@@ -6,7 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 
 from . import bundles, config, service
@@ -17,7 +17,7 @@ def install(app, current_user, admin_user):
     router = APIRouter(prefix="/api/v1/cluster", tags=["workstations"])
 
     def coordinator():
-        if config.load()["mode"] != "coordinator":
+        if config.load()["mode"] not in {"coordinator", "peer"}:
             raise HTTPException(503, "This installation is not the coordinator.")
         return Store()
 
@@ -147,6 +147,36 @@ def install(app, current_user, admin_user):
             raise HTTPException(404, "Input bundle unavailable.")
         return FileResponse(path)
 
+    def peer_replica():
+        if not config.is_peer():
+            raise HTTPException(409, "Enable independent workstation sharing first.")
+        from .replication import Replica
+        return Replica()
+
+    @router.post("/node/peer/hello")
+    def peer_hello(payload: dict = Body(...), actor=Depends(node), replica=Depends(peer_replica), store=Depends(coordinator)):
+        if payload.get("node_id") != actor["id"] or actor["id"] == config.identity():
+            raise HTTPException(403, "A peer can publish only its own resource snapshot.")
+        call(store.heartbeat, actor["id"], payload.get("snapshot", {}), [])
+        own = next((n for n in store.nodes() if n["id"] == config.identity()), None)
+        snapshot = dict(own["snapshot"]) if own else {}
+        if not own or own["availability"] != "online":
+            snapshot.update(accept_jobs=False, scheduler_online=False)
+        probes = payload.get("reference_probes", [])
+        if not isinstance(probes, list) or len(probes) > 10000 or any(not isinstance(p,str) for p in probes):
+            raise HTTPException(422, "Invalid reference inventory request.")
+        config.atomic_json(config.home() / ("peer-probes-" + actor["id"] + ".json"), {"references":probes})
+        return {"node_id":config.identity(), "snapshot":snapshot, "epoch":replica.epoch, "reference_probes":store.reference_probes()}
+
+    @router.get("/node/peer/records")
+    def peer_records(response: Response, since: int = Query(0, ge=0), actor=Depends(node), replica=Depends(peer_replica)):
+        response.headers["Cache-Control"] = "no-store"
+        return call(replica.export, since)
+
+    @router.post("/node/peer/records")
+    def receive_records(payload: dict = Body(...), actor=Depends(node), replica=Depends(peer_replica)):
+        return {"accepted":call(replica.receive, payload.get("records"))}
+
     @router.post("/node/heartbeat")
     def heartbeat(payload: dict = Body(...), actor=Depends(node), store=Depends(coordinator)):
         call(store.heartbeat, actor["id"], payload.get("snapshot", {}), payload.get("jobs", []), payload.get("known_references"))
@@ -155,7 +185,10 @@ def install(app, current_user, admin_user):
 
     @router.post("/node/claim")
     def claim(actor=Depends(node), store=Depends(coordinator)):
-        return {"command": call(store.claim, actor["id"])}
+        result = {"command": call(store.claim, actor["id"])}
+        if config.is_peer():
+            result["server_node_id"] = config.identity()
+        return result
 
     @router.post("/node/commands/{command_id}/finish")
     def finish(command_id: str, payload: dict = Body(...), actor=Depends(node), store=Depends(coordinator)):

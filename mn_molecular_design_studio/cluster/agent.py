@@ -26,6 +26,8 @@ class Agent:
         self._known_references = set()
         self._reference_probes = []
         self._stop = threading.Event()
+        self._peer_retry = {}
+        self._poll_index = 0
 
     def snapshot(self):
         if time.monotonic() - self._inventory_time > 120 or not self._inventory:
@@ -81,6 +83,8 @@ class Agent:
                 return result
 
     def heartbeat(self):
+        if config.is_peer():
+            return self.peer_heartbeat()
         storage_online = self.storage_online()
         jobs = self.catalog() if storage_online else []
         batches = [jobs[i:i + 1000] for i in range(0, len(jobs), 1000)] or [[]]
@@ -101,6 +105,36 @@ class Agent:
         if self.settings["mode"] == "coordinator":
             from .store import Store
             Store().cleanup_transfers()
+
+    def peer_heartbeat(self):
+        from .store import Store
+        from .replication import Replica, capture_identity, sync_peer, locked
+        store = Store()
+        jobs = self.catalog() if self.storage_online() else []
+        probes = set(store.reference_probes())
+        for path in config.home().glob("peer-probes-*.json"):
+            try:
+                probes.update(json.loads(path.read_text()).get("references", []))
+            except (OSError, ValueError):
+                continue
+        self._reference_probes = sorted(probes)
+        snapshot = self.snapshot()
+        for index in range(0, max(1, len(jobs)), 1000):
+            batch = jobs[index:index+1000]
+            known = sorted(self._known_references) if index + 1000 >= len(jobs) and self.storage_online() else None
+            store.heartbeat(self.node_id, snapshot, batch, known)
+            for row in batch:
+                self._published[row["task_group"] + "/" + row["run_id"]] = tuple(row["_signature"])
+        with locked():
+            capture_identity()
+            Replica().capture_jobs()
+        for peer in config.load().get("peers", []):
+            try:
+                sync_peer(peer, snapshot)
+            except Exception as exc:
+                log.warning("Workstation %s synchronization paused: %s", peer.get("name",peer["id"]), exc)
+        config.atomic_json(config.home() / "agent-status.json", {"last_heartbeat":time.time(), "node_id":self.node_id, "online":True})
+        store.cleanup_transfers()
 
     def execute(self, command):
         directory = config.home() / "receipts"
@@ -196,13 +230,38 @@ class Agent:
             raise ValueError("The downloaded artifact failed its integrity check.")
         return response | {"name": path.name}
 
-    def poll(self):
-        command = transport.node_request("/claim", method="POST").get("command")
+    def _poll_server(self, timeout=15, expected=None):
+        reply = transport.node_request("/claim", method="POST", timeout=timeout)
+        if expected and reply.get("server_node_id") != expected:
+            raise transport.ClusterUnavailable("The configured peer address belongs to another workstation.")
+        command = reply.get("command")
         if command:
             response, error = self.execute(command)
             transport.node_request("/commands/" + command["id"] + "/finish",
                                    {"lease_token": command["lease_token"], "response": response, "error": error}, method="POST", timeout=30)
         return bool(command)
+
+    def poll(self):
+        if not config.is_peer():
+            return self._poll_server()
+        settings = config.load()
+        servers = [(settings["coordinator_url"], self.node_id), *[(p["url"],p["id"]) for p in settings.get("peers",[])]]
+        addresses = [address for address,_ in servers]
+        for index in range(len(addresses)):
+            position = (self._poll_index + index) % len(addresses)
+            address = addresses[position]
+            if self._peer_retry.get(address, 0) > time.monotonic():
+                continue
+            try:
+                with transport.command_server(address):
+                    active = self._poll_server(timeout=3, expected=servers[position][1])
+                self._peer_retry.pop(address, None)
+                if active:
+                    self._poll_index = (position + 1) % len(addresses)
+                    return True
+            except transport.ClusterUnavailable:
+                self._peer_retry[address] = time.monotonic() + 15
+        return False
 
     def run(self, *, once=False):
         if self.settings["mode"] == "disabled" or not self.settings["node_token"]:

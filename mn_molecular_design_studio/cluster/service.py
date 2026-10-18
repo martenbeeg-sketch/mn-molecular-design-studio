@@ -18,7 +18,7 @@ def user_record(user):
 
 def lookup_job(reference, user, token=""):
     jid = str(reference).removeprefix("cluster:")
-    if config.load()["mode"] == "coordinator":
+    if config.load()["mode"] in {"coordinator", "peer"}:
         return Store().job(jid, user_record(user))
     return transport.request("/api/v1/cluster/jobs/" + jid, token=token)
 
@@ -56,7 +56,7 @@ def submit_from_api(payload, user, *, request_dir, token, authorize_path, kind="
         return None
     source = payload.get("source_job")
     has_cluster_source = bool(isinstance(source, str) and source.startswith("cluster:")) or bool(bundles.referenced_nodes(payload))
-    if placement == "local" and not has_cluster_source:
+    if placement == "local" and not has_cluster_source and not config.is_peer():
         from .agent import Agent
         if not Agent().storage_online():
             raise transport.ClusterUnavailable("This workstation's Results storage is unavailable. Restore its disk or select another workstation.")
@@ -92,7 +92,7 @@ def submit_from_api(payload, user, *, request_dir, token, authorize_path, kind="
     envelope = {"kind": kind, "payload": prepared, "project_id": project_id, "bundle_id": bundle_id,
                 "requirements": needs, "origin_node": config.identity(), "placement": placement,
                 "idempotency_key": execution.get("idempotency_key") or str(uuid.uuid4())}
-    if settings["mode"] == "coordinator":
+    if settings["mode"] in {"coordinator", "peer"}:
         if bundle_id:
             with Store().connect() as db:
                 db.execute("CREATE TABLE IF NOT EXISTS blob_grants(digest TEXT,owner_id TEXT,PRIMARY KEY(digest,owner_id))")
@@ -180,7 +180,7 @@ def accept_submission(envelope, user):
 
 
 def shared_jobs(user, *, token="", **filters):
-    if config.load()["mode"] == "coordinator":
+    if config.load()["mode"] in {"coordinator", "peer"}:
         return Store().search(user_record(user), **filters)
     from urllib.parse import urlencode
     return transport.request("/api/v1/cluster/jobs?" + urlencode({k: v for k, v in filters.items() if v is not None}, doseq=True), token=token)

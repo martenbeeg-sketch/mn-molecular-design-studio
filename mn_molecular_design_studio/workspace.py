@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from pathlib import Path
 
+from mn_molecular_design_studio.cluster.replication import identity_edit
+
 STUDIO_SOURCE_KEY = "molecular_design_studio"
 STUDIO_SOURCE_ID = "mn-molecular-design-studio"
 
@@ -91,6 +93,7 @@ def save_settings(settings: dict, home: Path | None = None) -> dict:
     return payload
 
 
+@identity_edit
 def save_organization(organization: dict, home: Path | None = None) -> dict:
     """Persist organization and project metadata in the Studio-owned workspace."""
     workspace = home or _studio_home()
@@ -109,6 +112,7 @@ def save_organization(organization: dict, home: Path | None = None) -> dict:
     return payload
 
 
+@identity_edit
 def create_project(
     name: str,
     description: str = "",

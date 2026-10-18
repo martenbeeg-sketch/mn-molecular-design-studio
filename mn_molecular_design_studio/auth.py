@@ -7,7 +7,7 @@ SHA-256 digests are stored in the workspace database.
 from __future__ import annotations
 
 import base64
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import hashlib
 import hmac
 import re
@@ -140,12 +140,18 @@ def _connect() -> sqlite3.Connection:
 
 @contextmanager
 def _connection():
-    connection = _connect()
-    try:
-        with connection:
-            yield connection
-    finally:
-        connection.close()
+    from mn_molecular_design_studio.cluster import config as cluster_config
+    from mn_molecular_design_studio.cluster.replication import locked, capture_identity
+    with locked() if cluster_config.is_peer() else nullcontext():
+        connection = _connect()
+        try:
+            with connection:
+                yield connection
+            changed = connection.total_changes
+        finally:
+            connection.close()
+        if changed:
+            capture_identity()
 
 
 def _normalize_username(username: str) -> str:
@@ -161,7 +167,7 @@ def _password_hash(password: str) -> str:
     if len(password) > 1024:
         raise ValueError("Password is too long.")
     salt = secrets.token_bytes(16)
-    derived = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32)
+    derived = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32, maxmem=128 * 1024 * 1024)
     salt_text = base64.urlsafe_b64encode(salt).decode("ascii")
     digest_text = base64.urlsafe_b64encode(derived).decode("ascii")
     return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${salt_text}${digest_text}"
@@ -181,6 +187,7 @@ def _verify_password(password: str, encoded: str) -> bool:
             r=int(r_text),
             p=int(p_text),
             dklen=len(expected),
+            maxmem=128 * 1024 * 1024,
         )
     except (ValueError, TypeError, UnicodeError):
         return False

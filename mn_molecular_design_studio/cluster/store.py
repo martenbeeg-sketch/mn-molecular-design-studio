@@ -261,6 +261,19 @@ class Store:
         nodes = self.nodes()
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            if config.is_peer():
+                online = {n["id"] for n in nodes if n["availability"] == "online"}
+                queued = db.execute("SELECT s.job_id,s.command_id,c.node_id FROM submissions s JOIN commands c ON c.id=s.command_id WHERE s.placement='auto' AND s.affinity_node IS NULL AND s.cancelled=0 AND c.status='queued'").fetchall()
+                for waiting in queued:
+                    if waiting["node_id"] in online:
+                        continue
+                    # Claim and reassignment use the same transaction: once claimed,
+                    # a job remains pinned even if its acceptance reply is lost.
+                    db.execute("UPDATE commands SET status='cancelled' WHERE id=? AND status='queued'", (waiting["command_id"],))
+                    db.execute("UPDATE submissions SET command_id=NULL WHERE job_id=?", (waiting["job_id"],))
+                    value = json.loads(self._job(db, waiting["job_id"])["payload"])
+                    value.update(node_id=None, status="waiting_for_workstation", wait_reason="The selected workstation disconnected before accepting; selecting an available workstation.")
+                    db.execute("UPDATE jobs SET node_id=NULL,payload=? WHERE id=?", (encoded(value), waiting["job_id"]))
             rows = db.execute("SELECT * FROM submissions WHERE command_id IS NULL AND cancelled=0").fetchall()
             for row in rows:
                 target = row["affinity_node"] or (row["placement"] if row["placement"] != "auto" else None)

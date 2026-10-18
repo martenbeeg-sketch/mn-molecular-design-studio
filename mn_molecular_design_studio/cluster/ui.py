@@ -74,14 +74,16 @@ def settings(user, token):
     if user.get("role") != "admin":
         st.write(f"{current['name']} · {current['mode']}")
         return
-    modes = ["disabled", "coordinator", "worker"]
+    modes = ["disabled", "peer", "coordinator", "worker"]
     mode = st.selectbox("Workstation connection", modes, index=modes.index(current["mode"]),
-                        format_func=lambda v: {"disabled": "Standalone", "coordinator": "Coordinator", "worker": "Connected workstation"}[v], key="cluster-settings-mode")
+                        format_func=lambda v: {"disabled": "Standalone", "peer": "Independent workstations", "coordinator": "Coordinator (legacy)", "worker": "Connected workstation (legacy)"}[v], key="cluster-settings-mode")
     name = st.text_input("Workstation name", value=current["name"], key="cluster-settings-name")
-    address = st.text_input("Coordinator API address", value=current["coordinator_url"] or "http://127.0.0.1:8766", key="cluster-settings-url")
+    address = st.text_input("Local API address" if mode == "peer" else "Coordinator API address", value=current["coordinator_url"] or "http://127.0.0.1:8766", key="cluster-settings-url")
     accept = st.checkbox("Accept new jobs on this workstation", value=current["accept_jobs"], key="cluster-settings-accept")
     st.caption(f"Permanent workstation ID: {config.identity()}")
-    if mode == "worker" and current["mode"] != "worker":
+    if mode == "peer" and current["mode"] != "peer":
+        st.info("Connect trusted peers with the cluster enable-peers command. Each installation keeps its accounts, scheduler and results available independently.")
+    elif mode == "worker" and current["mode"] != "worker":
         st.info("Enroll this workstation on the coordinator, then import its private enrollment file with the cluster join command.")
         st.code("mn-molecular-design-studio cluster join workstation-enrollment.json --coordinator-url " + address, language="bash")
     elif st.button("Save workstation settings", key="cluster-settings-save"):
@@ -108,6 +110,14 @@ def settings(user, token):
                                    "Accepts jobs": n["snapshot"].get("accept_jobs", False)} for n in nodes]), hide_index=True, use_container_width=True)
     except (transport.ClusterUnavailable, ValueError) as exc:
         st.info(str(exc))
+    if current["mode"] == "peer":
+        st.caption("Accounts and projects are stored locally and synchronized with trusted workstations. Each machine remains usable when the others are offline.")
+        from .replication import Replica
+        with Replica().db() as db:
+            conflicts = db.execute("SELECT key,error FROM conflicts ORDER BY key").fetchall()
+        if conflicts:
+            st.warning(f"{len(conflicts)} metadata changes need administrator attention. Existing account and job identities have been preserved.")
+            st.dataframe([dict(r) for r in conflicts], hide_index=True)
     if current["mode"] == "coordinator":
         with st.expander("Enroll another workstation"):
             new_name = st.text_input("New workstation name", placeholder="4032", key="cluster-enroll-name")

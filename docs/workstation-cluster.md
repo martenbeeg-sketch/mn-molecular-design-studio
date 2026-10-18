@@ -1,184 +1,162 @@
-# Studio on multiple workstations
+# Independent Studio workstations
 
-Studio can share its job catalog and route new workflows among workstations,
-while each workstation retains its scientific files and local compute scheduler.
-Workstation sharing is disabled by default. Installing an updated Studio does
-not change existing scheduler jobs, allocations, paused campaigns, or Results folders.
+Studio supports independent installations that exchange account, project, resource
+and job metadata. Each installation has its own API, account database, local compute
+scheduler, job catalog and Results storage. In **Independent workstations** mode
+(`mode=peer`), no particular workstation must remain switched on.
 
-## Components and ownership
+## Normal operation and outages
 
-- One Studio API also acts as the coordinator. Its private SQLite database is
-  accessed through the API; it is never mounted as a shared database file.
-- Every workstation, including the coordinator, runs a Studio background agent.
-  Agents connect outward to the coordinator, publish resources and job metadata,
-  and claim commands addressed to their permanent workstation UUID.
-- The existing MN Compute Scheduler on **each workstation** remains responsible
-  for CPU, GPU, RAM and scratch reservations across local MN applications.
-- Jobs have a global UUID and an owning workstation. Local GPU numbers are scoped
-  to that workstation. Identical run folders on two machines remain distinct.
-- Existing result references remain local. Federated references use
-  `cluster://WORKSTATION_UUID/TASK_GROUP/RUN_ID/relative/file` and refuse to
-  resolve on another workstation.
+- Sign in, create projects, submit local jobs and analyze local results even when
+  every other workstation is offline. Sessions are issued and checked locally.
+- Each background agent publishes its local catalog into its local shared store,
+  then synchronizes with every configured reachable peer. Synchronization has
+  durable cursors and resumes after an outage or process restart.
+- Automatic placement prefers this workstation when compatible resources are
+  available. Otherwise it selects a compatible peer using its latest resource
+  report. Explicit **This workstation** submissions use the local queue.
+- Each originating installation keeps its own durable submission queue. Execution
+  machines poll their peers directly for assigned commands. A third workstation
+  does not relay or authorize this communication.
+- A queued automatic command can be reassigned if its selected machine disappears
+  before claiming it. Claiming and reassignment use one database transaction.
+  Once claimed, it stays on that execution machine, including after a lost reply.
+  Durable execution receipts return the original submission result on retries.
+- A submitted request that still needs inputs or acceptance from an offline origin
+  waits for that origin to return. It is not duplicated elsewhere. Retry the same
+  submission ID against the same originating installation.
+- Heartbeats normally run every 15 seconds. After 45 seconds without direct contact
+  a peer is unreachable; after 120 seconds it is offline. Synchronizing an old
+  catalog entry through another peer does not make the unavailable machine online.
+- Every catalog retains the machine name, original path and last known job state.
+  An offline machine's data remain listed and are marked unavailable.
 
-New target files, sequences, settings and selected MSAs can be staged to the
-chosen workstation. Existing Results files and model reference directories are
-not bundled. Inputs use SHA-256 checks and a bounded, traversal-safe archive.
-The staging limit is 512 MB per submission.
+## Scientific data and scheduler ownership
 
-Analysis and follow-up sequence design/folding requests carry the source job's
-machine affinity. A source on an offline workstation waits for that workstation.
-The coordinator never moves an accepted scientific run to another machine.
-Whole visual pipelines execute on one workstation, preserving all intermediate
-files there. Requests combining existing source files from different workstations
-are rejected; run each branch on its source workstation and compare summary metrics.
+Full results, structures, logs, checkpoints and alignment databases stay local.
+Metadata replication never opens another machine's filesystem paths. Source files
+use `cluster://WORKSTATION_UUID/TASK_GROUP/RUN_ID/relative/file` references.
 
-The shared catalog contains user/project IDs, job status, scores and a file
-inventory. Full structures and logs stay on the owning workstation. A user can
-request individual files for viewing/download; these requested coordinator copies
-expire after 24 hours. Input bundles waiting for a workstation remain available.
-Accepted input files are retained on the execution workstation for queued jobs,
-restarts and provenance.
+Analysis and follow-up redesign/folding requests run on the workstation that owns
+those results. Whole visual pipelines execute there too. A disconnected source
+waits for its owner. Inputs from different machines cannot silently be combined
+into one local run. Requested individual files may be temporarily downloaded for
+viewing; those copies expire after 24 hours.
 
-## Installation
+New input bundles are bounded to 512 MB and checked by SHA-256. Pending submission
+inputs are retained until accepted. A storage sentinel disables new execution when
+a Results disk is unavailable; it never creates a replacement storage identity.
 
-Install the same Studio code and `mn-compute-scheduler` package on all machines.
-Use each machine's own app workspace, Results folder and reference folder. Do not
-copy a configured Studio workspace or its workstation UUID onto another machine.
-Start and configure the local MN Compute Scheduler on each machine as usual.
+Each local MN Compute Scheduler continues to own GPU/CPU/RAM reservations. Studio
+peer migration does not resume paused campaigns, change scheduler allocations or
+cancel existing scientific jobs. Matching engine code, container identities and
+required reference files are checked before remote execution.
 
-The coordinator owns sign-in, users, project IDs and access grants. Connected
-installations use those accounts and cache the project catalog. Create the
-coordinator admin in production mode before exposing its API to a private LAN:
+## Accounts, projects and trust
+
+Only explicitly enrolled, trusted workstations participate. Their private machine
+credentials authenticate peer APIs over SSH or a trusted authenticated network.
+User API credentials cannot read private synchronization records.
+
+Account IDs, password hashes, disabled-account flags, project IDs and memberships
+are replicated. Passwords and session tokens are not copied. A user can sign in
+locally with the same account after its account record has first synchronized.
+A password or disabled-account update invalidates that user's existing sessions
+on a peer when the update reaches it.
+
+Changes use Lamport versions and a stable workstation ID tie breaker, rather than
+wall clocks, so different system clock settings do not choose a stale update.
+Concurrent edits of one record converge deterministically. Membership removals
+and project removals are retained as tombstones and cannot be resurrected by old
+cached records. Different users created with the same username on disconnected
+machines remain separate identities: the collision is retained for administrator
+review under Settings → Workstations. Jobs cannot change execution-machine or
+user/project ownership through synchronization.
+
+Account and permission revocations cannot reach disconnected machines until they
+reconnect. These machines are trusted copies of the organization's account data;
+protect their disks and machine credentials accordingly. Application sessions
+remain local. No SQLite database is mounted or continuously copied between hosts.
+
+## Initial setup and migration
+
+Install Studio and the local MN Compute Scheduler on each machine. Keep permanent
+workstation UUIDs, local Results directories and reference paths distinct. Create
+and initialize an independent first installation with the Studio Conda Python:
 
 ```bash
 conda activate mn-molecular-design-studio
 mn-molecular-design-studio create-admin
-mn-molecular-design-studio cluster init --name current-workstation
-```
-
-The API listens on loopback by default. Existing SSH access can connect the
-workstations without opening a new network-facing API port. On the coordinator:
-
-```bash
-mn-molecular-design-studio cluster install-services --enable
-mn-molecular-design-studio cluster enroll --name 4032 --output studio-4032.json
-mn-molecular-design-studio cluster enroll --name 4033 --output studio-4033.json
-```
-
-Transfer each enrollment file privately to its intended workstation. Each file
-contains a credential for one node. On workstation 4032, replace the SSH destination
-below with the actual coordinator SSH account and hostname:
-
-```bash
-mn-molecular-design-studio cluster install-tunnel --ssh-host USER@COORDINATOR --enable
-mn-molecular-design-studio cluster join studio-4032.json --coordinator-url http://127.0.0.1:18766
+mn-molecular-design-studio cluster init --name workstation-name --independent
 mn-molecular-design-studio cluster install-services --enable
 ```
 
-Repeat on 4033 using its own enrollment file. Port 18766 is the worker's SSH
-tunnel to the coordinator. Port 8766 remains that worker's own Studio API.
-Keep the SSH host-key checks and key-based access normally used on these machines.
+For enrolled installations, a private, administrator-prepared manifest migrates
+existing node identities and credentials:
 
-For an authenticated private-LAN API instead of SSH, start the coordinator API
-with `api --host PRIVATE_LISTEN_ADDRESS` and configure the workers with that
-coordinator URL. Development authentication cannot bind to a non-loopback address.
+```bash
+mn-molecular-design-studio cluster enable-peers /private/workstation-peers.json
+systemctl --user restart studio-api studio-agent
+mn-molecular-design-studio cluster status
+```
 
-The generated user systemd services use the Python executable from the active
-Conda environment. They require the existing local scheduler service. User services
-normally run during the user's session; use the workstation's usual systemd
-linger policy if agents must stay available after logout.
+The manifest has schema version 1, the receiving `node_id`, its own `api_url`, a
+`members` array of enrolled IDs/names/credential hashes/disabled flags, and a
+`peers` array of IDs/names/API URLs as reachable **from that machine**. Optional
+`identity_records` seed existing accounts/projects using the replication format.
+Transfer this manifest only through an already authenticated private channel.
+The receiving node's existing private credential must match its membership hash.
 
-Inspect services without starting scientific work:
+Migration uses consistent SQLite backups in `cluster/before-peers-*` and copies the
+previous configuration and organization metadata. It retains the workstation UUID,
+credential, project/job identities, Results path and scheduler. Review synchronization
+conflicts before removing those backups.
+
+## Direct SSH connectivity
+
+Each pair of workstations needs a connection that works while the third is off.
+With loopback APIs on port 8766, a direct SSH forward on 4032 can expose 4033 as:
+
+```bash
+ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes \
+  -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 \
+  -L 127.0.0.1:18763:127.0.0.1:8766 compute@pc004033.marionegri.it
+```
+
+Configure 4033's peer URL as `http://127.0.0.1:18763` **on 4032**. Set up the
+opposite direction too. Keep these tunnels in restartable systemd user services.
+Dedicated SSH keys can be restricted to forwarding to `127.0.0.1:8766`, with no
+shell, PTY, agent or X11 forwarding. Validate host keys using an existing trusted
+SSH connection; do not disable host-key verification.
+
+On pc002975, the existing tunnels to 4032/4033 can retain reverse forwards so the
+workers can contact pc002975 without exposing its API. Those links are optional
+when pc002975 is off: the direct 4032↔4033 links remain available.
+
+Inspect without starting a scientific job:
 
 ```bash
 mn-molecular-design-studio cluster status
-systemctl --user status studio-api studio-agent studio-coordinator-tunnel
+systemctl --user status studio-api studio-agent
 journalctl --user -u studio-agent -n 50
 ```
 
-Use a single API process on each configured port. When switching from a manually
-started Studio API to the generated service, stop that API process before enabling
-the service. The local compute scheduler and its scientific workers keep running.
+User services require the usual login/linger policy to remain available after
+logout. Keep API listeners on loopback when using development authentication.
 
-`cluster agent --once` publishes one snapshot and processes at most one assigned
-command. It can execute an already queued command; use `cluster status` for a
-strictly read-only check.
+## Legacy deployments
 
-## User interface
+`coordinator` and `worker` modes remain supported for compatibility. In those modes
+shared sign-in, projects and dispatch require one coordinator; cached sessions only
+work until their original expiry. `cluster init` without `--independent`, `enroll`,
+`join` and `install-tunnel` retain their original behavior. Migrate enrolled nodes
+with `enable-peers` to remove that dependency.
 
-Settings → Workstations shows connection status, free resources, the local
-accept-new-jobs setting, and coordinator enrollment controls.
+## Verification
 
-When sharing is enabled, the sidebar offers **Automatic**, **This workstation**,
-and the other enrolled workstations, plus a resource summary for all signed-in
-users. Automatic prefers the origin when compatible
-resources are free; otherwise it chooses another ready workstation. It checks
-adapter code revision, engine image identity where known, reference availability,
-GPU memory, CPU, RAM, disk and reservations from the local scheduler.
-
-My results becomes a paginated shared catalog with workstation/project filters and
-separate job status and data availability. Local results retain their normal result view.
-Remote result pages show synchronized scores and offer on-demand result inspection,
-structure viewing, file downloads, cancellation, and follow-up analysis/redesign/
-Boltz-2 prediction on the owning workstation.
-
-Every API workflow and visual-pipeline submission accepts an optional execution
-envelope, for example:
-
-```json
-{
-  "schema_version": 1,
-  "workflow": "analysis.ipsae",
-  "project_id": "SHARED_PROJECT_ID",
-  "source_job": "cluster:GLOBAL_JOB_UUID",
-  "parameters": {"pae_cutoff": 10.0, "dist_cutoff": 10.0},
-  "execution": {"placement": "auto", "idempotency_key": "client-generated-unique-submission-id"}
-}
-```
-
-Use `placement: "local"` for ordinary local execution, including while the
-coordinator is unavailable. An explicit remote source always enforces its own
-workstation affinity. A repeated submission ID with the same request returns the
-same global job; using it for different inputs is rejected.
-
-Coordinator API routes are documented under `/docs`, including `/cluster/nodes`,
-`/cluster/jobs`, `/cluster/submissions`, `/cluster/jobs/{id}/actions`, and command
-status/file downloads. Node endpoints use separate workstation credentials.
-
-## Offline and failure behavior
-
-- Heartbeats normally arrive every 15 seconds. A node becomes unreachable after
-  45 seconds and offline after 120 seconds. Completion status remains unchanged.
-- Already running local jobs continue through coordinator/network outages. The
-  agent publishes their eventual state after reconnection.
-- The interface keeps a per-user cached catalog. Previously verified worker
-  sign-in sessions may operate locally until the original session expiry; no new
-  central identity or project permission is created while offline.
-- An acknowledged job is never automatically retried on another workstation.
-  Command lease recovery addresses the same workstation, whose receipt journal
-  returns the original local submission result after a lost reply.
-- If the agent crashes in the narrow interval between beginning local submission
-  and persisting its result, the operation is marked **submission uncertain**.
-  Check the local run carrying that `cluster_submission_id` before making another
-  submission. This deliberately avoids silently duplicating an expensive run.
-- A storage sentinel detects an unavailable Results mount and disables new work
-  without creating a replacement storage identity. Missing files remain cataloged
-  as unavailable; records are not erased because a workstation or disk is absent.
-- Changing **Accept new jobs** drains the workstation from new automatic
-  placement. Existing scheduler jobs continue.
-
-The reference-file inventory verifies presence, not full content hashes of every
-multi-gigabyte checkpoint. Container identities and code revisions are compared;
-keep matching model distributions on the eligible machines. Existing node-local
-user/project databases are not automatically merged into coordinator accounts.
-Import their projects and map ownership explicitly when migrating older installs.
-
-## Validation
-
-Cluster tests run in the Studio Conda environment and simulate independent node
-identities, busy resources, offline hosts, path separation, protected transfers,
-shared accounts and lost replies. Integration tests exercise the real coordinator
-API and workstation agent while replacing the scientific adapter with a small
-local test job. They do not launch a model, SSH session or scheduler GPU job.
-Real deployment still requires the selected coordinator and the actual SSH or
-private-network addresses of workstations 4032 and 4033.
+The peer tests exercise separate real SQLite account/catalog databases, HTTP peer
+APIs, local authentication with no network, offline project creation, metadata
+catch-up, concurrent edits, permission tombstones, ownership checks, private peer
+credentials, durable cursors and duplicate submission receipts. Model execution is
+replaced with a recorded submission, so these checks do not use a GPU or start a
+scientific workflow.

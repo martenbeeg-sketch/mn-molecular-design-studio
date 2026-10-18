@@ -21,18 +21,20 @@ def identity():
 
 
 @app.command("init")
-def initialize(name: str = typer.Option(...), coordinator_url: str = "http://127.0.0.1:8766"):
-    """Make this installation the coordinator and enroll its local agent."""
+def initialize(name: str = typer.Option(...), coordinator_url: str = "http://127.0.0.1:8766", independent: bool = False):
+    """Initialize a workstation; --independent enables local accounts and peer synchronization."""
     settings = config.load()
     if settings["mode"] == "worker":
         raise typer.BadParameter("Disable the worker connection before creating a new coordinator.")
-    if settings["mode"] == "coordinator" and settings["node_token"]:
-        config.save({"name": name, "coordinator_url": coordinator_url})
+    mode = "peer" if independent else "coordinator"
+    if settings["mode"] in {"coordinator", "peer"} and settings["node_token"]:
+        config.save({"mode": mode, "name": name, "coordinator_url": coordinator_url})
     else:
         enrollment = Store().enroll(name, config.identity())
-        config.save({"mode": "coordinator", "name": name, "coordinator_url": coordinator_url,
+        config.save({"mode": mode, "name": name, "coordinator_url": coordinator_url,
                      "node_token": enrollment["node_token"], "default_placement": "auto"})
-    typer.echo(f"Coordinator configured: {name} ({config.identity()}). Start the Studio API and cluster agent.")
+    label = "Independent workstation" if independent else "Coordinator"
+    typer.echo(f"{label} configured: {name} ({config.identity()}). Start the Studio API and cluster agent.")
 
 
 @app.command("enroll")
@@ -83,7 +85,7 @@ def status():
     settings = config.load()
     result = {k: settings[k] for k in ("mode", "name", "coordinator_url", "accept_jobs", "default_placement")}
     result["node_id"] = config.identity()
-    if settings["mode"] == "coordinator":
+    if settings["mode"] in {"coordinator", "peer"}:
         result["nodes"] = Store().nodes()
     typer.echo(json.dumps(result, indent=2))
 
@@ -139,3 +141,57 @@ def install_tunnel(ssh_host: str = typer.Option(..., help="Existing SSH destinat
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
         subprocess.run(["systemctl", "--user", "enable", "--now", "studio-coordinator-tunnel.service"], check=True)
     typer.echo(f"Tunnel service installed. Join using coordinator URL http://127.0.0.1:{local_port}")
+
+
+@app.command("enable-peers")
+def enable_peers(manifest: Path = typer.Argument(..., exists=True)):
+    """Migrate an enrolled installation using a private trusted-peer manifest.
+
+    The manifest contains member credential hashes, peer API URLs and optional
+    initial account/project records. No workstation UUID or results path changes.
+    """
+    import hashlib
+    import shutil
+    import sqlite3
+    import uuid
+    from datetime import datetime, timezone
+    from .replication import Replica, capture_identity, locked
+    from mn_molecular_design_studio import auth, workspace
+    payload = json.loads(manifest.read_text())
+    settings = config.load()
+    own = config.identity()
+    if payload.get("schema_version") != 1 or payload.get("node_id") != own:
+        raise typer.BadParameter("The peer manifest belongs to a different workstation.")
+    members = payload.get("members", [])
+    own_member = next((m for m in members if m.get("id") == own), None)
+    digest = hashlib.sha256(settings.get("node_token", "").encode()).hexdigest()
+    if not own_member or own_member.get("token_hash") != digest or not settings.get("node_token"):
+        raise typer.BadParameter("The manifest does not match this workstation's enrolled credential.")
+    member_ids = {str(uuid.UUID(m["id"])) for m in members}
+    if any(p["id"] not in member_ids or p["id"] == own for p in payload.get("peers", [])):
+        raise typer.BadParameter("Peer API addresses must refer to distinct trusted members.")
+    backup = config.home() / ("before-peers-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + '-' + uuid.uuid4().hex[:6])
+    backup.mkdir(mode=0o700)
+    # Online SQLite backups preserve consistent WAL state without stopping jobs.
+    for source in (Store().path, auth._database_path()):
+        if source.exists():
+            with sqlite3.connect(source) as db, sqlite3.connect(backup/source.name) as dest:
+                db.backup(dest)
+            (backup/source.name).chmod(0o600)
+    for source in (config.home()/"config.json", workspace._studio_home()/"organization/organization.json"):
+        if source.exists():
+            shutil.copy2(source, backup/source.name)
+    with Store().connect() as db:
+        for member in members:
+            if len(member.get("token_hash", "")) != 64:
+                raise typer.BadParameter("Invalid trusted member credential hash.")
+            db.execute("INSERT INTO nodes(id,name,token_hash,disabled) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,token_hash=excluded.token_hash,disabled=excluded.disabled", (member['id'],member['name'],member['token_hash'],int(member.get('disabled',False))))
+    config.save({"mode":"peer", "coordinator_url":payload.get("api_url","http://127.0.0.1:8766"), "peers":payload.get("peers",[]), "default_placement":settings.get("default_placement","auto")})
+    with locked():
+        replica = Replica()
+        initial = payload.get("identity_records", [])
+        for index in range(0, len(initial), 500):
+            replica.receive(initial[index:index+500])
+        capture_identity()
+    typer.echo(f"Independent workstation configured: {settings['name']}. Backup: {backup}")
+    typer.echo("Restart studio-api and studio-agent. Offline peers will synchronize after reconnecting.")

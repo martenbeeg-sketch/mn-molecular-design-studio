@@ -34,7 +34,7 @@ def load() -> dict:
         payload = {}
     return {"mode": "disabled", "name": socket.gethostname(), "coordinator_url": "",
             "node_token": "", "default_placement": "local", "heartbeat_seconds": 15,
-            "accept_jobs": True, **payload}
+            "accept_jobs": True, "peers": [], **payload}
 
 
 def identity() -> str:
@@ -54,8 +54,8 @@ def identity() -> str:
 
 def save(changes: dict) -> dict:
     config = load() | changes
-    if config["mode"] not in {"disabled", "coordinator", "worker"}:
-        raise ValueError("Choose disabled, coordinator, or worker mode.")
+    if config["mode"] not in {"disabled", "coordinator", "worker", "peer"}:
+        raise ValueError("Choose standalone, peer, coordinator, or worker mode.")
     if not str(config["name"]).strip():
         raise ValueError("Enter a workstation name.")
     address = str(config.get("coordinator_url") or "").rstrip("/")
@@ -67,6 +67,16 @@ def save(changes: dict) -> dict:
         raise ValueError("Accept jobs must be enabled or disabled.")
     if config["default_placement"] not in {"local", "auto"}:
         raise ValueError("Default placement must be local or auto.")
+    peers = config.get("peers", [])
+    if not isinstance(peers, list) or len(peers) > 100:
+        raise ValueError("Enter at most 100 trusted peer addresses.")
+    seen = set()
+    for peer in peers:
+        identity = str(uuid.UUID(peer["id"]))
+        parsed = urlsplit(str(peer.get("url", "")))
+        if identity in seen or parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+            raise ValueError("Each peer needs a unique workstation ID and an HTTP(S) API address.")
+        seen.add(identity)
     config["coordinator_url"] = address
     atomic_json(home() / "config.json", config)
     return config
@@ -86,3 +96,7 @@ def job_id(node_id: str, local_reference: str) -> str:
 
 def artifact_uri(node_id: str, group: str, run_id: str, relative: str = "") -> str:
     return f"cluster://{node_id}/{group}/{run_id}" + ("/" + relative.lstrip("/") if relative else "")
+
+
+def is_peer() -> bool:
+    return load()["mode"] == "peer"
