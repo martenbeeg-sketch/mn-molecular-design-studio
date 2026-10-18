@@ -160,7 +160,8 @@ class Store:
                     if previous.get("cancel_requested") or superseded_payload.get("cancel_requested"):
                         row["cancel_requested"] = True
                 row.update(cluster_job_id=jid, node_id=node_id, local_reference=local_ref,
-                           run_dir=config.artifact_uri(node_id, group, run), location=row.get("location") or raw.get("run_dir"), data_state="present")
+                           run_dir=config.artifact_uri(node_id, group, run), location=row.get("location") or raw.get("run_dir"),
+                           data_state="present", wait_reason="")
                 db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET local_ref=excluded.local_ref,payload=excluded.payload",
                            (jid, node_id, local_ref, str(row.get("owner_id") or ""), str(row.get("project_id") or ""), encoded(row), row.get("created_at") or stamp(self.clock())))
             if known_references is not None and snapshot.get("storage_available", True):

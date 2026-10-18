@@ -323,11 +323,38 @@ def test_heartbeat_promotes_legacy_fallback_job_to_submission_id_and_replicates_
     result = store.job(accepted["cluster_job_id"], user)
     assert result["status"] == "completed"
     assert result["local_reference"] == local_ref
+    assert result["wait_reason"] == ""
     with store.connect() as db:
         assert db.execute("SELECT 1 FROM jobs WHERE id=?", (fallback_id,)).fetchone() is None
     with Replica().db() as db:
         tombstone = db.execute("SELECT value FROM records WHERE key=?", ("job:" + fallback_id,)).fetchone()
     assert tombstone is not None and json.loads(tombstone["value"]) is None
+
+
+def test_replica_import_promotes_canonical_job_before_fallback_tombstone(cluster, monkeypatch):
+    from mn_molecular_design_studio.cluster.replication import Replica
+
+    store, nodes, user, needs, _snapshot, request, _clock = cluster
+    origin, remote = nodes[:2]
+    accepted = store.submit(request, needs, user, origin_node=origin["node_id"], placement=remote["node_id"])["job"]
+    local_ref = "design/finished-run"
+    fallback_id = config.job_id(remote["node_id"], local_ref)
+    fallback = {"cluster_job_id": fallback_id, "node_id": remote["node_id"], "owner_id": user["id"],
+                "project_id": "project-a", "status": "completed", "local_reference": local_ref}
+    with store.connect() as db:
+        db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?)", (
+            fallback_id, remote["node_id"], local_ref, user["id"], "project-a", json.dumps(fallback), "2026-10-18T00:00:00+00:00",
+        ))
+    monkeypatch.setattr(config, "identity", lambda: remote["node_id"])
+    canonical = fallback | {"cluster_job_id": accepted["cluster_job_id"]}
+
+    Replica()._apply("job", "job:" + accepted["cluster_job_id"], canonical, remote["node_id"])
+
+    with store.connect() as db:
+        assert db.execute("SELECT 1 FROM jobs WHERE id=?", (fallback_id,)).fetchone() is None
+        row = db.execute("SELECT local_ref,payload FROM jobs WHERE id=?", (accepted["cluster_job_id"],)).fetchone()
+    assert row["local_ref"] == local_ref
+    assert json.loads(row["payload"])["cluster_job_id"] == accepted["cluster_job_id"]
 
 
 def test_agent_crash_window_is_uncertain_and_never_submits_again(cluster, monkeypatch):

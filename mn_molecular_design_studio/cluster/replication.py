@@ -209,6 +209,7 @@ class Replica:
                 parts = str(local_ref).split('/')
                 if len(parts) != 2 or any(p in {'', '.', '..'} for p in parts):
                     raise ValueError("Invalid machine-local job reference.")
+                fallback_id = config.job_id(author, '/'.join(parts))
                 value = dict(value, run_dir=config.artifact_uri(author, *parts))
             # Older runs may have no recorded account/project; preserve the
             # original store's empty ownership fields and admin-only visibility.
@@ -220,6 +221,13 @@ class Replica:
                     raise PermissionError("Synchronization cannot change a job's execution machine or user/project ownership.")
                 if previous and previous['local_ref'] and not accepted:
                     return
+                if accepted:
+                    superseded = db.execute("SELECT * FROM jobs WHERE node_id=? AND local_ref=? AND id<>?", (author, '/'.join(parts), identifier)).fetchone()
+                    if superseded:
+                        if (superseded['id'] != fallback_id or superseded['owner_id'] != owner_id
+                                or superseded['project_id'] != project_id):
+                            raise PermissionError("Synchronization found a conflicting identity for this workstation run.")
+                        db.execute("DELETE FROM jobs WHERE id=?", (superseded['id'],))
                 db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET node_id=excluded.node_id,local_ref=excluded.local_ref,payload=excluded.payload", (identifier, value.get('node_id'), local_ref, owner_id, project_id, encoded(value), value.get('created_at','')))
             return
         from mn_molecular_design_studio import auth, workspace
