@@ -73,7 +73,13 @@ class Agent:
                 metadata = read_json(run / "metadata.json")
                 marker = read_json(run / "molecular_design_studio.json")
                 metrics = read_json(run / "result.json").get("metrics", {})
-                jid = metadata.get("cluster_job_id") or marker.get("cluster_job_id") or config.job_id(self.node_id, reference)
+                jid = (
+                    metadata.get("cluster_job_id")
+                    or marker.get("cluster_job_id")
+                    or metadata.get("cluster_submission_id")
+                    or marker.get("cluster_submission_id")
+                    or config.job_id(self.node_id, reference)
+                )
                 manifest = job_catalog.job_artifacts(row["task_group"], row["run_id"])
                 item = dict(row, cluster_job_id=jid, metrics=metrics, artifacts=manifest[:1000],
                             location=str(run), last_reported_at=time.time(), _signature=list(signature))

@@ -246,6 +246,50 @@ def test_agent_receipt_prevents_duplicate_inference_after_lost_reply(cluster, mo
     assert calls == [command["id"]] and result == again and error == again_error is None
 
 
+def test_agent_catalog_uses_cluster_submission_id_after_scheduler_rewrites_metadata(monkeypatch, tmp_path):
+    from mn_molecular_design_studio import job_catalog
+
+    node_id = str(uuid.uuid4())
+    submission_id = str(uuid.uuid4())
+    run = tmp_path / "design" / "run-1"
+    run.mkdir(parents=True)
+    (run / "metadata.json").write_text(json.dumps({"status": "completed", "cluster_submission_id": submission_id}))
+    (run / "molecular_design_studio.json").write_text(json.dumps({"cluster_submission_id": submission_id}))
+    (run / "result.json").write_text(json.dumps({"success": True, "metrics": {"candidate_count": 1}}))
+    monkeypatch.setattr(job_catalog, "search_jobs", lambda **kwargs: {
+        "items": [{"task_group": "design", "run_id": "run-1", "run_dir": str(run), "status": "completed",
+                   "metadata_mtime_ns": 1, "input_mtime_ns": 1, "result_mtime_ns": 1}],
+        "total": 1,
+    })
+    monkeypatch.setattr(job_catalog, "job_artifacts", lambda *_args: [])
+
+    agent = Agent()
+    agent.node_id = node_id
+    item = agent.catalog()[0]
+
+    assert item["cluster_job_id"] == submission_id
+    assert item["status"] == "completed"
+
+
+def test_submission_context_writes_both_cluster_job_id_fields(monkeypatch, tmp_path):
+    from mn_molecular_design_studio.cluster import context
+
+    node_id = str(uuid.uuid4())
+    submission_id = str(uuid.uuid4())
+    monkeypatch.setattr(config, "identity", lambda: node_id)
+    run = tmp_path / "design" / "run-1"
+    run.mkdir(parents=True)
+    metadata = {"run_id": "run-1"}
+    command = {"job_id": submission_id, "project_id": "project-a", "owner_id": "owner-a"}
+
+    with context.submission(command):
+        context.tag_created_job(run, metadata)
+
+    marker = json.loads((run / "molecular_design_studio.json").read_text())
+    assert metadata["cluster_job_id"] == metadata["cluster_submission_id"] == submission_id
+    assert marker["cluster_job_id"] == marker["cluster_submission_id"] == submission_id
+
+
 def test_agent_crash_window_is_uncertain_and_never_submits_again(cluster, monkeypatch):
     store, nodes, user, needs, _, request, _ = cluster
     store.submit(request, needs, user, origin_node=nodes[0]["node_id"], placement="local")
