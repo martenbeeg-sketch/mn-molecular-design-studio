@@ -14,6 +14,7 @@ from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import con
 
 _INPUT_KEYS = {
     "target_pdb",
+    "framework_pdb",
     "target_chains",
     "source_run_dir",
     "candidates_jsonl",

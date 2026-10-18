@@ -1,0 +1,86 @@
+
+
+<ROSETTASCRIPTS>
+
+        # This Rosetta XML minimizes an ANTIBODY-antigen complex and scores the interface
+        # This script also expects your antibody to be HLT formatted and will return
+        # garbage scores if this is not satisfied
+
+    <SCOREFXNS>
+        <ScoreFunction name="sfxn" weights="beta_nov16" />
+        <ScoreFunction name="sfxn_cart" weights="beta_nov16_cart" />
+    </SCOREFXNS>
+
+    <RESIDUE_SELECTORS>
+        <Chain name="chainH" chains="H"/>
+        <Chain name="chainL" chains="L"/>
+        <Chain name="chainT" chains="T"/>
+
+        <Or name="AbChain" selectors="chainH,chainL" />
+
+        <Neighborhood name="interfaceAb" selector="chainT" distance="10.0" />
+        <Neighborhood name="interfaceT" selector="AbChain" distance="10.0" />
+
+        <And name="interface" selectors="interfaceAb,interfaceT" />
+        <Not name="not_interface" selector="interface" />
+
+        <And name="interface_on_Ab" selectors="interface,AbChain" />
+        <And name="interface_on_T"  selectors="interface,chainT" />
+
+        <And name="not_interface_on_Ab" selectors="not_interface,AbChain" />
+        <And name="not_interface_on_T" selectors="not_interface,chainT" />
+
+    </RESIDUE_SELECTORS>
+    
+
+    <TASKOPERATIONS>        
+
+	<OperateOnResidueSubset name="restrict_to_interface" selector="not_interface">
+            <PreventRepackingRLT/>
+        </OperateOnResidueSubset>
+
+	<OperateOnResidueSubset name="pack_Ab_chain" selector="chainT">
+            <PreventRepackingRLT/>
+        </OperateOnResidueSubset>
+
+    </TASKOPERATIONS>
+
+    <MOVERS>
+            <TaskAwareMinMover name="min" scorefxn="sfxn" bb="0" chi="1" task_operations="restrict_to_interface" />
+    </MOVERS>
+
+    <FILTERS>
+
+        <Ddg name="ab_ddg" jump="2" repeats="5" repack="1" relax_mover="min" confidence="0" scorefxn="sfxn" extreme_value_removal="1" />
+        <Ddg name="nb_ddg" jump="1" repeats="5" repack="1" relax_mover="min" confidence="0" scorefxn="sfxn" extreme_value_removal="1" />
+
+        <Ddg name="ab_ddg_norepack" jump="2" repeats="1" repack="0" confidence="0" scorefxn="sfxn" extreme_value_removal="0" />
+        <Ddg name="nb_ddg_norepack" jump="1" repeats="1" repack="0" confidence="0" scorefxn="sfxn" extreme_value_removal="0" />
+
+        # This uses the pack_Ab_chain task operation to force the filter to only consider the net charge of non-target chain residues
+        <NetCharge name="fv_net_charge" task_operations="pack_Ab_chain" />
+
+    </FILTERS>
+
+    <SIMPLE_METRICS>
+         <SapScoreMetric name="sap_score" score_selector="AbChain" />
+    </SIMPLE_METRICS>
+
+    <MOVERS>
+
+        <TaskAwareMinMover name="minimize_interface" scorefxn="sfxn_cart" tolerance="0.01" cartesian="true" task_operations="restrict_to_interface" />
+
+    </MOVERS>
+
+    <APPLY_TO_POSE>
+    </APPLY_TO_POSE>
+    <PROTOCOLS>
+
+        <Add mover="minimize_interface" />
+        <Add filter="ddg" />
+        <Add metrics="sap_score" />
+        <Add filter="fv_net_charge" />
+
+
+    </PROTOCOLS>
+</ROSETTASCRIPTS>

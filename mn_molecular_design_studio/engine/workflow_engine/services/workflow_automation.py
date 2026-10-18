@@ -142,6 +142,7 @@ _SPECS = (
     _spec("design.bindcraft2", "bindcraft2", "enqueue_bindcraft2_design", "design", "bindcraft2", "bindcraft2_design", "Run a native BindCraft 2 design job.", "direct"),
     _spec("design.bindcraft2_generator", "bindcraft2", "enqueue_bindcraft2_design", "design", "bindcraft2_generator", "bindcraft2_generator", "Run BindCraft2 gradient design and emit only trajectories that pass the pre-ProteinMPNN handoff gate.", "direct"),
     _spec("design.rfdiffusion3", "rfdiffusion3", "run_rfdiffusion3_design", "design", "rfdiffusion3", "rfdiffusion3_design", "All-atom protein, enzyme, nucleic-acid and small-molecule conditioned design with RFdiffusion3."),
+    _spec("design.rfantibody", "rfantibody", "run_rfantibody_design", "design", "rfantibody", "rfantibody_design", "Run RFdiffusion, ProteinMPNN and RF2 antibody or nanobody design."),
     _spec("design.rfdiffusion3_foundry", "design", "run_rfdiffusion3_foundry", "design", "rfdiffusion3_foundry", "design_campaign", "Run RFdiffusion3 / Foundry design."),
     _spec("design.boltzgen", "design", "run_boltzgen", "design", "boltzgen", "design_campaign", "De novo protein binder design with BoltzGen's protein-anything protocol."),
     _spec("design.boltzgen_generator", "design", "run_boltzgen", "design", "boltzgen_generator", "design_generation", "Generate BoltzGen backbones only; sequence redesign, refolding, and ranking are separate steps."),
@@ -733,6 +734,12 @@ def _validate_workflow_inputs(spec: WorkflowSpec, parameters: dict[str, Any]) ->
         from mn_molecular_design_studio.rfdiffusion3_input import prepare_request
         try:
             prepare_request(parameters)
+        except (TypeError, ValueError, OSError) as exc:
+            raise AutomationError(str(exc)) from exc
+    if spec.workflow_id == "design.rfantibody":
+        from mn_molecular_design_studio.rfantibody_input import validate_request
+        try:
+            validate_request(parameters, require_files=not _schema_only_paths.get())
         except (TypeError, ValueError, OSError) as exc:
             raise AutomationError(str(exc)) from exc
     if spec.workflow_id in {"design.proteina_complexa", "design.proteina_complexa_generate"}:

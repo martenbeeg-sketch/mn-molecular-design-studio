@@ -135,6 +135,7 @@ WORKFLOW_TITLES = {
     "Proteina Complexa Generate": "Proteina-Complexa Generator",
     "Bindcraft2": "BindCraft2",
     "Bindcraft2 Generator": "BindCraft2 Generator",
+    "Rfantibody": "RFantibody",
     "Bindcraft": "BindCraft",
     "Boltzgen": "BoltzGen",
     "Boltzgen Generator": "BoltzGen Generator",
@@ -175,6 +176,7 @@ TOOL_CATALOG_WORKFLOW_IDS = {
     "design.bindcraft2",
     "design.bindcraft2_generator",
     "design.rfdiffusion3",
+    "design.rfantibody",
     "design.boltzgen",
     "design.boltzgen_generator",
     "design.pxdesign_generate",
@@ -219,6 +221,7 @@ TOOL_WORKFLOW_CODE_VERSIONS = {
     "design.bindcraft2_generator": ("BindCraft 2 c0ee638", False),
     "design.rfdiffusion_classic": ("RFdiffusion · version not pinned", False),
     "design.rfdiffusion3": ("RFdiffusion3 a36d29c · Foundry 0.1.9", False),
+    "design.rfantibody": ("RFantibody 3e5a5bb · CUDA 11.8", False),
     "design.boltzgen": ("BoltzGen 0.3.2", True),
     "design.boltzgen_generator": ("BoltzGen 0.3.2", True),
     "design.pxdesign": ("PXDesign f788441 · Protenix 0.5.0+pxd", False),
@@ -3557,6 +3560,12 @@ def _render_workflow_setup() -> None:
                      header=_render_cofolding_header, project_selector=_render_project_selector,
                      submit=_submit_cofolding_job)
         return
+    if workflow_id == "design.rfantibody":
+        from mn_molecular_design_studio import rfantibody_ui
+        importlib.reload(rfantibody_ui)
+        rfantibody_ui.render_setup(schema, owner_id=str(CURRENT_USER["id"]),
+                                   project_selector=_render_project_selector, submit=_submit_cofolding_job)
+        return
     if workflow_id in {"design.proteina_complexa", "design.proteina_complexa_generate"}:
         from mn_molecular_design_studio import complexa_ui
         importlib.reload(complexa_ui)
@@ -6571,7 +6580,8 @@ def _render_job_details() -> None:
     )
     is_design_validation = any(isinstance(item, dict) and (item.get("raw_metadata") or {}).get("validation_reference") for item in result_candidates)
     is_rfdiffusion3 = analysis_tool == "rfdiffusion3"
-    has_dedicated_prediction_results = is_rfdiffusion3 or is_af3_jax_cofolding or is_esmfold2_cofolding or is_optimized_prediction or is_design_validation
+    is_rfantibody = analysis_tool == "rfantibody" or "rfantibody" in workflow_identity
+    has_dedicated_prediction_results = is_rfantibody or is_rfdiffusion3 or is_af3_jax_cofolding or is_esmfold2_cofolding or is_optimized_prediction or is_design_validation
     pipeline_execution = {}
     surface_nodes = []
     if str(job.get("tool")) == "visual_pipeline":
@@ -6659,6 +6669,9 @@ def _render_job_details() -> None:
                 surface_ui.render_surface_analysis_results(run_id, run_dir, artifact_paths, input_payload)
             else:
                 surface_ui.render_results(surface_tool, run_id, run_dir, artifact_paths, input_payload)
+        elif is_rfantibody:
+            from mn_molecular_design_studio import rfantibody_ui
+            rfantibody_ui.render_results(run_id, run_dir, result_candidates, input_params, result)
         elif is_rfdiffusion3:
             from mn_molecular_design_studio.rfdiffusion3_ui import render_results
             render_results(run_id, run_dir, result_candidates, input_params, result)

@@ -1,0 +1,97 @@
+tool: rfantibody
+group: design
+image: mn-rfantibody:3e5a5bb-cu118-v1
+gpu: true
+description: Antibody and nanobody design with RFdiffusion, ProteinMPNN and RF2.
+inputs:
+  target_pdb:
+    type: pdb_or_mmcif
+    required: true
+  framework_pdb:
+    type: pdb
+    required: false
+params:
+  task:
+    type: enum
+    default: antibody
+    choices: [antibody, nanobody]
+  target_chains:
+    type: chain_list
+    required: true
+  hotspots:
+    type: residue_list
+    required: false
+  framework:
+    type: enum
+    default: hu-4D5-8_Fv
+    choices: [hu-4D5-8_Fv, h-NbBCII10, custom]
+  regions:
+    type: string_list
+    required: true
+  loop_lengths:
+    type: object
+    required: false
+  number_of_designs:
+    type: integer
+    default: 1
+  number_of_sequences:
+    type: integer
+    default: 1
+  use_abmpnn:
+    type: bool
+    default: false
+  calculate_epitope_distance:
+    type: bool
+    default: true
+  mpnn_temperature:
+    type: float
+    default: 0.1
+  bias_aas:
+    type: string
+    required: false
+  bias_by_res_json:
+    type: string
+    required: false
+  omit_aas:
+    type: string
+    default: CX
+  augment_eps:
+    type: float
+    default: 0.05
+  num_connections:
+    type: integer
+    default: 48
+  num_recycles:
+    type: integer
+    default: 3
+  rf2_repeats:
+    type: integer
+    default: 5
+  hotspot_show_prop:
+    type: float
+    default: 0.1
+  save_trajectories:
+    type: bool
+    default: false
+  cpu_cores:
+    type: integer
+    default: 4
+  gpu_device:
+    type: string
+    default: "0"
+outputs:
+  candidates:
+    path: artifacts/normalized_candidates/candidates.jsonl
+    type: normalized_candidates
+  design_table:
+    path: artifacts/raw/rfantibody/designs.csv
+    type: csv
+  diffusion_quiver:
+    path: artifacts/raw/rfantibody/stages/1_rfdiffusion.qv
+    type: quiver
+  sequence_quiver:
+    path: artifacts/raw/rfantibody/stages/2_proteinmpnn.qv
+    type: quiver
+  predicted_complexes:
+    path: artifacts/raw/rfantibody/rf2_models/model_*/*_best.pdb
+    type: pdb
