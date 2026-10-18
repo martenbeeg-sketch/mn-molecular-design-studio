@@ -195,13 +195,17 @@ class Replica:
                 if len(parts) != 2 or any(p in {'', '.', '..'} for p in parts):
                     raise ValueError("Invalid machine-local job reference.")
                 value = dict(value, run_dir=config.artifact_uri(author, *parts))
+            # Older runs may have no recorded account/project; preserve the
+            # original store's empty ownership fields and admin-only visibility.
+            owner_id = str(value.get('owner_id') or '')
+            project_id = str(value.get('project_id') or '')
             with Store().connect() as db:
                 previous = db.execute("SELECT * FROM jobs WHERE id=?", (identifier,)).fetchone()
-                if previous and (previous['owner_id'] != value.get('owner_id') or previous['project_id'] != value.get('project_id') or accepted and previous['node_id'] not in {None, author}):
+                if previous and (previous['owner_id'] != owner_id or previous['project_id'] != project_id or accepted and previous['node_id'] not in {None, author}):
                     raise PermissionError("Synchronization cannot change a job's execution machine or user/project ownership.")
                 if previous and previous['local_ref'] and not accepted:
                     return
-                db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET node_id=excluded.node_id,local_ref=excluded.local_ref,payload=excluded.payload", (identifier, value.get('node_id'), local_ref, value['owner_id'], value['project_id'], encoded(value), value.get('created_at','')))
+                db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET node_id=excluded.node_id,local_ref=excluded.local_ref,payload=excluded.payload", (identifier, value.get('node_id'), local_ref, owner_id, project_id, encoded(value), value.get('created_at','')))
             return
         from mn_molecular_design_studio import auth, workspace
         if kind == 'project':

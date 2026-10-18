@@ -354,3 +354,32 @@ def test_migration_preserves_identity_and_backs_up_accounts_and_registry(peers,t
         assert config.is_peer() and not config.is_worker()
         assert list(config.home().glob('before-peers-*/coordinator.sqlite3'))
         assert token not in result.output
+
+
+def test_legacy_jobs_without_ownership_sync_without_granting_access(peers):
+    nodes,on=peers
+    with on(0):
+        Store().heartbeat(nodes[0]['id'],copy.deepcopy(SNAPSHOT),[{'task_group':'design','run_id':'legacy',
+            'owner_id':None,'project_id':None,'status':'completed'}])
+        Replica().capture_jobs()
+    transfer(on,0,1)
+    with on(1):
+        admin={'id':'admin','role':'admin'}
+        ordinary={'id':'someone','role':'user','project_ids':[]}
+        assert Store().search(admin)['total']==1
+        assert Store().search(ordinary)['total']==0
+        with Replica().db() as db:
+            assert db.execute('SELECT count(*) FROM conflicts').fetchone()[0]==0
+
+
+def test_independent_workstation_settings_render_without_coordinator_controls(peers,monkeypatch):
+    nodes,on=peers
+    from mn_molecular_design_studio.cluster import ui
+    from streamlit.testing.v1 import AppTest
+    with on(1):
+        monkeypatch.setattr(ui,'_request',lambda *a,**k:{'nodes':Store().nodes()})
+        app=AppTest.from_string('from mn_molecular_design_studio.cluster.ui import settings\nsettings({"id":"admin","role":"admin"},"token")').run()
+        assert not app.exception
+        assert app.selectbox[0].value=='peer'
+        assert any('stored locally' in c.value for c in app.caption)
+        assert not any('coordinator' in e.label.casefold() for e in app.expander)
