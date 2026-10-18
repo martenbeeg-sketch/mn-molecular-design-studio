@@ -131,14 +131,33 @@ class Store:
                     raise ValueError("Invalid local job reference.")
                 local_ref = group + "/" + run
                 existing = db.execute("SELECT * FROM jobs WHERE node_id=? AND local_ref=?", (node_id, local_ref)).fetchone()
-                jid = existing["id"] if existing else str(row.get("cluster_job_id") or config.job_id(node_id, local_ref))
+                jid = str(row.get("cluster_job_id") or config.job_id(node_id, local_ref))
+                superseded_payload = {}
+                if existing and existing["id"] != jid:
+                    # Older agents could publish the deterministic machine-local
+                    # ID before recovering the real cluster submission ID. If the
+                    # original submission record is present, promote it and retire
+                    # the fallback row so the shared catalog has one identity.
+                    if existing["owner_id"] != str(row.get("owner_id") or "") or existing["project_id"] != str(row.get("project_id") or ""):
+                        raise PermissionError("A workstation cannot change job ownership or project while reconciling a job identity.")
+                    canonical = db.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
+                    if canonical:
+                        if (canonical["node_id"] not in {None, node_id}
+                                or canonical["local_ref"] not in {None, local_ref}
+                                or canonical["owner_id"] != str(row.get("owner_id") or "")
+                                or canonical["project_id"] != str(row.get("project_id") or "")):
+                            raise PermissionError("The reported cluster submission ID belongs to another job.")
+                        superseded_payload = json.loads(existing["payload"])
+                        db.execute("DELETE FROM jobs WHERE id=?", (existing["id"],))
+                    else:
+                        db.execute("UPDATE jobs SET id=? WHERE id=?", (jid, existing["id"]))
                 collision = db.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
                 if collision and (collision["node_id"] != node_id or collision["owner_id"] != str(row.get("owner_id") or "") or collision["project_id"] != str(row.get("project_id") or "")):
                     raise PermissionError("A workstation cannot change job ownership or adopt another workstation's run.")
                 if collision:
                     previous = json.loads(collision["payload"])
-                    row = previous | row
-                    if previous.get("cancel_requested"):
+                    row = previous | superseded_payload | row
+                    if previous.get("cancel_requested") or superseded_payload.get("cancel_requested"):
                         row["cancel_requested"] = True
                 row.update(cluster_job_id=jid, node_id=node_id, local_reference=local_ref,
                            run_dir=config.artifact_uri(node_id, group, run), location=row.get("location") or raw.get("run_dir"), data_state="present")

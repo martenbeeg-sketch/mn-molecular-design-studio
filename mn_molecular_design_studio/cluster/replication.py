@@ -119,12 +119,18 @@ class Replica:
         own = config.identity()
         with Store().connect() as db:
             rows = db.execute("SELECT j.*,s.origin_node FROM jobs j LEFT JOIN submissions s ON s.job_id=j.id WHERE (j.node_id=? AND j.local_ref IS NOT NULL) OR (s.origin_node=? AND j.local_ref IS NULL)", (own, own)).fetchall()
+        current = {}
+        for row in rows:
+            value = json.loads(row['payload'])
+            if not row['local_ref']:
+                value['submission_origin'] = own
+            current['job:' + row['id']] = value
         with self.db() as db:
-            for row in rows:
-                value = json.loads(row['payload'])
-                if not row['local_ref']:
-                    value['submission_origin'] = own
-                key = 'job:' + row['id']
+            previous = db.execute("SELECT key,value FROM records WHERE kind='job' AND author=?", (own,)).fetchall()
+            for record in previous:
+                if record['key'] not in current and json.loads(record['value']) is not None:
+                    self._write(db, record['key'], 'job', None)
+            for key, value in current.items():
                 previous = db.execute("SELECT value FROM records WHERE key=?", (key,)).fetchone()
                 if not previous or json.loads(previous[0]) != value:
                     self._write(db, key, 'job', value)
@@ -184,6 +190,15 @@ class Replica:
     def _apply(self, kind, key, value, author):
         identifier = key.split(':', 1)[1]
         if kind == 'job':
+            if value is None:
+                with Store().connect() as db:
+                    previous = db.execute("SELECT node_id,payload FROM jobs WHERE id=?", (identifier,)).fetchone()
+                    if previous:
+                        payload = json.loads(previous['payload'])
+                        if previous['node_id'] != author and payload.get('submission_origin') != author:
+                            raise PermissionError("Only the job's owning workstation may remove its superseded identity.")
+                        db.execute("DELETE FROM jobs WHERE id=?", (identifier,))
+                return
             if not isinstance(value, dict) or value.get('cluster_job_id') != identifier:
                 raise ValueError("Invalid job identity.")
             accepted = bool(value.get('local_reference'))

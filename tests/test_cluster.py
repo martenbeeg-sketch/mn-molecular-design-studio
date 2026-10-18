@@ -290,6 +290,46 @@ def test_submission_context_writes_both_cluster_job_id_fields(monkeypatch, tmp_p
     assert marker["cluster_job_id"] == marker["cluster_submission_id"] == submission_id
 
 
+def test_heartbeat_promotes_legacy_fallback_job_to_submission_id_and_replicates_tombstone(cluster, monkeypatch):
+    from mn_molecular_design_studio.cluster.replication import Replica
+
+    store, nodes, user, needs, snapshot, request, _clock = cluster
+    origin, remote = nodes[:2]
+    accepted = store.submit(request, needs, user, origin_node=origin["node_id"], placement=remote["node_id"])["job"]
+    run_id = "finished-run"
+    local_ref = "design/" + run_id
+    fallback_id = config.job_id(remote["node_id"], local_ref)
+    fallback = {
+        "cluster_job_id": fallback_id,
+        "node_id": remote["node_id"],
+        "owner_id": user["id"],
+        "project_id": "project-a",
+        "task_group": "design",
+        "run_id": run_id,
+        "status": "completed",
+        "campaign_name": "smoke",
+    }
+    with store.connect() as db:
+        db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?)", (
+            fallback_id, remote["node_id"], local_ref, user["id"], "project-a", json.dumps(fallback), "2026-10-18T00:00:00+00:00",
+        ))
+    monkeypatch.setattr(config, "identity", lambda: remote["node_id"])
+    Replica().capture_jobs()
+
+    completed = fallback | {"cluster_job_id": accepted["cluster_job_id"], "metrics": {"candidate_count": 1}}
+    store.heartbeat(remote["node_id"], snapshot, [completed])
+    Replica().capture_jobs()
+
+    result = store.job(accepted["cluster_job_id"], user)
+    assert result["status"] == "completed"
+    assert result["local_reference"] == local_ref
+    with store.connect() as db:
+        assert db.execute("SELECT 1 FROM jobs WHERE id=?", (fallback_id,)).fetchone() is None
+    with Replica().db() as db:
+        tombstone = db.execute("SELECT value FROM records WHERE key=?", ("job:" + fallback_id,)).fetchone()
+    assert tombstone is not None and json.loads(tombstone["value"]) is None
+
+
 def test_agent_crash_window_is_uncertain_and_never_submits_again(cluster, monkeypatch):
     store, nodes, user, needs, _, request, _ = cluster
     store.submit(request, needs, user, origin_node=nodes[0]["node_id"], placement="local")
