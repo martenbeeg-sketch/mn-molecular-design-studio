@@ -18,10 +18,45 @@ def code_revision():
 
 def images():
     try:
-        result = subprocess.run(["docker", "image", "ls", "--no-trunc", "--format", "{{.Repository}}:{{.Tag}} {{.ID}}"], capture_output=True, text=True, timeout=10, check=True)
-        return dict(line.split(None, 1) for line in result.stdout.splitlines() if "<none>" not in line)
+        result = subprocess.run(["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}"], capture_output=True, text=True, timeout=10, check=True)
+        tags = sorted({line.strip() for line in result.stdout.splitlines() if line.strip() and "<none>" not in line})
+        inventory = {}
+        # Docker's image ID is a config digest with the classic image store and
+        # a manifest digest with the containerd image store. Inspect the image
+        # contents instead so equivalent images compare equally across hosts.
+        for start in range(0, len(tags), 32):
+            batch = tags[start:start + 32]
+            inspected = subprocess.run(
+                ["docker", "image", "inspect", "--format", "{{json .}}", *batch],
+                capture_output=True, text=True, timeout=20, check=True,
+            )
+            rows = [json.loads(line) for line in inspected.stdout.splitlines() if line.strip()]
+            for requested, image in zip(batch, rows):
+                fingerprint = image_content_fingerprint(image)
+                if not fingerprint:
+                    continue
+                for tag in image.get("RepoTags") or [requested]:
+                    if tag and "<none>" not in tag:
+                        inventory[tag] = fingerprint
+        return inventory
     except (OSError, subprocess.SubprocessError, ValueError):
         return {}
+
+
+def image_content_fingerprint(image):
+    """Return a portable identity for an image's executable contents."""
+    stable = {
+        "os": image.get("Os"),
+        "architecture": image.get("Architecture"),
+        "variant": image.get("Variant"),
+        "os_version": image.get("OsVersion"),
+        "config": image.get("Config"),
+        "rootfs": image.get("RootFS"),
+    }
+    if not isinstance(stable["config"], dict) or not isinstance(stable["rootfs"], dict):
+        return ""
+    encoded = json.dumps(stable, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def reference_inventory(probes=()):
