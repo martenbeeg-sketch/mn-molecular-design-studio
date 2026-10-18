@@ -47,7 +47,7 @@ def _absolute_candidates(source: dict) -> list[dict]:
     return rows
 
 
-def _local_source(parent: Path, node_id: str, candidates: list[dict], target: dict | None = None) -> dict:
+def _local_source(parent: Path, node_id: str, candidates: list[dict], target: dict | None = None, analysis_runs: list[dict] | None = None) -> dict:
     """Write a new candidate collection, keeping upstream artifacts read-only."""
     destination = parent / "artifacts" / "pipeline_nodes" / node_id
     normalized = destination / "artifacts" / "normalized_candidates"
@@ -57,7 +57,7 @@ def _local_source(parent: Path, node_id: str, candidates: list[dict], target: di
     write_json(destination / "metadata.json", {"status": "completed", "tool": "pipeline_collection", "run_id": node_id})
     write_json(destination / "input.json", {"inputs": {}, "params": {}})
     write_json(destination / "result.json", {"success": True, "outputs": {"candidates": candidates}})
-    return {"run_dir": str(destination), "candidates_jsonl": str(candidate_path), "target": target or {}, "candidate_count": len(candidates)}
+    return {"run_dir": str(destination), "candidates_jsonl": str(candidate_path), "target": target or {}, "candidate_count": len(candidates), "analysis_runs": analysis_runs or []}
 
 
 def source_designs(source_run_dir: str, project_id: str, selected_ids=None) -> tuple[Path, list[dict]]:
@@ -127,6 +127,28 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
     """Only allowlisted adapters can turn graph data into a workflow call."""
     workflow = NODE_CATALOG[kind]["workflow"]
     p = copy.deepcopy(params)
+    if kind == "surface_analysis":
+        target = source.get("target") or {}
+        target_pdb = target.get("target_pdb")
+        chains = target.get("target_chains") or []
+        chains = [value for value in re.split(r"[,;\s]+", chains) if value] if isinstance(chains, str) else list(chains)
+        if not target_pdb or not chains:
+            raise ValueError("Protein Surface Analysis needs a connected target with selected protein chains.")
+        masif_chain_id = str(p.get("masif_chain_id") or chains[0])
+        if masif_chain_id not in chains:
+            raise ValueError("Choose a MaSIF-seed chain from the connected target chains.")
+        return {
+            "schema_version": 1,
+            "workflow": workflow,
+            "parameters": {
+                "target_pdb": target_pdb,
+                "chain_ids": chains,
+                "pesto_interface": p.get("pesto_interface", "protein"),
+                "scannet_mode": p.get("scannet_mode", "interface"),
+                "scannet_use_msa": bool(p.get("scannet_use_msa", False)),
+                "masif_chain_id": masif_chain_id,
+            },
+        }
     from mn_molecular_design_studio import inverse_folding_input
     if kind in inverse_folding_input.ENGINES:
         if source.get("candidates_jsonl"):
@@ -342,6 +364,23 @@ def _add_target_aligned_pose_rmsd(candidate: dict, parent: Path) -> dict:
 
 def _cache_valid(output: dict) -> bool:
     try:
+        analysis_runs = list(output.get("analysis_runs") or [])
+        if output.get("analysis_run"):
+            analysis_runs.append(output["analysis_run"])
+        for analysis_run in analysis_runs:
+            if not analysis_run.get("success"):
+                return False
+            root = _path(analysis_run.get("run_dir"))
+            result = read_json(root / "result.json")
+            if read_json(root / "metadata.json").get("status") != "completed" or result.get("success") is not True:
+                return False
+            artifacts = result.get("outputs", {}).get("artifacts") or []
+            if not artifacts or any(not _path(item["path"], root).is_file() for item in artifacts):
+                return False
+        if output.get("target", {}).get("target_pdb") and not _path(output["target"]["target_pdb"]).is_file():
+            return False
+        if output.get("analysis_run"):
+            return True
         path = _path(output["candidates_jsonl"])
         root = _path(output["run_dir"])
         if read_json(root / "metadata.json").get("status") != "completed" or read_json(root / "result.json").get("success") is not True:
@@ -355,6 +394,22 @@ def _cache_valid(output: dict) -> bool:
         return path.is_file()
     except (OSError, ValueError, KeyError, TypeError):
         return False
+
+
+def _child_analysis_output(child: Path, target: dict) -> dict:
+    metadata = read_json(child / "metadata.json")
+    result = read_json(child / "result.json")
+    return {
+        "analysis_run": {
+            "run_dir": str(child),
+            "run_id": str(metadata.get("run_id") or child.name),
+            "task_group": str(metadata.get("task_group") or "detection"),
+            "job_code": str(metadata.get("job_code") or ""),
+            "success": result.get("success") is True,
+        },
+        "target": copy.deepcopy(target),
+        "candidate_count": 0,
+    }
 
 
 def cancel_graph_children(run_dir: Path) -> None:
@@ -403,7 +458,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         output["fingerprint"] = fingerprint(key, {"candidate_digest": file_digest(Path(output["candidates_jsonl"]))}, []) if output.get("candidates_jsonl") else key
         outputs[node_id] = output
         node_states.setdefault(node_id, {}).update(status=status, output=output, fingerprint=key, candidate_count=output.get("candidate_count", 0), completed_at=utc_now())
-        if output.get("candidates_jsonl") and status != "cached":
+        analyses = [*(output.get("analysis_runs") or []), *([output["analysis_run"]] if output.get("analysis_run") else [])]
+        if (output.get("candidates_jsonl") or output.get("analysis_run", {}).get("success")) and all(a.get("success") for a in analyses) and status != "cached":
             write_json(cache_root / f"{key}.json", {"output": output})
         persist()
     try:
@@ -421,7 +477,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                 current = node_states.setdefault(node_id, {"status": "pending"})
                 if current.get("status") in {"failed", "blocked"}:
                     continue
-                if any(node_states.get(p, {}).get("status") in {"failed", "blocked"} for p in parents):
+                if any(
+                    node_states.get(p, {}).get("status") in {"failed", "blocked"} and p not in outputs
+                    for p in parents
+                ):
                     current.update(status="blocked", error="An upstream step failed."); persist(); progressed=True; continue
                 if not all(p in outputs for p in parents):
                     continue
@@ -476,11 +535,25 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         metadata = read_json(child / "metadata.json")
                         current["status"] = str(metadata.get("status") or "queued")
                         current["job_code"] = metadata.get("job_code")
-                        if current["status"] == "completed" and read_json(child / "result.json").get("success") is True:
-                            output = _child_output(child, source.get("target", {}))
-                            if NODE_CATALOG[kind]["category"] == "Structure prediction":
-                                output = _attach_refold_input_references(output, source, parent, node_id)
-                            complete(node_id, output, key); progressed=True
+                        child_result = read_json(child / "result.json")
+                        is_analysis_node = bool(NODE_CATALOG[kind]["outputs"] and NODE_CATALOG[kind]["outputs"][0]["type"] == "analysis")
+                        if is_analysis_node and current["status"] in {"completed", "failed"} and isinstance(child_result.get("outputs", {}).get("tool_status"), dict):
+                            output = _child_analysis_output(child, source.get("target", {}))
+                            step_status = "completed" if output["analysis_run"]["success"] else "failed"
+                            complete(node_id, output, key, step_status)
+                            if step_status == "failed":
+                                node_states[node_id]["error"] = "One or more surface-analysis methods failed; partial results are available."
+                                persist()
+                            progressed=True
+                        elif current["status"] == "completed" and child_result.get("success") is True:
+                            if is_analysis_node:
+                                current.update(status="failed", error="The surface-analysis job completed without reporting method results.")
+                                persist();progressed=True
+                            else:
+                                output = _child_output(child, source.get("target", {}))
+                                if NODE_CATALOG[kind]["category"] == "Structure prediction":
+                                    output = _attach_refold_input_references(output, source, parent, node_id)
+                                complete(node_id, output, key); progressed=True
                         elif current["status"] in {"failed", "cancelled"}:
                             current.update(status="failed", error=f"Child job {current.get('job_code') or child.name} did not complete successfully.");persist();progressed=True
                         continue
@@ -531,8 +604,12 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         complete(node_id, _local_source(parent, node_id, [c for c in all_rows if c["candidate_id"] in selected_ids],target), key);progressed=True;continue
                     if kind in {"filter", "results"}:
                         rows = []
+                        analysis_runs = []
                         for source_id, output in zip(parents, upstream):
-                            for row in _absolute_candidates(output):
+                            analysis_runs.extend(output.get("analysis_runs") or [])
+                            if output.get("analysis_run"):
+                                analysis_runs.append(output["analysis_run"])
+                            for row in _absolute_candidates(output) if output.get("candidates_jsonl") else []:
                                 if kind == "results":
                                     row = _add_target_aligned_pose_rmsd(row, parent)
                                     row.setdefault("raw_metadata", {}).update(pipeline_source_node=source_id, pipeline_original_candidate_id=row["candidate_id"])
@@ -540,7 +617,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                 rows.append(row)
                         if kind == "filter":
                             rows = filter_candidates(rows, params)
-                        complete(node_id, _local_source(parent, node_id, rows, source.get("target")), key);progressed=True;continue
+                        complete(node_id, _local_source(parent, node_id, rows, source.get("target"), analysis_runs if kind == "results" else []), key);progressed=True;continue
                     if source.get("candidates_jsonl") and not source.get("candidate_count"):
                         complete(node_id, _local_source(parent, node_id, [], source.get("target")), key, "skipped");progressed=True;continue
                     request = node_request(kind, params, source, f"{pipeline_name} · {node['data']['label']}")
@@ -557,17 +634,25 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                 persist();time.sleep(2)
         from mn_molecular_design_studio.engine.workflow_engine.core.candidates import write_candidates
         candidates=[]
+        surface_analyses=[]
+        seen_surface_runs=set()
         for node_id, output in outputs.items():
+            analyses = [*(output.get("analysis_runs") or []), *([output["analysis_run"]] if output.get("analysis_run") else [])]
+            for analysis in analyses:
+                identity = (str(analysis.get("task_group") or "detection"), str(analysis.get("run_id") or analysis.get("run_dir") or ""))
+                if identity not in seen_surface_runs:
+                    seen_surface_runs.add(identity)
+                    surface_analyses.append(analysis)
             if nodes[node_id]["data"]["kind"] != "results":
                 continue
-            for candidate in _absolute_candidates(output):
+            for candidate in _absolute_candidates(output) if output.get("candidates_jsonl") else []:
                 candidate["candidate_id"] = f"{node_id}:{candidate['candidate_id']}"
                 candidate.setdefault("raw_metadata", {})["pipeline_result_node"] = node_id
                 candidates.append(candidate)
         write_candidates(parent, "visual_pipeline", candidates)
         failures = [v for v in node_states.values() if v.get("status") in {"failed", "blocked"}]
         state["status"] = "failed" if failures else "completed";persist()
-        finish_job(parent, not failures, {"outputs": {"candidates": candidates, "pipeline_nodes": node_states}, "metrics": {"candidate_count": len(candidates), "node_count": len(nodes), "cached_steps": sum(v.get("status")=="cached" for v in node_states.values()), "failed_steps": len(failures)}, "downstream_artifacts": {"candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl", "graph_snapshot": "graph_snapshot.json", "graph_execution": "graph_execution.json"}})
+        finish_job(parent, not failures, {"outputs": {"candidates": candidates, "surface_analyses": surface_analyses, "pipeline_nodes": node_states}, "metrics": {"candidate_count": len(candidates), "surface_analysis_count": len(surface_analyses), "node_count": len(nodes), "cached_steps": sum(v.get("status")=="cached" for v in node_states.values()), "failed_steps": len(failures)}, "downstream_artifacts": {"candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl", "graph_snapshot": "graph_snapshot.json", "graph_execution": "graph_execution.json"}})
         return parent
     except Exception:
         cancel_graph_children(parent)

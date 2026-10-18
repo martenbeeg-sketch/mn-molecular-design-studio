@@ -57,19 +57,22 @@ def _masif_residue_scores(surface_path: Path, prediction_path: Path, target_pdb:
     vertices = np.asarray([[float(value) for value in line.split()[:3]] for line in lines[start : start + len(scores)]], dtype=float)
     if len(vertices) != len(scores):
         return pd.DataFrame()
-    atoms: list[tuple[str, int, list[float]]] = []
+    atoms: list[tuple[str, str, list[float]]] = []
     for line in target_pdb.read_text(errors="ignore").splitlines():
         if not line.startswith("ATOM  ") or len(line) < 54:
             continue
         try:
-            atoms.append((line[21].strip() or "_", int(line[22:26]), [float(line[30:38]), float(line[38:46]), float(line[46:54])]))
+            residue = f"{int(line[22:26])}{line[26].strip()}"
+            atoms.append((line[21].strip() or "_", residue, [float(line[30:38]), float(line[38:46]), float(line[46:54])]))
         except ValueError:
             continue
     if not atoms:
         return pd.DataFrame()
     atom_xyz = np.asarray([atom[2] for atom in atoms])
-    values: dict[tuple[str, int], float] = {}
+    values: dict[tuple[str, str], float] = {}
     for vertex, score in zip(vertices, scores):
+        if not np.isfinite(score) or not np.all(np.isfinite(vertex)):
+            continue
         index = int(np.argmin(np.sum((atom_xyz - vertex) ** 2, axis=1)))
         if float(np.sum((atom_xyz[index] - vertex) ** 2)) > 16.0:
             continue

@@ -11,7 +11,7 @@ params:
   interface:
     type: enum
     default: protein
-    choices: [protein]
+    choices: [protein, dna_rna, ion, ligand, lipid]
 outputs:
   residue_scores:
     path: artifacts/pesto/output/pesto_residue_scores.csv

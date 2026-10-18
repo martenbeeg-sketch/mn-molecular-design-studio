@@ -97,6 +97,32 @@ def test_api_to_remote_agent_to_local_scheduler_preserves_source_and_ownership(a
     assert len(captured) == 1
 
 
+def test_cluster_preflight_enforces_local_input_access_before_schema_validation(api_cluster, monkeypatch, tmp_path):
+    client, _store, _origin, _remote, _actor, project, _snapshot, _needs = api_cluster
+    from mn_molecular_design_studio import api
+
+    user = {"id": "1234567890abcdef1234567890abcdef", "role": "user"}
+    upload_root = tmp_path / "users" / user["id"] / "inputs"
+    upload_root.mkdir(parents=True)
+    monkeypatch.setattr(api, "user_input_root", lambda _user_id: upload_root)
+    monkeypatch.setattr(api, "accessible_project_ids", lambda _user: [project["id"]])
+    monkeypatch.setattr(api, "require_project_access", lambda *_args: None)
+    monkeypatch.setattr(api, "path_is_within_accessible_job", lambda *_args, **_kwargs: False)
+    api.app.dependency_overrides[api._current_user] = lambda: user
+    try:
+        response = client.post("/api/v1/workflows/validate", json={
+            "schema_version": 1,
+            "workflow": "detection.pesto",
+            "project_id": project["id"],
+            "parameters": {"target_pdb": "/etc/passwd", "chain_ids": ["A"]},
+        })
+    finally:
+        api.app.dependency_overrides[api._current_user] = lambda: _actor
+
+    assert response.status_code == 403
+    assert "uploaded" in response.json()["detail"]
+
+
 def test_remote_source_cannot_be_forced_onto_a_different_workstation(api_cluster):
     client, store, origin, remote, actor, project, snapshot, _ = api_cluster
     store.heartbeat(remote["node_id"], snapshot, [{"task_group": "design", "run_id": "remote", "owner_id": "owner", "project_id": project["id"], "status": "completed"}])

@@ -26,8 +26,8 @@ def field(name, label, default, *, kind="number", minimum=None, maximum=None, op
 def _spec(key, label, category, description, *, output="backbone", accepts=None, workflow=None, fields=(), color="#427f68", formats=("pdb", "cif")):
     return {"key": key, "label": label, "category": category, "description": description,
             "color": color, "workflow": workflow, "formats": list(formats),
-            "inputs": [] if accepts is None else [{"id": "in", "label": "Target" if accepts == ["target"] else "Candidates", "accepts": accepts, "multiple": key == "results"}],
-            "outputs": [] if output is None else [{"id": "out", "label": {"target": "Target", "backbone": "Backbones", "sequence": "Sequences", "prediction": "Predictions", "candidates": "Candidates"}.get(output, output), "type": output}],
+            "inputs": [] if accepts is None else [{"id": "in", "label": "Target" if accepts == ["target"] else "Results" if key == "results" else "Candidates", "accepts": accepts, "multiple": key == "results"}],
+            "outputs": [] if output is None else [{"id": "out", "label": {"target": "Target", "backbone": "Backbones", "sequence": "Sequences", "prediction": "Predictions", "candidates": "Candidates", "analysis": "Surface results"}.get(output, output), "type": output}],
             "fields": list(fields)}
 
 
@@ -70,7 +70,12 @@ NODE_CATALOG = {
     "esmfold": _spec("esmfold", "ESMFold · binder alone", "Structure prediction", "Predict each designed binder without the target.", accepts=["sequence", "prediction"], output="prediction", workflow="refolding.esmfold_monomer", fields=[], color="#477e9b"),
     "filter": _spec("filter", "Filter candidates", "Analysis", "Apply a score threshold, require passing filters, or retain the best candidates.", accepts=["backbone", "sequence", "prediction", "candidates"], output="candidates", color="#9a7854", fields=[
         field("passing_only", "Require an explicit filter pass", False, kind="boolean"), field("metric", "Score field", "", kind="text"), field("operator", "Comparison", ">=", kind="select", options=[">=", "<=", ">", "<"]), field("threshold", "Threshold", 0.7), field("limit", "Keep at most (0 = all)", 0, minimum=0, maximum=100000), field("higher_is_better", "Higher scores rank first", True, kind="boolean")]),
-    "results": _spec("results", "Results & comparison", "Results", "Collect branch results for the studio's structure overlay and RMSD analysis.", accepts=["backbone", "sequence", "prediction", "candidates"], output=None, color="#5d7b6c"),
+    "surface_analysis": _spec("surface_analysis", "Protein Surface Analysis", "Analysis", "Run PeSTo, ScanNet, Surf2Spot, and MaSIF-seed against one target and compare predicted PPI and hotspot residues.", accepts=["target"], output="analysis", workflow="detection.surface_analysis", color="#397b5b", formats=("pdb",), fields=[
+        field("pesto_interface", "PeSTo interface class", "protein", kind="select", options=["protein", "dna_rna", "ion", "ligand", "lipid"]),
+        field("scannet_mode", "ScanNet prediction mode", "interface", kind="select", options=["interface", "epitope", "idp"]),
+        field("scannet_use_msa", "Use MSA with ScanNet", False, kind="boolean"),
+        field("masif_chain_id", "MaSIF-seed chain", "", kind="text")]),
+    "results": _spec("results", "Results & comparison", "Results", "Collect candidate structures, metrics, and surface-analysis runs from connected branches.", accepts=["backbone", "sequence", "prediction", "candidates", "analysis"], output=None, color="#5d7b6c"),
     "ipsae": _spec("ipsae", "ipSAE Interface Analysis", "Analysis", "Score predicted interfaces using the saved pairwise PAE matrix and complex structure.", accepts=["prediction"], output="prediction", workflow="analysis.ipsae", color="#9a7854", fields=[field("pae_cutoff", "PAE cutoff (Å)", 10., minimum=0., maximum=100.), field("dist_cutoff", "Interface distance cutoff (Å)", 10., minimum=0., maximum=100.)]),
     "rosetta_metrics": _spec("rosetta_metrics", "Rosetta Interface Analysis", "Analysis", "Calculate PyRosetta interface, packing, SASA, hydrogen-bond, and binder surface metrics.", accepts=["prediction"], output="prediction", workflow="analysis.rosetta", color="#9a7854", fields=[]),
 }

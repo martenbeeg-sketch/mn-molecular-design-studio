@@ -171,6 +171,92 @@ def test_parallel_branches_collect_distinct_candidate_ids(execution_harness):
     assert len(candidates)==2 and len({c["candidate_id"] for c in candidates})==2
 
 
+@pytest.mark.parametrize("analysis_success", [True, False])
+def test_surface_analysis_branch_is_collected_as_a_pipeline_result(execution_harness, monkeypatch, tmp_path, analysis_success):
+    g, _calls, _parents = execution_harness
+    target = next(n for n in g["nodes"] if n["data"]["kind"] == "target")
+    target["data"]["params"].update(target_chains="A")
+    analysis = node("surface_analysis", "surface")
+    results = node("results", "results")
+    g["nodes"] = [target, analysis, results]
+    g["edges"] = [edge("target-0", "surface"), edge("surface", "results")]
+    child = tmp_path / "surface-child"
+    child.mkdir()
+    (child / "metadata.json").write_text(json.dumps({"status": "completed" if analysis_success else "failed", "run_id": child.name, "task_group": "detection", "job_code": "SA-1"}))
+    statuses = {tool: {"success": analysis_success} for tool in ("pesto", "scannet", "surf2spot", "masif_seed")}
+    (child / "result.json").write_text(json.dumps({"success": analysis_success, "outputs": {"tool_status": statuses}}))
+    captured = {}
+
+    def submit(request, _parent, _node, **_kwargs):
+        captured.update(request)
+        return child
+
+    monkeypatch.setattr(runner, "_submit", submit)
+    parent = runner.run_graph_pipeline(g, "surface-test", "owner", "project")
+
+    result = json.loads((parent / "result.json").read_text())
+    execution = json.loads((parent / "graph_execution.json").read_text())
+    assert captured["workflow"] == "detection.surface_analysis"
+    assert result["success"] is analysis_success
+    assert len(result["outputs"]["surface_analyses"]) == 1
+    assert execution["nodes"]["surface"]["output"]["analysis_run"]["job_code"] == "SA-1"
+    assert execution["nodes"]["results"]["status"] == "completed"
+
+
+def test_surface_cache_requires_predictions_and_valid_result_references(execution_harness, monkeypatch, tmp_path):
+    g, _calls, _parents = execution_harness
+    target = next(n for n in g["nodes"] if n["data"]["kind"] == "target")
+    target["data"]["params"].update(target_chains="A")
+    g["nodes"] = [target, node("surface_analysis", "surface"), node("results", "results")]
+    g["edges"] = [edge("target-0", "surface"), edge("surface", "results")]
+    submissions = []
+
+    def submit(*_args, **_kwargs):
+        child = tmp_path / f"surface-child-{len(submissions)}"
+        child.mkdir()
+        prediction = child / "prediction.csv"
+        prediction.write_text("chain,residue,score\nA,1,0.9\n")
+        (child / "metadata.json").write_text(json.dumps({"status": "completed", "run_id": child.name, "task_group": "detection"}))
+        (child / "result.json").write_text(json.dumps({"success": True, "outputs": {
+            "tool_status": {"pesto": {"success": True}}, "artifacts": [{"path": str(prediction)}],
+        }}))
+        submissions.append(child)
+        return child
+
+    monkeypatch.setattr(runner, "_submit", submit)
+    runner.run_graph_pipeline(g, "first", "owner", "project")
+    cached = runner.run_graph_pipeline(g, "cached", "owner", "project")
+    assert len(submissions) == 1
+    assert json.loads((cached / "result.json").read_text())["metrics"]["cached_steps"] == 2
+
+    (submissions[0] / "prediction.csv").unlink()
+    rerun = runner.run_graph_pipeline(g, "missing-prediction", "owner", "project")
+    assert len(submissions) == 2
+    result = json.loads((rerun / "result.json").read_text())
+    assert result["metrics"]["surface_analysis_count"] == 1
+    assert result["outputs"]["surface_analyses"][0]["run_id"] == submissions[1].name
+
+
+def test_completed_surface_job_without_method_results_fails_instead_of_waiting(execution_harness, monkeypatch, tmp_path):
+    g, _calls, _parents = execution_harness
+    target = next(n for n in g["nodes"] if n["data"]["kind"] == "target")
+    target["data"]["params"].update(target_chains="A")
+    g["nodes"] = [target, node("surface_analysis", "surface"), node("results", "results")]
+    g["edges"] = [edge("target-0", "surface"), edge("surface", "results")]
+    child = tmp_path / "surface-child"
+    child.mkdir()
+    (child / "metadata.json").write_text('{"status":"completed"}')
+    (child / "result.json").write_text('{"success":true,"outputs":{}}')
+    monkeypatch.setattr(runner, "_submit", lambda *_args, **_kwargs: child)
+
+    parent = runner.run_graph_pipeline(g, "missing-results", "owner", "project")
+
+    execution = json.loads((parent / "graph_execution.json").read_text())
+    assert execution["nodes"]["surface"]["status"] == "failed"
+    assert "method results" in execution["nodes"]["surface"]["error"]
+    assert execution["nodes"]["results"]["status"] == "blocked"
+
+
 def test_generator_fan_in_merges_every_candidate_before_shared_mpnn(tmp_path, monkeypatch, design_source_factory):
     from mn_molecular_design_studio import workspace
     from types import SimpleNamespace
@@ -279,6 +365,7 @@ def test_api_saves_and_validates_without_queuing_jobs(monkeypatch,tmp_path):
     from mn_molecular_design_studio import api
     from mn_molecular_design_studio.rfdiffusion3_input import ASSETS
     from shutil import copy2
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
     actor={"id":"test-user","role":"user"}
     api.app.dependency_overrides[api._current_user]=lambda:actor
     monkeypatch.setattr(graph,"app_home",lambda:tmp_path/"home")
@@ -297,6 +384,19 @@ def test_api_saves_and_validates_without_queuing_jobs(monkeypatch,tmp_path):
         assert client.post("/api/v1/pipelines/save",json=payload).status_code==200
         assert client.post("/api/v1/pipelines/validate",json=payload).status_code==200
         assert calls==[]
+
+        surface_graph = graph.new_graph("blank")
+        surface_graph["nodes"] = [node("target", "target"), node("surface_analysis", "surface"), node("results", "results")]
+        surface_graph["nodes"][0]["data"]["params"].update(target_pdb=str(uploaded / "target.pdb"), target_chains="A")
+        surface_graph["nodes"][1]["data"]["params"]["masif_chain_id"] = "A"
+        surface_graph["edges"] = [edge("target", "surface"), edge("surface", "results")]
+        surface_payload = {"project_id": "project", "graph": surface_graph}
+        assert client.post("/api/v1/pipelines/validate", json=surface_payload).status_code == 200
+        surface_graph["nodes"][1]["data"]["params"]["masif_chain_id"] = "not-a-target-chain"
+        invalid_surface = client.post("/api/v1/pipelines/validate", json=surface_payload)
+        assert invalid_surface.status_code == 422 and "MaSIF-seed chain" in invalid_surface.text
+        assert calls == []
+
         bad=copy.deepcopy(payload);bad["graph"]["nodes"][0]["data"]["params"]["target_pdb"]="/etc/passwd"
         assert client.post("/api/v1/pipelines/save",json=bad).status_code==403
         missing=copy.deepcopy(payload);missing["graph"]["nodes"][0]["data"]["params"]["target_pdb"]=""

@@ -259,6 +259,11 @@ def _validate_user_path_values(value: Any, user: dict[str, Any], request_dir: Pa
     raw = value.strip()
     if not raw:
         return
+    # These references are resolved by the cluster catalog/staging layer. They
+    # are not local filesystem paths on the submitting workstation, so local
+    # path authorization must not try to resolve a foreign run directory.
+    if raw.startswith(("cluster://", "cluster-input:///")):
+        return
     if key.casefold()=='model_weights':
         from mn_molecular_design_studio.generator_input import RF_MODELS
         if raw in RF_MODELS:return
@@ -442,10 +447,10 @@ def validate_workflow(
 ) -> dict[str, Any]:
     request_payload, project_id = _request_payload_and_project(payload, user)
     request_dir = _request_directory(user, base_dir)
+    _validate_user_path_values(request_payload, user, request_dir)
     remote = _cluster_submission(request_payload, project_id, user, request_dir, credentials, validate_only=True)
     if remote is not None:
         return remote
-    _validate_user_path_values(request_payload, user, request_dir)
     _guard_source_job(request_payload, user, project_id=project_id)
     return _with_request_file(request_payload, validate_workflow_request, base_dir=str(request_dir))
 
@@ -459,10 +464,10 @@ def submit_workflow(
 ) -> dict[str, Any]:
     request_payload, project_id = _request_payload_and_project(payload, user)
     request_dir = _request_directory(user, base_dir)
+    _validate_user_path_values(request_payload, user, request_dir)
     remote = _cluster_submission(request_payload, project_id, user, request_dir, credentials)
     if remote is not None:
         return remote
-    _validate_user_path_values(request_payload, user, request_dir)
     _guard_source_job(request_payload, user, project_id=project_id)
     result = _with_request_file(request_payload, submit_workflow_request, base_dir=str(request_dir))
     return mark_studio_job(result, project_id=project_id, owner_id=str(user["id"]))
@@ -540,7 +545,8 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
         from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import node_request
         nodes = {n["id"]: n for n in graph["nodes"]}
         for node in graph["nodes"]:
-            if NODE_CATALOG[node["data"]["kind"]]["category"] not in {"Design engine", "Design pipeline"}:
+            kind = node["data"]["kind"]
+            if NODE_CATALOG[kind]["category"] not in {"Design engine", "Design pipeline"} and kind != "surface_analysis":
                 continue
             parents=plan["incoming"][node["id"]]
             source = nodes[parents[0]]["data"]["params"] if parents else {}
@@ -577,7 +583,9 @@ def validate_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any] 
                       credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)):
     from mn_molecular_design_studio.pipeline_graph import validate_graph
     request, project_id = _request_payload_and_project(payload, user)
-    remote = _cluster_submission(request, project_id, user, _request_directory(user, None), credentials, kind="pipeline", validate_only=True)
+    request_dir = _request_directory(user, None)
+    _validate_user_path_values(request.get("graph"), user, request_dir)
+    remote = _cluster_submission(request, project_id, user, request_dir, credentials, kind="pipeline", validate_only=True)
     if remote is not None:
         return remote
     payload = dict(request, project_id=project_id)
@@ -593,7 +601,9 @@ def run_visual_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any
     from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import enqueue_graph_pipeline
     from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import job_reference
     request, selected_project = _request_payload_and_project(payload, user)
-    remote = _cluster_submission(request, selected_project, user, _request_directory(user, None), credentials, kind="pipeline")
+    request_dir = _request_directory(user, None)
+    _validate_user_path_values(request.get("graph"), user, request_dir)
+    remote = _cluster_submission(request, selected_project, user, request_dir, credentials, kind="pipeline")
     if remote is not None:
         return remote
     payload = dict(request, project_id=selected_project)

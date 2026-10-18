@@ -239,6 +239,7 @@ def run_worker_job(run_dir: Path) -> int:
                 run_pesto(
                     target_pdb,
                     [str(chain) for chain in inputs.get("chains") or []],
+                    interface=str(params.get("interface") or "protein"),
                     gpu_device=gpu_device,
                     existing_job=job,
                 )

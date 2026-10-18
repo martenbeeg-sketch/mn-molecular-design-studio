@@ -13,7 +13,7 @@ const statusLabels={completed:'Complete',cached:'Reused',running:'Running',queue
 
 const StudioNode=memo(({data,selected})=>{
   const spec=catalog[data.kind]||{}; const p=data.params||{};
-  const summary=p.num_designs?`${p.num_designs} design${p.num_designs===1?'':'s'} · ${p.binder_length||'variable'} aa`:p.sequences?`${p.sequences} sequence${p.sequences===1?'':'s'} / backbone`:data.kind==='target'?(p.target_pdb?`${p.target_chains||'A'} · target loaded`:'Choose a target structure'):data.kind==='filter'?(p.metric?`${p.metric} ${p.operator} ${p.threshold}`:p.passing_only?'Filter-passing designs':'All candidates'):data.kind==='results'?'Overlay · confidence · RMSD':spec.category;
+  const summary=data.summary||(p.num_designs?`${p.num_designs} design${p.num_designs===1?'':'s'} · ${p.binder_length||'variable'} aa`:p.sequences?`${p.sequences} sequence${p.sequences===1?'':'s'} / backbone`:data.kind==='target'?(p.target_pdb?`${p.target_chains||'A'} · target loaded`:'Choose a target structure'):data.kind==='filter'?(p.metric?`${p.metric} ${p.operator} ${p.threshold}`:p.passing_only?'Filter-passing designs':'All candidates'):data.kind==='results'?'Overlay · confidence · RMSD':spec.category);
   return <div className={`studio-node ${selected?'is-selected':''}`} style={{'--node-color':spec.color}}>
     <div className="node-category"><span className="category-dot"/>{spec.category}{data.status&&<span className={`node-status ${data.status}`}>{statusLabels[data.status]||data.status}</span>}</div>
     <div className="node-title">{data.label||spec.label}</div>
@@ -105,7 +105,15 @@ function Editor({args}){
     };window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);
   },[undo,redo,duplicate,pushHistory,rf]);
   const layout=()=>{pushHistory();const ns=state.current.nodes,es=state.current.edges;const levels=new Map(),visiting=new Set();const level=id=>{if(levels.has(id))return levels.get(id);if(visiting.has(id))return 0;visiting.add(id);const ins=es.filter(e=>e.target===id);const l=ins.length?Math.max(...ins.map(e=>level(e.source)))+1:0;levels.set(id,l);return l;};const rows={};setNodes(ns.map(n=>{const col=level(n.id),row=rows[col]||0;rows[col]=row+1;return {...n,position:{x:70+col*320,y:110+row*210}};}));setTimeout(()=>rf.fitView({padding:.4,duration:250}),30);};
-  const displayNodes=nodes.map(n=>({...n,data:{...n.data,status:args.execution?.[n.id]?.status,count:args.execution?.[n.id]?.candidate_count}}));
+  const displayNodes=nodes.map(n=>{
+    const incomingKinds=edges.filter(e=>e.target===n.id).map(e=>nodes.find(source=>source.id===e.source)?.data.kind);
+    const hasSurfaceAnalysis=incomingKinds.includes('surface_analysis');
+    const hasOtherResults=incomingKinds.some(kind=>kind&&kind!=='surface_analysis');
+    const summary=n.data.kind==='results'&&hasSurfaceAnalysis
+      ? hasOtherResults?'Candidates + surface evidence':'Residue consensus · surface view'
+      : undefined;
+    return {...n,data:{...n.data,status:args.execution?.[n.id]?.status,count:args.execution?.[n.id]?.candidate_count,summary}};
+  });
   const categories=[...new Set(Object.values(catalog).map(s=>s.category))];
   return <div className={`editor-shell ${focus?'focus-mode':''}`}>
     <header className="editor-toolbar"><div className="toolbar-title"><span className="flow-symbol">◇</span><strong>Pipeline canvas</strong><span className="draft-chip">Draft</span></div><div className="toolbar-actions"><button title="Undo (Ctrl+Z)" disabled={!history.current.past.length} onClick={undo}>↶</button><button title="Redo (Ctrl+Shift+Z)" disabled={!history.current.future.length} onClick={redo}>↷</button><span className="toolbar-divider"/><button onClick={layout} title="Arrange the current graph">Arrange</button><button title="Toggle canvas overview" onClick={()=>setShowMap(!showMap)}>Map</button><button title="Canvas shortcuts and help" onClick={()=>{setHelpOpen(!helpOpen);setSelection(null);}}>?</button><button onClick={()=>{setFocus(!focus);setTimeout(()=>rf.fitView({padding:.4,duration:200}),80);}}>{focus?'Exit focus':'Focus canvas'}</button><button onClick={()=>emit('save_version')}>Save version</button><button className="run-button" onClick={()=>emit('run')}>▶ Run pipeline</button></div></header>

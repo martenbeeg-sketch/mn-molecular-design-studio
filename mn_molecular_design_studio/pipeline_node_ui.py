@@ -85,7 +85,8 @@ def _render_field(field, values, key):
                   "trastuzumab_framework_vhvl":"Trastuzumab framework", "atezolizumab_framework_vhvl":"Atezolizumab framework",
                   "ocankitug_framework_vhvl":"Ocankitug framework", "caplacizumab_vhh":"Caplacizumab VHH",
                   "ozoralizumab_tnf_vhh":"Ozoralizumab TNF VHH", "vobarilizumab_il6r_vhh":"Vobarilizumab IL-6R VHH",
-                  "custom":"Custom masked template"}
+                  "custom":"Custom masked template", "dna_rna":"DNA / RNA", "ion":"Ion", "ligand":"Ligand", "lipid":"Lipid",
+                  "protein":"Protein–protein", "interface":"Interface", "epitope":"Epitope", "idp":"Disordered region"}
         return st.selectbox(label, options, index=options.index(value) if value in options else 0,
                             format_func=lambda v:labels.get(v,v), **kwargs)
     if field["type"] == "number":
@@ -145,6 +146,31 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                 st.caption("Reads the predicted complex and its saved pairwise PAE matrix. Boltz-2 full PAE output is enabled in the all-generators starter template.")
             else:
                 st.caption("Adds PyRosetta interface energy, shape complementarity, buried surface area, and related metrics to each connected predicted complex.")
+        elif kind == "surface_analysis":
+            _render_connection_card(node, graph)
+            _, upstream = _connected_inputs(graph, node["id"])
+            target_node = next((source for source in upstream if source["data"]["kind"] == "target"), None)
+            target_chains = target_node["data"]["params"].get("target_chains", "") if target_node else ""
+            target_chains = [chain for chain in target_chains.replace(";", ",").replace(" ", ",").split(",") if chain] if isinstance(target_chains, str) else list(target_chains or [])
+            if not target_chains:
+                st.warning("Connect a Target block and select at least one protein chain.")
+                ready = False
+            else:
+                if values.get("masif_chain_id") not in target_chains:
+                    values["masif_chain_id"] = target_chains[0]
+                values["masif_chain_id"] = st.selectbox(
+                    "MaSIF-seed target chain",
+                    target_chains,
+                    index=target_chains.index(values["masif_chain_id"]),
+                    key=key + "-masif-chain",
+                )
+            st.caption("PeSTo and ScanNet keep their individual prediction modes. Surf2Spot and MaSIF-seed run on the same selected target; MaSIF-seed uses the chain chosen above.")
+            with st.container(border=True):
+                st.markdown("**PeSTo and ScanNet modes**")
+                columns = st.columns(2)
+                for index, field in enumerate(f for f in spec["fields"] if f["name"] != "masif_chain_id"):
+                    with columns[index % 2]:
+                        values[field["name"]] = _render_field(field, values, key)
         elif kind == "esm_binder":
             _render_connection_card(node, graph)
             st.caption("Uses the selected target chain’s sequence; no MSA is required. The output contains designed sequences and ESMFold2-predicted complexes for downstream ProteinMPNN or structure-prediction steps.")

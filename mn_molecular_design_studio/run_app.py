@@ -155,6 +155,11 @@ WORKFLOW_TITLES = {
     "Rfdiffusion3": "RFdiffusion3",
     "Ipsae": "ipSAE Scoring",
     "Rosetta Metrics": "Rosetta Interface Metrics",
+    "Pesto": "PeSTo",
+    "Scannet": "ScanNet",
+    "Masif Seed": "MaSIF-seed",
+    "Surf2Spot": "Surf2Spot",
+    "Surface Analysis": "Protein Surface Analysis",
 }
 
 # Keep the Tools catalog focused on workflows that launch a specific tool or
@@ -165,6 +170,7 @@ TOOL_CATALOG_WORKFLOW_IDS = {
     "detection.pesto",
     "detection.surf2spot",
     "detection.masif_seed",
+    "detection.surface_analysis",
     "design.rfdiffusion_generate",
     "design.bindcraft2",
     "design.bindcraft2_generator",
@@ -208,6 +214,7 @@ TOOL_WORKFLOW_CODE_VERSIONS = {
     "detection.pesto": ("PeSTo ba651aa", False),
     "detection.surf2spot": ("Surf2Spot a38a7a7", False),
     "detection.masif_seed": ("MaSIF-seed 7715391", False),
+    "detection.surface_analysis": ("PeSTo · ScanNet · Surf2Spot · MaSIF-seed", False),
     "design.bindcraft2": ("BindCraft 2 c0ee638", False),
     "design.bindcraft2_generator": ("BindCraft 2 c0ee638", False),
     "design.rfdiffusion_classic": ("RFdiffusion · version not pinned", False),
@@ -3576,6 +3583,23 @@ def _render_workflow_setup() -> None:
         _render_af2_initial_guess_setup(schema)
         return
 
+    if workflow_id in {
+        "detection.pesto",
+        "detection.scannet",
+        "detection.masif_seed",
+        "detection.surf2spot",
+        "detection.surface_analysis",
+    }:
+        from mn_molecular_design_studio import surface_ui
+        importlib.reload(surface_ui)
+        surface_ui.render_setup(
+            schema,
+            owner_id=str(CURRENT_USER["id"]),
+            project_selector=_render_project_selector,
+            submit=_submit_cofolding_job,
+        )
+        return
+
     base_title = workflow_id.split(".", 1)[-1].replace("_", " ").title()
     title = WORKFLOW_TITLES.get(base_title, base_title)
 
@@ -6393,7 +6417,9 @@ def _render_job_details() -> None:
     input_payload = details.get("input") or {}
     result = details.get("result") or {}
     run_id = str(job.get("run_id") or "job")
-    title = str(job.get("campaign_name") or job.get("tool") or job.get("job_type") or run_id)
+    surface_titles = {"pesto": "PeSTo", "scannet": "ScanNet", "masif_seed": "MaSIF-seed", "surf2spot": "Surf2Spot", "surface_analysis": "Protein Surface Analysis"}
+    raw_title = str(job.get("tool") or job.get("job_type") or run_id)
+    title = str(job.get("campaign_name") or surface_titles.get(raw_title.casefold()) or raw_title)
     st.title(title)
     if metadata.get("demo_fixture"):
         st.info("Imported demo fixture · These results were copied from an existing ZIP and were not run by Molecular Design Studio.")
@@ -6424,10 +6450,18 @@ def _render_job_details() -> None:
         (str(project.get("name")) for project in _studio_projects() if project.get("id") == project_id),
         "No project",
     )
+    output_summary = ("Candidates", str(details.get("candidate_count", 0)))
+    job_metrics = result.get("metrics") or {}
+    if raw_title == "surface_analysis":
+        output_summary = ("Methods completed", f"{job_metrics.get('successful_tools', 0)} / {job_metrics.get('tool_count', 4)}")
+    elif raw_title in surface_titles:
+        output_summary = ("Output files", str(job_metrics.get("artifact_count", 0)))
+    elif raw_title == "visual_pipeline" and job_metrics.get("surface_analysis_count") and not details.get("candidate_count"):
+        output_summary = ("Surface analyses", str(job_metrics["surface_analysis_count"]))
     summary_values = (
         ("Status", str(job.get("status", "unknown")).replace("_", " ").title()),
         ("Type", str(job.get("tool") or job.get("job_type") or "—")),
-        ("Candidates", str(details.get("candidate_count", 0))),
+        output_summary,
         ("Time elapsed", _job_elapsed_label(job)),
         ("Project", project_name),
     )
@@ -6511,6 +6545,11 @@ def _render_job_details() -> None:
             input_payload.get("tool"),
         )
     ).casefold().replace("-", "_")
+    surface_tool_names = {"pesto", "scannet", "masif_seed", "surf2spot", "surface_analysis"}
+    surface_tool = analysis_tool if analysis_tool in surface_tool_names else next(
+        (tool for tool in surface_tool_names if tool in workflow_identity),
+        None,
+    )
     raw_result_candidates = result_payload.get("candidates")
     result_candidates = raw_result_candidates if isinstance(raw_result_candidates, list) else []
     is_af3_jax_cofolding = "af3_jax_cofolding" in workflow_identity or any(
@@ -6533,6 +6572,17 @@ def _render_job_details() -> None:
     is_design_validation = any(isinstance(item, dict) and (item.get("raw_metadata") or {}).get("validation_reference") for item in result_candidates)
     is_rfdiffusion3 = analysis_tool == "rfdiffusion3"
     has_dedicated_prediction_results = is_rfdiffusion3 or is_af3_jax_cofolding or is_esmfold2_cofolding or is_optimized_prediction or is_design_validation
+    pipeline_execution = {}
+    surface_nodes = []
+    if str(job.get("tool")) == "visual_pipeline":
+        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+        pipeline_execution = read_json(run_dir / "graph_execution.json")
+        surface_nodes = [
+            (node_id, state["output"]["analysis_run"])
+            for node_id, state in (pipeline_execution.get("nodes") or {}).items()
+            if isinstance(state.get("output"), dict) and isinstance(state["output"].get("analysis_run"), dict)
+        ]
+    has_dedicated_surface_results = surface_tool is not None or bool(surface_nodes and not result_candidates)
     is_ipsae = analysis_tool in {"ipsae", "analysis.ipsae"} or analysis_tool.endswith(".ipsae")
     if is_bindcraft2:
         resubmit_parameters, resubmit_reason = _bindcraft2_resubmit_parameters(details)
@@ -6581,7 +6631,35 @@ def _render_job_details() -> None:
     is_generator_tool=str(job.get('tool')) in generator_input.TOOLS.values()
 
     with results_tab:
-        if is_rfdiffusion3:
+        if str(job.get("tool")) == "visual_pipeline":
+            if surface_nodes:
+                snapshot = read_json(run_dir / "graph_snapshot.json")
+                node_labels = {node["id"]: node["data"].get("label", node["id"]) for node in snapshot.get("nodes", [])}
+                st.subheader("Protein surface analysis")
+                analysis_tabs = st.tabs([node_labels.get(node_id, node_id) for node_id, _analysis in surface_nodes])
+                for analysis_tab, (node_id, analysis) in zip(analysis_tabs, surface_nodes):
+                    with analysis_tab:
+                        try:
+                            child_reference = f"{analysis.get('task_group') or 'detection'}/{analysis.get('run_id') or ''}"
+                            child_details = _inspect_current_user_job(child_reference)
+                            from mn_molecular_design_studio import surface_ui
+                            importlib.reload(surface_ui)
+                            surface_ui.render_surface_analysis_results(
+                                f"{run_id}-{node_id}",
+                                Path(child_details["job"]["run_dir"]).resolve(),
+                                _job_artifact_paths(child_details),
+                                child_details.get("input") if isinstance(child_details.get("input"), dict) else {},
+                            )
+                        except (AutomationError, OSError, ValueError) as exc:
+                            st.warning(f"Could not load the completed surface-analysis step: {exc}")
+        if surface_tool is not None:
+            from mn_molecular_design_studio import surface_ui
+            importlib.reload(surface_ui)
+            if surface_tool == "surface_analysis":
+                surface_ui.render_surface_analysis_results(run_id, run_dir, artifact_paths, input_payload)
+            else:
+                surface_ui.render_results(surface_tool, run_id, run_dir, artifact_paths, input_payload)
+        elif is_rfdiffusion3:
             from mn_molecular_design_studio.rfdiffusion3_ui import render_results
             render_results(run_id, run_dir, result_candidates, input_params, result)
         elif str(job.get("tool")) in {"proteina_complexa", "proteina_complexa_generator"}:
@@ -6596,7 +6674,7 @@ def _render_job_details() -> None:
 
         structure_artifacts = (
             []
-            if has_dedicated_prediction_results or is_generator_tool or str(job.get("tool")) in {"proteina_complexa", "proteina_complexa_generator"}
+            if has_dedicated_prediction_results or has_dedicated_surface_results or is_generator_tool or str(job.get("tool")) in {"proteina_complexa", "proteina_complexa_generator"}
             else [
                 (item, path)
                 for item, path in artifact_paths
@@ -6635,7 +6713,7 @@ def _render_job_details() -> None:
 
         csv_artifacts = (
             []
-            if has_dedicated_prediction_results
+            if has_dedicated_prediction_results or has_dedicated_surface_results
             else [(item, path) for item, path in artifact_paths if path.suffix.casefold() == ".csv"]
         )
         preferred_csv_names = (
@@ -6755,7 +6833,7 @@ def _render_job_details() -> None:
             except (OSError, ValueError, pd.errors.ParserError, UnicodeError) as exc:
                 st.warning(f"Could not read the tool's CSV output: {exc}")
 
-        candidates = [] if has_dedicated_prediction_results else result_payload.get("candidates") or []
+        candidates = [] if has_dedicated_prediction_results or has_dedicated_surface_results else result_payload.get("candidates") or []
         if candidates and not csv_loaded:
             candidate_rows = []
             for candidate in candidates:
@@ -6823,13 +6901,13 @@ def _render_job_details() -> None:
             if candidate.get("raw_metadata"):
                 with st.expander("Candidate metadata"):
                     st.json(candidate["raw_metadata"])
-        elif not candidates and not csv_loaded and not has_dedicated_prediction_results:
+        elif not candidates and not csv_loaded and not has_dedicated_prediction_results and not has_dedicated_surface_results:
             st.info("No normalized candidate records are available for this job yet.")
             if result:
                 st.subheader("Run result")
                 st.json(result)
 
-        if visible_structure_artifacts and not has_dedicated_prediction_results:
+        if visible_structure_artifacts and not has_dedicated_prediction_results and not has_dedicated_surface_results:
             st.subheader("Structure preview")
             structure_index = st.selectbox(
                 "Structure file",
@@ -6855,7 +6933,7 @@ def _render_job_details() -> None:
                     st.caption("Structure colored by per-residue pLDDT confidence (stored in the structure B-factor field).")
             except OSError as exc:
                 st.warning(f"Could not load this structure preview: {exc}")
-        elif not has_dedicated_prediction_results:
+        elif not has_dedicated_prediction_results and not has_dedicated_surface_results:
             st.info(f"No {design_scope.casefold()} structure files were found in this job's Results folder.")
 
         if str(metadata.get("tool") or "").casefold() == "boltzgen":

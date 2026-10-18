@@ -226,6 +226,7 @@ def test_generator_api_preflight_enforces_input_access_without_enqueue(engine,mo
     import shutil
     from fastapi.testclient import TestClient
     from mn_molecular_design_studio import api
+    monkeypatch.setenv('MDS_CLUSTER_HOME',str(tmp_path/'cluster'))
     uploaded=tmp_path/'inputs';uploaded.mkdir()
     example=inputs.examples(engine,'binder')[0]['parameters']
     target=uploaded/Path(example['target_pdb']).name;shutil.copy2(example['target_pdb'],target)

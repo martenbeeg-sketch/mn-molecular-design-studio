@@ -53,6 +53,7 @@ def _request_priority(payload: dict[str, Any]) -> int:
 _INTERNAL_PARAMETERS = frozenset(
     {
         "existing_job",
+        "_defer_finish",
         "progress_callback",
         "internal_parent_run_dir",
         "internal_parent_task_group",
@@ -135,6 +136,7 @@ _SPECS = (
     _spec("detection.pesto", "detection", "run_pesto", "detection", "pesto", "ppi_detection", "Run PeSTo interface detection."),
     _spec("detection.surf2spot", "detection", "run_surf2spot", "detection", "surf2spot", "ppi_detection", "Run Surf2Spot hotspot detection."),
     _spec("detection.masif_seed", "detection", "run_masif_seed", "detection", "masif_seed", "ppi_detection", "Run MaSIF-seed surface/site detection."),
+    _spec("detection.surface_analysis", "detection", "run_surface_analysis", "detection", "surface_analysis", "surface_analysis", "Run PeSTo, ScanNet, Surf2Spot, and MaSIF-seed together on one target."),
     _spec("design.rfdiffusion_classic", "design", "run_rfdiffusion_classic", "design", "rfdiffusion_classic", "design_campaign", "Run the RFdiffusion classic design workflow."),
     _spec("design.bindcraft", "design", "run_bindcraft", "design", "bindcraft", "design_campaign", "Run the BindCraft 1.x vanilla workflow."),
     _spec("design.bindcraft2", "bindcraft2", "enqueue_bindcraft2_design", "design", "bindcraft2", "bindcraft2_design", "Run a native BindCraft 2 design job.", "direct"),
@@ -693,6 +695,20 @@ def _apply_resource_parameters(
 
 
 def _validate_workflow_inputs(spec: WorkflowSpec, parameters: dict[str, Any]) -> None:
+    if spec.workflow_id.startswith("detection.") and not _schema_only_paths.get():
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.detection import validate_surface_target
+
+        try:
+            selected = parameters.get("chain_ids")
+            if spec.workflow_id == "detection.surface_analysis" and not selected:
+                raise ValueError("Select at least one protein chain for surface analysis.")
+            if spec.workflow_id == "detection.masif_seed":
+                selected = [parameters["chain_id"]]
+            chains = validate_surface_target(parameters["target_pdb"], selected or None)
+            if spec.workflow_id == "detection.surface_analysis" and parameters.get("masif_chain_id") not in (None, "", *chains):
+                raise ValueError("The MaSIF-seed chain must be one of the selected target chains.")
+        except (ValueError, OSError) as exc:
+            raise AutomationError(str(exc)) from exc
     from mn_molecular_design_studio import inverse_folding_input
     if spec.workflow_id in inverse_folding_input.WORKFLOWS.values():
         engine = next(k for k, v in inverse_folding_input.WORKFLOWS.items() if v == spec.workflow_id)
