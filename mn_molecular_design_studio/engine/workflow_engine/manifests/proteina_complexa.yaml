@@ -1,0 +1,5 @@
+tool: proteina_complexa
+group: design
+image: mn-proteina-complexa:latest
+gpu: true
+description: Native protein binder, ligand binder, and motif + ligand design pipelines (generate → filter → evaluate → analyze).

@@ -1,0 +1,5 @@
+tool: proteina_complexa_generator
+group: design
+image: mn-proteina-complexa:latest
+gpu: true
+description: Generate backbone and sequence with Proteina-Complexa. Downstream sequence redesign and structure prediction are separate pipeline steps.

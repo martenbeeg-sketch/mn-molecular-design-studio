@@ -1,0 +1,8 @@
+{
+    "motif_filepaths": [
+        "data/design/motif_scaffolding/motifbench/motifs/23_1MPY.pdb"
+    ],
+    "segment_config_str": "0-20,A1,40-50,A2,10-15,A3,25-30,A4,5-15,A5,5-15,A6,0-20",
+    "maximum_total_length": 125,
+    "minimum_total_length": 125
+}

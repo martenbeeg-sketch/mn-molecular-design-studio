@@ -1,0 +1,8 @@
+{
+    "motif_filepaths": [
+        "data/design/motif_scaffolding/motifbench/motifs/25_2RKX.pdb"
+    ],
+    "segment_config_str": "0-20,A1,30-40,A2,45-55,A3,20-30,A4,35-45,A5,5-15,A6,20-30,A7,15-25,A8,0-20",
+    "maximum_total_length": 225,
+    "minimum_total_length": 225
+}

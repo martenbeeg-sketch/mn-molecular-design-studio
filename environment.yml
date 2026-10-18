@@ -1,0 +1,24 @@
+name: mn-molecular-design-studio
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pandas
+  - biopython
+  - gemmi
+  - pdbfixer
+  - pymol-open-source
+  - pyyaml
+  - openjdk=17
+  - nextflow
+  - openpyxl
+  - matplotlib
+  - streamlit
+  - fastapi
+  - uvicorn
+  - typer
+  - pip
+  - pip:
+      - -e .
+      - -e ../mn-compute-scheduler

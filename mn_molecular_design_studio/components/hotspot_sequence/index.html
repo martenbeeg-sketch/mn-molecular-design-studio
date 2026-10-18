@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root { color-scheme: light; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        color: #18221d;
+        background: transparent;
+        font: 14px/1.4 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      #sequence-root { padding: 4px 0 8px; }
+      .sequence-block { margin: 0 0 16px; }
+      .sequence-range {
+        margin-bottom: 13px;
+        color: #7a818a;
+        font-size: 12px;
+        line-height: 1.2;
+      }
+      .sequence-grid {
+        display: grid;
+        width: min(100%, 744px);
+        grid-template-columns: repeat(10, minmax(0, 58px));
+        column-gap: 16px;
+        row-gap: 16px;
+      }
+      .residue {
+        width: 100%;
+        min-width: 0;
+        height: 40px;
+        padding: 0;
+        border: 1px solid #d4d6d8;
+        border-radius: 999px;
+        color: #1b2932;
+        background: #fff;
+        font: 13px/1 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        text-align: center;
+        cursor: pointer;
+        user-select: none;
+        touch-action: none;
+        transition: color 90ms ease, border-color 90ms ease, background-color 90ms ease;
+      }
+      .residue:hover { border-color: #93b6a1; background: #f2f7f3; color: #245b40; }
+      .residue.selected { border-color: #246b49; background: #246b49; color: #fff; }
+      .residue:focus-visible { outline: 2px solid #246b49; outline-offset: 2px; }
+      .empty { color: #6e7b73; padding: 8px 0; }
+      @media (max-width: 760px) {
+        .sequence-grid {
+          width: 100%;
+          grid-template-columns: repeat(5, minmax(0, 1fr));
+          column-gap: 10px;
+          row-gap: 10px;
+        }
+        .residue { height: 40px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="sequence-root" aria-label="Selectable protein sequence"></div>
+    <script>
+      (() => {
+        const root = document.getElementById("sequence-root");
+        let args = {};
+        let selected = new Set();
+        let pointerStart = null;
+        let pointerMoved = false;
+        let pointerActive = false;
+        let dragPreview = null;
+        let lastHeight = 0;
+
+        const sendMessage = (type, fields = {}) => {
+          window.parent.postMessage({ isStreamlitMessage: true, type, ...fields }, "*");
+        };
+        const normalizeNumber = (value) => Number.parseInt(value, 10);
+        const selectedFromArgs = (incoming) => new Set((incoming.selectedResidues || []).map(normalizeNumber).filter(Number.isFinite));
+        const setHeight = () => {
+          window.requestAnimationFrame(() => {
+            const height = Math.max(26, Math.ceil(root.getBoundingClientRect().height + 4));
+            if (height === lastHeight) return;
+            lastHeight = height;
+            sendMessage("streamlit:setFrameHeight", { height });
+          });
+        };
+        const notifySelection = (action) => {
+          sendMessage("streamlit:setComponentValue", {
+            value: {
+              action,
+              chainId: args.chainId,
+              residues: [...selected].sort((a, b) => a - b),
+            },
+          });
+        };
+        const findResidue = (event) => {
+          const element = document.elementFromPoint(event.clientX, event.clientY);
+          const residue = element && element.closest ? element.closest("[data-residue]") : null;
+          if (!residue || residue.dataset.chain !== args.chainId) return null;
+          return normalizeNumber(residue.dataset.residue);
+        };
+        const previewRange = (endResidue) => {
+          const sequence = args.sequence || [];
+          const positions = sequence.map((entry) => normalizeNumber(entry.number));
+          const startIndex = positions.indexOf(pointerStart);
+          const endIndex = positions.indexOf(endResidue);
+          if (startIndex < 0 || endIndex < 0) return;
+          dragPreview = new Set(selected);
+          for (let idx = Math.min(startIndex, endIndex); idx <= Math.max(startIndex, endIndex); idx += 1) {
+            dragPreview.add(positions[idx]);
+          }
+          const prior = selected;
+          selected = dragPreview;
+          draw();
+          selected = prior;
+        };
+        const draw = () => {
+          root.replaceChildren();
+          const sequence = args.sequence || [];
+          if (!sequence.length) {
+            const empty = document.createElement("div");
+            empty.className = "empty";
+            empty.textContent = "No protein sequence is available for this chain.";
+            root.appendChild(empty);
+            setHeight();
+            return;
+          }
+
+          for (let start = 0; start < sequence.length; start += 20) {
+            const block = document.createElement("section");
+            block.className = "sequence-block";
+            const residues = sequence.slice(start, start + 20);
+            const range = document.createElement("div");
+            range.className = "sequence-range";
+            range.textContent = `${args.chainId}${residues[0].number}–${args.chainId}${residues[residues.length - 1].number}`;
+            block.appendChild(range);
+
+            const grid = document.createElement("div");
+            grid.className = "sequence-grid";
+            for (const residue of residues) {
+              const button = document.createElement("button");
+              const number = normalizeNumber(residue.number);
+              button.type = "button";
+              button.className = "residue" + (selected.has(number) ? " selected" : "");
+              button.dataset.residue = String(number);
+              button.dataset.chain = args.chainId;
+              button.textContent = residue.letter;
+              button.title = `${args.chainId}${number} · ${residue.letter}`;
+              button.setAttribute("aria-label", `${args.chainId}${number}, ${residue.letter}`);
+              button.setAttribute("aria-pressed", selected.has(number) ? "true" : "false");
+              grid.appendChild(button);
+            }
+            block.appendChild(grid);
+            root.appendChild(block);
+          }
+          setHeight();
+        };
+
+        root.addEventListener("pointerdown", (event) => {
+          const residue = findResidue(event);
+          if (residue === null || event.button !== 0) return;
+          pointerActive = true;
+          pointerMoved = false;
+          pointerStart = residue;
+          dragPreview = new Set(selected);
+          try { root.setPointerCapture(event.pointerId); } catch (_) { /* pointer capture is optional */ }
+          event.preventDefault();
+        });
+        root.addEventListener("pointermove", (event) => {
+          if (!pointerActive || pointerStart === null) return;
+          const residue = findResidue(event);
+          if (residue === null) return;
+          if (residue !== pointerStart) pointerMoved = true;
+          if (pointerMoved) previewRange(residue);
+        });
+        root.addEventListener("pointerup", (event) => {
+          if (!pointerActive || pointerStart === null) return;
+          const endResidue = findResidue(event) ?? pointerStart;
+          if (pointerMoved) {
+            previewRange(endResidue);
+            selected = dragPreview || selected;
+          } else if (selected.has(pointerStart)) {
+            selected.delete(pointerStart);
+          } else {
+            selected.add(pointerStart);
+          }
+          pointerActive = false;
+          pointerStart = null;
+          dragPreview = null;
+          draw();
+          notifySelection("chain");
+          event.preventDefault();
+        });
+        root.addEventListener("pointercancel", () => {
+          pointerActive = false;
+          pointerStart = null;
+          dragPreview = null;
+          draw();
+        });
+        root.addEventListener("keydown", (event) => {
+          const residueElement = event.target.closest("[data-residue]");
+          if (!residueElement || !(event.key === "Enter" || event.key === " ")) return;
+          event.preventDefault();
+          const number = normalizeNumber(residueElement.dataset.residue);
+          if (selected.has(number)) selected.delete(number); else selected.add(number);
+          draw();
+          notifySelection("chain");
+        });
+
+        window.addEventListener("message", (event) => {
+          if (!event.data || event.data.type !== "streamlit:render") return;
+          const incoming = event.data.args || {};
+          args = incoming;
+          selected = selectedFromArgs(incoming);
+          draw();
+        });
+
+        sendMessage("streamlit:componentReady", { apiVersion: 1 });
+        sendMessage("streamlit:setFrameHeight", { height: 26 });
+      })();
+    </script>
+  </body>
+</html>

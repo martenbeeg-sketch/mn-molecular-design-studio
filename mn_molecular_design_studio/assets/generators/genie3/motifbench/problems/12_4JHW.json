@@ -1,0 +1,8 @@
+{
+    "motif_filepaths": [
+        "data/design/motif_scaffolding/motifbench/motifs/12_4JHW.pdb"
+    ],
+    "segment_config_str": "10-25,A2,40-80,A1,10-25",
+    "maximum_total_length": 100,
+    "minimum_total_length": 100
+}

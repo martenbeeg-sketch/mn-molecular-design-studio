@@ -1,0 +1,5 @@
+tool: pxdesign_generator
+group: design
+image: mn-pxdesign:cu128
+gpu: true
+description: PXDesign raw backbone generation; downstream sequence design and folding are separate steps.

@@ -1,0 +1,78 @@
+{
+    "key": "02_sc2rbd",
+    "name": "SC2RBD",
+    "target_pdb_filepath": "data/design/binder_design/binderbench/targets/pdb/02_sc2rbd.pdb",
+    "target_fasta_filepath": "data/design/binder_design/binderbench/targets/fasta/02_sc2rbd.fasta",
+    "target_msa_filepath": "data/design/binder_design/binderbench/targets/msa/02_sc2rbd.a3m",
+    "target_pdb_filepath_by_chain": [
+        "data/design/binder_design/binderbench/targets/pdb/02_sc2rbd-chain_B.pdb"
+    ],
+    "target_fasta_filepath_by_chain": [
+        "data/design/binder_design/binderbench/targets/fasta/02_sc2rbd-chain_B.fasta"
+    ],
+    "target_msa_filepath_by_chain": [
+        "data/design/binder_design/binderbench/targets/msa/02_sc2rbd-chain_B.a3m"
+    ],
+    "target_chain_and_residues": [
+        "B1-194"
+    ],
+    "target_interface_residues": {
+        "hotspot": [
+            "B153",
+            "B157",
+            "B162",
+            "B168",
+            "B173"
+        ],
+        "extended": [
+            "B73",
+            "B117",
+            "B118",
+            "B139",
+            "B142",
+            "B143",
+            "B151",
+            "B152",
+            "B153",
+            "B154",
+            "B157",
+            "B158",
+            "B161",
+            "B162",
+            "B164",
+            "B167",
+            "B168",
+            "B170",
+            "B171",
+            "B173"
+        ],
+        "common": [
+            "B85",
+            "B113",
+            "B114",
+            "B115",
+            "B117",
+            "B123",
+            "B152",
+            "B153",
+            "B154",
+            "B156",
+            "B157",
+            "B161",
+            "B162",
+            "B163",
+            "B164",
+            "B166",
+            "B168",
+            "B169",
+            "B170",
+            "B173"
+        ]
+    },
+    "binder_min_length": 80,
+    "binder_max_length": 120,
+    "tag": [
+        "AlphaProteo"
+    ],
+    "pdb_id": "6M0J"
+}

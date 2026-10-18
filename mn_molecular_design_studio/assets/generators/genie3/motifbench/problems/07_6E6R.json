@@ -1,0 +1,8 @@
+{
+    "motif_filepaths": [
+        "data/design/motif_scaffolding/motifbench/motifs/07_6E6R.pdb"
+    ],
+    "segment_config_str": "0-190,A1,0-190",
+    "maximum_total_length": 200,
+    "minimum_total_length": 200
+}

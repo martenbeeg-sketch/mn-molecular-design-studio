@@ -1,0 +1,5 @@
+tool: rfdiffusion_generator
+group: design
+image: mn-rfdiffusion:latest
+gpu: true
+description: RFdiffusion backbone generation; no implicit sequence design or folding pipeline.

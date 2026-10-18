@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+.tmp/
+mn-molecular-design-studio-workdir/
+secrets.toml
+node_modules/
+/build/
+/dist/

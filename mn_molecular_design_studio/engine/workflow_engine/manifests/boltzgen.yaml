@@ -1,0 +1,5 @@
+tool: boltzgen
+group: design
+image: mn-boltzgen-opt:a07fea1-cu130-batch3
+gpu: true
+description: De novo protein binder design with BoltzGen's protein-anything protocol.

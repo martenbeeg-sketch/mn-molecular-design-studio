@@ -1,0 +1,74 @@
+tool: bindcraft2
+group: design
+image: mn-bindcraft2:c0ee638-cu13
+gpu: true
+description: BindCraft 2 design against a PDB/mmCIF structure or a disordered FASTA sequence, with AlphaFold validation.
+inputs:
+  target_pdb:
+    type: pdb_or_mmcif
+    required: false
+  target_fasta:
+    type: single_record_fasta
+    required: false
+params:
+  target_type:
+    type: enum
+    default: structure
+    choices: [structure, sequence]
+  target_chains:
+    type: chain_list
+    required: false
+  hotspots:
+    type: residue_list
+    required: false
+  binder_length:
+    type: string
+    required: false
+  modality:
+    type: enum
+    default: binder
+    choices: [binder, large_binder, peptide, cyclic_peptide, homo_oligomer, multidomain, VHH, scFv, Fab, ARP]
+  scaffold_edits:
+    type: string
+    required: false
+  target_crop_lengths:
+    type: integer_list
+    default: [10, 40]
+  target_crop_count:
+    type: integer
+    default: 1
+  design_properties:
+    type: string_list
+    required: false
+  quality_filters:
+    type: object
+    required: false
+  engine_overrides:
+    type: object
+    required: false
+    description: Any additional settings accepted by the selected BindCraft2 image; these override visible fields and modality presets.
+  number_of_final_designs:
+    type: integer
+    default: 1
+  max_trajectories:
+    type: integer
+    default: 1
+  workers_per_gpu:
+    type: string
+    default: auto
+  cpu_cores:
+    type: integer
+    default: 4
+  campaign_seed:
+    type: integer
+    default: 0
+  gpu_device:
+    type: string
+    default: "0"
+outputs:
+  bindcraft2_output:
+    path: artifacts/raw/bindcraft2/output/
+    type: directory
+  candidates:
+    path: artifacts/normalized_candidates/candidates.jsonl
+    type: normalized_candidates

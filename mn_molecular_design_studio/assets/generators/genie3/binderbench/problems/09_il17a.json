@@ -1,0 +1,80 @@
+{
+    "key": "09_il17a",
+    "name": "IL-17A",
+    "target_pdb_filepath": "data/design/binder_design/binderbench/targets/pdb/09_il17a.pdb",
+    "target_fasta_filepath": "data/design/binder_design/binderbench/targets/fasta/09_il17a.fasta",
+    "target_msa_filepath": "data/design/binder_design/binderbench/targets/msa/09_il17a.a3m",
+    "target_pdb_filepath_by_chain": [
+        "data/design/binder_design/binderbench/targets/pdb/09_il17a-chain_B.pdb",
+        "data/design/binder_design/binderbench/targets/pdb/09_il17a-chain_C.pdb"
+    ],
+    "target_fasta_filepath_by_chain": [
+        "data/design/binder_design/binderbench/targets/fasta/09_il17a-chain_B.fasta",
+        "data/design/binder_design/binderbench/targets/fasta/09_il17a-chain_C.fasta"
+    ],
+    "target_msa_filepath_by_chain": [
+        "data/design/binder_design/binderbench/targets/msa/09_il17a-chain_B.a3m",
+        "data/design/binder_design/binderbench/targets/msa/09_il17a-chain_C.a3m"
+    ],
+    "target_chain_and_residues": [
+        "B1-109",
+        "C1-109"
+    ],
+    "target_interface_residues": {
+        "hotspot": [
+            "B76",
+            "B98",
+            "C49"
+        ],
+        "extended": [
+            "B50",
+            "B75",
+            "B76",
+            "B77",
+            "B97",
+            "B98",
+            "C35",
+            "C36",
+            "C37",
+            "C47",
+            "C49"
+        ],
+        "common": [
+            "B2",
+            "B4",
+            "B75",
+            "B76",
+            "B77",
+            "B79",
+            "B94",
+            "B96",
+            "B98",
+            "C8",
+            "C9",
+            "C10",
+            "C12",
+            "C19",
+            "C22",
+            "C23",
+            "C26",
+            "C35",
+            "C37",
+            "C44",
+            "C45",
+            "C46",
+            "C47",
+            "C48",
+            "C49",
+            "C50",
+            "C51",
+            "C89",
+            "C101"
+        ]
+    },
+    "binder_min_length": 50,
+    "binder_max_length": 140,
+    "tag": [
+        "AlphaProteo"
+    ],
+    "pdb_id": "4HSA"
+}

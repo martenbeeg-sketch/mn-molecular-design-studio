@@ -1,0 +1,66 @@
+{
+    "key": "08_vegfa",
+    "name": "VEGF-A",
+    "target_pdb_filepath": "data/design/binder_design/binderbench/targets/pdb/08_vegfa.pdb",
+    "target_fasta_filepath": "data/design/binder_design/binderbench/targets/fasta/08_vegfa.fasta",
+    "target_msa_filepath": "data/design/binder_design/binderbench/targets/msa/08_vegfa.a3m",
+    "target_pdb_filepath_by_chain": [
+        "data/design/binder_design/binderbench/targets/pdb/08_vegfa-chain_B.pdb",
+        "data/design/binder_design/binderbench/targets/pdb/08_vegfa-chain_C.pdb"
+    ],
+    "target_fasta_filepath_by_chain": [
+        "data/design/binder_design/binderbench/targets/fasta/08_vegfa-chain_B.fasta",
+        "data/design/binder_design/binderbench/targets/fasta/08_vegfa-chain_C.fasta"
+    ],
+    "target_msa_filepath_by_chain": [
+        "data/design/binder_design/binderbench/targets/msa/08_vegfa-chain_B.a3m",
+        "data/design/binder_design/binderbench/targets/msa/08_vegfa-chain_C.a3m"
+    ],
+    "target_chain_and_residues": [
+        "B1-94",
+        "C1-94"
+    ],
+    "target_interface_residues": {
+        "hotspot": [
+            "C68",
+            "C70",
+            "C78"
+        ],
+        "extended": [
+            "C31",
+            "C33",
+            "C68",
+            "C70",
+            "C71",
+            "C72",
+            "C75",
+            "C76",
+            "C77",
+            "C78",
+            "C79",
+            "C80"
+        ],
+        "common": [
+            "B4",
+            "B5",
+            "B8",
+            "B9",
+            "B49",
+            "B50",
+            "C68",
+            "C70",
+            "C72",
+            "C73",
+            "C75",
+            "C76",
+            "C77",
+            "C78"
+        ]
+    },
+    "binder_min_length": 50,
+    "binder_max_length": 140,
+    "tag": [
+        "AlphaProteo"
+    ],
+    "pdb_id": "1BJ1"
+}

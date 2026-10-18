@@ -1,0 +1,37 @@
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+from mn_molecular_design_studio.engine.workflow_engine.core.gpu import docker_gpu_args
+from mn_molecular_design_studio.engine.workflow_engine.core.jobs import update_status, write_json
+from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import apply_docker_cpu_limit
+from mn_molecular_design_studio.engine.workflow_engine.runtime import reference_root
+
+
+def build_docker_command(
+    manifest: dict,
+    run_dir: Path,
+    args: list[str],
+    reference_root_path: Path | None = None,
+    gpu_device: object = "all",
+) -> list[str]:
+    command = ["docker", "run", "--rm"]
+    if manifest.get("gpu"):
+        command.extend(docker_gpu_args(gpu_device))
+    command.extend(["-v", f"{run_dir}:/work"])
+    reference_path = reference_root_path or reference_root()
+    if reference_path.exists():
+        command.extend(["-v", f"{reference_path}:/ref:ro"])
+    command.append(str(manifest["image"]))
+    command.extend(args)
+    return apply_docker_cpu_limit(command, run_dir)
+
+
+def run_docker_job(run_dir: Path, manifest: dict, args: list[str], gpu_device: object = "all") -> int:
+    command = build_docker_command(manifest, run_dir, args, gpu_device=gpu_device)
+    write_json(run_dir / "command.json", {"mode": "docker", "command": command, "image": manifest.get("image")})
+    update_status(run_dir, "running")
+    with (run_dir / "stdout.log").open("w") as stdout, (run_dir / "stderr.log").open("w") as stderr:
+        proc = subprocess.run(command, stdout=stdout, stderr=stderr, check=False)
+    return int(proc.returncode)

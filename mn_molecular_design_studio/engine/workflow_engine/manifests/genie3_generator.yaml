@@ -1,0 +1,5 @@
+tool: genie3_generator
+group: design
+image: mn-genie3:cu128
+gpu: true
+description: Genie3 native generation without evaluation or folding rewards.

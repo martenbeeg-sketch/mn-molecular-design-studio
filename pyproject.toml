@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mn-molecular-design-studio"
+version = "0.1.0"
+description = "A local interface and API for molecular design workflows"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "biopython",
+  "fastapi",
+  "gemmi",
+  "matplotlib",
+  "openpyxl",
+  "pandas",
+  "pyyaml",
+  "py2Dmol @ git+https://github.com/sokrypton/py2Dmol.git@67cbe73f06f49645291ea3e79a06293b0abaa3a7",
+  "streamlit",
+  "typer",
+  "uvicorn",
+]
+
+[project.optional-dependencies]
+scheduler = [
+  "mn-compute-scheduler @ git+ssh://git@github.com/martenbeeg-sketch/mn-compute-scheduler.git",
+]
+test = [
+  "httpx>=0.27",
+  "pytest>=8",
+]
+
+[project.scripts]
+mn-molecular-design-studio = "mn_molecular_design_studio.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["mn_molecular_design_studio*"]
+
+[tool.setuptools.package-data]
+"*" = [
+  "*.yaml",
+  "*.nf",
+  "*.config",
+  "*.tar.gz",
+  "*.json",
+  "*.html",
+  "*.css",
+  "*.js",
+  "*.png",
+  "assets/rfdiffusion3/*.pdb",
+  "assets/rfdiffusion3/*.md",
+  "assets/proteina_complexa/*.pdb",
+  "assets/proteina_complexa/*.md",
+  "assets/generators/**/*",
+  "assets/generators/*",
+  "assets/mpnn/*.pdb",
+  "assets/mpnn/*.md",
+  "assets/inverse_folding/*.pdb",
+  "assets/inverse_folding/*.md",
+  "components/pipeline_editor/build/*.html",
+  "components/pipeline_editor/build/assets/*.js",
+  "components/pipeline_editor/build/assets/*.css",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

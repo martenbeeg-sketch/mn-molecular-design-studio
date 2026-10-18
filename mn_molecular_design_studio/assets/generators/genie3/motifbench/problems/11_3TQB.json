@@ -1,0 +1,8 @@
+{
+    "motif_filepaths": [
+        "data/design/motif_scaffolding/motifbench/motifs/11_3TQB.pdb"
+    ],
+    "segment_config_str": "0-60,A1,30-60,A2,0-60",
+    "maximum_total_length": 125,
+    "minimum_total_length": 125
+}

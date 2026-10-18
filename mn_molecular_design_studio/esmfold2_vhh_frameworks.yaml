@@ -1,0 +1,38 @@
+# Curated VHH scaffold panel copied from:
+# tools-to-implement/mn-protein-design/esmfold2-pipeline/
+# src/esmfold2_pipeline/frameworks/vhh
+#
+# The Biohub ESMFold2 binder-design runner consumes masked sequence prompts,
+# so these records retain the framework sequence and the source pipeline's
+# per-CDR sampling ranges rather than CIF coordinates.
+frameworks:
+  - id: caplacizumab_vhh
+    canonical_name: caplacizumab_framework_vhh
+    display_name: Caplacizumab · VWF
+    aliases: [caplacizumab]
+    template: "EVQLVESGGGLVQPGGSLRLSCAAS{cdr1}MGWFRQAPGKGRELVAA{cdr2}YYPDSVEGRFTISRDNAKRMVYLQMNSLRAEDTAVYYC{cdr3}WGQGTQVTVSS"
+    cdr_lengths:
+      cdr1: {min: 7, max: 9}
+      cdr2: {min: 7, max: 9}
+      cdr3: {min: 18, max: 24}
+    source_target: von Willebrand factor
+  - id: ozoralizumab_tnf_vhh
+    canonical_name: ozoralizumab_tnf_framework_vhh
+    display_name: Ozoralizumab · TNF
+    aliases: [ozoralizumab_tnf, ozoralizumab]
+    template: "EVQLVESGGGLVQPGGSLRLSCAAS{cdr1}MYWVRQAPGKGLEWVSE{cdr2}KYPDSVKGRFTISRDNAKNTLYLQMNSLRPEDTAVYYC{cdr3}RGQGTLVTVSS"
+    cdr_lengths:
+      cdr1: {min: 7, max: 9}
+      cdr2: {min: 7, max: 9}
+      cdr3: {min: 5, max: 11}
+    source_target: TNF
+  - id: vobarilizumab_il6r_vhh
+    canonical_name: vobarilizumab_il6r_framework_vhh
+    display_name: Vobarilizumab · IL-6R
+    aliases: [vobarilizumab_il6r, vobarilizumab]
+    template: "EVQLVESGGGLVQPGGSLRLSCAAS{cdr1}MAWYRQAPGKGRELVAG{cdr2}SYADSVKGRFTISRDNAKNTLYLQMNSLRPEDTAVYYC{cdr3}WGQGTLVTVSS"
+    cdr_lengths:
+      cdr1: {min: 7, max: 9}
+      cdr2: {min: 6, max: 8}
+      cdr3: {min: 12, max: 18}
+    source_target: IL-6 receptor

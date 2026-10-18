@@ -1,0 +1,5 @@
+tool: protpardelle_generator
+group: design
+image: mn-protpardelle-1c:cu128
+gpu: true
+description: Protpardelle-1C structure generation with external MPNN and ESMFold evaluation disabled.

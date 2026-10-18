@@ -1,0 +1,8 @@
+{
+    "motif_filepaths": [
+        "data/design/motif_scaffolding/motifbench/motifs/14_5IUS.pdb"
+    ],
+    "segment_config_str": "0-30,A2,15-40,A1,0-30",
+    "maximum_total_length": 100,
+    "minimum_total_length": 100
+}

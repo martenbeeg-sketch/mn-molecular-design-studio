@@ -1,0 +1,69 @@
+{
+    "key": "10_tnfa",
+    "name": "TNFa",
+    "target_pdb_filepath": "data/design/binder_design/binderbench/targets/pdb/10_tnfa.pdb",
+    "target_fasta_filepath": "data/design/binder_design/binderbench/targets/fasta/10_tnfa.fasta",
+    "target_msa_filepath": "data/design/binder_design/binderbench/targets/msa/10_tnfa.a3m",
+    "target_pdb_filepath_by_chain": [
+        "data/design/binder_design/binderbench/targets/pdb/10_tnfa-chain_B.pdb",
+        "data/design/binder_design/binderbench/targets/pdb/10_tnfa-chain_C.pdb",
+        "data/design/binder_design/binderbench/targets/pdb/10_tnfa-chain_D.pdb"
+    ],
+    "target_fasta_filepath_by_chain": [
+        "data/design/binder_design/binderbench/targets/fasta/10_tnfa-chain_B.fasta",
+        "data/design/binder_design/binderbench/targets/fasta/10_tnfa-chain_C.fasta",
+        "data/design/binder_design/binderbench/targets/fasta/10_tnfa-chain_D.fasta"
+    ],
+    "target_msa_filepath_by_chain": [
+        "data/design/binder_design/binderbench/targets/msa/10_tnfa-chain_B.a3m",
+        "data/design/binder_design/binderbench/targets/msa/10_tnfa-chain_C.a3m",
+        "data/design/binder_design/binderbench/targets/msa/10_tnfa-chain_D.a3m"
+    ],
+    "target_chain_and_residues": [
+        "B1-146",
+        "C1-146",
+        "D1-146"
+    ],
+    "target_interface_residues": {
+        "hotspot": [
+            "B102",
+            "D62"
+        ],
+        "extended": [
+            "B56",
+            "B100",
+            "B102",
+            "D59",
+            "D60",
+            "D61",
+            "D62",
+            "D64",
+            "D127"
+        ],
+        "common": [
+            "B54",
+            "B55",
+            "B56",
+            "B102",
+            "B132",
+            "B133",
+            "B134",
+            "B135",
+            "D62",
+            "D64",
+            "D66",
+            "D68",
+            "D81",
+            "D84",
+            "D86",
+            "D124",
+            "D126"
+        ]
+    },
+    "binder_min_length": 50,
+    "binder_max_length": 120,
+    "tag": [
+        "AlphaProteo"
+    ],
+    "pdb_id": "1TNF"
+}

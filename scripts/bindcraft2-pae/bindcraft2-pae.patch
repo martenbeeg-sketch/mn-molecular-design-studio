@@ -1,0 +1,126 @@
+--- a/bindcraft/af2.py
++++ b/bindcraft/af2.py
+@@ -156,6 +156,7 @@
+         pae_bin_width = pae_bin_edges[1] - pae_bin_edges[0]
+         bin_centers = jnp.append(pae_bin_edges + pae_bin_width / 2, pae_bin_edges[-1] + 1.5 * pae_bin_width)
+         pae = (probabilities * bin_centers).sum(-1)
++        metrics['pae_raw'] = pae
+         metrics['pae'] = (pae + pae.T) / 2
+         metrics['ptm'] = confidence.predicted_tm_score(pae_head['logits'], pae_head['breaks'], residue_weights=seq_mask, use_jnp=True)
+         metrics['iptm'], metrics['iptm_per_residue'] = confidence.predicted_tm_score(pae_head['logits'], pae_head['breaks'], residue_weights=seq_mask, asym_id=interface_asym_id, use_jnp=True, return_per_alignment=True)
+--- a/bindcraft/MPNN_stage.py
++++ b/bindcraft/MPNN_stage.py
+@@ -1,12 +1,14 @@
++import json
+ import os
+ import time
++import numpy as np
+ import jax.numpy as jnp
+ from jax import Array
+ from typing import NamedTuple
+ from bindcraft.prediction import ProteinPredictor
+ from bindcraft.filters import binder_assembly_sequence, binder_chain_sequences, binder_target_contact_masks, confidence_stage_filters, design_sequence_report, design_stage_filters, evaluate_design_filters, protomer_identity_fraction, validates_unbound_binder, INTERFACE_PDAE_METRICS
+ from bindcraft.loss import align_binder_coordinates, binder_copy_chains, chain_atom_coordinates, chain_residue_slices, multidomain_linker_residues
+-from bindcraft.protein import StructurePrediction, StructurePredictions, Protein, ResidueFlags, ProteinStates, has_residue_flag, has_resolved_atom, superposed_on_binder, write_structure, BINDER_ALONE
++from bindcraft.protein import StructurePrediction, StructurePredictions, Protein, ResidueFlags, ProteinStates, has_residue_flag, has_resolved_atom, superposed_on_binder, write_structure, written_chains, BINDER_ALONE
+ from bindcraft.campaign_log import candidate_outcome, redesigns_kept, exhausted_redesign_window
+ from bindcraft.campaign_output import CampaignProgress, RANKING_METRIC, REFOLD_STAGE, accepted_state_suffixes, append_campaign_metrics, ranking_value, redesigned_sequence, stage_folder, target_ordered_row, timing_stamp, weighted_target_order
+ from bindcraft.protein_preparation import frame_holding_target, receptor_chain_layouts, states_holding_the_frame
+@@ -205,6 +207,56 @@
+     protomer_identity = protomer_identity_fraction(decoded_complex, binder)
+     return {'Protomer_Identity_Fraction': protomer_identity} if protomer_identity is not None else {}
+ 
++def write_pae_matrix(structure_path: str, prediction: StructurePrediction, receptor_chains: dict[str, tuple[tuple[str, int, int], ...]] | None=None) -> str | None:
++    """Write the prediction PAE in the residue order of its matching output CIF."""
++    protein_complex = prediction.protein_complex
++    pae = prediction.metrics.get('pae_raw', prediction.metrics.get('pae'))
++    if pae is None:
++        print(f'warning: no PAE matrix available for {structure_path}', flush=True)
++        return None
++    source_chains = sorted(protein_complex)
++    offsets, next_offset = {}, 0
++    for name in source_chains:
++        offsets[name] = next_offset
++        next_offset += len(protein_complex[name])
++    chains = written_chains(protein_complex, receptor_chains)
++    residue_indices, chain_map = [], []
++    output_offset = 0
++    for chain in chains:
++        count = chain.stop - chain.start
++        source_offset = offsets[chain.complex_chain] + chain.start
++        residue_indices.extend(range(source_offset, source_offset + count))
++        chain_map.append({
++            'cif_chain': chain.letter,
++            'source_chain': chain.complex_chain,
++            'label': chain.label or None,
++            'source_residue_start': chain.start,
++            'source_residue_stop': chain.stop,
++            'matrix_residue_start': output_offset,
++            'matrix_residue_stop': output_offset + count,
++        })
++        output_offset += count
++    pae = np.asarray(pae, dtype=float)
++    if pae.shape != (next_offset, next_offset) or len(residue_indices) != next_offset:
++        print(f'warning: PAE shape {pae.shape} does not match {next_offset} structure residues for {structure_path}; skipped PAE sidecar', flush=True)
++        return None
++    pae = pae[np.ix_(residue_indices, residue_indices)]
++    payload = {
++        'format': 'bindcraft2_pae_v1',
++        'pae': pae.tolist(),
++        'chain_order': chain_map,
++    }
++    plddt = prediction.metrics.get('plddt')
++    if plddt is not None:
++        plddt = np.asarray(plddt, dtype=float).reshape(-1)
++        if plddt.size == next_offset:
++            payload['plddt'] = (plddt[residue_indices] * 100.0).tolist()
++    pae_path = os.path.splitext(structure_path)[0] + '.pae.json'
++    with open(pae_path, 'w', encoding='utf-8') as handle:
++        json.dump(payload, handle, separators=(',', ':'))
++        handle.write('\n')
++    return pae_path
++
+ def write_refolded_candidate(refold_folder: str, candidate: str, predictions: StructurePredictions, prediction_state: str, failed_filters: list[str], settings: dict, receptor_chains: dict[str, tuple[tuple[str, int, int], ...]] | None=None, design_settings: BinderDesignSettings | None=None, protein_states: ProteinStates | None=None) -> str | None:
+     """Keep the complexes one redesigned sequence refolded to, one per target it was scored against.
+ 
+@@ -221,12 +273,14 @@
+     framed_states = states_holding_the_frame({name: state for name, state in protein_states.items() if name != BINDER_ALONE}, frame_holding_target(design_settings), design_settings.target_chain_prefix) if design_settings and protein_states else set(predictions)
+     written = os.path.join(refold_folder, 'Complexes', f'{candidate}{state_suffixes.get(prediction_state, "")}.cif')
+     write_structure(prediction.protein_complex, written, plddt=prediction.metrics.get('plddt'), metadata=metadata, receptor_chains=receptor_chains)
++    write_pae_matrix(written, prediction, receptor_chains)
+     for target_state in predictions:
+         if target_state in (prediction_state, BINDER_ALONE):
+             continue
+         state = predictions[target_state]
+         state_complex = state.protein_complex if target_state in framed_states else superposed_on_binder(state.protein_complex, prediction.protein_complex)
+         write_structure(state_complex, os.path.join(refold_folder, 'Complexes', f'{candidate}{state_suffixes.get(target_state, f"_{target_state}")}.cif'), plddt=state.metrics.get('plddt'), metadata=metadata, receptor_chains=receptor_chains)
++        write_pae_matrix(os.path.join(refold_folder, 'Complexes', f'{candidate}{state_suffixes.get(target_state, f"_{target_state}")}.cif'), state, receptor_chains)
+     if BINDER_ALONE in predictions and settings.get('save_binder_monomers', DEFAULT_SETTINGS['save_binder_monomers']):
+         monomer = predictions[BINDER_ALONE]
+         write_structure(superposed_on_binder(monomer.protein_complex, prediction.protein_complex), os.path.join(refold_folder, 'BinderMonomer', f'{candidate}_monomer.cif'), plddt=monomer.metrics.get('plddt'), metadata=metadata, receptor_chains=receptor_chains)
+--- a/bindcraft/campaign.py
++++ b/bindcraft/campaign.py
+@@ -7,7 +7,7 @@
+ from bindcraft.campaign_log import binder_optimization, campaign_budget_exhausted, campaign_closed, campaign_header, campaign_label, design_worker_index, speaks_for_the_campaign, trajectory_already_designed, trajectory_design_label, trajectory_header
+ from bindcraft.design_identity import design_hash, design_name
+ from bindcraft.parameter_sweep import arm_trajectory_budget, autotuned_settings, autotuned_stamp, parameter_sweep_arms, parameter_sweep_options, sweep_block_budgets, write_sweep_record
+-from bindcraft.MPNN_stage import redesign_and_validate_binders
++from bindcraft.MPNN_stage import redesign_and_validate_binders, write_pae_matrix
+ from bindcraft.filters import INTERFACE_PDAE_METRICS, all_atom_clashes_metric, backbone_clashes_metric, binder_chain_sequences, design_sequence_report, design_stage_filters, evaluate_design_filters, residue_confidence_tracks
+ from bindcraft.design_workers import campaign_subbatch_size, dispatch_design_workers, running_as_design_worker
+ from bindcraft.desperation import desperate_settings
+@@ -206,12 +206,14 @@
+                 candidate_metadata = structure_metadata(campaign_label(settings), {**validated_binder.metrics, **model_score_stamp(validated_binder.model_metrics)}, design_settings, **{**designed_span_stamp(primary_complex, receptor_chains), **(metadata or {}), 'design': candidate_name, 'design_hash': identity, 'validation_models': ' '.join(validation_models), **reprediction_facts(mpnn_model, validation_model), **drawn_weight_stamp(drawn)})
+                 state_suffixes = accepted_state_suffixes(design_settings.prepared_states, validated_binder.predictions)
+                 write_structure(primary_complex, os.path.join(accepted_dir, f'{candidate_name}{state_suffixes[primary_target]}.cif'), plddt=validated_binder.predictions[primary_target].metrics.get('plddt'), metadata=candidate_metadata, residue_metrics=residue_confidence_tracks(validated_binder.predictions, primary_target, binder_chain, f'{target_chain_prefix}_{primary_target}'), receptor_chains=receptor_chains)
++                write_pae_matrix(os.path.join(accepted_dir, f'{candidate_name}{state_suffixes[primary_target]}.cif'), validated_binder.predictions[primary_target], receptor_chains)
+                 #for multitargeting and detargeting
+                 for target_state in validated_binder.predictions:
+                     if target_state in (primary_target, BINDER_ALONE):
+                         continue
+                     state_complex = validated_binder.predictions[target_state].protein_complex
+                     write_structure(state_complex if target_state in framed_states else superposed_on_binder(state_complex, primary_complex), os.path.join(accepted_dir, f'{candidate_name}{state_suffixes[target_state]}.cif'), plddt=validated_binder.predictions[target_state].metrics.get('plddt'), metadata=candidate_metadata, residue_metrics=residue_confidence_tracks(validated_binder.predictions, target_state, binder_chain, f'{target_chain_prefix}_{target_state}'), receptor_chains=receptor_chains)
++                    write_pae_matrix(os.path.join(accepted_dir, f'{candidate_name}{state_suffixes[target_state]}.cif'), validated_binder.predictions[target_state], receptor_chains)
+                 #conformational switching case
+                 if binder_alone_complex is not None and settings.get('save_binder_monomers', True):
+                     write_structure(superposed_on_binder(validated_binder.predictions[BINDER_ALONE].protein_complex, primary_complex), os.path.join(accepted_dir, f'{candidate_name}_monomer.cif'), plddt=validated_binder.predictions[BINDER_ALONE].metrics.get('plddt'), metadata=candidate_metadata, residue_metrics=residue_confidence_tracks(validated_binder.predictions, BINDER_ALONE, binder_chain), receptor_chains=receptor_chains)

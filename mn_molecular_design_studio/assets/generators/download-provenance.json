@@ -1,0 +1,14 @@
+[
+  {
+    "url": "https://files.rcsb.org/download/1IEP.pdb",
+    "path": "1IEP.pdb",
+    "bytes": 434565,
+    "sha256": "577386b4b8bc58a570facba0c8a843386842caef5ed7b60106c685d0f68d4218"
+  },
+  {
+    "url": "https://files.rcsb.org/download/1CRN.pdb",
+    "path": "1CRN.pdb",
+    "bytes": 49491,
+    "sha256": "42199a30a0701864a2a5cc76cd7f35cc544cd0e65fbcf63e03c166543249b811"
+  }
+]

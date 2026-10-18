@@ -1,0 +1,60 @@
+{
+    "key": "05_trka",
+    "name": "TrkA",
+    "target_pdb_filepath": "data/design/binder_design/binderbench/targets/pdb/05_trka.pdb",
+    "target_fasta_filepath": "data/design/binder_design/binderbench/targets/fasta/05_trka.fasta",
+    "target_msa_filepath": "data/design/binder_design/binderbench/targets/msa/05_trka.a3m",
+    "target_pdb_filepath_by_chain": [
+        "data/design/binder_design/binderbench/targets/pdb/05_trka-chain_B.pdb"
+    ],
+    "target_fasta_filepath_by_chain": [
+        "data/design/binder_design/binderbench/targets/fasta/05_trka-chain_B.fasta"
+    ],
+    "target_msa_filepath_by_chain": [
+        "data/design/binder_design/binderbench/targets/msa/05_trka-chain_B.a3m"
+    ],
+    "target_chain_and_residues": [
+        "B1-101"
+    ],
+    "target_interface_residues": {
+        "hotspot": [
+            "B13",
+            "B15",
+            "B52"
+        ],
+        "extended": [
+            "B10",
+            "B11",
+            "B13",
+            "B14",
+            "B15",
+            "B16",
+            "B50",
+            "B51",
+            "B52",
+            "B53",
+            "B54",
+            "B62"
+        ],
+        "common": [
+            "B10",
+            "B11",
+            "B13",
+            "B14",
+            "B15",
+            "B16",
+            "B19",
+            "B21",
+            "B52",
+            "B62",
+            "B64"
+        ]
+    },
+    "binder_min_length": 50,
+    "binder_max_length": 120,
+    "tag": [
+        "RFDiffusion",
+        "AlphaProteo"
+    ],
+    "pdb_id": "1WWW"
+}
