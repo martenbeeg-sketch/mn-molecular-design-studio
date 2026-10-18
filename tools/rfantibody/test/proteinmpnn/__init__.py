@@ -1,3 +1,0 @@
-"""
-ProteinMPNN test module.
-"""

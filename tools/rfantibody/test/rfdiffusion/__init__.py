@@ -1,3 +1,0 @@
-"""
-RFdiffusion test module.
-"""

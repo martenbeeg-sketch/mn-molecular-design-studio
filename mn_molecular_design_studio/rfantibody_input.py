@@ -8,9 +8,7 @@ from pathlib import Path
 
 from Bio.SeqUtils import seq1
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-UPSTREAM_ROOT = PROJECT_ROOT / "tools" / "rfantibody"
-EXAMPLE_INPUTS = UPSTREAM_ROOT / "scripts" / "examples" / "example_inputs"
+EXAMPLE_INPUTS = Path(__file__).resolve().parent / "resources" / "rfantibody"
 UPSTREAM_COMMIT = "3e5a5bb1cb98befde9fc049ae3ff58cabb491f67"
 CODE_VERSION = f"RFantibody · {UPSTREAM_COMMIT[:8]}"
 IMAGE = "mn-rfantibody:3e5a5bb-cu118-v1"
