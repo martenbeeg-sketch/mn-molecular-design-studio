@@ -161,14 +161,16 @@ def _collect_candidates(
             target_chains = [chain for chain in chains if chain not in binder_chains]
             if not binder_chains or not target_chains:
                 continue
+            model_match = re.search(r"model_(\d+)", path.parent.name)
+            rf2_repeat = int(model_match.group(1)) if model_match else index
+            candidate_id = f"rf2_{rf2_repeat:02d}_{path.stem}"
             binder_sequence = "".join(sequence(chains[chain]) for chain in binder_chains)
-            binder_path = structures_dir / f"{path.stem}_binder.pdb"
+            binder_path = structures_dir / f"{candidate_id}_binder.pdb"
             _write_binder_structure(path, binder_path, binder_chains)
             metrics = _score_from_pdb(path)
-            model_match = re.search(r"model_(\d+)", path.parent.name)
             raw_hotspots = hotspots if calculate_epitope_distance else []
             candidates.append({
-                "candidate_id": path.stem,
+                "candidate_id": candidate_id,
                 "source_tool": "rfantibody",
                 "stage": STAGE_COMPLEX_REFOLDING,
                 "target_pdb": str(target_pdb),
@@ -181,7 +183,7 @@ def _collect_candidates(
                 "binder_length": len(binder_sequence),
                 "metrics": {
                     **metrics,
-                    "rf2_repeat": int(model_match.group(1)) if model_match else None,
+                    "rf2_repeat": rf2_repeat,
                     "binder_length": len(binder_sequence),
                     "hotspot_distance_analysis": bool(calculate_epitope_distance),
                 },
@@ -189,7 +191,7 @@ def _collect_candidates(
                     "upstream_commit": inputs.UPSTREAM_COMMIT,
                     "input_target_chains": target_chain_ids,
                     "input_hotspots": hotspots,
-                    "rf2_repeat": int(model_match.group(1)) if model_match else None,
+                    "rf2_repeat": rf2_repeat,
                     "result_kind": "rf2_complex_prediction",
                 },
             })

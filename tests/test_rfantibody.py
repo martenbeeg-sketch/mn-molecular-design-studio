@@ -97,6 +97,29 @@ def test_proteinmpnn_command_matches_pinned_image_cli():
     assert "--bias-by-res-json" not in command
 
 
+def test_rf2_repeats_have_distinct_candidate_and_binder_file_ids(monkeypatch, tmp_path):
+    root = tmp_path / "artifacts" / "raw" / "rfantibody"
+    (root / "structures").mkdir(parents=True)
+    for repeat in (1, 2):
+        model = root / "rf2_models" / f"model_{repeat:02d}"
+        model.mkdir(parents=True)
+        (model / "samples_design_0_dldesign_0_best.pdb").write_text("fixture")
+    monkeypatch.setattr(workflow, "read_structure", lambda _: object())
+    monkeypatch.setattr(workflow, "protein_chains", lambda _: {"H": [object()], "A": [object()]})
+    monkeypatch.setattr(workflow, "sequence", lambda _: "ACD")
+    monkeypatch.setattr(workflow, "_write_binder_structure", lambda _src, dst, _chains: dst.write_text("binder"))
+    monkeypatch.setattr(workflow, "_score_from_pdb", lambda _: {"pred_lddt": 0.9, "interaction_pae": 1.0})
+
+    candidates = workflow._collect_candidates(tmp_path, tmp_path / "target.pdb", ["A"], [],
+                                               calculate_epitope_distance=False)
+
+    assert len(candidates) == 2
+    assert [candidate["metrics"]["rf2_repeat"] for candidate in candidates] == [1, 2]
+    assert len({candidate["candidate_id"] for candidate in candidates}) == 2
+    assert len({candidate["binder_pdb"] for candidate in candidates}) == 2
+    assert all(Path(candidate["binder_pdb"]).is_file() for candidate in candidates)
+
+
 def test_unsupported_rfantibody_bias_settings_are_rejected_before_submission():
     with pytest.raises(ValueError, match="does not support global or per-residue"):
         inputs.validate_request(nanobody_parameters(bias_aas="W:2"))
