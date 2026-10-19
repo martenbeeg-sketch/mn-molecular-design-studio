@@ -1,6 +1,6 @@
 tool: rfantibody
 group: design
-image: mn-rfantibody:3e5a5bb-cu118-v1
+image: mn-rfantibody:3e5a5bb-cu128
 gpu: true
 description: Antibody and nanobody design with RFdiffusion, ProteinMPNN and RF2.
 inputs:

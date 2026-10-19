@@ -18,6 +18,7 @@ from mn_molecular_design_studio.design_validation import protein_chains, read_st
 from mn_molecular_design_studio.engine.workflow_engine.core.candidates import STAGE_COMPLEX_REFOLDING, write_candidates
 from mn_molecular_design_studio.engine.workflow_engine.core.gpu import docker_gpu_args, normalize_gpu_device
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import create_job, finish_job, update_status, write_json
+from mn_molecular_design_studio.runtime import reference_root
 
 STANDARD_RESIDUES = frozenset({"ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL", "MSE"})
 PDB_CHAIN_IDS = "".join(char for char in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" if char not in "HLT")
@@ -203,6 +204,18 @@ def run_rfantibody_design(
     normalized = inputs.validate_request(parameters, require_files=True)
     if normalized["target_pdb"] is None:
         raise ValueError("Load a target PDB or mmCIF structure first.")
+    weights_dir = reference_root() / "rfantibody"
+    required_weights = (
+        "RFdiffusion_Ab.pt",
+        "ProteinMPNN_v48_noise_0.2.pt",
+        "RF2_ab.pt",
+    )
+    missing_weights = [name for name in required_weights if not (weights_dir / name).is_file()]
+    if missing_weights:
+        raise ValueError(
+            f"RFantibody checkpoints are missing from {weights_dir}: "
+            + ", ".join(missing_weights)
+        )
     seed = secrets.randbelow(2_000_000_000) + 1
     gpu_device = normalize_gpu_device(gpu_device)
     parameters.update({"gpu_device": gpu_device, "cpu_cores": normalized["cpu_cores"], "seed": seed,
@@ -245,8 +258,11 @@ def run_rfantibody_design(
             framework_container = f"scripts/examples/example_inputs/{framework_name}.pdb"
             framework_command = []
 
-        image_mounts = ["--mount", f"type=bind,src={job.run_dir.resolve()},dst=/work"]
-        mpnn_checkpoint_in_container = "/opt/rfantibody/weights/ProteinMPNN_v48_noise_0.2.pt"
+        image_mounts = [
+            "--mount", f"type=bind,src={job.run_dir.resolve()},dst=/work",
+            "--mount", f"type=bind,src={weights_dir.resolve()},dst=/ref/rfantibody,readonly",
+        ]
+        mpnn_checkpoint_in_container = "/ref/rfantibody/ProteinMPNN_v48_noise_0.2.pt"
         if normalized["use_abmpnn"]:
             checkpoint = normalized["abmpnn_checkpoint"]
             image_mounts.extend(["--mount", f"type=bind,src={checkpoint.resolve()},dst=/mnt/studio-weights/abmpnn.pt,readonly"])
@@ -257,6 +273,7 @@ def run_rfantibody_design(
             "--cpus", str(normalized["cpu_cores"]), "--shm-size=16G", *docker_gpu_args(gpu_device),
             *image_mounts, "-w", "/opt/rfantibody",
             "-e", f"OMP_NUM_THREADS={normalized['cpu_cores']}", "-e", "PYTHONUNBUFFERED=1",
+            "-e", "RFANTIBODY_WEIGHTS=/ref/rfantibody",
             inputs.IMAGE, "bash", "-euo", "pipefail", "-c",
         ]
         steps: list[str] = []

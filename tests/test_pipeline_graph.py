@@ -21,8 +21,9 @@ def edge(source, target):
 
 def test_foundry_template_has_explicit_generation_sequence_and_prediction():
     plan=graph.validate_graph(graph.new_graph())
-    assert [n["data"]["kind"] for n in plan["graph"]["nodes"]]==["target","rfd3","foundry_mpnn","rf3","results"]
-    assert len(plan["order"])==5
+    kinds = [n["data"]["kind"] for n in plan["graph"]["nodes"]]
+    assert kinds == ["target", "binder_context", "rfd3", "foundry_mpnn", "rf3", "results"]
+    assert len(plan["order"]) == 6
 
 
 def test_all_generators_template_fans_into_one_mpnn_and_runs_boltz2_analysis():
@@ -35,9 +36,11 @@ def test_all_generators_template_fans_into_one_mpnn_and_runs_boltz2_analysis():
     by_id = {n["id"]: n["data"]["kind"] for n in g["nodes"]}
     incoming = plan["incoming"]
     target_id = next(n["id"] for n in g["nodes"] if n["data"]["kind"] == "target")
+    context_id = next(n["id"] for n in g["nodes"] if n["data"]["kind"] == "binder_context")
     mpnn_id = next(n["id"] for n in g["nodes"] if n["data"]["kind"] == "ligandmpnn")
     assert len(incoming[mpnn_id]) == len(generators)
-    assert all(target_id in incoming[node_id] for node_id, kind in by_id.items() if kind in generators)
+    assert incoming[context_id] == [target_id]
+    assert all(incoming[node_id] == [context_id] for node_id, kind in by_id.items() if kind in generators)
     downstream = [by_id[node_id] for node_id in plan["order"] if by_id[node_id] in {"ligandmpnn", "boltz2", "ipsae", "rosetta_metrics", "results"}]
     assert downstream == ["ligandmpnn", "boltz2", "ipsae", "rosetta_metrics", "results"]
     boltz = next(n for n in g["nodes"] if n["data"]["kind"] == "boltz2")
@@ -49,33 +52,43 @@ def test_all_generators_template_fans_into_one_mpnn_and_runs_boltz2_analysis():
 @pytest.mark.parametrize("case",["cycle","wrong_type","duplicate_id","two_inputs","missing_input","bad_number"])
 def test_graph_rejects_invalid_dependencies_before_execution(case):
     g=graph.new_graph()
+    by_kind={n["data"]["kind"]:n["id"] for n in g["nodes"]}
     if case=="cycle":
         # Sequence nodes can feed each other, but the cycle must still fail.
         g["nodes"]=[node("ligandmpnn","a"),node("ligandmpnn","b"),node("results","r")]
         g["edges"]=[edge("a","b"),edge("b","a"),edge("b","r")]
     elif case=="wrong_type":
-        g["edges"][0]["target"]="rf3-3"
+        g["edges"][0]["target"]=by_kind["rf3"]
     elif case=="duplicate_id":
         g["nodes"][1]["id"]=g["nodes"][0]["id"]
     elif case=="two_inputs":
-        g["edges"].append(edge("rfd3-1","rf3-3"))
+        g["edges"].append(edge(by_kind["target"],by_kind["rfd3"]))
     elif case=="missing_input":
         g["edges"].pop(1)
     else:
-        g["nodes"][1]["data"]["params"]["num_designs"]=-1
+        next(n for n in g["nodes"] if n["data"]["kind"]=="rfd3")["data"]["params"]["num_designs"]=-1
     with pytest.raises(ValueError):graph.validate_graph(g)
 
 
 def test_filter_keeps_upstream_type_and_format_constraints():
-    g=graph.new_graph(); g["nodes"].insert(2,node("filter","f"))
-    g["edges"][1:2]=[edge("rfd3-1","f"),edge("f","foundry_mpnn-2")]
+    g=graph.new_graph()
+    by_kind={n["data"]["kind"]:n["id"] for n in g["nodes"]}
+    g["nodes"].append(node("filter","f"))
+    g["edges"]=[edge(by_kind["target"],by_kind["binder_context"]),
+                 edge(by_kind["binder_context"],by_kind["rfd3"]),
+                 edge(by_kind["rfd3"],"f"),edge("f",by_kind["foundry_mpnn"]),
+                 edge(by_kind["foundry_mpnn"],by_kind["rf3"]),
+                 edge(by_kind["rf3"],by_kind["results"])]
     graph.validate_graph(g)
-    g["nodes"][1]=node("rfdiffusion","rfd3-1")
+    index=next(i for i,n in enumerate(g["nodes"]) if n["data"]["kind"]=="rfd3")
+    g["nodes"][index]=node("rfdiffusion",by_kind["rfd3"])
     # The common MPNN adapter can use a shared PDB backend through a filter too.
     graph.validate_graph(g)
-    g["nodes"][1]=node("rfd3","rfd3-1")
-    g["edges"]=[edge("target-0","rfd3-1"),edge("rfd3-1","f"),edge("f","rf3-3"),edge("rf3-3","results-4")]
-    g["nodes"]=[n for n in g["nodes"] if n["id"]!="foundry_mpnn-2"]
+    g["nodes"][index]=node("rfd3",by_kind["rfd3"])
+    g["edges"]=[edge(by_kind["target"],by_kind["binder_context"]),
+                 edge(by_kind["binder_context"],by_kind["rfd3"]),edge(by_kind["rfd3"],"f"),
+                 edge("f",by_kind["rf3"]),edge(by_kind["rf3"],by_kind["results"])]
+    g["nodes"]=[n for n in g["nodes"] if n["data"]["kind"]!="foundry_mpnn"]
     with pytest.raises(ValueError,match="required"):graph.validate_graph(g)
 
 
@@ -92,11 +105,12 @@ def test_versions_remain_immutable_while_draft_and_positions_change(monkeypatch,
     assert graph.list_definitions("other-owner","project")==[]
 
 
-def test_adapters_disable_hidden_downstream_pipelines_and_bind_existing_signatures():
+def test_adapters_disable_hidden_downstream_pipelines_and_bind_existing_signatures(design_source_factory):
     import inspect
     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS,_get_function
     from mn_molecular_design_studio.rfdiffusion3_input import ASSETS
-    source={"run_dir":"/tmp/source","candidates_jsonl":"/tmp/source/candidates.jsonl","target":{"target_pdb":str(ASSETS/"5o45_cropped.pdb"),"target_chains":["A"],"hotspots":"A54"}}
+    source_run, _ = design_source_factory()
+    source={"run_dir":str(source_run),"candidates_jsonl":str(source_run/"artifacts/normalized_candidates/candidates.jsonl"),"target":{"target_pdb":str(ASSETS/"5o45_cropped.pdb"),"target_chains":["A"],"hotspots":"A54"}}
     for kind,spec in graph.NODE_CATALOG.items():
         if not spec["workflow"]:continue
         p={f["name"]:f["default"] for f in spec["fields"]}
@@ -152,11 +166,11 @@ def test_execution_reuses_only_unchanged_steps_and_preserves_prior_results(execu
     p1=runner.run_graph_pipeline(g,"first","owner","project")
     assert calls==["rfd3","foundry_mpnn","rf3"]
     original=(p1/"result.json").read_bytes();snapshot=(p1/"graph_snapshot.json").read_bytes()
-    moved=copy.deepcopy(g);moved["nodes"][1]["position"]["y"]+=400
+    moved=copy.deepcopy(g);next(n for n in moved["nodes"] if n["data"]["kind"]=="binder_context")["position"]["y"]+=400
     p2=runner.run_graph_pipeline(moved,"moved","owner","project")
     assert len(calls)==3
     assert json.loads((p2/"result.json").read_text())["metrics"]["cached_steps"]==4
-    changed=copy.deepcopy(g);changed["nodes"][2]["data"]["params"]["sequences"]+=1
+    changed=copy.deepcopy(g);next(n for n in changed["nodes"] if n["data"]["kind"]=="foundry_mpnn")["data"]["params"]["sequences"]+=1
     runner.run_graph_pipeline(changed,"changed","owner","project")
     assert calls==["rfd3","foundry_mpnn","rf3","foundry_mpnn","rf3"]
     assert (p1/"result.json").read_bytes()==original and (p1/"graph_snapshot.json").read_bytes()==snapshot
@@ -164,7 +178,8 @@ def test_execution_reuses_only_unchanged_steps_and_preserves_prior_results(execu
 
 def test_parallel_branches_collect_distinct_candidate_ids(execution_harness):
     g,calls,_=execution_harness
-    g["nodes"].append(node("esmfold","esm"));g["edges"] += [edge("foundry_mpnn-2","esm"),edge("esm","results-4")]
+    by_kind={n["data"]["kind"]:n["id"] for n in g["nodes"]}
+    g["nodes"].append(node("esmfold","esm"));g["edges"] += [edge(by_kind["foundry_mpnn"],"esm"),edge("esm",by_kind["results"])]
     p=runner.run_graph_pipeline(g,"branched","owner","project")
     assert set(calls)=={"rfd3","foundry_mpnn","rf3","esmfold"}
     candidates=json.loads((p/"result.json").read_text())["outputs"]["candidates"]
@@ -331,7 +346,8 @@ def test_failure_blocks_descendants_without_submitting_them(execution_harness,mo
     assert calls==[]
     result=json.loads((p/"result.json").read_text())
     assert result["success"] is False
-    assert result["outputs"]["pipeline_nodes"]["foundry_mpnn-2"]["status"]=="blocked"
+    foundry_mpnn_id=next(n["id"] for n in g["nodes"] if n["data"]["kind"]=="foundry_mpnn")
+    assert result["outputs"]["pipeline_nodes"][foundry_mpnn_id]["status"]=="blocked"
 
 
 def test_foundry_mpnn_locks_target_and_selects_binder_chain(monkeypatch,tmp_path,design_source_factory):
@@ -428,7 +444,7 @@ render_pipeline_builder(owner_id="test-user",project_selector=lambda _:None,
     search_jobs=lambda **k:{"items":[]})
 ''').run()
     assert not app.exception
-    assert any("Choose a project" in c.value for c in app.caption)
+    assert any("Choose a project" in c.value for c in app.info)
 
 
 def test_api_address_persists_when_saving_other_workspace_settings(tmp_path):

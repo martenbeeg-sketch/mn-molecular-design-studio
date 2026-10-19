@@ -1,0 +1,38 @@
+tool: rfpeptides
+group: design
+image: mn-rfpeptides:86507b6-cu128
+gpu: true
+description: RFdiffusion macrocyclic peptide binder backbone design.
+inputs:
+  target_pdb:
+    type: pdb_or_mmcif
+    required: true
+params:
+  target_chains:
+    type: chain_list
+    required: true
+  binder_length:
+    type: string
+    default: 12-18
+  hotspots:
+    type: residue_list
+    required: false
+  number_of_designs:
+    type: integer
+    default: 1
+  diffusion_steps:
+    type: integer
+    default: 50
+  cpu_cores:
+    type: integer
+    default: 4
+  gpu_device:
+    type: string
+    default: "0"
+outputs:
+  candidates:
+    path: artifacts/normalized_candidates/candidates.jsonl
+    type: normalized_candidates
+  designs:
+    path: artifacts/raw/rfpeptides/output/rfpeptides_*.pdb
+    type: pdb

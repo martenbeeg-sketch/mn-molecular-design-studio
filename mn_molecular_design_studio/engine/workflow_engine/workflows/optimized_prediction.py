@@ -314,7 +314,7 @@ ENGINE_PROFILES: dict[str, dict[str, Any]] = {
         "label": "OpenDDE",
         "code_version": "OpenDDE 1.1.1",
         "optimized": True,
-        "image": "mn-opendde-opt:1.1.1-cu126-batch3",
+        "image": "mn-opendde-opt:1.1.1-cu128-batch3",
         "api_engine": "opendde_native",
         "modes": ("off", "exact", "fast", "big"),
         "gpu_count": {"big": 2},
@@ -2129,6 +2129,8 @@ def _prepare_prediction(
             "structure_templates": structure_templates.validate_uploads(
                 raw_task.get("structure_templates"), supported=bool(profile.get("supports_templates"))),
             "validation_reference": raw_task.get("validation_reference"),
+            "source_candidate_id": str(raw_task.get("source_candidate_id") or ""),
+            "source_run_dir": str(raw_task.get("source_run_dir") or ""),
             "binder_use_msa": bool(raw_task.get("binder_use_msa", True)),
             "raw_yaml_proteins": raw_yaml_proteins,
             "force_potentials": bool(raw_yaml_force or raw_task.get("template_distance_threshold")),
@@ -2571,11 +2573,12 @@ def run_optimized_prediction(
                     "target_chains": [task["target_chain_id"]] if is_boltzgen else target_chains,
                     "binder_chains": ["Z"] if is_boltzgen else binder_chains,
                     "metrics": metrics,
-                    "parents": [],
+                    "parents": [task["source_candidate_id"]] if task.get("source_candidate_id") else [],
                     "raw_metadata": {
                         "engine": engine, "image": profile["image"], "api_engine": profile["api_engine"],
                         "optimization_mode": selected_mode, "seed": int(seed),
                         "confidence_outputs": confidence, "batch_item_id": task["id"],
+                        **({"source_run_dir": task["source_run_dir"]} if task.get("source_run_dir") else {}),
                         "protein_chains": [
                             {
                                 "id": chain["id"],

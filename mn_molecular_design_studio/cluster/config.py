@@ -2,10 +2,31 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
+
+
+_DISPLAY_NAME_ALIASES = {
+    "4032": "pc004032",
+    "4033": "pc004033",
+}
+
+
+def display_name(value: object) -> str:
+    """Return the consistent human-facing label for a workstation name."""
+    name = str(value or "").strip()
+    return _DISPLAY_NAME_ALIASES.get(name.casefold(), name)
+
+
+def display_text(value: object) -> str:
+    """Expand legacy workstation labels when they appear in human-facing text."""
+    text = str(value or "")
+    for old, new in _DISPLAY_NAME_ALIASES.items():
+        text = re.sub(rf"(?<!\w){re.escape(old)}(?!\w)", new, text)
+    return text
 
 
 def home() -> Path:

@@ -32,6 +32,101 @@ def node_form_defaults(kind):
     return result
 
 
+def compatible_node_replacements(node, graph):
+    """List same-category nodes that can retain the current connections."""
+    current_kind = node["data"]["kind"]
+    current_spec = NODE_CATALOG[current_kind]
+    current_group = current_spec.get("replacement_group", current_spec.get("category"))
+    nodes = {item["id"]: item for item in graph.get("nodes", [])}
+    task_input = next((item for item in nodes.values() if item["data"].get("kind") == "cofold_input"), None)
+    task_type = (task_input or {}).get("data", {}).get("params", {}).get("task_type")
+    ligand_input_type = (task_input or {}).get("data", {}).get("params", {}).get("ligand_input_type", "smiles")
+    if not task_type:
+        template_id = graph.get("template_id")
+        if template_id in {"all_generators_boltz2", "vhh_design"}:
+            task_type = "protein_protein"
+    target_structure_available = bool(
+        (task_input or {}).get("data", {}).get("params", {}).get("target_pdb")
+        or any(item["data"].get("kind") == "target" and item["data"].get("params", {}).get("target_pdb") for item in nodes.values())
+    )
+    incoming = [nodes[edge["source"]] for edge in graph.get("edges", [])
+                if edge.get("target") == node["id"] and edge.get("source") in nodes]
+    outgoing = [nodes[edge["target"]] for edge in graph.get("edges", [])
+                if edge.get("source") == node["id"] and edge.get("target") in nodes]
+
+    def output_type(item):
+        outputs = NODE_CATALOG[item["data"]["kind"]].get("outputs") or []
+        return outputs[0].get("type") if outputs else None
+
+    def accepts(output, input_spec):
+        accepted = input_spec.get("accepts", [])
+        return output == "candidates" if accepted == ["target"] else output in accepted
+
+    choices = []
+    for kind, candidate in NODE_CATALOG.items():
+        candidate_group = candidate.get("replacement_group", candidate.get("category"))
+        if kind == current_kind or candidate.get("hidden") or candidate_group != current_group:
+            continue
+        if task_type and candidate.get("molecule_tasks") and task_type not in candidate["molecule_tasks"]:
+            continue
+        if task_type == "protein_ligand" and candidate.get("ligand_input_formats") and ligand_input_type not in candidate["ligand_input_formats"]:
+            continue
+        if candidate.get("requires_target_structure") and not target_structure_available:
+            continue
+        inputs = candidate.get("inputs") or []
+        outputs = candidate.get("outputs") or []
+        if incoming:
+            if not inputs or (len(incoming) > 1 and not inputs[0].get("multiple")):
+                continue
+            if any(not accepts(output_type(parent), inputs[0]) for parent in incoming):
+                continue
+        if outgoing:
+            if not outputs:
+                continue
+            candidate_output = outputs[0].get("type")
+            if any(not (NODE_CATALOG[target["data"]["kind"]].get("inputs")
+                        and accepts(candidate_output, NODE_CATALOG[target["data"]["kind"]]["inputs"][0]))
+                   for target in outgoing):
+                continue
+        choices.append(kind)
+    return choices
+
+
+def replacement_node_data(node, new_kind):
+    """Build replacement settings, retaining only fields valid for both tools."""
+    old_spec = NODE_CATALOG[node["data"]["kind"]]
+    new_spec = NODE_CATALOG[new_kind]
+    values = node_form_defaults(new_kind)
+    old_fields = {item["name"]: item for item in old_spec["fields"]}
+    new_fields = {item["name"]: item for item in new_spec["fields"]}
+    old_values = node["data"].get("params", {})
+    for name, value in old_values.items():
+        before, after = old_fields.get(name), new_fields.get(name)
+        if not before or not after or before["type"] != after["type"]:
+            continue
+        field_type = after["type"]
+        if field_type == "select" and value not in after.get("options", []):
+            continue
+        if field_type == "number":
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            if "min" in after and value < after["min"] or "max" in after and value > after["max"]:
+                continue
+            if isinstance(after["default"], int) and not float(value).is_integer():
+                continue
+        elif field_type == "boolean" and type(value) is not bool:
+            continue
+        elif field_type == "text" and not isinstance(value, str):
+            continue
+        elif field_type == "json" and not isinstance(value, list):
+            continue
+        values[name] = copy.deepcopy(value)
+
+    old_label = node["data"].get("label") or old_spec["label"]
+    label = new_spec["label"] if old_label == old_spec["label"] else old_label
+    return {"kind": new_kind, "label": label, "description": new_spec["description"], "params": values}
+
+
 def _connected_inputs(graph, node_id):
     nodes = {n["id"]: n for n in graph["nodes"]}
     parents = [nodes[e["source"]] for e in graph["edges"] if e["target"] == node_id and e["source"] in nodes]
@@ -41,7 +136,7 @@ def _connected_inputs(graph, node_id):
         if node["id"] in seen:
             continue
         seen.add(node["id"])
-        if node["data"]["kind"] in {"target", "design_source", "generation_source", "backbone_source"}:
+        if node["data"]["kind"] in {"target", "binder_context", "design_source", "generation_source", "backbone_source"}:
             upstream.append(node)
         queue.extend(nodes[e["source"]] for e in graph["edges"] if e["target"] == node["id"] and e["source"] in nodes)
     return parents, upstream
@@ -62,8 +157,12 @@ def _render_connection_card(node, graph):
                 a, b = st.columns(2)
                 a.caption("TARGET STRUCTURE")
                 a.write(Path(path).name if path else "Choose a structure in the Target block")
-                b.caption("CHAINS · HOTSPOTS")
-                b.write(f"{params.get('target_chains') or '—'} · {params.get('hotspots') or 'No hotspots selected'}")
+                b.caption("CHAINS · HOTSPOTS · COLDSPOTS")
+                b.write(f"{params.get('target_chains') or '—'} · {params.get('hotspots') or 'No hotspots'} · {params.get('coldspots') or 'No coldspots'}")
+            elif source["data"]["kind"] == "binder_context":
+                empty_state = "No annotation" if params.get("clear_unselected") else "Inherited"
+                context_name = source["data"].get("label", "Binder Design Context").upper()
+                st.caption(context_name + " · " + f"{('Hotspots: ' + params['hotspots']) if params.get('hotspots') else 'Hotspots ' + empty_state} · {('Coldspots: ' + params['coldspots']) if params.get('coldspots') else 'Coldspots ' + empty_state}")
             else:
                 st.caption(source['data']['label']+" · " + str(len(params.get("selected_candidate_ids") or [])) + " selected")
         if inputs:
@@ -80,13 +179,21 @@ def _render_field(field, values, key):
     if field["type"] == "select":
         options = field["options"]
         labels = {"protein_mpnn":"ProteinMPNN", "ligand_mpnn":"LigandMPNN", "soluble_mpnn":"SolubleMPNN",
+                  "smiles":"SMILES", "ccd":"CCD component code",
                   "single_sequence":"Single sequence (no MSA)", "reference_then_colabfold":"Reference MSA; ColabFold if missing",
+                  "protein_protein":"Protein / protein", "protein_ligand":"Protein / ligand",
+                  "protein_dna":"Protein / DNA", "protein_rna":"Protein / RNA",
+                  "protein_macrocyclic":"Protein / macrocyclic peptide",
+                  "protein":"Protein monomer",
                   "miniprotein":"Miniprotein", "scfv":"Antibody (scFv)", "vhh":"Nanobody (VHH)",
                   "trastuzumab_framework_vhvl":"Trastuzumab framework", "atezolizumab_framework_vhvl":"Atezolizumab framework",
                   "ocankitug_framework_vhvl":"Ocankitug framework", "caplacizumab_vhh":"Caplacizumab VHH",
                   "ozoralizumab_tnf_vhh":"Ozoralizumab TNF VHH", "vobarilizumab_il6r_vhh":"Vobarilizumab IL-6R VHH",
                   "custom":"Custom masked template", "dna_rna":"DNA / RNA", "ion":"Ion", "ligand":"Ligand", "lipid":"Lipid",
-                  "protein":"Protein–protein", "interface":"Interface", "epitope":"Epitope", "idp":"Disordered region"}
+                  "protein":"Protein–protein", "interface":"Interface", "epitope":"Epitope", "idp":"Disordered region",
+                  "alphafold3":"Official AlphaFold3", "openfold3":"OpenFold3 P2", "openbind0":"OpenBind-0",
+                  "boltz2":"Boltz-2 weights", "protenix2":"Protenix V2", "rosettafold3":"RosettaFold3",
+                  "intellifold2":"IntelliFold2", "opendde":"OpenDDE"}
         return st.selectbox(label, options, index=options.index(value) if value in options else 0,
                             format_func=lambda v:labels.get(v,v), **kwargs)
     if field["type"] == "number":
@@ -96,6 +203,8 @@ def _render_field(field, values, key):
                                min_value=convert(field["min"]) if "min" in field else None,
                                max_value=convert(field["max"]) if "max" in field else None,
                                disabled=name=="cfg_scale" and not values.get("classifier_free_guidance"), **kwargs)
+    if name in {"target_protein_sequences", "partner_protein_sequences", "dna_sequences", "rna_sequences", "ligand_smiles"}:
+        return st.text_area(label, value=str(value), height=110 if "sequence" in name else 85, **kwargs)
     return st.text_input(label, value=str(value), **kwargs)
 
 
@@ -120,10 +229,55 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
     </style>''')
     with st.container(key="pipeline-node-form"):
         st.html(f'<div class="node-form-heading"><div class="node-form-eyebrow">{escape(spec["category"])} · Pipeline step</div>'
-                f'<h2>{escape(spec["label"])}</h2><p>{escape(spec["description"])}</p></div>')
+                f'<h2>{escape(node["data"].get("label") or spec["label"])}</h2><p>{escape(node["data"].get("description") or spec["description"])}</p></div>')
+        replacements = compatible_node_replacements(node, graph)
+        replacement_kind = None
+        if replacements:
+            with st.expander("Replace this step", expanded=False):
+                st.caption("Choose another tool in this category. The node stays in place, compatible connections are kept, and shared settings carry over when valid.")
+                replacement_kind = st.selectbox(
+                    "Replacement tool",
+                    [""] + replacements,
+                    format_func=lambda value: "Choose a tool…" if not value else NODE_CATALOG[value]["label"],
+                    key=key + "-replacement-kind",
+                ) or None
+                if st.button("Replace step", key=key + "-replace", disabled=not replacement_kind,
+                             help="Replace this node while retaining compatible connections."):
+                    action = "replace"
+                else:
+                    action = None
+        else:
+            action = None
+        coldspot_support = spec.get("coldspot_support")
+        hotspot_support = spec.get("hotspot_support")
+        if hotspot_support == "native":
+            st.caption("Connected Target or Binder Design Context hotspots are passed to this engine’s hotspot input.")
+        elif hotspot_support == "conditional":
+            st.caption("Hotspots are used for the protein-binder task; ligand-design tasks use their ligand or motif constraints instead.")
+        elif hotspot_support == "unsupported":
+            st.caption("This step does not accept binder hotspots. Connected interface annotations are ignored here.")
+        if coldspot_support == "native":
+            st.caption("Connected Target or Binder Design Context coldspots are passed to this engine’s native coldspot constraint.")
+        elif coldspot_support == "mapped":
+            st.caption("Connected Target or Binder Design Context coldspots are passed as BoltzGen non-binding residues and mapped to its chain-local numbering.")
+        elif coldspot_support == "unsupported":
+            st.caption("This engine does not accept coldspots. Connected Target or Binder Design Context coldspots are ignored for this step.")
         label = st.text_input("Step name", value=node["data"]["label"], key=key+"-label").strip() or spec["label"]
         ready = True
-        if kind in {"target", "design_source", "generation_source", "backbone_source"}:
+        if kind == "binder_context":
+            _render_connection_card(node, graph)
+            values["clear_unselected"] = st.checkbox(
+                "Clear inherited annotations when overrides are empty",
+                value=bool(values.get("clear_unselected", False)),
+                key=key + "-clear-unselected",
+                help="Use this when the branch should receive no hotspots or coldspots, even if the connected Target Structure has them set.",
+            )
+            with st.container(border=True):
+                contexts = render_input()
+                ready = node["id"] in contexts
+                if ready:
+                    values.update(contexts[node["id"]])
+        elif kind in {"target", "design_source", "generation_source", "backbone_source"}:
             with st.container(border=True):
                 contexts = render_input()
                 ready = node["id"] in contexts
@@ -131,6 +285,45 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                     values.update(contexts[node["id"]])
             if kind in {"design_source","generation_source","backbone_source"}:
                 ready = ready and bool(values.get("selected_candidate_ids"))
+        elif kind == "cofold_input":
+            values["task_type"] = _render_field(next(f for f in spec["fields"] if f["name"] == "task_type"), values, key)
+            task_type = values["task_type"]
+            st.caption("Provide sequence inputs for this task. A target PDB path is optional for most models and required by AlphaFold2 Initial Guess and BoltzGen Fold.")
+            st.caption("The starter template includes every registered model that supports this molecule type. Ligand notation also affects which models are compatible.")
+            visible = {"target_protein_sequences", "target_pdb", "target_chain_id"}
+            if task_type in {"protein_protein", "protein_macrocyclic"}:
+                visible.add("partner_protein_sequences")
+            elif task_type == "protein_ligand":
+                visible.update({"ligand_input_type", "ligand_ccd_codes", "ligand_smiles"})
+            elif task_type == "protein_dna":
+                visible.add("dna_sequences")
+            elif task_type == "protein_rna":
+                visible.add("rna_sequences")
+            for field in spec["fields"]:
+                if field["name"] in visible and field["name"] != "task_type":
+                    values[field["name"]] = _render_field(field, values, key)
+            target = bool(values.get("target_protein_sequences", "").strip())
+            partner = bool(values.get("partner_protein_sequences", "").strip())
+            if task_type == "protein":
+                ready = target
+            elif task_type == "protein_protein":
+                ready = target and partner
+            elif task_type == "protein_ligand":
+                if values.get("ligand_input_type") == "ccd":
+                    values["ligand_smiles"] = ""
+                    ready = target and bool(values.get("ligand_ccd_codes", "").strip())
+                else:
+                    values["ligand_ccd_codes"] = ""
+                    ready = target and bool(values.get("ligand_smiles", "").strip())
+            elif task_type == "protein_dna":
+                ready = target and bool(values.get("dna_sequences", "").strip())
+            elif task_type == "protein_rna":
+                ready = target and bool(values.get("rna_sequences", "").strip())
+            elif task_type == "protein_macrocyclic":
+                ready = target and partner
+                values["cyclic_partner"] = True
+            if not ready:
+                st.info("Enter the sequence or molecule inputs required for the selected prediction task.")
         elif kind in {"esm_if1", "caliby", "boltzgen_inverse"}:
             from mn_molecular_design_studio.inverse_folding_ui import render_inputs
             _render_connection_card(node, graph)
@@ -148,6 +341,7 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                 st.caption("Adds PyRosetta interface energy, shape complementarity, buried surface area, and related metrics to each connected predicted complex.")
         elif kind == "surface_analysis":
             _render_connection_card(node, graph)
+            st.caption("Structure and selected chains only. Surface inspection ignores binder hotspots and coldspots; those annotations remain available to connected design branches.")
             _, upstream = _connected_inputs(graph, node["id"])
             target_node = next((source for source in upstream if source["data"]["kind"] == "target"), None)
             target_chains = target_node["data"]["params"].get("target_chains", "") if target_node else ""
@@ -276,6 +470,8 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                 st.caption("Protein binder design · the connected Target block provides structure, chains and hotspots.")
             primary = [f for f in spec["fields"] if f.get("section")=="basic" or spec["category"]=="Analysis"]
             optional = [f for f in spec["fields"] if f not in primary]
+            if kind == "bindcraft2_generator":
+                primary = sorted(primary, key=lambda item: item["name"] != "modality")
             if primary:
                 with st.container(border=True):
                     st.markdown("**Design settings**" if spec["category"].startswith("Design") else "**Prediction settings**" if spec["category"]=="Structure prediction" else "**Step settings**")
@@ -296,8 +492,27 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                         fields = [f for f in primary if f["name"]!="binder_length"]
                     columns = st.columns(2)
                     for i,field in enumerate(fields):
+                        if kind == "bindcraft2_generator" and field["name"] == "binder_length":
+                            if values.get("modality") == "VHH":
+                                values["binder_length"] = ""
+                                continue
+                            if not values.get("binder_length"):
+                                values["binder_length"] = "60-100"
+                        if kind == "bindcraft2_generator" and field["name"] == "scaffold_edits":
+                            if values.get("modality") != "VHH":
+                                values["scaffold_edits"] = ""
+                                continue
+                            if not values.get("scaffold_edits"):
+                                from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import BC2_SCAFFOLD_EDIT_DEFAULTS
+                                values["scaffold_edits"] = BC2_SCAFFOLD_EDIT_DEFAULTS["VHH"]
                         with columns[i%2]:
-                            values[field["name"]] = _render_field(field,values,key)
+                            if kind == "bindcraft2_generator" and field["name"] == "scaffold_edits":
+                                values[field["name"]] = st.text_area(field["label"], value=str(values[field["name"]]), height=95,
+                                    key=key+"-"+field["name"], help=field.get("help"))
+                            else:
+                                values[field["name"]] = _render_field(field,values,key)
+                    if kind == "bindcraft2_generator" and values.get("modality") == "VHH":
+                        st.caption("VHH scaffold mode fixes the framework; the edit ranges above define the CDR and loop regions to design.")
             if optional:
                 with st.expander("Optional settings", expanded=False):
                     columns = st.columns(2)
@@ -312,11 +527,10 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                 st.info("Collect candidate structures and metrics from the connected branches. Existing results remain available when you edit the pipeline.")
         st.caption("Apply saves this step to the draft. The pipeline runs only when you choose Run pipeline on the canvas.")
         a,b,c = st.columns([1.3,1,1.3])
-        action = None
-        if a.button("Reset to tool defaults", key=key+"-defaults", disabled=kind in {"target","design_source","generation_source","backbone_source","results"}, use_container_width=True):
+        if a.button("Reset to tool defaults", key=key+"-defaults", disabled=kind in {"target","binder_context","design_source","generation_source","backbone_source","results"}, use_container_width=True):
             action="reset"
         if b.button("Cancel", key=key+"-cancel", use_container_width=True):
             action="cancel"
         if c.button("Apply to pipeline", type="primary", key=key+"-apply", disabled=not ready, use_container_width=True):
             action="apply"
-    return values,label,action
+    return values,label,action,replacement_kind

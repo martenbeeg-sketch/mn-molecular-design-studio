@@ -544,13 +544,40 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
         from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
         from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import node_request
         nodes = {n["id"]: n for n in graph["nodes"]}
+        target_contexts = {}
+        for node_id in plan["order"]:
+            current = nodes[node_id]
+            current_kind = current["data"]["kind"]
+            current_params = current["data"]["params"]
+            parents = plan["incoming"][node_id]
+            target = dict(target_contexts.get(parents[0], {})) if len(parents) == 1 else {}
+            if current_kind == "target":
+                target = {
+                    "target_pdb": current_params.get("target_pdb", ""),
+                    "target_chains": [c for c in re.split(r"[,;\s]+", current_params.get("target_chains", "")) if c],
+                    "hotspots": current_params.get("hotspots", ""),
+                    "coldspots": current_params.get("coldspots", ""),
+                }
+            elif current_kind == "binder_context":
+                if current_params.get("clear_unselected"):
+                    target["hotspots"] = current_params.get("hotspots", "")
+                    target["coldspots"] = current_params.get("coldspots", "")
+                else:
+                    target["hotspots"] = current_params.get("hotspots") or target.get("hotspots", "")
+                    target["coldspots"] = current_params.get("coldspots") or target.get("coldspots", "")
+            target_contexts[node_id] = target
         for node in graph["nodes"]:
             kind = node["data"]["kind"]
             if NODE_CATALOG[kind]["category"] not in {"Design engine", "Design pipeline"} and kind != "surface_analysis":
                 continue
             parents=plan["incoming"][node["id"]]
-            source = nodes[parents[0]]["data"]["params"] if parents else {}
-            target = {"target_pdb": source.get("target_pdb",""), "target_chains": [c for c in re.split(r"[,;\s]+", source.get("target_chains","")) if c], "hotspots": source.get("hotspots","")}
+            target = dict(target_contexts.get(parents[0], {})) if parents else {}
+            params = node["data"]["params"]
+            if not target.get("target_pdb") and params.get("target_pdb"):
+                target["target_pdb"] = params["target_pdb"]
+                target["target_chains"] = [c for c in re.split(r"[,;\s]+", params.get("target_chains", "")) if c]
+            target.setdefault("target_chains", [])
+            target.setdefault("hotspots", "")
             child_request = _call(node_request, node["data"]["kind"], node["data"]["params"], {"target": target}, graph["name"])
             _with_request_file(child_request, validate_workflow_request, base_dir=str(_request_directory(user, None)))
     return graph, project_id, request

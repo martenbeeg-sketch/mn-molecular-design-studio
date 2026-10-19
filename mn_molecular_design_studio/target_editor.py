@@ -13,6 +13,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -453,9 +454,18 @@ def _target_widget_keys(key_prefix: str, path: Path) -> dict[str, str]:
     }
 
 
+def _rerun(scope: str | None = None) -> None:
+    if scope:
+        st.rerun(scope=scope)
+    else:
+        st.rerun()
+
+
 def _render_target_trimming(
     target: TargetDesignInput,
     protein_residues_by_chain: dict[str, list[tuple[int, str]]],
+    *,
+    rerun_scope: str | None = None,
 ) -> dict[str, tuple[int, int]]:
     retained_ranges: dict[str, tuple[int, int]] = {}
     with st.expander(f"Trim {target.label.lower()}-chain termini", expanded=False):
@@ -480,7 +490,7 @@ def _render_target_trimming(
                 trim_key = f"{target.key_prefix}-trim-" + _hash(f"{target.source_path}:{chain}")
                 st.session_state[trim_key + "-start"] = residues[0][0]
                 st.session_state[trim_key + "-end"] = residues[-1][0]
-            st.rerun()
+            _rerun(rerun_scope)
         if not target.chains:
             st.info(f"Select a {target.label.lower()} chain to set terminal trimming.")
         for chain in target.chains:
@@ -524,6 +534,8 @@ def render_target_editor(
     *,
     key_prefix: str,
     label: str = "Target",
+    chain_selection_label: str | None = None,
+    chain_selection_disabled: bool = False,
     prefer_chain_b: bool = False,
     legacy_hotspots_key: str | None = None,
     residue_selection_title: str = "Hotspot residues",
@@ -532,6 +544,8 @@ def render_target_editor(
     show_structure_tools: bool = True,
     allow_trimming: bool = True,
     viewer_height: int = 640,
+    rerun_scope: str | None = None,
+    before_residue_selection: Callable[[TargetDesignInput], None] | None = None,
 ) -> TargetDesignInput:
     """Render chain selection, terminal trimming, hotspots, and the target MolView."""
     target = TargetDesignInput(label=label, key_prefix=key_prefix, source_path=source.path)
@@ -558,14 +572,14 @@ def render_target_editor(
     if chain_key not in st.session_state:
         preferred = "B" if prefer_chain_b and "B" in chain_options else chain_options[0]
         st.session_state[chain_key] = [preferred]
-    target.chains = st.multiselect(f"{label} chains", chain_options, key=chain_key)
+    target.chains = st.multiselect(chain_selection_label or f"{label} chains", chain_options, key=chain_key, disabled=chain_selection_disabled)
 
     if is_mmcif:
         st.info("mmCIF structure loaded. Chain and residue selections use the author IDs in the file; terminal trimming is available for PDB files.")
         retained_ranges: dict[str, tuple[int, int]] = {}
     else:
         protein_residues_by_chain = _protein_residue_ids_by_chain(target.source_text)
-        retained_ranges = (_render_target_trimming(target, protein_residues_by_chain) if allow_trimming else
+        retained_ranges = (_render_target_trimming(target, protein_residues_by_chain, rerun_scope=rerun_scope) if allow_trimming else
                            {chain:(rows[0][0],rows[-1][0]) for chain,rows in protein_residues_by_chain.items() if chain in target.chains and rows})
 
     is_trimmed = not is_mmcif and target.valid_trim_ranges and any(
@@ -613,6 +627,9 @@ def render_target_editor(
     if normalized_hotspots != st.session_state[hotspot_key]:
         st.session_state[hotspot_key] = normalized_hotspots
 
+    if before_residue_selection is not None:
+        before_residue_selection(target)
+
     st.markdown(f"#### {residue_selection_title}")
     is_mmcif = source.path.suffix.lower() in {".cif", ".mmcif"}
     if residue_selection_caption:
@@ -626,12 +643,12 @@ def render_target_editor(
         if st.button("Select all", key=f"{hotspot_key}-select-all", use_container_width=True, disabled=not target.valid_residues):
             st.session_state[hotspot_key] = _hotspot_text(target.valid_residues)
             _increment_session_counter(revision_key)
-            st.rerun()
+            _rerun(rerun_scope)
     with clear_col:
         if st.button("Clear", key=f"{hotspot_key}-clear", use_container_width=True, disabled=not _hotspot_pairs(st.session_state[hotspot_key])):
             st.session_state[hotspot_key] = ""
             _increment_session_counter(revision_key)
-            st.rerun()
+            _rerun(rerun_scope)
     with input_col:
         target.hotspots = st.text_input(
             residue_selection_input_label,
@@ -667,6 +684,7 @@ def render_target_editor(
         kind="hotspots",
         height=viewer_height,
         show_structure_tools=show_structure_tools,
+        rerun_scope=rerun_scope,
     )
     target.hotspots = st.session_state[hotspot_key]
     target.coldspots = st.session_state.get(keys["coldspots"], "")
@@ -679,6 +697,7 @@ def _render_residue_viewer(
     kind: str,
     height: int,
     show_structure_tools: bool = True,
+    rerun_scope: str | None = None,
 ) -> None:
     if target.source_path is None or not target.source_path.is_file():
         st.info("Load a target structure to select residues in MolView.")
@@ -732,7 +751,7 @@ def _render_residue_viewer(
         next_value = _hotspot_text(picked_targets)
         if next_value != st.session_state.get(selection_key, ""):
             st.session_state[selection_key + "-pending-viewer-selection"] = next_value
-            st.rerun()
+            _rerun(rerun_scope)
 
 
 def render_target_coldspots(
@@ -741,6 +760,7 @@ def render_target_coldspots(
     key_prefix: str,
     legacy_coldspots_key: str | None = None,
     show_structure_tools: bool = True,
+    rerun_scope: str | None = None,
 ) -> str:
     """Render a target's coldspot input and independent MolView selection."""
     if target.source_path is None or not target.source_path.is_file():
@@ -771,12 +791,12 @@ def render_target_coldspots(
             if st.button("Select all", key=f"{coldspot_key}-select-all", use_container_width=True, disabled=not target.valid_residues):
                 st.session_state[coldspot_key] = _hotspot_text(target.valid_residues)
                 _increment_session_counter(revision_key)
-                st.rerun()
+                _rerun(rerun_scope)
         with clear_col:
             if st.button("Clear", key=f"{coldspot_key}-clear", use_container_width=True, disabled=not _hotspot_pairs(st.session_state[coldspot_key])):
                 st.session_state[coldspot_key] = ""
                 _increment_session_counter(revision_key)
-                st.rerun()
+                _rerun(rerun_scope)
         with input_col:
             target.coldspots = st.text_input(
                 "Chosen coldspot residues",
@@ -799,6 +819,7 @@ def render_target_coldspots(
             kind="coldspots",
             height=520,
             show_structure_tools=show_structure_tools,
+            rerun_scope=rerun_scope,
         )
     target.coldspots = st.session_state[coldspot_key]
     return target.coldspots

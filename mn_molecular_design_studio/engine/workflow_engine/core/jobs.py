@@ -825,6 +825,16 @@ def collect_jobs(task_group: str | None = None, *, include_hidden: bool = False)
             input_payload = read_json(run_dir / "input.json")
             input_params = input_payload.get("params") if isinstance(input_payload.get("params"), dict) else {}
             tool = job_tool(metadata.get("tool") or input_payload.get("tool", ""), input_params)
+            pipeline_parent = str(metadata.get("pipeline_parent_run_dir") or "").strip()
+            is_visual_pipeline = (
+                str(metadata.get("tool") or input_payload.get("tool") or "") == "visual_pipeline"
+                or str(metadata.get("job_type") or input_payload.get("job_type") or "") == "visual_pipeline"
+            )
+            pipeline_name = (
+                str(metadata.get("campaign_name") or input_params.get("pipeline_name") or "").strip()
+                if pipeline_parent or is_visual_pipeline
+                else ""
+            )
             warning = derive_job_warning(metadata, input_payload, result)
             queue_resource = (
                 _queue_resource_for(tool, input_params)
@@ -866,6 +876,7 @@ def collect_jobs(task_group: str | None = None, *, include_hidden: bool = False)
                     "warning_level": metadata.get("warning_level", "degraded" if warning else ""),
                     "campaign_name": job_name(metadata, input_params),
                     "campaign_id": metadata.get("campaign_id", ""),
+                    "pipeline_name": pipeline_name,
                     "campaign_step": metadata.get("campaign_step", ""),
                     "campaign_step_index": metadata.get("campaign_step_index", ""),
                     "created_at": metadata.get("created_at", ""),

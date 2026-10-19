@@ -45,7 +45,7 @@ def _load_example_inputs(owner_id: str) -> None:
 
 def render_setup(schema: dict, *, owner_id: str, project_selector, submit) -> None:
     st.html("""<style>
-    .block-container {max-width:1120px!important;padding-top:1.5rem!important}
+    .block-container {max-width:1240px!important;padding-top:1.5rem!important}
     .st-key-rfantibody-page {--rf-green:#2e6a50;--rf-ink:#173d31;--rf-mint:#eef6f1}
     .st-key-rfantibody-page .rfab-heading {text-align:center;padding:.45rem 0 1.35rem}
     .st-key-rfantibody-page .rfab-eyebrow {font-size:.69rem;letter-spacing:.13em;font-weight:650;color:#688575;margin-bottom:.6rem}
@@ -54,7 +54,7 @@ def render_setup(schema: dict, *, owner_id: str, project_selector, submit) -> No
     .st-key-rfantibody-page .rfab-meta {font-size:.73rem;color:#789084}
     .st-key-rfantibody-page [data-testid="stVerticalBlockBorderWrapper"] {border-color:#d7e6dc!important;border-radius:12px!important}
     .st-key-rfab-input-card {padding:1.25rem!important;background:#fff;border:1px solid #d7e6dc;border-radius:12px;margin:.45rem 0 .75rem}
-    .st-key-rfab-settings-card {padding:1.05rem 1.25rem!important;background:#f3f8f5;border:1px solid #d7e6dc;border-radius:12px;margin:.35rem 0 .65rem}
+    .st-key-rfab-design-count-card {padding:1.05rem 1.25rem!important;background:#f3f8f5;border:1px solid #d7e6dc;border-radius:12px;margin:.35rem 0 .65rem}
     .st-key-rfantibody-page .rfab-section {font-size:.72rem;font-weight:650;letter-spacing:.1em;color:#5c7b68;margin:0 0 .7rem}
     .st-key-rfantibody-page [data-variant="pills"] {border-radius:7px!important;border:1px solid #c2d9cc!important;background:#f7faf8;color:#38614e!important;min-height:2.55rem;padding:.4rem .85rem!important;font-size:.84rem!important;box-shadow:none!important}
     .st-key-rfantibody-page [data-variant="pills"][aria-checked="true"] {background:#2e6a50!important;color:white!important;border-color:#2e6a50!important}
@@ -114,11 +114,12 @@ def _render_setup_content(schema: dict, *, owner_id: str, project_selector, subm
         if previous_upload is not None and Path(previous_upload.name).suffix.lower() not in {f".{ext}" for ext in upload_extensions}:
             st.session_state.pop("rfab-target-upload", None)
         source = render_target_source(
-            key_prefix="rfab", label="Target file", example_code="7JZU", allow_cif=True,
+            key_prefix="rfab", label="Target", example_code="7JZU", allow_cif=True,
             upload_file_types=upload_extensions,
             upload_expander_label=f"Upload a {target_format} file instead",
             upload_label=f"Drop a {target_format} file here or browse",
             upload_help=f"Protein target structure in {target_format} format.",
+            upload_in_expander=False,
             fetched_path_key="rfab-example-target-path", fetched_name_key="rfab-example-target-name", owner_id=owner_id,
         )
         target_chains: list[str] = []
@@ -126,14 +127,19 @@ def _render_setup_content(schema: dict, *, owner_id: str, project_selector, subm
         target_file: Path | None = None
         if source.path:
             target = render_target_editor(
-                source, key_prefix="rfab-target-editor", label="Antigen", residue_selection_title="Hotspot residues",
-                residue_selection_caption="Choose antigen chains and optional epitope residues. Use the MolView structure to select hotspots.",
+                source, key_prefix="rfab-target-editor", label="Antigen", chain_selection_label="Antigen Chain IDs",
+                residue_selection_title="Hotspot residues",
+                residue_selection_caption="Please select antigen chains to enable residue selection. Choose hotspots in the MolView sequence panel or structure.",
+                residue_selection_input_label="Hotspot residues",
                 allow_trimming=False, show_structure_tools=False, viewer_height=480,
             )
             target_chains, hotspots = target.chains, target.hotspots
             target_file = target.design_path or source.path
         else:
-            st.info("Enter a PDB code and fetch the structure, or upload a PDB/mmCIF file.")
+            st.markdown("#### Antigen Chain IDs")
+            st.caption("Chain selection becomes available after loading a PDB or mmCIF structure.")
+            st.markdown("#### Hotspot residues")
+            st.caption("Please upload a PDB file and select chains to enable residue selection.")
 
     custom_framework: Path | None = None
     heavy_chain = "H"
@@ -148,28 +154,17 @@ def _render_setup_content(schema: dict, *, owner_id: str, project_selector, subm
                     custom_framework = _save_custom_framework(framework_upload, owner_id)
                 except OSError as exc:
                     st.error(f"Could not save custom framework: {exc}")
-            chain_cols = st.columns(2 if task == "antibody" else 1)
-            with chain_cols[0]:
-                heavy_chain = st.text_input("Heavy chain ID", "H", max_chars=1, key="rfab-heavy-chain").strip() or "H"
+            heavy_chain = st.text_input("Heavy chain ID", "H", max_chars=1, key="rfab-heavy-chain").strip() or "H"
             if task == "antibody":
-                with chain_cols[1]:
-                    light_chain = st.text_input("Light chain ID", "L", max_chars=1, key="rfab-light-chain").strip() or "L"
+                light_chain = st.text_input("Light chain ID", "L", max_chars=1, key="rfab-light-chain").strip() or "L"
 
     st.html('<div class="rfab-section">REGIONS TO DESIGN</div>')
     available_regions = list(inputs.NANOBODY_REGIONS if task == "nanobody" else inputs.CDR_REGIONS)
     previous_regions = st.session_state.get("rfab-regions")
     if previous_regions is None or not set(previous_regions).issubset(available_regions):
         st.session_state["rfab-regions"] = available_regions
-    regions = st.pills("CDR loops", available_regions, selection_mode="multi", default=available_regions, key="rfab-regions", label_visibility="collapsed") or []
+    regions = st.multiselect("CDR regions", available_regions, default=available_regions, key="rfab-regions", label_visibility="collapsed") or []
     st.caption("Choose which antibody loops RFdiffusion should design. Other framework regions stay fixed.")
-    loop_lengths = {}
-    if regions:
-        with st.expander("CDR loop lengths", expanded=False):
-            st.caption("Use auto for Chothia-defined boundaries, or specify a fixed length/range (1–40 residues).")
-            length_columns = st.columns(min(3, len(regions)))
-            for index, region in enumerate(regions):
-                with length_columns[index % len(length_columns)]:
-                    loop_lengths[region] = st.text_input(f"{region} length", "auto", key=f"rfab-loop-length-{region}", placeholder="auto or 10-15")
 
     if task == "antibody":
         st.caption("Antibody mode designs selected heavy- and/or light-chain CDRs; nanobody mode uses heavy-chain CDRs.")
@@ -177,35 +172,50 @@ def _render_setup_content(schema: dict, *, owner_id: str, project_selector, subm
     settings = {
         "task": task, "target_pdb": str(target_file) if target_file else None, "target_chains": target_chains,
         "hotspots": hotspots, "framework": framework, "framework_pdb": str(custom_framework) if custom_framework else None,
-        "custom_heavy_chain": heavy_chain, "custom_light_chain": light_chain, "regions": list(regions), "loop_lengths": loop_lengths,
+        "custom_heavy_chain": heavy_chain, "custom_light_chain": light_chain, "regions": list(regions), "loop_lengths": {},
         "job_name": job_name,
     }
-    with st.container(key="rfab-settings-card"):
-        st.html('<div class="rfab-section">DESIGN COUNT</div>')
-        count_col, sequences_col = st.columns(2)
-        with count_col:
-            settings["number_of_designs"] = int(st.number_input("Number of designs", min_value=1, max_value=100000, value=1, step=1, key="rfab-count", help="Tamarind supports up to 100,000 designs; large runs need substantial GPU time and storage."))
-        with sequences_col:
-            settings["number_of_sequences"] = int(st.number_input("Sequences per structure", min_value=1, max_value=100, value=1, step=1, key="rfab-sequences"))
-    with st.expander("Optional settings", expanded=False):
-        setting_cols = st.columns(2)
-        with setting_cols[0]:
-            settings["use_abmpnn"] = st.checkbox("Use AbMPNN weights", False, key="rfab-use-abmpnn", help="Use the installed antibody-specific ProteinMPNN checkpoint from Studio’s reference directory.")
-            settings["calculate_epitope_distance"] = st.checkbox("Calculate distance to epitope", True, key="rfab-distance")
-            settings["mpnn_temperature"] = st.number_input("ProteinMPNN temperature", 0.01, 2.0, 0.1, 0.01, key="rfab-temperature")
-            settings["omit_aas"] = st.text_input("Omit amino acids", "CX", key="rfab-omit-aas", help="Use one-letter codes, for example CX.")
-            settings["augment_eps"] = st.number_input("Backbone noise augmentation", 0.0, 1.0, 0.05, 0.01, key="rfab-augment")
-            settings["bias_aas"] = st.text_input("Global amino-acid bias", "", key="rfab-bias-aas", placeholder="W:3.0,P:3.0,C:3.0,A:-3.0")
-            settings["bias_by_res_json"] = st.text_area("Per-residue bias JSON", "{}", height=90, key="rfab-bias-by-res", help='Use antibody chain IDs and 1-based sequence positions, e.g. {"H":{"31":{"W":2.0}}}.')
-        with setting_cols[1]:
-            settings["num_connections"] = int(st.number_input("ProteinMPNN neighbors", 1, 100, 48, 1, key="rfab-connections"))
-            settings["num_recycles"] = int(st.number_input("RF2 recycles", 0, 20, 3, 1, key="rfab-recycles"))
-            settings["rf2_repeats"] = int(st.number_input("Number of models (RF2)", 1, 20, 5, 1, key="rfab-repeats", help="Independent RF2 predictions with different random seeds."))
-            settings["hotspot_show_prop"] = st.number_input("Hotspot visibility", 0.0, 1.0, 0.1, 0.05, key="rfab-hotspot-prop")
-            settings["save_trajectories"] = st.checkbox("Save diffusion trajectories", False, key="rfab-trajectories")
+    with st.container(key="rfab-design-count-card"):
+        st.html('<div class="rfab-section">NUMBER OF DESIGNS</div>')
+        settings["number_of_designs"] = int(st.number_input(
+            "Number of designs", min_value=1, max_value=100000, value=1, step=1, key="rfab-count",
+            help="Total number of antibody or nanobody designs to generate. Larger runs need more GPU time and storage.",
+        ))
+        st.caption("Generate from 1 to 100,000 designs. Use the Optional settings section for loop lengths and model parameters.")
+    with st.expander("View Optional Settings", expanded=False):
+        if regions:
+            st.markdown("**CDR loop lengths**")
+            st.caption("Use auto for Chothia-defined boundaries, or specify a fixed length or range (1–40 residues).")
+            for region in regions:
+                chain, number = region[0], region[1]
+                settings["loop_lengths"][region] = st.text_input(
+                    f"{chain}CDR{number} Length", "auto", key=f"rfab-loop-length-{region}",
+                    placeholder="auto or 10-15",
+                )
+        else:
+            st.info("Select at least one CDR region before configuring loop lengths.")
+
+        st.markdown("**Sequence design**")
+        settings["number_of_sequences"] = int(st.number_input("Sequences per structure", min_value=1, max_value=100, value=1, step=1, key="rfab-sequences"))
+        settings["use_abmpnn"] = st.checkbox("Use AbMPNN weights", False, key="rfab-use-abmpnn", help="Use the installed antibody-specific ProteinMPNN checkpoint from Studio’s reference directory.")
+        settings["mpnn_temperature"] = st.number_input("ProteinMPNN temperature", 0.01, 2.0, 0.1, 0.01, key="rfab-temperature")
+        settings["num_connections"] = int(st.number_input("ProteinMPNN neighbors", 1, 100, 48, 1, key="rfab-connections"))
+        settings["omit_aas"] = st.text_input("Omit amino acids", "CX", key="rfab-omit-aas", help="Use one-letter codes, for example CX.")
+        settings["bias_aas"] = st.text_input("Global amino-acid bias", "", key="rfab-bias-aas", placeholder="W:3.0,P:3.0,C:3.0,A:-3.0")
+        settings["bias_by_res_json"] = st.text_area("Per-residue bias JSON", "{}", height=90, key="rfab-bias-by-res", help='Use antibody chain IDs and 1-based sequence positions, e.g. {"H":{"31":{"W":2.0}}}.')
+
+        st.markdown("**Backbone and structure prediction**")
+        settings["augment_eps"] = st.number_input("Backbone noise augmentation", 0.0, 1.0, 0.05, 0.01, key="rfab-augment")
+        settings["num_recycles"] = int(st.number_input("RF2 recycles", 0, 20, 3, 1, key="rfab-recycles"))
+        settings["rf2_repeats"] = int(st.number_input("Number of models (RF2)", 1, 20, 5, 1, key="rfab-repeats", help="Independent RF2 predictions with different random seeds."))
+        settings["calculate_epitope_distance"] = st.checkbox("Calculate distance to epitope", True, key="rfab-distance")
+        settings["hotspot_show_prop"] = st.number_input("Hotspot visibility", 0.0, 1.0, 0.1, 0.05, key="rfab-hotspot-prop")
+        settings["save_trajectories"] = st.checkbox("Save diffusion trajectories", False, key="rfab-trajectories")
+
+        st.markdown("**Compute**")
         settings["cpu_cores"] = int(st.number_input("CPU cores", min_value=1, max_value=256, value=4, step=1, key="rfab-cpus"))
-    settings["gpu_device"] = st.selectbox("GPU device", ["0", "1", "all"], index=0, key="rfab-gpu", help="RFantibody requires an NVIDIA GPU.")
-    prioritize = st.checkbox("Prioritize in scheduler queue", key="rfab-priority")
+        settings["gpu_device"] = st.selectbox("GPU device", ["0", "1", "all"], index=0, key="rfab-gpu", help="RFantibody requires an NVIDIA GPU.")
+        prioritize = st.checkbox("Prioritize in scheduler queue", key="rfab-priority")
     try:
         inputs.validate_request(settings, require_files=bool(target_file))
         if not target_file:

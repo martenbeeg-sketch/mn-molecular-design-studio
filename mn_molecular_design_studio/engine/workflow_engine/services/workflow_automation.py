@@ -143,6 +143,7 @@ _SPECS = (
     _spec("design.bindcraft2_generator", "bindcraft2", "enqueue_bindcraft2_design", "design", "bindcraft2_generator", "bindcraft2_generator", "Run BindCraft2 gradient design and emit only trajectories that pass the pre-ProteinMPNN handoff gate.", "direct"),
     _spec("design.rfdiffusion3", "rfdiffusion3", "run_rfdiffusion3_design", "design", "rfdiffusion3", "rfdiffusion3_design", "All-atom protein, enzyme, nucleic-acid and small-molecule conditioned design with RFdiffusion3."),
     _spec("design.rfantibody", "rfantibody", "run_rfantibody_design", "design", "rfantibody", "rfantibody_design", "Run RFdiffusion, ProteinMPNN and RF2 antibody or nanobody design."),
+    _spec("design.rfpeptides", "rfpeptides", "run_rfpeptides_design", "design", "rfpeptides", "rfpeptides_design", "Generate cyclic peptide binder backbones with the RFpeptides RFdiffusion protocol."),
     _spec("design.rfdiffusion3_foundry", "design", "run_rfdiffusion3_foundry", "design", "rfdiffusion3_foundry", "design_campaign", "Run RFdiffusion3 / Foundry design."),
     _spec("design.boltzgen", "design", "run_boltzgen", "design", "boltzgen", "design_campaign", "De novo protein binder design with BoltzGen's protein-anything protocol."),
     _spec("design.boltzgen_generator", "design", "run_boltzgen", "design", "boltzgen_generator", "design_generation", "Generate BoltzGen backbones only; sequence redesign, refolding, and ranking are separate steps."),
@@ -738,6 +739,12 @@ def _validate_workflow_inputs(spec: WorkflowSpec, parameters: dict[str, Any]) ->
             raise AutomationError(str(exc)) from exc
     if spec.workflow_id == "design.rfantibody":
         from mn_molecular_design_studio.rfantibody_input import validate_request
+        try:
+            validate_request(parameters, require_files=not _schema_only_paths.get())
+        except (TypeError, ValueError, OSError) as exc:
+            raise AutomationError(str(exc)) from exc
+    if spec.workflow_id == "design.rfpeptides":
+        from mn_molecular_design_studio.rfpeptides_input import validate_request
         try:
             validate_request(parameters, require_files=not _schema_only_paths.get())
         except (TypeError, ValueError, OSError) as exc:

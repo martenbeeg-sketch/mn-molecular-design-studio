@@ -208,7 +208,7 @@ class Store:
             item = json.loads(row["payload"])
             if statuses and item.get("status") not in statuses or tools and item.get("tool") not in tools:
                 continue
-            if query and str(query).casefold() not in " ".join(str(item.get(k) or "") for k in ("campaign_name", "run_id", "tool", "job_code")).casefold():
+            if query and str(query).casefold() not in " ".join(str(item.get(k) or "") for k in ("campaign_name", "pipeline_name", "run_id", "tool", "job_code")).casefold():
                 continue
             selected.append(row["id"])
         items = [self.job(j, user) for j in selected[offset:offset + limit]]
@@ -233,12 +233,28 @@ class Store:
                 jid = previous["job_id"]
             else:
                 jid = str(uuid.uuid4())
-                params = request.get("payload", {}).get("parameters", {})
-                name = params.get("job_name") or params.get("campaign_name") or request.get("payload", {}).get("graph", {}).get("name") or request["payload"].get("workflow") or "Pipeline"
+                payload = request.get("payload", {})
+                params = payload.get("parameters", {})
+                workflow = str(payload.get("workflow") or "visual_pipeline")
+                graph = payload.get("graph", {})
+                name = params.get("job_name") or params.get("campaign_name") or graph.get("name") or params.get("pipeline_name") or workflow or "Pipeline"
+                pipeline_name = ""
+                if workflow == "visual_pipeline":
+                    pipeline_name = str(params.get("pipeline_name") or graph.get("name") or name)
+                    tool = "visual_pipeline"
+                elif workflow == "refolding.optimized_prediction":
+                    engine = str(params.get("engine") or "")
+                    tool = "optimized_prediction_" + engine if engine else workflow
+                else:
+                    try:
+                        from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS
+                        tool = WORKFLOWS[workflow].tool
+                    except (ImportError, KeyError):
+                        tool = workflow
                 preferred = affinity_node or (placement if placement != "auto" else None)
                 row = {"cluster_job_id": jid, "node_id": preferred, "owner_id": user["id"], "project_id": request["project_id"],
                        "status": "waiting_for_workstation", "campaign_name": name, "created_at": stamp(self.clock()),
-                       "tool": request["payload"].get("workflow", "visual_pipeline"), "job_code": jid[:5].upper(),
+                       "tool": tool, "pipeline_name": pipeline_name, "job_code": jid[:5].upper(),
                        "request_summary": request["payload"], "wait_reason": "Waiting for a compatible workstation."}
                 db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?)", (jid, None, None, user["id"], request["project_id"], encoded(row), row["created_at"]))
                 db.execute("INSERT INTO submissions(job_id,owner_id,idempotency_key,fingerprint,request,requirements,origin_node,placement,affinity_node,command_id) VALUES (?,?,?,?,?,?,?,?,?,NULL)",

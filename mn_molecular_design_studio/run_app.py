@@ -25,6 +25,7 @@ import streamlit as st
 from mn_molecular_design_studio.cofolding_input import render_molecule_editor, prediction_settings_for
 from mn_molecular_design_studio import cofolding_results
 from mn_molecular_design_studio.cluster import config as cluster_config
+from mn_molecular_design_studio.cluster.ui import display_tool_label
 from mn_molecular_design_studio import pipeline_graph, complexa_input, generator_input
 importlib.reload(generator_input)
 importlib.reload(pipeline_graph)
@@ -136,6 +137,7 @@ WORKFLOW_TITLES = {
     "Bindcraft2": "BindCraft2",
     "Bindcraft2 Generator": "BindCraft2 Generator",
     "Rfantibody": "RFantibody",
+    "Rfpeptides": "RFpeptides",
     "Bindcraft": "BindCraft",
     "Boltzgen": "BoltzGen",
     "Boltzgen Generator": "BoltzGen Generator",
@@ -177,6 +179,7 @@ TOOL_CATALOG_WORKFLOW_IDS = {
     "design.bindcraft2_generator",
     "design.rfdiffusion3",
     "design.rfantibody",
+    "design.rfpeptides",
     "design.boltzgen",
     "design.boltzgen_generator",
     "design.pxdesign_generate",
@@ -222,6 +225,7 @@ TOOL_WORKFLOW_CODE_VERSIONS = {
     "design.rfdiffusion_classic": ("RFdiffusion · version not pinned", False),
     "design.rfdiffusion3": ("RFdiffusion3 a36d29c · Foundry 0.1.9", False),
     "design.rfantibody": ("RFantibody 3e5a5bb · CUDA 11.8", False),
+    "design.rfpeptides": ("RFpeptides · RFdiffusion 86507b6 · CUDA 12.8", False),
     "design.boltzgen": ("BoltzGen 0.3.2", True),
     "design.boltzgen_generator": ("BoltzGen 0.3.2", True),
     "design.pxdesign": ("PXDesign f788441 · Protenix 0.5.0+pxd", False),
@@ -721,6 +725,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "design.proteina_complexa": ["Structure (PDB)", "Structure (mmCIF)"],
         "design.proteina_complexa_generate": ["Structure (PDB)", "Structure (mmCIF)"],
         "design.rfdiffusion3": ["Structure (PDB)", "Structure (mmCIF)", "JSON"],
+        "design.rfpeptides": ["Structure (PDB)", "Structure (mmCIF)"],
         "refolding.esmfold2_cofolding": ["Protein Sequences"],
         "refolding.af3_jax_cofolding": ["Molecule Fields"],
         "refolding.optimized_prediction": ["Molecule Fields"],
@@ -751,6 +756,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
             if workflow in {"design.bindcraft2", "design.bindcraft2_generator"}
             else ["Protein", "DNA", "RNA", "Ligand"]
             if workflow in {"refolding.af3_jax_cofolding", "design.rfdiffusion3"}
+            else ["Protein", "Peptide"] if workflow == "design.rfpeptides"
             else ["Protein", "Ligand"] if workflow in {"design.proteina_complexa", "design.proteina_complexa_generate"}
             else ["Protein"]
             if workflow == "refolding.esmfold2_cofolding"
@@ -3566,6 +3572,12 @@ def _render_workflow_setup() -> None:
         rfantibody_ui.render_setup(schema, owner_id=str(CURRENT_USER["id"]),
                                    project_selector=_render_project_selector, submit=_submit_cofolding_job)
         return
+    if workflow_id == "design.rfpeptides":
+        from mn_molecular_design_studio import rfpeptides_ui
+        importlib.reload(rfpeptides_ui)
+        rfpeptides_ui.render_setup(schema, owner_id=str(CURRENT_USER["id"]),
+                                   project_selector=_render_project_selector, submit=_submit_cofolding_job)
+        return
     if workflow_id in {"design.proteina_complexa", "design.proteina_complexa_generate"}:
         from mn_molecular_design_studio import complexa_ui
         importlib.reload(complexa_ui)
@@ -4006,7 +4018,7 @@ def _job_elapsed_label(row: dict) -> str:
 
 def _jobs_csv(rows: list[dict]) -> bytes:
     stream = io.StringIO(newline="")
-    fields = ("Job name", "Project", "Type", "Job code", "Status", "Submitted", "Time elapsed", "Stage", "Run ID")
+    fields = ("Job name", "Project", "Tool", "Pipeline", "Job code", "Status", "Submitted", "Time elapsed", "Stage", "Run ID")
     writer = csv.DictWriter(stream, fieldnames=fields)
     writer.writeheader()
     project_names = {str(project["id"]): str(project["name"]) for project in _studio_projects()}
@@ -4015,7 +4027,8 @@ def _jobs_csv(rows: list[dict]) -> bytes:
             {
                 "Job name": row.get("campaign_name") or row.get("tool") or row.get("job_type") or "Job",
                 "Project": project_names.get(str(row.get("project_id") or ""), ""),
-                "Type": row.get("tool") or row.get("job_type") or "—",
+                "Tool": display_tool_label(row),
+                "Pipeline": row.get("pipeline_name") or "—",
                 "Job code": row.get("job_code", ""),
                 "Status": row.get("status", "unknown").title(),
                 "Submitted": _job_submitted_label(row.get("created_at")),
@@ -4067,7 +4080,7 @@ def _render_runs() -> None:
         chosen_statuses = st.multiselect(
             "Status", facets["statuses"], key="results-status-filter"
         )
-        chosen_tools = st.multiselect("Type", facets["tools"], key="results-tool-filter")
+        chosen_tools = st.multiselect("Tool", facets["tools"], key="results-tool-filter")
     selected_project_id = selected_project if selected_project else None
 
     page_size = st.selectbox("Rows per page", [10, 25, 50], index=0, key="results-page-size")
@@ -4147,8 +4160,14 @@ def _render_runs() -> None:
             use_container_width=True,
             key="results-export-download",
         )
-    all_columns = ["Job name", "Project", "Type", "#", "Status", "Submitted", "Time elapsed", "Stage", "Run ID"]
-    default_columns = ["Job name", "Project", "Type", "#", "Status", "Submitted", "Time elapsed"]
+    all_columns = ["Job name", "Project", "Tool", "Pipeline", "#", "Status", "Submitted", "Time elapsed", "Stage", "Run ID"]
+    default_columns = ["Job name", "Project", "Tool", "Pipeline", "#", "Status", "Submitted", "Time elapsed"]
+    stored_columns = st.session_state.get("results-visible-columns")
+    if isinstance(stored_columns, list) and "Type" in stored_columns:
+        migrated_columns = ["Tool" if column == "Type" else column for column in stored_columns if column != "Type" or "Tool" not in stored_columns]
+        if "Pipeline" not in migrated_columns:
+            migrated_columns.insert(migrated_columns.index("Tool") + 1 if "Tool" in migrated_columns else 0, "Pipeline")
+        st.session_state["results-visible-columns"] = [column for column in migrated_columns if column in all_columns]
     if not st.session_state.get("results-elapsed-column-default-applied"):
         existing_columns = st.session_state.get("results-visible-columns")
         if isinstance(existing_columns, list) and "Time elapsed" not in existing_columns:
@@ -4179,7 +4198,8 @@ def _render_runs() -> None:
         {
             "Job name": row.get("campaign_name") or row.get("tool") or row.get("job_type") or "Job",
             "Project": next((str(project["name"]) for project in projects if project.get("id") == row.get("project_id")), "—"),
-            "Type": row.get("tool") or row.get("job_type") or "—",
+            "Tool": display_tool_label(row),
+            "Pipeline": row.get("pipeline_name") or "—",
             "#": row.get("job_code", ""),
             "Status": str(row.get("status", "unknown")).title(),
             "Submitted": _job_submitted_label(row.get("created_at")),
@@ -4194,7 +4214,8 @@ def _render_runs() -> None:
         {
             "Job name": 2.0,
             "Project": 1.1,
-            "Type": 1.35,
+            "Tool": 1.5,
+            "Pipeline": 1.4,
             "#": 0.45,
             "Status": 0.8,
             "Submitted": 1.2,
@@ -6430,6 +6451,7 @@ def _render_job_details() -> None:
     raw_title = str(job.get("tool") or job.get("job_type") or run_id)
     title = str(job.get("campaign_name") or surface_titles.get(raw_title.casefold()) or raw_title)
     st.title(title)
+    st.caption(f"Tool: {display_tool_label(job)} · Pipeline: {job.get('pipeline_name') or '—'}")
     if metadata.get("demo_fixture"):
         st.info("Imported demo fixture · These results were copied from an existing ZIP and were not run by Molecular Design Studio.")
     submitted = _job_submitted_label(job.get("created_at"))
@@ -6469,7 +6491,8 @@ def _render_job_details() -> None:
         output_summary = ("Surface analyses", str(job_metrics["surface_analysis_count"]))
     summary_values = (
         ("Status", str(job.get("status", "unknown")).replace("_", " ").title()),
-        ("Type", str(job.get("tool") or job.get("job_type") or "—")),
+        ("Tool", display_tool_label(job)),
+        ("Pipeline", str(job.get("pipeline_name") or "—")),
         output_summary,
         ("Time elapsed", _job_elapsed_label(job)),
         ("Project", project_name),
@@ -6581,7 +6604,8 @@ def _render_job_details() -> None:
     is_design_validation = any(isinstance(item, dict) and (item.get("raw_metadata") or {}).get("validation_reference") for item in result_candidates)
     is_rfdiffusion3 = analysis_tool == "rfdiffusion3"
     is_rfantibody = analysis_tool == "rfantibody" or "rfantibody" in workflow_identity
-    has_dedicated_prediction_results = is_rfantibody or is_rfdiffusion3 or is_af3_jax_cofolding or is_esmfold2_cofolding or is_optimized_prediction or is_design_validation
+    is_rfpeptides = analysis_tool == "rfpeptides" or "rfpeptides" in workflow_identity
+    has_dedicated_prediction_results = is_rfantibody or is_rfpeptides or is_rfdiffusion3 or is_af3_jax_cofolding or is_esmfold2_cofolding or is_optimized_prediction or is_design_validation
     pipeline_execution = {}
     surface_nodes = []
     if str(job.get("tool")) == "visual_pipeline":
@@ -6672,6 +6696,9 @@ def _render_job_details() -> None:
         elif is_rfantibody:
             from mn_molecular_design_studio import rfantibody_ui
             rfantibody_ui.render_results(run_id, run_dir, result_candidates, input_params, result)
+        elif is_rfpeptides:
+            from mn_molecular_design_studio import rfpeptides_ui
+            rfpeptides_ui.render_results(run_id, run_dir, result_candidates, input_params, result)
         elif is_rfdiffusion3:
             from mn_molecular_design_studio.rfdiffusion3_ui import render_results
             render_results(run_id, run_dir, result_candidates, input_params, result)

@@ -11,7 +11,7 @@ from Bio.SeqUtils import seq1
 EXAMPLE_INPUTS = Path(__file__).resolve().parent / "resources" / "rfantibody"
 UPSTREAM_COMMIT = "3e5a5bb1cb98befde9fc049ae3ff58cabb491f67"
 CODE_VERSION = f"RFantibody · {UPSTREAM_COMMIT[:8]}"
-IMAGE = "mn-rfantibody:3e5a5bb-cu118-v1"
+IMAGE = "mn-rfantibody:3e5a5bb-cu128"
 TASKS = {"antibody": "Antibody", "nanobody": "Nanobody"}
 FRAMEWORKS = {
     "hu-4D5-8_Fv": "Humanized antibody · hu-4D5-8 Fv",

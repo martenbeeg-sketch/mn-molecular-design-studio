@@ -10,7 +10,7 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 
-from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, clean_graph, fingerprint, list_definitions, list_versions, new_graph, validate_graph
+from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, clean_graph, fingerprint, list_definitions, list_versions, migrate_template_graph, new_graph, validate_graph
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
 
@@ -42,8 +42,24 @@ def _matching_execution(graph, snapshot, execution):
         return {}
 
 
-def _render_node_input(selected, owner_id, project_id, search_jobs, prefix):
-    from mn_molecular_design_studio.target_editor import TargetSource, _hash, _target_widget_keys, render_target_editor, render_target_source
+def _target_ancestor(graph, node_id):
+    nodes = {node["id"]: node for node in graph.get("nodes", [])}
+    pending = [edge["source"] for edge in graph.get("edges", []) if edge.get("target") == node_id]
+    seen = set()
+    while pending:
+        source_id = pending.pop(0)
+        if source_id in seen or source_id not in nodes:
+            continue
+        seen.add(source_id)
+        source = nodes[source_id]
+        if source["data"]["kind"] == "target":
+            return source
+        pending.extend(edge["source"] for edge in graph.get("edges", []) if edge.get("target") == source_id)
+    return None
+
+
+def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, graph=None):
+    from mn_molecular_design_studio.target_editor import TargetSource, _hash, _target_widget_keys, render_target_coldspots, render_target_editor, render_target_source
     from mn_molecular_design_studio.design_validation import design_candidates
     from mn_molecular_design_studio.generation_io import generated_candidates
     contexts = {}
@@ -51,16 +67,53 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix):
     key = f"{prefix}-{node_id}"
     if selected["data"]["kind"] == "target":
         path = resolve_stored_path(params.get("target_pdb"), must_exist=True) if params.get("target_pdb") else None
-        source = render_target_source(key_prefix=key, label="Target", example_code="7QF4", allow_cif=True, upload_in_expander=True, owner_id=owner_id)
+        source = render_target_source(key_prefix=key, label="Target Structure", example_code="7QF4", allow_cif=True, upload_in_expander=True, owner_id=owner_id)
         if not source.path and path:
             source = TargetSource(path=path, name=path.stem, owner_id=owner_id)
         if source.path:
             chain_key = f"{key}-chains-" + _hash(str(source.path))
             st.session_state.setdefault(chain_key, [c.strip() for c in params.get("target_chains", "A").split(",") if c.strip()])
             st.session_state.setdefault(_target_widget_keys(key, source.path)["hotspots"], params.get("hotspots", ""))
-        target = render_target_editor(source, key_prefix=key, label="Target", show_structure_tools=False)
+        target = render_target_editor(source, key_prefix=key, label="Target Structure", show_structure_tools=False, rerun_scope="fragment")
+        if target.source_path:
+            coldspot_key = _target_widget_keys(key, target.source_path)["coldspots"]
+            if coldspot_key not in st.session_state:
+                st.session_state[coldspot_key] = params.get("coldspots", "")
+            with st.expander("Coldspot residues (optional)", expanded=bool(params.get("coldspots"))):
+                st.caption("Coldspots are inherited only by generator engines that support them; each generator node shows its support status.")
+                render_target_coldspots(target, key_prefix=key, show_structure_tools=False, rerun_scope="fragment")
         if target.design_path and target.ready and target.valid_trim_ranges:
-            contexts[node_id] = {"target_pdb": str(target.design_path), "target_chains": ",".join(target.chains), "hotspots": target.hotspots}
+            contexts[node_id] = {"target_pdb": str(target.design_path), "target_chains": ",".join(target.chains), "hotspots": target.hotspots, "coldspots": target.coldspots}
+            params.update(contexts[node_id])
+    elif selected["data"]["kind"] == "binder_context":
+        context_name = selected["data"].get("label", "Binder Design Context")
+        context_subject = context_name.removesuffix(" Context")
+        target_node = _target_ancestor(graph or {}, node_id)
+        target_params = target_node["data"]["params"] if target_node else {}
+        path = resolve_stored_path(target_params.get("target_pdb"), must_exist=True) if target_params.get("target_pdb") else None
+        if not path:
+            st.info("Connect this context to a Target Structure node and load its structure first.")
+            return contexts
+        source = TargetSource(path=path, name=path.stem, owner_id=owner_id)
+        chain_key = f"{key}-chains-" + _hash(str(source.path))
+        selected_chains = target_params.get("target_chains", "")
+        if isinstance(selected_chains, str):
+            selected_chains = [chain.strip() for chain in selected_chains.replace(";", ",").split(",") if chain.strip()]
+        st.session_state[chain_key] = list(selected_chains or [])
+        widget_keys = _target_widget_keys(key, source.path)
+        st.session_state.setdefault(widget_keys["hotspots"], params.get("hotspots", ""))
+        st.session_state.setdefault(widget_keys["coldspots"], params.get("coldspots", ""))
+        target = render_target_editor(source, key_prefix=key, label=f"{context_subject} target", show_structure_tools=False, allow_trimming=False,
+                                      chain_selection_label="Target chains (set in Target Structure)", chain_selection_disabled=True,
+                                      residue_selection_title="Hotspot override",
+                                      residue_selection_caption="Choose residues the binder should contact. Leave empty to inherit hotspots from Target Structure.",
+                                      residue_selection_input_label="Hotspot override", rerun_scope="fragment")
+        if target.source_path:
+            with st.expander("Coldspot residues (optional)", expanded=bool(params.get("coldspots"))):
+                st.caption("Choose residues the binder should avoid. Leave empty to inherit coldspots from Target Structure. Support depends on the connected generator.")
+                render_target_coldspots(target, key_prefix=key, show_structure_tools=False, rerun_scope="fragment")
+        if target.ready and target.valid_trim_ranges:
+            contexts[node_id] = {"hotspots": target.hotspots, "coldspots": target.coldspots}
             params.update(contexts[node_id])
     else:
         generated=selected['data']['kind'] in {'generation_source','backbone_source'}
@@ -118,8 +171,29 @@ def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs):
         working["data"]["params"] = copy.deepcopy(editor["params"])
         key = f"{prefix}-editor-{editor['id']}-{editor['revision']}"
         def render_input():
-            return _render_node_input(working, owner_id, project_id, search_jobs, key)
-        values, label, action = render_node_form(working, graph, key=key, render_input=render_input, owner_id=owner_id)
+            return _render_node_input(working, owner_id, project_id, search_jobs, key, graph)
+        values, label, action, replacement_kind = render_node_form(working, graph, key=key, render_input=render_input, owner_id=owner_id)
+        if action == "replace":
+            try:
+                from mn_molecular_design_studio.pipeline_node_ui import replacement_node_data
+                updated = copy.deepcopy(graph)
+                node = next(n for n in updated["nodes"] if n["id"] == selected["id"])
+                replacement_source = copy.deepcopy(selected)
+                replacement_source["data"].update(params=values, label=label)
+                replacement = replacement_node_data(replacement_source, replacement_kind)
+                node["data"].update(replacement)
+                updated = clean_graph(updated)
+                validate_graph(updated)
+                if project_id:
+                    submit_api("/api/v1/pipelines/save", {"project_id":project_id, "graph":updated})
+                st.session_state[prefix+"-graph"] = updated
+                st.session_state[prefix+"-settings-update"] = {
+                    "id":uuid.uuid4().hex, "node_id":node["id"], **replacement,
+                }
+                _close_node_editor(prefix)
+                st.rerun(scope="app")
+            except (ValueError, OSError, TypeError, KeyError) as exc:
+                st.error(str(exc))
         if action == "reset":
             from mn_molecular_design_studio.pipeline_node_ui import node_form_defaults
             editor["params"] = node_form_defaults(working["data"]["kind"])
@@ -153,6 +227,13 @@ def _activate_graph(prefix, graph):
     _close_node_editor(prefix)
 
 
+def _activate_selected_template(prefix, templates):
+    """Load the selected starter graph before rendering the canvas again."""
+    selected = st.session_state.get(prefix + "-template")
+    if selected in templates:
+        _activate_graph(prefix, new_graph(templates[selected]))
+
+
 def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jobs):
     st.markdown("<style>.block-container{max-width:1900px;padding-top:1.35rem} [data-testid=stMainBlockContainer]{padding-left:2rem;padding-right:2rem}</style>", unsafe_allow_html=True)
     project_col, template_col, new_col = st.columns([1.2, 1.1, .55], vertical_alignment="bottom")
@@ -169,17 +250,33 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     if pending and pending['project_id']==project_id:
         _activate_graph(prefix,pending['graph'])
         st.session_state.pop('pipeline-pending-draft',None)
-    templates = {"Foundry · RFD3 → MPNN → RF3": "foundry", "Proteina-Complexa · Generator → MPNN → RF3":"complexa",
+    current_graph = st.session_state[state_key]
+    migrated_graph = migrate_template_graph(current_graph)
+    if migrated_graph is not current_graph:
+        _activate_graph(prefix, migrated_graph)
+    templates = {"Foundry · RFD3 → MPNN → RF3": "foundry",
                  "PXDesign · MPNN → AF2 + Protenix":"pxdesign","RFdiffusion · MPNN → AF2":"rfdiffusion",
                  "Genie3 · MPNN → AF2 template":"genie3","Protpardelle-1C · MPNN → ESMFold":"protpardelle",
                  "ESMFold2 Binder Design → ProteinMPNN → RF3":"esmfold2_binder",
-                 "All generators → ProteinMPNN → Boltz-2 + analysis":"all_generators_boltz2",
-                 "BindCraft2 design": "bindcraft2", "BoltzGen design": "boltzgen", "Blank canvas": "blank"}
+                 "Miniprotein binders · all generators → ProteinMPNN → Boltz-2 + analysis":"all_generators_boltz2",
+                 "VHH binders · BindCraft2 + BoltzGen + ESMFold2 → ProteinMPNN → Boltz-2":"vhh_design",
+                 "Cofolding · Protein monomer":"cofold_protein",
+                 "Cofolding · Protein / protein":"cofold_protein_protein",
+                 "Cofolding · Protein / ligand":"cofold_protein_ligand",
+                 "Cofolding · Protein / DNA":"cofold_protein_dna",
+                 "Cofolding · Protein / RNA":"cofold_protein_rna",
+                 "Cofolding · Protein / macrocyclic peptide":"cofold_protein_macrocyclic",
+                 "Blank canvas": "blank"}
+    template_widget_key = prefix + "-template"
+    old_template_label = "All generators → ProteinMPNN → Boltz-2 + analysis"
+    if st.session_state.get(template_widget_key) == old_template_label:
+        st.session_state[template_widget_key] = "Miniprotein binders · all generators → ProteinMPNN → Boltz-2 + analysis"
     with template_col:
-        template = st.selectbox("Start from a template", list(templates), key=prefix+"-template")
+        template = st.selectbox("Start from a template", list(templates), key=prefix+"-template",
+                                on_change=_activate_selected_template, args=(prefix, templates))
     with new_col:
-        if st.button("New canvas", key=prefix+"-new", use_container_width=True):
-            g = new_graph(templates[template]);st.session_state[state_key]=g;st.session_state[prefix+"-reset"]=uuid.uuid4().hex;st.session_state[prefix+"-name"]=g["name"];st.rerun()
+        st.button("Reset canvas", key=prefix+"-new", use_container_width=True,
+                  on_click=_activate_selected_template, args=(prefix, templates))
     graph = st.session_state[state_key]
     from mn_molecular_design_studio.pipeline_graph import TEMPLATE_REFERENCES
     if graph.get('template_id') in TEMPLATE_REFERENCES:
@@ -202,15 +299,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         if not definitions and not versions:
             st.caption("Drafts save automatically after you select a project. Save version keeps an immutable copy.")
     contexts = {}
-    with st.expander("Target & inputs", expanded=False):
-        inputs = [n for n in graph["nodes"] if n["data"]["kind"] in {"target", "design_source", "generation_source", "backbone_source", "complexa_generator", "pxdesign", "rfdiffusion", "genie3", "protpardelle"}]
-        if not inputs:
-            st.caption("Add a Target, Generator, or project designs block to the canvas.")
-        for input_node in inputs:
-            st.button("Configure " + input_node["data"]["label"], key=prefix+"-configure-"+input_node["id"], on_click=_open_node_editor, args=(prefix,input_node["id"]))
-        st.caption("You can also click an input block directly on the canvas.")
     if not project_id:
-        st.caption("Choose a project to save this canvas and run its steps.")
+        st.info("Choose a project before saving a pipeline version or running it. Each pipeline run is recorded under its selected project.")
     last_job = st.session_state.get(prefix+"-last-job", {})
     execution = {}
     if last_job.get("run_dir"):
@@ -227,7 +317,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 # controls, rather than accepted from component messages.
                 known = {n["id"]: n for n in graph["nodes"]}
                 for n in updated["nodes"]:
-                    if n["data"]["kind"] in {"target", "design_source", "generation_source", "backbone_source", "complexa_generator", "pxdesign", "rfdiffusion", "genie3", "protpardelle"}:
+                    if n["data"]["kind"] in {"target", "binder_context", "design_source", "generation_source", "backbone_source", "complexa_generator", "pxdesign", "rfdiffusion", "genie3", "protpardelle"}:
                         previous = known.get(n["id"])
                         n["data"]["params"] = copy.deepcopy(previous["data"]["params"] if previous and previous["data"]["kind"]==n["data"]["kind"] else {f["name"]:f["default"] for f in NODE_CATALOG[n["data"]["kind"]]["fields"]})
                 updated["name"] = graph["name"]

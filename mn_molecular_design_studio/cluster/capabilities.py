@@ -162,6 +162,18 @@ def requirements(payload, *, references=(), installed_images=None):
             needed_images.add(ENGINES[engine]["image"])
             needed_refs.update(path.relative_to(reference_root()).as_posix() for path in weights(engine, p))
             cpu_only = False
+        elif workflow == "design.rfantibody":
+            from mn_molecular_design_studio.rfantibody_input import IMAGE
+            needed_images.add(IMAGE)
+            needed_refs.update(
+                "rfantibody/" + name
+                for name in ("RFdiffusion_Ab.pt", "ProteinMPNN_v48_noise_0.2.pt", "RF2_ab.pt")
+            )
+            cpu_only = False
+        elif workflow == "design.rfpeptides":
+            from mn_molecular_design_studio.rfpeptides_input import WEIGHTS_RELATIVE_PATH
+            needed_refs.add(WEIGHTS_RELATIVE_PATH.as_posix())
+            cpu_only = False
         else:
             if workflow.startswith(("design.", "refolding.", "sequence.")):
                 cpu_only = False

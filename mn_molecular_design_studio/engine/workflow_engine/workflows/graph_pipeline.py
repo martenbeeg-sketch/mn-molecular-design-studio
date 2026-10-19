@@ -14,7 +14,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, fingerprint, scope_root, validate_graph
+from mn_molecular_design_studio.pipeline_graph import (
+    NODE_CATALOG, OPTIMIZED_PREDICTION_NODE_ENGINES, fingerprint, scope_root, validate_graph,
+)
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import create_job, finish_job, read_json, update_status, utc_now, write_json
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
 
@@ -104,6 +106,246 @@ def _generation_target(params, source=None):
     return target
 
 
+def _optimized_prediction_tasks(engine: str, source: dict, params: dict) -> list[dict]:
+    """Convert connected candidate complexes into shared prediction tasks."""
+    import io
+    from Bio.PDB import MMCIFIO, PDBIO, Select
+    from mn_molecular_design_studio import design_validation
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
+
+    profile = ENGINE_PROFILES[engine]
+    direct_input = source.get("molecule_task")
+    if isinstance(direct_input, dict):
+        task_input = copy.deepcopy(direct_input)
+        task_type = str(task_input.get("task_type") or "")
+        target_sequences = str(task_input.get("target_protein_sequences") or "")
+        partner_sequences = str(task_input.get("partner_protein_sequences") or "")
+        target_pdb = str(task_input.get("target_pdb") or "").strip()
+        target_chain = str(task_input.get("target_chain_id") or "A").strip()
+        if profile.get("input_kind") == "boltzgen":
+            if not target_pdb or not partner_sequences:
+                raise ValueError("BoltzGen Fold needs a target PDB path and a protein partner sequence.")
+            if re.search(r"[:\n\r]", partner_sequences):
+                raise ValueError("BoltzGen Fold accepts one protein partner sequence per task.")
+            if len(target_chain) != 1 or target_chain.upper() == "Z":
+                raise ValueError("BoltzGen Fold requires a one-character target chain ID other than Z.")
+            target_path = _path(target_pdb)
+            if target_path.suffix.lower() in {".cif", ".mmcif"}:
+                from Bio.PDB import MMCIFParser
+                structure = MMCIFParser(QUIET=True).get_structure("boltzgen-target", str(target_path))
+            else:
+                from Bio.PDB import PDBParser
+                structure = PDBParser(QUIET=True).get_structure("boltzgen-target", str(target_path))
+            model = next(structure.get_models())
+            if target_chain not in model:
+                raise ValueError(f"BoltzGen Fold cannot find target chain {target_chain!r} in {target_path.name}.")
+
+            class TargetChain(Select):
+                def accept_chain(self, candidate_chain):
+                    return candidate_chain.id == target_chain
+
+            stream = io.StringIO()
+            writer = PDBIO()
+            writer.set_structure(structure)
+            writer.save(stream, TargetChain())
+            return [{
+                "name": "cofold_task", "target_pdb_text": stream.getvalue(),
+                "target_chain_id": target_chain, "binder_sequence": partner_sequences,
+            }]
+
+        if task_type == "protein":
+            task = {"name": "cofold_task", "protein_sequences": target_sequences}
+            protein_count = len([part for part in re.split(r"[:\n\r]+", target_sequences) if part.strip()])
+            target_chain_ids = list("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"[:protein_count])
+        elif task_type in {"protein_protein", "protein_macrocyclic"}:
+            task = {
+                "name": "cofold_task", "target_protein_sequences": target_sequences,
+                "binder_sequence": partner_sequences,
+            }
+            target_count = len([part for part in re.split(r"[:\n\r]+", target_sequences) if part.strip()])
+            partner_count = len([part for part in re.split(r"[:\n\r]+", partner_sequences) if part.strip()])
+            chain_ids = list("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+            target_chain_ids = chain_ids[:target_count]
+            partner_chain_ids = chain_ids[target_count:target_count + partner_count]
+        else:
+            task = {"name": "cofold_task", "protein_sequences": target_sequences}
+            protein_count = len([part for part in re.split(r"[:\n\r]+", target_sequences) if part.strip()])
+            target_chain_ids = list("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"[:protein_count])
+
+        for molecule_key in ("dna_sequences", "rna_sequences", "ligand_ccd_codes", "ligand_smiles"):
+            task[molecule_key] = str(task_input.get(molecule_key) or "")
+        if profile.get("supports_msa"):
+            task["molecule_chain_options"] = [
+                {"id": chain_id, "use_msa": bool(params.get("target_use_msa", params.get("use_target_msa", True)))}
+                for chain_id in target_chain_ids
+            ]
+            if task_type in {"protein_protein", "protein_macrocyclic"}:
+                task["molecule_chain_options"].extend(
+                    {"id": chain_id, "use_msa": False}
+                    for chain_id in partner_chain_ids
+                )
+        if task_type == "protein_macrocyclic" and task_input.get("cyclic_partner"):
+            partner_chain = partner_chain_ids[0]
+            partner_option = next((option for option in task.setdefault("molecule_chain_options", [])
+                                   if option.get("id") == partner_chain), None)
+            if partner_option is None:
+                partner_option = {"id": partner_chain, "use_msa": False}
+                task["molecule_chain_options"].append(partner_option)
+            partner_option["cyclic"] = True
+
+        if target_pdb and profile.get("supports_templates") and params.get("use_target_template", True):
+            target_path = _path(target_pdb)
+            if target_path.suffix.lower() in {".cif", ".mmcif"}:
+                from Bio.PDB import MMCIFParser
+                structure = MMCIFParser(QUIET=True).get_structure("cofold-template", str(target_path))
+            else:
+                from Bio.PDB import PDBParser
+                structure = PDBParser(QUIET=True).get_structure("cofold-template", str(target_path))
+            model = next(structure.get_models())
+            selected_chains = [part.strip() for part in re.split(r"[,;\s]+", target_chain) if part.strip()]
+            templates = []
+            for index, chain_id in enumerate(selected_chains):
+                if chain_id not in model:
+                    raise ValueError(f"Could not find target chain {chain_id!r} in {target_path.name}.")
+
+                class TargetChain(Select):
+                    def accept_chain(self, candidate_chain):
+                        return candidate_chain.id == chain_id
+
+                stream = io.StringIO()
+                writer = MMCIFIO()
+                writer.set_structure(structure)
+                writer.save(stream, TargetChain())
+                query_ids = list("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+                if index >= len(target_chain_ids):
+                    raise ValueError("The target structure contains more chains than the target protein sequences entered.")
+                templates.append({
+                    "name": f"target_{query_ids[index]}.cif", "text": stream.getvalue(),
+                    "query_chain_id": query_ids[index], "template_chain_id": chain_id,
+                })
+            task["structure_templates"] = templates
+        return [task]
+
+    run_dir = _path(source["run_dir"])
+    rows = _absolute_candidates(source)
+    if not rows:
+        raise ValueError(f"{profile['label']} needs at least one connected candidate complex.")
+    if len(rows) > 32:
+        raise ValueError(f"{profile['label']} accepts up to 32 candidate complexes per pipeline step; reduce the upstream design or sequence count.")
+    tasks = []
+    chain_ids = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    for candidate in rows:
+        candidate_id = str(candidate.get("candidate_id") or "")
+        if not candidate_id:
+            raise ValueError(f"{profile['label']} cannot map a candidate without an ID back to its input.")
+        info = design_validation.candidate_description(run_dir, candidate)
+        target_chains = list(info["target_chains"])
+        binder_chains = list(info["binder_chains"])
+        if not target_chains:
+            raise ValueError(f"Candidate {candidate_id} has no identified target chain for {profile['label']} cofolding.")
+        ordered = [*target_chains, *binder_chains]
+        if len(ordered) > len(chain_ids):
+            raise ValueError(f"Candidate {candidate_id} exceeds {profile['label']}'s protein-chain limit.")
+        chain_map = {chain: chain_ids[index] for index, chain in enumerate(ordered)}
+        if profile["api_engine"] == "boltzgen_fold_opt_msa":
+            if len(target_chains) != 1:
+                raise ValueError("BoltzGen Fold needs exactly one target chain; select a single target chain before connecting this node.")
+            target_chain = target_chains[0]
+            if len(target_chain) != 1 or target_chain.upper() == "Z":
+                raise ValueError("BoltzGen Fold requires a one-character target chain ID other than Z.")
+            structure = design_validation.read_structure(info["structure_path"])
+            class TargetChain(Select):
+                def accept_chain(self, candidate_chain):
+                    return candidate_chain.id == target_chain
+            stream = io.StringIO()
+            writer = PDBIO()
+            writer.set_structure(structure)
+            writer.save(stream, TargetChain())
+            tasks.append({
+                "name": candidate_id,
+                "target_pdb_text": stream.getvalue(),
+                "target_chain_id": target_chain,
+                "binder_sequence": info["binder_sequence"],
+                "source_candidate_id": candidate_id,
+                "source_run_dir": str(run_dir),
+            })
+            continue
+
+        task = {
+            "name": candidate_id,
+            "target_protein_sequences": ":".join(design_validation.sequence(info["chains"][chain]) for chain in target_chains),
+            "binder_sequence": info["binder_sequence"],
+            "molecule_chain_options": [
+                {"id": chain_map[chain], "use_msa": bool(profile.get("supports_msa") and params.get("target_use_msa", True) and chain in target_chains)}
+                for chain in ordered
+            ],
+            "source_candidate_id": candidate_id,
+            "source_run_dir": str(run_dir),
+        }
+        if params.get("use_target_template", True) and profile.get("supports_templates"):
+            structure = design_validation.read_structure(info["structure_path"])
+            templates = []
+            for chain in target_chains:
+                class TargetChain(Select):
+                    def accept_chain(self, candidate_chain):
+                        return candidate_chain.id == chain
+                stream = io.StringIO()
+                writer = MMCIFIO()
+                writer.set_structure(structure)
+                writer.save(stream, TargetChain())
+                templates.append({
+                    "name": f"target_{chain_map[chain]}.cif",
+                    "text": stream.getvalue(),
+                    "query_chain_id": chain_map[chain],
+                    "template_chain_id": chain,
+                })
+            task["structure_templates"] = templates
+        tasks.append(task)
+    return tasks
+
+
+def _af3_pipeline_tasks(source: dict, params: dict) -> list[dict]:
+    """Convert connected candidate complexes into official AF3 tasks."""
+    return _optimized_prediction_tasks("alphafold3", source, params)
+
+
+def _optimized_prediction_request(engine: str, params: dict, source: dict, name: str) -> dict:
+    """Build a shared prediction request for a direct molecule task or design candidates."""
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
+
+    profile = ENGINE_PROFILES[engine]
+    option_keys = {setting["key"] for setting in profile.get("settings", ())}
+    engine_options = {
+        setting["key"]: params[setting["key"]]
+        for setting in profile.get("settings", ())
+        if setting["key"] in params and setting["key"] not in {"use_msa", "use_msa_server"}
+    }
+    msa_setting = "target_use_msa" if "target_use_msa" in params else "use_target_msa"
+    if "use_msa" in option_keys:
+        engine_options["use_msa"] = bool(params.get(msa_setting, True))
+    if engine == "alphafold3":
+        engine_options["model"] = params.get("model", "alphafold3")
+    terms_accepted = bool(params.get("accept_alphafold3_terms", False))
+    return {
+        "schema_version": 1,
+        "workflow": "refolding.optimized_prediction",
+        "parameters": {
+            "engine": engine,
+            "optimization_mode": params.get("optimization_mode", "off"),
+            "job_name": name,
+            "seed": int(params.get("seed", 0)),
+            "samples": int(params.get("samples", 1)),
+            "num_recycles": int(params.get("num_recycles", profile.get("default_recycles", 10))),
+            "cpu_cores": 4,
+            "tasks": _optimized_prediction_tasks(engine, source, params),
+            "engine_options": engine_options,
+            "use_target_template": bool(params.get("use_target_template", profile.get("requires_target_template", False))),
+            "target_use_msa": bool(params.get(msa_setting, True)),
+            "accept_alphafold3_terms": terms_accepted,
+        },
+    }
+
+
 def filter_candidates(rows: list[dict], settings: dict) -> list[dict]:
     from mn_molecular_design_studio.design_validation import candidate_passes_filters
     metric = str(settings.get("metric") or "").strip()
@@ -127,6 +369,31 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
     """Only allowlisted adapters can turn graph data into a workflow call."""
     workflow = NODE_CATALOG[kind]["workflow"]
     p = copy.deepcopy(params)
+    if isinstance(source.get("molecule_task"), dict):
+        molecule_task = source["molecule_task"]
+        if kind == "af2":
+            target_pdb = str(molecule_task.get("target_pdb") or "").strip()
+            partner_sequence = str(molecule_task.get("partner_protein_sequences") or "").strip()
+            if not target_pdb or not partner_sequence:
+                raise ValueError("AlphaFold2 Initial Guess needs a target PDB path and partner protein sequence.")
+            target_chains = [value for value in re.split(r"[,;\s]+", str(molecule_task.get("target_chain_id") or "A")) if value]
+            return {
+                "schema_version": 1,
+                "workflow": "refolding.af2_initial_guess_input",
+                "parameters": {
+                    "input_mode": "target_template", "job_name": name,
+                    "target_pdb": str(_path(target_pdb)), "target_chains": target_chains,
+                    "partner_sequence": partner_sequence,
+                    "num_recycles": int(p.get("num_recycles", 3)),
+                    "model_count": int(p.get("model_count", 1)),
+                    "multimer": bool(p.get("multimer", True)),
+                    "msa_source": "single_sequence", "msa_max_depth": 256,
+                },
+            }
+        direct_engines = {"af3": "alphafold3", "boltz2": "boltz2", "rf3": "rf3_foundry"}
+        engine = direct_engines.get(kind) or OPTIMIZED_PREDICTION_NODE_ENGINES.get(kind)
+        if engine:
+            return _optimized_prediction_request(engine, p, source, name)
     if kind == "surface_analysis":
         target = source.get("target") or {}
         target_pdb = target.get("target_pdb")
@@ -169,6 +436,8 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
         chains=p.get('target_chains') if own else inherited.get('target_chains',p.get('target_chains'))
         p['target_chains']=[v for v in re.split(r'[,;\s]+',chains) if v] if isinstance(chains,str) else list(chains or [])
         if not own and not p.get('hotspots'):p['hotspots']=inherited.get('hotspots','')
+        if NODE_CATALOG[kind].get('hotspot_support') == 'unsupported':
+            p['hotspots'] = ''
         if p.get('task') in {'unconditional','symmetry'}:p.update(target_pdb=None,target_chains=[],hotspots='')
         for key in ('scaffold_pdb','scaffold_ss_file','scaffold_adj_file','target_ss_file','target_adj_file'):
             if key in p:p[key]=p[key] or None
@@ -184,6 +453,15 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
         if not target.get("target_pdb"):
             raise ValueError("This design step needs a target structure.")
         p.update(target_pdb=target["target_pdb"], target_chains=target["target_chains"], hotspots=target.get("hotspots", ""), campaign_name=name)
+        if NODE_CATALOG[kind].get("hotspot_support") == "unsupported":
+            p["hotspots"] = ""
+        if NODE_CATALOG[kind].get("coldspot_support") == "unsupported":
+            p.pop("coldspots", None)
+            p.pop("non_binding_residues", None)
+        if kind in {"bindcraft2", "bindcraft2_generator"}:
+            p["coldspots"] = p.get("coldspots") or target.get("coldspots", "")
+        elif kind in {"boltzgen", "boltzgen_generator"}:
+            p["non_binding_residues"] = p.get("non_binding_residues") or target.get("coldspots", "")
         if kind == "rfd3":
             length = str(p.pop("binder_length"))
             match = re.fullmatch(r"(\d+)(?:-(\d+))?", length)
@@ -215,6 +493,47 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
             if len(chains) != 1:
                 raise ValueError("ESMFold2 Binder Design currently accepts one target chain.")
             p["target_chain"] = chains[0]
+    elif kind == "af3":
+        p = {
+            "engine": "alphafold3",
+            "optimization_mode": p["optimization_mode"],
+            "job_name": name,
+            "seed": 0,
+            "samples": int(p["samples"]),
+            "num_recycles": int(p["num_recycles"]),
+            "cpu_cores": 4,
+            "accept_alphafold3_terms": bool(p["accept_alphafold3_terms"]),
+            "tasks": _af3_pipeline_tasks(source, p),
+            "engine_options": {"model": p["model"], "use_msa": bool(p["target_use_msa"])},
+            "use_target_template": bool(p["use_target_template"]),
+            "target_use_msa": bool(p["target_use_msa"]),
+        }
+    elif kind in OPTIMIZED_PREDICTION_NODE_ENGINES:
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
+
+        engine = OPTIMIZED_PREDICTION_NODE_ENGINES[kind]
+        profile = ENGINE_PROFILES[engine]
+        option_keys = {setting["key"] for setting in profile.get("settings", ())}
+        engine_options = {
+            setting["key"]: p[setting["key"]]
+            for setting in profile.get("settings", ())
+            if setting["key"] in p and setting["key"] not in {"use_msa", "use_msa_server"}
+        }
+        if "use_msa" in option_keys:
+            engine_options["use_msa"] = bool(p.get("target_use_msa", True))
+        p = {
+            "engine": engine,
+            "optimization_mode": p.get("optimization_mode", "off"),
+            "job_name": name,
+            "seed": int(p.get("seed", 0)),
+            "samples": int(p.get("samples", 1)),
+            "num_recycles": int(p.get("num_recycles", profile.get("default_recycles", 10))),
+            "cpu_cores": 4,
+            "tasks": _optimized_prediction_tasks(engine, source, p),
+            "engine_options": engine_options,
+            "use_target_template": bool(p.get("use_target_template", profile.get("requires_target_template", False))),
+            "target_use_msa": bool(p.get("target_use_msa", True)),
+        }
     else:
         ligand_context=source.get('target',{}).get('pipeline_task') in {'ligand_binder','motif_ligand'}
         if ligand_context and kind=='af2':
@@ -247,6 +566,12 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
                 p["use_initial_guess"] = True
             if kind == "boltz2":
                 p.pop("use_target_msa", None)  # This adapter always uses shared target MSA preparation.
+        elif kind in {"openfold3_legacy", "protenix_cli", "boltzgen_fold_batch"}:
+            # These standalone cofolding tiles consume normalized candidate
+            # collections directly. Pipeline candidates may come from design,
+            # generation, sequence redesign, or a preceding predictor, so do
+            # not require the old monomer-refolding stage gate here.
+            p["require_monomer_success"] = False
     return {"schema_version": 1, "workflow": workflow, "parameters": p}
 
 
@@ -502,7 +827,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             merged_rows.append(candidate)
                     source = _local_source(parent, f"{node_id}_fan_in", merged_rows, merged_target)
                 key_params = copy.deepcopy(params)
-                if kind == "target" or kind=='complexa_generator' and params.get('target_pdb'):
+                if kind == "target" or kind == 'cofold_input' and params.get('target_pdb') or kind=='complexa_generator' and params.get('target_pdb'):
                     target_path = _path(params["target_pdb"])
                     key_params["structure_digest"] = file_digest(target_path)
                 if kind in {"design_source","generation_source","backbone_source"}:
@@ -570,8 +895,29 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         staged_target.parent.mkdir(parents=True, exist_ok=True)
                         if not staged_target.exists():
                             shutil.copy2(target_path, staged_target)
-                        output = {"target": {"target_pdb": str(staged_target), "target_chains": chains, "hotspots": params["hotspots"]}}
+                        output = {"target": {"target_pdb": str(staged_target), "target_chains": chains,
+                                             "hotspots": params["hotspots"], "coldspots": params.get("coldspots", "")}}
                         complete(node_id, output, key);progressed=True;continue
+                    if kind == 'cofold_input':
+                        task = {key: copy.deepcopy(params.get(key, '')) for key in (
+                            'task_type', 'target_protein_sequences', 'partner_protein_sequences',
+                            'dna_sequences', 'rna_sequences', 'ligand_input_type', 'ligand_ccd_codes', 'ligand_smiles',
+                            'cyclic_partner', 'target_chain_id',
+                        )}
+                        target_pdb = str(params.get('target_pdb') or '').strip()
+                        task['target_pdb'] = str(_path(target_pdb)) if target_pdb else ''
+                        complete(node_id, {'molecule_task': task}, key);progressed=True;continue
+                    if kind == "binder_context":
+                        target = copy.deepcopy(source.get("target") or {})
+                        if not target.get("target_pdb") or not target.get("target_chains"):
+                            raise ValueError("Binder Design Context needs a connected Target Structure with selected chains.")
+                        if params.get("clear_unselected"):
+                            target["hotspots"] = params.get("hotspots", "")
+                            target["coldspots"] = params.get("coldspots", "")
+                        else:
+                            target["hotspots"] = params.get("hotspots") or target.get("hotspots", "")
+                            target["coldspots"] = params.get("coldspots") or target.get("coldspots", "")
+                        complete(node_id, {"target": target}, key);progressed=True;continue
                     if kind in {"design_source","generation_source","backbone_source"}:
                         loader=source_generations if kind in {'generation_source','backbone_source'} else source_designs
                         extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind!='design_source' else {}
