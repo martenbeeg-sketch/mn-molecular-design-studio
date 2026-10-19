@@ -201,8 +201,9 @@ def _render_setup_content(schema: dict, *, owner_id: str, project_selector, subm
         settings["mpnn_temperature"] = st.number_input("ProteinMPNN temperature", 0.01, 2.0, 0.1, 0.01, key="rfab-temperature")
         settings["num_connections"] = int(st.number_input("ProteinMPNN neighbors", 1, 100, 48, 1, key="rfab-connections"))
         settings["omit_aas"] = st.text_input("Omit amino acids", "CX", key="rfab-omit-aas", help="Use one-letter codes, for example CX.")
-        settings["bias_aas"] = st.text_input("Global amino-acid bias", "", key="rfab-bias-aas", placeholder="W:3.0,P:3.0,C:3.0,A:-3.0")
-        settings["bias_by_res_json"] = st.text_area("Per-residue bias JSON", "{}", height=90, key="rfab-bias-by-res", help='Use antibody chain IDs and 1-based sequence positions, e.g. {"H":{"31":{"W":2.0}}}.')
+        st.caption("The pinned RFantibody image does not yet support global or per-residue amino-acid bias in its ProteinMPNN interface.")
+        settings["bias_aas"] = st.text_input("Global amino-acid bias", "", key="rfab-bias-aas", placeholder="W:3.0,P:3.0,C:3.0,A:-3.0", disabled=True)
+        settings["bias_by_res_json"] = st.text_area("Per-residue bias JSON", "{}", height=90, key="rfab-bias-by-res", help='Use antibody chain IDs and 1-based sequence positions, e.g. {"H":{"31":{"W":2.0}}}.', disabled=True)
 
         st.markdown("**Backbone and structure prediction**")
         settings["augment_eps"] = st.number_input("Backbone noise augmentation", 0.0, 1.0, 0.05, 0.01, key="rfab-augment")

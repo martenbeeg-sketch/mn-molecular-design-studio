@@ -293,7 +293,8 @@ render_setup(workflow_schema("sequence.mpnn"), owner_id="test", project_selector
 from mn_molecular_design_studio.pipeline_graph import new_graph
 from mn_molecular_design_studio.pipeline_node_ui import render_node_form
 g=new_graph("foundry")
-render_node_form(g["nodes"][2],g,key="common",owner_id="test",render_input=lambda:{})
+node=next(n for n in g["nodes"] if n["data"]["kind"]=="foundry_mpnn")
+render_node_form(node,g,key="common",owner_id="test",render_input=lambda:{})
 ''').run()
     assert not node.exception
     assert node.button_group(key="common-mpnn-field-model")

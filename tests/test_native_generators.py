@@ -162,14 +162,24 @@ def test_shared_canvas_node_form_and_template_bind_to_public_generator(engine):
 from mn_molecular_design_studio.pipeline_graph import new_graph
 from mn_molecular_design_studio.pipeline_node_ui import render_node_form
 g=new_graph({engine!r})
-render_node_form(g['nodes'][0],g,key='test-generator',owner_id='test',render_input=lambda:{{}})
+node=next(n for n in g['nodes'] if n['data']['kind']=={engine!r})
+render_node_form(node,g,key='test-generator',owner_id='test',render_input=lambda:{{}})
 ''').run(timeout=20)
     assert not app.exception
     assert any(b.label=='Design task' for b in app.button_group)
     assert not any(n.label=='Number of independent jobs' for n in app.number_input)
     g=graph.new_graph(engine)
-    g['nodes'][0]['data']['params'].update({k:('' if v is None else v) for k,v in inputs.examples(engine)[0]['parameters'].items() if k in g['nodes'][0]['data']['params']})
-    g['nodes'][0]['data']['params']['target_chains']=','.join(g['nodes'][0]['data']['params']['target_chains'])
+    generator_node=next(n for n in g['nodes'] if n['data']['kind']==engine)
+    if engine == 'protpardelle':
+        pass  # This starter template is intentionally an unconditional design.
+    else:
+        example=inputs.examples(engine)[0]['parameters']
+        target_node=next(n for n in g['nodes'] if n['data']['kind']=='target')
+        target_node['data']['params'].update(target_pdb=example['target_pdb'],
+            target_chains=','.join(example.get('target_chains') or ['A']),
+            hotspots=example.get('hotspots',''))
+        generator_node['data']['params'].update({k:('' if v is None else v) for k,v in example.items()
+            if k in generator_node['data']['params'] and k not in {'target_pdb','target_chains','hotspots'}})
     plan=graph.validate_graph(g,require_inputs=True)
     assert plan['graph']['template_id']==engine
     request=runner.node_request(engine,plan['graph']['nodes'][0]['data']['params'],{},'test')

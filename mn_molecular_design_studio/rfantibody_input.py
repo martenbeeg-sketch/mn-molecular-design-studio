@@ -206,6 +206,10 @@ def validate_request(parameters: dict, *, require_files: bool = True) -> dict:
         raise ValueError("Omit amino acids using standard one-letter codes, optionally including X.")
     bias_aas = normalize_global_bias(parameters.get("bias_aas", ""))
     bias_by_res_json = normalize_per_residue_bias(parameters.get("bias_by_res_json", "{}"))
+    if bias_aas or json.loads(bias_by_res_json):
+        raise ValueError(
+            "The installed RFantibody ProteinMPNN interface does not support global or per-residue amino-acid bias yet."
+        )
     use_abmpnn = bool(parameters.get("use_abmpnn", False))
     abmpnn_checkpoint = None
     if use_abmpnn:

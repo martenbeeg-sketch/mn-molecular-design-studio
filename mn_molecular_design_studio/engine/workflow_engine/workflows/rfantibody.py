@@ -114,6 +114,33 @@ def _write_binder_structure(source: Path, destination: Path, chains: list[str]) 
     _write_selected_structure(structure, destination, allowed)
 
 
+def _proteinmpnn_command(
+    *,
+    input_quiver: str,
+    output_quiver: str,
+    loops: str,
+    sequences_per_structure: int,
+    temperature: float,
+    augment_eps: float,
+    num_connections: int,
+    omit_aas: str,
+    checkpoint: str,
+) -> list[str]:
+    """Use the pinned RFantibody script's actual ProteinMPNN argument names."""
+    return [
+        "python", "scripts/proteinmpnn_interface_design.py",
+        "-quiver", input_quiver,
+        "-outquiver", output_quiver,
+        "-loop_string", loops,
+        "-seqs_per_struct", str(sequences_per_structure),
+        "-temperature", str(temperature),
+        "-augment_eps", str(augment_eps),
+        "-num_connections", str(num_connections),
+        "-omit_AAs", omit_aas,
+        "-checkpoint_path", checkpoint,
+    ]
+
+
 def _collect_candidates(
     run_dir: Path,
     target_pdb: Path,
@@ -296,15 +323,17 @@ def run_rfantibody_design(
         if not save_trajectories:
             diffusion.append("--no-trajectory")
         steps.extend(["echo '[RFantibody] Stage 1/3 · RFdiffusion'; " + shlex.join(diffusion)])
-        mpnn = [
-            "proteinmpnn", "--input-quiver", diff_qv_container, "--output-quiver", mpnn_qv_container,
-            "--loops", ",".join(normalized["regions"]), "--seqs-per-struct", str(normalized["number_of_sequences"]),
-            "--temperature", str(normalized["mpnn_temperature"]), "--augment-eps", str(normalized["augment_eps"]),
-            "--num-connections", str(normalized["num_connections"]), "--omit-aas", normalized["omit_aas"],
-            "--bias-aas", normalized["bias_aas"], "--bias-by-res-json", normalized["bias_by_res_json"],
-        ]
-        if use_abmpnn:
-            mpnn.extend(["--weights", mpnn_checkpoint_in_container])
+        mpnn = _proteinmpnn_command(
+            input_quiver=diff_qv_container,
+            output_quiver=mpnn_qv_container,
+            loops=",".join(normalized["regions"]),
+            sequences_per_structure=normalized["number_of_sequences"],
+            temperature=normalized["mpnn_temperature"],
+            augment_eps=normalized["augment_eps"],
+            num_connections=normalized["num_connections"],
+            omit_aas=normalized["omit_aas"],
+            checkpoint=mpnn_checkpoint_in_container,
+        )
         steps.append("echo '[RFantibody] Stage 2/3 · ProteinMPNN'; " + shlex.join(mpnn))
         for repeat in range(1, normalized["rf2_repeats"] + 1):
             model_output = f"/work/artifacts/raw/rfantibody/rf2_models/model_{repeat:02d}"

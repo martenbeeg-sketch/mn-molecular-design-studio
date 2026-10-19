@@ -77,6 +77,33 @@ def test_target_is_prepared_with_valid_chain_mapping_and_hotspots(tmp_path):
     assert list(protein_chains(read_structure(tmp_path / "target.pdb"))) == ["B"]
 
 
+def test_proteinmpnn_command_matches_pinned_image_cli():
+    command = workflow._proteinmpnn_command(
+        input_quiver="/work/input.qv",
+        output_quiver="/work/output.qv",
+        loops="H1,H2,H3",
+        sequences_per_structure=1,
+        temperature=0.1,
+        augment_eps=0.05,
+        num_connections=48,
+        omit_aas="CX",
+        checkpoint="/ref/ProteinMPNN.pt",
+    )
+
+    assert command[:2] == ["python", "scripts/proteinmpnn_interface_design.py"]
+    assert command[command.index("-num_connections") + 1] == "48"
+    assert "--num-connections" not in command
+    assert "--bias-aas" not in command
+    assert "--bias-by-res-json" not in command
+
+
+def test_unsupported_rfantibody_bias_settings_are_rejected_before_submission():
+    with pytest.raises(ValueError, match="does not support global or per-residue"):
+        inputs.validate_request(nanobody_parameters(bias_aas="W:2"))
+    with pytest.raises(ValueError, match="does not support global or per-residue"):
+        inputs.validate_request(nanobody_parameters(bias_by_res_json='{"H":{"31":{"W":2}}}'))
+
+
 def test_queued_workflow_job_parameters_serialize_resolved_structure_paths(monkeypatch, tmp_path):
     references = tmp_path / "references"
     antibody_weights = references / "rfantibody"
