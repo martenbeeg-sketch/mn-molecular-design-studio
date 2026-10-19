@@ -218,8 +218,15 @@ def run_rfantibody_design(
         )
     seed = secrets.randbelow(2_000_000_000) + 1
     gpu_device = normalize_gpu_device(gpu_device)
-    parameters.update({"gpu_device": gpu_device, "cpu_cores": normalized["cpu_cores"], "seed": seed,
-                       "engine_version": inputs.CODE_VERSION, "image": inputs.IMAGE})
+    parameters.update({
+        "target_pdb": str(normalized["target_pdb"]),
+        "framework_pdb": str(normalized["framework_pdb"]) if normalized["framework_pdb"] else None,
+        "gpu_device": gpu_device,
+        "cpu_cores": normalized["cpu_cores"],
+        "seed": seed,
+        "engine_version": inputs.CODE_VERSION,
+        "image": inputs.IMAGE,
+    })
     inputs_payload = {"target_pdb": str(normalized["target_pdb"]), "framework_pdb": str(normalized["framework_pdb"]) if normalized["framework_pdb"] else None}
     job = create_job("design", "rfantibody_design", "rfantibody", inputs_payload, parameters)
     update_status(job.run_dir, "preparing", campaign_name=job_name, current_phase="Preparing RFantibody target and framework")

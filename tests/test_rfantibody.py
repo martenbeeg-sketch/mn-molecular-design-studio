@@ -77,6 +77,38 @@ def test_target_is_prepared_with_valid_chain_mapping_and_hotspots(tmp_path):
     assert list(protein_chains(read_structure(tmp_path / "target.pdb"))) == ["B"]
 
 
+def test_queued_workflow_job_parameters_serialize_resolved_structure_paths(monkeypatch, tmp_path):
+    references = tmp_path / "references"
+    antibody_weights = references / "rfantibody"
+    antibody_weights.mkdir(parents=True)
+    for name in ("RFdiffusion_Ab.pt", "ProteinMPNN_v48_noise_0.2.pt", "RF2_ab.pt"):
+        (antibody_weights / name).touch()
+    monkeypatch.setattr(workflow, "reference_root", lambda: references)
+    captured = {}
+
+    class StopAfterCapture(Exception):
+        pass
+
+    def capture_job(_task_group, _job_type, _tool, _inputs, parameters):
+        captured.update(parameters)
+        json.dumps(parameters)
+        raise StopAfterCapture
+
+    monkeypatch.setattr(workflow, "create_job", capture_job)
+    with pytest.raises(StopAfterCapture):
+        workflow.run_rfantibody_design(
+            task="nanobody",
+            target_pdb=EXAMPLE_TARGET,
+            target_chains=["B"],
+            hotspots="B146,B170,B177",
+            framework="h-NbBCII10",
+            regions=["H1", "H2", "H3"],
+        )
+
+    assert captured["target_pdb"] == str(EXAMPLE_TARGET)
+    assert captured["framework_pdb"] is None
+
+
 def test_workflow_registration_and_schema_validation(tmp_path):
     schema = automation.workflow_schema("design.rfantibody")
     assert schema["workflow"] == "design.rfantibody"
