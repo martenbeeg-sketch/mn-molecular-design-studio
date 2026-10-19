@@ -17,6 +17,7 @@ from mn_molecular_design_studio.engine.workflow_engine.core import jobs, portabl
         ("target_pdb_text", "HEADER    target.pdb\nATOM      1\nEND\n"),
         ("msa_a3m_text", ">query\nACDE\n"),
         ("target_sequence", "ACDEFG"),
+        ("bias_by_res_json", "{}"),
         ("input_smiles", "C/C=C\\C"),
         # Inline fields must remain literal even when they resemble a managed URI.
         ("design_yaml", "runs:///literal.yaml"),
@@ -55,6 +56,7 @@ def test_non_admin_path_guard_distinguishes_inline_yaml_and_real_paths(monkeypat
             "design_yaml": "entities:\n  - file:\n      path: {{TARGET_FILE}}\n",
             "target_msa_a3m": ">target/1-4\nACDE\n",
             "target_pdb_text": "HEADER /inline/target.pdb\nEND\n",
+            "bias_by_res_json": "{}",
         },
         user,
         tmp_path,

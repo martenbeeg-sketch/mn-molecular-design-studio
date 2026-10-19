@@ -21,7 +21,9 @@ _PATH_KEY_SUFFIXES: Final = (
     "_mmcif", "_msa", "_pdb", "_path", "_root", "_structure", "_table", "_tsv", "_weights", "_yaml", "_yml",
 )
 _PROVENANCE_KEY_PARTS: Final = ("command", "argv", "executable", "queued_command")
-_INLINE_CONTENT_KEYS: Final = frozenset({"design_yaml", "target_msa_a3m", "text", "sequence", "sequences", "smiles"})
+_INLINE_CONTENT_KEYS: Final = frozenset({
+    "bias_by_res_json", "design_yaml", "target_msa_a3m", "text", "sequence", "sequences", "smiles",
+})
 _INLINE_CONTENT_SUFFIXES: Final = ("_text", "_sequence", "_sequences", "_smiles")
 _PATH_VALUE_EXTENSIONS: Final = frozenset({
     ".a3m", ".cif", ".csv", ".fa", ".fasta", ".json", ".jsonl", ".mmcif",
