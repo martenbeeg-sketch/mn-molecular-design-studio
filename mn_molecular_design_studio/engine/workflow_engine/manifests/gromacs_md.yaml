@@ -1,0 +1,35 @@
+tool: gromacs_md
+group: ligand-md
+image: mn-gromacs:2026.3-cu128
+gpu: true
+description: Bound protein-ligand preparation, explicit-solvent molecular dynamics, and trajectory analysis with GROMACS.
+inputs:
+  complex_pdb:
+    type: protein_ligand_complex_pdb
+    required: true
+  ligand_sdf:
+    type: ligand_coordinates_sdf
+    required: true
+  ligand_key:
+    type: bound_ligand_residue
+    required: true
+params:
+  production_ns: {type: float, default: 1.0}
+  timestep_fs: {type: float, default: 2.0}
+  temperature: {type: float, default: 300.0}
+  pressure: {type: float, default: 1.0}
+  forcefield_method: {type: str, default: gaff2}
+  protein_forcefield_method: {type: str, default: ff14SB}
+  water_model: {type: str, default: tip3p}
+  use_gpu: {type: bool, default: true}
+  cpu_cores: {type: int, default: 8}
+outputs:
+  trajectories:
+    path: artifacts/md/production
+    type: md_trajectory_set
+  analysis:
+    path: artifacts/md/production/trajectory_analysis.json
+    type: md_analysis
+  prepared_system:
+    path: artifacts/md/preparation
+    type: prepared_md_system

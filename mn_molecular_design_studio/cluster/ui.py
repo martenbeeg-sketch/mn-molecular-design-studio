@@ -5,12 +5,14 @@ import hashlib
 import json
 import sys
 import uuid
-from pathlib import Path
+import csv
+import io
+from pathlib import Path, PurePosixPath
 
 import pandas as pd
 import streamlit as st
 
-from . import config, transport
+from . import config, progress as job_progress, transport
 
 
 _TOOL_LABELS = {
@@ -29,6 +31,7 @@ _TOOL_LABELS = {
     "rfdiffusion": "RFdiffusion",
     "rfdiffusion_classic": "RFdiffusion",
     "rfdiffusion_generator": "RFdiffusion Generator",
+    "rfdiffusion_beta_pairing": "RFdiffusion β-pairing",
     "rfdiffusion3": "RFdiffusion3",
     "rfdiffusion3_foundry": "RFdiffusion3",
     "genie3": "Genie3",
@@ -100,6 +103,7 @@ def display_tool_label(row):
         "design.proteina_complexa_generate": "Proteina-Complexa Generator",
         "design.pxdesign_generate": "PXDesign",
         "design.rfdiffusion_generate": "RFdiffusion Generator",
+        "design.rfdiffusion_beta_pairing": "RFdiffusion β-pairing",
         "design.rfdiffusion3": "RFdiffusion3",
         "design.genie3_generate": "Genie3 Generator",
         "design.protpardelle_generate": "Protpardelle-1C Generator",
@@ -123,6 +127,427 @@ def display_tool_label(row):
 
 def _request(path, token, payload=None, method="GET", **kwargs):
     return transport.request("/api/v1/cluster" + path, payload, token=token, method=method, **kwargs)
+
+
+def _is_bindcraft2_job(row):
+    identity = " ".join(str(row.get(key) or "") for key in ("tool", "job_type", "workflow")).casefold()
+    return "bindcraft2" in identity.replace(" ", "") or "bindcraft 2" in identity
+
+
+def _row_progress(row):
+    progress = row.get("progress")
+    if isinstance(progress, dict) and progress.get("engine") == "bindcraft2":
+        return progress
+    if row.get("node_id") != config.identity() or not _is_bindcraft2_job(row):
+        return None
+    run_dir = row.get("run_dir")
+    if not isinstance(run_dir, str) or not run_dir:
+        return None
+    try:
+        return job_progress.bindcraft2_progress(Path(run_dir))
+    except OSError:
+        return None
+
+
+def _progress_summary(progress):
+    if not isinstance(progress, dict):
+        return ""
+    completed = int(progress.get("trajectories_completed") or 0)
+    active = int(progress.get("trajectories_in_progress") or 0)
+    accepted = int(progress.get("designs_accepted") or 0)
+    trajectory_limit = progress.get("trajectory_limit")
+    design_target = progress.get("design_target")
+    trajectory_label = f"{completed:,} / {int(trajectory_limit):,}" if trajectory_limit else f"{completed:,} completed"
+    design_label = f"{accepted:,} / {int(design_target):,}" if design_target else f"{accepted:,} accepted"
+    return f"Progress: {trajectory_label} trajectories · {active:,} running · {design_label} accepted"
+
+
+def _render_bindcraft2_progress(row, job_id, token):
+    terminal = {"completed", "succeeded", "failed", "cancelled"}
+    run_every = 15 if row.get("status") not in terminal else None
+
+    @st.fragment(run_every=run_every)
+    def live_progress():
+        current = row
+        try:
+            current = _request("/jobs/" + job_id, token)
+        except (transport.ClusterUnavailable, ValueError):
+            pass
+        progress = _row_progress(current)
+        st.subheader("BindCraft progress")
+        if not progress:
+            st.caption("Live campaign counters will appear when BindCraft starts writing progress.")
+            return
+
+        completed = int(progress.get("trajectories_completed") or 0)
+        active = int(progress.get("trajectories_in_progress") or 0)
+        accepted = int(progress.get("designs_accepted") or 0)
+        trajectory_limit = progress.get("trajectory_limit")
+        design_target = progress.get("design_target")
+        attempts_col, accepted_col = st.columns(2)
+        attempts_value = f"{completed:,}" + (f" / {int(trajectory_limit):,}" if trajectory_limit else "")
+        accepted_value = f"{accepted:,}" + (f" / {int(design_target):,}" if design_target else "")
+        attempts_col.metric("Completed trajectories", attempts_value, delta=f"{active:,} running" if active else None)
+        accepted_col.metric("Accepted designs", accepted_value)
+        if trajectory_limit:
+            attempts_col.progress(min(1.0, completed / max(1, int(trajectory_limit))), text="Attempt cap")
+        if design_target:
+            accepted_col.progress(min(1.0, accepted / max(1, int(design_target))), text="Accepted-design goal")
+        if progress.get("updated_at"):
+            st.caption("Counters update while the campaign runs; the trajectory count is completed attempts, with active workers shown separately.")
+
+    live_progress()
+
+
+def _candidate_structure_path(candidate, data):
+    """Return a run-relative candidate structure path safe for the artifact API."""
+    if not isinstance(candidate, dict) or not isinstance(data, dict):
+        return None
+    run_dir = (data.get("job") or {}).get("run_dir")
+    if not isinstance(run_dir, str) or not run_dir:
+        return None
+    root = PurePosixPath(run_dir)
+    for key in ("complex_pdb", "binder_pdb"):
+        value = candidate.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        path = PurePosixPath(value.strip())
+        if path.is_absolute():
+            try:
+                path = path.relative_to(root)
+            except ValueError:
+                continue
+        if not path.parts or any(part in {".", ".."} for part in path.parts):
+            continue
+        return str(path), key
+    return None
+
+
+_BINDCRAFT2_RESULT_COLUMNS = (
+    "i_pDAE",
+    "i_pTM",
+    "pLDDT",
+    "pTM",
+    "i_pAE",
+    "Unbound_Binder_pLDDT",
+    "Target_pLDDT",
+    "Interface_Residues",
+    "Binder_RMSD",
+    "Target_Crop_Length",
+    "Backbone_Clashes",
+    "All_Atom_Clashes",
+    "Interface_BuriedArea",
+    "Interface_BuriedArea_Fraction",
+    "Surface_Hydrophobicity",
+    "Interface_Hydrophobicity",
+    "Binder_Helix_Fraction",
+    "Binder_BetaSheet_Fraction",
+    "Binder_Loop_Fraction",
+    "SS_pLDDT",
+    "Interface_Helix_Fraction",
+    "Interface_BetaSheet_Fraction",
+    "Interface_Loop_Fraction",
+    "Binder_Disulfides",
+    "Binder_Mass_kDa",
+    "Binder_pI",
+    "Binder_Net_Charge",
+    "Binder_Cysteines",
+    "Binder_Extinction",
+    "Binder_Free_Cysteines",
+    "Interface_Binder_Residues",
+    "Interface_Target_Residues",
+)
+
+
+def _candidate_result_rows(candidates, tool=""):
+    """Build a cross-tool result table, retaining BindCraft2's native metrics."""
+    is_bindcraft2 = "bindcraft2" in str(tool).casefold() or any(
+        isinstance(candidate, dict)
+        and "bindcraft2" in str(candidate.get("source_tool") or candidate.get("tool") or "").casefold()
+        for candidate in candidates
+    )
+    metric_columns = (
+        ("pred_lddt", "pLDDT"),
+        ("interaction_pae", "Interaction PAE"),
+        ("pae", "PAE"),
+        ("hotspot_atom_contact_fraction", "Hotspot atom contacts"),
+        ("hotspot_ca_contact_fraction", "Hotspot CA contacts"),
+        ("rf2_repeat", "RF2 repeat"),
+        ("cyclic", "Cyclic"),
+    )
+    rows = []
+    for rank, candidate in enumerate(candidates, 1):
+        if not isinstance(candidate, dict):
+            continue
+        metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
+        raw_metadata = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+        native_row = raw_metadata.get("bindcraft2_row") if isinstance(raw_metadata.get("bindcraft2_row"), dict) else {}
+        row = {
+            "Rank": metrics.get("bindcraft2_rank", native_row.get("rank", rank)) if is_bindcraft2 else rank,
+            "Design": (
+                native_row.get("design")
+                or raw_metadata.get("bindcraft2_design")
+                or candidate.get("candidate_id")
+                or f"Design {rank}"
+            ),
+            "Sequence": candidate.get("binder_sequence") or candidate.get("sequence") or "—",
+            "Length": candidate.get("binder_length") or metrics.get("binder_length"),
+        }
+        if is_bindcraft2:
+            for key in _BINDCRAFT2_RESULT_COLUMNS:
+                value = metrics.get(key, native_row.get(key))
+                if value not in (None, ""):
+                    row[key] = value
+            if "native_pass_filters" in metrics:
+                row["Passed filters"] = metrics["native_pass_filters"]
+        else:
+            for key, label in metric_columns:
+                if key in metrics:
+                    row[label] = metrics[key]
+        rows.append(row)
+    return rows
+
+
+def _bindcraft2_run_parameter_rows(data):
+    """Select human-readable BindCraft2 inputs and filter thresholds from inspect data."""
+    input_payload = data.get("input") if isinstance(data, dict) else None
+    if not isinstance(input_payload, dict):
+        return [], []
+    params = input_payload.get("params") if isinstance(input_payload.get("params"), dict) else {}
+    inputs = input_payload.get("inputs") if isinstance(input_payload.get("inputs"), dict) else {}
+
+    def present(value):
+        return value not in (None, "", [], {})
+
+    rows = []
+    values = (
+        ("Campaign", params.get("campaign_name") or input_payload.get("campaign_name")),
+        ("Target", params.get("target_name") or inputs.get("target_name")),
+        ("Target type", params.get("target_type") or inputs.get("target_type")),
+        ("Target chains", params.get("target_chains") or inputs.get("target_chains")),
+        ("Design format", params.get("modality")),
+        ("Binder length range", params.get("binder_length")),
+        ("Designs requested", params.get("number_of_final_designs")),
+        ("Maximum trajectories", params.get("max_trajectories")),
+        ("Target crop count", params.get("target_crop_count")),
+        ("Target crop lengths", params.get("target_crop_lengths")),
+        ("Hotspots", params.get("hotspots")),
+        ("Coldspots", params.get("coldspots")),
+        ("Random seed", params.get("campaign_seed")),
+        ("GPU device", params.get("gpu_device")),
+    )
+    for label, value in values:
+        if present(value):
+            if isinstance(value, (list, tuple)):
+                value = ", ".join(map(str, value))
+            rows.append({"Parameter": label, "Value": value})
+
+    quality = params.get("quality_filters") if isinstance(params.get("quality_filters"), dict) else {}
+    filters = quality.get("filters") if isinstance(quality.get("filters"), dict) else {}
+    filter_rows = []
+    for name, value in quality.items():
+        if name == "filters" or value is None:
+            continue
+        try:
+            value = f"{float(value):g}"
+        except (TypeError, ValueError):
+            value = str(value)
+        key = str(name)
+        direction = "≤" if key.startswith("max_") else "≥" if key.startswith("min_") else ""
+        detail = key.removeprefix("min_").removeprefix("max_")
+        parts = detail.split("_")
+        if parts[0] in {"iptm", "plddt"} and len(parts) > 1:
+            metric = "i_pTM" if parts[0] == "iptm" else "pLDDT"
+            label = f"{parts[-1].title()} {metric} stage minimum"
+        else:
+            label = detail.replace("_", " ").title()
+        filter_rows.append({"Filter": label, "Requirement": f"{direction} {value}".strip()})
+    for name, config in filters.items():
+        if not isinstance(config, dict) or config.get("threshold") is None:
+            continue
+        threshold = config["threshold"]
+        try:
+            threshold = float(threshold)
+            threshold = f"{threshold:g}"
+        except (TypeError, ValueError):
+            threshold = str(threshold)
+        direction = "≥" if config.get("higher") else "≤"
+        filter_rows.append({"Filter": str(name).replace("_", " "), "Requirement": f"{direction} {threshold}"})
+    filter_rows.sort(key=lambda item: item["Filter"].casefold())
+    return rows, filter_rows
+
+
+def _safe_run_artifact_path(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    path = PurePosixPath(value.strip())
+    if path.is_absolute() or not path.parts or any(part in {".", ".."} for part in path.parts):
+        return None
+    return str(path)
+
+
+def _bindcraft2_refolded_table_path(data):
+    result = data.get("result") if isinstance(data, dict) else None
+    outputs = result.get("outputs") if isinstance(result, dict) else None
+    artifacts = outputs.get("artifacts") if isinstance(outputs, dict) else None
+    for artifact in artifacts if isinstance(artifacts, list) else []:
+        if isinstance(artifact, dict) and artifact.get("type") == "bindcraft2_refolded_table":
+            path = _safe_run_artifact_path(artifact.get("path"))
+            if path:
+                return path
+    return "artifacts/raw/bindcraft2/output/2_Refolded/!_Refolded.csv"
+
+
+def _bindcraft2_monomer_path(refolded_csv, candidate):
+    raw = candidate.get("raw_metadata") if isinstance(candidate, dict) else None
+    raw = raw if isinstance(raw, dict) else {}
+    direct_path = _safe_run_artifact_path(raw.get("bindcraft2_binder_monomer"))
+    if direct_path:
+        return direct_path
+    if not refolded_csv:
+        return None
+    native = raw.get("bindcraft2_row") if isinstance(raw.get("bindcraft2_row"), dict) else {}
+    wanted_sequence = "".join(str(candidate.get("binder_sequence") or native.get("Binder_Sequence") or "").split()).upper()
+    matches = []
+    if wanted_sequence:
+        csv_text = str(refolded_csv or "").lstrip("\ufeff")
+        for row in csv.DictReader(io.StringIO(csv_text)):
+            sequence = "".join(str(row.get("Binder_Sequence") or "").split()).upper()
+            if sequence != wanted_sequence:
+                continue
+            failed = str(row.get("failed_filters") or "").strip()
+            outcome = str(row.get("outcome") or "").strip().casefold()
+            matches.append((not failed and outcome in {"", "passed"}, row))
+    if not matches:
+        design = str(raw.get("bindcraft2_design") or native.get("design") or "").strip()
+    else:
+        _, matched = next((item for item in matches if item[0]), matches[0])
+        design = str(matched.get("design") or "").strip()
+    design = PurePosixPath(design).name
+    if not design or design in {".", ".."}:
+        return None
+    if design.endswith("_monomer.cif"):
+        return _safe_run_artifact_path(
+            f"artifacts/raw/bindcraft2/output/2_Refolded/BinderMonomer/{design}"
+        )
+    if design.endswith((".cif", ".mmcif", ".pdb")):
+        design = PurePosixPath(design).stem
+    return _safe_run_artifact_path(
+        f"artifacts/raw/bindcraft2/output/2_Refolded/BinderMonomer/{design}_monomer.cif"
+    )
+
+
+def _fetch_remote_artifact_text(jid, path, token, state_key, label="saved structure"):
+    relative = _safe_run_artifact_path(path)
+    if not relative:
+        st.warning("The saved structure path is invalid.")
+        return None
+    command_id = st.session_state.get(state_key)
+    if not command_id:
+        try:
+            operation = _request(
+                "/jobs/" + jid + "/actions",
+                token,
+                {"action": "artifact", "parameters": {"path": relative}},
+                method="POST",
+            )
+            command_id = operation["command_id"]
+            st.session_state[state_key] = command_id
+        except (ValueError, transport.ClusterUnavailable) as exc:
+            st.warning(f"Could not request the saved structure: {exc}")
+            return None
+    try:
+        status = _request("/commands/" + command_id, token)
+        if status["status"] == "failed":
+            error = status.get("error") or f"The workstation could not serve this {label}."
+            st.warning(f"{error} Requested path: {relative}")
+            return None
+        if status["status"] != "completed":
+            st.info(f"Loading the {label} from the owning workstation…")
+            return None
+        content_key = "cluster-artifact-bytes-" + command_id
+        if content_key not in st.session_state:
+            st.session_state[content_key] = _request(
+                "/commands/" + command_id + "/file", token, raw=True, timeout=60
+            )
+        return st.session_state[content_key].decode("utf-8", errors="replace")
+    except (ValueError, transport.ClusterUnavailable) as exc:
+        st.info(str(exc))
+        return None
+
+
+def _align_bindcraft2_monomer_to_complex(complex_text, monomer_text, candidate):
+    """Fit the binder-alone CIF onto its binder chain in the predicted complex."""
+    from Bio.PDB import MMCIFIO, MMCIFParser, Superimposer
+    from mn_molecular_design_studio.design_validation import protein_chains, residue_pairs, sequence
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import _mmcif_text_with_default_occupancy
+
+    def parse(text, name):
+        prepared = _mmcif_text_with_default_occupancy(str(text))
+        return MMCIFParser(QUIET=True).get_structure(name, io.StringIO(prepared))
+
+    complex_structure = parse(complex_text, "bindcraft2_complex")
+    monomer_structure = parse(monomer_text, "bindcraft2_binder_monomer")
+    complex_chains = protein_chains(complex_structure)
+    monomer_chains = protein_chains(monomer_structure)
+    expected = str(candidate.get("binder_sequence") or "").replace(" ", "").upper()
+    if not expected:
+        raise ValueError("The candidate sequence is missing, so its binder chain cannot be matched.")
+
+    def best_chain(chains, preferred=()):
+        ordered = [chain for chain in preferred if chain in chains]
+        ordered.extend(chain for chain in chains if chain not in ordered)
+        scored = []
+        for chain in ordered:
+            observed = sequence(chains[chain])
+            pairs = residue_pairs(expected, observed)
+            identity = sum(expected[i] == observed[j] for i, j in pairs) / max(1, len(pairs))
+            scored.append((identity, chain, pairs))
+        return max(scored, default=(0.0, None, []))
+
+    binder_chains = candidate.get("binder_chains") or []
+    complex_identity, complex_chain, _ = best_chain(complex_chains, binder_chains)
+    monomer_identity, monomer_chain, _ = best_chain(monomer_chains)
+    if complex_chain is None or monomer_chain is None or min(complex_identity, monomer_identity) < 0.5:
+        raise ValueError("Could not identify the binder chain in both structures.")
+    complex_residues, monomer_residues = complex_chains[complex_chain], monomer_chains[monomer_chain]
+    complex_sequence, monomer_sequence = sequence(complex_residues), sequence(monomer_residues)
+    pairs = residue_pairs(complex_sequence, monomer_sequence)
+    pairs = [(i, j) for i, j in pairs if "CA" in complex_residues[i] and "CA" in monomer_residues[j]]
+    if len(pairs) < 3:
+        raise ValueError("Fewer than three matching binder C-alpha atoms are available for alignment.")
+    fixed = [complex_residues[i]["CA"] for i, _ in pairs]
+    moving = [monomer_residues[j]["CA"] for _, j in pairs]
+    superimposer = Superimposer()
+    superimposer.set_atoms(fixed, moving)
+    for atom in monomer_structure.get_atoms():
+        atom.transform(*superimposer.rotran)
+    output = io.StringIO()
+    writer = MMCIFIO()
+    writer.set_structure(monomer_structure)
+    writer.save(output)
+    return output.getvalue(), float(superimposer.rms), len(pairs)
+
+
+def _candidate_structure_color(candidate, structure_text=""):
+    """Use pLDDT colors only when per-atom confidence values are in the PDB."""
+    metrics = candidate.get("metrics") if isinstance(candidate, dict) else None
+    metrics = metrics if isinstance(metrics, dict) else {}
+    has_confidence_metric = any(
+        isinstance(metrics.get(key), (int, float))
+        for key in ("pred_lddt", "plddt", "mean_plddt")
+    )
+    if has_confidence_metric:
+        factors = []
+        for line in str(structure_text).splitlines():
+            if line.startswith(("ATOM  ", "HETATM")):
+                try:
+                    factors.append(float(line[60:66]))
+                except ValueError:
+                    continue
+        if len(factors) > 1 and max(factors) - min(factors) > 0.01:
+            return "plddt"
+    return "chain-id"
 
 
 def _cache(user_id, name):
@@ -245,7 +670,15 @@ def settings(user, token):
                 st.caption("This file grants access to one workstation agent. Copy it privately to that workstation.")
 
 
-def render_runs(user, token, local_search):
+def render_runs(user, token, local_search, *, elapsed_label=None, elapsed_since=None):
+    @st.fragment(run_every=15)
+    def live_results():
+        _render_runs_content(user, token, local_search, elapsed_label=elapsed_label, elapsed_since=elapsed_since)
+
+    live_results()
+
+
+def _render_runs_content(user, token, local_search, *, elapsed_label=None, elapsed_since=None):
     st.title("My results")
     page, stale = catalog(user, token)
     if stale:
@@ -262,6 +695,8 @@ def render_runs(user, token, local_search):
     for row in local:
         key = (config.identity(), row["task_group"], row["run_id"])
         item = dict(row, node_id=config.identity(), node_name=config.load()["name"], availability="online")
+        if _is_bindcraft2_job(item):
+            item["progress"] = _row_progress(item)
         if key in known:
             rows[known[key]] = rows[known[key]] | item
         else:
@@ -285,17 +720,27 @@ def render_runs(user, token, local_search):
     if st.session_state.get(page_key, 1) > pages:
         st.session_state[page_key] = 1
     selected_page = int(st.number_input("Page", min_value=1, max_value=pages, value=1, step=1, key=page_key))
-    header = st.columns([3, 1, 1, 1.3, 0.7])
-    for column, label in zip(header, ("Job name · tool · pipeline", "Status", "Workstation", "File availability", "Open")):
+    header = st.columns([2.8, 1, 1.25, 1, 1.3, 0.7])
+    for column, label in zip(
+        header,
+        ("Job name · tool · pipeline", "Status", "Elapsed", "Workstation", "File availability", "Open"),
+    ):
         column.caption(label)
     for row in chosen[(selected_page - 1) * 50:selected_page * 50]:
         with st.container(border=True):
-            title, state, machine, access, action = st.columns([3, 1, 1, 1.3, 0.7])
+            title, state, elapsed, machine, access, action = st.columns([2.8, 1, 1.25, 1, 1.3, 0.7])
             title.write(config.display_text(row.get("campaign_name") or row.get("tool") or "Job"))
             pipeline_name = str(row.get("pipeline_name") or "").strip() or "—"
             title.caption(f"Tool: {display_tool_label(row)} · Pipeline: {config.display_text(pipeline_name)}")
             title.caption(project_names.get(row.get("project_id"), "Project") + " · " + str(row.get("job_code", "")))
+            progress_label = _progress_summary(_row_progress(row))
+            if progress_label:
+                title.caption(progress_label)
             state.write(str(row.get("status", "unknown")).replace("_", " ").title())
+            elapsed.write(elapsed_label(row) if elapsed_label else "—")
+            since = elapsed_since(row) if elapsed_since else ""
+            if since:
+                elapsed.caption(since)
             machine.write(config.display_name(row.get("node_name") or "Not assigned"))
             availability = "last known" if stale and row.get("node_id") != config.identity() else row.get("availability", "pending")
             access.write(availability.title())
@@ -328,6 +773,8 @@ def render_job(reference, user, token, submit):
     a.metric("Job status", row.get("status", "unknown").replace("_", " ").title())
     b.metric("Workstation", config.display_name(row.get("node_name") or "Not assigned"))
     c.metric("Data availability", row.get("availability", "unknown").title())
+    if _is_bindcraft2_job(row):
+        _render_bindcraft2_progress(row, str(row.get("cluster_job_id") or jid), token)
     if row.get("availability") != "online":
         st.info("The saved job record remains available. Full files and live analysis will be available when the owning workstation reconnects.")
     if row.get("wait_reason"):
@@ -338,7 +785,8 @@ def render_job(reference, user, token, submit):
         if st.button("Request cancellation", key="cluster-cancel-" + jid):
             response = _request("/jobs/" + jid + "/actions", token, {"action": "cancel"}, method="POST")
             st.success("Cancellation requested. The workstation will confirm when execution has stopped.")
-    st.json(row.get("metrics", {}), expanded=False)
+    if row.get("metrics"):
+        st.json(row.get("metrics", {}), expanded=False)
     if row.get("local_reference"):
         if st.button("Load full results from workstation", key="cluster-inspect-" + jid):
             operation = _request("/jobs/" + jid + "/actions", token, {"action": "inspect"}, method="POST")
@@ -359,11 +807,187 @@ def render_job(reference, user, token, submit):
             data = op["response"]
             candidates = data.get("results", {}).get("candidates", [])
             if candidates:
-                st.dataframe(pd.json_normalize([{ "candidate_id": r.get("candidate_id"), **r.get("metrics", {})} for r in candidates]), hide_index=True)
+                tool = " ".join(
+                    str(row.get(key) or "")
+                    for key in ("tool", "job_type", "workflow", "pipeline_name", "campaign_name")
+                ).casefold() + " " + display_tool_label(row).casefold()
+                if "rfpeptides" in tool:
+                    st.info("RFpeptides generated cyclic peptide backbones. It does not design amino-acid sequences; run ProteinMPNN or another sequence-design tool as a follow-up.")
+                rows = _candidate_result_rows(candidates, tool=tool)
+                if "bindcraft2" in tool:
+                    st.caption("The table includes BindCraft2's ranked confidence, interface, clash, and developability metrics. Scroll horizontally to see all columns.")
+                st.dataframe(
+                    pd.DataFrame(rows),
+                    hide_index=True,
+                    use_container_width=True,
+                    height=min(410, 38 * (len(rows) + 1) + 3),
+                    column_config={"Sequence": st.column_config.TextColumn(width="large")},
+                )
+                parameter_rows, filter_rows = ([], [])
+                if "bindcraft2" in tool:
+                    parameter_rows, filter_rows = _bindcraft2_run_parameter_rows(data)
+                selected = st.selectbox(
+                    "Design to visualize",
+                    range(len(candidates)),
+                    format_func=lambda index: f"{index + 1}. {candidates[index].get('candidate_id') or 'Design'}",
+                    key="cluster-candidate-" + jid,
+                )
+                candidate = candidates[selected]
+                sequence = candidate.get("binder_sequence") or candidate.get("sequence")
+                if sequence:
+                    st.markdown("**Designed molecule sequence**")
+                    st.code(sequence, language=None)
+                elif "rfpeptides" in tool:
+                    st.caption("Sequence: not applicable yet; this run contains a backbone structure only.")
+
+                structure = _candidate_structure_path(candidate, data)
+                if not structure:
+                    st.info("No candidate structure file was recorded for this design.")
+                elif row.get("availability") != "online":
+                    st.info("The structure is saved on the owning workstation and will load when that workstation reconnects.")
+                else:
+                    relative_path, structure_field = structure
+                    candidate_key = str(candidate.get("candidate_id") or selected)
+                    file_key = f"cluster-candidate-file-{jid}-{candidate_key}"
+                    command_id = st.session_state.get(file_key)
+                    if not command_id:
+                        try:
+                            file_operation = _request(
+                                "/jobs/" + jid + "/actions",
+                                token,
+                                {"action": "artifact", "parameters": {"path": relative_path}},
+                                method="POST",
+                            )
+                            command_id = file_operation["command_id"]
+                            st.session_state[file_key] = command_id
+                        except (ValueError, transport.ClusterUnavailable) as exc:
+                            st.warning(f"Could not request the representative structure: {exc}")
+                    if command_id:
+                        try:
+                            file_status = _request("/commands/" + command_id, token)
+                            if file_status["status"] == "failed":
+                                st.warning(file_status.get("error") or "The workstation could not serve this structure.")
+                            elif file_status["status"] != "completed":
+                                st.info("Loading the representative structure from the owning workstation…")
+                            else:
+                                metadata = file_status.get("response") or {}
+                                name = metadata.get("name") or Path(relative_path).name
+                                if metadata.get("size_bytes", 0) > 50 * 1024 * 1024:
+                                    st.info(f"{name} is too large for the inline structure viewer. Use the saved-file controls below to download it.")
+                                else:
+                                    content_key = "cluster-candidate-bytes-" + command_id
+                                    if content_key not in st.session_state:
+                                        st.session_state[content_key] = _request(
+                                            "/commands/" + command_id + "/file",
+                                            token,
+                                            raw=True,
+                                            timeout=60,
+                                        )
+                                    content = st.session_state[content_key]
+                                    structure_text = content.decode("utf-8", errors="replace")
+                                    st.subheader("Representative structure")
+                                    from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer import molstar_custom_component
+                                    from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer.dataclasses import StructureVisualization
+                                    visualizations = [StructureVisualization(
+                                        pdb=structure_text,
+                                        color=_candidate_structure_color(candidate, structure_text),
+                                        representation_type="cartoon",
+                                    )]
+                                    overlay_key = None
+                                    if "bindcraft2" in tool:
+                                        candidate_token = hashlib.sha256(candidate_key.encode()).hexdigest()[:12]
+                                        overlay_key = f"cluster-bc2-overlay-{jid}-{candidate_token}"
+                                        if st.checkbox(
+                                            "Overlay binder-alone monomer",
+                                            key=overlay_key + "-enabled",
+                                            help="Align the saved binder-only prediction onto the binder chain in this complex.",
+                                        ):
+                                            monomer_path = _bindcraft2_monomer_path("", candidate)
+                                            if not monomer_path:
+                                                refolded_csv = _fetch_remote_artifact_text(
+                                                    jid,
+                                                    _bindcraft2_refolded_table_path(data),
+                                                    token,
+                                                    overlay_key + "-refolded-csv",
+                                                    label="BindCraft2 refolded results table",
+                                                )
+                                                if refolded_csv:
+                                                    monomer_path = _bindcraft2_monomer_path(refolded_csv, candidate)
+                                            if monomer_path:
+                                                monomer_token = hashlib.sha256(monomer_path.encode()).hexdigest()[:12]
+                                                monomer_text = _fetch_remote_artifact_text(
+                                                    jid,
+                                                    monomer_path,
+                                                    token,
+                                                    overlay_key + "-monomer-" + monomer_token,
+                                                    label="binder-alone monomer",
+                                                )
+                                                if monomer_text:
+                                                    aligned_key = overlay_key + "-aligned-" + monomer_token
+                                                    if aligned_key not in st.session_state:
+                                                        try:
+                                                            aligned_text, overlay_rmsd, matched_residues = _align_bindcraft2_monomer_to_complex(
+                                                                structure_text, monomer_text, candidate
+                                                            )
+                                                            st.session_state[aligned_key] = {
+                                                                "text": aligned_text,
+                                                                "rmsd": overlay_rmsd,
+                                                                "matched_residues": matched_residues,
+                                                            }
+                                                        except (ImportError, KeyError, ValueError, OSError) as exc:
+                                                            st.warning(f"Could not align the binder-alone monomer: {exc}")
+                                                    aligned = st.session_state.get(aligned_key)
+                                                    if aligned:
+                                                        visualizations.append(StructureVisualization(
+                                                            pdb=aligned["text"],
+                                                            color="uniform",
+                                                            color_params={"value": "0xff7d45"},
+                                                            representation_type="cartoon",
+                                                        ))
+                                                        st.caption(
+                                                            "Orange: binder-alone monomer, fitted onto the complex binder. "
+                                                            f"Cα RMSD: {aligned['rmsd']:.2f} Å over {aligned['matched_residues']} matched residues."
+                                                        )
+                                            else:
+                                                st.warning("No matching binder-alone monomer file was found for this accepted sequence.")
+                                    molstar_custom_component(
+                                        visualizations,
+                                        key=f"cluster-candidate-view-{jid}-{selected}-{structure_field}-overlay-{bool(overlay_key and overlay_key + '-enabled' in st.session_state and st.session_state[overlay_key + '-enabled'])}",
+                                        height=520,
+                                        show_controls=True,
+                                        show_structure_tools=False,
+                                    )
+                                    st.download_button(
+                                        "Download candidate structure",
+                                        content,
+                                        file_name=name,
+                                        key=f"cluster-candidate-download-{command_id}",
+                                    )
+                        except (ValueError, transport.ClusterUnavailable) as exc:
+                            st.info(str(exc))
+                if parameter_rows:
+                    st.markdown("**BindCraft2 run parameters**")
+                    st.dataframe(
+                        pd.DataFrame(parameter_rows),
+                        hide_index=True,
+                        use_container_width=True,
+                        height=min(360, 35 * (len(parameter_rows) + 1) + 3),
+                    )
+                if filter_rows:
+                    st.markdown("**Quality filters used**")
+                    st.dataframe(
+                        pd.DataFrame(filter_rows),
+                        hide_index=True,
+                        use_container_width=True,
+                        height=min(260, 35 * (len(filter_rows) + 1) + 3),
+                    )
             with st.expander("Run settings and inputs"):
                 st.json(data.get("input", {}))
             with st.expander("Run summary"):
                 st.json(data.get("result", {}))
+            if candidates and "rfantibody" in tool:
+                from mn_molecular_design_studio.rfantibody_ui import render_confidence_guide
+                render_confidence_guide()
         inspect_operation()
         artifacts = row.get("artifacts", [])
         if artifacts:

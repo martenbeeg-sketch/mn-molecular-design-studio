@@ -23,6 +23,7 @@ def molstar_custom_component(
     force_reload=False,
     sequence_highlight_color: str | None = None,
     sequence_highlight_indices: list[int] | None = None,
+    minimal_viewer: bool = False,
 ):
     """Create a new instance of "molstar_custom_component".
 
@@ -75,6 +76,7 @@ def molstar_custom_component(
         forceReload=force_reload,
         sequenceHighlightColor=sequence_highlight_color,
         sequenceHighlightIndices=sequence_highlight_indices or [],
+        minimalViewer=minimal_viewer,
         key=key,
     )
 

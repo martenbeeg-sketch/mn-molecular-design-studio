@@ -1,0 +1,20 @@
+tool: nesso_affinity
+group: ligand-affinity
+image: mn-nesso:1.0.0-cu128
+gpu: true
+description: Nesso-1 affinity-only prediction for protein targets and SMILES compound sets.
+inputs:
+  target_pdb:
+    type: pdb
+    required: true
+  compound_set_file:
+    type: compound_set
+    required: true
+params:
+  recycling_steps: {type: int, default: 5}
+  seed: {type: int, default: 42}
+outputs:
+  affinity_metrics:
+    path: artifacts/nesso_affinity.csv
+    type: affinity_metrics
+  structure_output: false

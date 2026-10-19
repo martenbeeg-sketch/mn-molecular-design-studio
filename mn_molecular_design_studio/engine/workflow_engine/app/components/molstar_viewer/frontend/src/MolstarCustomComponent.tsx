@@ -17,6 +17,8 @@ import { createStructureRepresentationParams } from "molstar/lib/mol-plugin-stat
 import { StructureElement } from "molstar/lib/mol-model/structure";
 import { PLDDTConfidenceColorThemeProvider } from "molstar/lib/extensions/model-archive/quality-assessment/color/plddt";
 import { getColorListFromName } from 'molstar/lib/mol-util/color/lists';
+import { Vec3 } from "molstar/lib/mol-math/linear-algebra";
+import { Sphere3D } from "molstar/lib/mol-math/geometry";
 
 import "./assets/style.css";
 import { ChainVisualization, ColorParameters, ContigSegment, SequenceSelection, StreamlitComponentValue, StructureVisualization } from "./types";
@@ -27,6 +29,7 @@ interface Props {
   divName: string;
   showControls: boolean;
   showStructureTools?: boolean;
+  minimalViewer?: boolean;
   selectionMode: boolean;
   contigs: ContigSegment[][];
   highlightedContig: ContigSegment & { structureIdx: number; } | null;
@@ -43,11 +46,13 @@ interface InnerProps {
   loadingPdb: boolean;
   structures: StateObjectSelector[];
   representations: StateObjectSelector[][];
+  dockingBoxLoaded: boolean;
 }
 
 // TODO: review if there is no other way to do this (useMemo, useRef or something?)
 // right now it works, we do not want useState as this would infinitely reload
-const innerProps: InnerProps = { plugin: null, structures: [], representations: [], loadingPlugin: false, loadingPdb: false };
+const innerProps: InnerProps = { plugin: null, structures: [], representations: [], loadingPlugin: false, loadingPdb: false, dockingBoxLoaded: false };
+const DOCKING_BOX_PROVIDER_REF = "mnpd-vina-docking-box-provider";
 
 function MolstarCustomComponent(props: Props) {
   const applySequenceHighlights = () => {
@@ -87,7 +92,7 @@ function MolstarCustomComponent(props: Props) {
             controlsDisplay: "landscape",
             regionState: {
               // sequence panel, keep it visible when showing panels
-              top: "full",
+              top: props.minimalViewer ? "hidden" : "full",
               // left panel shows component tree, always hide it
               left: "hidden",
               // bottom panel shows log messages, always hide it
@@ -103,18 +108,19 @@ function MolstarCustomComponent(props: Props) {
         config: [
           [PluginConfig.VolumeStreaming.Enabled, true],
           [PluginConfig.Viewport.ShowExpand, false],            // hide the full screen button as we use the fullscreen
-          [PluginConfig.Viewport.ShowToggleFullscreen, true],
+          [PluginConfig.Viewport.ShowToggleFullscreen, !props.minimalViewer],
           [PluginConfig.Viewport.ShowAnimation, false],         // we do not need animation controls
           [PluginConfig.Viewport.ShowXR, false],                // we also do not need AR/VR
-          [PluginConfig.Viewport.ShowControls, true],
-          [PluginConfig.Viewport.ShowSettings, true],
-          [PluginConfig.Viewport.ShowSelectionMode, true],
+          [PluginConfig.Viewport.ShowControls, !props.minimalViewer],
+          [PluginConfig.Viewport.ShowSettings, !props.minimalViewer],
+          [PluginConfig.Viewport.ShowSelectionMode, !props.minimalViewer],
         ],
       }
     });
 
     // Add a possibility to color by pLDDT
     plugin.representation.structure.themes.colorThemeRegistry.add(PLDDTConfidenceColorThemeProvider);
+    if (props.minimalViewer) plugin.canvas3d?.setProps({ renderer: { backgroundColor: Color(0xffffff) } });
 
     // Turn on selection mode if requested
     if (props.selectionMode) {
@@ -154,7 +160,12 @@ function MolstarCustomComponent(props: Props) {
 
     innerProps.plugin = plugin;
     innerProps.loadingPlugin = false;
-    loadData(props.structures);
+    await loadData(props.structures);
+    prevStructuresRef.current = props.structures;
+    const box = props.structures[0]?.docking_box;
+    if (props.minimalViewer && box) {
+      plugin.managers.camera.focusSphere(Sphere3D.create(Vec3.create(...box.center), Math.max(35, Math.max(...box.size) * 1.8)), { durationMs: 0, extraRadius: 0 });
+    }
     setTimeout(applySequenceHighlights, 250);
   };
 
@@ -215,15 +226,13 @@ function MolstarCustomComponent(props: Props) {
     const trimmed = selections.map((sel) => sel.trim()).filter((e) => e !== "");
 
     const parsedSelections = trimmed.map(item => {
-      const regex = /([A-Z]+)(\d+)(-\d+)?/;
-
-      const match = item.match(regex);
+      const match = item.match(/^([^:\s]+):(-?\d+)(?:-(-?\d+))?$/) || item.match(/^([A-Za-z]+)(-?\d+)(?:-(-?\d+))?$/);
 
       if (match) {
         const start = parseInt(match[2]);
         return {
-          chainId: match[1],
-          residues: getRange([start, match[3] ? parseInt(match[3].slice(1)) : start])
+          chainId: match[1] === "_" ? "" : match[1],
+          residues: getRange([start, match[3] ? parseInt(match[3]) : start])
         };
       } else {
         throw new Error(`Invalid format for selection: ${item}`);
@@ -252,6 +261,12 @@ function MolstarCustomComponent(props: Props) {
 
   const removeLoadedData = async () => {
     if (innerProps.loadingPdb) return;
+    if (innerProps.dockingBoxLoaded) {
+      const update = innerProps.plugin!.build();
+      update.delete(DOCKING_BOX_PROVIDER_REF);
+      await update.commit();
+      innerProps.dockingBoxLoaded = false;
+    }
     for (const structure of innerProps.structures) {
       if (structure) {
         const update = innerProps.plugin!.build();
@@ -262,6 +277,28 @@ function MolstarCustomComponent(props: Props) {
 
     innerProps.structures = [];
     innerProps.representations = [];
+  };
+
+  const addDockingBox = async (dockingBox: StructureVisualization["docking_box"]) => {
+    const plugin = innerProps.plugin;
+    if (!plugin || !dockingBox) return;
+    const { center, size } = dockingBox;
+    if (center.length !== 3 || size.length !== 3 || ![...center, ...size].every(Number.isFinite)) return;
+    const bottomLeft = Vec3.create(center[0] - size[0] / 2, center[1] - size[1] / 2, center[2] - size[2] / 2);
+    const topRight = Vec3.create(center[0] + size[0] / 2, center[1] + size[1] / 2, center[2] + size[2] / 2);
+    const parameters = { bottomLeft, topRight, radius: 0.14, color: Color(0xc94b9b) };
+    const update = plugin.build();
+    const snapshot = innerProps.dockingBoxLoaded ? plugin.canvas3d?.camera.getSnapshot() : undefined;
+    if (innerProps.dockingBoxLoaded) {
+      update.to(DOCKING_BOX_PROVIDER_REF).update(parameters);
+    } else {
+      update.toRoot()
+        .apply(StateTransforms.Shape.BoxShape3D, parameters, { ref: DOCKING_BOX_PROVIDER_REF })
+        .apply(StateTransforms.Representation.ShapeRepresentation3D);
+    }
+    await update.commit();
+    if (snapshot) plugin.managers.camera.setSnapshot(snapshot, 0);
+    innerProps.dockingBoxLoaded = true;
   };
 
   const loadData = async (structures: StructureVisualization[]) => {
@@ -275,6 +312,7 @@ function MolstarCustomComponent(props: Props) {
       for (let i = 0; i < structures.length; i++) {
         const structToLoad = structures[i];
         await loadPdb(structToLoad, i);
+        await addDockingBox(structToLoad.docking_box);
         if (props.contigs[i] && props.contigs[i].length) {
           await overPaintStructureByContigs(i);
           addContigLabelsAtEnds(i);
@@ -446,14 +484,14 @@ function MolstarCustomComponent(props: Props) {
       for (const group of shownGroups) {
         const component = await plugin.builders.structure.tryCreateComponentStatic(structure, group);
         if (component) {
-          plugin.builders.structure.representation.addRepresentation(component, {
+          await plugin.builders.structure.representation.addRepresentation(component, {
             type: 'ball-and-stick',
           });
         }
 
         if (group === "branched") {
           if (component) {
-            plugin.builders.structure.representation.addRepresentation(component, {
+            await plugin.builders.structure.representation.addRepresentation(component, {
               type: 'carbohydrate',
             });
           }
@@ -480,7 +518,7 @@ function MolstarCustomComponent(props: Props) {
     props.contigs[structureIdx].forEach((e, i) => {
       const range = Array.from(new Array(e.end - e.start + 1), (x, i) => i + e.start);
       const bundle = Bundle.fromSelection(getSelectionFromChainAuthId(innerProps.plugin!, e.chain, range, structureIdx));
-      params.push({ bundle: bundle, color: Color.fromHexString(e.color.replace("#", "0x")), clear: false });
+      params.push({ bundle: bundle, color: Color.fromHexString((e.color ?? "#808080").replace("#", "0x")), clear: false });
     });
 
     innerProps.representations[structureIdx].map(
@@ -509,8 +547,8 @@ function MolstarCustomComponent(props: Props) {
       e.end_label || ""
     ]);
     const chains: string[] = segments.flatMap((e: ContigSegment) => [e.chain, e.chain]);
-    const textColors: Color[] = segments.flatMap((e: ContigSegment) => [Color.fromHexString(e.color.replace("#", "0x")), Color(0xffffff)]);
-    const borderColors: Color[] = segments.flatMap((e: ContigSegment) => [Color(0xffffff), Color.fromHexString(e.color.replace("#", "0x"))]);
+    const textColors: Color[] = segments.flatMap((e: ContigSegment) => [Color.fromHexString((e.color ?? "#808080").replace("#", "0x")), Color(0xffffff)]);
+    const borderColors: Color[] = segments.flatMap((e: ContigSegment) => [Color(0xffffff), Color.fromHexString((e.color ?? "#808080").replace("#", "0x"))]);
 
     arrays.forEach((arr, idx) => {
       if (!labels[idx]) {
@@ -546,8 +584,8 @@ function MolstarCustomComponent(props: Props) {
     const arrays: number[] = segments.flatMap((e: ContigSegment) => [e.start, e.end]);
     const chains: string[] = segments.flatMap((e: ContigSegment) => [e.chain, e.chain]);
     const colors: Color[] = segments.flatMap((e: ContigSegment) => [
-      Color.fromHexString(e.color.replace("#", "0x")),
-      Color.fromHexString(e.color.replace("#", "0x"))
+      Color.fromHexString((e.color ?? "#808080").replace("#", "0x")),
+      Color.fromHexString((e.color ?? "#808080").replace("#", "0x"))
     ]);
 
     // Add "linkers" between pairs of contigs
@@ -600,14 +638,14 @@ function MolstarCustomComponent(props: Props) {
 
       const options = {
         labelParams: {
-          customText: segment.middle_label,
+          customText: segment.middle_label ?? "",
         },
         visualParams: {
           scaleByRadius: false,
           sizeFactor: 1,
           textSize: 3,
           textColor: Color(0x0),
-          borderColor: Color.fromHexString(segment.color.replace("#", "0x")),
+          borderColor: Color.fromHexString((segment.color ?? "#808080").replace("#", "0x")),
           offsetZ: 2,
         }
       };
@@ -649,7 +687,8 @@ function MolstarCustomComponent(props: Props) {
   const addSpecialChainVisualizations = async (chainVisualizations: ChainVisualization[] | null, structureIdx: number) => {
     if (!innerProps.plugin || !chainVisualizations) return;
 
-    for (const [chainVisIdx, chainVis] of chainVisualizations.entries()) {
+    for (let chainVisIdx = 0; chainVisIdx < chainVisualizations.length; chainVisIdx++) {
+      const chainVis = chainVisualizations[chainVisIdx];
       const builder = innerProps.plugin.state.data.build();
       const groupRef = `chain_${chainVis.chain_id}_${structureIdx}_${chainVisIdx}`;
       const group = builder.to(innerProps.structures[structureIdx]).apply(StateTransforms.Misc.CreateGroup, { label: groupRef }, { ref: groupRef });
@@ -713,24 +752,42 @@ function MolstarCustomComponent(props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.highlightedContig]);
 
-  // remove current structures if the structure visualization changes... but ignore "highlighted_selections" to allow selections interaction
+  // Update the box and selections in place so editing a pocket keeps the camera.
   const prevStructuresRef = React.useRef<Partial<StructureVisualization>[]>([]);
   useEffect(() => {
-    // remove "highlighted_selections" from each structure for comparison
+    const plugin = innerProps.plugin;
+    if (!plugin || innerProps.loadingPdb) return;
     const stripSelections = (structures: StructureVisualization[]) =>
-      structures.map(({ highlighted_selections, ...rest }) => rest as Partial<StructureVisualization>);
+      structures.map(({ highlighted_selections, docking_box, ...rest }) => rest as Partial<StructureVisualization>);
 
     const prevStripped = JSON.stringify(stripSelections(prevStructuresRef.current as StructureVisualization[]));
     const currStripped = JSON.stringify(stripSelections(props.structures));
 
-    if (prevStripped !== currStripped) {
-      const run = async () => {
-        await removeLoadedData();  // we need await here, that's why we use the wrapper
-        loadData(props.structures);
-      };
-      run();
-      prevStructuresRef.current = props.structures.map(({ highlighted_selections, ...rest }) => rest);
-    }
+    const previous = prevStructuresRef.current;
+    const run = async () => {
+      if (prevStripped !== currStripped) {
+        await removeLoadedData();
+        await loadData(props.structures);
+      } else {
+        const oldBoxes = JSON.stringify(previous.map(s => s.docking_box));
+        const newBoxes = JSON.stringify(props.structures.map(s => s.docking_box));
+        if (oldBoxes !== newBoxes) {
+          const box = props.structures.find(s => s.docking_box)?.docking_box;
+          if (box) {
+            await addDockingBox(box);
+          } else if (innerProps.dockingBoxLoaded) {
+            await plugin.build().delete(DOCKING_BOX_PROVIDER_REF).commit();
+            innerProps.dockingBoxLoaded = false;
+          }
+        }
+        if (JSON.stringify(previous.map(s => s.highlighted_selections)) !== JSON.stringify(props.structures.map(s => s.highlighted_selections))) {
+          plugin.managers.interactivity.lociSelects.deselectAll();
+          props.structures.forEach((s, idx) => addSelections(s.highlighted_selections, idx));
+        }
+      }
+      prevStructuresRef.current = props.structures;
+    };
+    void run();
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.structures]);

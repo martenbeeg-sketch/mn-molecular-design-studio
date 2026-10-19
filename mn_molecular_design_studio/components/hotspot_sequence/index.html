@@ -47,6 +47,13 @@
       .residue.selected { border-color: #246b49; background: #246b49; color: #fff; }
       .residue:focus-visible { outline: 2px solid #246b49; outline-offset: 2px; }
       .empty { color: #6e7b73; padding: 8px 0; }
+      #sequence-root.compact { max-width: 100%; padding: 6px 0; }
+      .compact .sequence-block { display: inline-flex; align-items: center; margin: 0 8px 5px 0; }
+      .compact .sequence-grid { display: flex; width: auto; gap: 2px; }
+      .compact .residue { width: 23px; height: 27px; min-width: 23px; border: 0; border-radius: 3px; background: transparent; color: #263c30; }
+      .compact .residue:hover { background: #e4eee7; }
+      .compact .residue.selected { background: #216345; color: white; }
+      .compact .sequence-range { margin: 0 0 0 5px; color: #79857d; font-size: 11px; }
       @media (max-width: 760px) {
         .sequence-grid {
           width: 100%;
@@ -116,6 +123,7 @@
         };
         const draw = () => {
           root.replaceChildren();
+          root.classList.toggle("compact", Boolean(args.compact));
           const sequence = args.sequence || [];
           if (!sequence.length) {
             const empty = document.createElement("div");
@@ -132,8 +140,8 @@
             const residues = sequence.slice(start, start + 20);
             const range = document.createElement("div");
             range.className = "sequence-range";
-            range.textContent = `${args.chainId}${residues[0].number}–${args.chainId}${residues[residues.length - 1].number}`;
-            block.appendChild(range);
+            range.textContent = args.compact ? `(${residues[residues.length - 1].number})` : `${args.chainId}${residues[0].number}–${args.chainId}${residues[residues.length - 1].number}`;
+            if (!args.compact) block.appendChild(range);
 
             const grid = document.createElement("div");
             grid.className = "sequence-grid";
@@ -151,6 +159,7 @@
               grid.appendChild(button);
             }
             block.appendChild(grid);
+            if (args.compact) block.appendChild(range);
             root.appendChild(block);
           }
           setHeight();

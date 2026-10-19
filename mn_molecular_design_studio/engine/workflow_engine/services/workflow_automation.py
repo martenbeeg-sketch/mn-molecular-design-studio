@@ -127,6 +127,25 @@ def _spec(
 
 
 _SPECS = (
+    _spec("ligand.complex.prepare", "ligand_tools", "run_ligand_complex_prepare", "ligand-preparation", "studio_ligand_complex_preparation", "ligand_complex_preparation", "Import and repair a protein-ligand complex with optional C-terminal extension and chain-aware trimming."),
+    _spec("ligand.docking.vina", "ligand_tools", "run_ligand_vina", "ligand-docking", "vina", "ligand_docking", "Dock a Database compound set against a target pocket with AutoDock Vina."),
+    _spec("ligand.docking.autodock_gpu", "ligand_tools", "run_ligand_autodock_gpu", "ligand-docking", "autodock_gpu", "ligand_docking", "Dock a Database compound set with AutoDock-GPU and AutoGrid affinity maps."),
+    _spec("ligand.docking.gnina", "ligand_tools", "run_ligand_gnina", "ligand-docking", "gnina", "ligand_docking", "Dock a Database compound set with GNINA and CNN pose rescoring."),
+    _spec("ligand.docking.unidock_pro", "ligand_tools", "run_ligand_unidock_pro", "ligand-docking", "unidock_pro", "ligand_docking", "GPU-accelerated classic receptor docking with Uni-Dock Pro."),
+    _spec("ligand.docking.rosetta_ligand", "ligand_tools", "run_ligand_rosetta_ligand", "ligand-docking", "rosetta_ligand", "ligand_docking", "RosettaLigand docking with VSH, VSX, or convergence protocols."),
+    _spec("ligand.affinity.nesso", "ligand_tools", "run_ligand_nesso", "ligand-affinity", "nesso_affinity", "ligand_affinity", "Predict protein–ligand affinity with Nesso-1; this tile returns affinity scores and does not generate a complex structure."),
+    _spec("ligand.generation.lddm", "ligand_tools", "run_ligand_lddm", "ligand-generation", "lddm_generation", "ligand_generation", "Generate pocket-conditioned ligands with the LDDM CD+BB checkpoint."),
+    _spec("ligand.generation.pocketxmol", "ligand_tools", "run_ligand_pocketxmol", "ligand-generation", "pocketxmol_generation", "ligand_generation", "Generate de novo ligands in a protein pocket with PocketXMol."),
+    _spec("ligand.generation.omtra", "ligand_tools", "run_ligand_omtra", "ligand-generation", "omtra_generation", "ligand_generation", "Generate ligands with OMTRA's multi-condition foundation model."),
+    _spec("ligand.generation.flowr_root", "ligand_tools", "run_ligand_flowr_root", "ligand-generation", "flowr_root_generation", "ligand_generation", "Generate or redesign pocket-conditioned ligands with FLOWR.root."),
+    _spec("ligand.generation.conditar", "ligand_tools", "run_ligand_conditar", "ligand-generation", "conditar_generation", "ligand_generation", "Generate pocket-conditioned ligands with conDitar."),
+    _spec("ligand.generation.paopt", "ligand_tools", "run_ligand_paopt", "ligand-generation", "paopt_generation", "ligand_generation", "Steer conDitar ligand generation toward selected ADMET objectives with paOPT."),
+    _spec("ligand.generation.drugrpg", "ligand_tools", "run_ligand_drugrpg", "ligand-generation", "drugrpg_generation", "ligand_generation", "Generate pocket-conditioned ligands with DrugRPG."),
+    _spec("ligand.generation.pfm", "ligand_tools", "run_ligand_pfm", "ligand-generation", "pfm_generation", "ligand_generation", "Generate pocket-conditioned ligands with perturbed flow matching (PFM)."),
+    _spec("ligand.generation.pocketflow", "ligand_tools", "run_ligand_pocketflow", "ligand-generation", "pocketflow_generation", "ligand_generation", "Generate ligands inside a protein pocket with PocketFlow."),
+    _spec("ligand.generation.pgmg", "ligand_tools", "run_ligand_pgmg", "ligand-generation", "pgmg_generation", "ligand_generation", "Generate compounds from a PGMG-compatible pharmacophore hypothesis."),
+    _spec("ligand.md.gromacs", "ligand_tools", "run_ligand_gromacs_md", "ligand-md", "gromacs_md", "ligand_md", "Prepare a bound protein–ligand complex and run explicit-solvent GROMACS dynamics."),
+    _spec("ligand.md.openmm", "ligand_tools", "run_ligand_openmm_md", "ligand-md", "openmm_md", "ligand_md", "Prepare a bound protein–ligand complex and run explicit-solvent OpenMM dynamics."),
     _spec("target.prepare", "target_prep", "enqueue_target_preparation", "target-prep", "internal_pdb_cleaner", "target_preparation", "Clean, trim, and optionally prepare MSAs for a PDB target.", "target_prepare"),
     _spec("target.crop", "target_crop", "run_target_crop", "target-crop", "internal_pdb_cropper", "target_cropping", "Crop a prepared target by residue ranges or Mol* selection coordinates."),
     _spec("target.mask", "target_masking", "create_masked_target", "target-prep", "internal_target_masker", "target_masking", "Create a mutation/masked-target job with recorded mutation details.", "direct"),
@@ -138,6 +157,7 @@ _SPECS = (
     _spec("detection.masif_seed", "detection", "run_masif_seed", "detection", "masif_seed", "ppi_detection", "Run MaSIF-seed surface/site detection."),
     _spec("detection.surface_analysis", "detection", "run_surface_analysis", "detection", "surface_analysis", "surface_analysis", "Run PeSTo, ScanNet, Surf2Spot, and MaSIF-seed together on one target."),
     _spec("design.rfdiffusion_classic", "design", "run_rfdiffusion_classic", "design", "rfdiffusion_classic", "design_campaign", "Run the RFdiffusion classic design workflow."),
+    _spec("design.rfdiffusion_beta_pairing", "rfdiffusion_beta_pairing", "run_rfdiffusion_beta_pairing", "design", "rfdiffusion_beta_pairing", "design_generation", "Generate RFdiffusion binder backbones with explicit target–binder β-strand SS/adjacency interface conditioning."),
     _spec("design.bindcraft", "design", "run_bindcraft", "design", "bindcraft", "design_campaign", "Run the BindCraft 1.x vanilla workflow."),
     _spec("design.bindcraft2", "bindcraft2", "enqueue_bindcraft2_design", "design", "bindcraft2", "bindcraft2_design", "Run a native BindCraft 2 design job.", "direct"),
     _spec("design.bindcraft2_generator", "bindcraft2", "enqueue_bindcraft2_design", "design", "bindcraft2_generator", "bindcraft2_generator", "Run BindCraft2 gradient design and emit only trajectories that pass the pre-ProteinMPNN handoff gate.", "direct"),
@@ -697,6 +717,17 @@ def _apply_resource_parameters(
 
 
 def _validate_workflow_inputs(spec: WorkflowSpec, parameters: dict[str, Any]) -> None:
+    if spec.workflow_id.startswith("ligand."):
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.ligand_tools import validate_ligand_tool_request
+
+        try:
+            validate_ligand_tool_request(
+                spec.workflow_id,
+                parameters,
+                require_files=not _schema_only_paths.get(),
+            )
+        except (TypeError, ValueError, OSError) as exc:
+            raise AutomationError(str(exc)) from exc
     if spec.workflow_id.startswith("detection.") and not _schema_only_paths.get():
         from mn_molecular_design_studio.engine.workflow_engine.workflows.detection import validate_surface_target
 
@@ -747,6 +778,14 @@ def _validate_workflow_inputs(spec: WorkflowSpec, parameters: dict[str, Any]) ->
         from mn_molecular_design_studio.rfpeptides_input import validate_request
         try:
             validate_request(parameters, require_files=not _schema_only_paths.get())
+        except (TypeError, ValueError, OSError) as exc:
+            raise AutomationError(str(exc)) from exc
+    if spec.workflow_id == "design.rfdiffusion_beta_pairing":
+        from mn_molecular_design_studio import rfdiffusion_beta_pairing_input
+        try:
+            rfdiffusion_beta_pairing_input.prepare_request(
+                parameters, require_files=not _schema_only_paths.get()
+            )
         except (TypeError, ValueError, OSError) as exc:
             raise AutomationError(str(exc)) from exc
     if spec.workflow_id in {"design.proteina_complexa", "design.proteina_complexa_generate"}:

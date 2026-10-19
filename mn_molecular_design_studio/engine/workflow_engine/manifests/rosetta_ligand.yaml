@@ -1,0 +1,28 @@
+tool: rosetta_ligand
+group: ligand-docking
+image: mn-openvs:local
+gpu: false
+description: RosettaLigand/OpenVS ensemble docking for a Studio Database compound set.
+inputs:
+  target_pdb:
+    type: pdb
+    required: true
+  compound_set_file:
+    type: compound_set
+    required: true
+  reference_ligand_sdf:
+    type: sdf
+    required: false
+params:
+  protocol: {type: str, default: vsh}
+  reference_mode: {type: str, default: pocket_center}
+  cpu_cores: {type: int, default: 8}
+  replicates: {type: int, default: 1}
+  seed_start: {type: int, default: 1001}
+outputs:
+  scores:
+    path: artifacts/docking_scores.csv
+    type: docking_scores
+  poses:
+    path: artifacts/poses
+    type: ligand_poses

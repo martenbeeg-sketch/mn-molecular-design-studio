@@ -1,0 +1,26 @@
+tool: lddm_generation
+group: ligand-generation
+image: mn-lddm:cu128-f254fb4
+gpu: true
+description: Pocket-conditioned ligand generation with the MIT-licensed LDDM CD+BB checkpoint.
+inputs:
+  target_pdb:
+    type: pdb
+    required: true
+  reference_ligand_sdf:
+    type: sdf
+    required: true
+params:
+  requested_count: {type: int, default: 64}
+  batch_size: {type: int, default: 8}
+  seed: {type: int, default: 42}
+  n_steps: {type: int, default: 100}
+  sampler: {type: str, default: ForwardEuler}
+  sampling_noise: {type: float, default: 5.0}
+outputs:
+  compound_set:
+    path: artifacts/generated_compound_set.json
+    type: compound_set
+  coordinates:
+    path: artifacts/generated_compounds.sdf
+    type: ligand_coordinate_set

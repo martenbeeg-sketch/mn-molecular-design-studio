@@ -226,6 +226,30 @@ for _engine,_metadata in generator_input.ENGINES.items():
         fields=generator_input.canvas_fields(_engine),formats=('cif',) if _engine=='pxdesign' else ('pdb',))
     NODE_CATALOG[_engine]['inputs'][0]['optional']=True
     NODE_CATALOG[_engine]['inputs'][0]['label']='Target (optional)'
+NODE_CATALOG["rfdiffusion_beta_pairing"] = _spec(
+    "rfdiffusion_beta_pairing",
+    "RFdiffusion β-pairing",
+    "Design engine",
+    "Generate binder backbones with explicit target–binder β-strand SS/adjacency interface conditioning. Connect ProteinMPNN and AlphaFold2 Initial Guess after this step.",
+    accepts=["target"],
+    output="backbone",
+    workflow="design.rfdiffusion_beta_pairing",
+    formats=("pdb",),
+    fields=[
+        field("target_pdb", "Target PDB (optional when connected)", "", kind="text", section="basic"),
+        field("target_chain", "Target chain (blank = connected chain)", "", kind="text", section="basic"),
+        field("target_beta_strands", "Target β-strand residues", "", kind="text", section="basic", help="Use ranges such as B99-103,B120-124. Each continuous segment gets a corresponding designed binder β-strand."),
+        field("binder_length", "Binder length", 65, minimum=30, maximum=500, section="basic"),
+        field("binder_strand_length", "Designed β-strand length", 6, minimum=3, maximum=40, section="basic"),
+        field("num_designs", "Number of backbones", 10, minimum=1, maximum=10000, section="basic"),
+        field("timesteps", "Diffusion timesteps", 50, minimum=1, maximum=200),
+        field("systematic_sampling", "Systematic register sampling", False, kind="boolean"),
+        SEED,
+    ],
+    color="#27674e",
+)
+NODE_CATALOG["rfdiffusion_beta_pairing"]["inputs"][0]["optional"] = True
+NODE_CATALOG["rfdiffusion_beta_pairing"]["inputs"][0]["label"] = "Target (optional)"
 # Coldspots are target-wide context, but only BindCraft2 and BoltzGen expose
 # matching engine inputs. The canvas shows this support state on every generator.
 for _kind in ('rfd3','rfdiffusion','genie3','pxdesign','pxdesign_pipeline','genie3_pipeline',
@@ -623,7 +647,9 @@ def new_graph(template="foundry") -> dict[str, Any]:
     elif template == "esmfold2_binder":
         kinds = ["target", "esm_binder", "ligandmpnn", "rf3", "results"]
     engine=template.removesuffix('_generated')
-    if engine in generator_input.ENGINES:
+    if engine == "rfdiffusion_beta_pairing":
+        kinds = ["backbone_source" if template.endswith("_generated") else engine, "ligandmpnn", "af2", "results"]
+    elif engine in generator_input.ENGINES:
         kinds=['backbone_source' if template.endswith('_generated') else engine,'ligandmpnn','esmfold' if engine=='protpardelle' else 'af2','results']
         if not template.endswith('_generated') and _uses_binder_context(engine):
             kinds = ['target', 'binder_context', *kinds]
@@ -637,6 +663,9 @@ def new_graph(template="foundry") -> dict[str, Any]:
                       "data": {"kind": kind, "label": spec["label"], "params": {f["name"]: f["default"] for f in spec["fields"]}}})
     if template == "esmfold2_binder":
         for node, x in zip(nodes, (50, 360, 670, 980, 1290)):
+            node["position"] = {"x": x, "y": 180}
+    elif engine == "rfdiffusion_beta_pairing":
+        for node, x in zip(nodes, (50, 370, 690, 1010)):
             node["position"] = {"x": x, "y": 180}
     elif 'binder_context' in kinds and engine != 'pxdesign':
         for index, node in enumerate(nodes):
@@ -675,7 +704,20 @@ def new_graph(template="foundry") -> dict[str, Any]:
                 a['position']={'x':50,'y':170};b['position']={'x':380,'y':170};c['position']={'x':710,'y':50};d['position']={'x':710,'y':300};r['position']={'x':1040,'y':170}
                 pairs=[(a,b),(b,c),(b,d),(c,r),(d,r)]
             edges=[{'id':f'edge-{i}','source':source['id'],'sourceHandle':'out','target':dest['id'],'targetHandle':'in'} for i,(source,dest) in enumerate(pairs)]
-    result={"schema_version": SCHEMA, "id": uuid.uuid4().hex, "name": {"foundry": "Foundry binder design", "bindcraft2": "BindCraft2 design", "boltzgen": "BoltzGen design", "complexa":"Proteina-Complexa custom pipeline", "complexa_generated":"Continue generated designs", "esmfold2_binder":"ESMFold2 Binder Design → ProteinMPNN → RosettaFold3"}.get(template, generator_input.ENGINES[engine]['title']+' · author-inspired pipeline' if engine in generator_input.ENGINES else "Untitled pipeline"), "nodes": nodes, "edges": edges, "viewport": {"x": 0, "y": 0, "zoom": 0.75}}
+    if engine == "rfdiffusion_beta_pairing":
+        sequence = next(n for n in nodes if n["data"]["kind"] == "ligandmpnn")
+        sequence["data"]["params"]["sequences"] = 10
+        af2 = next((n for n in nodes if n["data"]["kind"] == "af2"), None)
+        if af2:
+            af2["data"]["params"].update(
+                model_count=1,
+                num_recycles=3,
+                multimer=True,
+                use_binder_template=False,
+                use_interface_template=False,
+                msa_source="single_sequence",
+            )
+    result={"schema_version": SCHEMA, "id": uuid.uuid4().hex, "name": {"foundry": "Foundry binder design", "bindcraft2": "BindCraft2 design", "boltzgen": "BoltzGen design", "complexa":"Proteina-Complexa custom pipeline", "complexa_generated":"Continue generated designs", "esmfold2_binder":"ESMFold2 Binder Design → ProteinMPNN → RosettaFold3", "rfdiffusion_beta_pairing":"RFdiffusion β-pairing → ProteinMPNN → AF2 Initial Guess", "rfdiffusion_beta_pairing_generated":"Continue β-pairing backbones → ProteinMPNN → AF2 Initial Guess"}.get(template, generator_input.ENGINES[engine]['title']+' · author-inspired pipeline' if engine in generator_input.ENGINES else "Untitled pipeline"), "nodes": nodes, "edges": edges, "viewport": {"x": 0, "y": 0, "zoom": 0.75}}
     if template in TEMPLATE_REFERENCES:result['template_id']=template
     return result
 
@@ -967,6 +1009,12 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
             p=node['data']['params']
             if p.get('task') not in {'unconditional','symmetry','custom','fold'} and not p.get('target_pdb'):
                 raise ValueError('Load a structure in '+node['data']['label']+' or connect a Target block.')
+        if require_inputs and kind == "rfdiffusion_beta_pairing":
+            p = node["data"]["params"]
+            if not incoming[node_id] and not p.get("target_pdb"):
+                raise ValueError("Load a PDB target in RFdiffusion β-pairing or connect a Target block.")
+            if not str(p.get("target_beta_strands") or "").strip():
+                raise ValueError("Select target β-strand residue ranges for RFdiffusion β-pairing.")
     if not any(n["data"]["kind"] == "results" for n in nodes.values()):
         raise ValueError("Add a Results node to collect the pipeline outputs.")
     return {"graph": graph, "order": order, "incoming": incoming, "outgoing": outgoing}

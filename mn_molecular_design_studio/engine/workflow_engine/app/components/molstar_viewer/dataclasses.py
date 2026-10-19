@@ -95,6 +95,7 @@ class StructureVisualization:
     ) = "cartoon"
     highlighted_selections: list[str] | None = None
     chains: list[ChainVisualization] | None = None
+    docking_box: dict | None = None
 
     def __post_init__(self):
         if self.chains:

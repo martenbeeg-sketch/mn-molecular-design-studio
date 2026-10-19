@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import pytest
+from streamlit.testing.v1 import AppTest
 
 from mn_molecular_design_studio import rfantibody_input as inputs
 from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation as automation
@@ -157,6 +158,30 @@ def test_queued_workflow_job_parameters_serialize_resolved_structure_paths(monke
 
     assert captured["target_pdb"] == str(EXAMPLE_TARGET)
     assert captured["framework_pdb"] is None
+
+
+def test_rfantibody_results_end_with_score_interpretation(monkeypatch, tmp_path):
+    from mn_molecular_design_studio import rfantibody_ui
+
+    structure = tmp_path / "complex.pdb"
+    structure.write_text("ATOM sample\n")
+    monkeypatch.setattr(rfantibody_ui, "molstar_custom_component", lambda *args, **kwargs: None)
+    candidate = {
+        "candidate_id": "test-design",
+        "binder_sequence": "ACDE",
+        "complex_pdb": str(structure),
+        "binder_length": 4,
+        "metrics": {"pred_lddt": 0.9, "interaction_pae": 8.0},
+    }
+    at = AppTest.from_string(
+        "from pathlib import Path\n"
+        "from mn_molecular_design_studio.rfantibody_ui import render_results\n"
+        f"render_results('test-run', Path({str(tmp_path)!r}), "
+        f"[{candidate!r}], {{}}, {{}})"
+    ).run()
+    assert not at.exception
+    assert any("How to interpret these scores" in block.value for block in at.markdown)
+    assert any("<10 Å" in block.value and "0.90 corresponds to 90/100" in block.value for block in at.markdown)
 
 
 def test_workflow_registration_and_schema_validation(tmp_path):

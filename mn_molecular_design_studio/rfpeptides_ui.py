@@ -221,7 +221,7 @@ def render_results(run_id: str, run_dir: Path, candidates: list[dict], parameter
     peptide_path = _result_path(candidate.get("binder_pdb"), run_dir)
     if complex_path:
         molstar_custom_component(
-            [StructureVisualization(pdb=complex_path.read_text(errors="ignore"), color="molecule-type", representation_type="cartoon+ball-and-stick")],
+            [StructureVisualization(pdb=complex_path.read_text(errors="ignore"), color="chain-id", representation_type="cartoon")],
             key=f"rfpeptides-result-view-{run_id}-{selected}", height=560,
             show_controls=True, show_structure_tools=False,
         )

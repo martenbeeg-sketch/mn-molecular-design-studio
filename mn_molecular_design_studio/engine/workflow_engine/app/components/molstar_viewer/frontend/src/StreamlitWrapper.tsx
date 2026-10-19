@@ -98,12 +98,10 @@ class StreamlitWrapper extends StreamlitComponentBase<State> {
 
     updateStreamlitComponentValue = (newValue: StreamlitComponentValue) => {
         this.setState(prevState => {
-            if (prevState?.currentComponentState) {
-                const prevValueString = JSON.stringify(prevState.currentComponentState);
-                const newValueString = JSON.stringify(newValue);
-                if (prevValueString !== newValueString) {
-                    Streamlit.setComponentValue(newValueString);
-                }
+            const prevValueString = JSON.stringify(prevState?.currentComponentState);
+            const newValueString = JSON.stringify(newValue);
+            if (prevValueString !== newValueString) {
+                Streamlit.setComponentValue(newValueString);
             }
             return {
                 ...prevState,
@@ -119,6 +117,7 @@ class StreamlitWrapper extends StreamlitComponentBase<State> {
         const showControls = this.props.args["showControls"];
         const showStructureTools = this.props.args["showStructureTools"] ?? true;
         const selectionMode = this.props.args["selectionMode"];
+        const minimalViewer = this.props.args["minimalViewer"] ?? false;
         const forceReload = this.props.args["forceReload"] ?? false;
         const sequenceHighlightColor = this.props.args["sequenceHighlightColor"] ?? null;
         const sequenceHighlightIndices = this.props.args["sequenceHighlightIndices"] ?? [];
@@ -137,11 +136,12 @@ class StreamlitWrapper extends StreamlitComponentBase<State> {
             <>
                 <div
                     id={divName}
-                    className={sequenceHighlightColor ? "mnpd-sequence-highlight" : undefined}
+                    className={[sequenceHighlightColor ? "mnpd-sequence-highlight" : "", minimalViewer ? "vina-minimal-viewer" : ""].filter(Boolean).join(" ")}
                     style={{ height: requestedHeight, width: effectiveWidth, "--mnpd-sequence-highlight-color": sequenceHighlightColor ?? "#2563eb" } as React.CSSProperties}
                 >
                     <MolstarCustomComponent structures={structures} divName={divName} showControls={showControls}
                         showStructureTools={showStructureTools}
+                        minimalViewer={minimalViewer}
                         contigs={allContigsParsed} highlightedContig={this.state.highlightedContig}
                         selectionMode={selectionMode} updateStreamlitComponentValue={this.updateStreamlitComponentValue}
                         forceReload={forceReload}
@@ -155,7 +155,7 @@ class StreamlitWrapper extends StreamlitComponentBase<State> {
                         <div className="msp-layout-contig" style={{ color: "black", fontSize: "14px", cursor: "default" }} key={outerIdx}>
                             Segments: {labeledSegments.map((e, idx) => {
                                 const contigDescription = e.middle_label ? `${e.middle_label} ` : `${e.start_label}-${e.end_label} `;
-                                return <span style={{ color: ensureReadableColor(e.color) }} onMouseOver={() => this.setHighlightedContig(e, outerIdx)} key={idx}>{contigDescription}</span>;
+                                return <span style={{ color: ensureReadableColor(e.color ?? "#808080") }} onMouseOver={() => this.setHighlightedContig(e, outerIdx)} key={idx}>{contigDescription}</span>;
                             })}
                         </div>);
                     return <React.Fragment key={outerIdx}></React.Fragment>;

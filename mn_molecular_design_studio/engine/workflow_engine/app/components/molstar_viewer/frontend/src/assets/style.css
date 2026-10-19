@@ -28,3 +28,9 @@
   color: var(--mnpd-sequence-highlight-color, #2563eb) !important;
   font-weight: 700;
 }
+
+.vina-minimal-viewer .msp-layout-standard { border: 0; }
+.vina-minimal-viewer .msp-viewport-controls,
+.vina-minimal-viewer .msp-selection-viewport-controls,
+.vina-minimal-viewer .fullscreen-btn { display: none; }
+.vina-minimal-viewer .msp-plugin { background: #fff; }

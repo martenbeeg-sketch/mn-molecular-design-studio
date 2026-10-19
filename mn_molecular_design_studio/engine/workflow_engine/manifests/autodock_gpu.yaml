@@ -1,0 +1,29 @@
+tool: autodock_gpu
+group: ligand-docking
+image: mn-docking-suite:cu128
+gpu: true
+description: AutoDock-GPU 1.6 with AutoGrid and AutoDock4 scoring for Database compound sets.
+inputs:
+  target_pdb:
+    type: pdb
+    required: true
+  compound_set_file:
+    type: compound_set
+    required: true
+params:
+  center_x: {type: float, required: true}
+  center_y: {type: float, required: true}
+  center_z: {type: float, required: true}
+  size_x: {type: float, default: 20.0}
+  size_y: {type: float, default: 20.0}
+  size_z: {type: float, default: 20.0}
+  nrun: {type: int, default: 20}
+  seed: {type: int, default: 42}
+  compound_limit: {type: int, default: 100}
+outputs:
+  scores:
+    path: artifacts/docking_scores.csv
+    type: docking_scores
+  poses:
+    path: artifacts/poses
+    type: ligand_poses

@@ -25,7 +25,7 @@ export type ChainVisualization = {
     chain_id: string;
     color: "uniform" | "chain-id" | "hydrophobicity" | "plddt" | "molecule-type" | "secondary-structure" | "residue-name" | "residue-charge";
     color_params: ColorParameters | null;
-    representation_type: "cartoon" | "molecular-surface" | "gaussian-surface" | "ball-and-stick";
+    representation_type: "cartoon" | "cartoon+ball-and-stick" | "molecular-surface" | "gaussian-surface" | "ball-and-stick";
     residues: number[] | null;
     label: string | null;
 };
@@ -35,9 +35,10 @@ export type StructureVisualization = {
     contigs: string | null;
     color: "uniform" | "chain-id" | "hydrophobicity" | "plddt" | "molecule-type" | "secondary-structure" | "residue-name" | "residue-charge";
     color_params: ColorParameters | null;
-    representation_type: "cartoon" | "molecular-surface" | "gaussian-surface" | "ball-and-stick";
+    representation_type: "cartoon" | "cartoon+ball-and-stick" | "molecular-surface" | "gaussian-surface" | "ball-and-stick";
     highlighted_selections: string[] | null;
     chains: ChainVisualization[] | null;
+    docking_box?: { center: [number, number, number]; size: [number, number, number] } | null;
 };
 
 export type ColorParameters = {

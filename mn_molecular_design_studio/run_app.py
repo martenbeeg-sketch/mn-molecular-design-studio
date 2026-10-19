@@ -24,6 +24,7 @@ import streamlit as st
 
 from mn_molecular_design_studio.cofolding_input import render_molecule_editor, prediction_settings_for
 from mn_molecular_design_studio import cofolding_results
+from mn_molecular_design_studio import ligand_compounds
 from mn_molecular_design_studio.cluster import config as cluster_config
 from mn_molecular_design_studio.cluster.ui import display_tool_label
 from mn_molecular_design_studio import pipeline_graph, complexa_input, generator_input
@@ -130,6 +131,7 @@ WORKFLOW_TITLES = {
     "Boltzgen Inverse": "BoltzGen Inverse Folding",
     "Pxdesign Generate": "PXDesign",
     "Rfdiffusion Generate": "RFdiffusion",
+    "Rfdiffusion Beta Pairing": "RFdiffusion β-pairing",
     "Genie3 Generate": "Genie3",
     "Protpardelle Generate": "Protpardelle-1C",
     "Proteina Complexa": "Proteina-Complexa",
@@ -163,6 +165,25 @@ WORKFLOW_TITLES = {
     "Masif Seed": "MaSIF-seed",
     "Surf2Spot": "Surf2Spot",
     "Surface Analysis": "Protein Surface Analysis",
+    "Docking.Vina": "AutoDock Vina",
+    "Docking.Autodock Gpu": "AutoDock-GPU",
+    "Docking.Gnina": "GNINA",
+    "Docking.Unidock Pro": "Uni-Dock Pro",
+    "Docking.Rosetta Ligand": "RosettaLigand",
+    "Affinity.Nesso": "Nesso-1",
+    "Complex.Prepare": "Complex Preparation",
+    "Generation.Lddm": "LDDM",
+    "Generation.Pocketxmol": "PocketXMol",
+    "Generation.Omtra": "OMTRA",
+    "Generation.Flowr Root": "FLOWR.root",
+    "Generation.Conditar": "conDitar",
+    "Generation.Paopt": "paOPT",
+    "Generation.Drugrpg": "DrugRPG",
+    "Generation.Pfm": "PFM",
+    "Generation.Pocketflow": "PocketFlow",
+    "Generation.Pgmg": "PGMG",
+    "Md.Gromacs": "GROMACS",
+    "Md.Openmm": "OpenMM",
 }
 
 # Keep the Tools catalog focused on workflows that launch a specific tool or
@@ -175,6 +196,7 @@ TOOL_CATALOG_WORKFLOW_IDS = {
     "detection.masif_seed",
     "detection.surface_analysis",
     "design.rfdiffusion_generate",
+    "design.rfdiffusion_beta_pairing",
     "design.bindcraft2",
     "design.bindcraft2_generator",
     "design.rfdiffusion3",
@@ -202,17 +224,56 @@ TOOL_CATALOG_WORKFLOW_IDS = {
     "refolding.boltzgen_fold",
     "analysis.ipsae",
     "analysis.rosetta",
+    "ligand.complex.prepare",
+    "ligand.docking.vina",
+    "ligand.docking.autodock_gpu",
+    "ligand.docking.gnina",
+    "ligand.docking.unidock_pro",
+    "ligand.docking.rosetta_ligand",
+    "ligand.affinity.nesso",
+    "ligand.generation.lddm",
+    "ligand.generation.pocketxmol",
+    "ligand.generation.omtra",
+    "ligand.generation.flowr_root",
+    "ligand.generation.conditar",
+    "ligand.generation.paopt",
+    "ligand.generation.drugrpg",
+    "ligand.generation.pfm",
+    "ligand.generation.pocketflow",
+    "ligand.generation.pgmg",
+    "ligand.md.gromacs",
+    "ligand.md.openmm",
 }
 
 # Upstream code versions for tool tiles. Values describe engine code or a pinned
 # source revision, never the Docker image tag. Some legacy shared images have no
 # pinned upstream release, which is shown explicitly.
 TOOL_WORKFLOW_CODE_VERSIONS = {
+    "ligand.complex.prepare": ("Complex Preparation · Studio bundled runtime", False),
+    "ligand.docking.vina": ("AutoDock Vina · 1.2.7", False),
+    "ligand.docking.autodock_gpu": ("AutoDock-GPU · 1.6", False),
+    "ligand.docking.gnina": ("GNINA · installed docking-suite version", False),
+    "ligand.docking.unidock_pro": ("Uni-Dock Pro · installed docking-suite version", False),
+    "ligand.docking.rosetta_ligand": ("RosettaLigand · Studio bundled OpenVS runner", False),
+    "ligand.affinity.nesso": ("Nesso-1 · 1.0.0", False),
+    "ligand.generation.lddm": ("LDDM · f254fb4", False),
+    "ligand.generation.pocketxmol": ("PocketXMol · 65488cf", False),
+    "ligand.generation.omtra": ("OMTRA · Studio workflow adapter", False),
+    "ligand.generation.flowr_root": ("FLOWR.root · Studio workflow adapter", False),
+    "ligand.generation.conditar": ("conDitar · permissioned local image", False),
+    "ligand.generation.paopt": ("paOPT · permissioned local image", False),
+    "ligand.generation.drugrpg": ("DrugRPG · Studio workflow adapter", False),
+    "ligand.generation.pfm": ("PFM · Studio workflow adapter", False),
+    "ligand.generation.pocketflow": ("PocketFlow · Studio workflow adapter", False),
+    "ligand.generation.pgmg": ("PGMG · Studio workflow adapter", False),
+    "ligand.md.gromacs": ("GROMACS · Studio bundled runtime", False),
+    "ligand.md.openmm": ("OpenMM · Studio bundled runtime", False),
     "sequence.esm_if1": ("ESM-IF1 · fair-esm 2.0.1 · 2b369911", False),
     "sequence.caliby": ("Caliby 0.1 · 41d31560", True),
     "sequence.boltzgen_inverse": ("BoltzGen 0.3.2 · a07fea1", False),
     "design.pxdesign_generate": ("PXDesign f788441", False),
     "design.rfdiffusion_generate": ("RFdiffusion · version not pinned", False),
+    "design.rfdiffusion_beta_pairing": ("mn-rfdiffusion:latest · published SS/adjacency conditioning", False),
     "design.genie3_generate": ("Genie3 d77ae5a", False),
     "design.protpardelle_generate": ("Protpardelle-1C ee37840", False),
     "detection.scannet": ("ScanNet a61623c", False),
@@ -660,6 +721,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
     workflow = str(row.get("workflow", ""))
     prefix = workflow.split(".", 1)[0]
     function_by_prefix = {
+        "ligand": "Molecular Docking & Affinity",
         "target": "Target Preparation",
         "detection": "Binding-site Detection",
         "design": "De Novo Binder Design",
@@ -671,6 +733,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "campaign": "Multi-step Validation",
     }
     function_by_workflow = {
+        "ligand.complex.prepare": "Complex Preparation",
         "target.prepare": "Structure Preparation",
         "target.crop": "Structure Cropping",
         "target.mask": "Target Masking",
@@ -691,8 +754,27 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "sequence.pipeline": "Protein Sequence Design",
         "analysis.ipsae": "Interface Confidence Scoring",
         "analysis.rosetta": "Rosetta Structure Scoring",
+        "ligand.docking.vina": "Molecular Docking",
+        "ligand.docking.autodock_gpu": "Molecular Docking",
+        "ligand.docking.gnina": "Molecular Docking",
+        "ligand.docking.unidock_pro": "Molecular Docking",
+        "ligand.docking.rosetta_ligand": "Molecular Docking",
+        "ligand.affinity.nesso": "Affinity Prediction",
+        "ligand.generation.lddm": "Ligand Generation",
+        "ligand.generation.pocketxmol": "Ligand Generation",
+        "ligand.generation.omtra": "Ligand Generation",
+        "ligand.generation.flowr_root": "Ligand Generation",
+        "ligand.generation.conditar": "Ligand Generation",
+        "ligand.generation.paopt": "Ligand Generation",
+        "ligand.generation.drugrpg": "Ligand Generation",
+        "ligand.generation.pfm": "Ligand Generation",
+        "ligand.generation.pocketflow": "Ligand Generation",
+        "ligand.generation.pgmg": "Ligand Generation",
+        "ligand.md.gromacs": "Molecular Dynamics",
+        "ligand.md.openmm": "Molecular Dynamics",
     }
     modalities_by_prefix = {
+        "ligand": ["Protein", "Ligand"],
         "target": ["Protein"],
         "detection": ["Protein"],
         "design": ["Protein"],
@@ -704,6 +786,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "campaign": ["Protein", "Antibody", "Peptide"],
     }
     input_types_by_prefix = {
+        "ligand": ["Protein Structure (PDB)", "Compound Set"],
         "target": ["Structure (PDB)"],
         "detection": ["Structure (PDB)"],
         "design": ["Structure (PDB)"],
@@ -715,6 +798,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "campaign": ["Existing Results"],
     }
     input_types_by_workflow = {
+        "ligand.complex.prepare": ["Protein–Ligand Complex (PDB)"],
         "sequence.mpnn": ["Structure (PDB)", "Structure (mmCIF)", "Existing Results"],
         "sequence.esm_if1": ["Structure (PDB)", "Structure (mmCIF)", "Existing Results"],
         "sequence.caliby": ["Structure (PDB)", "Structure (mmCIF)", "Existing Results"],
@@ -731,6 +815,24 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "refolding.optimized_prediction": ["Molecule Fields"],
         "analysis.ipsae": ["Existing Results"],
         "analysis.rosetta": ["Existing Results"],
+        "ligand.docking.vina": ["Protein Structure (PDB)", "Database Compound Set"],
+        "ligand.docking.autodock_gpu": ["Protein Structure (PDB)", "Database Compound Set"],
+        "ligand.docking.gnina": ["Protein Structure (PDB)", "Database Compound Set"],
+        "ligand.docking.unidock_pro": ["Protein Structure (PDB)", "Database Compound Set"],
+        "ligand.docking.rosetta_ligand": ["Protein Structure (PDB)", "Database Compound Set", "Optional Reference Ligand (SDF)"],
+        "ligand.affinity.nesso": ["Protein Structure (PDB)", "Database Compound Set"],
+        "ligand.generation.lddm": ["Protein Structure (PDB)", "Reference Ligand (SDF)"],
+        "ligand.generation.pocketxmol": ["Protein Structure (PDB)", "Pocket Structure (PDB)"],
+        "ligand.generation.omtra": ["Protein Structure (PDB)", "Optional Pocket (PDB)", "Optional Reference Ligand (SDF)"],
+        "ligand.generation.flowr_root": ["Protein Structure (PDB)", "Pocket Structure (PDB)", "Reference Ligand (SDF)"],
+        "ligand.generation.conditar": ["Protein Structure (PDB)", "Pocket Structure (PDB)"],
+        "ligand.generation.paopt": ["Protein Structure (PDB)", "Pocket Structure (PDB)", "Reference Ligand (SDF)", "ADMET Objectives"],
+        "ligand.generation.drugrpg": ["Protein Structure (PDB)", "Pocket Structure (PDB)"],
+        "ligand.generation.pfm": ["Protein Structure (PDB)", "Pocket Structure (PDB)"],
+        "ligand.generation.pocketflow": ["Protein Structure (PDB)", "Pocket Structure (PDB)"],
+        "ligand.generation.pgmg": ["Protein Structure (PDB)", "Pharmacophore Hypothesis (.posp)"],
+        "ligand.md.gromacs": ["Protein–Ligand Complex (PDB)", "Bound Ligand (SDF)"],
+        "ligand.md.openmm": ["Protein–Ligand Complex (PDB)", "Bound Ligand (SDF)"],
         "import.bindcraft": ["Result Folder"],
         "import.table": ["CSV / Table", "Structure (PDB)", "Sequence"],
         "benchmark.dataset": ["CSV / Table", "Result Folder", "Structure (PDB)", "Existing Results"],
@@ -993,6 +1095,12 @@ def _render_tool_catalog() -> None:
             version_line = f"**{engine_version}**\n\n" if engine_version else ""
             if row.get("optimized_engine"):
                 setup_note = f"{len(optimized_prediction.ENGINE_PROFILES[row['optimized_engine']]['modes'])} validated modes · Set up →"
+            elif row.get("workflow") in {"ligand.docking.vina", "ligand.docking.autodock_gpu", "ligand.docking.gnina", "ligand.docking.unidock_pro", "ligand.docking.rosetta_ligand", "ligand.affinity.nesso"}:
+                setup_note = "Database compound set + target structure · Set up →"
+            elif str(row.get("workflow", "")).startswith("ligand.generation."):
+                setup_note = "Target pocket + generation settings · Set up →"
+            elif str(row.get("workflow", "")).startswith("ligand.md."):
+                setup_note = "Complex + selected ligand + MD settings · Set up →"
             elif row.get("workflow") in {"design.proteina_complexa", "design.proteina_complexa_generate"}:
                 setup_note = "3 design tasks · Set up →" if row["workflow"].endswith("_generate") else "3 pipeline tasks · Set up →"
             elif row.get('workflow') in generator_input.WORKFLOWS.values():
@@ -3540,6 +3648,36 @@ def _render_workflow_setup() -> None:
         return
 
     schema = workflow_schema(workflow_id)
+    if workflow_id.startswith("ligand."):
+        from mn_molecular_design_studio import ligand_tools_ui
+        importlib.reload(ligand_tools_ui)
+        if workflow_id in {"ligand.docking.vina", "ligand.docking.gnina", "ligand.docking.unidock_pro", "ligand.docking.rosetta_ligand"}:
+            from mn_molecular_design_studio import vina_ui
+            importlib.reload(vina_ui)
+        try:
+            compound_sets = _database_compound_tool_options()
+        except (OSError, ValueError) as exc:
+            st.error(f"Could not load compound sets from Database: {exc}")
+            compound_sets = []
+        ligand_tools_ui.render_setup(
+            workflow_id,
+            schema,
+            owner_id=str(CURRENT_USER["id"]),
+            compound_sets=compound_sets,
+            project_selector=_render_project_selector,
+            submit=_submit_cofolding_job,
+        )
+        return
+    if workflow_id == "design.rfdiffusion_beta_pairing":
+        from mn_molecular_design_studio import rfdiffusion_beta_pairing_ui
+        importlib.reload(rfdiffusion_beta_pairing_ui)
+        rfdiffusion_beta_pairing_ui.render_setup(
+            schema,
+            owner_id=str(CURRENT_USER["id"]),
+            project_selector=_render_project_selector,
+            submit=_submit_cofolding_job,
+        )
+        return
     from mn_molecular_design_studio import inverse_folding_input
     if workflow_id in inverse_folding_input.WORKFLOWS.values():
         from mn_molecular_design_studio import inverse_folding_ui
@@ -3996,24 +4134,53 @@ def _job_elapsed_label(row: dict) -> str:
     status = str(row.get("status") or "").casefold()
     timestamps = _job_runtime_timestamps(row)
     now = datetime.now(timezone.utc)
-    if status == "queued":
+    queued_statuses = {"queued", "waiting_for_workstation", "dispatching", "pending"}
+    if status in queued_statuses:
         queued_at = _parse_job_datetime(timestamps.get("queue_wait_started_at")) or _parse_job_datetime(
             row.get("created_at")
         )
-        return f"Queued · {_duration_label((now - queued_at).total_seconds())}" if queued_at else "Queued"
+        queue_label = "Waiting" if status == "waiting_for_workstation" else "Queued"
+        return f"{queue_label} · {_duration_label((now - queued_at).total_seconds())}" if queued_at else queue_label
 
     started_at = _parse_job_datetime(timestamps.get("worker_started_at"))
-    if status in {"running", "preparing"}:
+    if status in {"running", "preparing", "paused", "holding", "cancelling", "cancel_requested"}:
         if not started_at:
-            return "Starting"
-        return f"Running · {_duration_label((now - started_at).total_seconds())}"
-    if not started_at:
-        return "—"
+            submitted_at = _parse_job_datetime(row.get("created_at"))
+            if submitted_at:
+                return f"Running · {_duration_label((now - submitted_at).total_seconds())} total"
+            return "Running · time unavailable"
+        runtime_label = "Paused" if status == "paused" else "Running"
+        return f"{runtime_label} · {_duration_label((now - started_at).total_seconds())}"
 
-    completed_at = _parse_job_datetime(timestamps.get("completed_at")) or _parse_job_datetime(row.get("updated_at"))
+    completed_at = _parse_job_datetime(timestamps.get("completed_at")) or _parse_job_datetime(
+        row.get("updated_at")
+    )
     if not completed_at:
         return "—"
+    if not started_at:
+        submitted_at = _parse_job_datetime(row.get("created_at"))
+        if submitted_at:
+            return f"Total · {_duration_label((completed_at - submitted_at).total_seconds())}"
+        return "—"
     return _duration_label((completed_at - started_at).total_seconds())
+
+
+def _job_elapsed_since(row: dict) -> str:
+    status = str(row.get("status") or "").casefold()
+    timestamps = _job_runtime_timestamps(row)
+    if status in {"queued", "waiting_for_workstation", "dispatching", "pending"}:
+        raw = timestamps.get("queue_wait_started_at")
+        prefix = "Queued since"
+        parsed = _parse_job_datetime(raw) or _parse_job_datetime(row.get("created_at"))
+    elif status in {"running", "preparing", "paused", "holding", "cancelling", "cancel_requested"}:
+        raw = timestamps.get("worker_started_at")
+        prefix = "Running since" if raw else "Submitted"
+        parsed = _parse_job_datetime(raw) or _parse_job_datetime(row.get("created_at"))
+    else:
+        return ""
+    if not parsed:
+        return ""
+    return f"{prefix} {parsed.astimezone().strftime('%d %b %H:%M')}"
 
 
 def _jobs_csv(rows: list[dict]) -> bytes:
@@ -4043,7 +4210,13 @@ def _jobs_csv(rows: list[dict]) -> bytes:
 def _render_runs() -> None:
     if cluster_config.enabled():
         from mn_molecular_design_studio.cluster.ui import render_runs
-        render_runs(CURRENT_USER, str(st.session_state.get("studio-session-token") or "development-mode"), search_jobs)
+        render_runs(
+            CURRENT_USER,
+            str(st.session_state.get("studio-session-token") or "development-mode"),
+            search_jobs,
+            elapsed_label=_job_elapsed_label,
+            elapsed_since=_job_elapsed_since,
+        )
         return
     st.title("My results")
     try:
@@ -6603,6 +6776,7 @@ def _render_job_details() -> None:
     )
     is_design_validation = any(isinstance(item, dict) and (item.get("raw_metadata") or {}).get("validation_reference") for item in result_candidates)
     is_rfdiffusion3 = analysis_tool == "rfdiffusion3"
+    is_beta_pairing = analysis_tool == "rfdiffusion_beta_pairing" or "rfdiffusion_beta_pairing" in workflow_identity
     is_rfantibody = analysis_tool == "rfantibody" or "rfantibody" in workflow_identity
     is_rfpeptides = analysis_tool == "rfpeptides" or "rfpeptides" in workflow_identity
     has_dedicated_prediction_results = is_rfantibody or is_rfpeptides or is_rfdiffusion3 or is_af3_jax_cofolding or is_esmfold2_cofolding or is_optimized_prediction or is_design_validation
@@ -6702,6 +6876,9 @@ def _render_job_details() -> None:
         elif is_rfdiffusion3:
             from mn_molecular_design_studio.rfdiffusion3_ui import render_results
             render_results(run_id, run_dir, result_candidates, input_params, result)
+        elif is_beta_pairing:
+            from mn_molecular_design_studio import rfdiffusion_beta_pairing_ui
+            rfdiffusion_beta_pairing_ui.render_results(run_id, run_dir, result_candidates, input_params, result)
         elif str(job.get("tool")) in {"proteina_complexa", "proteina_complexa_generator"}:
             from mn_molecular_design_studio.complexa_ui import render_results
             render_results(run_id,run_dir,result_candidates,input_params,result)
@@ -6714,7 +6891,7 @@ def _render_job_details() -> None:
 
         structure_artifacts = (
             []
-            if has_dedicated_prediction_results or has_dedicated_surface_results or is_generator_tool or str(job.get("tool")) in {"proteina_complexa", "proteina_complexa_generator"}
+            if has_dedicated_prediction_results or has_dedicated_surface_results or is_generator_tool or is_beta_pairing or str(job.get("tool")) in {"proteina_complexa", "proteina_complexa_generator"}
             else [
                 (item, path)
                 for item, path in artifact_paths
@@ -7159,6 +7336,172 @@ def _database_table_bytes(rows: list[dict], columns: list[str]) -> bytes:
     return stream.getvalue().encode("utf-8")
 
 
+def _database_compound_set_path(compound_set_id: str) -> Path:
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "", str(compound_set_id or ""))
+    if not safe_id or safe_id != str(compound_set_id):
+        raise ValueError("Invalid compound-set ID.")
+    return app_home() / "database" / "compound_sets" / f"{safe_id}.json"
+
+
+def _database_compound_tool_options() -> list[dict[str, Any]]:
+    """Return accessible compound-only group selections for ligand tiles."""
+    options: list[dict[str, Any]] = []
+    for group in _load_database_groups():
+        members = [
+            item for item in group.get("members", [])
+            if isinstance(item, dict) and item.get("record_type") == "compound"
+        ]
+        if not members:
+            continue
+        set_ids = list(dict.fromkeys(str(item.get("compound_set_id") or "") for item in members))
+        try:
+            if len(set_ids) == 1:
+                set_path = _database_compound_set_path(set_ids[0])
+                payload = ligand_compounds.load_compound_set(set_path)
+                _require_compound_set_access(payload)
+                wanted = {str(item.get("compound_id") or "") for item in members}
+                compounds = [row for row in payload["compounds"] if row["compound_id"] in wanted]
+                if len(compounds) != len(wanted):
+                    raise ValueError("Some compounds referenced by the Database group are missing.")
+            else:
+                compounds = []
+                first_payload: dict[str, Any] = {}
+                seen_ids: set[str] = set()
+                for set_id in set_ids:
+                    payload = ligand_compounds.load_compound_set(_database_compound_set_path(set_id))
+                    _require_compound_set_access(payload)
+                    first_payload = first_payload or payload
+                    wanted = {
+                        str(item.get("compound_id") or "")
+                        for item in members if str(item.get("compound_set_id") or "") == set_id
+                    }
+                    for row in payload["compounds"]:
+                        if row["compound_id"] not in wanted:
+                            continue
+                        compound = dict(row)
+                        if compound["compound_id"].casefold() in seen_ids:
+                            compound["compound_id"] = f"{compound['compound_id']}-{set_id[:6]}"
+                        seen_ids.add(compound["compound_id"].casefold())
+                        compounds.append(compound)
+                snapshot_id = hashlib.sha256(json.dumps(members, sort_keys=True).encode("utf-8")).hexdigest()[:24]
+                set_path = app_home() / "database" / "compound_sets" / "selections" / f"{snapshot_id}.json"
+                if not set_path.is_file():
+                    ligand_compounds.write_compound_set(
+                        set_path,
+                        name=str(group.get("name") or "Database compound group"),
+                        compounds=compounds,
+                        owner_id=str(group.get("owner_id") or CURRENT_USER["id"]),
+                        project_id=str(group.get("project_id") or first_payload.get("project_id") or ""),
+                        created_at=str(group.get("created_at") or datetime.now(timezone.utc).isoformat(timespec="seconds")),
+                        compound_set_id=f"selection-{snapshot_id}",
+                    )
+                payload = ligand_compounds.load_compound_set(set_path)
+        except (OSError, ValueError):
+            continue
+        options.append({
+            "group_id": str(group.get("id") or ""),
+            "name": str(group.get("name") or "Compound set"),
+            "compound_count": len(payload["compounds"]),
+            "path": str(set_path.resolve()),
+        })
+    return options
+
+
+def _require_compound_set_access(payload: dict[str, Any]) -> None:
+    if (
+        CURRENT_USER.get("role") != "admin"
+        and str(payload.get("owner_id") or "") != str(CURRENT_USER.get("id") or "")
+    ):
+        raise PermissionError("This compound set belongs to another Studio account.")
+    project_id = validate_project_id(payload.get("project_id"))
+    if project_id:
+        require_project_access(CURRENT_USER, project_id)
+
+
+def _database_import_compound_set(
+    *,
+    name: str,
+    project_id: str,
+    compounds: list[dict[str, Any]],
+) -> str:
+    """Persist an immutable compound-set artifact and add it to a Database group."""
+    project_id = validate_project_id(project_id)
+    if not project_id:
+        raise ValueError("Select a project before importing a compound set.")
+    require_project_access(CURRENT_USER, project_id)
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    set_id = hashlib.sha1(f"{stamp}-{name}-{secrets.token_hex(8)}".encode("utf-8")).hexdigest()[:20]
+    path = _database_compound_set_path(set_id)
+    payload = ligand_compounds.write_compound_set(
+        path,
+        name=name,
+        compounds=compounds,
+        owner_id=str(CURRENT_USER["id"]),
+        project_id=project_id,
+        created_at=stamp,
+        compound_set_id=set_id,
+    )
+    group_id = str(st.session_state.get("database-import-group-id") or set_id)
+    group_name = str(st.session_state.get("database-import-group-name") or name or "Compound set")
+    groups = _load_database_groups()
+    group = next((item for item in groups if item.get("id") == group_id), None)
+    if group is None:
+        group = {
+            "id": group_id,
+            "name": group_name,
+            "owner_id": str(CURRENT_USER["id"]),
+            "created_at": stamp,
+            "record_type": "compound_set",
+            "compound_set_id": set_id,
+            "project_id": project_id,
+            "members": [],
+        }
+        groups.append(group)
+    elif str(group.get("owner_id") or "") != str(CURRENT_USER["id"]) and CURRENT_USER.get("role") != "admin":
+        path.unlink(missing_ok=True)
+        raise PermissionError("You do not have permission to add compounds to this group.")
+    else:
+        group["project_id"] = project_id
+    added_members = [
+        {"record_type": "compound", "compound_set_id": set_id, "compound_id": row["compound_id"]}
+        for row in payload["compounds"]
+    ]
+    existing_members = [item for item in group.get("members", []) if isinstance(item, dict)]
+    existing_keys = {
+        (str(item.get("compound_set_id") or ""), str(item.get("compound_id") or ""))
+        for item in existing_members
+        if item.get("record_type") == "compound"
+    }
+    group["members"] = [
+        *existing_members,
+        *[
+            item for item in added_members
+            if (str(item["compound_set_id"]), str(item["compound_id"])) not in existing_keys
+        ],
+    ]
+    compound_set_ids = list(dict.fromkeys(
+        str(item.get("compound_set_id") or "")
+        for item in group["members"]
+        if item.get("record_type") == "compound" and item.get("compound_set_id")
+    ))
+    group["record_type"] = (
+        "compound_set"
+        if len(group["members"]) == len([item for item in group["members"] if item.get("record_type") == "compound"])
+        else "molecule_group"
+    )
+    group["compound_set_ids"] = compound_set_ids
+    if len(compound_set_ids) == 1:
+        group["compound_set_id"] = compound_set_ids[0]
+    else:
+        group.pop("compound_set_id", None)
+    _save_database_groups(groups)
+    st.session_state["database-preselect-group"] = f"custom:{group_id}"
+    st.session_state["database-last-compound-import"] = len(payload["compounds"])
+    st.session_state["database-import-dialog-requested"] = False
+    st.session_state["database-import-step"] = 0
+    return set_id
+
+
 def _studio_candidate_sources(task_group: str | None = None) -> list[dict]:
     """Keep this studio's molecule database separate from other apps' jobs."""
     visible = []
@@ -7337,10 +7680,91 @@ def _render_database_import_dialog() -> None:
         st.rerun()
     method = st.radio(
         "What are you importing?",
-        ["Table", "Structure file", "ZIP of structures", "FASTA", "Fetch by identifier", "Paste sequences"],
+        ["Table", "Compound set", "Structure file", "ZIP of structures", "FASTA", "Fetch by identifier", "Paste sequences"],
         horizontal=True,
         key="database-import-method",
     )
+
+    if method == "Compound set":
+        st.caption("Import small molecules from CSV/TSV with SMILES, an SMI file, or an SDF with SMILES properties.")
+        uploaded = st.file_uploader(
+            "Compound set file",
+            type=["csv", "tsv", "txt", "smi", "smiles", "sdf", "mol"],
+            key="database-import-compound-set",
+        )
+        if not uploaded:
+            return
+        data = uploaded.getvalue()
+        id_column = ""
+        smiles_column = ""
+        compounds: list[dict[str, Any]] = []
+        if Path(uploaded.name).suffix.lower() in {".csv", ".tsv", ".txt"}:
+            try:
+                separator = "\t" if uploaded.name.lower().endswith((".tsv", ".txt")) else ","
+                preview = pd.read_csv(io.BytesIO(data), sep=separator)
+            except Exception as exc:
+                st.error(f"Could not read this compound table: {exc}")
+                return
+            columns = [str(column) for column in preview.columns]
+            id_guess = _guess_database_column(columns, ("compound_id", "id", "name", "zinc_id", "catalog_id"))
+            smiles_guess = _guess_database_column(columns, ("smiles", "canonical_smiles", "isomeric_smiles"))
+            mapping = st.columns(2)
+            id_options = ["", *columns]
+            smiles_options = ["", *columns]
+            id_column = mapping[0].selectbox(
+                "Compound ID column",
+                id_options,
+                index=id_options.index(id_guess) if id_guess in id_options else 0,
+                format_func=lambda value: value or "Generate IDs from SMILES",
+                key="database-compound-id-column",
+            )
+            smiles_column = mapping[1].selectbox(
+                "SMILES column *",
+                smiles_options,
+                index=smiles_options.index(smiles_guess) if smiles_guess in smiles_options else 0,
+                format_func=lambda value: value or "Select a SMILES column",
+                key="database-compound-smiles-column",
+            )
+            st.dataframe(preview.head(10), hide_index=True, use_container_width=True)
+            if smiles_column:
+                try:
+                    compounds = ligand_compounds.parse_compound_table(
+                        data,
+                        filename=uploaded.name,
+                        id_column=id_column,
+                        smiles_column=smiles_column,
+                    )
+                except ValueError as exc:
+                    st.error(str(exc))
+        else:
+            try:
+                compounds = ligand_compounds.parse_compound_table(data, filename=uploaded.name)
+            except ValueError as exc:
+                st.error(str(exc))
+        if compounds:
+            st.success(f"Ready to add {len(compounds):,} compounds to **{import_group_name}**.")
+            st.dataframe(
+                [{"Compound": row["compound_id"], "SMILES": row["smiles"]} for row in compounds[:10]],
+                hide_index=True,
+                use_container_width=True,
+            )
+        project_id = st.session_state.get("database-import-project-id")
+        if st.button(
+            "Import compound set",
+            type="primary",
+            disabled=not compounds or not project_id,
+            key="database-compound-set-import-button",
+        ):
+            try:
+                _database_import_compound_set(
+                    name=import_group_name or Path(uploaded.name).stem,
+                    project_id=str(project_id),
+                    compounds=compounds,
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Compound-set import failed: {exc}")
+        return
 
     if method == "Table":
         st.caption("Import candidate sequences or structure paths from CSV, TSV, or Excel.")
@@ -7546,6 +7970,11 @@ def _render_database_group_dialog(filtered_refs: list[dict], selected_refs: list
             "name": group_name.strip(),
             "owner_id": str(CURRENT_USER["id"]),
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "record_type": (
+                "compound_group"
+                if group_refs and all(item.get("record_type") == "compound" for item in group_refs)
+                else "molecule_group"
+            ),
             "members": group_refs,
         }
         groups.append(group)
@@ -7560,6 +7989,9 @@ def _render_database() -> None:
     st.title("Database")
     if st.session_state.pop("database-last-import", None):
         st.success("Molecules imported. The new candidate set is available in Groups.")
+    compound_import_count = st.session_state.pop("database-last-compound-import", None)
+    if compound_import_count:
+        st.success(f"Imported {int(compound_import_count):,} compounds. The set is available in Groups and ligand tools.")
     try:
         sources = _studio_candidate_sources()
     except Exception as exc:
@@ -7573,7 +8005,16 @@ def _render_database() -> None:
             "members": [
                 member for member in group.get("members", [])
                 if isinstance(member, dict)
-                and f"{member.get('task_group', '')}/{member.get('run_id', '')}" in source_by_key
+                and (
+                    (
+                        member.get("record_type") == "compound"
+                        and _database_compound_set_path(str(member.get("compound_set_id") or "")).is_file()
+                    )
+                    or (
+                        member.get("record_type") != "compound"
+                        and f"{member.get('task_group', '')}/{member.get('run_id', '')}" in source_by_key
+                    )
+                )
             ],
         }
         for group in groups
@@ -7597,7 +8038,15 @@ def _render_database() -> None:
         if _database_source_key(source) not in grouped_source_keys
     ]
     custom_entries = [
-        {"id": f"custom:{group['id']}", "name": group["name"], "count": len(group.get("members", [])), "method": "Custom group", "source": None, "members": group.get("members", [])}
+        {
+            "id": f"custom:{group['id']}",
+            "name": group["name"],
+            "count": len(group.get("members", [])),
+            "method": "Compound set" if any(member.get("record_type") == "compound" for member in group.get("members", [])) else "Custom group",
+            "source": None,
+            "members": group.get("members", []),
+            "record_type": group.get("record_type"),
+        }
         for group in groups
     ]
     entries = [*custom_entries, *source_entries]
@@ -7668,7 +8117,39 @@ def _render_database() -> None:
             except Exception as exc:
                 st.error(f"Could not open this group: {exc}")
         else:
+            compound_set_cache: dict[str, dict[str, Any]] = {}
             for member in selected_entry["members"]:
+                if member.get("record_type") == "compound":
+                    compound_set_id = str(member.get("compound_set_id") or "")
+                    if compound_set_id not in compound_set_cache:
+                        try:
+                            compound_set_cache[compound_set_id] = ligand_compounds.load_compound_set(
+                                _database_compound_set_path(compound_set_id)
+                            )
+                        except (OSError, ValueError) as exc:
+                            st.error(f"Could not open compound set: {exc}")
+                            compound_set_cache[compound_set_id] = {"compounds": []}
+                    compound = next(
+                        (
+                            row for row in compound_set_cache[compound_set_id].get("compounds", [])
+                            if row.get("compound_id") == member.get("compound_id")
+                        ),
+                        None,
+                    )
+                    if compound:
+                        all_candidates.append({
+                            "candidate_id": compound["compound_id"],
+                            "stage": "compound_set",
+                            "source_tool": "Compound set",
+                            "smiles": compound["smiles"],
+                            "binder_sequence": "",
+                            "binder_chains": [],
+                            "target_chains": [],
+                            "metrics": {},
+                            "raw_metadata": compound.get("properties") or {},
+                            "_database_ref": member,
+                        })
+                    continue
                 source = source_by_key.get(f"{member.get('task_group', '')}/{member.get('run_id', '')}")
                 if not source:
                     continue
@@ -7702,12 +8183,12 @@ def _render_database() -> None:
                 st.session_state["database-create-group-requested"] = True
         with export_col:
             export_placeholder = st.empty()
-        all_columns = ["Candidate", "Stage", "Source", "Binder sequence", "Length", "Binder chains", "Target chains"]
+        all_columns = ["Candidate", "Molecule type", "Stage", "Source", "SMILES", "Binder sequence", "Length", "Binder chains", "Target chains"]
         with columns_col.popover("Columns", icon=":material/view_column:", use_container_width=True):
             visible_columns = st.multiselect(
                 "Choose columns",
                 all_columns,
-                default=all_columns[:5],
+                default=["Candidate", "Stage", "Source", "Binder sequence", "Length"],
                 key="database-visible-columns",
                 label_visibility="collapsed",
             )
@@ -7732,7 +8213,8 @@ def _render_database() -> None:
             filtered_candidates = []
             for candidate in all_candidates:
                 sequence = str(candidate.get("binder_sequence") or "")
-                searchable = " ".join((str(candidate.get("candidate_id") or ""), str(candidate.get("source_tool") or ""), sequence)).casefold()
+                smiles = str(candidate.get("smiles") or "")
+                searchable = " ".join((str(candidate.get("candidate_id") or ""), str(candidate.get("source_tool") or ""), sequence, smiles)).casefold()
                 if candidate_query and candidate_query not in searchable:
                     continue
                 if selected_stages and str(candidate.get("stage") or "Unknown") not in selected_stages:
@@ -7749,8 +8231,10 @@ def _render_database() -> None:
             table_rows = [
                 {
                     "Candidate": candidate.get("candidate_id", ""),
+                    "Molecule type": "Small molecule" if candidate.get("smiles") else "Protein",
                     "Stage": str(candidate.get("stage") or "").replace("_", " ").title(),
                     "Source": candidate.get("source_tool") or "—",
+                    "SMILES": candidate.get("smiles") or "",
                     "Binder sequence": candidate.get("binder_sequence") or "",
                     "Length": len(str(candidate.get("binder_sequence") or "")),
                     "Binder chains": ", ".join(candidate.get("binder_chains") or []),
@@ -7791,7 +8275,7 @@ def _render_database() -> None:
             if len(selected_candidates) == 1:
                 candidate = selected_candidates[0]
                 with st.expander(f"{candidate.get('candidate_id', 'Molecule')} details", expanded=True):
-                    st.code(candidate.get("binder_sequence") or "No binder sequence recorded", language="text")
+                    st.code(candidate.get("smiles") or candidate.get("binder_sequence") or "No sequence or SMILES recorded", language="text")
                     st.json({key: candidate.get(key) for key in ("stage", "source_tool", "target_chains", "binder_chains", "hotspots", "metrics", "raw_metadata")})
                     for path_key in ("binder_pdb", "complex_pdb", "target_pdb"):
                         path_text = candidate.get(path_key)

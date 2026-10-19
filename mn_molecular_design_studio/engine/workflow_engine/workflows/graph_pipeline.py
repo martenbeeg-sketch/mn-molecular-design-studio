@@ -416,6 +416,15 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
                 "masif_chain_id": masif_chain_id,
             },
         }
+    if kind == "rfdiffusion_beta_pairing":
+        inherited = source.get("target") or {}
+        p["target_pdb"] = p.get("target_pdb") or inherited.get("target_pdb") or None
+        inherited_chains = inherited.get("target_chains") or []
+        if isinstance(inherited_chains, str):
+            inherited_chains = [value for value in re.split(r"[,;\s]+", inherited_chains) if value]
+        p["target_chain"] = p.get("target_chain") or (inherited_chains[0] if len(inherited_chains) == 1 else "")
+        p["job_name"] = name
+        return {"schema_version": 1, "workflow": workflow, "parameters": p}
     from mn_molecular_design_studio import inverse_folding_input
     if kind in inverse_folding_input.ENGINES:
         if source.get("candidates_jsonl"):
@@ -849,6 +858,11 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     key_params['input_adapter_digest']=file_digest(Path(generator_input.__file__))
                     for key in ('target_pdb','scaffold_pdb','scaffold_ss_file','scaffold_adj_file','target_ss_file','target_adj_file'):
                         if params.get(key):key_params[key+'_digest']=file_digest(_path(params[key]))
+                elif kind == "rfdiffusion_beta_pairing":
+                    from mn_molecular_design_studio import rfdiffusion_beta_pairing_input
+                    key_params["input_adapter_digest"] = file_digest(Path(rfdiffusion_beta_pairing_input.__file__))
+                    if params.get("target_pdb"):
+                        key_params["target_pdb_digest"] = file_digest(_path(params["target_pdb"]))
                 if NODE_CATALOG[kind]["workflow"]:
                     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS, _get_function
                     implementation = _get_function(WORKFLOWS[NODE_CATALOG[kind]["workflow"]])

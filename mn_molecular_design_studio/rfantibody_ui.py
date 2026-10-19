@@ -266,7 +266,7 @@ def render_results(run_id: str, run_dir: Path, candidates: list[dict], parameter
     binder_path = Path(str(candidate.get("binder_pdb") or ""))
     if structure_path.is_file():
         molstar_custom_component(
-            [StructureVisualization(pdb=structure_path.read_text(errors="ignore"), color="molecule-type", representation_type="cartoon+ball-and-stick")],
+            [StructureVisualization(pdb=structure_path.read_text(errors="ignore"), color="chain-id", representation_type="cartoon")],
             key=f"rfab-result-view-{run_id}-{selected}", height=560, show_controls=True, show_structure_tools=False,
         )
         download_cols = st.columns(2)
@@ -282,3 +282,22 @@ def render_results(run_id: str, run_dir: Path, candidates: list[dict], parameter
         st.json(candidate.get("raw_metadata") or {})
     with st.expander("Requested settings", expanded=False):
         st.json({key: value for key, value in parameters.items() if key not in {"target_pdb", "framework_pdb"}})
+    render_confidence_guide()
+
+
+def render_confidence_guide() -> None:
+    st.markdown("#### How to interpret these scores")
+    st.markdown(
+        "RFantibody's maintainers suggest **RF2 pAE <10 Å** as a minimal filter and "
+        "**design-to-prediction RMSD <2 Å**; **Rosetta ddG <−20** may also help when available. "
+        "They caution that current filters are not yet reliable at separating binders from non-binders. "
+        "**Interaction PAE/ipAE** (Å) is lower when the predicted interface placement is more confident, "
+        "but it is not the same metric as whole-complex pAE and RFantibody's guidance does not establish "
+        "a validated ipAE cutoff. **pLDDT** measures local structure confidence, not binding probability; "
+        "RFantibody reports it on a 0–1 scale here, so 0.90 corresponds to 90/100. No antibody-specific "
+        "pLDDT cutoff is established by that guidance. Treat these as prioritization signals, not proof of binding."
+    )
+    st.caption(
+        "Sources: [RFantibody filtering guidance](https://github.com/RosettaCommons/RFantibody#filtering-strategies) · "
+        "[AlphaFold confidence guidance](https://alphafold.ebi.ac.uk/faq)"
+    )

@@ -14,6 +14,11 @@ from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import con
 
 _INPUT_KEYS = {
     "target_pdb",
+    "compound_set_file",
+    "reference_ligand_sdf",
+    "complex_pdb",
+    "ligand_sdf",
+    "pocket_pdb",
     "framework_pdb",
     "target_chains",
     "source_run_dir",

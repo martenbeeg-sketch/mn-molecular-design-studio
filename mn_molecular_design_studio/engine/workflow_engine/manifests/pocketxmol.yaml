@@ -1,0 +1,26 @@
+tool: pocketxmol_generation
+group: ligand-generation
+image: mn-pocketxmol:cu128-65488cf
+gpu: true
+description: De novo ligand generation in an uploaded protein pocket with PocketXMol.
+inputs:
+  target_pdb:
+    type: pdb
+    required: true
+  pocket_pdb:
+    type: pdb
+    required: true
+params:
+  requested_count: {type: int, default: 64}
+  batch_size: {type: int, default: 8}
+  seed: {type: int, default: 42}
+  diffusion_steps: {type: int, default: 100}
+  ligand_atoms_mean: {type: float, default: 28.0}
+  ligand_atoms_std: {type: float, default: 2.0}
+outputs:
+  compound_set:
+    path: artifacts/generated_compound_set.json
+    type: compound_set
+  coordinates:
+    path: artifacts/generated_compounds.sdf
+    type: ligand_coordinate_set

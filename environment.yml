@@ -9,6 +9,7 @@ dependencies:
   - gemmi
   - pdbfixer
   - pymol-open-source
+  - rdkit
   - pyyaml
   - openjdk=17
   - nextflow
@@ -20,5 +21,9 @@ dependencies:
   - typer
   - pip
   - pip:
-      - -e .
+      # pydssp is called with NumPy coordinates, so CPU PyTorch is sufficient.
+      # Select the CPU wheel to avoid pip pulling the default CUDA-enabled build.
+      - --extra-index-url https://download.pytorch.org/whl/cpu
+      - torch==2.14.1+cpu
+      - -e .[secondary-structure]
       - -e ../mn-compute-scheduler

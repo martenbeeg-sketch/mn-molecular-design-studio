@@ -26,8 +26,10 @@ conda activate mn-molecular-design-studio
 
 The environment installs Molecular Design Studio and the sibling
 `mn-compute-scheduler` client package. It does not install or edit the previous
-protein design app. The scheduler API is a separate service and must already be
-running before submitted Studio jobs can be claimed.
+protein design app. Candidate secondary-structure metrics use `pydssp` with
+CPU-only PyTorch; they do not need a CUDA PyTorch install. The scheduler API is
+a separate service and must already be running before submitted Studio jobs can
+be claimed.
 
 The scheduler checkout is expected next to this repository at
 `../mn-compute-scheduler`. For a pip-only setup, install the optional scheduler

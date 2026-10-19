@@ -1,0 +1,5 @@
+tool: rfdiffusion_beta_pairing
+group: design
+image: mn-rfdiffusion:latest
+gpu: true
+description: RFdiffusion binder backbone generation conditioned by published target–binder beta-strand SS/adjacency interface tensors; sequence design and folding are downstream.

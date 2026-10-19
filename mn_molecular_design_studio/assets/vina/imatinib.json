@@ -1,0 +1,10 @@
+[
+  {
+    "compound_id": "imatinib-CID5291",
+    "smiles": "Cc1ccc(NC(=O)c2ccc(CN3CCN(C)CC3)cc2)cc1Nc1nccc(-c2cccnc2)n1",
+    "properties": {
+      "pubchem_cid": 5291,
+      "name": "Imatinib"
+    }
+  }
+]

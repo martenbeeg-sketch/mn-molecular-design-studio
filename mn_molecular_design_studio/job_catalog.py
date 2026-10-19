@@ -106,6 +106,9 @@ def _initialize(connection: sqlite3.Connection) -> None:
             campaign_step_index TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL DEFAULT '',
+            queue_wait_started_at TEXT NOT NULL DEFAULT '',
+            worker_started_at TEXT NOT NULL DEFAULT '',
+            completed_at TEXT NOT NULL DEFAULT '',
             success INTEGER,
             hidden INTEGER NOT NULL DEFAULT 0,
             capacity_parent INTEGER NOT NULL DEFAULT 0,
@@ -140,10 +143,18 @@ def _initialize(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS studio_artifacts_by_job ON job_artifacts(job_id, name);
         """
     )
-    if "pipeline_name" not in {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}:
+    existing_columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+    added_columns = False
+    if "pipeline_name" not in existing_columns:
         connection.execute("ALTER TABLE jobs ADD COLUMN pipeline_name TEXT NOT NULL DEFAULT ''")
-        # Existing records must be re-read once so visual-pipeline lineage can
-        # be derived from their durable metadata without requiring job changes.
+        added_columns = True
+    for column in ("queue_wait_started_at", "worker_started_at", "completed_at"):
+        if column not in existing_columns:
+            connection.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+            added_columns = True
+    if added_columns:
+        # Existing records must be re-read once so newly indexed metadata can
+        # be derived from durable run metadata without requiring job changes.
         connection.execute("UPDATE jobs SET metadata_mtime_ns=0")
     try:
         connection.executescript(
@@ -252,6 +263,9 @@ def _job_payload(run_dir: Path) -> dict[str, Any]:
         "campaign_step_index": str(metadata.get("campaign_step_index") or ""),
         "created_at": str(metadata.get("created_at") or ""),
         "updated_at": str(metadata.get("updated_at") or ""),
+        "queue_wait_started_at": str(metadata.get("queue_wait_started_at") or ""),
+        "worker_started_at": str(metadata.get("worker_started_at") or ""),
+        "completed_at": str(metadata.get("completed_at") or ""),
         "success": result.get("success"),
         "hidden": bool(metadata.get("hidden")),
         "capacity_parent": bool(metadata.get("capacity_parent_run_id") or metadata.get("capacity_parent")),
@@ -301,13 +315,15 @@ def _upsert(root: Path, run_dir: Path, *, refresh_artifacts: bool) -> None:
         row["status"], row["queue_resource"], row["resource_allocation"], row["scheduler_wait_reason"],
         row["current_phase"], row["current_engine"], row["warning"], row["warning_level"], row["campaign_name"],
         row["campaign_id"], row["pipeline_name"], row["campaign_step"], row["campaign_step_index"], row["created_at"], row["updated_at"],
+        row["queue_wait_started_at"], row["worker_started_at"], row["completed_at"],
         int(row["success"]) if isinstance(row["success"], bool) else None, int(row["hidden"]), int(row["capacity_parent"]),
         row["owner_id"], row["project_id"], row["metadata_mtime_ns"], row["input_mtime_ns"], row["result_mtime_ns"], _now(),
     )
     columns = (
         "run_relative_path", "job_code", "job_type", "tool", "status", "queue_resource", "resource_allocation",
         "scheduler_wait_reason", "current_phase", "current_engine", "warning", "warning_level", "campaign_name",
-        "campaign_id", "pipeline_name", "campaign_step", "campaign_step_index", "created_at", "updated_at", "success", "hidden",
+        "campaign_id", "pipeline_name", "campaign_step", "campaign_step_index", "created_at", "updated_at",
+        "queue_wait_started_at", "worker_started_at", "completed_at", "success", "hidden",
         "capacity_parent", "owner_id", "project_id", "metadata_mtime_ns", "input_mtime_ns", "result_mtime_ns", "indexed_at",
     )
     with _connection() as connection:
@@ -318,7 +334,8 @@ def _upsert(root: Path, run_dir: Path, *, refresh_artifacts: bool) -> None:
         connection.execute(
             "INSERT INTO jobs (storage_root_id, task_group, run_id, run_relative_path, job_code, job_type, tool, status, "
             "queue_resource, resource_allocation, scheduler_wait_reason, current_phase, current_engine, warning, warning_level, "
-            "campaign_name, campaign_id, pipeline_name, campaign_step, campaign_step_index, created_at, updated_at, success, hidden, "
+            "campaign_name, campaign_id, pipeline_name, campaign_step, campaign_step_index, created_at, updated_at, "
+            "queue_wait_started_at, worker_started_at, completed_at, success, hidden, "
             "capacity_parent, owner_id, project_id, metadata_mtime_ns, input_mtime_ns, result_mtime_ns, indexed_at) "
             "VALUES (" + ",".join("?" for _ in values) + ") "
             "ON CONFLICT(storage_root_id, task_group, run_id) DO UPDATE SET "

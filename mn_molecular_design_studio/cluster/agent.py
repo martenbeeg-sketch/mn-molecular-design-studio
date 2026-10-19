@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import bundles, capabilities, config, context, transport
+from . import bundles, capabilities, config, context, progress as job_progress, transport
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +23,8 @@ class Agent:
         self._inventory_time = 0
         self._inventory = {}
         self._published = {}
+        self._artifact_signatures = {}
+        self._artifact_manifests = {}
         self._known_references = set()
         self._reference_probes = []
         self._stop = threading.Event()
@@ -65,7 +67,13 @@ class Agent:
             page = job_catalog.search_jobs(access_admin=True, limit=1000, offset=offset)
             for row in page["items"]:
                 run = Path(row["run_dir"])
-                signature = (row.get("metadata_mtime_ns"), row.get("input_mtime_ns"), row.get("result_mtime_ns"))
+                artifact_signature = (
+                    row.get("metadata_mtime_ns"),
+                    row.get("input_mtime_ns"),
+                    row.get("result_mtime_ns"),
+                )
+                progress_mtime = job_progress.bindcraft2_progress_mtime_ns(run)
+                signature = (*artifact_signature, progress_mtime)
                 reference = row["task_group"] + "/" + row["run_id"]
                 self._known_references.add(reference)
                 if self._published.get(reference) == signature:
@@ -80,8 +88,13 @@ class Agent:
                     or marker.get("cluster_submission_id")
                     or config.job_id(self.node_id, reference)
                 )
-                manifest = job_catalog.job_artifacts(row["task_group"], row["run_id"])
-                item = dict(row, cluster_job_id=jid, metrics=metrics, artifacts=manifest[:1000],
+                if self._artifact_signatures.get(reference) != artifact_signature:
+                    manifest = job_catalog.job_artifacts(row["task_group"], row["run_id"])
+                    self._artifact_manifests[reference] = manifest[:1000]
+                    self._artifact_signatures[reference] = artifact_signature
+                progress = job_progress.bindcraft2_progress(run)
+                item = dict(row, cluster_job_id=jid, metrics=metrics, progress=progress,
+                            artifacts=self._artifact_manifests.get(reference, []),
                             location=str(run), last_reported_at=time.time(), _signature=list(signature))
                 result.append(item)
             offset += len(page["items"])

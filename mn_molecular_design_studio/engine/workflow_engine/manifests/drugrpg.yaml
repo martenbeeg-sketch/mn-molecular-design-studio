@@ -1,0 +1,15 @@
+tool: drugrpg_generation
+group: ligand-generation
+image: mn-drugrpg:cu128-6fa0e41
+gpu: true
+description: DrugRPG physics-guided pocket-conditioned ligand generation.
+inputs:
+  target_pdb: {type: pdb, required: true}
+  pocket_pdb: {type: pdb, required: true}
+params:
+  requested_count: {type: int, default: 64}
+  batch_size: {type: int, default: 8}
+  seed: {type: int, default: 42}
+outputs:
+  compound_set: {path: artifacts/generated_compound_set.json, type: compound_set}
+  coordinates: {path: artifacts/generated_compounds.sdf, type: ligand_coordinate_set}

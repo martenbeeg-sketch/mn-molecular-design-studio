@@ -37,9 +37,10 @@ def _smiles_preview(smiles: str) -> str:
         return ""
     configured = os.getenv("MN_MOLECULAR_DESIGN_STUDIO_CHEM_PYTHON")
     python = Path(configured) if configured else (
-        Path(sys.executable) if importlib.util.find_spec("rdkit") else
-        Path(sys.executable).parents[2] / "mn-ligand" / "bin" / "python"
+        Path(sys.executable) if importlib.util.find_spec("rdkit") else None
     )
+    if python is None:
+        return ""
     if not python.is_file():
         return ""
     script = (

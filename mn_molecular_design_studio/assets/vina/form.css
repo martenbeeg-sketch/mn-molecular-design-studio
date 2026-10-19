@@ -1,0 +1,69 @@
+/* Scoped to the Vina input page; the Studio navigation retains its theme. */
+[data-testid="stMain"]:has(.st-key-vina-page) { background: #f7f8f7; }
+.st-key-vina-page { max-width: 1540px; margin: 0 auto; color: #1a1a1a; }
+.st-key-vina-page, .st-key-vina-page input, .st-key-vina-page button,
+.st-key-vina-page p, .st-key-vina-page select { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.st-key-vina-page [data-testid="stVerticalBlock"] { gap: .65rem; }
+.st-key-vina-page .vina-heading { text-align: center; padding: 0 0 22px; border-bottom: 1px solid #e7e9e7; margin-bottom: 16px; }
+.st-key-vina-page .vina-heading h1 { color: #1a1a1a; font-size: 34px; font-weight: 650; margin: 0 0 8px; padding: 0; }
+.st-key-vina-page .vina-heading p { font-size: 14px; color: #67706a; margin: 0 0 10px; }
+.st-key-vina-page .vina-heading nav { font-size: 12px; color: #747b77; display: flex; justify-content: center; gap: 25px; }
+.st-key-vina-page a { color: #216345; }
+.st-key-vina-page label p, .st-key-vina-page .vina-label { color: #1a1a1a; font-size: 14px; font-weight: 650; line-height: 24px; }
+.st-key-vina-page .vina-label { margin: 10px 0 0; font-size: 16px; }
+.st-key-vina-page [data-baseweb="input"], .st-key-vina-page [data-baseweb="select"] > div,
+.st-key-vina-page [data-testid="stNumberInputContainer"] { border: 1px solid #cfd3d0; border-radius: 5px; background: transparent; box-shadow: none; }
+.st-key-vina-page [data-testid="stTextInputRootElement"],
+.st-key-vina-page [data-testid="stSelectbox"] [role="group"] { background: transparent !important; border:1px solid #cfd3d0 !important; border-radius:5px !important; }
+.st-key-vina-page [data-baseweb="input"] input, .st-key-vina-page [data-testid="stNumberInput"] input { background: transparent; color: #1a1a1a; font-size: 16px; min-height: 37px; }
+.st-key-vina-page [data-testid="stNumberInputStepUp"], .st-key-vina-page [data-testid="stNumberInputStepDown"] { display: none; }
+.st-key-vina-page [data-testid="stBaseButton-secondary"] { background: transparent; color: #216345; border: 1px solid #47856a; border-radius: 5px; }
+.st-key-vina-page [data-testid="stBaseButton-primary"] { background: #216345; border: 1px solid #216345; color: white; border-radius: 5px; }
+.st-key-vina-page [data-testid="stBaseButton-primary"]:hover { background: #184c34; border-color: #184c34; }
+.st-key-vina-page [data-testid="stSegmentedControl"] button { border-radius: 0; border-color: #cfd3d0; color: #346452; }
+.st-key-vina-page [data-testid="stSegmentedControl"] button[aria-pressed="true"] { color: #216345; background: #e6ede8; }
+.st-key-vina-page [role="radio"][aria-checked="true"] { color:#216345 !important; background:#e6ede8 !important; border-color:#a5b9ad !important; }
+.st-key-vina-page [role="tab"][aria-selected="true"] { color:#216345 !important; }
+.st-key-vina-page .react-aria-SelectionIndicator { background:#216345 !important; }
+.st-key-vina-page .st-key-vina-protein-source [data-testid="stFileUploaderDropzone"],
+.st-key-vina-page .st-key-vina-ligand-source [data-testid="stFileUploaderDropzone"] { background: #fafcfb; border: 2px dashed #83a993; border-radius: 8px; min-height: 108px; padding: 16px; }
+.st-key-vina-page [data-testid="stFileUploaderDropzone"] small { color: #8b938d; }
+.st-key-vina-page [data-testid="stFileUploaderDropzone"] button { background: white; color: #216345; border: 1px solid #47856a; }
+.st-key-vina-page [data-testid="stFileUploaderDropzone"] { display:flex; align-items:center; justify-content:center; gap:5px; }
+.st-key-vina-page [data-testid="stFileUploaderDropzone"]::before { content:"Drag & Drop or"; color:#7c857f; font-size:14px; }
+.st-key-vina-page [data-testid="stFileUploaderDropzone"]::after { content:"your protein file"; color:#7c857f; font-size:14px; }
+.st-key-vina-page [data-testid="stFileUploaderDropzone"]:has(input[accept*=".sdf"])::after { content:"your sdf files"; }
+.st-key-vina-page [data-testid="stFileUploaderDropzone"]:has(input[accept*=".csv"])::after { content:"your CSV files"; }
+.st-key-vina-page [data-testid="stFileUploaderDropzoneInstructions"],
+.st-key-vina-page [data-testid="stFileUploaderDropzone"] button [data-testid="stIconMaterial"] { display:none; }
+.st-key-vina-page [data-testid="stFileUploaderDropzone"] button { padding:0; min-height:0; border:0; background:transparent; }
+.st-key-vina-page [data-testid="stFileUploaderDropzone"] button p { font-size:14px; font-weight:650; text-decoration:underline; }
+.st-key-vina-page [data-testid="stFileUploaderFile"] { display: none; }
+.st-key-vina-page .vina-file { color: white; background: #216345; border-radius: 7px; padding: 10px 15px; font-size: 12px; margin-top: -4px; display:flex; justify-content:space-between; align-items:center; }
+.st-key-vina-page .vina-file small { display:block; font-size:10px; opacity:.75; }
+.st-key-vina-page .vina-file .vina-upload-complete { text-align:right; }
+.st-key-vina-page .st-key-vina-protein-source,
+.st-key-vina-page .st-key-vina-ligand-source { padding:16px; border:1px solid #e9ece9; border-radius:14px; background:#fcfdfc; box-shadow:0 2px 8px #152d1e09; }
+.st-key-vina-page .st-key-vina-protein-source:has(.vina-file) [data-testid="stFileUploaderDropzone"] { min-height:0; height:0; padding:0; border:0; visibility:hidden; position:absolute; }
+.st-key-vina-page .st-key-vina-protein-source:has(.vina-file) .vina-file { outline:2px dashed #438269; outline-offset:9px; margin:8px 10px; }
+.st-key-vina-page .vina-box-title { text-align:center; font-size:22px; font-weight:600; margin:25px 0 8px; }
+.st-key-vina-page .st-key-vina-viewer { width:min(400px,100%) !important; margin:0 auto; background:#fff; }
+.st-key-vina-page .st-key-vina-pocket { border:1px solid #dfe3df; border-radius:4px; padding:16px; margin:0 0 4px; }
+.st-key-vina-page [data-testid="stTabs"] [data-baseweb="tab-list"] { background:transparent; gap:0; border-bottom:0; }
+.st-key-vina-page [data-testid="stTabs"] [data-baseweb="tab"] { color:#5e6962; font-size:14px; padding:10px 18px; }
+.st-key-vina-page [data-testid="stTabs"] [aria-selected="true"] { color:#216345; }
+.st-key-vina-page [data-baseweb="tab-highlight"] { background:#216345; }
+.st-key-vina-page [data-baseweb="tab-border"] { background:transparent; }
+.st-key-vina-page [data-testid="stCaptionContainer"] { color:#717b75; font-size:13px; }
+.st-key-vina-page .st-key-vina-box-fields { max-width:850px; margin:0 auto; }
+.st-key-vina-page .st-key-vina-box-fields [data-testid="stNumberInput"] input { height:48px; }
+.st-key-vina-page .st-key-vina-optional details { border:1px solid #8b948e; border-radius:12px; }
+.st-key-vina-page .st-key-vina-example button { background:#216345; border-color:#216345; color:white; border-radius:5px; }
+.st-key-vina-page .st-key-vina-submit { max-width:160px; margin:10px auto 0; text-align:center; }
+.st-key-vina-page .vina-runtime { border:1px solid #e1e4e1; border-radius:5px; padding:16px; margin-top:8px; font-size:15px; }
+.st-key-vina-page .vina-runtime strong { display:block; font-size:20px; margin-bottom:8px; }
+@media(max-width:800px) {
+  .st-key-vina-page .vina-heading nav { gap:12px; flex-wrap:wrap; }
+  .st-key-vina-page .vina-heading h1 { font-size:28px; }
+  .st-key-vina-page [data-testid="stTabs"] [data-baseweb="tab"] { padding:8px; font-size:12px; }
+}

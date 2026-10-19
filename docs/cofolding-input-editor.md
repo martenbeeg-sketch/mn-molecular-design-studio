@@ -69,8 +69,7 @@ its native YAML, template, restraint and affinity controls. BoltzGen Fold adds
 target PDB/A3M uploads and uses the shared protein card for the binder. The
 optimized engine pages retain multiple independent complexes under Batch mode.
 
-SMILES previews use RDKit when installed in the app environment, the sibling
-`mn-ligand` environment, or an interpreter set through
+SMILES previews use RDKit from the app environment or an interpreter set through
 `MN_MOLECULAR_DESIGN_STUDIO_CHEM_PYTHON`. Preview generation is optional and runs
 locally. Input changes preserve the editor state across Streamlit reruns;
 frontend asset changes remount the component using its saved model.

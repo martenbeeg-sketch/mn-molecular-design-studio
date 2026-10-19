@@ -174,6 +174,11 @@ def requirements(payload, *, references=(), installed_images=None):
             from mn_molecular_design_studio.rfpeptides_input import WEIGHTS_RELATIVE_PATH
             needed_refs.add(WEIGHTS_RELATIVE_PATH.as_posix())
             cpu_only = False
+        elif workflow == "design.rfdiffusion_beta_pairing":
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.rfdiffusion_beta_pairing import RF_IMAGE, TENSOR_IMAGE
+            needed_images.update({RF_IMAGE, TENSOR_IMAGE})
+            needed_refs.add("rfdiffusion_models/Complex_Fold_base_ckpt.pt")
+            cpu_only = False
         else:
             if workflow.startswith(("design.", "refolding.", "sequence.")):
                 cpu_only = False

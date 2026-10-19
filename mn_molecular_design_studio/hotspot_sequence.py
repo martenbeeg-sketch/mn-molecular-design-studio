@@ -11,6 +11,7 @@ def render_hotspot_sequence(
     sequence: list[tuple[int, str]],
     selected_residues: set[int],
     key: str,
+    compact: bool = False,
 ):
     """Render the click-and-drag, 20-residue sequence selector."""
     global _component
@@ -26,6 +27,7 @@ def render_hotspot_sequence(
         chainId=chain,
         sequence=[{"number": number, "letter": amino_acid} for number, amino_acid in sequence],
         selectedResidues=sorted(selected_residues),
+        compact=compact,
         key=key,
         default=None,
     )
