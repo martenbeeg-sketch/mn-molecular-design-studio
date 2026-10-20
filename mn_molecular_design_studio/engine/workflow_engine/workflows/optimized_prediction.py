@@ -2187,6 +2187,34 @@ def validate_prediction_request(parameters: dict[str, Any]) -> None:
     _prepare_prediction(**parameters, resolve_random_seed=False)
 
 
+def boltz2_prediction_parameters(
+    tasks: list[dict[str, Any]], *, settings: dict[str, Any], job_name: str,
+) -> dict[str, Any]:
+    """Build the canonical optimized-prediction request used by the Boltz-2 tile."""
+    mode = str(settings.get("optimization_mode") or "off")
+    option_keys = (
+        "sampling_steps", "max_parallel_samples", "step_scale", "output_format",
+        "seed_count", "use_potentials", "method", "use_msa", "generate_ipsae", "boltz_version",
+    )
+    engine_options = {key: settings[key] for key in option_keys if key in settings}
+    engine_options["max_msa_seqs"] = int(settings.get("max_msa_seqs") or 8192)
+    # The tile exposes MSA as one user-facing switch; disabling it also disables
+    # the server fallback. Callers may pass the derived value explicitly.
+    engine_options["use_msa_server"] = bool(settings.get("use_msa_server", settings.get("use_msa", True)))
+    return {
+        "engine": "boltz2",
+        "optimization_mode": mode,
+        "job_name": str(job_name or "boltz2-prediction"),
+        "seed": int(settings.get("seed") or 0),
+        "samples": int(settings.get("samples") or 1),
+        "num_recycles": int(settings.get("num_recycles") or ENGINE_PROFILES["boltz2"]["default_recycles"]),
+        "cpu_cores": int(settings.get("cpu_cores") or 4),
+        "gpu_device": str(settings.get("gpu_device") or ("0,1" if mode == "big" else "0")),
+        "tasks": [dict(task) for task in tasks],
+        "engine_options": engine_options,
+    }
+
+
 def run_optimized_prediction(
     engine: PredictionEngine,
     protein_sequences: str = "",

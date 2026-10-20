@@ -37,15 +37,18 @@ def test_workstation_resources_are_visible_to_an_ordinary_user(isolated, monkeyp
 def test_shared_results_can_page_beyond_first_hundred_jobs(isolated, monkeypatch):
     rows = [{"cluster_job_id": f"job-{i}", "node_id": "remote", "node_name": "4032", "project_id": "p", "campaign_name": f"Design {i}",
              "status": "completed", "availability": "offline", "created_at": f"{i:05d}"} for i in range(121)]
-    monkeypatch.setattr(ui, "catalog", lambda *a: ({"items": rows, "total": len(rows)}, False))
+    monkeypatch.setattr(ui, "catalog", lambda *a, **kw: ({"items": rows, "total": len(rows)}, False))
     from mn_molecular_design_studio import workspace
     monkeypatch.setattr(workspace, "load_organization", lambda: {"projects": [{"id": "p", "name": "Project"}]})
     at = AppTest.from_string('from mn_molecular_design_studio.cluster.ui import render_runs\nrender_runs({"id":"scientist"}, "token", lambda **kw: {"items":[], "total":0})').run()
     assert not at.exception
-    assert len([b for b in at.button if b.label == "View"]) == 50
+    view_links = [block.value for block in at.markdown if "job_ref=" in block.value]
+    assert len(view_links) == 50
+    assert any('href="?job_ref=cluster%3Ajob-120"' in link for link in view_links)
     at.number_input[0].set_value(3).run()
     assert not at.exception
-    assert len([b for b in at.button if b.label == "View"]) == 21
+    view_links = [block.value for block in at.markdown if "job_ref=" in block.value]
+    assert len(view_links) == 21
 
 
 def test_remote_candidate_results_include_sequence_and_scores():

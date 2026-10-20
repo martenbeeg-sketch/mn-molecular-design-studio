@@ -79,6 +79,7 @@ def run_tile(root: Path = Path("/work")) -> dict:
     for index, item in enumerate(compounds, start=1):
         compound_id = item["compound_id"]
         smiles = item["smiles"]
+        source_sdf = ligand_root / f"{compound_id}_source.sdf"
         sdf = ligand_root / f"{compound_id}.sdf"
         ligand_pdbqt = ligand_root / f"{compound_id}.pdbqt"
         dock_dir = pose_root / compound_id
@@ -87,11 +88,29 @@ def run_tile(root: Path = Path("/work")) -> dict:
             _run(
                 [
                     sys.executable, str(input_root / "smiles_to_3d.py"),
-                    "--smiles", smiles, "--name", compound_id, "--output", str(sdf),
+                    "--smiles", smiles, "--name", compound_id, "--output", str(source_sdf),
                 ],
                 log_root / f"{compound_id}.conformer.log",
                 cwd=root,
             )
+            if config.get("use_scrub", True):
+                scrub_command = [
+                    "scrub.py", str(source_sdf), "-o", str(sdf),
+                    "--ph", f"{float(config.get('scrub_ph', 7.4)):.2f}",
+                ]
+                if config.get("scrub_skip_tautomer", True):
+                    scrub_command.append("--skip_tautomer")
+                scrub_log = log_root / f"{compound_id}.scrub.log"
+                try:
+                    _run(scrub_command, scrub_log, cwd=root)
+                    if not sdf.is_file() or sdf.stat().st_size == 0:
+                        raise RuntimeError("Scrub produced no valid molecule")
+                except RuntimeError as exc:
+                    shutil.copy2(source_sdf, sdf)
+                    with scrub_log.open("a", encoding="utf-8") as handle:
+                        handle.write(f"\nScrub failed; using the RDKit SDF for Meeko preparation: {exc}\n")
+            else:
+                shutil.copy2(source_sdf, sdf)
             _run(
                 ["mk_prepare_ligand.py", "-i", str(sdf), "-o", str(ligand_pdbqt)],
                 log_root / f"{compound_id}.ligand_prepare.log",

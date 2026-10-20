@@ -40,7 +40,10 @@ def test_inline_inputs_survive_job_and_worker_serialization(monkeypatch, tmp_pat
 
     assert restored == kwargs
     assert not portable_paths.is_operational_path_key(key)
+    assert not portable_paths.is_operational_path_key("output_format")
+    assert not portable_paths.is_operational_path_key("input_format")
     assert portable_paths.is_operational_path_key("target_pdb")
+    assert portable_paths.is_operational_path_key("output_directory")
     assert portable_paths.is_operational_path_key("design_yaml_file")
 
 

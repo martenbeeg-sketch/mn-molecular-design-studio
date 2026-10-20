@@ -455,6 +455,25 @@ def validate_workflow(
     return _with_request_file(request_payload, validate_workflow_request, base_dir=str(request_dir))
 
 
+@app.post("/api/v1/workflows/placement-options")
+def workflow_placement_options(
+    payload: dict[str, Any] = Body(...),
+    base_dir: str | None = Query(default=None, description="Directory used to resolve relative input paths."),
+    user: dict[str, Any] = Depends(_current_user),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> dict[str, Any]:
+    request_payload, project_id = _request_payload_and_project(payload, user)
+    request_dir = _request_directory(user, base_dir)
+    _validate_user_path_values(request_payload, user, request_dir)
+    from mn_molecular_design_studio.cluster.service import placement_options_from_api
+    token = credentials.credentials if credentials else "development-mode" if is_development_mode() else ""
+    return _call(
+        placement_options_from_api, dict(request_payload, project_id=project_id), user,
+        request_dir=request_dir, token=token,
+        authorize_path=lambda path: _validate_user_path_values(str(path), user, request_dir, "input_path"),
+    )
+
+
 @app.post("/api/v1/workflows", status_code=202)
 def submit_workflow(
     payload: dict[str, Any] = Body(...),
@@ -511,7 +530,7 @@ def submit_campaign(
 def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
     import re
     from mn_molecular_design_studio.pipeline_graph import clean_graph, validate_graph
-    from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import source_designs, source_generations
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import source_designs, source_generations, source_molecule_selection
 
     request, project_id = _request_payload_and_project(payload, user)
     if set(request) - {"graph", "version", "reuse_completed", "gpu_device"}:
@@ -519,12 +538,12 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
     graph = _call(clean_graph, request.get("graph"))
     _validate_user_path_values(graph, user, _request_directory(user, None))
     for node in graph["nodes"]:
-        if node["data"]["kind"] in {"design_source","generation_source","backbone_source"} and node["data"]["params"].get("source_run_dir"):
+        if node["data"]["kind"] in {"design_source","generation_source","backbone_source","molecule_source"} and node["data"]["params"].get("source_run_dir"):
             params = node["data"]["params"]
             _guard_source_job({"parameters": {"validation_sources": [{"source_run_dir": params["source_run_dir"]}]}}, user, project_id=project_id)
             kind=node['data']['kind']
-            loader=source_generations if kind in {'generation_source','backbone_source'} else source_designs
-            extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind!='design_source' else {}
+            loader=source_molecule_selection if kind == 'molecule_source' else source_generations if kind in {'generation_source','backbone_source'} else source_designs
+            extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind in {'generation_source','backbone_source'} else {}
             _call(loader, params["source_run_dir"], project_id, params.get("selected_candidate_ids"),**extra)
     if runnable:
         plan = _call(validate_graph, graph, require_inputs=True)
@@ -736,3 +755,8 @@ def stop_job(
 
 from mn_molecular_design_studio.cluster.routes import install as _install_cluster_routes
 _install_cluster_routes(app, _current_user, _admin_user)
+
+from mn_molecular_design_studio.molecular_database_api import install as _install_molecular_database_routes
+_install_molecular_database_routes(app, _current_user)
+from mn_molecular_design_studio.molecular_database_peer import install_routes as _install_molecular_peer_routes
+_install_molecular_peer_routes(app)

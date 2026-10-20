@@ -780,6 +780,13 @@ def validate_ligand_tool_request(workflow_id: str, parameters: dict[str, Any], *
             raise ValueError("Vina exhaustiveness must be between 1 and 1,024.")
         if workflow_id == "ligand.docking.gnina" and str(parameters.get("cnn_scoring", "rescore")).strip().lower() not in {"none", "rescore", "refinement", "all"}:
             raise ValueError("GNINA CNN scoring must be none, rescore, refinement, or all.")
+        use_scrub = parameters.get("use_scrub", True)
+        skip_tautomer = parameters.get("scrub_skip_tautomer", True)
+        scrub_ph = float(parameters.get("scrub_ph", 7.4))
+        if type(use_scrub) is not bool or type(skip_tautomer) is not bool:
+            raise ValueError("Scrub and tautomer-enumeration settings must be booleans.")
+        if not math.isfinite(scrub_ph) or not 0 <= scrub_ph <= 14:
+            raise ValueError("Scrub pH must be between 0 and 14.")
         if not 1 <= int(parameters.get("num_modes", 9)) <= 100:
             raise ValueError("Vina pose count must be between 1 and 100.")
         if not 1 <= int(parameters.get("seed", 42)) <= 2_147_483_646:
@@ -1042,19 +1049,27 @@ def nesso_reference_paths() -> tuple[Path, Path, Path]:
     else:
         portable_cache = root / "nesso" / "huggingface"
         legacy_cache = root / "nesso" / ".cache" / "huggingface"
-        esm_cache = portable_cache if portable_cache.exists() or not legacy_cache.exists() else legacy_cache
+        shared_cache = root / "proteina-complexa" / "hf-cache"
+        candidates = (portable_cache, legacy_cache, shared_cache)
+        esm_cache = next((candidate for candidate in candidates if _nesso_esm_cache_ready(candidate)), None)
+        if esm_cache is None:
+            esm_cache = next((candidate for candidate in candidates if candidate.exists()), portable_cache)
     return checkpoint.resolve(), ccd.resolve(), esm_cache.resolve()
 
 
-def nesso_readiness() -> dict[str, Any]:
-    checkpoint, ccd, cache = nesso_reference_paths()
+def _nesso_esm_cache_ready(cache: Path) -> bool:
     model_cache = cache / "models--facebook--esm2_t33_650M_UR50D" / "snapshots"
-    esm_ready = any(
+    return any(
         (snapshot / "model.safetensors").is_file()
         and (snapshot / "config.json").is_file()
         and (snapshot / "vocab.txt").is_file()
         for snapshot in model_cache.glob("*")
     )
+
+
+def nesso_readiness() -> dict[str, Any]:
+    checkpoint, ccd, cache = nesso_reference_paths()
+    esm_ready = _nesso_esm_cache_ready(cache)
     checkpoint_ready = (checkpoint / "model.safetensors").is_file() and (checkpoint / "hparams.json").is_file()
     return {
         "checkpoint_dir": str(checkpoint),
@@ -1224,10 +1239,14 @@ def _run_docking(
     compound_limit: int,
     cpu_cores: int,
     gpu_device: str,
+    compound_workers: int | None = None,
     align_longest_axis_to_x: bool = False,
     alignment_ligand_sdf: Path | None = None,
     job_name: str | None = None,
     cnn_scoring: str = "rescore",
+    use_scrub: bool = True,
+    scrub_ph: float = 7.4,
+    scrub_skip_tautomer: bool = True,
 ) -> Path:
     if engine not in {"vina", "gnina"}:
         raise ValueError(f"Unsupported small-molecule docking engine: {engine}.")
@@ -1243,6 +1262,11 @@ def _run_docking(
         raise ValueError("GNINA CNN scoring must be none, rescore, refinement, or all.")
     if type(cpu_cores) is not int or not 1 <= cpu_cores <= 256:
         raise ValueError("cpu_cores must be between 1 and 256.")
+    if type(use_scrub) is not bool or type(scrub_skip_tautomer) is not bool:
+        raise ValueError("Scrub and tautomer-enumeration settings must be booleans.")
+    scrub_ph = float(scrub_ph)
+    if not math.isfinite(scrub_ph) or not 0 <= scrub_ph <= 14:
+        raise ValueError("Scrub pH must be between 0 and 14.")
     original_center = [float(center_x), float(center_y), float(center_z)]
     original_box_size = [float(size_x), float(size_y), float(size_z)]
     alignment_ligand_sdf = Path(alignment_ligand_sdf) if alignment_ligand_sdf else None
@@ -1256,6 +1280,16 @@ def _run_docking(
     center_x, center_y, center_z = aligned_center
     size_x, size_y, size_z = aligned_size
     payload, compounds = _validated_compound_set(compound_set_file, compound_limit)
+    if engine == "gnina":
+        if compound_workers is None:
+            compound_workers = 2
+        if type(compound_workers) is not int or not 1 <= compound_workers <= 4:
+            raise ValueError("GNINA compound_workers must be an integer between 1 and 4.")
+        compound_workers = min(compound_workers, cpu_cores, len(compounds))
+        cpu_threads_per_compound = max(1, cpu_cores // compound_workers)
+    else:
+        compound_workers = 1
+        cpu_threads_per_compound = cpu_cores
     params = {
         "engine": engine,
         "center": [float(center_x), float(center_y), float(center_z)],
@@ -1264,9 +1298,20 @@ def _run_docking(
         "original_box_size": original_box_size,
         "exhaustiveness": int(exhaustiveness), "num_modes": int(num_modes),
         "seed": int(seed), "compound_limit": int(compound_limit), "cpu_cores": cpu_cores,
+        **({
+            "compound_workers": min(cpu_cores, len(compounds)),
+            "cpu_threads_per_compound": 1,
+        } if engine == "vina" else {}),
+        **({
+            "compound_workers": compound_workers,
+            "cpu_threads_per_compound": cpu_threads_per_compound,
+        } if engine == "gnina" else {}),
         "compound_set_name": payload.get("name", "Compound set"),
         "align_longest_axis_to_x": bool(coordinate_transform),
         "coordinate_transform": coordinate_transform,
+        "use_scrub": use_scrub,
+        "scrub_ph": scrub_ph,
+        "scrub_skip_tautomer": scrub_skip_tautomer,
     }
     if job_name is not None:
         normalized_job_name = str(job_name).strip()[:120]
@@ -1319,10 +1364,14 @@ def _run_docking(
             f"vina --receptor artifacts/prepared/receptor.pdbqt --ligand \"artifacts/ligands/${{compound_id}}.pdbqt\" "
             f"--center_x {center_x:.3f} --center_y {center_y:.3f} --center_z {center_z:.3f} "
             f"--size_x {size_x:.3f} --size_y {size_y:.3f} --size_z {size_z:.3f} "
-            f"--exhaustiveness {int(exhaustiveness)} --num_modes {int(num_modes)} --seed {int(seed)} --cpu {cpu_cores} "
-            "--out \"artifacts/poses/${compound_id}.pdbqt\" --log \"artifacts/logs/${compound_id}.vina.log\""
+            f"--exhaustiveness {int(exhaustiveness)} --num_modes {int(num_modes)} --seed {int(seed)} --cpu 1 "
+            "--out \"artifacts/poses/${compound_id}.pdbqt\" "
         )
-        score_parse = "score=$(awk '$1 == 1 {print $2; exit}' \"artifacts/logs/${compound_id}.vina.log\"); cnn_score=''; cnn_affinity=''"
+        dock_command += "> \"artifacts/logs/${compound_id}.vina.log\" 2>&1"
+        score_parse = (
+            "score=$(awk '$1 ~ /^[0-9]+$/ && $2 ~ /^-?[0-9]+([.][0-9]+)?$/ {print $2; exit}' "
+            "\"artifacts/logs/${compound_id}.vina.log\"); cnn_score=''; cnn_affinity=''"
+        )
         failure_message = "Vina returned an error"
         selected_gpu = "none"
     else:
@@ -1330,7 +1379,7 @@ def _run_docking(
             f"gnina --receptor artifacts/prepared/receptor.pdbqt --ligand \"artifacts/ligands/${{compound_id}}.pdbqt\" "
             f"--center_x {center_x:.3f} --center_y {center_y:.3f} --center_z {center_z:.3f} "
             f"--size_x {size_x:.3f} --size_y {size_y:.3f} --size_z {size_z:.3f} "
-            f"--exhaustiveness {int(exhaustiveness)} --num_modes {int(num_modes)} --seed {int(seed)} --cpu {cpu_cores} "
+            f"--exhaustiveness {int(exhaustiveness)} --num_modes {int(num_modes)} --seed {int(seed)} --cpu {cpu_threads_per_compound} "
             f"--cnn_scoring {cnn_scoring} --out \"artifacts/poses/${{compound_id}}.pdbqt\" "
             "--log \"artifacts/logs/${compound_id}.gnina.log\""
         )
@@ -1342,25 +1391,92 @@ def _run_docking(
         )
         failure_message = "GNINA returned an error"
         selected_gpu = gpu_device
-    script = (
+    scrub_step = (
+        "if scrub.py \"artifacts/ligands/${compound_id}_source.sdf\" "
+        "-o \"artifacts/ligands/${compound_id}.sdf\" "
+        f"--ph {scrub_ph:.2f}"
+        + (" --skip_tautomer" if scrub_skip_tautomer else "")
+        + " >>\"artifacts/logs/${compound_id}.prepare.log\" 2>&1 "
+        + "&& [[ -s \"artifacts/ligands/${compound_id}.sdf\" ]]; then :; else "
+        + "cp \"artifacts/ligands/${compound_id}_source.sdf\" \"artifacts/ligands/${compound_id}.sdf\"; "
+        + "echo 'Scrub failed; using the RDKit SDF for Meeko preparation.' "
+        + ">> \"artifacts/logs/${compound_id}.prepare.log\"; fi; "
+        if use_scrub else
+        "cp \"artifacts/ligands/${compound_id}_source.sdf\" \"artifacts/ligands/${compound_id}.sdf\"; "
+    )
+    common_setup = (
         "set -euo pipefail; cd /work; "
         "mkdir -p artifacts/prepared artifacts/ligands artifacts/poses artifacts/logs; "
         "if ! mk_prepare_receptor.py --read_pdb artifacts/input/receptor.pdb -o artifacts/prepared/receptor -p; then "
         "awk 'substr($0,77,2) !~ /^[[:space:]]*H[[:space:]]*$/' artifacts/input/receptor.pdb > artifacts/input/receptor-noh.pdb; "
         "mk_prepare_receptor.py -i artifacts/input/receptor-noh.pdb -o artifacts/prepared/receptor -p; fi; "
         "printf 'compound_id\\tstatus\\tbest_score_kcal_mol\\tcnn_score\\tcnn_affinity\\tpose_path\\terror\\n' > artifacts/docking_scores.csv; "
+    )
+    preparation_loop = (
         "tail -n +2 artifacts/input/compounds.tsv | while IFS=$'\\t' read -r compound_id smiles; do "
         "[[ -n \"$compound_id\" && -n \"$smiles\" ]] || continue; "
         "if ! python artifacts/input/smiles_to_3d.py --smiles \"$smiles\" --name \"$compound_id\" "
-        "--output \"artifacts/ligands/${compound_id}.sdf\" >\"artifacts/logs/${compound_id}.prepare.log\" 2>&1; then "
-        "printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$compound_id\" failed '' '' '' '' 'RDKit 3D preparation failed' >> artifacts/docking_scores.csv; continue; fi; "
-        "if ! mk_prepare_ligand.py -i \"artifacts/ligands/${compound_id}.sdf\" "
+        "--output \"artifacts/ligands/${compound_id}_source.sdf\" >\"artifacts/logs/${compound_id}.prepare.log\" 2>&1; then "
+        "printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$compound_id\" failed '' '' '' '' 'RDKit 3D preparation failed' > \"artifacts/logs/${compound_id}.result.tsv\"; continue; fi; "
+        + scrub_step
+        + "if ! mk_prepare_ligand.py -i \"artifacts/ligands/${compound_id}.sdf\" "
         "-o \"artifacts/ligands/${compound_id}.pdbqt\" >>\"artifacts/logs/${compound_id}.prepare.log\" 2>&1; then "
-        "printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$compound_id\" failed '' '' '' '' 'Meeko ligand preparation failed' >> artifacts/docking_scores.csv; continue; fi; "
-        f"if {dock_command}; then {score_parse}; "
-        "printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$compound_id\" completed \"$score\" \"$cnn_score\" \"$cnn_affinity\" \"artifacts/poses/${compound_id}.pdbqt\" '' >> artifacts/docking_scores.csv; "
-        f"else printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$compound_id\" failed '' '' '' '' '{failure_message}' >> artifacts/docking_scores.csv; fi; done"
+        "printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$compound_id\" failed '' '' '' '' 'Meeko ligand preparation failed' > \"artifacts/logs/${compound_id}.result.tsv\"; continue; fi; "
     )
+    if engine == "vina":
+        vina_workers = min(cpu_cores, len(compounds))
+        script = (
+            common_setup
+            + " : > artifacts/input/ready_compounds.txt; "
+            + preparation_loop
+            + 'printf "%s\\n" "$compound_id" >> artifacts/input/ready_compounds.txt; done; '
+            + f"DOCKING_COMPOUND_WORKERS={vina_workers}; "
+            + "dock_vina_compound() { compound_id=\"$1\"; if "
+            + dock_command
+            + "; then " + score_parse + "; "
+            + "printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$compound_id\" completed \"$score\" \"$cnn_score\" \"$cnn_affinity\" \"artifacts/poses/${compound_id}.pdbqt\" '' > \"artifacts/logs/${compound_id}.result.tsv.tmp\"; "
+            + "else printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$compound_id\" failed '' '' '' '' 'Vina returned an error' > \"artifacts/logs/${compound_id}.result.tsv.tmp\"; fi; "
+            + "mv \"artifacts/logs/${compound_id}.result.tsv.tmp\" \"artifacts/logs/${compound_id}.result.tsv\"; "
+            + "}; export -f dock_vina_compound; "
+            + "xargs -r -P \"$DOCKING_COMPOUND_WORKERS\" -n 1 bash -c 'dock_vina_compound \"$1\"' _ "
+            + "< artifacts/input/ready_compounds.txt; "
+            + "while IFS=$'\\t' read -r compound_id smiles; do [[ -n \"$compound_id\" ]] || continue; "
+            + "if [[ -s \"artifacts/logs/${compound_id}.result.tsv\" ]]; then cat \"artifacts/logs/${compound_id}.result.tsv\" >> artifacts/docking_scores.csv; "
+            + "else printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$compound_id\" failed '' '' '' '' 'Compound task produced no result' >> artifacts/docking_scores.csv; fi; "
+            + "done < <(tail -n +2 artifacts/input/compounds.tsv)"
+        )
+    elif engine == "gnina":
+        script = (
+            common_setup
+            + " : > artifacts/input/ready_compounds.txt; "
+            + preparation_loop
+            + 'printf "%s\\n" "$compound_id" >> artifacts/input/ready_compounds.txt; done; '
+            + f"DOCKING_COMPOUND_WORKERS={compound_workers}; "
+            + "dock_gnina_compound() { compound_id=\"$1\"; if "
+            + dock_command
+            + "; then " + score_parse + "; "
+            + "printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$compound_id\" completed \"$score\" \"$cnn_score\" \"$cnn_affinity\" \"artifacts/poses/${compound_id}.pdbqt\" '' > \"artifacts/logs/${compound_id}.result.tsv.tmp\"; "
+            + "else printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$compound_id\" failed '' '' '' '' 'GNINA returned an error' > \"artifacts/logs/${compound_id}.result.tsv.tmp\"; fi; "
+            + "mv \"artifacts/logs/${compound_id}.result.tsv.tmp\" \"artifacts/logs/${compound_id}.result.tsv\"; "
+            + "}; export -f dock_gnina_compound; "
+            + "xargs -r -P \"$DOCKING_COMPOUND_WORKERS\" -n 1 bash -c 'dock_gnina_compound \"$1\"' _ "
+            + "< artifacts/input/ready_compounds.txt; "
+            + "while IFS=$'\\t' read -r compound_id smiles; do [[ -n \"$compound_id\" ]] || continue; "
+            + "if [[ -s \"artifacts/logs/${compound_id}.result.tsv\" ]]; then cat \"artifacts/logs/${compound_id}.result.tsv\" >> artifacts/docking_scores.csv; "
+            + "else printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$compound_id\" failed '' '' '' '' 'Compound task produced no result' >> artifacts/docking_scores.csv; fi; "
+            + "done < <(tail -n +2 artifacts/input/compounds.tsv)"
+        )
+    else:
+        script = (
+            common_setup
+            + preparation_loop
+            + f"if {dock_command}; then {score_parse}; "
+            + "printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$compound_id\" completed \"$score\" \"$cnn_score\" \"$cnn_affinity\" \"artifacts/poses/${compound_id}.pdbqt\" '' >> artifacts/docking_scores.csv; "
+            + f"else printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$compound_id\" failed '' '' '' '' '{failure_message}' >> artifacts/docking_scores.csv; fi; done; "
+            + "while IFS=$'\\t' read -r compound_id smiles; do [[ -n \"$compound_id\" ]] || continue; "
+            + "if [[ -s \"artifacts/logs/${compound_id}.result.tsv\" ]]; then cat \"artifacts/logs/${compound_id}.result.tsv\" >> artifacts/docking_scores.csv; fi; "
+            + "done < <(tail -n +2 artifacts/input/compounds.tsv)"
+        )
     return_code = run_docker_job(job.run_dir, manifest, ["bash", "-lc", script], gpu_device=selected_gpu)
     score_path = artifacts / "docking_scores.csv"
     rows: list[dict[str, Any]] = []
@@ -1422,6 +1538,9 @@ def run_ligand_autodock_gpu(
     gpu_device: str = "0",
     align_longest_axis_to_x: bool = False,
     alignment_ligand_sdf: Path | None = None,
+    use_scrub: bool = True,
+    scrub_ph: float = 7.4,
+    scrub_skip_tautomer: bool = True,
 ) -> Path:
     """Dock a Database compound set with AutoDock-GPU and AutoGrid maps."""
     validate_target_pdb(target_pdb)
@@ -1437,6 +1556,11 @@ def run_ligand_autodock_gpu(
         raise ValueError("AutoDock-GPU seed must be a positive 32-bit integer.")
     if type(cpu_cores) is not int or not 1 <= cpu_cores <= 256:
         raise ValueError("AutoDock-GPU CPU allocation must be between 1 and 256 cores.")
+    if type(use_scrub) is not bool or type(scrub_skip_tautomer) is not bool:
+        raise ValueError("Scrub and tautomer-enumeration settings must be booleans.")
+    scrub_ph = float(scrub_ph)
+    if not math.isfinite(scrub_ph) or not 0 <= scrub_ph <= 14:
+        raise ValueError("Scrub pH must be between 0 and 14.")
     if not str(gpu_device).strip() or str(gpu_device).strip().lower() in {"none", "cpu", "off"}:
         raise ValueError("AutoDock-GPU requires a CUDA GPU device.")
     original_center, original_box_size = list(center), list(box_size)
@@ -1468,6 +1592,9 @@ def run_ligand_autodock_gpu(
         "primary_ranking_metric": "best_score_kcal_mol",
         "primary_ranking_direction": "lower",
         "score_units": "kcal/mol (AutoDock4 scoring function)",
+        "use_scrub": use_scrub,
+        "scrub_ph": scrub_ph,
+        "scrub_skip_tautomer": scrub_skip_tautomer,
     }
     job = create_job(
         "ligand-docking", "ligand_docking", "autodock_gpu",
@@ -1509,6 +1636,9 @@ def run_ligand_autodock_gpu(
         "box_size": box_size,
         "nrun": int(nrun),
         "seed": int(seed),
+        "use_scrub": use_scrub,
+        "scrub_ph": scrub_ph,
+        "scrub_skip_tautomer": scrub_skip_tautomer,
     })
     (input_root / "smiles_to_3d.py").write_text(_RDKIT_3D_SCRIPT, encoding="utf-8")
     shutil.copy2(Path(__file__).with_name("autodock_gpu_runner.py"), input_root / "autodock_gpu_runner.py")
@@ -1565,8 +1695,8 @@ def run_ligand_vina(
     size_x: float = 20.0,
     size_y: float = 20.0,
     size_z: float = 20.0,
-    exhaustiveness: int = 8,
-    num_modes: int = 9,
+    exhaustiveness: int = 32,
+    num_modes: int = 10,
     seed: int = 42,
     compound_limit: int = 100,
     cpu_cores: int = 4,
@@ -1574,6 +1704,9 @@ def run_ligand_vina(
     align_longest_axis_to_x: bool = False,
     alignment_ligand_sdf: Path | None = None,
     job_name: str = "autodock-vina",
+    use_scrub: bool = True,
+    scrub_ph: float = 7.4,
+    scrub_skip_tautomer: bool = True,
 ) -> Path:
     """Dock a Studio Database compound set with AutoDock Vina."""
     return _run_docking(
@@ -1586,6 +1719,9 @@ def run_ligand_vina(
         align_longest_axis_to_x=align_longest_axis_to_x,
         alignment_ligand_sdf=alignment_ligand_sdf,
         job_name=job_name,
+        use_scrub=use_scrub,
+        scrub_ph=scrub_ph,
+        scrub_skip_tautomer=scrub_skip_tautomer,
     )
 
 
@@ -1603,11 +1739,15 @@ def run_ligand_gnina(
     seed: int = 42,
     compound_limit: int = 100,
     cpu_cores: int = 4,
+    compound_workers: int = 2,
     gpu_device: str = "0",
     align_longest_axis_to_x: bool = False,
     alignment_ligand_sdf: Path | None = None,
     job_name: str | None = None,
     cnn_scoring: str = "rescore",
+    use_scrub: bool = True,
+    scrub_ph: float = 7.4,
+    scrub_skip_tautomer: bool = True,
 ) -> Path:
     """Run GNINA docking and CNN rescoring on a Studio Database compound set."""
     return _run_docking(
@@ -1617,10 +1757,14 @@ def run_ligand_gnina(
         size_x=size_x, size_y=size_y, size_z=size_z,
         exhaustiveness=exhaustiveness, num_modes=num_modes, seed=seed,
         compound_limit=compound_limit, cpu_cores=cpu_cores, gpu_device=gpu_device,
+        compound_workers=compound_workers,
         align_longest_axis_to_x=align_longest_axis_to_x,
         alignment_ligand_sdf=alignment_ligand_sdf,
         job_name=job_name,
         cnn_scoring=cnn_scoring,
+        use_scrub=use_scrub,
+        scrub_ph=scrub_ph,
+        scrub_skip_tautomer=scrub_skip_tautomer,
     )
 
 
@@ -1642,6 +1786,9 @@ def run_ligand_unidock_pro(
     align_longest_axis_to_x: bool = False,
     alignment_ligand_sdf: Path | None = None,
     job_name: str = "unidock-pro",
+    use_scrub: bool = True,
+    scrub_ph: float = 7.4,
+    scrub_skip_tautomer: bool = True,
 ) -> Path:
     """Run the classic Uni-Dock Pro receptor-docking mode on a compound set."""
     search_mode = str(search_mode).strip().lower()
@@ -1660,6 +1807,11 @@ def run_ligand_unidock_pro(
         raise ValueError("Docking box dimensions must be between 1 and 60 Å.")
     if type(cpu_cores) is not int or not 1 <= cpu_cores <= 256:
         raise ValueError("cpu_cores must be between 1 and 256.")
+    if type(use_scrub) is not bool or type(scrub_skip_tautomer) is not bool:
+        raise ValueError("Scrub and tautomer-enumeration settings must be booleans.")
+    scrub_ph = float(scrub_ph)
+    if not math.isfinite(scrub_ph) or not 0 <= scrub_ph <= 14:
+        raise ValueError("Scrub pH must be between 0 and 14.")
 
     original_center = [float(center_x), float(center_y), float(center_z)]
     original_box_size = [float(size_x), float(size_y), float(size_z)]
@@ -1686,6 +1838,9 @@ def run_ligand_unidock_pro(
         "cpu_cores": cpu_cores, "gpu_device": str(gpu_device).strip(),
         "compound_set_name": payload.get("name", "Compound set"),
         "job_name": str(job_name).strip()[:120] or "unidock-pro",
+        "use_scrub": use_scrub,
+        "scrub_ph": scrub_ph,
+        "scrub_skip_tautomer": scrub_skip_tautomer,
     }
     job = create_job(
         "ligand-docking", "ligand_docking", "unidock_pro",
@@ -1731,6 +1886,18 @@ def run_ligand_unidock_pro(
             (center_x, center_y, center_z, size_x, size_y, size_z),
         )
     ), encoding="utf-8")
+    scrub_step = (
+        "if scrub.py \"artifacts/ligands/${compound_id}_source.sdf\" "
+        "-o \"artifacts/ligands/${compound_id}.sdf\" "
+        f"--ph {scrub_ph:.2f}"
+        + (" --skip_tautomer" if scrub_skip_tautomer else "")
+        + " >> artifacts/logs/preparation.log 2>&1 "
+        + "&& [[ -s \"artifacts/ligands/${compound_id}.sdf\" ]]; then :; else "
+        + "cp \"artifacts/ligands/${compound_id}_source.sdf\" \"artifacts/ligands/${compound_id}.sdf\"; "
+        + "echo 'Scrub failed; using the RDKit SDF for Meeko preparation.' >> artifacts/logs/preparation.log; fi; "
+        if use_scrub else
+        "cp \"artifacts/ligands/${compound_id}_source.sdf\" \"artifacts/ligands/${compound_id}.sdf\"; "
+    )
     script = (
         "set -euo pipefail; cd /work; "
         "mkdir -p artifacts/prepared artifacts/ligands artifacts/poses artifacts/logs; "
@@ -1741,8 +1908,9 @@ def run_ligand_unidock_pro(
         "tail -n +2 artifacts/input/compounds.tsv | while IFS=$'\\t' read -r compound_id smiles; do "
         "[[ -n \"$compound_id\" && -n \"$smiles\" ]] || continue; "
         "if ! python artifacts/input/smiles_to_3d.py --smiles \"$smiles\" --name \"$compound_id\" "
-        "--output \"artifacts/ligands/${compound_id}.sdf\" >> artifacts/logs/preparation.log 2>&1; then continue; fi; "
-        "if ! mk_prepare_ligand.py -i \"artifacts/ligands/${compound_id}.sdf\" "
+        "--output \"artifacts/ligands/${compound_id}_source.sdf\" >> artifacts/logs/preparation.log 2>&1; then continue; fi; "
+        + scrub_step
+        + "if ! mk_prepare_ligand.py -i \"artifacts/ligands/${compound_id}.sdf\" "
         "-o \"artifacts/ligands/${compound_id}.pdbqt\" >> artifacts/logs/preparation.log 2>&1; then continue; fi; "
         "printf '%s\\n' \"artifacts/ligands/${compound_id}.pdbqt\" >> artifacts/input/ligand_index.txt; done; "
         "dock_status=0; if [[ -s artifacts/input/ligand_index.txt ]]; then "
@@ -2554,7 +2722,7 @@ def run_ligand_nesso(
     except ValueError as exc:
         raise ValueError("Nesso checkpoint, CCD, and ESM cache must be inside the configured Studio reference directory.") from exc
     native_args = [
-        "predict", "/work/inputs", "--out_dir", "/work/output", "--cache", f"/ref/{relative_cache.as_posix()}",
+        "predict", "/work/inputs", "--out_dir", "/work/output", "--cache", "/cache",
         "--checkpoint", f"/ref/{relative_checkpoint.as_posix()}", "--ccd", f"/ref/{relative_ccd.as_posix()}",
         "--accelerator", "gpu", "--devices", "1", "--precision", "bf16-mixed",
         "--recycling_steps", str(recycling_steps), "--num_workers", "2", "--require_affinity", "--override",
@@ -2563,6 +2731,7 @@ def run_ligand_nesso(
     command = [
         "docker", "run", "--rm", *docker_gpu_args(gpu_device),
         "-v", f"{job.run_dir}:/work", "-v", f"{reference}:/ref:ro",
+        "-v", f"{cache}:/cache/huggingface:ro",
         "--env", "HF_HUB_OFFLINE=1", "--env", "TRANSFORMERS_OFFLINE=1", "--shm-size", "8g",
         image, *native_args,
     ]

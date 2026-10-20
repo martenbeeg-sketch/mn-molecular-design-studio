@@ -14,6 +14,23 @@ from mn_molecular_design_studio.engine.workflow_engine.workflows import optimize
 
 
 class BoltzInputContractTests(unittest.TestCase):
+    def test_boltz2_tile_request_builder_uses_shared_optimized_workflow_contract(self):
+        parameters = workflow.boltz2_prediction_parameters(
+            [{"name": "probe_1", "protein_sequences": "ACDEFGHIKLMNPQRSTVWY", "ligand_smiles": "CCO"}],
+            settings={
+                "optimization_mode": "off", "seed": 7, "samples": 2, "num_recycles": 3,
+                "cpu_cores": 4, "output_format": "pdb", "max_msa_seqs": "",
+                "use_msa": False, "use_msa_server": False, "generate_ipsae": False,
+            },
+            job_name="boltz-pocket",
+        )
+        self.assertEqual(parameters["engine"], "boltz2")
+        self.assertEqual(parameters["job_name"], "boltz-pocket")
+        self.assertEqual(parameters["engine_options"]["output_format"], "pdb")
+        self.assertEqual(parameters["engine_options"]["max_msa_seqs"], 8192)
+        self.assertFalse(parameters["engine_options"]["use_msa_server"])
+        workflow.validate_prediction_request(parameters)
+
     def test_copies_keep_modifications_and_custom_msa_on_the_selected_chain(self):
         model = default_model()
         model["cards"] = [

@@ -154,7 +154,7 @@ class Replica:
                 if not isinstance(record, dict) or set(record) != {'key','kind','author','counter','value'}:
                     raise ValueError("Invalid peer metadata record.")
                 key, kind, author, counter, value = (record[k] for k in ('key','kind','author','counter','value'))
-                if author not in known or kind not in IDENTITY_KINDS | {'job'} or not isinstance(key, str) or not key.startswith(kind + ':') or len(key) > 300 or type(counter) is not int or not 0 < counter < 2**62:
+                if author not in known or kind not in IDENTITY_KINDS | {'job', 'molecule_group', 'molecule_entry'} or not isinstance(key, str) or not key.startswith(kind + ':') or len(key) > 300 or type(counter) is not int or not 0 < counter < 2**62:
                     raise ValueError("Invalid metadata authority or version.")
                 if len(encoded(record)) > 2 * 1024 * 1024:
                     raise ValueError("Metadata record exceeds 2 MB.")
@@ -189,6 +189,10 @@ class Replica:
 
     def _apply(self, kind, key, value, author):
         identifier = key.split(':', 1)[1]
+        if kind in {'molecule_group', 'molecule_entry'}:
+            from mn_molecular_design_studio.molecular_database_peer import apply_record
+            apply_record(kind, key, value, author)
+            return
         if kind == 'job':
             if value is None:
                 with Store().connect() as db:
@@ -286,6 +290,8 @@ def capture_identity():
 def sync_peer(peer, snapshot):
     from . import transport
     replica = Replica()
+    from mn_molecular_design_studio.molecular_database_peer import capture
+    capture(replica)
     state = replica.state('peer:'+peer['id'], {'push':0, 'pull':0})
     response = transport.node_request('/peer/hello', {'node_id': config.identity(), 'snapshot': snapshot, 'reference_probes': Store().reference_probes()}, method='POST', base_url=peer['url'], timeout=4)
     if response.get('node_id') != peer['id']:

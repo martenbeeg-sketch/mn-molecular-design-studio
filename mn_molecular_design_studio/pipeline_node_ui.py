@@ -136,7 +136,7 @@ def _connected_inputs(graph, node_id):
         if node["id"] in seen:
             continue
         seen.add(node["id"])
-        if node["data"]["kind"] in {"target", "binder_context", "design_source", "generation_source", "backbone_source"}:
+        if node["data"]["kind"] in {"target", "binder_context", "design_source", "generation_source", "backbone_source", "molecule_source"}:
             upstream.append(node)
         queue.extend(nodes[e["source"]] for e in graph["edges"] if e["target"] == node["id"] and e["source"] in nodes)
     return parents, upstream

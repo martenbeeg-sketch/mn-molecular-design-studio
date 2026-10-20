@@ -436,6 +436,35 @@ def _search_expression(query: str) -> str | None:
     return " AND ".join(f'"{token}"*' for token in tokens) or None
 
 
+def set_job_hidden(task_group: str, run_id: str, hidden: bool = True) -> None:
+    """Hide or restore a run in Results without deleting its files."""
+    if not isinstance(task_group, str) or not isinstance(run_id, str):
+        raise ValueError("Invalid job reference.")
+    if not task_group or not run_id or any(part in {".", ".."} or "/" in part or "\\" in part for part in (task_group, run_id)):
+        raise ValueError("Invalid job reference.")
+    root = _results_root()
+    run_dir = (root / task_group / run_id).resolve()
+    try:
+        run_dir.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Invalid job reference.") from exc
+    metadata_path = run_dir / "metadata.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise FileNotFoundError("Job not found.") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError("Invalid job metadata.")
+    metadata["hidden"] = bool(hidden)
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json
+    write_json(metadata_path, metadata)
+    with _connection() as connection:
+        connection.execute(
+            "UPDATE jobs SET hidden=?, metadata_mtime_ns=? WHERE storage_root_id=? AND task_group=? AND run_id=?",
+            (int(bool(hidden)), _mtime(metadata_path), _root_id(root), task_group, run_id),
+        )
+
+
 def search_jobs(
     *,
     query: str = "",

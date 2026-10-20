@@ -287,15 +287,18 @@ function MolstarCustomComponent(props: Props) {
     const bottomLeft = Vec3.create(center[0] - size[0] / 2, center[1] - size[1] / 2, center[2] - size[2] / 2);
     const topRight = Vec3.create(center[0] + size[0] / 2, center[1] + size[1] / 2, center[2] + size[2] / 2);
     const parameters = { bottomLeft, topRight, radius: 0.14, color: Color(0xc94b9b) };
-    const update = plugin.build();
     const snapshot = innerProps.dockingBoxLoaded ? plugin.canvas3d?.camera.getSnapshot() : undefined;
     if (innerProps.dockingBoxLoaded) {
-      update.to(DOCKING_BOX_PROVIDER_REF).update(parameters);
-    } else {
-      update.toRoot()
-        .apply(StateTransforms.Shape.BoxShape3D, parameters, { ref: DOCKING_BOX_PROVIDER_REF })
-        .apply(StateTransforms.Representation.ShapeRepresentation3D);
+      // Recreate the shape provider on box changes. Updating the existing
+      // provider can leave its rendered geometry stale in Mol* after a
+      // Streamlit number-input edit, even though the provider parameters move.
+      await plugin.build().delete(DOCKING_BOX_PROVIDER_REF).commit();
+      innerProps.dockingBoxLoaded = false;
     }
+    const update = plugin.build();
+    update.toRoot()
+      .apply(StateTransforms.Shape.BoxShape3D, parameters, { ref: DOCKING_BOX_PROVIDER_REF })
+      .apply(StateTransforms.Representation.ShapeRepresentation3D);
     await update.commit();
     if (snapshot) plugin.managers.camera.setSnapshot(snapshot, 0);
     innerProps.dockingBoxLoaded = true;

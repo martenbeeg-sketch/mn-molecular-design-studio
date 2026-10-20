@@ -72,6 +72,9 @@ include = ["mn_molecular_design_studio*"]
   "components/pipeline_editor/build/*.html",
   "components/pipeline_editor/build/assets/*.js",
   "components/pipeline_editor/build/assets/*.css",
+  "components/molecule_sketcher/**/*",
+  "components/molecule_sketcher/*",
+  "components/molecule_table/*",
 ]
 
 [tool.pytest.ini_options]

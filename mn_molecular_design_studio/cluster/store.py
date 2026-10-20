@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import sqlite3
 import time
@@ -15,6 +16,10 @@ from pathlib import Path
 from . import config
 
 TERMINAL = {"completed", "failed", "cancelled", "succeeded"}
+ACTIVE_RESOURCE_STATUSES = {
+    "running", "queued", "preparing", "pending", "starting", "dispatching",
+    "cancelling", "cancel_requested", "submitted",
+}
 
 
 def stamp(epoch=None):
@@ -157,6 +162,8 @@ class Store:
                 if collision:
                     previous = json.loads(collision["payload"])
                     row = previous | superseded_payload | row
+                    if previous.get("hidden") or superseded_payload.get("hidden"):
+                        row["hidden"] = True
                     if previous.get("cancel_requested") or superseded_payload.get("cancel_requested"):
                         row["cancel_requested"] = True
                 row.update(cluster_job_id=jid, node_id=node_id, local_reference=local_ref,
@@ -195,7 +202,7 @@ class Store:
             item["availability"] = "files_unavailable"
         return item
 
-    def search(self, user, *, node_id=None, project_id=None, query="", statuses=None, tools=None, limit=100, offset=0):
+    def search(self, user, *, node_id=None, project_id=None, query="", statuses=None, tools=None, limit=100, offset=0, include_hidden=False):
         if type(limit) is not int or not 1 <= limit <= 1000 or type(offset) is not int or offset < 0:
             raise ValueError("Invalid result page.")
         with self.connect() as db:
@@ -206,6 +213,8 @@ class Store:
             if not visible(row, user) or node_id and row["node_id"] != node_id or project_id and row["project_id"] != project_id:
                 continue
             item = json.loads(row["payload"])
+            if not include_hidden and item.get("hidden"):
+                continue
             if statuses and item.get("status") not in statuses or tools and item.get("tool") not in tools:
                 continue
             if query and str(query).casefold() not in " ".join(str(item.get(k) or "") for k in ("campaign_name", "pipeline_name", "run_id", "tool", "job_code")).casefold():
@@ -267,7 +276,8 @@ class Store:
         snapshot = node["snapshot"]
         if node["availability"] != "online" or not snapshot.get("accept_jobs") or not snapshot.get("scheduler_online"):
             return False
-        if needs.get("code_revision") and snapshot.get("code_revision") != needs["code_revision"]:
+        if (needs.get("code_revision") and snapshot.get("code_revision") != needs["code_revision"]
+                and not needs.get("_allow_code_revision_refresh")):
             return False
         for tag, digest in needs.get("images", {}).items():
             present = snapshot.get("images", {}).get(tag)
@@ -293,6 +303,107 @@ class Store:
                 and float(available.get("ram_available_gb", 0)) >= float(needs.get("ram_gb", 0))
                 and float(available.get("scratch_free_gb", 0)) >= float(needs.get("scratch_gb", 0)))
 
+    @staticmethod
+    def _active_job_resource_usage(db, node_id):
+        """Read running allocations from the synchronized results catalog.
+
+        The scheduler resource snapshot is useful for free-memory and CPU
+        telemetry, but older or externally-started runs can be absent from its
+        reservation list. The synchronized job catalog is the second source of
+        truth for resources already in use on a workstation.
+        """
+        busy_gpu_ids = set()
+        all_gpus_busy = False
+        cpu_in_use = 0.0
+        rows = db.execute("SELECT payload FROM jobs WHERE node_id=?", (node_id,)).fetchall()
+        for row in rows:
+            try:
+                job = json.loads(row["payload"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if str(job.get("status") or "").casefold() not in ACTIVE_RESOURCE_STATUSES:
+                continue
+
+            request = job.get("scheduler_resource_request") or job.get("resource_request")
+            if isinstance(request, dict):
+                cpu_in_use += max(0.0, float(request.get("cpu_threads") or request.get("cpu_cores") or 0))
+                gpu_ids = request.get("gpu_ids")
+                if isinstance(gpu_ids, (list, tuple, set)):
+                    busy_gpu_ids.update(str(value) for value in gpu_ids)
+                elif request.get("gpu"):
+                    selected = str(request.get("gpu_device") or "").strip().lower()
+                    if selected in {"", "all", "auto", "any"}:
+                        all_gpus_busy = True
+                    else:
+                        busy_gpu_ids.update(re.findall(r"\d+", selected))
+
+            queue_resource = str(job.get("queue_resource") or "").strip().lower()
+            if queue_resource.startswith("gpu"):
+                selected = queue_resource.partition(":")[2].strip()
+                if not selected or selected in {"all", "any", "auto"}:
+                    all_gpus_busy = True
+                else:
+                    busy_gpu_ids.update(re.findall(r"\d+", selected))
+
+            allocation = str(job.get("resource_allocation") or "")
+            match = re.search(r"(\d+(?:\.\d+)?)\s+CPU cores?", allocation, flags=re.IGNORECASE)
+            if match and not (isinstance(request, dict) and (request.get("cpu_threads") or request.get("cpu_cores"))):
+                cpu_in_use += float(match.group(1))
+
+        return {"busy_gpu_ids": busy_gpu_ids, "all_gpus_busy": all_gpus_busy, "cpu_in_use": cpu_in_use}
+
+    @staticmethod
+    def _with_active_job_resources(node, usage):
+        effective = dict(node)
+        snapshot = dict(node.get("snapshot") or {})
+        resources = dict(snapshot.get("resources") or {})
+        if usage["all_gpus_busy"]:
+            resources["free_gpus"] = []
+        elif usage["busy_gpu_ids"]:
+            resources["free_gpus"] = [
+                gpu for gpu in resources.get("free_gpus", [])
+                if str(gpu.get("gpu_id")) not in usage["busy_gpu_ids"]
+            ]
+        if usage["cpu_in_use"] > 0:
+            reported_free = float(resources.get("cpu_free", 0))
+            if resources.get("cpu_total") is not None:
+                active_limit = max(0.0, float(resources["cpu_total"]) - usage["cpu_in_use"])
+                resources["cpu_free"] = min(reported_free, active_limit)
+            else:
+                resources["cpu_free"] = max(0.0, reported_free - usage["cpu_in_use"])
+        snapshot["resources"] = resources
+        effective["snapshot"] = snapshot
+        return effective
+
+    def placement_options(self, needs, *, origin_node, affinity_node=None):
+        """List currently compatible and available workstations without queuing."""
+        nodes = self.nodes()
+        options = []
+        with self.connect() as db:
+            for node in nodes:
+                if affinity_node and node["id"] != affinity_node:
+                    continue
+                if not self.compatible(node, needs):
+                    continue
+                reserved = db.execute(
+                    "SELECT 1 FROM commands WHERE node_id=? AND kind IN ('workflow','pipeline') "
+                    "AND status IN ('queued','claimed') LIMIT 1", (node["id"],),
+                ).fetchone()
+                usage = self._active_job_resource_usage(db, node["id"])
+                effective = self._with_active_job_resources(node, usage)
+                if not self.capacity(effective, needs, reserved):
+                    continue
+                resources = effective["snapshot"].get("resources", {})
+                options.append({
+                    "node_id": node["id"], "name": node["name"],
+                    "cpu_free": resources.get("cpu_free", 0),
+                    "free_gpus": resources.get("free_gpus", []),
+                })
+        options.sort(key=lambda item: (
+            item["node_id"] != origin_node, -float(item.get("cpu_free", 0)), item["node_id"],
+        ))
+        return options
+
     def dispatch(self):
         nodes = self.nodes()
         with self.connect() as db:
@@ -314,27 +425,172 @@ class Store:
             for row in rows:
                 target = row["affinity_node"] or (row["placement"] if row["placement"] != "auto" else None)
                 needs = json.loads(row["requirements"])
-                choices = [n for n in nodes if (not target or n["id"] == target) and self.compatible(n, needs)]
-                if not target:
-                    choices = [n for n in choices if self.capacity(n, needs, db.execute(
-                        "SELECT 1 FROM commands WHERE node_id=? AND kind IN ('workflow','pipeline') AND status IN ('queued','claimed') LIMIT 1", (n["id"],)).fetchone())]
-                choices.sort(key=lambda n: (n["id"] != row["origin_node"], -float(n["snapshot"].get("resources", {}).get("cpu_free", 0)), n["id"]))
+                choices = []
+                wait_reason = "Waiting for a compatible workstation."
+                for node in nodes:
+                    if target and node["id"] != target:
+                        continue
+                    if node["availability"] != "online":
+                        wait_reason = f"Waiting for selected workstation {node['name']} to come online."
+                        continue
+                    # A job pinned to its submitting workstation should not
+                    # become permanently stuck after an unrelated Studio code
+                    # update. Keep the exact image and checkpoint checks, but
+                    # allow that same workstation to validate the current
+                    # request against its own code when accepting the job.
+                    refresh_local_code = (
+                        row["placement"] != "auto"
+                        and row["placement"] == row["origin_node"]
+                        and node["id"] == row["origin_node"]
+                    )
+                    compatible_needs = dict(needs)
+                    if refresh_local_code:
+                        compatible_needs["_allow_code_revision_refresh"] = True
+                    if not self.compatible(node, compatible_needs):
+                        snapshot = node["snapshot"]
+                        missing_images = [
+                            tag for tag, digest in needs.get("images", {}).items()
+                            if not snapshot.get("images", {}).get(tag)
+                            or digest and snapshot["images"].get(tag) != digest
+                        ]
+                        missing_references = [
+                            path for path in needs.get("references", [])
+                            if not snapshot.get("references", {}).get(path)
+                        ]
+                        if missing_images:
+                            wait_reason = f"{node['name']} is missing the required image: {', '.join(missing_images)}."
+                        elif missing_references:
+                            wait_reason = f"{node['name']} is missing required reference files: {', '.join(missing_references)}."
+                        elif needs.get("code_revision") and snapshot.get("code_revision") != needs["code_revision"]:
+                            wait_reason = f"{node['name']} is running a different Studio code revision."
+                        else:
+                            wait_reason = f"{node['name']} is not accepting jobs or its scheduler is offline."
+                        continue
+                    reserved = db.execute(
+                        "SELECT 1 FROM commands WHERE node_id=? AND kind IN ('workflow','pipeline') "
+                        "AND status IN ('queued','claimed') LIMIT 1", (node["id"],),
+                    ).fetchone()
+                    usage = self._active_job_resource_usage(db, node["id"])
+                    effective = self._with_active_job_resources(node, usage)
+                    if self.capacity(effective, needs, reserved):
+                        choices.append((node, effective, refresh_local_code))
+                    elif target:
+                        resources = effective["snapshot"].get("resources", {})
+                        requested_gpus = {str(value) for value in needs.get("gpu_ids", [])}
+                        free_gpus = resources.get("free_gpus", [])
+                        free_ids = {str(gpu.get("gpu_id")) for gpu in free_gpus
+                                    if float(gpu.get("free_vram_gb", 0)) >= float(needs.get("min_vram_gb", 0))}
+                        busy_requested = sorted(requested_gpus.intersection(usage["busy_gpu_ids"]))
+                        if busy_requested:
+                            label = ", ".join(f"GPU {gpu}" for gpu in busy_requested)
+                            wait_reason = f"Waiting for {label} to become available on {node['name']}."
+                        elif reserved:
+                            wait_reason = f"Waiting for {node['name']} to accept its queued job before staging another."
+                        elif requested_gpus and not requested_gpus.intersection(free_ids):
+                            label = ", ".join(f"GPU {gpu}" for gpu in sorted(requested_gpus))
+                            wait_reason = f"Waiting for {label} with enough free memory on {node['name']}."
+                        elif float(resources.get("cpu_free", 0)) < float(needs.get("cpu_threads", 1)):
+                            wait_reason = f"Waiting for {needs.get('cpu_threads', 1)} free CPU threads on {node['name']}."
+                        else:
+                            wait_reason = f"Waiting for the requested GPU and memory to become available on {node['name']}."
+                choices.sort(key=lambda pair: (
+                    pair[0]["id"] != row["origin_node"],
+                    -float(pair[1]["snapshot"].get("resources", {}).get("cpu_free", 0)),
+                    pair[0]["id"],
+                ))
                 if not choices:
+                    job = json.loads(self._job(db, row["job_id"])["payload"])
+                    job.update(status="waiting_for_workstation", wait_reason=wait_reason)
+                    db.execute("UPDATE jobs SET payload=? WHERE id=?", (encoded(job), row["job_id"]))
                     continue
-                node_id = choices[0]["id"]
+                node_id, refresh_local_code = choices[0][0]["id"], choices[0][2]
                 cmd = str(uuid.uuid4())
                 request = json.loads(row["request"])
+                if refresh_local_code:
+                    request["origin_node"] = row["origin_node"]
+                    request["allow_code_revision_refresh"] = True
                 db.execute("INSERT INTO commands(id,node_id,job_id,kind,payload,owner_id,project_id,created_at) VALUES (?,?,?,?,?,?,?,?)",
-                           (cmd, node_id, row["job_id"], request["kind"], row["request"], row["owner_id"], request["project_id"], stamp(self.clock())))
+                           (cmd, node_id, row["job_id"], request["kind"], encoded(request), row["owner_id"], request["project_id"], stamp(self.clock())))
                 db.execute("UPDATE submissions SET command_id=? WHERE job_id=?", (cmd, row["job_id"]))
                 job = json.loads(self._job(db, row["job_id"])["payload"])
                 job.update(node_id=node_id, status="dispatching", wait_reason="Inputs are being staged on the selected workstation.")
                 db.execute("UPDATE jobs SET node_id=?,payload=? WHERE id=?", (node_id, encoded(job), row["job_id"]))
 
     def action(self, jid, kind, payload, user):
-        if kind not in {"inspect", "artifact", "cancel"}:
+        if kind not in {"inspect", "artifact", "cancel", "hide", "restore", "retry", "change_gpu", "purge"}:
             raise ValueError("Unsupported workstation action.")
         job = self.job(jid, user)
+        if kind == "purge" and job.get("status") not in TERMINAL:
+            raise ValueError("Only finished jobs can be permanently removed.")
+        if kind == "change_gpu":
+            if job.get("status") != "waiting_for_workstation" or job.get("local_reference"):
+                raise ValueError("A GPU can only be changed while a job is waiting and has not been accepted.")
+            try:
+                gpu_id = int(payload["gpu_id"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("Provide the target gpu_id as a non-negative integer.") from exc
+            if gpu_id < 0:
+                raise ValueError("gpu_id must be non-negative.")
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                submission = db.execute(
+                    "SELECT request,requirements,command_id,placement,origin_node FROM submissions WHERE job_id=?",
+                    (job["cluster_job_id"],),
+                ).fetchone()
+                if (not submission or submission["command_id"]
+                        or submission["placement"] == "auto"
+                        or submission["placement"] != submission["origin_node"]):
+                    raise ValueError("GPU changes are supported only for an unclaimed job pinned to its submitting workstation.")
+                node = next((item for item in self.nodes() if item["id"] == submission["placement"]), None)
+                if not node or node["availability"] != "online":
+                    raise ValueError("The selected workstation is not online.")
+                requirements = json.loads(submission["requirements"])
+                minimum_vram = float(requirements.get("min_vram_gb", 0))
+                available = next((gpu for gpu in node["snapshot"].get("resources", {}).get("free_gpus", [])
+                                  if int(gpu.get("gpu_id", -1)) == gpu_id
+                                  and float(gpu.get("free_vram_gb", 0)) >= minimum_vram), None)
+                if not available:
+                    raise ValueError(f"GPU {gpu_id} is not currently free with the required memory on {node['name']}.")
+                request = json.loads(submission["request"])
+                workflow_payload = request.get("payload") or {}
+                parameters = workflow_payload.setdefault("parameters", {})
+                parameters["gpu_device"] = str(gpu_id)
+                resources = workflow_payload.get("resources")
+                if isinstance(resources, dict) and "gpu_device" in resources:
+                    resources["gpu_device"] = str(gpu_id)
+                requirements["gpu_count"] = max(1, int(requirements.get("gpu_count", 1)))
+                requirements["gpu_ids"] = [gpu_id]
+                request["requirements"] = requirements
+                db.execute("UPDATE submissions SET request=?,requirements=? WHERE job_id=?",
+                           (encoded(request), encoded(requirements), job["cluster_job_id"]))
+                job["request_summary"] = workflow_payload
+                job.update(wait_reason=f"Rechecking placement on GPU {gpu_id}.")
+                db.execute("UPDATE jobs SET payload=? WHERE id=?", (encoded(job), job["cluster_job_id"]))
+            self.dispatch()
+            return self.job(job["cluster_job_id"], user)
+        if kind == "retry":
+            if job.get("status") != "failed" or job.get("local_reference"):
+                raise ValueError("Only failed jobs that were not accepted by a workstation can be retried.")
+            if job.get("error") != "The workstation's engine images, code, or checkpoints no longer match this submission.":
+                raise ValueError("This job did not fail during workstation compatibility checks and cannot be retried here.")
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                submission = db.execute("SELECT command_id FROM submissions WHERE job_id=?", (job["cluster_job_id"],)).fetchone()
+                if not submission or not submission["command_id"]:
+                    raise ValueError("No failed workstation acceptance attempt is available to retry.")
+                previous = db.execute("SELECT status FROM commands WHERE id=?", (submission["command_id"],)).fetchone()
+                if not previous or previous["status"] != "failed":
+                    raise ValueError("The workstation acceptance attempt is not in a failed state.")
+                db.execute("UPDATE submissions SET command_id=NULL,cancelled=0 WHERE job_id=?", (job["cluster_job_id"],))
+                job.update(status="waiting_for_workstation", error="", wait_reason="Rechecking the selected workstation.")
+                db.execute("UPDATE jobs SET payload=? WHERE id=?", (encoded(job), job["cluster_job_id"]))
+            self.dispatch()
+            return self.job(job["cluster_job_id"], user)
+        if kind in {"hide", "restore"}:
+            job["hidden"] = kind == "hide"
+            with self.connect() as db:
+                db.execute("UPDATE jobs SET payload=? WHERE id=?", (encoded(job), job["cluster_job_id"]))
+            return {"hidden": job["hidden"]}
         if kind == "cancel" and not job.get("local_reference"):
             with self.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
@@ -351,11 +607,86 @@ class Store:
             return {"status": job["status"], "cancel_requested": job.get("cancel_requested", False)}
         if not job.get("local_reference"):
             raise ValueError("This job has not been accepted by its workstation yet.")
+        if kind == "purge":
+            with self.connect() as db:
+                existing = db.execute(
+                    "SELECT id,status FROM commands WHERE job_id=? AND kind='purge' "
+                    "AND status IN ('queued','claimed') ORDER BY created_at DESC LIMIT 1",
+                    (job["cluster_job_id"],),
+                ).fetchone()
+            if existing:
+                return {"command_id": existing["id"], "status": existing["status"], "node_id": job["node_id"]}
         command_id = str(uuid.uuid4())
         with self.connect() as db:
             db.execute("INSERT INTO commands(id,node_id,job_id,kind,payload,owner_id,project_id,created_at) VALUES (?,?,?,?,?,?,?,?)",
                        (command_id, job["node_id"], job["cluster_job_id"], kind, encoded(payload | {"local_reference": job["local_reference"]}), user["id"], job["project_id"], stamp(self.clock())))
         return {"command_id": command_id, "status": "queued", "node_id": job["node_id"]}
+
+    def purge_context(self, jid, user):
+        """Return the terminal job and staging command needed for local cleanup."""
+        job = self.job(jid, user)
+        if job.get("status") not in TERMINAL:
+            raise ValueError("Only finished jobs can be permanently removed.")
+        with self.connect() as db:
+            submission = db.execute(
+                "SELECT command_id,request FROM submissions WHERE job_id=?",
+                (job["cluster_job_id"],),
+            ).fetchone()
+        request = json.loads(submission["request"]) if submission else {}
+        return {
+            "job": job,
+            "command_id": str(submission["command_id"] or "") if submission else "",
+            "bundle_id": str(request.get("bundle_id") or ""),
+        }
+
+    def purge_metadata(self, jid, user):
+        """Remove coordinator records for an already-cleaned terminal job."""
+        job_id = str(jid).removeprefix("cluster:")
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = self._job(db, job_id)
+            if not visible(row, user):
+                raise LookupError("Job not found.")
+            payload = json.loads(row["payload"])
+            if payload.get("status") not in TERMINAL:
+                raise ValueError("Only finished jobs can be permanently removed.")
+            submission = db.execute(
+                "SELECT request FROM submissions WHERE job_id=?", (job_id,)
+            ).fetchone()
+            request = json.loads(submission["request"]) if submission else {}
+            bundle_id = str(request.get("bundle_id") or "")
+            command_count = db.execute(
+                "SELECT count(*) FROM commands WHERE job_id=?", (job_id,)
+            ).fetchone()[0]
+            db.execute("DELETE FROM commands WHERE job_id=?", (job_id,))
+            db.execute("DELETE FROM submissions WHERE job_id=?", (job_id,))
+            db.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+
+            # Input bundles can be shared across a compound batch. Return a
+            # digest for disk cleanup only when no remaining job or command
+            # references it.
+            still_referenced = False
+            if bundle_id:
+                for table, columns in (("submissions", ("request",)), ("commands", ("payload", "response"))):
+                    for row in db.execute("SELECT " + ",".join(columns) + " FROM " + table):
+                        for column in columns:
+                            try:
+                                value = json.loads(row[column] or "{}")
+                            except (TypeError, ValueError):
+                                continue
+                            if bundle_id in json.dumps(value, separators=(",", ":")):
+                                still_referenced = True
+                                break
+                        if still_referenced:
+                            break
+                    if still_referenced:
+                        break
+            return {
+                "cluster_job_id": job_id,
+                "removed_commands": int(command_count),
+                "removed_submission": submission is not None,
+                "unreferenced_bundle_id": bundle_id if bundle_id and not still_referenced else "",
+            }
 
     def claim(self, node_id):
         self.dispatch()
@@ -369,10 +700,12 @@ class Store:
                 return None
             token = secrets.token_urlsafe(24)
             db.execute("UPDATE commands SET status='claimed',lease_token=?,lease_until=? WHERE id=?", (token, self.clock() + 180, row["id"]))
-            return {"id": row["id"], "job_id": row["job_id"], "kind": row["kind"], "payload": json.loads(row["payload"]),
+            return {"id": row["id"], "job_id": row["job_id"], "node_id": row["node_id"],
+                    "kind": row["kind"], "payload": json.loads(row["payload"]),
                     "owner_id": row["owner_id"], "project_id": row["project_id"], "lease_token": token}
 
     def finish(self, node_id, command_id, lease_token, response=None, error=None):
+        unreferenced_bundle_id = ""
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM commands WHERE id=? AND node_id=?", (command_id, node_id)).fetchone()
@@ -400,6 +733,41 @@ class Store:
                                    (str(uuid.uuid4()), node_id, row["job_id"], "cancel", encoded({"local_reference": local_ref}),
                                     row["owner_id"], row["project_id"], stamp(self.clock())))
                 db.execute("UPDATE jobs SET payload=? WHERE id=?", (encoded(job), row["job_id"]))
+            elif row["kind"] == "purge" and not error:
+                # The owning workstation has already removed the run directory
+                # and run-derived Database rows. Keep this completed command so
+                # the Results page can show the final remote-operation status.
+                submission = db.execute(
+                    "SELECT request FROM submissions WHERE job_id=?", (row["job_id"],)
+                ).fetchone()
+                request = json.loads(submission["request"]) if submission else {}
+                bundle_id = str(request.get("bundle_id") or "")
+                db.execute("DELETE FROM commands WHERE job_id=? AND id<>?", (row["job_id"], command_id))
+                db.execute("DELETE FROM submissions WHERE job_id=?", (row["job_id"],))
+                db.execute("DELETE FROM jobs WHERE id=?", (row["job_id"],))
+                still_referenced = False
+                if bundle_id:
+                    for table, columns in (("submissions", ("request",)), ("commands", ("payload", "response"))):
+                        for item in db.execute("SELECT " + ",".join(columns) + " FROM " + table):
+                            for column in columns:
+                                try:
+                                    value = json.loads(item[column] or "{}")
+                                except (TypeError, ValueError):
+                                    continue
+                                if bundle_id in json.dumps(value, separators=(",", ":")):
+                                    still_referenced = True
+                                    break
+                            if still_referenced:
+                                break
+                        if still_referenced:
+                            break
+                if bundle_id and not still_referenced:
+                    unreferenced_bundle_id = bundle_id
+
+        if re.fullmatch(r"[0-9a-f]{64}", unreferenced_bundle_id):
+            blob = self.root / "transfer-cache" / unreferenced_bundle_id
+            if blob.is_file() and not blob.is_symlink():
+                blob.unlink()
 
     def command(self, command_id, user):
         with self.connect() as db:

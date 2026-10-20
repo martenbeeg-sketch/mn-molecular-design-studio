@@ -56,6 +56,106 @@ def test_automatic_placement_uses_other_ready_workstation_when_origin_is_busy(cl
     assert result["job"]["node_id"] in {nodes[1]["node_id"], nodes[2]["node_id"]}
 
 
+def test_synchronized_running_job_reserves_its_gpu_for_automatic_placement(cluster):
+    store, nodes, user, needs, snapshot, request, _ = cluster
+    busy = copy.deepcopy(snapshot)
+    busy["resources"]["cpu_total"] = 16
+    running = {
+        "task_group": "design", "run_id": "active-gpu-job", "owner_id": user["id"],
+        "project_id": "project-a", "status": "running", "queue_resource": "gpu:0",
+        "resource_allocation": "4 CPU cores · 0",
+    }
+    store.heartbeat(nodes[0]["node_id"], busy, [running])
+
+    candidates = store.placement_options(needs, origin_node=nodes[0]["node_id"])
+    candidate_ids = {candidate["node_id"] for candidate in candidates}
+    assert nodes[0]["node_id"] not in candidate_ids
+    assert candidate_ids == {nodes[1]["node_id"], nodes[2]["node_id"]}
+
+    result = store.submit(request, needs, user, origin_node=nodes[0]["node_id"])
+    assert result["job"]["node_id"] in candidate_ids
+
+
+def test_explicit_workstation_selection_is_rechecked_before_dispatch(cluster):
+    store, nodes, user, needs, snapshot, request, _ = cluster
+    busy = copy.deepcopy(snapshot)
+    running = {
+        "task_group": "design", "run_id": "active-gpu-job", "owner_id": user["id"],
+        "project_id": "project-a", "status": "running", "queue_resource": "gpu:0",
+        "resource_allocation": "4 CPU cores · 0",
+    }
+    store.heartbeat(nodes[1]["node_id"], busy, [running])
+
+    result = store.submit(request, needs, user, origin_node=nodes[0]["node_id"], placement=nodes[1]["node_id"])
+    assert result["job"]["status"] == "waiting_for_workstation"
+    assert result["job"]["node_id"] == nodes[1]["node_id"]
+
+
+def test_explicit_origin_selection_survives_stale_package_revision(cluster):
+    store, nodes, user, needs, snapshot, request, _ = cluster
+    current = copy.deepcopy(snapshot)
+    current["code_revision"] = "updated-code"
+    store.heartbeat(nodes[0]["node_id"], current, [])
+
+    result = store.submit(request, needs, user, origin_node=nodes[0]["node_id"],
+                         placement=nodes[0]["node_id"])
+
+    assert result["job"]["status"] == "dispatching"
+    with store.connect() as db:
+        row = db.execute("SELECT s.requirements,c.payload FROM submissions s JOIN commands c ON c.id=s.command_id WHERE s.job_id=?",
+                         (result["job"]["cluster_job_id"],)).fetchone()
+    original = json.loads(row["requirements"])
+    command_payload = json.loads(row["payload"])
+    assert original["code_revision"] == needs["code_revision"]
+    assert command_payload["allow_code_revision_refresh"] is True
+    assert command_payload["origin_node"] == nodes[0]["node_id"]
+    claimed = store.claim(nodes[0]["node_id"])
+    assert claimed["node_id"] == nodes[0]["node_id"]
+
+
+def test_retry_recovers_job_rejected_only_for_stale_compatibility_fingerprint(cluster):
+    store, nodes, user, needs, snapshot, request, _ = cluster
+    submitted = store.submit(request, needs, user, origin_node=nodes[0]["node_id"],
+                             placement=nodes[0]["node_id"])["job"]
+    error = "The workstation's engine images, code, or checkpoints no longer match this submission."
+    with store.connect() as db:
+        submission = db.execute("SELECT command_id FROM submissions WHERE job_id=?",
+                                (submitted["cluster_job_id"],)).fetchone()
+        db.execute("UPDATE commands SET status='failed',error=? WHERE id=?", (error, submission["command_id"]))
+        job = json.loads(db.execute("SELECT payload FROM jobs WHERE id=?",
+                                    (submitted["cluster_job_id"],)).fetchone()["payload"])
+        job.update(status="failed", error=error)
+        db.execute("UPDATE jobs SET payload=? WHERE id=?",
+                   (json.dumps(job), submitted["cluster_job_id"]))
+
+    retried = store.action(submitted["cluster_job_id"], "retry", {}, user)
+
+    assert retried["status"] == "dispatching"
+    assert not retried.get("error")
+
+
+def test_waiting_local_job_can_be_moved_to_an_available_gpu(cluster):
+    store, nodes, user, needs, snapshot, request, _ = cluster
+    selected_needs = dict(needs, gpu_count=1, gpu_ids=[1], min_vram_gb=8)
+    selected_request = copy.deepcopy(request)
+    selected_request["payload"]["parameters"] = {"gpu_device": "1"}
+    submitted = store.submit(selected_request, selected_needs, user,
+                             origin_node=nodes[0]["node_id"], placement=nodes[0]["node_id"])["job"]
+    assert submitted["status"] == "waiting_for_workstation"
+
+    changed = store.action(submitted["cluster_job_id"], "change_gpu", {"gpu_id": 0}, user)
+
+    assert changed["status"] == "dispatching"
+    assert changed["request_summary"]["parameters"]["gpu_device"] == "0"
+    with store.connect() as db:
+        row = db.execute("SELECT s.requirements,c.payload FROM submissions s JOIN commands c ON c.id=s.command_id WHERE s.job_id=?",
+                         (submitted["cluster_job_id"],)).fetchone()
+    req = json.loads(row["requirements"])
+    command_payload = json.loads(row["payload"])
+    assert req["gpu_ids"] == [0]
+    assert command_payload["payload"]["parameters"]["gpu_device"] == "0"
+
+
 @pytest.mark.parametrize("change", [
     {"images": {"engine:1": "sha256:other"}}, {"images": {}}, {"references": {}},
     {"code_revision": "old-code"}, {"scheduler_online": False}, {"accept_jobs": False},
@@ -383,6 +483,9 @@ def test_input_staging_copies_only_inputs_and_keeps_runs_and_weights_in_place(cl
     _, nodes, *_ = cluster
     from mn_molecular_design_studio import runtime
     run_root = tmp_path / "runs"; run = run_root / "design/run"; run.mkdir(parents=True)
+    # A local directory named "pdb" must not make a prediction output format
+    # look like a remote filesystem input during request packaging.
+    (tmp_path / "pdb").mkdir()
     refs = tmp_path / "refs"; refs.mkdir(); weight = refs / "model.pt"; weight.write_bytes(b"weights")
     structure = tmp_path / "target.pdb"; structure.write_text("TARGET")
     monkeypatch.setattr(runtime, "runs_root", lambda: run_root)
@@ -390,11 +493,12 @@ def test_input_staging_copies_only_inputs_and_keeps_runs_and_weights_in_place(cl
     from mn_molecular_design_studio.engine.workflow_engine.core import portable_paths
     monkeypatch.setattr(portable_paths, "runs_root", lambda: run_root)
     monkeypatch.setattr(portable_paths, "reference_root", lambda: refs)
-    prepared, digest, references = bundles.pack({"parameters": {"target_pdb": str(structure), "source_run_dir": str(run), "checkpoint_path": str(weight)}},
+    prepared, digest, references = bundles.pack({"parameters": {"target_pdb": str(structure), "source_run_dir": str(run), "checkpoint_path": str(weight), "engine_options": {"output_format": "pdb"}}},
                                                base_dir=tmp_path, node_id=nodes[0]["node_id"])
     assert prepared["parameters"]["target_pdb"].startswith("cluster-input:///")
     assert prepared["parameters"]["source_run_dir"].startswith("cluster://")
     assert prepared["parameters"]["checkpoint_path"] == "reference:///model.pt"
+    assert prepared["parameters"]["engine_options"]["output_format"] == "pdb"
     assert references == ["model.pt"]
     with zipfile.ZipFile(bundles.blob_path(digest)) as archive:
         assert len(archive.namelist()) == 1
@@ -431,6 +535,135 @@ def test_node_token_cannot_publish_another_nodes_jobs(cluster):
     assert store.authenticate_node(nodes[0]["node_token"])["id"] == nodes[0]["node_id"]
     with pytest.raises(PermissionError):
         store.authenticate_node("incorrect")
+
+
+def test_results_can_hide_and_restore_jobs_without_losing_scheduler_record(cluster):
+    store, nodes, user, _, snapshot, _, _ = cluster
+    jid = config.job_id(nodes[0]["node_id"], "design/run-visibility")
+    row = {
+        "task_group": "design", "run_id": "run-visibility", "cluster_job_id": jid,
+        "owner_id": user["id"], "project_id": "project-a", "status": "completed",
+    }
+    store.heartbeat(nodes[0]["node_id"], snapshot, [row])
+    assert store.search(user)["total"] == 1
+
+    assert store.action(jid, "hide", {}, user)["hidden"] is True
+    assert store.search(user)["total"] == 0
+    hidden = store.search(user, include_hidden=True)["items"][0]
+    assert hidden["hidden"] is True
+    assert hidden["run_id"] == "run-visibility"
+
+    # A heartbeat from the owner does not undo the user's Results cleanup.
+    store.heartbeat(nodes[0]["node_id"], snapshot, [row])
+    assert store.search(user)["total"] == 0
+    assert store.action(jid, "restore", {}, user)["hidden"] is False
+    assert store.search(user)["total"] == 1
+
+
+def test_remote_purge_command_removes_coordinator_result_after_workstation_finishes(cluster):
+    store, nodes, user, *_ = cluster
+    jid = config.job_id(nodes[1]["node_id"], "design/failed-run")
+    store.heartbeat(nodes[1]["node_id"], {}, [{
+        "cluster_job_id": jid, "task_group": "design", "run_id": "failed-run",
+        "owner_id": user["id"], "project_id": "project-a", "status": "failed",
+    }])
+
+    operation = store.action(jid, "purge", {"actor": user}, user)
+    command = store.claim(nodes[1]["node_id"])
+    assert command["id"] == operation["command_id"]
+    assert command["kind"] == "purge"
+
+    store.finish(nodes[1]["node_id"], command["id"], command["lease_token"], response={"status": "purged"})
+
+    with pytest.raises(LookupError):
+        store.job(jid, user)
+    assert store.command(command["id"], user)["status"] == "completed"
+
+
+def test_agent_purge_deletes_local_run_folder_and_accepted_inputs(monkeypatch, tmp_path):
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
+    from mn_molecular_design_studio import job_catalog, molecular_database_results
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    runs = tmp_path / "runs"
+    run_dir = runs / "vina" / "failed-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "metadata.json").write_text(json.dumps({"status": "completed"}))
+    accepted_id = str(uuid.uuid4())
+    accepted_dir = config.home() / "accepted-inputs" / accepted_id
+    accepted_dir.mkdir(parents=True)
+    (accepted_dir / "input.json").write_text("{}")
+    receipt_dir = config.home() / "receipts"
+    receipt_dir.mkdir(exist_ok=True)
+    (receipt_dir / f"{accepted_id}.json").write_text("{}")
+    monkeypatch.setattr(jobs, "runs_root", lambda: runs)
+    monkeypatch.setattr(job_catalog, "reconcile", lambda _root: None)
+    monkeypatch.setattr(molecular_database_results, "remove_run_records", lambda *args, **kwargs: {
+        "removed_sources": 2, "removed_members": 3, "removed_groups": 0,
+        "preserved_saved_selections": True,
+    })
+
+    result = Agent().purge({
+        "payload": {
+            "local_reference": "vina/failed-run", "accepted_command_id": accepted_id,
+            "actor": {"id": "owner", "role": "admin"},
+            "run_owner_id": "owner", "run_project_id": "project-a",
+        },
+    })
+
+    assert result["run_files_removed"] is True
+    assert result["staging_inputs_removed"] is True
+    assert result["database"]["preserved_saved_selections"] is True
+    assert not run_dir.exists()
+    assert not accepted_dir.exists()
+    assert not (receipt_dir / f"{accepted_id}.json").exists()
+
+
+def test_synchronized_results_page_has_status_filter_and_row_selection(monkeypatch, tmp_path):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio.cluster import ui
+    from mn_molecular_design_studio import workspace
+
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
+    requests = []
+    monkeypatch.setattr(ui, "catalog", lambda user, token, **kwargs: ({"items": [{
+        "cluster_job_id": "job-1", "node_id": "node-1", "node_name": "pc002975",
+        "task_group": "vina", "run_id": "run-1", "owner_id": "owner",
+        "project_id": "", "status": "completed", "availability": "online",
+    }], "total": 1}, False))
+    def request(path, token, payload=None, method="GET", **kwargs):
+        requests.append((path, method, payload))
+        return {"status": "purged", "database": {"removed_sources": 0, "removed_members": 0}}
+    monkeypatch.setattr(ui, "_request", request)
+    monkeypatch.setattr(ui.config, "identity", lambda: "node-2")
+    monkeypatch.setattr(ui.config, "display_name", lambda value: str(value or "All workstations"))
+    monkeypatch.setattr(ui.config, "display_text", lambda value: str(value or ""))
+    monkeypatch.setattr(ui, "_row_progress", lambda row: None)
+    monkeypatch.setattr(workspace, "load_organization", lambda: {"projects": []})
+    user = {"id": "owner", "role": "user", "project_ids": []}
+    script = f'''\
+from mn_molecular_design_studio.cluster.ui import _render_runs_content
+_render_runs_content({user!r}, "token", lambda **kwargs: {{"items": [], "total": 0}})
+'''
+    app = AppTest.from_string(script, default_timeout=10).run()
+
+    assert not app.exception
+    assert app.multiselect(key="cluster-results-status-filter").options == ["Completed"]
+    checkbox_key = next(widget.key for widget in app.checkbox if widget.key.startswith("cluster-results-select-"))
+
+    app.checkbox(key=checkbox_key).check().run()
+    assert not app.exception
+    assert app.button(key="cluster-results-remove-and-purge-request")
+    assert not any(button.key in {"cluster-results-hide-selected", "cluster-results-database-removal-request"}
+                   for button in app.button)
+
+    app.button(key="cluster-results-remove-and-purge-request").click().run()
+    assert not app.exception
+    assert app.button(key="cluster-results-remove-and-purge-confirm")
+    app.button(key="cluster-results-remove-and-purge-confirm").click().run()
+    assert not app.exception
+    assert ("/jobs/job-1/purge", "DELETE", None) in requests
+    assert app.checkbox(key=checkbox_key).value is False
 
 
 def test_remote_job_marker_does_not_write_to_local_files(cluster, tmp_path):

@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import sys
 import uuid
 import csv
 import io
 from pathlib import Path, PurePosixPath
+from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
@@ -555,13 +557,14 @@ def _cache(user_id, name):
     return config.home() / (name + "-" + safe + ".json")
 
 
-def catalog(user, token):
-    path = _cache(user["id"], "catalog-cache")
+def catalog(user, token, *, include_hidden=False):
+    path = _cache(user["id"], "catalog-cache-hidden" if include_hidden else "catalog-cache")
     try:
-        result = _request("/jobs?limit=1000", token)
+        query = "?limit=1000" + ("&include_hidden=true" if include_hidden else "")
+        result = _request("/jobs" + query, token)
         total = result["total"]
         while len(result["items"]) < total:
-            page = _request(f"/jobs?limit=1000&offset={len(result['items'])}", token)
+            page = _request(f"/jobs?limit=1000&offset={len(result['items'])}" + ("&include_hidden=true" if include_hidden else ""), token)
             if not page["items"]:
                 break
             result["items"].extend(page["items"])
@@ -671,7 +674,8 @@ def settings(user, token):
 
 
 def render_runs(user, token, local_search, *, elapsed_label=None, elapsed_since=None):
-    @st.fragment(run_every=15)
+    run_every = 2 if st.session_state.get("cluster-results-purge-operations") else 15
+    @st.fragment(run_every=run_every)
     def live_results():
         _render_runs_content(user, token, local_search, elapsed_label=elapsed_label, elapsed_since=elapsed_since)
 
@@ -679,8 +683,48 @@ def render_runs(user, token, local_search, *, elapsed_label=None, elapsed_since=
 
 
 def _render_runs_content(user, token, local_search, *, elapsed_label=None, elapsed_since=None):
+    if st.session_state.pop("cluster-results-reset-selection", False):
+        for key in list(st.session_state):
+            if str(key).startswith("cluster-results-select-"):
+                st.session_state.pop(key, None)
+        st.session_state["cluster-results-selected"] = {}
     st.title("My results")
-    page, stale = catalog(user, token)
+    if message := st.session_state.pop("cluster-results-flash", None):
+        st.success(message)
+    if failures := st.session_state.pop("cluster-results-purge-errors", None):
+        for failure in failures:
+            st.error(failure)
+    purge_operations = list(st.session_state.get("cluster-results-purge-operations") or [])
+    if purge_operations:
+        remaining_operations = []
+        completed_operations = 0
+        for operation in purge_operations:
+            try:
+                result = _request("/commands/" + operation["command_id"], token)
+            except (ValueError, transport.ClusterUnavailable) as exc:
+                remaining_operations.append(operation)
+                st.info(f"Waiting for purge on {operation.get('workstation', 'the owning workstation')}: {exc}")
+                continue
+            if result.get("status") == "completed":
+                completed_operations += 1
+            elif result.get("status") == "failed":
+                st.error(
+                    f"Could not purge {operation.get('name') or 'a selected run'} on "
+                    f"{operation.get('workstation', 'its workstation')}: {result.get('error') or 'operation failed'}"
+                )
+            else:
+                remaining_operations.append(operation)
+        if remaining_operations:
+            st.session_state["cluster-results-purge-operations"] = remaining_operations
+            st.info(f"Physically removing {len(remaining_operations)} run folder(s) on the owning workstation(s)…")
+        else:
+            st.session_state.pop("cluster-results-purge-operations", None)
+            if completed_operations:
+                st.success(f"Physically removed {completed_operations} remote run folder(s) and their automatic Database records.")
+    show_removed = st.toggle("Show removed jobs", key="cluster-results-show-removed")
+    # Keep hidden rows in the merged view so local jobs do not reappear when
+    # they are filtered out by the coordinator's default Results query.
+    page, stale = catalog(user, token, include_hidden=True)
     if stale:
         st.info("Coordinator unavailable. Showing the last synchronized catalog and current local jobs. Remote status is last known.")
     rows = list(page["items"])
@@ -701,17 +745,24 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
             rows[known[key]] = rows[known[key]] | item
         else:
             rows.append(item)
-    search_col, machine_col, refresh_col = st.columns([0.5, 0.35, 0.15])
+    status_options = sorted({str(r.get("status") or "unknown").replace("_", " ").title() for r in rows}, key=str.casefold)
+    status_key = "cluster-results-status-filter"
+    if not set(st.session_state.get(status_key, [])).issubset(status_options):
+        st.session_state[status_key] = []
+    search_col, machine_col, status_col, refresh_col = st.columns([0.38, 0.26, 0.24, 0.12])
     query = search_col.text_input("Search jobs", placeholder="Name, engine, or run ID", key="cluster-results-query").casefold()
     names = {r.get("node_id"): config.display_name(r.get("node_name") or "Not assigned") for r in rows if r.get("node_id")}
     machine = machine_col.selectbox("Workstation", ["", *names], format_func=lambda v: names.get(v, "All workstations"), key="cluster-results-machine")
+    statuses = status_col.multiselect("Status", status_options, key=status_key, placeholder="All statuses")
     if refresh_col.button("Refresh", key="cluster-results-refresh"):
         st.rerun()
     projects = sorted({r.get("project_id") for r in rows if r.get("project_id")})
     from mn_molecular_design_studio.workspace import load_organization
     project_names = {p["id"]: p["name"] for p in load_organization().get("projects", [])}
     project = st.selectbox("Project", ["", *projects], format_func=lambda v: project_names.get(v, "All projects"), key="cluster-results-project")
-    chosen = [r for r in rows if (not machine or r.get("node_id") == machine) and (not project or r.get("project_id") == project)
+    chosen = [r for r in rows if (show_removed or not r.get("hidden"))
+              and (not machine or r.get("node_id") == machine) and (not project or r.get("project_id") == project)
+              and (not statuses or str(r.get("status") or "unknown").replace("_", " ").title() in statuses)
               and (not query or query in " ".join(f"{r.get(k, '')} {config.display_text(r.get(k, ''))}" for k in ("campaign_name", "pipeline_name", "run_id", "tool", "job_code")).casefold())]
     chosen.sort(key=lambda r: r.get("created_at", ""), reverse=True)
     st.caption(f"{len(chosen)} jobs · Job status and file availability are tracked separately.")
@@ -720,15 +771,23 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
     if st.session_state.get(page_key, 1) > pages:
         st.session_state[page_key] = 1
     selected_page = int(st.number_input("Page", min_value=1, max_value=pages, value=1, step=1, key=page_key))
-    header = st.columns([2.8, 1, 1.25, 1, 1.3, 0.7])
+    header = st.columns([0.35, 2.8, 1, 1.25, 1, 1.3, 0.7])
+    header[0].caption("Select")
     for column, label in zip(
-        header,
+        header[1:],
         ("Job name · tool · pipeline", "Status", "Elapsed", "Workstation", "File availability", "Open"),
     ):
         column.caption(label)
+    selected_jobs = st.session_state.setdefault("cluster-results-selected", {})
     for row in chosen[(selected_page - 1) * 50:selected_page * 50]:
+        ref = str(row.get("cluster_job_id") or (str(row.get("task_group") or "") + "/" + str(row.get("run_id") or "")))
+        checkbox_key = "cluster-results-select-" + hashlib.sha1(ref.encode()).hexdigest()[:12]
         with st.container(border=True):
-            title, state, elapsed, machine, access, action = st.columns([2.8, 1, 1.25, 1, 1.3, 0.7])
+            select_col, title, state, elapsed, machine, access, action = st.columns([0.35, 2.8, 1, 1.25, 1, 1.3, 0.7])
+            if select_col.checkbox("Select job", value=ref in selected_jobs, key=checkbox_key, label_visibility="collapsed"):
+                selected_jobs[ref] = row
+            else:
+                selected_jobs.pop(ref, None)
             title.write(config.display_text(row.get("campaign_name") or row.get("tool") or "Job"))
             pipeline_name = str(row.get("pipeline_name") or "").strip() or "—"
             title.caption(f"Tool: {display_tool_label(row)} · Pipeline: {config.display_text(pipeline_name)}")
@@ -746,13 +805,133 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
             access.write(availability.title())
             if row.get("last_seen_at"):
                 access.caption(str(row["last_seen_at"]))
-            ref = "cluster:" + row["cluster_job_id"] if row.get("cluster_job_id") else row["run_id"]
-            if action.button("View", key="cluster-view-" + ref):
-                if row.get("node_id") == config.identity() and row.get("run_id"):
-                    ref = row["run_id"]
-                st.session_state["selected-job-reference"] = ref
-                st.session_state["page"] = "Job details"
+            view_ref = "cluster:" + row["cluster_job_id"] if row.get("cluster_job_id") else row["run_id"]
+            if row.get("node_id") == config.identity() and row.get("run_id"):
+                view_ref = row["run_id"]
+            view_href = "?job_ref=" + quote(str(view_ref), safe="")
+            action.markdown(
+                f'<a href="{view_href}" target="_self" '
+                'style="display:inline-block;padding:0.35rem 0.65rem;border:1px solid #d5dbe1;'
+                'border-radius:0.4rem;background:#fff;color:#26352d;text-decoration:none">View</a>',
+                unsafe_allow_html=True,
+            )
+    st.session_state["cluster-results-selected"] = selected_jobs
+    selected_rows = list(selected_jobs.values())
+    if selected_rows:
+        st.caption(f"{len(selected_rows)} job{'s' if len(selected_rows) != 1 else ''} selected")
+        if show_removed:
+            available_to_restore = [row for row in selected_rows if row.get("hidden")]
+            if available_to_restore and st.button("Restore selected jobs", key="cluster-results-restore-selected"):
+                failures = []
+                restored = 0
+                for row in available_to_restore:
+                    try:
+                        jid = str(row.get("cluster_job_id") or "")
+                        if jid:
+                            _request("/jobs/" + jid + "/actions", token, {"action": "restore"}, method="POST")
+                        elif row.get("node_id") == config.identity() and row.get("task_group") and row.get("run_id"):
+                            from mn_molecular_design_studio.auth import can_access_job
+                            from mn_molecular_design_studio.job_catalog import set_job_hidden, get_job_access_record
+                            access_record = get_job_access_record(str(row["task_group"]), str(row["run_id"]))
+                            if not can_access_job(user, access_record):
+                                raise PermissionError("Job not found.")
+                            set_job_hidden(str(row["task_group"]), str(row["run_id"]), False)
+                        else:
+                            raise ValueError("This job cannot be updated while its workstation is unavailable.")
+                        restored += 1
+                    except (ValueError, PermissionError, transport.ClusterUnavailable) as exc:
+                        failures.append(str(exc))
+                st.session_state["cluster-results-selected"] = {}
+                st.session_state["cluster-results-reset-selection"] = True
+                if restored:
+                    st.session_state["cluster-results-flash"] = f"Restored {restored} job{'s' if restored != 1 else ''}."
+                for failure in failures:
+                    st.error(failure)
                 st.rerun()
+        else:
+            pending_key = "cluster-results-pending-remove-and-purge"
+            if st.button("Remove and purge selected", key="cluster-results-remove-and-purge-request"):
+                st.session_state[pending_key] = [dict(row) for row in selected_rows]
+            pending = st.session_state.get(pending_key)
+            if pending:
+                st.warning("Confirming permanently deletes each selected finished run folder from its workstation's Results directory and removes its automatic Database records. Queued or running jobs cannot be purged. Molecules explicitly saved to user collections are kept. Remote runs are deleted when their workstation receives the request.")
+                confirm, cancel = st.columns(2)
+                if confirm.button("Confirm removal and purge", type="primary", key="cluster-results-remove-and-purge-confirm"):
+                    removed_sources = removed_members = succeeded = 0
+                    queued_operations = []
+                    failures = []
+                    for row in pending:
+                        try:
+                            jid = str(row.get("cluster_job_id") or "")
+                            if jid:
+                                result = _request("/jobs/" + jid + "/purge", token, method="DELETE")
+                                if result.get("status") == "purge_queued":
+                                    queued_operations.append({
+                                        "command_id": result["command_id"],
+                                        "workstation": config.display_name(row.get("node_name") or result.get("node_id")),
+                                        "name": row.get("campaign_name") or row.get("run_id") or jid,
+                                    })
+                                else:
+                                    database = result.get("database") or {}
+                                    removed_sources += int(database.get("removed_sources", 0))
+                                    removed_members += int(database.get("removed_members", 0))
+                                    succeeded += 1
+                            elif row.get("node_id") == config.identity() and row.get("task_group") and row.get("run_id"):
+                                from mn_molecular_design_studio.auth import can_access_job
+                                from mn_molecular_design_studio.job_catalog import get_job_access_record, reconcile
+                                from mn_molecular_design_studio.molecular_database_results import remove_run_records
+                                from mn_molecular_design_studio.engine.workflow_engine.core.jobs import delete_job_run, runs_root
+                                access_record = get_job_access_record(str(row["task_group"]), str(row["run_id"]))
+                                if not can_access_job(user, access_record):
+                                    raise PermissionError("Job not found.")
+                                if str(row.get("status") or "").casefold() not in {"completed", "succeeded", "cancelled", "failed"}:
+                                    raise ValueError("Only finished jobs can be permanently removed.")
+                                result = remove_run_records(
+                                    row["task_group"], row["run_id"], user,
+                                    owner_id=row.get("owner_id"), project_id=row.get("project_id"),
+                                )
+                                removed_sources += result["removed_sources"]
+                                removed_members += result["removed_members"]
+                                try:
+                                    delete_job_run(row["task_group"], row["run_id"])
+                                except FileNotFoundError:
+                                    pass
+                                reconcile(runs_root())
+                                succeeded += 1
+                            else:
+                                raise ValueError("This job cannot be updated while its workstation is unavailable.")
+                        except (ValueError, PermissionError, OSError, sqlite3.Error, transport.ClusterUnavailable) as exc:
+                            failures.append(f"{row.get('campaign_name') or row.get('run_id') or 'Selected job'}: {exc}")
+                    st.session_state.pop(pending_key, None)
+                    st.session_state["cluster-results-selected"] = {}
+                    st.session_state["cluster-results-reset-selection"] = True
+                    if queued_operations:
+                        st.session_state["cluster-results-purge-operations"] = queued_operations
+                    messages = []
+                    if succeeded:
+                        messages.append(
+                            f"Physically removed {succeeded} run folder{'s' if succeeded != 1 else ''} "
+                            f"and their automatic Database records "
+                            f"({removed_sources} source links, {removed_members} run records)."
+                        )
+                    if queued_operations:
+                        messages.append(
+                            f"Queued physical deletion of {len(queued_operations)} run folder"
+                            f"{'s' if len(queued_operations) != 1 else ''} on the owning workstation(s)."
+                        )
+                    if messages:
+                        st.session_state["cluster-results-flash"] = " ".join(messages)
+                    if failures:
+                        st.session_state["cluster-results-purge-errors"] = failures
+                    st.rerun()
+                if cancel.button("Cancel", key="cluster-results-remove-and-purge-cancel"):
+                    st.session_state.pop(pending_key, None)
+                    st.rerun()
+        clear_col, _ = st.columns([1, 4])
+        if clear_col.button("Clear selection", key="cluster-results-clear-selection"):
+            st.session_state["cluster-results-selected"] = {}
+            st.session_state["cluster-results-reset-selection"] = True
+            st.rerun()
 
 
 def render_job(reference, user, token, submit):

@@ -561,6 +561,7 @@ def _render_authentication_gate() -> dict:
 
 
 CURRENT_USER = _render_authentication_gate()
+st.session_state["_molecular_database_user"] = CURRENT_USER
 
 
 def search_jobs(**kwargs):
@@ -2936,6 +2937,92 @@ def _post_local_api(path: str, payload: dict) -> dict:
         raise ValueError(f"Could not reach the local workflow API at {API_BASE_URL}: {exc.reason}") from exc
 
 
+def _workflow_placement_options(schema, workflow_id: str, parameters: dict, project_id: str, idempotency_key: str) -> dict:
+    payload = {
+        "schema_version": schema["schema_version"],
+        "workflow": workflow_id,
+        "parameters": parameters,
+        "project_id": project_id,
+    }
+    if cluster_config.enabled():
+        settings = cluster_config.load()
+        payload["execution"] = {
+            "placement": st.session_state.get("cluster-placement", settings["default_placement"]),
+            "idempotency_key": idempotency_key,
+        }
+    return _post_local_api("/api/v1/workflows/placement-options", payload)
+
+
+def _docking_prediction_state(saved_job: dict) -> dict:
+    """Follow the durable job ID, including jobs initially waiting for a node."""
+    from mn_molecular_design_studio import docking_preparations
+    from mn_molecular_design_studio.cluster import service, transport
+    from mn_molecular_design_studio.cluster.store import Store
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+
+    token = str(st.session_state.get("studio-session-token") or ("development-mode" if is_development_mode() else ""))
+    cluster_id = saved_job.get("cluster_job_id")
+    try:
+        if cluster_id:
+            job = service.lookup_job("cluster:" + cluster_id, CURRENT_USER, token)
+            if cluster_config.load()["mode"] in {"coordinator", "peer"}:
+                nodes = Store().nodes()
+            else:
+                nodes = transport.request("/api/v1/cluster/nodes", token=token).get("nodes", [])
+            workstation = next((cluster_config.display_name(node["name"]) for node in nodes if node["id"] == job.get("node_id")), "")
+        else:
+            reference = saved_job.get("run_id")
+            if not reference and saved_job.get("run_dir"):
+                path = Path(saved_job["run_dir"])
+                reference = f"{path.parent.name}/{path.name}"
+            job = resolve_job(reference)
+            _require_current_user_job_access(job)
+            workstation = cluster_config.display_name(cluster_config.load()["name"])
+        result = {"job": job, "workstation": workstation, "structures": [], "loading": False}
+        if not cluster_id or job.get("node_id") == cluster_config.identity():
+            if not job.get("run_id"):
+                return result
+            local = resolve_job(f"{job['task_group']}/{job['run_id']}")
+            _require_current_user_job_access(local)
+            run_dir = Path(local["run_dir"]).resolve()
+            metadata = read_json(run_dir / "metadata.json")
+            job["status"] = metadata.get("status", job.get("status"))
+            job["error"] = metadata.get("error") or metadata.get("status_message")
+            if job["status"] in {"completed", "succeeded"}:
+                for candidate in read_candidates(run_dir):
+                    path = Path(candidate.get("complex_pdb") or "").resolve()
+                    if path.is_file() and path.is_relative_to(run_dir):
+                        result["structures"].append(path.read_text())
+            return result
+        if job.get("status") not in {"completed", "succeeded"}:
+            return result
+        from mn_molecular_design_studio.cluster.ui import _fetch_remote_artifact_text
+        manifest = _fetch_remote_artifact_text(
+            cluster_id, "artifacts/normalized_candidates/candidates.jsonl", token,
+            f"docking-prediction-manifest-{cluster_id}", "prediction results",
+        )
+        if manifest is None:
+            result["loading"] = True
+            return result
+        for line in manifest.splitlines():
+            candidate = json.loads(line) if line.strip() else {}
+            if not candidate.get("complex_pdb"):
+                continue
+            relative = docking_preparations.artifact_relative_path(candidate["complex_pdb"], job)
+            key = hashlib.sha256(relative.encode()).hexdigest()[:16]
+            content = _fetch_remote_artifact_text(cluster_id, relative, token, f"docking-prediction-{cluster_id}-{key}", "predicted complex")
+            if content is None:
+                result["loading"] = True
+            else:
+                result["structures"].append(content)
+        # Wait for every probe structure before deriving the combined pocket.
+        if result["loading"]:
+            result["structures"] = []
+        return result
+    except (transport.ClusterUnavailable, AutomationError) as exc:
+        raise ValueError(str(exc)) from exc
+
+
 def _render_parameter_fields(parameters: list[dict], *, workflow_id: str, group: str) -> dict:
     values = {}
     columns = st.columns(2, gap="large")
@@ -3450,21 +3537,9 @@ def _render_boltz_prediction_setup(profile: dict[str, Any], schema: dict[str, An
             if values.pop("input_error", ""):
                 raise ValueError("Complete every complex before submitting the batch.")
             values.pop("chain_catalog", None)
-        engine_options = {
-            key: settings[key] for key in (
-                "sampling_steps", "max_parallel_samples", "step_scale", "output_format",
-                "seed_count", "use_potentials", "method", "use_msa", "generate_ipsae", "boltz_version",
-            )
-        }
-        engine_options["max_msa_seqs"] = int(settings.get("max_msa_seqs") or 8192)
-        engine_options["use_msa_server"] = bool(settings["use_msa"])
-        parameters = {
-            "engine": "boltz2", "optimization_mode": settings["optimization_mode"],
-            "job_name": job_name or "boltz2-prediction", "seed": int(settings.get("seed") or 0),
-            "samples": int(settings["samples"]), "num_recycles": int(settings["num_recycles"]),
-            "cpu_cores": 4, "gpu_device": "0,1" if settings["optimization_mode"] == "big" else "0",
-            "tasks": tasks, "engine_options": engine_options,
-        }
+        parameters = optimized_prediction.boltz2_prediction_parameters(
+            tasks, settings=settings, job_name=job_name or "boltz2-prediction",
+        )
         payload = {
             "schema_version": schema["schema_version"], "workflow": "refolding.optimized_prediction",
             "parameters": parameters, "project_id": project_id,
@@ -3500,6 +3575,8 @@ def _submit_cofolding_job(schema: dict, workflow_id: str, parameters: dict, proj
         "parameters": parameters, "project_id": project_id,
         "priority": 1000 if settings.get("prioritize") else 0,
     }
+    if isinstance(settings.get("_execution"), dict):
+        payload["execution"] = settings["_execution"]
     validation = _post_local_api("/api/v1/workflows/validate", payload)
     if not validation.get("valid"):
         st.error(f"The {label} inputs did not pass validation.")
@@ -3666,6 +3743,8 @@ def _render_workflow_setup() -> None:
             compound_sets=compound_sets,
             project_selector=_render_project_selector,
             submit=_submit_cofolding_job,
+            placement_options=_workflow_placement_options,
+            prediction_state=_docking_prediction_state,
         )
         return
     if workflow_id == "design.rfdiffusion_beta_pairing":
@@ -4219,13 +4298,15 @@ def _render_runs() -> None:
         )
         return
     st.title("My results")
+    if message := st.session_state.pop("results-flash", None):
+        st.success(message)
     try:
         facets = job_list_facets()
     except Exception as exc:
         st.error(f"Could not load jobs: {exc}")
         return
 
-    refresh_col, search_col, project_col, filter_col = st.columns([0.06, 0.42, 0.28, 0.24], vertical_alignment="bottom")
+    refresh_col, search_col, project_col, status_col, filter_col = st.columns([0.06, 0.34, 0.22, 0.2, 0.18], vertical_alignment="bottom")
     if refresh_col.button("", icon=":material/refresh:", help="Refresh job list", key="results-refresh"):
         st.rerun()
     query = search_col.text_input(
@@ -4249,10 +4330,13 @@ def _render_runs() -> None:
         key="results-project-filter",
         label_visibility="collapsed",
     )
+    if not set(st.session_state.get("results-status-filter", [])).issubset(facets["statuses"]):
+        st.session_state["results-status-filter"] = []
+    chosen_statuses = status_col.multiselect(
+        "Status", facets["statuses"], key="results-status-filter", placeholder="All statuses",
+        label_visibility="collapsed",
+    )
     with filter_col.popover("Add filter", icon=":material/filter_alt:", use_container_width=True):
-        chosen_statuses = st.multiselect(
-            "Status", facets["statuses"], key="results-status-filter"
-        )
         chosen_tools = st.multiselect("Tool", facets["tools"], key="results-tool-filter")
     selected_project_id = selected_project if selected_project else None
 
@@ -4459,6 +4543,48 @@ def _render_runs() -> None:
     active_selected = [row for row in selected_rows if str(row.get("status", "")).lower() in ACTIVE_STATUSES]
     if selected_rows:
         st.caption(f"{len(selected_rows)} job{'s' if len(selected_rows) != 1 else ''} selected")
+        pending_key = "results-pending-remove-and-purge"
+        if st.button("Remove and purge selected", key="results-remove-and-purge-request"):
+            st.session_state[pending_key] = [dict(row) for row in selected_rows]
+        pending = st.session_state.get(pending_key)
+        if pending:
+            st.warning("This removes the selected jobs from Results and removes their automatically indexed run records from Database. Run files and molecules explicitly saved to a user collection are kept.")
+            confirm, cancel = st.columns(2)
+            if confirm.button("Confirm removal and purge", type="primary", key="results-remove-and-purge-confirm"):
+                from mn_molecular_design_studio.job_catalog import set_job_hidden
+                from mn_molecular_design_studio.molecular_database_results import remove_run_records
+                removed_sources = removed_members = succeeded = 0
+                errors = []
+                for row in pending:
+                    try:
+                        _require_current_user_job_access(row)
+                        result = remove_run_records(
+                            row["task_group"], row["run_id"], CURRENT_USER,
+                            owner_id=row.get("owner_id"), project_id=row.get("project_id"),
+                        )
+                        removed_sources += result["removed_sources"]
+                        removed_members += result["removed_members"]
+                        set_job_hidden(str(row["task_group"]), str(row["run_id"]), True)
+                        succeeded += 1
+                    except (ValueError, FileNotFoundError, PermissionError, OSError, sqlite3.Error, KeyError) as exc:
+                        errors.append(str(exc))
+                st.session_state.pop(pending_key, None)
+                st.session_state["results-selected-jobs"] = {}
+                for state_key in list(st.session_state):
+                    if str(state_key).startswith("results-row-select-"):
+                        st.session_state.pop(state_key, None)
+                if succeeded:
+                    st.session_state["results-flash"] = (
+                        f"Removed and purged {succeeded} job{'s' if succeeded != 1 else ''} "
+                        f"({removed_sources} Database source links, {removed_members} run records)."
+                    )
+                for error in errors:
+                    st.error(error)
+                st.rerun()
+            if cancel.button("Cancel", key="results-remove-and-purge-cancel"):
+                st.session_state.pop(pending_key, None)
+                st.rerun()
+
         if active_selected:
             if st.button("Stop selected jobs", icon=":material/stop_circle:", key="results-stop-selected"):
                 st.session_state["results-pending-stop"] = [
@@ -6620,6 +6746,7 @@ def _render_job_details() -> None:
     input_payload = details.get("input") or {}
     result = details.get("result") or {}
     run_id = str(job.get("run_id") or "job")
+    run_dir = Path(job["run_dir"]).expanduser().resolve()
     surface_titles = {"pesto": "PeSTo", "scannet": "ScanNet", "masif_seed": "MaSIF-seed", "surf2spot": "Surf2Spot", "surface_analysis": "Protein Surface Analysis"}
     raw_title = str(job.get("tool") or job.get("job_type") or run_id)
     title = str(job.get("campaign_name") or surface_titles.get(raw_title.casefold()) or raw_title)
@@ -6682,6 +6809,9 @@ def _render_job_details() -> None:
         f"{summary_items}</div>",
         unsafe_allow_html=True,
     )
+    from mn_molecular_design_studio.molecular_database_results_ui import render_run_database_actions
+
+    render_run_database_actions(run_dir, CURRENT_USER, _studio_projects())
     if str(job.get("tool")) == "visual_pipeline":
         pipeline_run = Path(job["run_dir"])
         try:
@@ -6727,7 +6857,6 @@ def _render_job_details() -> None:
     if resubmit_notice:
         st.success(resubmit_notice)
     action_cols = st.columns([1.35, 1, 4.65], vertical_alignment="center")
-    run_dir = Path(job["run_dir"]).expanduser().resolve()
     archive_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", title).strip("._-") or "job"
     action_cols[0].download_button(
         "Download job ZIP",
@@ -6750,6 +6879,14 @@ def _render_job_details() -> None:
             input_payload.get("tool"),
         )
     ).casefold().replace("-", "_")
+    is_complex_preparation = any(
+        marker in workflow_identity
+        for marker in (
+            "ligand.complex.prepare",
+            "ligand_complex_preparation",
+            "studio_ligand_complex_preparation",
+        )
+    )
     surface_tool_names = {"pesto", "scannet", "masif_seed", "surf2spot", "surface_analysis"}
     surface_tool = analysis_tool if analysis_tool in surface_tool_names else next(
         (tool for tool in surface_tool_names if tool in workflow_identity),
@@ -6836,6 +6973,26 @@ def _render_job_details() -> None:
         ["Results", "Files", "Job settings", "Logs", "Citations"]
     )
     artifact_paths = _job_artifact_paths(details)
+    if is_complex_preparation and str(job.get("status") or "").casefold() in {"completed", "succeeded"}:
+        prepared_target = next(
+            (path for item, path in artifact_paths
+             if str(item.get("relative_path") or "").replace("\\", "/").endswith("artifacts/prepared/prepared_target.pdb")
+             or path.name == "prepared_target.pdb"),
+            None,
+        )
+        if prepared_target is not None:
+            try:
+                prep_params = input_payload.get("params") if isinstance(input_payload.get("params"), dict) else {}
+                source_name = Path(str(prep_params.get("source_pdb") or "")).stem or title
+                saved_target = target_editor._target_storage_path(
+                    prepared_target.read_bytes(),
+                    f"{source_name}-prepared-target.pdb",
+                    owner_id=str(CURRENT_USER["id"]),
+                    allow_non_protein=True,
+                )
+                st.success(f"Prepared receptor saved to My proteins as {saved_target.name}.")
+            except (OSError, ValueError) as exc:
+                st.warning(f"Could not add the prepared receptor to My proteins: {exc}")
     is_generator_tool=str(job.get('tool')) in generator_input.TOOLS.values()
 
     with results_tab:
@@ -7264,11 +7421,8 @@ def _load_database_groups() -> list[dict]:
 
 
 def _save_database_groups(groups: list[dict]) -> None:
-    path = _database_groups_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_suffix(".json.tmp")
-    temporary_path.write_text(json.dumps(groups, indent=2), encoding="utf-8")
-    temporary_path.replace(path)
+    from mn_molecular_design_studio.molecular_database import save_legacy_groups
+    save_legacy_groups(_database_groups_file(), groups, CURRENT_USER)
 
 
 def _database_source_key(source: dict) -> str:
@@ -7344,6 +7498,18 @@ def _database_compound_set_path(compound_set_id: str) -> Path:
 
 
 def _database_compound_tool_options() -> list[dict[str, Any]]:
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    from mn_molecular_design_studio.molecular_database_ingest import sync_workspace
+    library = MolecularDatabase()
+    sync_workspace(CURRENT_USER, database=library)
+    options = library.compound_options(CURRENT_USER)
+    selection = st.session_state.get("database-pending-compound-selection")
+    if selection and Path(selection["path"]).is_file():
+        options.append(selection)
+    return options
+
+
+def _legacy_database_compound_tool_options() -> list[dict[str, Any]]:
     """Return accessible compound-only group selections for ligand tiles."""
     options: list[dict[str, Any]] = []
     for group in _load_database_groups():
@@ -7985,7 +8151,7 @@ def _render_database_group_dialog(filtered_refs: list[dict], selected_refs: list
         st.rerun()
 
 
-def _render_database() -> None:
+def _render_legacy_database() -> None:
     st.title("Database")
     if st.session_state.pop("database-last-import", None):
         st.success("Molecules imported. The new candidate set is available in Groups.")
@@ -8295,6 +8461,11 @@ def _render_database() -> None:
         refs = [candidate["_database_ref"] for candidate in filtered_candidates if candidate.get("_database_ref")]
         selection_refs = [candidate["_database_ref"] for candidate in selected_candidates if candidate.get("_database_ref")]
         _render_database_group_dialog(refs, selection_refs)
+
+
+def _render_database() -> None:
+    from mn_molecular_design_studio import database_ui
+    database_ui.render_database(CURRENT_USER, _studio_projects())
 
 
 def _render_account() -> None:

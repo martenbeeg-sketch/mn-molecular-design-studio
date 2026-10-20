@@ -5,9 +5,11 @@ import fcntl
 import hashlib
 import json
 import logging
+import shutil
 import signal
 import threading
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -165,7 +167,10 @@ class Agent:
                 return previous["response"], previous.get("error")
             # A crash between local scheduler submission and recording its reply
             # cannot safely be treated as a new submission.
-            return {}, "Submission state is uncertain after an agent restart. Reconcile the existing local run before retrying."
+            # Purging is idempotent: if a crash happens after deleting the run
+            # but before acknowledging the command, retrying finishes cleanup.
+            if command["kind"] != "purge":
+                return {}, "Submission state is uncertain after an agent restart. Reconcile the existing local run before retrying."
         config.atomic_json(receipt, {"state": "accepting", "job_id": command["job_id"], "command_id": command["id"]})
         response, error = {}, None
         try:
@@ -180,6 +185,8 @@ class Agent:
                 response = {"job": cancel_job(command["payload"]["local_reference"], reason="Cancelled through the shared workstation catalog")}
             elif command["kind"] == "artifact":
                 response = self.artifact(command)
+            elif command["kind"] == "purge":
+                response = self.purge(command)
             else:
                 raise ValueError("Unsupported workstation command.")
         except Exception as exc:
@@ -187,6 +194,80 @@ class Agent:
             log.exception("Workstation operation failed: %s", command["id"])
         config.atomic_json(receipt, {"state": "finished", "response": response, "error": error})
         return response, error
+
+    def purge(self, command):
+        """Remove a terminal run and its run-derived records on this workstation."""
+        payload = command.get("payload") or {}
+        reference = str(payload.get("local_reference") or "")
+        parts = reference.split("/")
+        if len(parts) != 2 or any(part in {"", ".", ".."} or "\\" in part for part in parts):
+            raise ValueError("The job has an invalid local run reference.")
+        task_group, run_id = parts
+
+        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import delete_job_run, runs_root
+        root = Path(runs_root()).expanduser().resolve()
+        run_dir = (root / task_group / run_id).resolve()
+        run_dir.relative_to(root)
+        run_files_removed = False
+        if run_dir.exists():
+            if not run_dir.is_dir():
+                raise ValueError("The job run path is not a directory.")
+            try:
+                metadata = json.loads((run_dir / "metadata.json").read_text())
+            except (OSError, ValueError):
+                metadata = {}
+            status = str(metadata.get("status") or "").casefold()
+            if status not in {"completed", "succeeded", "cancelled", "failed"}:
+                raise ValueError("Only finished runs can be permanently removed.")
+
+        actor = dict(payload.get("actor") or {})
+        if not actor.get("id"):
+            raise ValueError("The purge request is missing its authorized user.")
+        if "_cluster_project_ids" not in actor and isinstance(actor.get("project_ids"), list):
+            actor["_cluster_project_ids"] = actor["project_ids"]
+        from mn_molecular_design_studio.molecular_database_results import remove_run_records
+        database_result = remove_run_records(
+            task_group,
+            run_id,
+            actor,
+            owner_id=payload.get("run_owner_id"),
+            project_id=payload.get("run_project_id"),
+        )
+
+        if run_dir.exists():
+            delete_job_run(task_group, run_id)
+            run_files_removed = True
+
+        accepted_id = str(payload.get("accepted_command_id") or "")
+        staging_removed = False
+        if accepted_id:
+            try:
+                accepted_id = str(uuid.UUID(accepted_id))
+            except ValueError as exc:
+                raise ValueError("The accepted-input reference is invalid.") from exc
+            accepted_root = (config.home() / "accepted-inputs").resolve()
+            accepted_dir = accepted_root / accepted_id
+            if accepted_dir.is_symlink():
+                raise ValueError("The accepted-input path cannot be a symbolic link.")
+            try:
+                accepted_dir.resolve().relative_to(accepted_root)
+            except ValueError as exc:
+                raise ValueError("The accepted-input path is invalid.") from exc
+            if accepted_dir.is_dir():
+                shutil.rmtree(accepted_dir)
+                staging_removed = True
+            receipt = config.home() / "receipts" / f"{accepted_id}.json"
+            if receipt.is_file() and not receipt.is_symlink():
+                receipt.unlink()
+
+        from mn_molecular_design_studio.job_catalog import reconcile
+        reconcile(root)
+        return {
+            "status": "purged",
+            "run_files_removed": run_files_removed,
+            "staging_inputs_removed": staging_removed,
+            "database": database_result,
+        }
 
     def submit(self, command):
         from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import submit_workflow_request, validate_workflow_request
@@ -196,6 +277,12 @@ class Agent:
         needs = payload.get("requirements", {})
         snapshot = self.snapshot()
         from .store import Store
+        if (payload.get("allow_code_revision_refresh") is True
+                and command.get("node_id") == payload.get("origin_node")):
+            # The coordinator permits this only for jobs explicitly pinned to
+            # their submitting workstation. Validate against the current local
+            # code while retaining strict image and checkpoint checks.
+            needs = dict(needs, _allow_code_revision_refresh=True)
         if not Store.compatible({"availability": "online", "snapshot": snapshot}, needs):
             raise ValueError("The workstation's engine images, code, or checkpoints no longer match this submission.")
         staging = config.home() / "accepted-inputs" / command["id"]

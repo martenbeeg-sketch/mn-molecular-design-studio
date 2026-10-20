@@ -280,6 +280,8 @@ def mark_studio_job(
         except Exception:
             # Indexing is rebuildable and must not make job submission fail.
             pass
+        from mn_molecular_design_studio.molecular_database_ingest import record_completed_run
+        record_completed_run(run_dir)
     return result
 
 

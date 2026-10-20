@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +26,39 @@ def test_vina_box_from_points_centers_selected_atoms_with_padding():
     assert size == {"x": 12.0, "y": 12.0, "z": 14.0}
 
 
+def test_vina_ligand_preview_browses_compounds_in_a_set(tmp_path):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio.vina_ui import _render_ligand_2d_preview
+
+    compound_path = tmp_path / "compounds.json"
+    ligand_compounds.write_compound_set(
+        compound_path,
+        name="Preview set",
+        compounds=[
+            {"compound_id": "ethanol", "smiles": "CCO"},
+            {"compound_id": "ethylamine", "smiles": "CCN"},
+        ],
+        owner_id="owner",
+        project_id="project",
+        created_at="now",
+    )
+    app = AppTest.from_string(f'''\
+from mn_molecular_design_studio.vina_ui import _render_ligand_2d_preview
+_render_ligand_2d_preview({{"path": {str(compound_path)!r}}})
+''').run()
+    assert not app.exception
+    preview_key = hashlib.sha1(str(compound_path.resolve()).encode("utf-8")).hexdigest()[:12]
+    assert any("ethanol" in block.value for block in app.markdown)
+    assert any(block.value == "Compound 1 of 2" for block in app.caption)
+    assert app.button(key=f"vina-ligand-preview-prev-{preview_key}").disabled
+
+    app.button(key=f"vina-ligand-preview-next-{preview_key}").click().run()
+    assert not app.exception
+    assert any("ethylamine" in block.value for block in app.markdown)
+    assert any(block.value == "Compound 2 of 2" for block in app.caption)
+    assert app.button(key=f"vina-ligand-preview-next-{preview_key}").disabled
+
+
 def test_vina_viewer_selection_uses_protein_residue_coordinates_only():
     coordinates = {
         ("A", 10): [(1.0, 2.0, 3.0)],
@@ -41,11 +75,24 @@ def test_vina_viewer_selection_uses_protein_residue_coordinates_only():
 
 def test_vina_setup_loads_example_selects_pocket_and_submits(tmp_path, monkeypatch):
     from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import vina_inputs
 
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_APP_HOME", str(tmp_path))
     app = AppTest.from_string('''\
 import streamlit as st
 from mn_molecular_design_studio import ligand_tools_ui as ui
+from mn_molecular_design_studio import vina_inputs
+from mn_molecular_design_studio import vina_ui
+
+target, _ = vina_inputs.stage_example("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+pdb_lines = target.read_text().splitlines()
+chain_a = [line for line in pdb_lines if line.startswith("ATOM  ") and line[21] == "A"]
+target.write_text("\\n".join(
+    [line for line in pdb_lines if line != "END"]
+    + [line[:21] + "B" + line[22:] for line in chain_a]
+    + ["END", ""]
+))
+st.session_state["vina-target-path"] = str(target)
 
 def submit(schema, workflow, parameters, project, settings, title):
     st.session_state["test-vina-submission"] = {"workflow": workflow, "parameters": parameters}
@@ -57,39 +104,130 @@ ui._render_vina_setup(
 )
 ''').run()
     assert not app.exception
+    assert app.session_state["ligand-vina-pocket-mode"] == "Co-crystallized Ligand"
+    assert app.session_state["ligand-vina-box-ligand"] == "STI|A|201|_"
+    assert app.number_input(key="vina-box-size-x").value == pytest.approx(18.664)
     app.button(key="vina-load-example").click().run()
     assert not app.exception
+    assert app.session_state["ligand-vina-pocket-mode"] == "Co-crystallized Ligand"
+    assert app.session_state["ligand-vina-box-ligand"] == "STI|A|201|_"
     assert app.number_input(key="vina-box-center-x").value == pytest.approx(15.190)
-    assert [tab.label for tab in app.tabs] == ["Manual", "Co-crystallized Ligand", "Select Residues", "Predict (Boltz)"]
-    app.session_state["ligand-vina-pocket-mode"] = "Predict (Boltz)"
-    app.run()
-    app.text_input(key="vina-probe-0").set_value("CCO").run()
-    app.button(key="vina-predict-pocket").click().run()
+    assert any("2D structure preview" in block.value for block in app.markdown)
+    assert [tab.label for tab in app.tabs] == ["Co-crystallized Ligand", "Select Residues", "Predict (Boltz)", "Manual"]
+    assert app.checkbox(key="ligand-vina-use-scrub").value is True
+    assert app.number_input(key="ligand-vina-scrub-ph").value == pytest.approx(7.4)
+    assert app.checkbox(key="ligand-vina-skip-tautomer").value is True
+    assert app.number_input(key="ligand-vina-exhaustiveness").value == 32
+    assert app.number_input(key="ligand-vina-num-modes").value == 10
+    markdown = [block.value for block in app.markdown]
+    assert markdown.index("**Ligand preparation**") < markdown.index("**Search settings**")
+    assert app.number_input(key="vina-box-center-y").value == pytest.approx(53.903)
+    old_focus_epoch = app.session_state.get("vina-viewer-focus-epoch", 0)
+    app.selectbox(key="ligand-vina-box-ligand").set_value("STI|B|202|_").run()
     assert not app.exception
-    prediction = app.session_state["test-vina-submission"]
-    assert prediction["workflow"] == "refolding.optimized_prediction"
-    from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import validate_prediction_request
-    validate_prediction_request(prediction["parameters"])
-    app.session_state["ligand-vina-pocket-mode"] = "Select Residues"
-    app.run()
-    app.text_input(key="vina-residue-text-A").set_value("225-226").run()
-    assert not app.exception
-    assert ("A", 225) in app.session_state["ligand-vina-selected-residues"]
-    app.session_state["ligand-vina-pocket-mode"] = "Co-crystallized Ligand"
-    app.run()
-    app.selectbox(key="ligand-vina-box-ligand").set_value("STI|A|201|_").run()
-    assert not app.exception
+    assert app.selectbox(key="ligand-vina-box-ligand").value == "STI|B|202|_"
+    assert app.session_state["vina-viewer-focus-epoch"] == old_focus_epoch + 1
+    assert "STI|B|202|_" in app.session_state["vina-derived-box-signature"]
+    assert app.number_input(key="vina-box-center-x").value == pytest.approx(13.171)
+    assert app.number_input(key="vina-box-center-y").value == pytest.approx(95.113)
+    assert app.number_input(key="vina-box-center-z").value == pytest.approx(58.594)
     app.button(key="ligand-vina-run").click().run()
     assert not app.exception
     submitted = app.session_state["test-vina-submission"]
     assert submitted["workflow"] == "ligand.docking.vina"
+    assert submitted["parameters"]["center_y"] == pytest.approx(95.113)
     assert Path(submitted["parameters"]["compound_set_file"]).is_file()
     assert submitted["parameters"]["job_name"] == "autodock-vina-example"
+
+    app.session_state["ligand-vina-pocket-mode"] = "Predict (Boltz)"
+    app.run()
+    chains = app.multiselect(key="vina-boltz-selected-chains")
+    assert len(chains.options) == 2
+    assert set(chains.value) == {"A", "B"}
+    chain_sequence = "".join(letter for _, letter in vina_inputs.protein_sequence_entries(
+        Path(app.session_state["vina-target-path"]).read_text()
+    )["B"])
+    chains.set_value(["B"]).run()
+    assert not app.exception
+    assert app.multiselect(key="vina-boltz-selected-chains").value == ["B"]
+    probe_widgets = [widget for widget in app.text_input if str(widget.key).startswith("vina-probe-")]
+    assert len(probe_widgets) == 1
+    assert "Imported compound imatinib-CID5291" in app.text_input(key="vina-probe-0").label
+    imported_smiles = "Cc1ccc(NC(=O)c2ccc(CN3CCN(C)CC3)cc2)cc1Nc1nccc(-c2cccnc2)n1"
+    assert app.text_input(key="vina-probe-0").value == imported_smiles
+    app.button(key="vina-predict-pocket").click().run()
+    assert not app.exception
+    prediction = app.session_state["test-vina-submission"]
+    assert prediction["workflow"] == "refolding.optimized_prediction"
+    assert len(prediction["parameters"]["tasks"]) == 1
+    assert prediction["parameters"]["tasks"][0]["protein_sequences"] == chain_sequence
+    assert prediction["parameters"]["tasks"][0]["ligand_smiles"] == imported_smiles
+    assert "output_format" not in prediction["parameters"]["engine_options"]
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import validate_prediction_request
+    validate_prediction_request(prediction["parameters"])
+
+
+def test_vina_residue_selection_requires_confirmation_to_update_box(tmp_path, monkeypatch):
+    import hashlib
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import vina_inputs
+
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_APP_HOME", str(tmp_path))
+    app = AppTest.from_string('''\
+import hashlib
+import streamlit as st
+from mn_molecular_design_studio import ligand_tools_ui as ui, vina_inputs
+
+target, compounds = vina_inputs.stage_example("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+st.session_state["vina-target-path"] = str(target)
+st.session_state["vina-compound-input"] = compounds
+st.session_state["vina-default-target-signature"] = hashlib.sha1(target.read_bytes()).hexdigest()[:12]
+st.session_state["ligand-vina-pocket-mode"] = "Select Residues"
+
+def submit(schema, workflow, parameters, project, settings, title):
+    st.session_state["test-vina-submission"] = {"workflow": workflow, "parameters": parameters}
+
+ui._render_vina_setup(
+    "ligand.docking.vina", {}, owner_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    compound_sets=[], project_selector=lambda key: "project-1", submit=submit,
+    title="AutoDock Vina",
+)
+''').run()
+    assert not app.exception
+    assert app.session_state["ligand-vina-pocket-mode"] == "Select Residues"
+    old_center = app.number_input(key="vina-box-center-x").value
+    app.text_input(key="vina-residue-text-A").set_value("225-226").run()
+    assert not app.exception
+    assert ("A", 225) in app.session_state["ligand-vina-selected-residues"]
+    assert app.number_input(key="vina-box-center-x").value == pytest.approx(old_center)
+    assert not app.session_state.get("ligand-vina-applied-residues")
+    assert app.button(key="ligand-vina-run").disabled
+
+    old_focus_epoch = app.session_state.get("vina-viewer-focus-epoch", 0)
+    app.button(key="vina-apply-selected-residues").click().run()
+    assert not app.exception
+    assert app.session_state["ligand-vina-applied-residues"] == [("A", 225), ("A", 226)]
+    assert not app.button(key="ligand-vina-run").disabled
+    assert app.session_state["vina-viewer-focus-epoch"] == old_focus_epoch + 1
+    assert app.number_input(key="vina-box-center-x").value != pytest.approx(old_center)
+
+    app.number_input(key="vina-box-size-x").set_value(42.0).run()
+    assert app.number_input(key="vina-box-size-x").value == pytest.approx(42.0)
+    app.number_input(key="ligand-vina-residue-padding").set_value(7.0).run()
+    target, _ = vina_inputs.stage_example("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    coordinates = ligand_tools_ui._vina_protein_atom_coordinates(target.read_text())
+    selected_points = [
+        point for residue in (225, 226) for point in coordinates[("A", residue)]
+    ]
+    _, expected_size = ligand_tools_ui._vina_box_from_points(selected_points, padding=7.0)
+    assert app.number_input(key="vina-box-size-x").value == pytest.approx(expected_size["x"])
+    assert app.session_state["vina-applied-residue-padding"] == pytest.approx(7.0)
 
 
 @pytest.mark.parametrize(
     ("workflow_id", "title", "tool_key", "expected_options"),
     [
+        ("ligand.docking.autodock_gpu", "AutoDock-GPU", "autodock-gpu", {"nrun", "gpu_device", "job_name"}),
         ("ligand.docking.gnina", "GNINA", "gnina", {"exhaustiveness", "gpu_device", "cnn_scoring", "job_name"}),
         ("ligand.docking.unidock_pro", "Uni-Dock Pro", "unidock-pro", {"search_mode", "gpu_device", "job_name"}),
         ("ligand.docking.rosetta_ligand", "RosettaLigand", "rosetta", {"protocol", "reference_mode", "padding", "job_name"}),
@@ -118,6 +256,10 @@ ui._render_vina_setup(
     assert any(title in str(element.value) for element in app.markdown)
     app.button(key="vina-load-example").click().run()
     assert not app.exception
+    assert any(
+        f"{title} then docks against the imported receptor." in str(element.value)
+        for element in app.caption
+    )
     if workflow_id == "ligand.docking.rosetta_ligand":
         app.selectbox(key="ligand-rosetta-reference-mode").set_value("reference_guided").run()
         assert not app.exception
@@ -129,6 +271,7 @@ ui._render_vina_setup(
     assert submitted["workflow"] == workflow_id
     assert expected_options <= submitted["parameters"].keys()
     expected_job_name = {
+        "autodock-gpu": "autodock-gpu-example",
         "gnina": "gnina-example", "unidock-pro": "unidock-pro-example",
         "rosetta": "rosettaligand-example",
     }[tool_key]
@@ -199,6 +342,82 @@ ui.render_setup(
     ligand_tools.validate_ligand_tool_request(
         "ligand.affinity.nesso", parameters, require_files=False,
     )
+
+
+def test_nesso_reuses_shared_proteina_complexa_esm_cache(tmp_path, monkeypatch):
+    reference_root = tmp_path / "reference_files"
+    # MN-Ligand keeps ESM-2 in the shared Proteina-Complexa cache. The
+    # Nesso-specific Hugging Face directories may exist without the model.
+    (reference_root / "nesso" / ".cache" / "huggingface").mkdir(parents=True)
+    snapshot = (
+        reference_root / "proteina-complexa" / "hf-cache"
+        / "models--facebook--esm2_t33_650M_UR50D" / "snapshots" / "esm-revision"
+    )
+    snapshot.mkdir(parents=True)
+    for filename in ("model.safetensors", "config.json", "vocab.txt"):
+        (snapshot / filename).write_text("present")
+    checkpoint = reference_root / "nesso" / "v1.0.0"
+    checkpoint.mkdir(parents=True)
+    for filename in ("model.safetensors", "hparams.json"):
+        (checkpoint / filename).write_text("present")
+    (reference_root / "nesso" / "ccd.pkl").write_text("present")
+    monkeypatch.setattr(ligand_tools, "reference_root", lambda: reference_root)
+    monkeypatch.delenv("MN_NESSO_ESM_CACHE_DIR", raising=False)
+
+    checkpoint_path, ccd_path, esm_cache = ligand_tools.nesso_reference_paths()
+
+    assert esm_cache == reference_root / "proteina-complexa" / "hf-cache"
+    assert checkpoint_path == checkpoint
+    assert ccd_path == reference_root / "nesso" / "ccd.pkl"
+    assert ligand_tools.nesso_readiness()["ready"] is True
+
+
+def test_nesso_mounts_huggingface_cache_at_cli_expected_location(tmp_path, monkeypatch):
+    target = tmp_path / "target.pdb"
+    target.write_text(
+        "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00 20.00           C\nEND\n"
+    )
+    compound_set = tmp_path / "set.json"
+    ligand_compounds.write_compound_set(
+        compound_set,
+        name="Smoke set",
+        compounds=[{"compound_id": "ethanol", "smiles": "CCO"}],
+        owner_id="owner",
+        project_id="project",
+        created_at="now",
+    )
+    reference_root = tmp_path / "reference_files"
+    checkpoint = reference_root / "nesso" / "v1.0.0"
+    checkpoint.mkdir(parents=True)
+    for filename in ("model.safetensors", "hparams.json"):
+        (checkpoint / filename).write_text("present")
+    (reference_root / "nesso" / "ccd.pkl").write_text("present")
+    cache = reference_root / "proteina-complexa" / "hf-cache"
+    snapshot = cache / "models--facebook--esm2_t33_650M_UR50D" / "snapshots" / "revision"
+    snapshot.mkdir(parents=True)
+    for filename in ("model.safetensors", "config.json", "vocab.txt"):
+        (snapshot / filename).write_text("present")
+    monkeypatch.setattr(jobs, "runs_root", lambda: tmp_path / "runs")
+    monkeypatch.setattr(ligand_tools, "reference_root", lambda: reference_root)
+    monkeypatch.setattr(ligand_tools, "load_manifest", lambda _name: {"image": "mn-nesso:test"})
+
+    def fake_docker(command, **_kwargs):
+        work_mount = Path(command[command.index("-v") + 1].split(":", 1)[0])
+        prediction = work_mount / "output" / "predictions" / "ethanol" / "affinity.json"
+        prediction.parent.mkdir(parents=True)
+        prediction.write_text(json.dumps({"affinity_pred_value": -5.2, "affinity_probability_binary": 0.8}))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ligand_tools.subprocess, "run", fake_docker)
+
+    run_dir = ligand_tools.run_ligand_nesso(target, compound_set, recycling_steps=1, compound_limit=1)
+
+    command = jobs.read_json(run_dir / "command.json")["command"]
+    result = jobs.read_json(run_dir / "result.json")
+    assert command[command.index("--cache") + 1] == "/cache"
+    assert f"{cache}:/cache/huggingface:ro" in command
+    assert result["success"] is True
+    assert result["metrics"]["scored_count"] == 1
 
 
 def test_ligand_backend_readiness_uses_studio_bundle_even_without_external_checkout(monkeypatch):
@@ -522,8 +741,19 @@ def test_vina_job_stages_exact_compound_subset_with_typed_pipeline_contract(tmp_
     monkeypatch.setattr(jobs, "runs_root", lambda: tmp_path / "runs")
     monkeypatch.setattr(ligand_tools, "load_manifest", lambda _name: {"image": "mn-docking-suite:test"})
 
-    def fake_docker(run_dir, _manifest, _args, *, gpu_device):
+    def fake_docker(run_dir, _manifest, args, *, gpu_device):
         assert gpu_device == "none"
+        docker_script = args[-1]
+        assert "--log" not in docker_script
+        assert '> "artifacts/logs/${compound_id}.vina.log" 2>&1' in docker_script
+        assert 'artifacts/logs/${compound_id}.vina.log' in docker_script
+        assert 'scrub.py "artifacts/ligands/${compound_id}_source.sdf"' in docker_script
+        assert "--ph 7.40 --skip_tautomer" in docker_script
+        assert 'mk_prepare_ligand.py -i "artifacts/ligands/${compound_id}.sdf"' in docker_script
+        shell_syntax = ligand_tools.subprocess.run(
+            ["bash", "-n", "-c", docker_script], capture_output=True, text=True, check=False,
+        )
+        assert shell_syntax.returncode == 0, shell_syntax.stderr
         scores = run_dir / "artifacts" / "docking_scores.csv"
         scores.write_text(
             "compound_id\tstatus\tbest_score_kcal_mol\tpose_path\terror\n"
@@ -559,7 +789,68 @@ def test_vina_job_stages_exact_compound_subset_with_typed_pipeline_contract(tmp_
     assert staged_set["source_compound_set_id"] == "database-set-1"
     assert staged_set["source_content_sha256"] == database_record["content_sha256"]
     assert jobs.read_json(run_dir / "input.json")["inputs"]["compound_set_file"] == str(compound_set.resolve())
+    params = jobs.read_json(run_dir / "input.json")["params"]
+    assert params["use_scrub"] is True
+    assert params["scrub_ph"] == pytest.approx(7.4)
+    assert params["scrub_skip_tautomer"] is True
+    assert params["exhaustiveness"] == 32
+    assert params["num_modes"] == 10
     assert jobs.read_json(run_dir / "metadata.json")["campaign_name"] == "EGFR ligand screen"
+
+
+def test_vina_docking_fans_out_compounds_with_bounded_cpu_workers(tmp_path, monkeypatch):
+    target = tmp_path / "target.pdb"
+    target.write_text(
+        "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00 20.00           C\nEND\n"
+    )
+    compound_set = tmp_path / "set.json"
+    ligand_compounds.write_compound_set(
+        compound_set,
+        name="Parallel Vina set",
+        compounds=[
+            {"compound_id": "ethanol", "smiles": "CCO"},
+            {"compound_id": "ethylamine", "smiles": "CCN"},
+            {"compound_id": "methanol", "smiles": "CO"},
+        ],
+        owner_id="owner",
+        project_id="project",
+        created_at="now",
+    )
+    monkeypatch.setattr(jobs, "runs_root", lambda: tmp_path / "runs")
+    monkeypatch.setattr(ligand_tools, "load_manifest", lambda _name: {"image": "mn-docking-suite:test"})
+    captured = {}
+
+    def fake_docker(run_dir, _manifest, args, *, gpu_device):
+        captured["script"] = args[-1]
+        assert gpu_device == "none"
+        script_check = ligand_tools.subprocess.run(
+            ["bash", "-n", "-c", args[-1]], capture_output=True, text=True, check=False,
+        )
+        assert script_check.returncode == 0, script_check.stderr
+        (run_dir / "artifacts" / "docking_scores.csv").write_text(
+            "compound_id\tstatus\tbest_score_kcal_mol\tcnn_score\tcnn_affinity\tpose_path\terror\n"
+            "ethanol\tcompleted\t-5.4\t\t\tartifacts/poses/ethanol.pdbqt\t\n"
+            "ethylamine\tcompleted\t-4.1\t\t\tartifacts/poses/ethylamine.pdbqt\t\n"
+            "methanol\tcompleted\t-3.0\t\t\tartifacts/poses/methanol.pdbqt\t\n"
+        )
+        return 0
+
+    monkeypatch.setattr(ligand_tools, "run_docker_job", fake_docker)
+    run_dir = ligand_tools.run_ligand_vina(
+        target, compound_set,
+        center_x=0.0, center_y=0.0, center_z=0.0,
+        compound_limit=3, cpu_cores=2,
+    )
+
+    script = captured["script"]
+    assert "DOCKING_COMPOUND_WORKERS=2" in script
+    assert 'xargs -r -P "$DOCKING_COMPOUND_WORKERS" -n 1 bash -c' in script
+    assert "--cpu 1" in script
+    assert '"artifacts/logs/${compound_id}.result.tsv.tmp"' in script
+    params = jobs.read_json(run_dir / "input.json")["params"]
+    assert params["cpu_cores"] == 2
+    assert params["compound_workers"] == 2
+    assert params["cpu_threads_per_compound"] == 1
 
 
 def test_gnina_tile_records_cnn_scores_and_uses_gpu_container(tmp_path, monkeypatch):
@@ -571,7 +862,11 @@ def test_gnina_tile_records_cnn_scores_and_uses_gpu_container(tmp_path, monkeypa
     ligand_compounds.write_compound_set(
         compound_set,
         name="GNINA set",
-        compounds=[{"compound_id": "ethanol", "smiles": "CCO"}],
+        compounds=[
+            {"compound_id": "ethanol", "smiles": "CCO"},
+            {"compound_id": "ethylamine", "smiles": "CCN"},
+            {"compound_id": "methanol", "smiles": "CO"},
+        ],
         owner_id="owner",
         project_id="project",
         created_at="now",
@@ -582,6 +877,10 @@ def test_gnina_tile_records_cnn_scores_and_uses_gpu_container(tmp_path, monkeypa
 
     def fake_docker(run_dir, manifest, args, *, gpu_device):
         captured.update(manifest=manifest, args=args, gpu_device=gpu_device)
+        script_check = ligand_tools.subprocess.run(
+            ["bash", "-n", "-c", args[-1]], capture_output=True, text=True, check=False,
+        )
+        assert script_check.returncode == 0, script_check.stderr
         (run_dir / "artifacts" / "docking_scores.csv").write_text(
             "compound_id\tstatus\tbest_score_kcal_mol\tcnn_score\tcnn_affinity\tpose_path\terror\n"
             "ethanol\tcompleted\t-6.2\t0.81\t-7.4\tartifacts/poses/ethanol.pdbqt\t\n"
@@ -592,6 +891,7 @@ def test_gnina_tile_records_cnn_scores_and_uses_gpu_container(tmp_path, monkeypa
     run_dir = ligand_tools.run_ligand_gnina(
         target, compound_set, center_x=0.0, center_y=1.0, center_z=2.0, gpu_device="1",
         cnn_scoring="refinement", job_name="EGFR GNINA",
+        scrub_ph=6.2, scrub_skip_tautomer=False, cpu_cores=4, compound_workers=2,
     )
 
     script = captured["args"][-1]
@@ -600,8 +900,15 @@ def test_gnina_tile_records_cnn_scores_and_uses_gpu_container(tmp_path, monkeypa
     assert captured["manifest"]["tool"] == "gnina"
     assert captured["gpu_device"] == "1"
     assert "gnina --receptor" in script and "--cnn_scoring refinement" in script
+    assert "DOCKING_COMPOUND_WORKERS=2" in script
+    assert 'xargs -r -P "$DOCKING_COMPOUND_WORKERS" -n 1 bash -c' in script
+    assert "--cpu 2" in script
+    assert "--ph 6.20" in script and "--skip_tautomer" not in script
     assert result["metrics"]["primary_ranking_metric"] == "cnn_score"
     assert result["metrics"]["best_cnn_score"] == pytest.approx(0.81)
+    params = jobs.read_json(run_dir / "input.json")["params"]
+    assert params["compound_workers"] == 2
+    assert params["cpu_threads_per_compound"] == 2
     assert jobs.read_json(run_dir / "metadata.json")["campaign_name"] == "EGFR GNINA"
     assert contract["workflow"] == "ligand.docking.gnina"
     assert contract["outputs"][0]["type"] == "ligand_docking_scores/v1"
@@ -647,6 +954,8 @@ def test_unidock_pro_tile_batches_compounds_on_gpu_and_emits_typed_poses(tmp_pat
     assert captured["gpu_device"] == "1"
     assert "--ligand_index artifacts/input/ligand_index.txt" in script
     assert "--search_mode detail" in script
+    assert "--ph 7.40 --skip_tautomer" in script
+    assert 'scrub.py "artifacts/ligands/${compound_id}_source.sdf"' in script
     assert '\\"$compound_id\\"' not in script
     assert shell_syntax.returncode == 0, shell_syntax.stderr
     assert contract["workflow"] == "ligand.docking.unidock_pro"
@@ -870,6 +1179,13 @@ def test_single_tool_tiles_are_registered_with_database_inputs(workflow_id, requ
     schema = workflow_automation.workflow_schema(workflow_id)
     assert workflow_id in {row["workflow"] for row in workflow_automation.workflow_catalog()}
     assert required_parameters <= {field["name"] for field in schema["parameters"]}
+    if workflow_id in {
+        "ligand.docking.vina", "ligand.docking.gnina",
+        "ligand.docking.unidock_pro", "ligand.docking.autodock_gpu",
+    }:
+        assert {"use_scrub", "scrub_ph", "scrub_skip_tautomer"} <= {
+            field["name"] for field in schema["parameters"]
+        }
 
 
 def test_autodock_gpu_validation_requires_device_and_bounded_runs():
@@ -896,6 +1212,24 @@ def test_autodock_gpu_validation_requires_device_and_bounded_runs():
         )
 
 
+def test_meeko_docking_prep_settings_validate_ph_and_boolean_values():
+    request = {
+        "center_x": 0.0, "center_y": 0.0, "center_z": 0.0,
+        "size_x": 20.0, "size_y": 20.0, "size_z": 20.0,
+        "exhaustiveness": 8, "num_modes": 9, "seed": 42,
+        "use_scrub": True, "scrub_ph": 7.4, "scrub_skip_tautomer": True,
+    }
+    ligand_tools.validate_ligand_tool_request(
+        "ligand.docking.vina", request, require_files=False,
+    )
+    with pytest.raises(ValueError, match="Scrub pH"):
+        ligand_tools.validate_ligand_tool_request(
+            "ligand.docking.vina", {**request, "scrub_ph": 14.1}, require_files=False,
+        )
+    with pytest.raises(ValueError, match="must be booleans"):
+        ligand_tools.validate_ligand_tool_request(
+            "ligand.docking.vina", {**request, "use_scrub": "yes"}, require_files=False,
+        )
 def test_autodock_gpu_tile_stages_ad4_grid_workflow_and_typed_pose_outputs(tmp_path, monkeypatch):
     target = tmp_path / "target.pdb"
     target.write_text(
@@ -955,8 +1289,11 @@ def test_autodock_gpu_container_runner_builds_maps_and_parses_ad4_energy(tmp_pat
     (input_root / "compounds.tsv").write_text("compound_id\tsmiles\nethanol\tCCO\n")
     (input_root / "smiles_to_3d.py").write_text("# mock generator")
 
+    commands = []
+
     def fake_run(command, log_path, *, cwd):
         command = list(map(str, command))
+        commands.append(command)
         if command[0] == "mk_prepare_receptor.py":
             receptor_base = Path(command[command.index("-o") + 1])
             receptor_base.with_suffix(".gpf").write_text("parameter_file AD4.2_bound.dat\n")
@@ -984,6 +1321,9 @@ def test_autodock_gpu_container_runner_builds_maps_and_parses_ad4_energy(tmp_pat
     assert score_rows[0]["status"] == "completed"
     assert float(score_rows[0]["best_score_kcal_mol"]) == pytest.approx(-8.2)
     assert (tmp_path / score_rows[0]["pose_path"]).read_text() == "best pose"
+    scrub_command = next(command for command in commands if command[0] == "scrub.py")
+    assert scrub_command[scrub_command.index("--ph") + 1] == "7.40"
+    assert "--skip_tautomer" in scrub_command
 
 
 def _write_gromacs_inputs(tmp_path: Path) -> tuple[Path, Path]:

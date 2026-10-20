@@ -162,6 +162,16 @@ def render_molecule_editor(
     prediction_settings: dict[str, Any] | None = None, settings_only: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], bool]:
     state_key = f"{key_prefix}-editor-model"
+    database_user = st.session_state.get("_molecular_database_user")
+    if database_user and not settings_only:
+        from mn_molecular_design_studio.database_ui import render_molecule_picker
+        from mn_molecular_design_studio.database_selections import set_editor_selection
+        allowed = {"protein", *[kind for kind, field in (("dna", "dna_sequences"), ("rna", "rna_sequences")) if field in supported_inputs]}
+        if {"ligand_ccd_codes", "ligand_smiles"}.intersection(supported_inputs):
+            allowed.add("small_molecule")
+        selected = render_molecule_picker(database_user, key=key_prefix, allowed_types=allowed)
+        if selected:
+            set_editor_selection(key_prefix, selected)
     initial = st.session_state.get(f"{key_prefix}-editor") or st.session_state.get(state_key)
     if initial is None:
         initial = default_model()
@@ -210,7 +220,8 @@ def render_molecule_editor(
             "boltz": boltz_settings, "modes": modes, "can_submit": can_submit,
             "prediction": prediction_settings, "settings_only": settings_only,
         },
-        key=f"{key_prefix}-editor", default=initial,
+        key=(f"{key_prefix}-editor-library-{st.session_state[key_prefix + '-library-epoch']}"
+             if st.session_state.get(key_prefix + "-library-epoch") else f"{key_prefix}-editor"), default=initial,
     )
     st.session_state[state_key] = model
     if prediction_settings:

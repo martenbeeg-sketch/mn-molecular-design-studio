@@ -10,6 +10,7 @@ from typing import Any, Callable
 import streamlit as st
 
 from mn_molecular_design_studio.auth import user_input_root
+from mn_molecular_design_studio.docking_structure_check import render_receptor_check
 from mn_molecular_design_studio.engine.workflow_engine.workflows import ligand_tools
 from mn_molecular_design_studio.target_editor import TargetSource
 
@@ -135,12 +136,16 @@ def _render_vina_setup(
     project_selector: Callable[..., str | None],
     submit: Callable[..., None],
     title: str,
+    placement_options: Callable[..., dict[str, Any]] | None = None,
+    prediction_state: Callable[..., dict[str, Any]] | None = None,
 ) -> None:
     from mn_molecular_design_studio.vina_ui import render_vina_setup
 
     render_vina_setup(
         workflow_id, schema, owner_id=owner_id, compound_sets=compound_sets,
         project_selector=project_selector, submit=submit, title=title,
+        placement_options=placement_options,
+        prediction_state=prediction_state,
     )
 
 
@@ -218,21 +223,44 @@ def _render_complex_preparation_setup(
             f"{readiness['source']}. Reinstall or repair the Studio package."
         )
     project_id = project_selector(f"ligand-tool-{workflow_id}")
+    pending_source = st.session_state.get("ligand-complex-prepare-pending-source")
+    pending_path: Path | None = None
+    if pending_source:
+        try:
+            candidate = Path(str(pending_source)).expanduser().resolve(strict=True)
+            candidate.relative_to(user_input_root(owner_id))
+            if candidate.suffix.lower() not in {".pdb", ".ent"}:
+                raise ValueError("The preloaded structure is not a PDB file.")
+            pending_path = candidate
+            st.info(f"Loaded from the docking tile: {candidate.name}. The source structure will be preserved.")
+        except (OSError, ValueError) as exc:
+            st.warning(f"The preloaded docking structure is unavailable: {exc}")
+            st.session_state.pop("ligand-complex-prepare-pending-source", None)
     uploaded = st.file_uploader(
-        "Protein–ligand complex (PDB) *",
+        "Replace with a different complex (PDB)" if pending_path else "Protein–ligand complex (PDB) *",
         type=["pdb", "ent"],
-        key=f"ligand-complex-prepare-input-{workflow_id}",
+        key=(
+            f"ligand-complex-prepare-input-{workflow_id}-"
+            + (hashlib.sha256(str(pending_path).encode()).hexdigest()[:10] if pending_path else "upload")
+        ),
         help="Upload a coordinate-bearing complex. Ligand and cofactor records are retained in the complex output.",
     )
+    source_name = uploaded.name if uploaded is not None else (pending_path.name if pending_path else "")
+    source_content = uploaded.getvalue() if uploaded is not None else None
+    if uploaded is None and pending_path is not None:
+        try:
+            source_content = pending_path.read_bytes()
+        except OSError as exc:
+            st.error(f"Could not read the preloaded structure: {exc}")
     pdb_data = ""
     chain_ranges: dict[str, dict[str, Any]] = {}
-    if uploaded is not None:
+    if source_content is not None:
         try:
-            pdb_data = uploaded.getvalue().decode("utf-8")
+            pdb_data = source_content.decode("utf-8")
             chain_ranges = ligand_tools._pdb_polymer_chain_ranges(pdb_data)
         except (UnicodeDecodeError, ValueError) as exc:
             st.error(f"Could not read the complex PDB: {exc}")
-    if not chain_ranges and uploaded is not None:
+    if not chain_ranges and source_content is not None:
         st.warning("No canonical protein chains with readable residue numbers were found.")
 
     st.subheader("Protein repair")
@@ -357,9 +385,9 @@ def _render_complex_preparation_setup(
         "extension_models": extension_models,
         "trim_ranges_json": trim_json,
     }
-    if uploaded is not None:
+    if source_content is not None:
         st.caption(f"Detected protein chains: {', '.join('blank' if key == '_' else key for key in chain_ranges)}")
-    disabled = not project_id or uploaded is None or not readiness["ready"] or not chain_ranges
+    disabled = not project_id or source_content is None or not readiness["ready"] or not chain_ranges
     if add_terminal and not extension_sequence:
         disabled = True
     if trim_protein and not trim_ranges:
@@ -369,11 +397,16 @@ def _render_complex_preparation_setup(
         type="primary",
         disabled=disabled,
         key=f"ligand-complex-prepare-run-{workflow_id}",
-    ) and uploaded is not None:
+    ) and source_content is not None:
         try:
-            source_path = _save_target_upload(owner_id, uploaded.name, uploaded.getvalue())
+            previous_job = st.session_state.get("last_submitted_job") or {}
+            previous_run_id = previous_job.get("run_id") if isinstance(previous_job, dict) else None
+            source_path = _save_target_upload(owner_id, source_name, source_content)
             parameters["source_pdb"] = str(source_path)
             submit(schema, workflow_id, parameters, str(project_settings), {}, title)
+            current_job = st.session_state.get("last_submitted_job") or {}
+            if isinstance(current_job, dict) and current_job.get("run_id") and current_job.get("run_id") != previous_run_id:
+                st.session_state.pop("ligand-complex-prepare-pending-source", None)
         except (OSError, ValueError) as exc:
             st.error(f"Could not start complex preparation: {exc}")
 
@@ -386,6 +419,8 @@ def render_setup(
     compound_sets: list[dict[str, Any]],
     project_selector: Callable[..., str | None],
     submit: Callable[..., None],
+    placement_options: Callable[..., dict[str, Any]] | None = None,
+    prediction_state: Callable[..., dict[str, Any]] | None = None,
 ) -> None:
     is_complex_prepare = workflow_id == "ligand.complex.prepare"
     is_vina = workflow_id == "ligand.docking.vina"
@@ -394,7 +429,7 @@ def render_setup(
     is_unidock = workflow_id == "ligand.docking.unidock_pro"
     is_rosetta = workflow_id == "ligand.docking.rosetta_ligand"
     is_docking = is_vina or is_autodock_gpu or is_gnina or is_unidock or is_rosetta
-    is_shared_docking_page = is_vina or is_gnina or is_unidock or is_rosetta
+    is_shared_docking_page = is_vina or is_autodock_gpu or is_gnina or is_unidock or is_rosetta
     is_nesso = workflow_id == "ligand.affinity.nesso"
     is_lddm = workflow_id == "ligand.generation.lddm"
     is_pocketxmol = workflow_id == "ligand.generation.pocketxmol"
@@ -435,6 +470,8 @@ def render_setup(
             compound_sets=compound_sets,
             project_selector=project_selector,
             submit=submit,
+            placement_options=placement_options,
+            prediction_state=prediction_state,
             title=title,
         )
         return
@@ -531,6 +568,17 @@ def render_setup(
         type=["pdb", "ent"],
         key=f"ligand-tool-target-{workflow_id}",
     )
+    if uploaded is not None and (is_autodock_gpu or is_nesso):
+        try:
+            checked_target = _save_target_upload(owner_id, uploaded.name, uploaded.getvalue())
+            render_receptor_check(
+                checked_target.read_text(encoding="utf-8", errors="replace"),
+                checked_target,
+                owner_id=owner_id,
+                key=f"ligand-{workflow_id}-repair-receptor",
+            )
+        except (OSError, ValueError) as exc:
+            st.error(f"Could not inspect the target structure: {exc}")
     bound_ligands: list[dict[str, Any]] = []
     saved_complex: Path | None = None
     selected_ligand_key = ""
@@ -638,8 +686,44 @@ def render_setup(
                 exhaustiveness = int(search_cols[0].number_input("Exhaustiveness", min_value=1, max_value=1024, value=8, step=1, key=f"ligand-{tool_key}-exhaustiveness"))
             num_modes = 9 if is_autodock_gpu else int(search_cols[1].number_input("Poses per compound", min_value=1, max_value=100, value=9, step=1, key=f"ligand-{tool_key}-modes"))
             compound_limit = int(search_cols[1 if is_autodock_gpu else 2].number_input("Maximum compounds", min_value=1, max_value=5000, value=100, step=10, key=f"ligand-{tool_key}-limit"))
-            cpu_cores = int(st.number_input("CPU cores", min_value=1, max_value=256, value=4, step=1, key=f"ligand-{tool_key}-cpu"))
+            cpu_label = "CPU cores / Vina compound workers" if is_vina else "CPU cores"
+            cpu_help = (
+                "This is the total CPU allocation. Vina docks up to this many compounds concurrently, using one CPU thread per compound."
+                if is_vina else None
+            )
+            cpu_cores = int(st.number_input(
+                cpu_label, min_value=1, max_value=256, value=4, step=1,
+                key=f"ligand-{tool_key}-cpu", help=cpu_help,
+            ))
             gpu_device = st.text_input("GPU device", value="0", key=f"ligand-{tool_key}-gpu", help="Use a device ID such as 0.") if (is_gnina or is_unidock or is_autodock_gpu) else "none"
+            compound_workers = 1
+            if is_gnina:
+                compound_workers = int(st.number_input(
+                    "Concurrent compounds", min_value=1,
+                    max_value=max(1, min(4, cpu_cores, compound_limit)),
+                    value=max(1, min(2, cpu_cores, compound_limit)), step=1,
+                    key="ligand-tool-gnina-compound-workers",
+                    help="Run independent compounds concurrently on the assigned GPU. CPU threads are divided across workers; use 1 if GPU memory is tight.",
+                ))
+            use_scrub = True
+            scrub_ph = 7.4
+            scrub_skip_tautomer = True
+            if is_autodock_gpu:
+                st.markdown("**Ligand preparation**")
+                prep_cols = st.columns(3)
+                use_scrub = prep_cols[0].checkbox(
+                    "Use Scrub", value=True, key=f"ligand-{tool_key}-use-scrub",
+                    help="Normalize ligand protonation and chemistry with Scrub before Meeko prepares the ligand for docking.",
+                )
+                scrub_ph = float(prep_cols[1].number_input(
+                    "Scrub pH", min_value=0.0, max_value=14.0, value=7.4, step=0.1,
+                    disabled=not use_scrub, key=f"ligand-{tool_key}-scrub-ph",
+                ))
+                scrub_skip_tautomer = prep_cols[2].checkbox(
+                    "Skip tautomer enumeration", value=True, disabled=not use_scrub,
+                    key=f"ligand-{tool_key}-skip-tautomer",
+                    help="When cleared, Scrub may generate tautomer states before docking.",
+                )
         align_longest_axis_to_x = False
         if not is_rosetta:
             st.subheader("Docking coordinate frame")
@@ -666,6 +750,14 @@ def render_setup(
         }
         if not is_rosetta:
             parameters["align_longest_axis_to_x"] = align_longest_axis_to_x
+        if is_gnina:
+            parameters["compound_workers"] = compound_workers
+        if is_autodock_gpu:
+            parameters.update({
+                "use_scrub": use_scrub,
+                "scrub_ph": scrub_ph,
+                "scrub_skip_tautomer": scrub_skip_tautomer,
+            })
     elif is_md:
         with st.expander("Simulation settings", expanded=True):
             md_cols = st.columns(3)

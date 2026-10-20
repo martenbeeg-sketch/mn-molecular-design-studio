@@ -112,7 +112,13 @@ def stage_example(owner_id: str, *, project_id: str = "") -> tuple[Path, dict]:
     return target, compound
 
 
-def predicted_contact_residues(target_text: str, predicted_text: str, contact_distance: float) -> set[tuple[str, int]]:
+def predicted_contact_residues(
+    target_text: str,
+    predicted_text: str,
+    contact_distance: float,
+    *,
+    selected_chains: list[str] | tuple[str, ...] | None = None,
+) -> set[tuple[str, int]]:
     """Map predicted probe contacts back to author residues in the uploaded receptor.
 
     Boltz assigns protein chains A, B, ... in input order and renumbers their
@@ -122,9 +128,14 @@ def predicted_contact_residues(target_text: str, predicted_text: str, contact_di
     if not math.isfinite(contact_distance) or not 1 <= contact_distance <= 20:
         raise ValueError("Contact distance must be between 1 and 20 Å.")
     originals = list(protein_sequence_entries(target_text).items())
+    if selected_chains is not None:
+        selected = set(selected_chains)
+        originals = [row for row in originals if row[0] in selected]
     predictions = list(protein_sequence_entries(predicted_text).items())
-    if len(predictions) != len(originals):
-        raise ValueError("The predicted complex does not contain the same protein chains as the Vina target.")
+    if not originals:
+        raise ValueError("Select at least one protein chain from the imported Vina target.")
+    if len(predictions) < len(originals):
+        raise ValueError("The predicted complex does not contain all selected protein chains from the Vina target.")
     atom_coordinates: dict[tuple[str, int], list[tuple[float, float, float]]] = {}
     ligand_points = []
     for line in predicted_text.splitlines():
@@ -167,3 +178,87 @@ def predicted_contact_residues(target_text: str, predicted_text: str, contact_di
             if points and np.any(np.sum((np.asarray(points)[:, None, :] - ligand[None, :, :]) ** 2, axis=-1) <= contact_distance ** 2):
                 result.add((original_chain, original_number))
     return result
+
+
+def predicted_ligand_overlay_pdb(
+    target_text: str,
+    predicted_text: str,
+    *,
+    selected_chains: list[str] | tuple[str, ...] | None = None,
+) -> str:
+    """Align predicted probe-ligand coordinates onto the original target frame."""
+    originals = list(protein_sequence_entries(target_text).items())
+    if selected_chains is not None:
+        selected = set(selected_chains)
+        originals = [row for row in originals if row[0] in selected]
+    predictions = list(protein_sequence_entries(predicted_text).items())
+    if not originals or len(predictions) < len(originals):
+        raise ValueError("The predicted complex does not contain all selected target chains.")
+
+    def ca_coordinates(pdb_text: str) -> dict[tuple[str, int], np.ndarray]:
+        output: dict[tuple[str, int], np.ndarray] = {}
+        for line in pdb_text.splitlines():
+            if line.startswith("ENDMDL"):
+                break
+            if not line.startswith("ATOM  ") or line[12:16].strip().upper() != "CA":
+                continue
+            try:
+                key = (line[21].strip() or "_", int(line[22:26]))
+                output[key] = np.asarray([float(line[a:b]) for a, b in ((30, 38), (38, 46), (46, 54))])
+            except (ValueError, IndexError):
+                continue
+        return output
+
+    original_ca = ca_coordinates(target_text)
+    predicted_ca = ca_coordinates(predicted_text)
+    target_points: list[np.ndarray] = []
+    moving_points: list[np.ndarray] = []
+    aligner = PairwiseAligner(mode="global", match_score=2, mismatch_score=-2, open_gap_score=-6, extend_gap_score=-1)
+    for (original_chain, original), (predicted_chain, predicted) in zip(originals, predictions):
+        original_seq = "".join(letter for _, letter in original)
+        predicted_seq = "".join(letter for _, letter in predicted)
+        alignment = aligner.align(original_seq, predicted_seq)[0]
+        matches = 0
+        aligned_pairs: list[tuple[int, int]] = []
+        for (oa, ob), (pa, pb) in zip(*alignment.aligned):
+            for oi, pi in zip(range(oa, ob), range(pa, pb)):
+                matches += original_seq[oi] == predicted_seq[pi]
+                aligned_pairs.append((oi, pi))
+        if matches / max(len(original_seq), len(predicted_seq), 1) < .9:
+            raise ValueError("A predicted protein chain does not match the selected Vina target sequence.")
+        for oi, pi in aligned_pairs:
+            original_point = original_ca.get((original_chain, original[oi][0]))
+            predicted_point = predicted_ca.get((predicted_chain, predicted[pi][0]))
+            if original_point is not None and predicted_point is not None:
+                target_points.append(original_point)
+                moving_points.append(predicted_point)
+    if len(target_points) < 3:
+        raise ValueError("At least three matched Cα atoms are required to align the predicted probe pose.")
+
+    target = np.asarray(target_points)
+    moving = np.asarray(moving_points)
+    target_center = target.mean(axis=0)
+    moving_center = moving.mean(axis=0)
+    covariance = (moving - moving_center).T @ (target - target_center)
+    left, _singular_values, right = np.linalg.svd(covariance)
+    rotation = left @ right
+    if np.linalg.det(rotation) < 0:
+        left[:, -1] *= -1
+        rotation = left @ right
+
+    excluded = {"HOH", "WAT", "DOD", "H2O", "NA", "CL", "MG", "CA", "ZN", "K"}
+    overlay: list[str] = []
+    for line in predicted_text.splitlines():
+        if not line.startswith("HETATM") or len(line) < 54:
+            continue
+        if line[17:20].strip().upper() in _AMINO_ACIDS | excluded:
+            continue
+        try:
+            point = np.asarray([float(line[a:b]) for a, b in ((30, 38), (38, 46), (46, 54))])
+        except ValueError:
+            continue
+        aligned = (point - moving_center) @ rotation + target_center
+        overlay.append(line[:30] + "".join(f"{value:8.3f}" for value in aligned) + line[54:])
+    if not overlay:
+        raise ValueError("No probe-ligand atoms were found in the predicted complex.")
+    return "\n".join(overlay + ["END", ""])

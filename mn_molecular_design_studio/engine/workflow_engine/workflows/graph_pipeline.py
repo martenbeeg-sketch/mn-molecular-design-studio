@@ -94,6 +94,25 @@ def source_generations(source_run_dir: str, project_id: str, selected_ids=None, 
     return run_dir,candidates
 
 
+def source_molecule_selection(source_run_dir: str, project_id: str, selected_ids=None):
+    run_dir = _path(source_run_dir)
+    marker = read_json(run_dir / "molecular_design_studio.json")
+    metadata = read_json(run_dir / "metadata.json")
+    snapshot = read_json(run_dir / "selection_snapshot.json")
+    if (marker.get("project_id") != project_id or snapshot.get("project_id") != project_id
+            or metadata.get("tool") != "database_selection" or metadata.get("status") != "completed"):
+        raise ValueError("Use a completed Database selection snapshot from this project.")
+    candidates = read_candidates(run_dir)
+    expected = set(snapshot.get("molecule_ids") or [])
+    if not expected or {row["candidate_id"] for row in candidates} != expected:
+        raise ValueError("The Database selection snapshot is incomplete.")
+    if selected_ids is not None:
+        if not set(selected_ids).issubset(expected):
+            raise ValueError("Selected molecules are not present in this frozen selection.")
+        candidates = [row for row in candidates if row["candidate_id"] in selected_ids]
+    return run_dir, candidates
+
+
 def _generation_target(params, source=None):
     target=copy.deepcopy((source or {}).get('target') or {})
     own_input=bool(params.get('target_pdb'))
@@ -839,9 +858,9 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                 if kind == "target" or kind == 'cofold_input' and params.get('target_pdb') or kind=='complexa_generator' and params.get('target_pdb'):
                     target_path = _path(params["target_pdb"])
                     key_params["structure_digest"] = file_digest(target_path)
-                if kind in {"design_source","generation_source","backbone_source"}:
-                    loader=source_generations if kind in {'generation_source','backbone_source'} else source_designs
-                    extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind!='design_source' else {}
+                if kind in {"design_source","generation_source","backbone_source","molecule_source"}:
+                    loader=source_molecule_selection if kind == 'molecule_source' else source_generations if kind in {'generation_source','backbone_source'} else source_designs
+                    extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind in {'generation_source','backbone_source'} else {}
                     source_dir, _ = loader(params["source_run_dir"], project_id, params.get("selected_candidate_ids"),**extra)
                     key_params["source_digest"] = file_digest(source_dir / "artifacts/normalized_candidates/candidates.jsonl")
                 if kind=='complexa_generator':
@@ -932,9 +951,9 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             target["hotspots"] = params.get("hotspots") or target.get("hotspots", "")
                             target["coldspots"] = params.get("coldspots") or target.get("coldspots", "")
                         complete(node_id, {"target": target}, key);progressed=True;continue
-                    if kind in {"design_source","generation_source","backbone_source"}:
-                        loader=source_generations if kind in {'generation_source','backbone_source'} else source_designs
-                        extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind!='design_source' else {}
+                    if kind in {"design_source","generation_source","backbone_source","molecule_source"}:
+                        loader=source_molecule_selection if kind == 'molecule_source' else source_generations if kind in {'generation_source','backbone_source'} else source_designs
+                        extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind in {'generation_source','backbone_source'} else {}
                         source_dir, selected = loader(params["source_run_dir"], project_id, params.get("selected_candidate_ids"),**extra)
                         all_rows = _absolute_candidates({"run_dir": str(source_dir), "candidates_jsonl": str(source_dir / "artifacts/normalized_candidates/candidates.jsonl")})
                         selected_ids = {c["candidate_id"] for c in selected}

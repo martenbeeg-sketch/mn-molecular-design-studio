@@ -59,6 +59,7 @@ NODE_CATALOG = {
         field("hotspots", "Hotspot override", "", kind="text", help="Leave empty to inherit the connected Target Structure hotspots."),
         field("coldspots", "Coldspot override", "", kind="text", help="Leave empty to inherit the connected Target Structure coldspots."),
         field("clear_unselected", "Clear inherited annotations when overrides are empty", False, kind="boolean", help="Enable this to explicitly pass no hotspots or coldspots when the corresponding override is blank.")]),
+    "molecule_source": _spec("molecule_source", "Database selection", "Input", "An immutable selection of Database molecules, prepared through Use in pipeline.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Selection snapshot", "", kind="text")]),
     "design_source": _spec("design_source", "Successful project designs", "Input", "Selected filter-passing designs from a successful job in this project.", output="sequence", color="#758f84", fields=[field("source_run_dir", "Source run", "", kind="text")]),
     "generation_source": _spec("generation_source", "Generated project designs", "Input", "Select generated structures and sequences from a completed generator job in this project.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Generator run", "", kind="text")]),
     "rfd3": _spec("rfd3", "RFdiffusion3", "Design engine", "Generate backbones only; sequence design and refolding are separate nodes.", accepts=["target"], workflow="design.rfdiffusion3", fields=[COUNT, LENGTH, STEPS, SEED], formats=("cif",)),
@@ -1001,6 +1002,8 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
                 raise ValueError("Binder length must be a positive length or range, such as 74 or 60-100.")
         if require_inputs and kind == "design_source" and not node["data"]["params"].get("source_run_dir"):
             raise ValueError("Select a successful design job from this project.")
+        if require_inputs and kind == "molecule_source" and not node["data"]["params"].get("source_run_dir"):
+            raise ValueError("Select molecules in Database and choose Use in pipeline.")
         if require_inputs and kind == "generation_source" and not node["data"]["params"].get("source_run_dir"):
             raise ValueError("Select a completed generator job from this project.")
         if require_inputs and kind=='backbone_source' and not node['data']['params'].get('source_run_dir'):

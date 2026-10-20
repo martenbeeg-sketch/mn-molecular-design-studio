@@ -73,6 +73,10 @@ def is_operational_path_key(key: str) -> bool:
     lowered = key.lower()
     if _is_inline_content_key(lowered):
         return False
+    # Format names such as "pdb" and "mmcif" are values, even when the key
+    # contains "input" or "output"; they must not be resolved as filesystem paths.
+    if lowered.endswith("_format"):
+        return False
     return any(part in lowered for part in _PATH_KEY_PARTS) or lowered.endswith(_PATH_KEY_SUFFIXES)
 
 

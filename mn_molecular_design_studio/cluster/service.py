@@ -103,6 +103,65 @@ def submit_from_api(payload, user, *, request_dir, token, authorize_path, kind="
     return transport.request("/api/v1/cluster/submissions", envelope, token=token, method="POST", timeout=30)
 
 
+def placement_options_from_api(payload, user, *, request_dir, token, authorize_path, kind="workflow"):
+    """Preview automatic-placement candidates without creating a job."""
+    settings = config.load()
+    execution = payload.get("execution") or {}
+    if not isinstance(execution, dict) or set(execution) - {"placement", "idempotency_key"}:
+        raise ValueError("execution accepts placement and idempotency_key.")
+    placement = execution.get("placement", settings["default_placement"])
+    if settings["mode"] == "disabled":
+        return {"placement": "local", "candidates": []}
+    if placement != "auto":
+        return {"placement": placement, "candidates": []}
+
+    request_payload = copy.deepcopy(payload)
+    request_payload.pop("execution", None)
+    project_id = request_payload.pop("project_id")
+    source = request_payload.get("source_job")
+    if isinstance(source, str) and source.startswith("cluster:"):
+        job = lookup_job(source, user, token)
+        if job["project_id"] != project_id:
+            raise ValueError("The source job must belong to the selected project.")
+        if not job.get("local_reference"):
+            raise ValueError("The source job has not been accepted by its workstation yet.")
+        request_payload["source_job"] = "cluster://" + job["node_id"] + "/" + job["local_reference"]
+    elif source is not None:
+        from mn_molecular_design_studio.auth import require_job_access
+        from mn_molecular_design_studio.job_catalog import get_job_access_record
+        from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import resolve_job
+        row = resolve_job(source)
+        record = get_job_access_record(row["task_group"], row["run_id"])
+        require_job_access(user, record)
+        if not record or record.get("project_id") != project_id:
+            raise ValueError("The source job must belong to the selected project.")
+        request_payload["source_job"] = config.artifact_uri(config.identity(), row["task_group"], row["run_id"])
+
+    schema_check(request_payload, kind, request_dir)
+    prepared, _bundle_id, references = bundles.pack(
+        request_payload, base_dir=request_dir, node_id=config.identity(), authorize_path=authorize_path,
+    )
+    owner_nodes = bundles.referenced_nodes(prepared)
+    if len(owner_nodes) > 1:
+        raise ValueError("Selected inputs belong to multiple workstations. Keep each pipeline branch on its data-owning workstation and compare the resulting scores.")
+    requirements = capabilities.requirements(request_payload, references=references)
+    envelope = {
+        "requirements": requirements,
+        "origin_node": config.identity(),
+        "affinity_node": next(iter(owner_nodes), None),
+    }
+    if settings["mode"] in {"coordinator", "peer"}:
+        candidates = Store().placement_options(
+            requirements, origin_node=envelope["origin_node"], affinity_node=envelope["affinity_node"],
+        )
+    else:
+        response = transport.request(
+            "/api/v1/cluster/placement-options", envelope, token=token, method="POST", timeout=30,
+        )
+        candidates = response.get("candidates", [])
+    return {"placement": "auto", "candidates": candidates}
+
+
 def accept_submission(envelope, user):
     from mn_molecular_design_studio.workspace import validate_project_id
     from mn_molecular_design_studio.auth import require_project_access

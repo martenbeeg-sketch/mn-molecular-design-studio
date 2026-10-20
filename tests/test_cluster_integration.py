@@ -97,6 +97,85 @@ def test_api_to_remote_agent_to_local_scheduler_preserves_source_and_ownership(a
     assert len(captured) == 1
 
 
+def test_api_purge_removes_terminal_job_database_and_local_run_files(api_cluster, tmp_path):
+    client, store, origin, _remote, actor, project, snapshot, _needs = api_cluster
+    run_id = "purge-test-run"
+    task_group = "ligand-docking"
+    from mn_molecular_design_studio.workspace import ensure_studio_workspace
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import runs_root
+    ensure_studio_workspace()
+    run_dir = runs_root() / task_group / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "metadata.json").write_text(json.dumps({"status": "completed", "run_id": run_id}))
+    jid = str(uuid.uuid4())
+    store.heartbeat(origin["node_id"], snapshot, [{
+        "cluster_job_id": jid,
+        "task_group": task_group,
+        "run_id": run_id,
+        "job_type": "ligand_docking",
+        "tool": "vina",
+        "status": "completed",
+        "owner_id": actor["id"],
+        "project_id": project["id"],
+        "run_dir": str(run_dir),
+    }])
+
+    response = client.delete(f"/api/v1/cluster/jobs/{jid}/purge")
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["status"] == "purged"
+    assert result["run_files_removed"] is True
+    assert result["database"]["preserved_saved_selections"] is True
+    assert not run_dir.exists()
+    assert store.search({"id": actor["id"], "role": "admin", "project_ids": [project["id"]]}, project_id=project["id"])["total"] == 0
+    assert client.get(f"/api/v1/cluster/jobs/{jid}").status_code == 404
+
+
+def test_api_purge_rejects_active_jobs_and_queues_remote_run_cleanup(api_cluster):
+    client, store, origin, remote, actor, project, snapshot, _needs = api_cluster
+    local_active_id = str(uuid.uuid4())
+    store.heartbeat(origin["node_id"], snapshot, [{
+        "cluster_job_id": local_active_id, "task_group": "design", "run_id": "still-running",
+        "status": "running", "owner_id": actor["id"], "project_id": project["id"],
+    }])
+    active = client.delete(f"/api/v1/cluster/jobs/{local_active_id}/purge")
+    assert active.status_code == 409
+    assert client.get(f"/api/v1/cluster/jobs/{local_active_id}").status_code == 200
+
+    remote_id = str(uuid.uuid4())
+    store.heartbeat(remote["node_id"], snapshot, [{
+        "cluster_job_id": remote_id, "task_group": "design", "run_id": "remote-failed",
+        "status": "failed", "owner_id": actor["id"], "project_id": project["id"],
+    }])
+    remote_job = store.job(remote_id, {"id": actor["id"], "role": "admin", "project_ids": [project["id"]]})
+    assert remote_job["local_reference"] == "design/remote-failed"
+    remote_response = client.delete(f"/api/v1/cluster/jobs/{remote_id}/purge")
+    assert remote_response.status_code == 202
+    operation = remote_response.json()
+    assert operation["status"] == "purge_queued"
+    command = store.claim(remote["node_id"])
+    assert command["id"] == operation["command_id"]
+    assert command["kind"] == "purge"
+    store.finish(remote["node_id"], command["id"], command["lease_token"], response={"status": "purged"})
+    assert client.get(f"/api/v1/cluster/jobs/{remote_id}").status_code == 404
+    assert client.get(f"/api/v1/cluster/commands/{command['id']}").json()["status"] == "completed"
+
+
+def test_placement_options_api_previews_candidates_without_creating_a_job(api_cluster, monkeypatch):
+    client, store, _origin, _remote, _actor, project, _snapshot, _needs = api_cluster
+    monkeypatch.setattr(service, "schema_check", lambda *_args: None)
+    response = client.post("/api/v1/workflows/placement-options", json={
+        "schema_version": 1, "workflow": "analysis.ipsae", "parameters": {"pae_cutoff": 10.0},
+        "project_id": project["id"], "execution": {"placement": "auto", "idempotency_key": "preview"},
+    })
+
+    assert response.status_code == 200, response.text
+    assert len(response.json()["candidates"]) == 2
+    with store.connect() as db:
+        assert db.execute("SELECT count(*) FROM submissions").fetchone()[0] == 0
+
+
 def test_cluster_preflight_enforces_local_input_access_before_schema_validation(api_cluster, monkeypatch, tmp_path):
     client, _store, _origin, _remote, _actor, project, _snapshot, _needs = api_cluster
     from mn_molecular_design_studio import api

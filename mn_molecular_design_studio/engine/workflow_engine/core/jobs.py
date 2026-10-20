@@ -559,6 +559,8 @@ def finish_job(run_dir: Path, success: bool, result: dict) -> None:
     write_json(run_dir / "result.json", normalized)
     update_status(run_dir, "completed" if success else "failed")
     _release_resource_lock(run_dir)
+    from mn_molecular_design_studio.molecular_database_ingest import record_completed_run
+    record_completed_run(run_dir)
 
 
 def _signal_worker_process(run_dir: Path, sig: int = signal.SIGTERM) -> bool:
