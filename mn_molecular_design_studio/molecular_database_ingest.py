@@ -183,7 +183,8 @@ def _candidate_rejected(candidate):
     status = str(candidate.get("status") or raw.get("status") or raw.get("filter_status") or metrics.get("status") or "").strip().casefold()
     if status in {"rejected", "failed", "invalid", "filtered", "discarded", "not accepted", "not_accepted"}:
         return True
-    return candidate.get("accepted") is False or raw.get("accepted") is False or metrics.get("pass_filters") is False
+    return (candidate.get("accepted") is False or raw.get("accepted") is False
+            or metrics.get("pass_filters") is False or metrics.get("native_pass_filters") is False)
 
 
 def _run_mode(run_dir, metadata, inputs):
@@ -387,6 +388,22 @@ def _prune_stale_run_structures(database, task_group, run_id, keep_ids, *, candi
                 connection.execute("DELETE FROM molecule_structures WHERE id=?", (row["id"],))
 
 
+def _prune_generated_group(database, group_id, keep_ids):
+    """Remove superseded or rejected entries from one run's generated group."""
+    keep_ids = set(keep_ids)
+    with database.connection() as connection:
+        members = connection.execute(
+            "SELECT molecule_id FROM molecule_members WHERE group_id=?", (group_id,)
+        ).fetchall()
+        for member in members:
+            molecule_id = member["molecule_id"]
+            if molecule_id in keep_ids:
+                continue
+            for table in ("molecule_sources", "molecule_structures", "molecule_observations"):
+                connection.execute(f"DELETE FROM {table} WHERE group_id=? AND molecule_id=?", (group_id, molecule_id))
+            connection.execute("DELETE FROM molecule_members WHERE group_id=? AND molecule_id=?", (group_id, molecule_id))
+
+
 def ingest_run(run_dir: Path, *, database=None, force=False):
     from mn_molecular_design_studio.workspace import is_studio_job
     from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
@@ -478,16 +495,33 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     # the all-indexed view; evaluation outputs reuse an exact input identity.
     preferred_prediction_structure_ids = set()
     prediction_candidate_ids = set()
+    generated_molecule_ids = set()
     for candidate, record in candidate_records:
         stage = str(candidate.get("stage") or "")
         sequence = candidate.get("binder_sequence") or candidate.get("sequence")
         is_backbone = stage == "generation.backbone" and not sequence
         rejected = _candidate_rejected(candidate)
+        # A failed generated design remains visible in its job results and
+        # native tables, but it is not a reusable library candidate.
+        if mode == "generated" and rejected:
+            continue
         provenance = {**origin, "candidate_id": candidate.get("candidate_id"), "parents": candidate.get("parents") or []}
         candidate_id = str(candidate.get("candidate_id") or _canonical_fingerprint(record))
         source_for_molecule = f"{source_key}:{candidate_id}"
         prediction_candidate_ids.add(candidate_id)
         identity_record = {**record, "files": []}
+        if mode == "generated" and sequence:
+            # Generated designs are identified by their designed chain(s).
+            # A later structure parse may add the target chain to the same
+            # candidate; that complex should be attached as a representation
+            # without creating a second molecule identity for the binder.
+            binder_chains = {str(chain) for chain in candidate.get("binder_chains") or []}
+            binder_components = [
+                component for component in record.get("components") or []
+                if component.get("role") == "binder" or str(component.get("chain")) in binder_chains
+            ]
+            if binder_components:
+                identity_record["components"] = binder_components
 
         if mode == "curated":
             destination = output_group("curated")
@@ -497,6 +531,8 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             destination = output_group("generated")
             with database.connection() as connection:
                 molecule_id = database._put(connection, destination, identity_record, source_key=source_for_molecule, origin=provenance, stamp=stamp)
+            if mode == "generated":
+                generated_molecule_ids.add(molecule_id)
         elif not rejected and not is_backbone:
             molecule_id, destination, matched = _find_original_group(database, user["id"], project, record, candidate)
             if not matched:
@@ -547,6 +583,9 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             database.add_observation(destination, molecule_id, tool, run_dir.name, metrics,
                 context={**provenance, "candidate": candidate_context, "settings": settings},
                 source_key=f"{source_for_molecule}:metrics", created_at=stamp)
+
+    if mode == "generated":
+        _prune_generated_group(database, _id("job-", source_key), generated_molecule_ids)
 
     if prediction_run:
         _prune_stale_run_structures(database, run_dir.parent.name, run_dir.name,

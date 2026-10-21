@@ -209,3 +209,34 @@ def test_bindcraft2_sequence_result_keeps_cropped_target_and_binder_roles(monkey
     assert candidates[0]["binder_chains"] == ["B"]
     assert candidates[0]["binder_sequence"] == "LLLL"
     assert candidates[0]["metrics"]["target_chain_inference"] == "fasta_crop_or_binder_sequence_match"
+
+
+def test_bindcraft2_ranked_candidates_use_native_refolded_pass_status(monkeypatch, tmp_path):
+    ranked = tmp_path / "artifacts/raw/bindcraft2/output/3_Ranked"
+    refolded = tmp_path / "artifacts/raw/bindcraft2/output/2_Refolded"
+    ranked.mkdir(parents=True)
+    refolded.mkdir(parents=True)
+    (ranked / "!_Ranked.csv").write_text(
+        "rank,design,Binder_Sequence,hash\n1,passed,LLLL,shared-hash\n2,rejected,MMMM,shared-hash\n"
+    )
+    (refolded / "!_Refolded.csv").write_text(
+        "design,Binder_Sequence,hash,outcome,failed_filters\npassed,LLLL,shared-hash,passed,\nrejected,MMMM,shared-hash,rejected,i_pTM\n"
+    )
+    (ranked / "passed.cif").touch()
+    (ranked / "rejected.cif").touch()
+    (tmp_path / "artifacts/raw/bindcraft2/target.fasta").write_text(">target\nACDEFGH\n")
+    monkeypatch.setattr(
+        bindcraft2,
+        "_sequences_by_chain",
+        lambda path: {"A": "ACDEFGH", "B": "LLLL" if path.stem == "passed" else "MMMM"},
+    )
+    monkeypatch.setattr(bindcraft2, "write_candidates", lambda _run, _tool, candidates: candidates)
+
+    candidates = bindcraft2.normalize_bindcraft2_candidates(
+        tmp_path, {"target_type": "sequence", "target_sequence": "ACDEFGH"}
+    )
+
+    assert [candidate["metrics"]["bindcraft2_rank"] for candidate in candidates] == [1, 2]
+    assert [candidate["metrics"]["native_pass_filters"] for candidate in candidates] == [True, False]
+    assert candidates[1]["raw_metadata"]["bindcraft2_refolded_outcome"] == "rejected"
+    assert candidates[1]["raw_metadata"]["bindcraft2_failed_filters"] == "i_pTM"

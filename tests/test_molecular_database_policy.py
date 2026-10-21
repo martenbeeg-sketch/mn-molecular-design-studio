@@ -107,6 +107,59 @@ def test_generated_complex_refolding_is_library_output(database):
     assert database.list_molecules(A, group_id=library[0]["id"], collection="library")["total"] == 1
 
 
+def test_generated_complex_reindex_keeps_binder_identity_and_only_passing_designs(database):
+    candidate = {
+        "candidate_id": "bindcraft2_00001", "stage": "complex_refolding",
+        "binder_sequence": "EFG", "binder_chains": ["B"],
+        "metrics": {"native_pass_filters": True},
+    }
+    run = _make_run(database, "design", "bindcraft2-reindex", workflow="design_generation",
+                    tool="bindcraft2", candidates=[candidate])
+
+    assert ingest_run(run, database=database) == 1
+    group = next(group for group in database.groups(A, collection="all") if group["origin"].get("run_id") == "bindcraft2-reindex")
+    original_id = database.list_molecules(A, group_id=group["id"])["items"][0]["id"]
+
+    # Recreate the earlier duplicate full-complex row produced when structure
+    # parsing changed a candidate's identity from binder-only to target+binder.
+    complex_text = "\n".join([
+        "ATOM      1  CA  ALA A   1       1.000   1.000   1.000  1.00 20.00           C",
+        "ATOM      2  CA  CYS A   2       2.000   1.000   1.000  1.00 20.00           C",
+        "ATOM      3  CA  ASP A   3       3.000   1.000   1.000  1.00 20.00           C",
+        "ATOM      4  CA  GLU B   1       8.000   1.000   1.000  1.00 20.00           C",
+        "ATOM      5  CA  PHE B   2       9.000   1.000   1.000  1.00 20.00           C",
+        "ATOM      6  CA  GLY B   3      10.000   1.000   1.000  1.00 20.00           C",
+        "END", "",
+    ])
+    complex_path = run / "complex.pdb"
+    complex_path.write_text(complex_text)
+    full_components = molecule_imports.parse_structure(complex_text.encode(), "complex.pdb")[0]["components"]
+    with database.connection() as connection:
+        duplicate_id = database._put(connection, group["id"], {
+            "name": "bindcraft2_00001", "components": full_components, "files": [],
+        })
+    database.attach_structure(group["id"], duplicate_id, {"path": str(complex_path), "label": "Complex Pdb"})
+    assert duplicate_id != original_id
+
+    passing = {**candidate, "complex_pdb": "complex.pdb"}
+    rejected = {
+        "candidate_id": "bindcraft2_00002", "stage": "complex_refolding",
+        "binder_sequence": "VVV", "binder_chains": ["B"],
+        "metrics": {"native_pass_filters": False},
+    }
+    (run / "artifacts/normalized_candidates/candidates.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in (passing, rejected))
+    )
+
+    assert ingest_run(run, database=database, force=True) == 1
+    rows = database.list_molecules(A, group_id=group["id"])["items"]
+    assert len(rows) == 1
+    assert rows[0]["id"] == original_id
+    assert [(component["chain"], component["sequence"]) for component in rows[0]["components"]] == [("B", "EFG")]
+    assert len(rows[0]["structures"]) == 1
+    assert rows[0]["structures"][0]["context"]["portable"] is True
+
+
 def test_prediction_indexes_only_the_best_structure_per_input(database):
     run = _make_run(database, "optimized-prediction", "best-model", tool="optimized_prediction_boltz2",
                     workflow="refolding.optimized_prediction", candidates=[

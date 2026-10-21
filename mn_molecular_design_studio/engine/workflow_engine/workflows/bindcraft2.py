@@ -998,6 +998,19 @@ def normalize_bindcraft2_candidates(run_dir: Path, settings: dict[str, Any]) -> 
     if not ranked_csv.is_file():
         return write_candidates(run_dir, BINDCRAFT2_TOOL, [])
 
+    # BindCraft 2 can include designs in its ranked table that failed the
+    # native refolding filters. Keep the ranked order, but carry the actual
+    # pass/fail result from the refolded table instead of assuming every row
+    # in 3_Ranked passed.
+    refolded_csv = output_dir / "2_Refolded" / "!_Refolded.csv"
+    refolded_by_sequence: dict[str, list[dict[str, str]]] = {}
+    if refolded_csv.is_file():
+        with refolded_csv.open(newline="", encoding="utf-8-sig") as handle:
+            for row in csv.DictReader(handle):
+                sequence = "".join(str(row.get("Binder_Sequence") or "").split()).upper()
+                if sequence:
+                    refolded_by_sequence.setdefault(sequence, []).append(row)
+
     target_sequence = str(settings.get("target_sequence") or "").strip().upper()
     if target_type == "sequence" and not target_sequence and target_artifact.is_file():
         _, target_sequence = parse_disordered_target_fasta(target_artifact.read_text(encoding="utf-8"))
@@ -1010,6 +1023,20 @@ def normalize_bindcraft2_candidates(run_dir: Path, settings: dict[str, Any]) -> 
             design_name = Path(str(row.get("design") or "")).name
             if not design_name:
                 continue
+            ranked_sequence = "".join(str(row.get("Binder_Sequence") or "").split()).upper()
+            refolded_matches = refolded_by_sequence.get(ranked_sequence, [])
+            passing_matches = [
+                match for match in refolded_matches
+                if str(match.get("outcome") or "").strip().casefold() in {"passed", "pass"}
+                and not str(match.get("failed_filters") or "").strip()
+            ]
+            passed_filters = bool(passing_matches)
+            refolded_outcome = "passed" if passed_filters else (
+                str(refolded_matches[0].get("outcome") or "").strip().casefold() if refolded_matches else ""
+            )
+            failed_filters = ""
+            if not passed_filters and refolded_matches:
+                failed_filters = str(refolded_matches[0].get("failed_filters") or "").strip()
             structures = sorted(
                 path
                 for path in (output_dir / "3_Ranked").glob(f"{design_name}*.cif")
@@ -1063,7 +1090,7 @@ def normalize_bindcraft2_candidates(run_dir: Path, settings: dict[str, Any]) -> 
             metrics.update(
                 {
                     "bindcraft2_rank": rank,
-                    "native_pass_filters": True,
+                    "native_pass_filters": passed_filters,
                     "result_kind": "native_pipeline",
                     "target_chain_inference": chain_inference,
                 }
@@ -1099,6 +1126,9 @@ def normalize_bindcraft2_candidates(run_dir: Path, settings: dict[str, Any]) -> 
                         "pae_path": pae_ref,
                         "bindcraft2_pae_matrix": pae_ref,
                         "bindcraft2_row": row,
+                        "bindcraft2_refolded_outcome": refolded_outcome or None,
+                        "bindcraft2_failed_filters": failed_filters or None,
+                        "bindcraft2_refolded_sequence_matches": len(refolded_matches),
                         "input_target_chains": input_target_chains,
                         "target_type": target_type,
                         "target_fasta": portable_path(target_artifact) if target_type == "sequence" and target_artifact.is_file() else None,
@@ -1199,7 +1229,9 @@ def run_bindcraft2_job(run_dir: Path) -> Path:
                 "return_code": int(process.returncode),
                 "candidate_count": len(candidates),
                 "artifact_count": len(artifacts),
-                "accepted_design_count": 0 if trajectory_only else len(candidates),
+                "accepted_design_count": 0 if trajectory_only else sum(
+                    candidate.get("metrics", {}).get("native_pass_filters") is True for candidate in candidates
+                ),
                 "trajectory_only": trajectory_only,
                 "generated_trajectory_count": len(candidates) if trajectory_only else 0,
                 "mpnn_eligible_trajectory_count": len(candidates) if trajectory_only else 0,
