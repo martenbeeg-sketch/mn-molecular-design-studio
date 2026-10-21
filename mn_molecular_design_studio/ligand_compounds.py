@@ -11,12 +11,13 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-COMPOUND_SET_SCHEMA_VERSION = 1
+COMPOUND_SET_SCHEMA_VERSION = 2
 _SMILES_FIELD_NAMES = (
     "smiles", "canonical_smiles", "canonical_isomeric_smiles",
     "isomeric_smiles", "canonical smiles",
 )
-_ID_FIELD_NAMES = ("compound_id", "id", "name", "compound", "zinc_id", "catalog_id")
+_ID_FIELD_NAMES = ("compound_id", "id", "pubchem_cid", "zinc_id", "catalog_id", "compound", "name")
+_NAME_FIELD_NAMES = ("compound_name", "name", "compound", "preferred_name", "common_name", "title")
 
 
 def _clean(value: object) -> str:
@@ -44,7 +45,11 @@ def normalize_compounds(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         if not smiles:
             raise ValueError(f"Compound row {index} has no SMILES value.")
+        properties = raw.get("properties")
+        if not isinstance(properties, dict):
+            properties = {}
         compound_id = _safe_id(raw.get("compound_id") or raw.get("id") or raw.get("name"), index, smiles)
+        compound_name = _clean(raw.get("compound_name") or raw.get("name") or properties.get("name")) or compound_id
         folded_id = compound_id.casefold()
         if folded_id in seen_ids:
             raise ValueError(f"Compound ID {compound_id!r} occurs more than once.")
@@ -54,11 +59,12 @@ def normalize_compounds(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             properties = {
                 str(key): value
                 for key, value in raw.items()
-                if key not in {"compound_id", "id", "name", "smiles", "canonical_smiles", "canonical_isomeric_smiles", "isomeric_smiles"}
+                if key not in {"compound_id", "id", "name", "compound_name", "smiles", "canonical_smiles", "canonical_isomeric_smiles", "isomeric_smiles"}
                 and value not in (None, "")
             }
         normalized.append({
             "compound_id": compound_id,
+            "compound_name": compound_name,
             "smiles": smiles,
             "properties": properties,
         })
@@ -85,7 +91,7 @@ def parse_smi_text(text: str) -> list[dict[str, str]]:
         parts = line.split(maxsplit=1)
         smiles = parts[0].strip()
         compound_id = parts[1].strip() if len(parts) > 1 else f"compound-{index:06d}"
-        rows.append({"compound_id": compound_id, "smiles": smiles})
+        rows.append({"compound_id": compound_id, "compound_name": compound_id, "smiles": smiles})
     return normalize_compounds(rows)
 
 
@@ -94,6 +100,7 @@ def parse_compound_table(
     *,
     filename: str,
     id_column: str = "",
+    name_column: str = "",
     smiles_column: str = "",
 ) -> list[dict[str, Any]]:
     """Read CSV, TSV, SMI, or SDF records into the shared compound contract."""
@@ -118,6 +125,9 @@ def parse_compound_table(
     selected_id = id_column or next(
         (by_normalized[key] for key in _ID_FIELD_NAMES if key in by_normalized), ""
     )
+    selected_name = name_column or next(
+        (by_normalized[key] for key in _NAME_FIELD_NAMES if key in by_normalized), ""
+    )
     if selected_smiles not in fields:
         raise ValueError("Select a SMILES column to import this compound table.")
     rows = []
@@ -128,10 +138,12 @@ def parse_compound_table(
         row: dict[str, Any] = {"smiles": smiles}
         if selected_id and selected_id in fields:
             row["compound_id"] = _clean(raw.get(selected_id))
+        if selected_name and selected_name in fields:
+            row["compound_name"] = _clean(raw.get(selected_name))
         row["properties"] = {
             str(key): value
             for key, value in raw.items()
-            if key not in {selected_smiles, selected_id} and value not in (None, "")
+            if key not in {selected_smiles, selected_id, selected_name} and value not in (None, "")
         }
         rows.append(row)
     return normalize_compounds(rows)
@@ -169,7 +181,7 @@ def _parse_sdf(text: str) -> list[dict[str, Any]]:
                 f"SDF record {index} has no SMILES property and could not be converted. "
                 "Add a SMILES field to the SDF or import a CSV/SMI file."
             )
-        rows.append({"compound_id": compound_id, "smiles": smiles, "properties": properties})
+        rows.append({"compound_id": compound_id, "compound_name": compound_id, "smiles": smiles, "properties": properties})
     return normalize_compounds(rows)
 
 
@@ -214,13 +226,25 @@ def load_compound_set(path: Path) -> dict[str, Any]:
         raise ValueError(f"Could not read compound set {path}: {exc}") from exc
     if not isinstance(payload, dict) or payload.get("record_type") != "compound_set":
         raise ValueError("The selected database artifact is not a compound set.")
-    if payload.get("schema_version") != COMPOUND_SET_SCHEMA_VERSION:
+    schema_version = payload.get("schema_version")
+    if schema_version not in (1, COMPOUND_SET_SCHEMA_VERSION):
         raise ValueError(f"Unsupported compound-set schema version: {payload.get('schema_version')!r}.")
-    payload["compounds"] = normalize_compounds(payload.get("compounds") or [])
+    original_compounds = payload.get("compounds") or []
+    payload["compounds"] = normalize_compounds(original_compounds)
     content_sha256 = compound_content_sha256(payload["compounds"])
     recorded_digest = str(payload.get("content_sha256") or "")
+    if recorded_digest and recorded_digest != content_sha256 and schema_version == 1:
+        legacy = [
+            {key: row[key] for key in ("compound_id", "smiles", "properties") if key in row}
+            for row in payload["compounds"]
+        ]
+        legacy_canonical = json.dumps(legacy, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        legacy_digest = hashlib.sha256(legacy_canonical.encode("utf-8")).hexdigest()
+        if recorded_digest == legacy_digest:
+            recorded_digest = content_sha256
     if recorded_digest and recorded_digest != content_sha256:
         raise ValueError("The compound set failed its content-integrity check.")
+    payload["schema_version"] = COMPOUND_SET_SCHEMA_VERSION
     payload["content_sha256"] = content_sha256
     payload.setdefault("compound_set_id", f"cs-{content_sha256[:24]}")
     payload["compound_count"] = len(payload["compounds"])

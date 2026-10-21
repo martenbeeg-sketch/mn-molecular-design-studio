@@ -59,8 +59,25 @@ def _import_content(method):
             return []
         table = imports.read_table(upload.getvalue(), upload.name)
         columns = list(table.columns)
-        name_guess = _guess(columns, {"name", "id", "molecule", "candidate_id", "compound_id", "design_id"})
-        name_column = st.selectbox("Molecule name column", ["", *columns], index=(["", *columns].index(name_guess)), format_func=lambda value: value or "Generate names", key="molecular-import-name-column")
+        id_guess = _guess(columns, {"compound_id", "pubchem_cid", "catalog_id", "zinc_id", "candidate_id", "design_id", "id"})
+        name_guess = _guess(columns, {"compound_name", "preferred_name", "common_name", "molecule_name", "name", "molecule"})
+        identity_columns = st.columns(2)
+        id_options = ["", *columns]
+        name_options = ["", *columns]
+        id_column = identity_columns[0].selectbox(
+            "Molecule ID / compound ID column",
+            id_options,
+            index=id_options.index(id_guess) if id_guess in id_options else 0,
+            format_func=lambda value: value or "No separate ID",
+            key="molecular-import-id-column",
+        )
+        name_column = identity_columns[1].selectbox(
+            "Display name column",
+            name_options,
+            index=name_options.index(name_guess) if name_guess in name_options else 0,
+            format_func=lambda value: value or "Use ID as name, or generate a name",
+            key="molecular-import-name-column",
+        )
         defaults = [column for column in columns if column.lower().replace(" ", "_") in {"sequence", "protein_sequence", "binder_sequence", "target_sequence", "smiles", "canonical_smiles", "isomeric_smiles", "dna", "rna", "heavy", "light", "vh", "vl"}]
         signature = hashlib.sha256(upload.getvalue()).hexdigest()[:12]
         chain_columns = st.multiselect("Molecular chain columns", columns, default=defaults, key="molecular-import-chains-" + signature)
@@ -75,7 +92,10 @@ def _import_content(method):
             mapping[column] = {"type": kind, "chain": chain, "role": role}
         st.dataframe(table.head(5), hide_index=True, use_container_width=True)
         if mapping:
-            records = imports.parse_table(upload.getvalue(), upload.name, name_column=name_column, chain_columns=mapping)
+            records = imports.parse_table(
+                upload.getvalue(), upload.name, name_column=name_column,
+                id_column=id_column, chain_columns=mapping,
+            )
     elif method in {"FASTA", "Paste sequences"}:
         kind = st.selectbox("Sequence type", ["protein", "dna", "rna"], format_func=TYPE_LABELS.get, key="molecular-import-sequence-type")
         if method == "FASTA":
@@ -222,15 +242,28 @@ def cropped_record(record, chains):
 
 def _table_row(record):
     components = record["components"]
-    values = {"Name": record["name"], "Type": TYPE_LABELS[record["type"]], "Has structure": "Yes" if record["structures"] else "No",
+    metadata = record.get("metadata") or {}
+    compound_id = (metadata.get("compound_id") or metadata.get("pubchem_cid") or record["name"]) if record["type"] == "small_molecule" else ""
+    smiles = "; ".join(str(component.get("smiles") or "").strip() for component in components
+                        if component.get("type", record["type"]) == "small_molecule" and component.get("smiles"))
+    values = {"Compound ID": compound_id, "Name": record["name"], "SMILES": smiles,
+              "Type": TYPE_LABELS[record["type"]], "Has structure": "Yes" if record["structures"] else "No",
               "Origin": record.get("origin", {}).get("tool") or "User upload", "Added": record["created_at"][:10],
-              "Tags": record.get("metadata", {}).get("tags", ""), "Status": record.get("metadata", {}).get("status", ""),
-              "Notes": record.get("metadata", {}).get("notes", ""), **record.get("scores", {})}
+              "Tags": metadata.get("tags", ""), "Status": metadata.get("status", ""),
+              "Notes": metadata.get("notes", ""), **record.get("scores", {})}
     for component in components:
         label = component["chain"] + (" · lead" if component.get("role") == "lead" else "")
         values[label] = component.get("sequence") or component.get("smiles") or component.get("ccd")
-    values.update({"Property · " + key: value for key, value in record.get("metadata", {}).items() if isinstance(value, (str, int, float, bool))})
+    values.update({"Property · " + key: value for key, value in metadata.items()
+                   if key not in {"compound_id", "compound_name"} and isinstance(value, (str, int, float, bool))})
     return {"id": record["id"], "values": values}
+
+
+def _remote_source_workstation(origin):
+    """Return the source workstation for records replicated from another node."""
+    if not isinstance(origin, dict) or not origin.get("_replica_node"):
+        return ""
+    return str(origin.get("workstation") or "another workstation")
 
 
 def _structure_text(path, context):
@@ -255,6 +288,9 @@ def _structure_text(path, context):
 def render_details(database, user, record):
     st.markdown("**" + html.escape(record["name"]) + "**")
     st.caption(record["id"])
+    source_workstation = _remote_source_workstation(record.get("origin"))
+    if source_workstation:
+        st.caption("Synced from " + source_workstation)
     molecule_tab, scores_tab = st.tabs(["This molecule", "Group scores"])
     with molecule_tab:
         structures = record["structures"]
@@ -262,18 +298,42 @@ def render_details(database, user, record):
             selected = st.selectbox("Structure", range(len(structures)), format_func=lambda index: structures[index]["label"], key="database-structure-" + record["id"])
             structure = structures[selected]
             try:
+                if source_workstation and str(structure.get("path", "")).startswith("cluster-library://"):
+                    if structure.get("context", {}).get("portable"):
+                        st.caption(f"Portable Database copy · syncing from {source_workstation}.")
+                    else:
+                        st.caption(f"Structure file is hosted by {source_workstation} and retrieved when opened.")
                 path = database.structure_file(user, structure["id"])
                 st.download_button("Download structure", path.read_bytes(), file_name=record["name"][:70] + path.suffix, key="database-download-" + structure["id"])
+                if structure.get("context", {}).get("portable"):
+                    st.caption("This structure is stored in the shared Database and will be copied to other workstations during sync.")
+                else:
+                    try:
+                        database.group(structure["group_id"], user, write=True)
+                        if st.button("Make available on all computers", key="database-portable-" + structure["id"]):
+                            database.make_structure_portable(user, structure["id"])
+                            from mn_molecular_design_studio.cluster.replication import Replica
+                            from mn_molecular_design_studio.molecular_database_peer import capture
+                            capture(Replica())
+                            structure.setdefault("context", {})["portable"] = True
+                            st.success("Saved in the shared Database. Other workstations will receive it during sync.")
+                    except PermissionError:
+                        pass
                 if path.suffix.lower() in {".pdb", ".ent", ".cif", ".mmcif", ".sdf", ".mol", ".pdbqt"} and path.stat().st_size < 50_000_000:
                     from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer import molstar_custom_component
                     from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer.dataclasses import StructureVisualization
-                    representations = [StructureVisualization(pdb=_structure_text(path, structure["context"]), color="chain-id", representation_type="ball-and-stick" if record["type"] == "small_molecule" else "cartoon+ball-and-stick")]
+                    # Keep protein structures in cartoon form in the Database viewer so
+                    # side-chain atoms do not obscure the overall complex. Small
+                    # molecules remain ball-and-stick for chemical detail.
+                    representations = [StructureVisualization(pdb=_structure_text(path, structure["context"]), color="chain-id", representation_type="ball-and-stick" if record["type"] == "small_molecule" else "cartoon")]
                     target = structure["context"].get("target_path")
                     if target and Path(target).is_file():
                         representations.insert(0, StructureVisualization(pdb=Path(target).read_text(), color="uniform", color_params={"value": "318c70"}, representation_type="cartoon"))
                     molstar_custom_component(representations, key="database-molstar-" + structure["id"], height=310, show_controls=False, show_structure_tools=False)
             except (OSError, ValueError) as exc:
                 st.caption(str(exc))
+        elif source_workstation:
+            st.info(f"No structure file is attached to this synced Database record. Its source is {source_workstation}; the structure must be indexed on that workstation before it can be opened here.")
         for component in record["components"]:
             st.markdown(f"<p class='database-label'>{html.escape(component['chain'])} · {TYPE_LABELS[component['type']]}{(' · ' + html.escape(component['role'])) if component.get('role') else ''}</p>", unsafe_allow_html=True)
             if component.get("smiles"):
@@ -470,7 +530,14 @@ def render_database(user, projects):
             if st.session_state.get("database-selected-group") not in options:
                 st.session_state["database-selected-group"] = ""
             with st.container(height=560, border=False):
-                group_id = st.radio("Molecule groups", options, format_func=lambda value: next((f"{row['name']} · {row['molecule_count']:,}" for row in filtered_groups if row["id"] == value), "All molecules"), key="database-selected-group", label_visibility="collapsed")
+                def group_label(value):
+                    row = next((row for row in filtered_groups if row["id"] == value), None)
+                    if row is None:
+                        return "All molecules"
+                    label = f"{row['name']} · {row['molecule_count']:,}"
+                    source = _remote_source_workstation(row.get("origin"))
+                    return label + (f" · from {source}" if source else "")
+                group_id = st.radio("Molecule groups", options, format_func=group_label, key="database-selected-group", label_visibility="collapsed")
         group_name = next((row["name"] for row in groups if row["id"] == group_id), "All molecules")
         query_args = {"group_id": group_id, "project_id": project_id, "scope": scope, "methods": methods, "collection": collection}
         metric_fields = database.metric_fields(user, **query_args)
@@ -517,15 +584,15 @@ def render_database(user, projects):
             page = database.list_molecules(user, **args, limit=100, offset=(page_number-1)*100)
             records = page["items"]
             rows = [_table_row(record) for record in records]
-            basic_columns = ["Name", "Type", "Has structure"]
-            chain_columns = list(dict.fromkeys(key for row in rows for key in row["values"] if key not in {"Name", "Type", "Has structure", "Origin", "Added", "Tags", "Notes", "Status", *metric_fields} and not key.startswith("Property · ")))
+            basic_columns = ["Compound ID", "Name", "SMILES", "Type", "Has structure"]
+            chain_columns = list(dict.fromkeys(key for row in rows for key in row["values"] if key not in {"Compound ID", "Name", "SMILES", "Type", "Has structure", "Origin", "Added", "Tags", "Notes", "Status", *metric_fields} and not key.startswith("Property · ")))
             all_columns = [*basic_columns, *chain_columns, *metric_fields, "Origin", "Added", "Tags", "Notes", "Status", *list(dict.fromkeys(key for row in rows for key in row["values"] if key.startswith("Property · ")))]
             with st.popover("Columns", icon=":material/view_column:"):
                 key = "molecular-columns-" + hashlib.sha1((group_id + "|".join(all_columns)).encode()).hexdigest()[:12]
                 preferred = [PREFIX + key for key in ("design.sequence_length", "geometry.binder.ca_rg", "secondary_structure.binder.dssp.helix_fraction") if PREFIX + key in metric_fields]
                 columns = st.multiselect("Visible columns", all_columns, default=[*basic_columns, *chain_columns[:2], *(preferred or metric_fields[:3])], format_func=field_label, key=key)
                 st.caption("Common measurements share a definition and unit across tools. Original tool fields are also available.")
-            columns = list(dict.fromkeys(["Name", *columns]))
+            columns = list(dict.fromkeys(["Compound ID", "Name", *columns]))
             if records:
                 from mn_molecular_design_studio.molecule_table import render_table
                 current_focus = st.session_state.get("database-focus")

@@ -478,6 +478,7 @@ def search_jobs(
     access_admin: bool = False,
     limit: int = 100,
     offset: int = 0,
+    sort_by: str = "created_desc",
     cursor: str | None = None,
     include_hidden: bool = False,
 ) -> dict[str, Any]:
@@ -487,6 +488,22 @@ def search_jobs(
         raise ValueError("limit must be between 1 and 1000")
     if type(offset) is not int or offset < 0:
         raise ValueError("offset must be a non-negative integer")
+    order_by = {
+        "created_desc": "j.created_at DESC, j.run_id DESC",
+        "finished_desc": (
+            "CASE WHEN lower(j.status) IN ('completed','succeeded','failed','cancelled','canceled') "
+            "THEN 0 ELSE 1 END ASC, "
+            "COALESCE(NULLIF(j.completed_at,''), NULLIF(j.updated_at,''), j.created_at) DESC, "
+            "j.created_at DESC, j.run_id DESC"
+        ),
+        "name_asc": (
+            "lower(COALESCE(NULLIF(j.campaign_name,''), NULLIF(j.tool,''), NULLIF(j.job_type,''), j.run_id)) ASC, "
+            "j.created_at DESC, j.run_id DESC"
+        ),
+        "status_asc": "replace(lower(j.status), '_', ' ') ASC, j.created_at DESC, j.run_id DESC",
+    }.get(sort_by)
+    if order_by is None:
+        raise ValueError("sort_by must be created_desc, finished_desc, name_asc, or status_asc")
     if cursor is not None:
         try:
             cursor_offset = int(cursor)
@@ -540,7 +557,7 @@ def search_jobs(
             total = int(connection.execute("SELECT count(*) FROM jobs j WHERE " + where, params).fetchone()[0])
             rows = connection.execute(
                 "SELECT j.* FROM jobs j WHERE " + where
-                + " ORDER BY j.created_at DESC, j.run_id DESC LIMIT ? OFFSET ?",
+                + " ORDER BY " + order_by + " LIMIT ? OFFSET ?",
                 [*params, limit, offset],
             ).fetchall()
     except sqlite3.OperationalError as exc:
@@ -556,7 +573,7 @@ def search_jobs(
             total = int(connection.execute("SELECT count(*) FROM jobs j WHERE " + where, like_params).fetchone()[0])
             rows = connection.execute(
                 "SELECT j.* FROM jobs j WHERE " + where
-                + " ORDER BY j.created_at DESC, j.run_id DESC LIMIT ? OFFSET ?",
+                + " ORDER BY " + order_by + " LIMIT ? OFFSET ?",
                 [*like_params, limit, offset],
             ).fetchall()
     items = []

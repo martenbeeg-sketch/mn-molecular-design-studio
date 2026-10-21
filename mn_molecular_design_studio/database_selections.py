@@ -36,10 +36,15 @@ def freeze_protein_selection(database, user, ids, project_id, *, name="Database 
                            "binder_sequence": lead["sequence"], "binder_chains": [lead["chain"]],
                            "target_chains": [row["chain"] for row in record["components"] if row["chain"] != lead["chain"]],
                            "complex_pdb": str(path) if path else None, "binder_pdb": str(path) if path and len(record["components"]) == 1 else None,
-                           "metrics": {"library_selection": True}, "raw_metadata": {"studio_molecule_id": identifier, "components": record["components"]},
+                           "metrics": {"library_selection": True}, "raw_metadata": {
+                               "studio_molecule_id": identifier, "name": record["name"],
+                               "metadata": record.get("metadata") or {}, "components": record["components"],
+                           },
                            "parents": [{"molecule_id": identifier}]})
     write_json(job.run_dir / "selection_snapshot.json", {"schema_version": 1, "owner_id": user["id"], "project_id": project_id,
-               "molecule_ids": ids, "molecules": [{"id": row["id"], "components": row["components"]} for row in records]})
+               "molecule_ids": ids, "molecules": [{"id": row["id"], "name": row["name"],
+                                                     "metadata": row.get("metadata") or {},
+                                                     "components": row["components"]} for row in records]})
     write_candidates(job.run_dir, "database_selection", candidates)
     finish_job(job.run_dir, True, {"outputs": {"selection": "selection_snapshot.json"}, "metrics": {"molecule_count": len(ids)}})
     mark_studio_job({"run_dir": str(job.run_dir)}, project_id=project_id, owner_id=user["id"])
@@ -67,6 +72,8 @@ def open_in_pipeline(database, user, ids, project_id):
 def editor_model(record):
     from mn_molecular_design_studio.cofolding_input import default_model
     model = default_model()
+    model["compound_name"] = str(record.get("name") or "")
+    model["compound_id"] = str((record.get("metadata") or {}).get("compound_id") or record.get("name") or "")
     model["cards"] = []
     for index, component in enumerate(record["components"], 1):
         ligand = component["type"] == "small_molecule"

@@ -59,6 +59,64 @@ def test_rankings_are_per_complex_and_missing_primary_scores_sort_last():
     assert [row['metrics']['ranking_score'] for row in ranked] == [.9, .7, None, .5, .1]
 
 
+def test_batch_summary_keeps_compounds_separate_and_picks_each_best_model():
+    candidates = [
+        {'candidate_id': 'bepristat_a_low', 'raw_metadata': {'batch_item_id': 'task-a', 'source_compound_id': 'Bepristat_1a'},
+         'metrics': {'ranking_score': .61}},
+        {'candidate_id': 'rutin_best', 'raw_metadata': {'batch_item_id': 'task-r', 'source_compound_id': 'Rutin'},
+         'metrics': {'ranking_score': .92}},
+        {'candidate_id': 'bepristat_a_best', 'raw_metadata': {'batch_item_id': 'task-a', 'source_compound_id': 'Bepristat_1a'},
+         'metrics': {'ranking_score': .87}},
+        {'candidate_id': 'rutin_low', 'raw_metadata': {'batch_item_id': 'task-r', 'source_compound_id': 'Rutin'},
+         'metrics': {'ranking_score': .45}},
+    ]
+
+    best = results.best_candidates_by_complex(candidates)
+
+    assert [results.complex_label(item) for item in best] == ['Bepristat_1a', 'Rutin']
+    assert [item['candidate_id'] for item in best] == ['bepristat_a_best', 'rutin_best']
+
+
+def test_complex_label_uses_task_name_when_no_compound_id_exists():
+    assert results.complex_label({'raw_metadata': {'input_name': 'sequence_7'}}, 'Complex 7') == 'sequence_7'
+
+
+def test_compound_identity_keeps_id_name_and_smiles_separate():
+    candidate = {"raw_metadata": {
+        "compound_id": "CID-5291", "compound_name": "Imatinib", "ligand_smiles": ["CCN", "CO"],
+    }}
+    assert results.compound_identity(candidate) == {
+        "compound_id": "CID-5291", "compound_name": "Imatinib", "smiles": "CCN; CO",
+    }
+    assert results.complex_label(candidate) == "CID-5291 · Imatinib"
+
+
+def test_summary_groups_old_candidates_by_input_name_without_batch_ids():
+    candidates = [
+        {'candidate_id': 'seq-a-model-2', 'raw_metadata': {'input_name': 'sequence_A'}, 'metrics': {'ranking_score': .5}},
+        {'candidate_id': 'seq-b-model-1', 'raw_metadata': {'input_name': 'sequence_B'}, 'metrics': {'ranking_score': .7}},
+        {'candidate_id': 'seq-a-model-1', 'raw_metadata': {'input_name': 'sequence_A'}, 'metrics': {'ranking_score': .8}},
+    ]
+
+    best = results.best_candidates_by_complex(candidates)
+
+    assert [item['candidate_id'] for item in best] == ['seq-a-model-1', 'seq-b-model-1']
+
+
+def test_prediction_input_labels_fill_names_missing_from_older_candidate_metadata(tmp_path):
+    path = tmp_path / 'artifacts/raw/optimized_prediction/input_mapping.json'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({'items': [
+        {'id': 'task-a', 'name': 'Bepristat_1a'},
+        {'id': 'task-b', 'name': 'Rutin'},
+    ]}))
+    labels = results.prediction_input_labels(tmp_path)
+
+    candidate = {'raw_metadata': {'batch_item_id': 'task-b'}}
+    assert labels == {'task-a': 'Bepristat_1a', 'task-b': 'Rutin'}
+    assert results.complex_label(candidate, 'Complex 2', labels) == 'Rutin'
+
+
 def test_model_sidecars_are_exact_and_job_paths_cannot_escape(tmp_path):
     model = tmp_path / 'job_sample_1.cif'
     model.touch()

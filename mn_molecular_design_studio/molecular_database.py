@@ -218,7 +218,7 @@ class MolecularDatabase:
 
     def _store_file(self, name: str, content: bytes) -> Path:
         suffix = Path(name).suffix.lower()
-        if suffix not in {".pdb", ".ent", ".cif", ".mmcif", ".sdf", ".mol", ".fasta", ".fa"}:
+        if suffix not in {".pdb", ".ent", ".cif", ".mmcif", ".pdbqt", ".sdf", ".mol", ".fasta", ".fa"}:
             raise ValueError("Unsupported molecular structure file.")
         digest = hashlib.sha256(content).hexdigest()
         directory = self.root / "molecular_files" / digest[:2]
@@ -275,6 +275,26 @@ class MolecularDatabase:
                 path.suffix.lower().lstrip("."), _json(structure_context), stamp))
             connection.execute("UPDATE molecule_groups SET updated_at=? WHERE id=?", (stamp, group_id))
         return structure_id
+
+    def make_structure_portable(self, user, structure_id):
+        """Keep a structure in the Database store so peer workstations can replicate it."""
+        with self.connection() as connection:
+            row = connection.execute("SELECT * FROM molecule_structures WHERE id=?", (structure_id,)).fetchone()
+        if not row:
+            raise FileNotFoundError("Structure not found.")
+        self.group(row["group_id"], user, write=True)
+        source = Path(row["path"])
+        if not source.is_file():
+            raise FileNotFoundError("The source structure is unavailable on this workstation.")
+        content = source.read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        destination = self._store_file(source.name, content)
+        context = json.loads(row["context"])
+        context.update(portable=True, portable_sha256=digest)
+        with self.connection() as connection:
+            connection.execute("UPDATE molecule_structures SET path=?,context=? WHERE id=?",
+                               (str(destination), _json(context), structure_id))
+        return {"structure_id": structure_id, "path": str(destination), "sha256": digest}
 
     def _visible_ids(self, user, group_id="", project_id="", scope="organization", methods=None, collection="all"):
         groups = self.groups(user, project_id=project_id, scope=scope, methods=methods, collection=collection)
@@ -503,11 +523,13 @@ class MolecularDatabase:
             components = row["components"]
             if len(components) != 1 or components[0]["type"] != "small_molecule" or not components[0].get("smiles"):
                 raise ValueError("This selection must contain only compounds with known SMILES.")
-            compound_id = re_safe(row["name"])[:80] or row["id"]
+            metadata = row.get("metadata") or {}
+            compound_id = re_safe(metadata.get("compound_id") or metadata.get("pubchem_cid")
+                                  or metadata.get("catalog_id") or row["name"])[:80] or row["id"]
             if compound_id.casefold() in seen:
                 compound_id += "-" + row["id"][-8:]
             seen.add(compound_id.casefold())
-            compounds.append({"compound_id": compound_id, "smiles": components[0]["smiles"],
+            compounds.append({"compound_id": compound_id, "compound_name": row["name"], "smiles": components[0]["smiles"],
                               "properties": {**row["metadata"], "studio_molecule_id": row["id"]}})
         digest = hashlib.sha256(_json([user["id"], project_id, compounds]).encode()).hexdigest()
         from mn_molecular_design_studio.auth import user_input_root

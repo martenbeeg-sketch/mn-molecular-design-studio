@@ -325,7 +325,15 @@ def apply_record(kind, key, value, author, *, database=None):
             if context.get("target_structure_id"):
                 context["target_structure_id"] = _id("peer-structure-", author + ":" + context["target_structure_id"])
             structure_id = _id("peer-structure-", author + ":" + row["id"])
-            connection.execute("INSERT OR REPLACE INTO molecule_structures VALUES (?,?,?,?,?,?,?,?)", (structure_id, molecule_id, group_id, "cluster-library://" + author + "/" + row["id"], row["label"], row["format"], _json(context), row["created_at"]))
+            structure_path = "cluster-library://" + author + "/" + row["id"]
+            existing_structure = connection.execute("SELECT path,context FROM molecule_structures WHERE id=?", (structure_id,)).fetchone()
+            if context.get("portable") is True and existing_structure and not str(existing_structure["path"]).startswith("cluster-library://"):
+                existing_context = _object_json(existing_structure["context"], "existing structure context")
+                existing_path = Path(existing_structure["path"])
+                if (existing_context.get("portable") is True and existing_path.is_file()
+                        and _digest(existing_path) == digest):
+                    structure_path = str(existing_path)
+            connection.execute("INSERT OR REPLACE INTO molecule_structures VALUES (?,?,?,?,?,?,?,?)", (structure_id, molecule_id, group_id, structure_path, row["label"], row["format"], _json(context), row["created_at"]))
         current_observations = set()
         for row, context in observations:
             current_observations.add(_id("peer-score-", author + ":" + row["id"]))
@@ -382,6 +390,57 @@ def fetch_structure(row, user):
     return path
 
 
+def materialize_portable_structures(*, database=None, peer=None):
+    """Cache portable peer structures in this workstation's shared Database store."""
+    from mn_molecular_design_studio.cluster import config, transport
+
+    database = database or MolecularDatabase()
+    peers = [peer] if peer else [item for item in config.load().get("peers", []) if item.get("id") and item.get("url")]
+    peers = [item for item in peers if item and item.get("id") and item.get("url")]
+    with database.connection() as connection:
+        rows = connection.execute(
+            "SELECT s.*,g.owner_id FROM molecule_structures s "
+            "JOIN molecule_groups g ON g.id=s.group_id WHERE s.path LIKE 'cluster-library://%'"
+        ).fetchall()
+    materialized = 0
+    for row in rows:
+        context = _object_json(row["context"], "structure context")
+        if context.get("portable") is not True:
+            continue
+        source_node = str(context.get("_replica_node") or "")
+        source_structure = str(context.get("_replica_structure") or "")
+        digest = str(context.get("portable_sha256") or context.get("sha256") or "")
+        if not source_node or not source_structure or not _SHA256.fullmatch(digest):
+            continue
+        local_id = _id("peer-structure-", source_node + ":" + source_structure)
+        content = None
+        for remote_peer in peers:
+            remote_structure_id = source_structure if remote_peer["id"] == source_node else local_id
+            try:
+                content = transport.node_request(
+                    "/molecules/structures/" + remote_structure_id,
+                    {"user_id": row["owner_id"]}, method="POST", base_url=remote_peer["url"], raw=True, timeout=60,
+                )
+            except (transport.ClusterUnavailable, OSError, ValueError):
+                continue
+            if hashlib.sha256(content).hexdigest() == digest:
+                break
+            content = None
+        if content is None:
+            continue
+        destination = database._store_file("portable." + str(row["format"] or "pdb"), content)
+        with database.connection() as connection:
+            current = connection.execute("SELECT context,path FROM molecule_structures WHERE id=?", (row["id"],)).fetchone()
+            if not current:
+                continue
+            current_context = _object_json(current["context"], "structure context")
+            if (current_context.get("portable") is True
+                    and current_context.get("portable_sha256", current_context.get("sha256")) == digest):
+                connection.execute("UPDATE molecule_structures SET path=? WHERE id=?", (str(destination), row["id"]))
+                materialized += 1
+    return materialized
+
+
 def install_routes(app):
     from fastapi import APIRouter, Body, HTTPException, Request
     from fastapi.responses import FileResponse
@@ -405,5 +464,24 @@ def install_routes(app):
             path = database.structure_file(user, structure_id)
             return FileResponse(path, filename=path.name)
         except (PermissionError, FileNotFoundError) as exc:
+            raise HTTPException(404, "Structure not found or inaccessible.") from exc
+
+    @router.post("/structures/{structure_id}/portable")
+    def mark_portable(structure_id: str, request: Request, payload: dict = Body(...)):
+        authorization = request.headers.get("authorization", "")
+        try:
+            if not authorization.startswith("Bearer "):
+                raise PermissionError("A workstation credential is required.")
+            Store().authenticate_node(authorization[7:])
+            user = next((row for row in auth.list_users() if row["id"] == payload.get("user_id") and not row.get("disabled")), None)
+            if not user and auth.is_development_mode() and payload.get("user_id") == auth.development_user()["id"]:
+                user = auth.development_user()
+            if not user:
+                raise PermissionError("Unknown or disabled user.")
+            result = MolecularDatabase().make_structure_portable(user, structure_id)
+            from mn_molecular_design_studio.cluster.replication import Replica
+            capture(Replica())
+            return result
+        except (PermissionError, FileNotFoundError, ValueError) as exc:
             raise HTTPException(404, "Structure not found or inaccessible.") from exc
     app.include_router(router)

@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import logging
+import re
 import socket
 import time
 from pathlib import Path
@@ -62,6 +63,28 @@ def _record(candidate, run_dir):
             components = imports.canonical_components(raw_components)[0]
         except (KeyError, TypeError, ValueError):
             components = None
+    raw_metadata = candidate.get("raw_metadata") or {}
+    small_molecules = [component for component in components or [] if component.get("type") == "small_molecule"]
+    raw_smiles = raw_metadata.get("ligand_smiles") or []
+    if isinstance(raw_smiles, (str, dict)):
+        raw_smiles = [raw_smiles]
+    smiles_values = [
+        str(value.get("smiles") or value.get("value") or "").strip() if isinstance(value, dict)
+        else str(value or "").strip()
+        for value in raw_smiles if isinstance(value, (str, dict))
+    ]
+    smiles_values = [value for value in smiles_values if value]
+    if small_molecules and len(smiles_values) == len(small_molecules):
+        for component, smiles in zip(small_molecules, smiles_values):
+            component["smiles"] = smiles
+            component.pop("ccd", None)
+    raw_ccd = raw_metadata.get("ligand_ccd_codes") or []
+    if isinstance(raw_ccd, str):
+        raw_ccd = [value for value in re.split(r"[\s,;]+", raw_ccd) if value]
+    if small_molecules and not smiles_values and isinstance(raw_ccd, list) and len(raw_ccd) == len(small_molecules):
+        for component, ccd in zip(small_molecules, raw_ccd):
+            if isinstance(ccd, str) and ccd.strip():
+                component["ccd"] = ccd.strip()
     if components is None and sequence:
         components = imports.parse_sequences(str(sequence))[0]["components"]
         designed_chains = list(candidate.get("binder_chains") or [])
@@ -82,11 +105,76 @@ def _record(candidate, run_dir):
     identity_context = None
     if unresolved and files:
         identity_context = {"unsequenced_backbone": hashlib.sha256(Path(files[0]["path"]).read_bytes()).hexdigest()}
-    return {"name": candidate.get("candidate_id") or "Molecule", "components": components, "files": files,
+    return {"name": raw_metadata.get("compound_name") or raw_metadata.get("source_compound_name")
+            or raw_metadata.get("source_compound_id") or raw_metadata.get("input_name")
+            or candidate.get("candidate_id") or "Molecule", "components": components, "files": files,
             "identity_context": identity_context,
-            "metadata": {"status": (candidate.get("raw_metadata") or {}).get("status") or ("Unsequenced backbone" if unresolved else ""),
-                         **(candidate.get("raw_metadata") or {}), "stage": candidate.get("stage"), "source_tool": candidate.get("source_tool"),
+            "metadata": {"status": raw_metadata.get("status") or ("Unsequenced backbone" if unresolved else ""),
+                         **raw_metadata, "stage": candidate.get("stage"), "source_tool": candidate.get("source_tool"),
                          "output_kind": (candidate.get("normalized_output") or {}).get("kind")}}
+
+
+def _prediction_tasks_by_id(run_dir, inputs):
+    """Associate older prediction candidates with their saved task inputs."""
+    nested = inputs.get("inputs") if isinstance(inputs.get("inputs"), dict) else {}
+    tasks = nested.get("tasks") if isinstance(nested.get("tasks"), list) else inputs.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        return {}
+    tasks_by_name = {}
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        for key in ("name", "source_input_name", "source_compound_id"):
+            if task.get(key):
+                tasks_by_name[str(task[key])] = task
+    result = {}
+    for relative in (
+        "artifacts/raw/optimized_prediction/input_mapping.json",
+        "artifacts/raw/af3_jax_cofolding/input_mapping.json",
+    ):
+        mapping = _read(Path(run_dir) / relative)
+        rows = mapping.get("items") if isinstance(mapping.get("items"), list) else []
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("id"):
+                continue
+            task = next(
+                (tasks_by_name[str(row[key])] for key in ("source_input_name", "name")
+                 if row.get(key) and str(row[key]) in tasks_by_name),
+                None,
+            )
+            if task is not None:
+                result[str(row["id"])] = task
+    return result
+
+
+def _attach_prediction_input(candidate, tasks_by_id):
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    task = tasks_by_id.get(str(raw.get("batch_item_id") or ""))
+    if not task:
+        return candidate
+    enriched_raw = dict(raw)
+    task_name = str(task.get("source_input_name") or task.get("name") or "").strip()
+    if task_name:
+        enriched_raw.setdefault("input_name", task_name)
+    compound_name = str(task.get("compound_name") or task_name).strip()
+    if compound_name:
+        enriched_raw.setdefault("compound_name", compound_name)
+        enriched_raw.setdefault("source_compound_name", compound_name)
+    compound_id = str(task.get("compound_id") or task.get("source_compound_id") or "").strip()
+    if compound_id:
+        enriched_raw.setdefault("compound_id", compound_id)
+        enriched_raw.setdefault("source_compound_id", compound_id)
+    ligand_smiles = task.get("ligand_smiles") or []
+    if isinstance(ligand_smiles, (str, dict)):
+        ligand_smiles = [ligand_smiles]
+    if isinstance(ligand_smiles, list) and ligand_smiles:
+        enriched_raw.setdefault("ligand_smiles", ligand_smiles)
+        if len(ligand_smiles) == 1 and task_name:
+            enriched_raw.setdefault("source_compound_id", task_name)
+    ligand_ccd_codes = task.get("ligand_ccd_codes") or []
+    if ligand_ccd_codes:
+        enriched_raw.setdefault("ligand_ccd_codes", ligand_ccd_codes)
+    return {**candidate, "raw_metadata": enriched_raw}
 
 
 def _candidate_rejected(candidate):
@@ -219,6 +307,86 @@ def _numeric(values):
     return result
 
 
+def _is_cofolding_prediction(tool, metadata, inputs, mode):
+    if mode != "evaluation":
+        return False
+    text = " ".join(str(mapping.get(key) or "") for mapping in (metadata, inputs, inputs.get("params") or {})
+                    for key in ("tool", "workflow", "workflow_id", "engine", "task")).casefold().replace("-", "_")
+    text = f"{text} {tool}".casefold().replace("-", "_")
+    return not any(token in text for token in ("docking", "vina", "gnina", "rosetta_ligand", "unidock", "autodock")) and any(
+        token in text for token in ("optimized_prediction", "boltz", "af3", "alphafold3", "chai", "cofold", "esmfold")
+    )
+
+
+def _enrich_prediction_candidates(run_dir, candidates):
+    """Read the same confidence sidecars used by the cofolding results page."""
+    from mn_molecular_design_studio.cofolding_results import enrich_candidate
+
+    return [enrich_candidate(run_dir, candidate) for candidate in candidates]
+
+
+def _best_docking_pose_indices(rows, pose_paths):
+    """Choose one pose per compound, preferring explicit pose rank then score."""
+    def number(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def sort_key(index):
+        row = rows[index]
+        rank = next((number(row.get(key)) for key in ("pose_rank", "rank") if number(row.get(key)) is not None), None)
+        score = None
+        score_direction = 1
+        for key in ("estimated_dg_reu", "best_score_kcal_mol", "score", "total_score_reu", "cnn_score", "cnn_affinity"):
+            value = number(row.get(key))
+            if value is not None:
+                score = value
+                score_direction = -1 if key in {"cnn_score", "cnn_affinity"} else 1
+                break
+        # Engine-provided pose rank is the primary ordering. A score resolves
+        # replicate ties; without a rank, use the tool's score direction.
+        if rank is not None:
+            return (0, rank, score * score_direction if score is not None else 0.0, index)
+        return (1, score * score_direction if score is not None else 0.0, index)
+
+    candidates = {}
+    for index, path in enumerate(pose_paths):
+        compound_id = str(rows[index].get("compound_id") or "").strip()
+        if path is not None and compound_id:
+            candidates.setdefault(compound_id, []).append(index)
+    return {min(indices, key=sort_key) for indices in candidates.values()}
+
+
+def _prune_stale_run_structures(database, task_group, run_id, keep_ids, *, candidate_ids=None, docking=False):
+    """Drop superseded indexed models/poses while preserving saved curated copies."""
+    candidate_ids = {str(value) for value in (candidate_ids or []) if value}
+    keep_ids = set(keep_ids)
+    if not candidate_ids and not docking:
+        return
+    with database.connection() as connection:
+        rows = connection.execute(
+            "SELECT s.id,s.context,g.origin FROM molecule_structures s "
+            "JOIN molecule_groups g ON g.id=s.group_id"
+        ).fetchall()
+        for row in rows:
+            context = json.loads(row["context"])
+            if (str(context.get("task_group") or "") != str(task_group)
+                    or str(context.get("run_id") or "") != str(run_id)):
+                continue
+            try:
+                group_origin = json.loads(row["origin"])
+            except (TypeError, ValueError):
+                group_origin = {}
+            if group_origin.get("collection_kind") == "curated":
+                continue
+            is_candidate = str(context.get("candidate_id") or "") in candidate_ids
+            is_pose = ("pose_rank" in context or "compound_id" in (context.get("row") or {})
+                       or context.get("database_structure_policy") == "best_docking_pose")
+            if (is_candidate or (docking and is_pose)) and row["id"] not in keep_ids:
+                connection.execute("DELETE FROM molecule_structures WHERE id=?", (row["id"],))
+
+
 def ingest_run(run_dir: Path, *, database=None, force=False):
     from mn_molecular_design_studio.workspace import is_studio_job
     from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
@@ -238,8 +406,10 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         "artifacts/normalized_candidates/candidates.jsonl", "artifacts/input/compound_set.json",
         "artifacts/generated_compound_set.json", "artifacts/generated_compounds.sdf",
         "artifacts/docking_scores.csv", "artifacts/nesso_affinity.csv", "artifacts/input/receptor.pdb",
-        "artifacts/input/target.pdb", "artifacts/input/complex.pdb")]
-    signature = _json({"ingestion_version": 3, "files": [
+        "artifacts/input/target.pdb", "artifacts/input/complex.pdb",
+        "artifacts/raw/optimized_prediction/input_mapping.json",
+        "artifacts/raw/af3_jax_cofolding/input_mapping.json")]
+    signature = _json({"ingestion_version": 5, "files": [
         (str(path.relative_to(run_dir)), path.stat().st_mtime_ns, path.stat().st_size)
         for path in observed_paths if path.is_file()]})
     with database.connection() as connection:
@@ -274,12 +444,24 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         return _ensure_group(database, user, group_id, name if kind != "evaluation" else "Evaluated structures",
                              project, output_method, origin, kind)
 
-    candidates = read_candidates(run_dir)
+    task_inputs_by_id = _prediction_tasks_by_id(run_dir, inputs)
+    candidates = [
+        _attach_prediction_input(candidate, task_inputs_by_id)
+        for candidate in read_candidates(run_dir)
+    ]
+    prediction_run = _is_cofolding_prediction(tool, metadata, inputs, mode)
+    best_prediction_ids = set()
+    if prediction_run and candidates:
+        candidates = _enrich_prediction_candidates(run_dir, candidates)
     candidate_records = []
     for candidate in candidates:
         record = _record(candidate, run_dir)
         if record is not None:
             candidate_records.append((candidate, record))
+    if prediction_run and candidate_records:
+        from mn_molecular_design_studio.cofolding_results import best_candidates_by_complex
+        with_structures = [candidate for candidate, record in candidate_records if record.get("files")]
+        best_prediction_ids = {id(candidate) for candidate in best_candidates_by_complex(with_structures)}
 
     input_set_path = run_dir / "artifacts/input/compound_set.json"
     generated_set_path = run_dir / "artifacts/generated_compound_set.json"
@@ -294,6 +476,8 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     # Register generated and explicitly imported candidates in the library.
     # Backbone-only, rejected, and unmatched intermediate proposals stay in
     # the all-indexed view; evaluation outputs reuse an exact input identity.
+    preferred_prediction_structure_ids = set()
+    prediction_candidate_ids = set()
     for candidate, record in candidate_records:
         stage = str(candidate.get("stage") or "")
         sequence = candidate.get("binder_sequence") or candidate.get("sequence")
@@ -302,36 +486,51 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         provenance = {**origin, "candidate_id": candidate.get("candidate_id"), "parents": candidate.get("parents") or []}
         candidate_id = str(candidate.get("candidate_id") or _canonical_fingerprint(record))
         source_for_molecule = f"{source_key}:{candidate_id}"
+        prediction_candidate_ids.add(candidate_id)
+        identity_record = {**record, "files": []}
 
         if mode == "curated":
             destination = output_group("curated")
             with database.connection() as connection:
-                molecule_id = database._put(connection, destination, record, source_key=source_for_molecule, origin=provenance, stamp=stamp)
+                molecule_id = database._put(connection, destination, identity_record, source_key=source_for_molecule, origin=provenance, stamp=stamp)
         elif not rejected and not is_backbone and (mode == "generated" or (mode == "auto" and stage in {"sequence_design", "generation.backbone_sequence"})):
             destination = output_group("generated")
             with database.connection() as connection:
-                molecule_id = database._put(connection, destination, record, source_key=source_for_molecule, origin=provenance, stamp=stamp)
+                molecule_id = database._put(connection, destination, identity_record, source_key=source_for_molecule, origin=provenance, stamp=stamp)
         elif not rejected and not is_backbone:
             molecule_id, destination, matched = _find_original_group(database, user["id"], project, record, candidate)
             if not matched:
                 if mode == "evaluation" or stage in {"complex_refolding", "analysis", "benchmark", "monomer_refolding"}:
                     destination = output_group("evaluation")
                     with database.connection() as connection:
-                        molecule_id = database._put(connection, destination, record, source_key=source_for_molecule,
+                        molecule_id = database._put(connection, destination, identity_record, source_key=source_for_molecule,
                                                     origin=provenance, stamp=stamp)
                 else:
                     destination = output_group("intermediate")
                     with database.connection() as connection:
-                        molecule_id = database._put(connection, destination, record, source_key=source_for_molecule,
+                        molecule_id = database._put(connection, destination, identity_record, source_key=source_for_molecule,
                                                     origin=provenance, stamp=stamp)
             else:
                 _put_source(database, destination, molecule_id, source_for_molecule, provenance)
-                for item in record.get("files") or []:
-                    database.attach_structure(destination, molecule_id, item, context=provenance, created_at=stamp)
         else:
             destination = output_group("intermediate")
             with database.connection() as connection:
-                molecule_id = database._put(connection, destination, record, source_key=source_for_molecule, origin=provenance, stamp=stamp)
+                molecule_id = database._put(connection, destination, identity_record, source_key=source_for_molecule, origin=provenance, stamp=stamp)
+
+        attach_candidate_structure = not prediction_run or id(candidate) in best_prediction_ids
+        candidate_files = (record.get("files") or []) if attach_candidate_structure else []
+        for item in candidate_files:
+            selected_item = dict(item)
+            if prediction_run:
+                selected_item["database_structure_policy"] = "best_prediction"
+            structure_id = database.attach_structure(destination, molecule_id, selected_item,
+                                                    context=provenance, created_at=stamp)
+            # These are the representative structures users expect to open
+            # from any workstation. Keep a content-addressed copy in the
+            # shared Database store before peer replication captures the row.
+            database.make_structure_portable(user, structure_id)
+            if prediction_run:
+                preferred_prediction_structure_ids.add(structure_id)
 
         candidate_groups[candidate_id] = (molecule_id, destination)
         seen_molecules.add(molecule_id)
@@ -349,6 +548,10 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                 context={**provenance, "candidate": candidate_context, "settings": settings},
                 source_key=f"{source_for_molecule}:metrics", created_at=stamp)
 
+    if prediction_run:
+        _prune_stale_run_structures(database, run_dir.parent.name, run_dir.name,
+                                    preferred_prediction_structure_ids, candidate_ids=prediction_candidate_ids)
+
     # The ligand contracts preserve exactly the consumed and generated sets.
     compound_rows = {}
     set_paths = [(input_set_path, False), (generated_set_path, True)]
@@ -359,8 +562,9 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         payload = load_compound_set(path)
         destination = output_group("generated") if generated else None
         for index, compound in enumerate(payload["compounds"]):
-            record = {"name": compound["compound_id"], "components": [{"type": "small_molecule", "chain": "L", "smiles": compound["smiles"]}],
-                      "metadata": {**(compound.get("properties") or {}), "source_tool": tool, "stage": "generated" if generated else "input"}}
+            record = {"name": compound.get("compound_name") or compound["compound_id"], "components": [{"type": "small_molecule", "chain": "L", "smiles": compound["smiles"]}],
+                      "metadata": {**(compound.get("properties") or {}), "compound_id": compound["compound_id"],
+                                   "source_tool": tool, "stage": "generated" if generated else "input"}}
             coordinates = run_dir / "artifacts/generated_compounds.sdf"
             if generated and coordinates.is_file():
                 record["files"] = [{"path": str(coordinates), "label": "Generated coordinates", "molecule_index": index}]
@@ -413,23 +617,37 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                "settings": params, "units": (result.get("metrics") or {}).get("score_units"),
                "primary_ranking_metric": (result.get("metrics") or {}).get("primary_ranking_metric"),
                "ranking_direction": (result.get("metrics") or {}).get("ranking_direction")}
+    preferred_docking_structure_ids = set()
+    has_docking_scores = False
     for filename in ("docking_scores.csv", "nesso_affinity.csv"):
         path = run_dir / "artifacts" / filename
         if not path.is_file():
             continue
         text = path.read_text(errors="replace")
         reader = csv.DictReader(io.StringIO(text), delimiter="\t" if "\t" in text.partition("\n")[0] else ",")
-        for index, row in enumerate(reader):
+        rows = list(reader)
+        pose_paths = [_path(row.get("pose_path"), run_dir) for row in rows]
+        best_pose_indices = _best_docking_pose_indices(rows, pose_paths) if filename == "docking_scores.csv" else set()
+        if filename == "docking_scores.csv":
+            has_docking_scores = True
+        for index, row in enumerate(rows):
             match = compound_rows.get(str(row.get("compound_id") or ""))
             if not match:
                 continue
             molecule_id, destination, record = match
-            pose = _path(row.get("pose_path"), run_dir)
-            if pose:
-                database.attach_structure(destination, molecule_id, {"path": str(pose), "label": f"{tool} pose {row.get('pose_rank') or index+1}"},
-                                          context={**context, "pose_rank": row.get("pose_rank")}, created_at=stamp)
+            pose = pose_paths[index]
+            if filename == "docking_scores.csv" and index in best_pose_indices and pose:
+                structure_id = database.attach_structure(
+                    destination, molecule_id,
+                    {"path": str(pose), "label": f"{tool} best pose", "database_structure_policy": "best_docking_pose"},
+                    context={**context, "pose_rank": row.get("pose_rank"), "row": row}, created_at=stamp)
+                database.make_structure_portable(user, structure_id)
+                preferred_docking_structure_ids.add(structure_id)
             database.add_observation(destination, molecule_id, tool, run_dir.name, _numeric({key: value for key, value in row.items() if key != "compound_id"}),
                 context={**context, "row": row}, source_key=f"{source_key}:{filename}:{index}", created_at=stamp)
+    if has_docking_scores:
+        _prune_stale_run_structures(database, run_dir.parent.name, run_dir.name,
+                                    preferred_docking_structure_ids, docking=True)
     # MD produces observations and large artifacts for one already prepared complex.
     if "md" in run_dir.parent.name and target_id and target_group_id:
         database.add_observation(target_group_id, target_id, tool, run_dir.name, _numeric(result.get("metrics") or {}),
@@ -527,7 +745,7 @@ def migrate_legacy_groups(database, user):
         if not database._can_read(access, user):
             continue
         source_key = "legacy-compound-set:" + set_id
-        signature = hashlib.sha256(_json({"migration_version": 2, "payload": payload}).encode()).hexdigest()
+        signature = hashlib.sha256(_json({"migration_version": 3, "payload": payload}).encode()).hexdigest()
         with database.connection() as connection:
             prior = connection.execute("SELECT signature FROM molecular_ingestions WHERE source_key=?", (source_key,)).fetchone()
         if prior and prior[0] == signature:
@@ -537,9 +755,9 @@ def migrate_legacy_groups(database, user):
         database.create_group(actor, str(payload.get("name") or "Imported compounds"), group_id=group_id,
                               project_id=access["project_id"], import_method="user_uploads",
                               origin={"type": "legacy", "legacy_compound_set_id": set_id})
-        records = [{"name": compound["compound_id"],
+        records = [{"name": compound.get("compound_name") or compound["compound_id"],
                     "components": [{"type": "small_molecule", "chain": "L", "smiles": compound["smiles"]}],
-                    "metadata": compound.get("properties") or {}}
+                    "metadata": {**(compound.get("properties") or {}), "compound_id": compound["compound_id"]}}
                    for compound in payload["compounds"]]
         database.import_records(actor, records, group_id=group_id)
         with database.connection() as connection:

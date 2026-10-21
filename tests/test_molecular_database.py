@@ -121,6 +121,32 @@ def test_import_table_supports_mixed_chains_and_preserves_numeric_properties():
         imports.parse_table(b"sequence\nINVALID?\n", "bad.csv", chain_columns={"sequence": {"type": "protein", "chain": "A"}})
 
 
+def test_import_table_keeps_separate_compound_id_name_and_smiles():
+    rows = imports.parse_table(
+        b"compound_id,compound_name,smiles\n70701262,Bepristat_1a,CCN\n",
+        "compounds.csv",
+        id_column="compound_id",
+        name_column="compound_name",
+        chain_columns={"smiles": {"chain": "L", "type": "small_molecule"}},
+    )
+
+    assert rows[0]["name"] == "Bepristat_1a"
+    assert rows[0]["metadata"]["compound_id"] == "70701262"
+    assert rows[0]["components"][0]["smiles"] == "CCN"
+
+
+def test_import_table_uses_id_as_display_name_when_name_column_is_missing():
+    rows = imports.parse_table(
+        b"compound_id,smiles\nML359,CCN\n",
+        "compounds.csv",
+        id_column="compound_id",
+        chain_columns={"smiles": {"chain": "L", "type": "small_molecule"}},
+    )
+
+    assert rows[0]["name"] == "ML359"
+    assert rows[0]["metadata"]["compound_id"] == "ML359"
+
+
 def test_formula_operations_bound_string_and_numeric_results_before_expansion():
     from mn_molecular_design_studio.molecule_schema import MAX_FORMULA_STRING, evaluate
 

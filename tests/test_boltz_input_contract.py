@@ -10,13 +10,14 @@ from unittest.mock import patch
 import yaml
 
 from mn_molecular_design_studio.cofolding_input import default_model, model_to_payload
-from mn_molecular_design_studio.engine.workflow_engine.workflows import optimized_prediction as workflow
+from mn_molecular_design_studio.engine.workflow_engine.workflows import af3_jax_cofolding, optimized_prediction as workflow
 
 
 class BoltzInputContractTests(unittest.TestCase):
     def test_boltz2_tile_request_builder_uses_shared_optimized_workflow_contract(self):
         parameters = workflow.boltz2_prediction_parameters(
-            [{"name": "probe_1", "protein_sequences": "ACDEFGHIKLMNPQRSTVWY", "ligand_smiles": "CCO"}],
+            [{"name": "probe_1", "compound_id": "probe-001", "compound_name": "Ethanol probe",
+              "protein_sequences": "ACDEFGHIKLMNPQRSTVWY", "ligand_smiles": "CCO"}],
             settings={
                 "optimization_mode": "off", "seed": 7, "samples": 2, "num_recycles": 3,
                 "cpu_cores": 4, "output_format": "pdb", "max_msa_seqs": "",
@@ -38,9 +39,13 @@ class BoltzInputContractTests(unittest.TestCase):
              "cyclic": True, "modifications": [{"position": 2, "code": "MSE"}]},
             {"kind": "ligand", "mode": "smiles", "value": "CCO", "copies": 1},
         ]
+        model["compound_name"] = "probe ethanol"
+        model["compound_id"] = "probe-001"
         model["msa_files"] = [{"chain_id": "B", "name": "B.a3m", "text": ">B\nACD\n"}]
         values = model_to_payload(model)
         self.assertEqual(values["input_error"], "")
+        self.assertEqual(values["compound_id"], "probe-001")
+        self.assertEqual(values["compound_name"], "probe ethanol")
         self.assertEqual(values["protein_sequences"], "ACD:ACD")
         self.assertEqual([row["id"] for row in values["chain_catalog"]], ["A", "B", "C"])
         self.assertEqual(values["molecule_chain_options"][0]["msa_a3m_text"], "")
@@ -52,6 +57,29 @@ class BoltzInputContractTests(unittest.TestCase):
         model["cards"][0]["value"] = "ACD"
         model["cards"].append({"kind": "protein", "value": "", "copies": 1})
         self.assertEqual(model_to_payload(model)["input_error"], "All sequences must be non empty.")
+
+    def test_ligand_complex_requires_a_name_and_defaults_id_to_name(self):
+        model = default_model()
+        model["cards"] = [
+            {"kind": "protein", "value": "ACD", "copies": 1},
+            {"kind": "ligand", "mode": "smiles", "value": "CCO", "copies": 1},
+        ]
+        missing = model_to_payload(model)
+        self.assertEqual(missing["input_error"], "Enter a compound name for this ligand complex.")
+        model["compound_name"] = "Ethanol"
+        named = model_to_payload(model)
+        self.assertEqual(named["compound_id"], "Ethanol")
+        self.assertEqual(named["name"], "Ethanol")
+
+    def test_standalone_af3_family_rejects_unnamed_ligand_before_creating_job(self):
+        with patch.object(af3_jax_cofolding, "create_job") as create_job:
+            with self.assertRaisesRegex(ValueError, "compound name"):
+                af3_jax_cofolding.run_af3_jax_cofolding(
+                    protein_sequences="ACDEFG",
+                    ligand_smiles="CCO",
+                    model_name="openbind0",
+                )
+        create_job.assert_not_called()
 
     def test_templates_single_sequence_mode_and_affinity_reach_native_yaml(self):
         with TemporaryDirectory() as directory:

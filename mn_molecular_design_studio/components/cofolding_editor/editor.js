@@ -15,6 +15,8 @@
   const fresh=()=>({id:Date.now()+Math.floor(Math.random()*1000),kind:'protein',value:'',copies:1,modifications:[]});
   const kindOf=card=>card.kind==='ligand'?(card.mode||(cap.ccd?'ccd':'smiles')):card.kind;
   const catalog=()=>{if(state.settings?.use_yaml&&yamlCatalog.length)return yamlCatalog;let rows=[];for(const kind of ['protein','dna','rna','ccd','smiles'])state.cards.forEach((card,index)=>{if(kindOf(card)!==kind)return;for(let copy=0;copy<card.copies;copy++)rows.push({id:ids[rows.length],kind,card:index,value:card.value||''});});return rows.filter(row=>row.id);};
+  const hasLigand=()=>state.settings?.use_yaml&&cap.boltz?yamlCatalog.some(row=>row.kind==='ligand'):catalog().some(row=>['ccd','smiles'].includes(row.kind));
+  const compoundIdentity=()=>`<section class="compound-identity"><h3>Compound identification</h3><div class="identity-fields"><label>Compound ID<input type="text" aria-label="Compound ID" data-path="compound_id" value="${esc(state.compound_id||'')}" placeholder="Optional; defaults to compound name"></label><label>Compound name *<input type="text" aria-label="Compound name" data-path="compound_name" value="${esc(state.compound_name||'')}" placeholder="Name shown in result tables"></label></div><p>The name is required and is saved with the ligand input. The ID defaults to the name when left blank.</p></section>`;
   const chainOptions=(chosen,filter=()=>true)=>catalog().filter(filter).map(row=>`<option value="${row.id}" ${chosen===row.id?'selected':''}>Chain ${row.id}</option>`).join('');
   const control=(path,value,type='number',extra='')=>`<input type="${type}" aria-label="${esc(fieldName(path))}" data-path="${path}" value="${esc(value)}" ${extra}>`;
   const select=(path,value,choices)=>`<select aria-label="${esc(fieldName(path))}" data-path="${path}">${choices.map(([id,label])=>`<option value="${esc(id)}" ${value===id?'selected':''}>${esc(label)}</option>`).join('')}</select>`;
@@ -116,11 +118,12 @@
       for(const field of cap.prediction.fields){const value=s[field.key]??field.default;if(field.required&&!value)return 'Review and accept the AlphaFold3 weight terms.';if(!['bool','select','text'].includes(field.type)&&(!Number.isFinite(Number(value))||value===''||Number(value)<field.min||Number(value)>field.max))return `Enter a valid ${field.label.toLowerCase()}.`;}
     }
     if(cap.settings_only)return '';
-    if(state.settings?.use_yaml)return state.yaml_text?.trim()?yamlError:'Upload a Boltz YAML file.';
+    if(state.settings?.use_yaml){if(!state.yaml_text?.trim())return 'Upload a Boltz YAML file.';if(yamlError)return yamlError;if(hasLigand()&&!state.compound_name?.trim())return 'Enter a compound name for this ligand complex.';return '';}
     if(!state.cards.length||state.cards.some(card=>!String(card.value||'').trim()))return 'All sequences must be non empty.';
     if(state.cards.reduce((sum,card)=>sum+Number(card.copies||1),0)>52)return 'Enter at most 52 chains and ligand copies.';
     if(state.cards.some(card=>(card.modifications||[]).some(mod=>!mod.code?.trim())))return 'Every modification needs a CCD code.';
     if((state.msa_files||[]).some(file=>!file.chain_id)&&state.settings.use_msa)return 'Assign each A3M file to its protein chain.';
+    if(hasLigand()&&!state.compound_name?.trim())return 'Enter a compound name for this ligand complex.';
     if(state.restraints.some(row=>restraintError(row)))return 'Complete all restraint endpoints.';
     return '';
   }
@@ -128,9 +131,10 @@
     if(!state)return;
     let html='';
     if(cap.examples){const examples=[['7QF4','7QF4 - MiniSOG monomer'],['8JYR','8JYR - Antibody complex']];if(cap.ligand_examples)examples.push(['ligand',`Protein-Ligand Complex${cap.affinity?' + Affinity':''}`]);html=`<div class="caption">EXAMPLES</div><div class="examples">${examples.map(([name,label])=>`<button data-action="example" data-name="${name}">${label}</button>`).join('')}</div>`;}
-    if(state.settings.use_yaml&&cap.boltz)html+=`<div class="yaml-notice">YAML input is enabled. ${state.yaml_text?`Using ${esc(state.yaml_name||'uploaded Boltz YAML')}.`:'Upload your file under Optional settings.'}</div>`;
+    if(state.settings.use_yaml&&cap.boltz)html+=`<div class="yaml-notice">YAML input is enabled. ${state.yaml_text?`Using ${esc(state.yaml_name||'uploaded Boltz YAML')}.`:'Upload your file under Optional settings.'}</div>`+(hasLigand()?compoundIdentity():'');
     else if(!cap.settings_only){
       html+=state.cards.map(molecule).join('')+`<div class="actions"><button class="outline" data-action="add" ${state.cards.length>=16?'disabled':''}>＋ &nbsp;Add chain</button><button class="outline" data-action="fasta">${icon('file')} Import FASTA</button><button class="clear" data-action="clear">Clear all</button><input class="hidden" type="file" data-file="fasta" accept=".fa,.fasta,.fna,.txt"></div>`;
+      if(hasLigand())html+=compoundIdentity();
       if(cap.restraints)html+=(state.restraints.length?'<div class="caption">RESTRAINTS</div>':'')+state.restraints.map(restraint).join('')+`<div class="restraint-help"><button class="outline" data-action="add-restraint">＋ &nbsp;Add restraint</button><span>Restraints constrain how different chains are arranged in your complex, and can incorporate prior knowledge of structural contacts.</span></div>`;
       const ligands=catalog().filter(row=>['ccd','smiles'].includes(row.kind));
       if(cap.affinity_control&&ligands.length)html+=`<div class="affinity">${check('settings.predict_affinity',state.settings.predict_affinity,'Predict affinity (small molecule ligand)')}${state.settings.predict_affinity?`<label>Binder chain <select data-path="settings.affinity_binder">${chainOptions(state.settings.affinity_binder,row=>['ccd','smiles'].includes(row.kind))}</select></label>`:''}</div>`;
@@ -226,7 +230,7 @@
     }
     render();if(state.message){const p=document.createElement('p');p.className='error';p.textContent=state.message;root.append(p);state.message='';fit();}notify(true);
   }
-  window.addEventListener('message',event=>{if(event.data.type!=='streamlit:render')return;const capabilitiesChanged=JSON.stringify(cap)!==JSON.stringify(event.data.args.capabilities);cap=event.data.args.capabilities;previews=event.data.args.previews||{};const changed=JSON.stringify(yamlCatalog)!==JSON.stringify(event.data.args.yaml_chains||[]);yamlCatalog=event.data.args.yaml_chains||[];yamlError=event.data.args.yaml_error||'';if(!state){state=clone(event.data.args.initial);state.settings||={};state.templates||=[];state.msa_files||=[];state.yaml_files||=[];normalizePrediction();render();}else {if(changed||capabilitiesChanged){normalizePrediction();render();return;}const submit=root.querySelector('.submit'),validation=root.querySelector('.validation');if(submit)submit.disabled=Boolean(error()||!cap.can_submit);if(validation)validation.textContent=error()||(!cap.can_submit?'Select a project to submit.':'');root.querySelectorAll('[data-preview-slot]').forEach(slot=>{const source=previews[slot.dataset.previewSlot];slot.innerHTML=source?`<img class="ligand-preview" alt="Ligand chemical structure" src="${esc(source)}">`:'';});fit();}});
+  window.addEventListener('message',event=>{if(event.data.type!=='streamlit:render')return;const capabilitiesChanged=JSON.stringify(cap)!==JSON.stringify(event.data.args.capabilities);cap=event.data.args.capabilities;previews=event.data.args.previews||{};const changed=JSON.stringify(yamlCatalog)!==JSON.stringify(event.data.args.yaml_chains||[]);yamlCatalog=event.data.args.yaml_chains||[];yamlError=event.data.args.yaml_error||'';if(!state){state=clone(event.data.args.initial);state.settings||={};state.templates||=[];state.msa_files||=[];state.yaml_files||=[];state.compound_name||='';state.compound_id||='';normalizePrediction();render();}else {state.compound_name||='';state.compound_id||='';if(changed||capabilitiesChanged){normalizePrediction();render();return;}const submit=root.querySelector('.submit'),validation=root.querySelector('.validation');if(submit)submit.disabled=Boolean(error()||!cap.can_submit);if(validation)validation.textContent=error()||(!cap.can_submit?'Select a project to submit.':'');root.querySelectorAll('[data-preview-slot]').forEach(slot=>{const source=previews[slot.dataset.previewSlot];slot.innerHTML=source?`<img class="ligand-preview" alt="Ligand chemical structure" src="${esc(source)}">`:'';});fit();}});
   new ResizeObserver(fit).observe(root);
   post('streamlit:componentReady',{apiVersion:1});
 })();

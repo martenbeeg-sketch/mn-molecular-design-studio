@@ -254,8 +254,7 @@ def ranked_candidates(candidates: list[dict]) -> list[dict]:
     # Sort within each complex; unrelated complexes must not compete for "best".
     groups: dict[str, list[dict]] = {}
     for candidate in candidates:
-        raw = candidate.get('raw_metadata') or {}
-        groups.setdefault(str(raw.get('batch_item_id') or ''), []).append(candidate)
+        groups.setdefault(complex_group_key(candidate), []).append(candidate)
     result = []
     for group in groups.values():
         key = next((name for name in ('native_rank', 'ranking_score', 'confidence_score', 'iptm', 'ptm', 'plddt_mean')
@@ -265,6 +264,88 @@ def ranked_candidates(candidates: list[dict]) -> list[dict]:
             return (1, 0) if value is None else (0, value if key == 'native_rank' else -value)
         result.extend(sorted(group, key=rank))
     return result
+
+
+def prediction_input_labels(run_dir: Path) -> dict[str, str]:
+    """Read stable task names from the saved prediction input mapping."""
+    for relative in (
+        'artifacts/raw/optimized_prediction/input_mapping.json',
+        'artifacts/raw/af3_jax_cofolding/input_mapping.json',
+    ):
+        path = local_artifact(run_dir, Path(run_dir) / relative)
+        if path is None:
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, UnicodeError, ValueError):
+            continue
+        rows = payload.get('items') if isinstance(payload, dict) else None
+        labels = {}
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict) or not row.get('id'):
+                continue
+            label = row.get('source_input_name') or row.get('name')
+            if label:
+                labels[str(row['id'])] = str(label)
+        if labels:
+            return labels
+    return {}
+
+
+def complex_label(
+    candidate: dict,
+    fallback: str = 'Complex',
+    input_labels: dict[str, str] | None = None,
+) -> str:
+    """Return a user-facing identity label, showing both ID and name when distinct."""
+    identity = compound_identity(candidate, input_labels)
+    if identity["compound_id"] and identity["compound_name"] and identity["compound_id"] != identity["compound_name"]:
+        return f"{identity['compound_id']} · {identity['compound_name']}"
+    if identity["compound_name"] or identity["compound_id"]:
+        return identity["compound_name"] or identity["compound_id"]
+    raw = candidate.get('raw_metadata') if isinstance(candidate.get('raw_metadata'), dict) else {}
+    reference = raw.get('validation_reference') if isinstance(raw.get('validation_reference'), dict) else {}
+    return str(
+        raw.get('input_name') or (input_labels or {}).get(str(raw.get('batch_item_id') or ''))
+        or reference.get('candidate_id')
+        or fallback
+        or candidate.get('candidate_id')
+    )
+
+
+def compound_identity(candidate: dict, input_labels: dict[str, str] | None = None) -> dict[str, str]:
+    """Resolve stable compound ID, display name, and SMILES across engine output contracts."""
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    fallback = str(raw.get("source_input_name") or raw.get("input_name") or
+                   (input_labels or {}).get(str(raw.get("batch_item_id") or "")) or "").strip()
+    source_smiles = raw.get("compound_smiles") or raw.get("ligand_smiles") or []
+    if isinstance(source_smiles, (str, dict)):
+        source_smiles = [source_smiles]
+    smiles = []
+    if isinstance(source_smiles, list):
+        for row in source_smiles:
+            value = row.get("smiles") or row.get("value") or "" if isinstance(row, dict) else row
+            text = str(value or "").strip()
+            if text and text not in smiles:
+                smiles.append(text)
+    has_ligand = bool(smiles or raw.get("ligand_ccd_codes") or raw.get("compound_id") or raw.get("source_compound_id"))
+    compound_id = str(raw.get("compound_id") or raw.get("source_compound_id") or (fallback if has_ligand else "")).strip()
+    compound_name = str(raw.get("compound_name") or raw.get("source_compound_name") or (fallback if has_ligand else "")).strip()
+    return {"compound_id": compound_id, "compound_name": compound_name, "smiles": "; ".join(smiles)}
+
+
+def complex_group_key(candidate: dict) -> str:
+    raw = candidate.get('raw_metadata') if isinstance(candidate.get('raw_metadata'), dict) else {}
+    return str(raw.get('batch_item_id') or raw.get('source_compound_id') or raw.get('input_name') or '__single_complex__')
+
+
+def best_candidates_by_complex(candidates: list[dict]) -> list[dict]:
+    """Return one top-ranked structure for each independent input, in input order."""
+    ranked = ranked_candidates(candidates)
+    best: dict[str, dict] = {}
+    for candidate in ranked:
+        best.setdefault(complex_group_key(candidate), candidate)
+    return list(best.values())
 
 
 def model_index(candidate: dict, fallback: int) -> int:

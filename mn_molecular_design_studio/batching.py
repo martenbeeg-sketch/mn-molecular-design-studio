@@ -12,7 +12,7 @@ MAX_PREDICTION_ITEMS = 1024
 PREDICTION_INPUTS = frozenset({
     "protein_sequences", "target_pdb_text", "target_chain_id", "target_msa_a3m",
     "binder_sequence", "dna_sequences", "rna_sequences", "ligand_ccd_codes",
-    "ligand_smiles", "tasks", "compound_set_file", "sequence_file",
+    "ligand_smiles", "compound_id", "compound_name", "tasks", "compound_set_file", "sequence_file",
 })
 
 
@@ -61,7 +61,8 @@ def prediction_collection_tasks(shared, *, compound_set_file=None, sequence_file
         if context.get("ligand_smiles") or context.get("ligand_ccd_codes"):
             raise ValueError("Use the selected compound collection or ligand chains in the complex, not both.")
         tasks = [
-            {**task, "name": f"{task.get('name', 'input')}_{row['compound_id']}" if len(tasks) > 1 else row["compound_id"],
+            {**task, "name": f"{task.get('name', 'input')}_{row['compound_name']}" if len(tasks) > 1 else row["compound_name"],
+             "compound_id": row["compound_id"], "compound_name": row["compound_name"],
              "ligand_smiles": row["smiles"], "ligand_ccd_codes": "", "source_compound_id": row["compound_id"]}
             for task in tasks for row in compounds
         ]

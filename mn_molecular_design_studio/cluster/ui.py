@@ -478,6 +478,124 @@ def _fetch_remote_artifact_text(jid, path, token, state_key, label="saved struct
         return None
 
 
+def _render_remote_docking_preview(jid, row, data, token):
+    tool = " ".join(
+        str(value or "")
+        for value in (row.get("tool"), row.get("workflow"), row.get("job_type"), display_tool_label(row))
+    ).casefold().replace("-", "_")
+    if not any(name in tool for name in ("vina", "autodock_gpu", "gnina", "unidock_pro", "rosetta_ligand", "rosettaligand")):
+        return
+
+    st.subheader("Docked protein–ligand complex")
+    score_text = _fetch_remote_artifact_text(
+        jid,
+        "artifacts/docking_scores.csv",
+        token,
+        f"cluster-docking-scores-{jid}",
+        label="docking score table",
+    )
+    pose_rows = []
+    if score_text:
+        for item in csv.DictReader(io.StringIO(score_text)):
+            pose_path = _safe_run_artifact_path(str(item.get("pose_path") or ""))
+            if not pose_path:
+                continue
+            item["pose_path"] = pose_path
+            compound = str(item.get("compound_id") or Path(pose_path).stem)
+            details = []
+            if item.get("replicate"):
+                details.append(f"replicate {item['replicate']}")
+            if item.get("pose_rank"):
+                details.append(f"pose {item['pose_rank']}")
+            for key, unit in (("estimated_dg_reu", "REU"), ("best_score_kcal_mol", "kcal/mol")):
+                try:
+                    details.append(f"{float(item.get(key)):g} {unit}")
+                    break
+                except (TypeError, ValueError):
+                    continue
+            item["_label"] = compound + (" · " + " · ".join(details) if details else "")
+            pose_rows.append(item)
+    if not pose_rows:
+        st.info("No docked pose is recorded in the saved score table.")
+        return
+
+    result = data.get("result") if isinstance(data, dict) else {}
+    metrics = result.get("metrics") if isinstance(result, dict) and isinstance(result.get("metrics"), dict) else {}
+    best_compound = str(metrics.get("best_compound_id") or "").casefold()
+    default_index = next(
+        (index for index, item in enumerate(pose_rows)
+         if str(item.get("compound_id") or "").casefold() == best_compound),
+        0,
+    )
+    selected = st.selectbox(
+        "Docked pose",
+        range(len(pose_rows)),
+        index=default_index,
+        format_func=lambda index: pose_rows[index]["_label"],
+        key=f"cluster-docking-pose-{jid}",
+    )
+    pose_path = pose_rows[selected]["pose_path"]
+    pose_text = _fetch_remote_artifact_text(
+        jid, pose_path, token, f"cluster-docking-pose-text-{jid}-{selected}", label="docked pose"
+    )
+    if pose_text is None:
+        return
+
+    artifacts = [
+        _safe_run_artifact_path(str(item.get("relative_path") or ""))
+        for item in row.get("artifacts", [])
+        if isinstance(item, dict)
+    ]
+    artifacts = [path for path in artifacts if path]
+    receptor_relative = None
+    for suffix in (
+        "artifacts/prepared/receptor.pdbqt",
+        "prepared/receptor.pdb",
+        "artifacts/input/receptor.pdb",
+        "input/receptor.pdb",
+    ):
+        receptor_relative = next(
+            (suffix for artifact in artifacts if artifact.casefold().endswith("/" + suffix.casefold()) or artifact.casefold() == suffix.casefold()),
+            None,
+        )
+        if receptor_relative:
+            break
+    receptor_text = None
+    if receptor_relative:
+        receptor_text = _fetch_remote_artifact_text(
+            jid,
+            receptor_relative,
+            token,
+            f"cluster-docking-receptor-text-{jid}",
+            label="prepared receptor",
+        )
+        if receptor_text is None:
+            return
+
+    from mn_molecular_design_studio import docking_results
+    pose_name = Path(pose_path).name
+    structures = docking_results.pose_visualizations(
+        pose_text,
+        pose_name,
+        receptor_text,
+        Path(receptor_relative).name if receptor_relative else "",
+    )
+    if pose_name.casefold().endswith(".pdbqt") and receptor_text is None:
+        st.warning("The prepared receptor is unavailable, so this preview can show only the ligand pose.")
+    from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer import molstar_custom_component
+    molstar_custom_component(
+        structures,
+        key=f"cluster-docking-complex-{jid}-{selected}",
+        height=520,
+        show_controls=False,
+        show_structure_tools=False,
+    )
+    st.caption(
+        f"Pose: `{pose_name}` · "
+        + (f"receptor: `{Path(receptor_relative).name}`" if receptor_relative else "protein and ligand from the docked pose file")
+    )
+
+
 def _align_bindcraft2_monomer_to_complex(complex_text, monomer_text, candidate):
     """Fit the binder-alone CIF onto its binder chain in the predicted complex."""
     from Bio.PDB import MMCIFIO, MMCIFParser, Superimposer
@@ -749,11 +867,21 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
     status_key = "cluster-results-status-filter"
     if not set(st.session_state.get(status_key, [])).issubset(status_options):
         st.session_state[status_key] = []
-    search_col, machine_col, status_col, refresh_col = st.columns([0.38, 0.26, 0.24, 0.12])
+    search_col, machine_col, status_col, sort_col, refresh_col = st.columns([0.31, 0.20, 0.19, 0.20, 0.10])
     query = search_col.text_input("Search jobs", placeholder="Name, engine, or run ID", key="cluster-results-query").casefold()
     names = {r.get("node_id"): config.display_name(r.get("node_name") or "Not assigned") for r in rows if r.get("node_id")}
     machine = machine_col.selectbox("Workstation", ["", *names], format_func=lambda v: names.get(v, "All workstations"), key="cluster-results-machine")
     statuses = status_col.multiselect("Status", status_options, key=status_key, placeholder="All statuses")
+    sort_by = sort_col.selectbox(
+        "Sort jobs",
+        ["finished_desc", "name_asc", "status_asc"],
+        format_func=lambda value: {
+            "finished_desc": "Finished (newest first)",
+            "name_asc": "Name (A–Z)",
+            "status_asc": "Status (A–Z)",
+        }[value],
+        key="cluster-results-sort-by",
+    )
     if refresh_col.button("Refresh", key="cluster-results-refresh"):
         st.rerun()
     projects = sorted({r.get("project_id") for r in rows if r.get("project_id")})
@@ -764,7 +892,34 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
               and (not machine or r.get("node_id") == machine) and (not project or r.get("project_id") == project)
               and (not statuses or str(r.get("status") or "unknown").replace("_", " ").title() in statuses)
               and (not query or query in " ".join(f"{r.get(k, '')} {config.display_text(r.get(k, ''))}" for k in ("campaign_name", "pipeline_name", "run_id", "tool", "job_code")).casefold())]
-    chosen.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    page_sort_key = "cluster-results-last-sort"
+    if st.session_state.get(page_sort_key) != sort_by:
+        st.session_state[page_sort_key] = sort_by
+        st.session_state["cluster-results-page"] = 1
+    if sort_by == "name_asc":
+        chosen.sort(
+            key=lambda r: (
+                str(r.get("campaign_name") or r.get("tool") or r.get("job_type") or "Job").casefold(),
+                str(r.get("created_at") or ""),
+            )
+        )
+    elif sort_by == "status_asc":
+        chosen.sort(
+            key=lambda r: (
+                str(r.get("status") or "unknown").replace("_", " ").casefold(),
+                str(r.get("created_at") or ""),
+            )
+        )
+    else:
+        finished_statuses = {"completed", "succeeded", "failed", "cancelled", "canceled"}
+        chosen.sort(
+            key=lambda r: (
+                str(r.get("status") or "unknown").casefold() in finished_statuses,
+                str(r.get("completed_at") or r.get("updated_at") or r.get("created_at") or ""),
+                str(r.get("created_at") or ""),
+            ),
+            reverse=True,
+        )
     st.caption(f"{len(chosen)} jobs · Job status and file availability are tracked separately.")
     pages = max(1, (len(chosen) + 49) // 50)
     page_key = "cluster-results-page"
@@ -1160,6 +1315,7 @@ def render_job(reference, user, token, submit):
                         use_container_width=True,
                         height=min(260, 35 * (len(filter_rows) + 1) + 3),
                     )
+            _render_remote_docking_preview(jid, row, data, token)
             with st.expander("Run settings and inputs"):
                 st.json(data.get("input", {}))
             with st.expander("Run summary"):

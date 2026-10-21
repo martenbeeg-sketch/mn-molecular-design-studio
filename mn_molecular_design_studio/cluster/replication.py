@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import fcntl
+import logging
 from functools import wraps
 import sqlite3
 import threading
@@ -316,4 +317,9 @@ def sync_peer(peer, snapshot):
         if not page['more']:
             break
     replica.retry_conflicts()
+    try:
+        from mn_molecular_design_studio.molecular_database_peer import materialize_portable_structures
+        materialize_portable_structures(peer=peer)
+    except Exception:
+        logging.getLogger(__name__).exception("Could not materialize portable molecular Database structures from %s", peer.get("id"))
     return response.get('reference_probes',[])

@@ -3493,7 +3493,7 @@ def _render_family_cofolding_setup(schema: dict, *, family: str) -> None:
             "gpu_device": "0,1" if mode == "big" and (not is_jax or profile["two_gpu_big"]) else "0",
         }
         if is_jax:
-            parameters.update({key: values[key] for key in ("dna_sequences", "rna_sequences", "ligand_ccd_codes", "ligand_smiles")})
+            parameters.update({key: values[key] for key in ("dna_sequences", "rna_sequences", "ligand_ccd_codes", "ligand_smiles", "compound_id", "compound_name")})
             parameters["structure_templates"] = values.get("structure_templates", [])
             parameters.update(model_name=model, num_recycles=int(settings["num_recycles"]),
                               cpu_cores=int(settings["cpu_cores"]), accept_alphafold3_terms=bool(settings.get("accept_terms")))
@@ -4359,7 +4359,18 @@ def _render_runs() -> None:
         chosen_tools = st.multiselect("Tool", facets["tools"], key="results-tool-filter")
     selected_project_id = selected_project if selected_project else None
 
-    page_size = st.selectbox("Rows per page", [10, 25, 50], index=0, key="results-page-size")
+    sort_col, page_size_col = st.columns([0.58, 0.42])
+    sort_by = sort_col.selectbox(
+        "Sort jobs",
+        ["finished_desc", "name_asc", "status_asc"],
+        format_func=lambda value: {
+            "finished_desc": "Finished (newest first)",
+            "name_asc": "Name (A–Z)",
+            "status_asc": "Status (A–Z)",
+        }[value],
+        key="results-sort-by",
+    )
+    page_size = page_size_col.selectbox("Rows per page", [10, 25, 50], index=0, key="results-page-size")
     filters_key = (query, tuple(sorted(chosen_statuses)), tuple(sorted(chosen_tools)), selected_project_id, page_size)
     if st.session_state.get("results-filter-state") != filters_key:
         st.session_state["results-filter-state"] = filters_key
@@ -4370,6 +4381,11 @@ def _render_runs() -> None:
         for state_key in list(st.session_state):
             if str(state_key).startswith("results-row-select-"):
                 st.session_state.pop(state_key, None)
+    if st.session_state.get("results-last-sort") != sort_by:
+        st.session_state["results-last-sort"] = sort_by
+        st.session_state["results-page"] = 0
+        st.session_state.pop("results-export-data", None)
+        st.session_state.pop("results-export-count", None)
     page_number = max(0, int(st.session_state.get("results-page", 0)))
     offset = page_number * page_size
     try:
@@ -4380,6 +4396,7 @@ def _render_runs() -> None:
             project_id=selected_project_id,
             limit=page_size,
             offset=offset,
+            sort_by=sort_by,
         )
     except Exception as exc:
         st.error(f"Could not search jobs: {exc}")
@@ -4398,6 +4415,7 @@ def _render_runs() -> None:
             project_id=selected_project_id,
             limit=page_size,
             offset=offset,
+            sort_by=sort_by,
         )
         page_rows = result_page["items"]
 
@@ -4419,6 +4437,7 @@ def _render_runs() -> None:
                 project_id=selected_project_id,
                 limit=1000,
                 offset=export_offset,
+                sort_by=sort_by,
             )
             if not export_page["items"]:
                 break
@@ -4662,6 +4681,196 @@ def _job_artifact_paths(details: dict) -> list[tuple[dict, Path]]:
         except (KeyError, OSError, ValueError):
             continue
     return artifacts
+
+
+def _docking_compounds(run_dir: Path) -> list[dict[str, Any]]:
+    """Load the exact compound identities staged for a docking/affinity run."""
+    compound_set_path = run_dir / "artifacts" / "input" / "compound_set.json"
+    if not compound_set_path.is_file():
+        return []
+    try:
+        return ligand_compounds.load_compound_set(compound_set_path).get("compounds", [])
+    except (OSError, ValueError):
+        return []
+
+
+def _docking_pose_rows(run_dir: Path, artifact_paths: list[tuple[dict, Path]]) -> list[dict[str, Any]]:
+    """Read successful docking pose references from the run's score table."""
+    from mn_molecular_design_studio import docking_results
+
+    compounds = docking_results.compound_identity_map(_docking_compounds(run_dir))
+    score_path = next(
+        (path for item, path in artifact_paths
+         if path.name.casefold() == "docking_scores.csv"
+         or str(item.get("relative_path") or "").casefold().endswith("/docking_scores.csv")),
+        None,
+    )
+    rows: list[dict[str, Any]] = []
+    if score_path is not None:
+        try:
+            with score_path.open(newline="", encoding="utf-8", errors="replace") as handle:
+                for row in csv.DictReader(handle):
+                    raw_pose = str(row.get("pose_path") or "").strip()
+                    if not raw_pose:
+                        continue
+                    candidate = Path(raw_pose)
+                    if not candidate.is_absolute():
+                        candidate = run_dir / candidate
+                    try:
+                        candidate = candidate.resolve(strict=True)
+                        candidate.relative_to(run_dir.resolve())
+                    except (OSError, ValueError):
+                        continue
+                    if not candidate.is_file() or candidate.suffix.casefold() not in {".pdb", ".ent", ".pdbqt", ".cif", ".mmcif"}:
+                        continue
+                    identity = compounds.get(str(row.get("compound_id") or "").strip(), {})
+                    row["compound_name"] = row.get("compound_name") or identity.get("compound_name") or row.get("compound_id") or ""
+                    row["smiles"] = row.get("smiles") or identity.get("smiles") or ""
+                    row["_pose_file"] = str(candidate)
+                    row["_pose_label"] = _docking_pose_label(row, candidate)
+                    rows.append(row)
+        except (OSError, UnicodeError, csv.Error):
+            rows = []
+    if rows:
+        return rows
+
+    # Older runs may predate the score-table pose_path field. Use only saved
+    # pose outputs, never prepared ligand or receptor structures.
+    root = run_dir.resolve()
+    for item, path in artifact_paths:
+        relative = str(item.get("relative_path") or "").replace("\\", "/")
+        if "/artifacts/poses/" not in f"/{relative}" and "/poses/" not in f"/{relative}":
+            continue
+        if path.suffix.casefold() not in {".pdb", ".ent", ".pdbqt", ".cif", ".mmcif"}:
+            continue
+        try:
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        row = {"compound_id": path.stem, "_pose_file": str(resolved)}
+        identity = compounds.get(str(row["compound_id"]).strip(), {})
+        row["compound_name"] = identity.get("compound_name") or row["compound_id"]
+        row["smiles"] = identity.get("smiles") or ""
+        row["_pose_label"] = _docking_pose_label(row, resolved)
+        rows.append(row)
+    return rows
+
+
+def _docking_pose_label(row: dict[str, Any], path: Path) -> str:
+    compound_id = str(row.get("compound_id") or row.get("compound") or path.stem)
+    compound_name = str(row.get("compound_name") or "").strip()
+    compound = (
+        f"{compound_id} · {compound_name}"
+        if compound_name and compound_name != compound_id
+        else compound_name or compound_id
+    )
+    details = []
+    if row.get("replicate") not in (None, ""):
+        details.append(f"replicate {row['replicate']}")
+    if row.get("pose_rank") not in (None, ""):
+        details.append(f"pose {row['pose_rank']}")
+    for key, unit in (
+        ("estimated_dg_reu", "REU"),
+        ("best_score_kcal_mol", "kcal/mol"),
+    ):
+        try:
+            score = float(row.get(key))
+        except (TypeError, ValueError):
+            continue
+        details.append(f"{score:g} {unit}")
+        break
+    return compound + (" · " + " · ".join(details) if details else "")
+
+
+def _docking_receptor_file(run_dir: Path, artifact_paths: list[tuple[dict, Path]]) -> Path | None:
+    preferred = (
+        "artifacts/prepared/receptor.pdbqt",
+        "prepared/receptor.pdb",
+        "artifacts/input/receptor.pdb",
+        "input/receptor.pdb",
+    )
+    root = run_dir.resolve()
+    for relative in preferred:
+        relative_suffix = relative.casefold()
+        candidate = None
+        for item, path in artifact_paths:
+            indexed_path = str(item.get("relative_path") or "").replace("\\", "/").casefold()
+            try:
+                run_relative_path = path.resolve().relative_to(root).as_posix().casefold()
+            except (OSError, ValueError):
+                run_relative_path = ""
+            if indexed_path.endswith(relative_suffix) or run_relative_path == relative_suffix:
+                candidate = path
+                break
+        if candidate is None:
+            candidate = run_dir / relative
+        try:
+            candidate = candidate.resolve(strict=True)
+            candidate.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _render_docking_pose_preview(
+    run_id: str,
+    run_dir: Path,
+    artifact_paths: list[tuple[dict, Path]],
+    result: dict[str, Any],
+) -> None:
+    from mn_molecular_design_studio import docking_results
+
+    st.subheader("Docked protein–ligand complex")
+    poses = _docking_pose_rows(run_dir, artifact_paths)
+    if not poses:
+        st.info("No saved docked poses are available to preview for this run.")
+        return
+    metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+    best_compound = str(metrics.get("best_compound_id") or "").casefold()
+    default_index = next(
+        (index for index, row in enumerate(poses)
+         if str(row.get("compound_id") or "").casefold() == best_compound),
+        0,
+    )
+    selected = st.selectbox(
+        "Docked pose",
+        range(len(poses)),
+        index=default_index,
+        format_func=lambda index: poses[index]["_pose_label"],
+        key=f"job-docking-pose-{run_id}",
+    )
+    pose_path = Path(poses[selected]["_pose_file"])
+    try:
+        if pose_path.stat().st_size > 50 * 1024 * 1024:
+            st.info("This pose is over 50 MB; download it from the Files tab to inspect it locally.")
+            return
+        pose_text = pose_path.read_text(encoding="utf-8", errors="replace")
+        receptor_path = _docking_receptor_file(run_dir, artifact_paths)
+        receptor_text = receptor_path.read_text(encoding="utf-8", errors="replace") if receptor_path else None
+        structures = docking_results.pose_visualizations(
+            pose_text,
+            pose_path.name,
+            receptor_text,
+            receptor_path.name if receptor_path else "",
+        )
+        if pose_path.suffix.casefold() == ".pdbqt" and receptor_text is None:
+            st.warning("The prepared receptor file is unavailable, so this preview can show only the ligand pose.")
+        molstar_custom_component(
+            structures,
+            key=f"job-docking-complex-{run_id}-{selected}",
+            height=520,
+            show_controls=False,
+            show_structure_tools=False,
+        )
+        st.caption(
+            f"Pose: `{pose_path.name}` · "
+            + (f"receptor: `{receptor_path.name}`" if receptor_path else "protein and docked ligand from the pose file")
+        )
+    except (OSError, ValueError) as exc:
+        st.warning(f"Could not load this docked complex: {exc}")
 
 
 _AA_TYPE_STYLE = {
@@ -6246,6 +6455,8 @@ def _render_cofolding_prediction_results(
     candidates = cofolding_results.ranked_candidates([
         cofolding_results.enrich_candidate(run_dir, candidate) for candidate in candidates if isinstance(candidate, dict)
     ])
+    all_candidates = candidates
+    input_labels = cofolding_results.prediction_input_labels(run_dir)
     st.subheader(f"{model_label} predictions")
     comparison_report = cofolding_results.local_artifact(run_dir, (result.get("outputs") or {}).get("validation_report"))
     if comparison_report:
@@ -6254,15 +6465,70 @@ def _render_cofolding_prediction_results(
     if not candidates:
         st.info("No predictions have been saved yet. Refresh after the job finishes, or check Logs for progress.")
     else:
-        complex_ids = list(dict.fromkeys(str((item.get("raw_metadata") or {}).get("batch_item_id") or "") for item in candidates))
+        complex_ids = list(dict.fromkeys(cofolding_results.complex_group_key(item) for item in candidates))
+        best_candidates = cofolding_results.best_candidates_by_complex(all_candidates)
+        has_compound_names = any(
+            isinstance(item.get("raw_metadata"), dict)
+            and (
+                item["raw_metadata"].get("source_compound_id")
+                or item["raw_metadata"].get("input_name")
+                or str(item["raw_metadata"].get("batch_item_id") or "") in input_labels
+            )
+            for item in all_candidates
+        )
+        if len(best_candidates) > 1 or has_compound_names:
+            batch_summary_rows = []
+            for index, item in enumerate(best_candidates):
+                item_metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
+                item_raw = item.get("raw_metadata") if isinstance(item.get("raw_metadata"), dict) else {}
+                identity = cofolding_results.compound_identity(item, input_labels)
+                item_confidence = item_raw.get("confidence_outputs") if isinstance(item_raw.get("confidence_outputs"), dict) else {}
+                metric_sources = (
+                    {str(key).casefold(): value for key, value in item_metrics.items()},
+                    {str(key).casefold(): value for key, value in item_confidence.items()},
+                )
+
+                def best_metric(*keys: str) -> float | None:
+                    for key in keys:
+                        for source in metric_sources:
+                            value = _af3_optional_metric(source.get(key.casefold()))
+                            if value is not None:
+                                return value
+                    return None
+
+                structure = cofolding_results.structure_for(run_dir, item)
+                batch_summary_rows.append({
+                    "Compound ID": identity["compound_id"] or "—",
+                    "Compound name": identity["compound_name"] or cofolding_results.complex_label(item, f"Complex {index + 1}", input_labels),
+                    "SMILES": identity["smiles"] or "—",
+                    "Best model": f"Model {cofolding_results.model_index(item, index)}",
+                    "Ranking score": best_metric("ranking_score", "confidence_score"),
+                    "Mean pLDDT (%)": best_metric("plddt_mean"),
+                    "pTM": best_metric("ptm"),
+                    "ipTM": best_metric("iptm"),
+                    "Affinity prediction": best_metric("affinity_pred_value", "affinity_prediction", "pic50_binding_affinity"),
+                    "Binding probability": best_metric("affinity_probability_binary", "binding_probability"),
+                    "Best structure": structure.name if structure else "—",
+                })
+            batch_summary = pd.DataFrame(batch_summary_rows)
+            st.subheader("Batch summary · best complex per input")
+            st.dataframe(batch_summary, hide_index=True, use_container_width=True)
+            summary_download, _ = st.columns([1, 5])
+            summary_download.download_button(
+                "Download batch summary CSV",
+                data=batch_summary.to_csv(index=False).encode("utf-8"),
+                file_name=f"{run_id}_best_complexes.csv",
+                mime="text/csv",
+                key=f"cofolding-batch-summary-{run_id}",
+            )
+            st.caption("One top-ranked structure per input compound or sequence. The best model follows the saved engine rank or confidence score; interface confidence, pTM, then pLDDT are used when a rank is unavailable.")
         if len(complex_ids) > 1:
             complex_labels = []
             for index, complex_id in enumerate(complex_ids):
-                item = next(c for c in candidates if str((c.get("raw_metadata") or {}).get("batch_item_id") or "") == complex_id)
-                reference = (item.get("raw_metadata") or {}).get("validation_reference") or {}
-                complex_labels.append(f"{Path(reference['source_run_dir']).name} · {reference['candidate_id']}" if reference else f"Complex {index + 1}")
-            complex_index = st.selectbox("Design" if comparison_report else "Complex", range(len(complex_ids)), format_func=lambda index: complex_labels[index], key=f"cofolding-complex-{run_id}")
-            candidates = [item for item in candidates if str((item.get("raw_metadata") or {}).get("batch_item_id") or "") == complex_ids[complex_index]]
+                item = next(c for c in candidates if cofolding_results.complex_group_key(c) == complex_id)
+                complex_labels.append(cofolding_results.complex_label(item, f"Complex {index + 1}", input_labels))
+            complex_index = st.selectbox("Design" if comparison_report else "Compound / complex", range(len(complex_ids)), format_func=lambda index: complex_labels[index], key=f"cofolding-complex-{run_id}")
+            candidates = [item for item in candidates if cofolding_results.complex_group_key(item) == complex_ids[complex_index]]
 
         def structure_path_for(candidate: dict) -> Path | None:
             return cofolding_results.structure_for(run_dir, candidate)
@@ -6433,6 +6699,7 @@ def _render_cofolding_prediction_results(
             item_raw = item.get("raw_metadata") if isinstance(item.get("raw_metadata"), dict) else {}
             item_confidence = item_raw.get("confidence_outputs") if isinstance(item_raw.get("confidence_outputs"), dict) else {}
             row: dict[str, object] = {}
+            row["Compound / input"] = cofolding_results.complex_label(item, "Complex", input_labels)
             item_proteins = item_raw.get("protein_chains") or item_raw.get("chain_sequences") or {}
             if isinstance(item_proteins, dict):
                 sequence = ":".join(str(value) for value in item_proteins.values())
@@ -6466,7 +6733,8 @@ def _render_cofolding_prediction_results(
                 row[label] = _af3_metric_label(value, percent="probability" in key)
             row["Structure"] = str(item.get("complex_pdb") or "—")
             table_rows.append(row)
-        st.subheader("Quality and affinity metrics" if affinity_table_keys else "Quality metrics")
+        selected_input_label = cofolding_results.complex_label(candidate, "Complex", input_labels)
+        st.subheader(f"Model metrics · {selected_input_label}" if affinity_table_keys else f"Model quality · {selected_input_label}")
         table_frame = pd.DataFrame(table_rows)
         table_scroll_height = min(520, max(170, 34 + min(len(table_frame), 12) * 32))
         table_frame_height = table_scroll_height + (86 if "Sequence" in table_frame.columns else 66)
@@ -6828,9 +7096,6 @@ def _render_job_details() -> None:
         f"{summary_items}</div>",
         unsafe_allow_html=True,
     )
-    from mn_molecular_design_studio.molecular_database_results_ui import render_run_database_actions
-
-    render_run_database_actions(run_dir, CURRENT_USER, _studio_projects())
     if str(job.get("tool")) == "visual_pipeline":
         pipeline_run = Path(job["run_dir"])
         try:
@@ -6898,6 +7163,11 @@ def _render_job_details() -> None:
             input_payload.get("tool"),
         )
     ).casefold().replace("-", "_")
+    docking_tool_ids = {"vina", "autodock_gpu", "gnina", "unidock_pro", "rosetta_ligand"}
+    is_docking_job = (
+        analysis_tool in docking_tool_ids
+        or any(f"ligand.docking.{tool}" in workflow_identity for tool in docking_tool_ids)
+    )
     is_complex_preparation = any(
         marker in workflow_identity
         for marker in (
@@ -7190,6 +7460,17 @@ def _render_job_details() -> None:
                         trace["Step"] = trace["phase"].astype(str) + " · " + trace["round"].astype(str)
                         st.line_chart(trace.set_index("Step")[["_value"]].rename(columns={"_value": metric_name}))
 
+                if (
+                    csv_path.name.casefold() in {"docking_scores.csv", "nesso_affinity.csv"}
+                    and any(str(column).casefold() in {"compound_id", "compound"} for column in csv_df.columns)
+                ):
+                    from mn_molecular_design_studio import docking_results
+
+                    table_df = pd.DataFrame(docking_results.display_docking_rows(
+                        csv_df.to_dict("records"), _docking_compounds(run_dir),
+                    ))
+                    st.caption("Compound ID, display name, and SMILES come from the exact compound set used by this run.")
+
                 if is_ipsae:
                     table_df = _ipsae_display_table(csv_df)
                     st.caption(
@@ -7309,7 +7590,9 @@ def _render_job_details() -> None:
                 st.subheader("Run result")
                 st.json(result)
 
-        if visible_structure_artifacts and not has_dedicated_prediction_results and not has_dedicated_surface_results:
+        if is_docking_job:
+            _render_docking_pose_preview(run_id, run_dir, artifact_paths, result)
+        elif visible_structure_artifacts and not has_dedicated_prediction_results and not has_dedicated_surface_results:
             st.subheader("Structure preview")
             structure_index = st.selectbox(
                 "Structure file",
@@ -7335,7 +7618,7 @@ def _render_job_details() -> None:
                     st.caption("Structure colored by per-residue pLDDT confidence (stored in the structure B-factor field).")
             except OSError as exc:
                 st.warning(f"Could not load this structure preview: {exc}")
-        elif not has_dedicated_prediction_results and not has_dedicated_surface_results:
+        elif not is_docking_job and not has_dedicated_prediction_results and not has_dedicated_surface_results:
             st.info(f"No {design_scope.casefold()} structure files were found in this job's Results folder.")
 
         if str(metadata.get("tool") or "").casefold() == "boltzgen":
@@ -7364,6 +7647,13 @@ def _render_job_details() -> None:
                     )
                 except OSError as exc:
                     st.caption(f"Could not read {path.name}: {exc}")
+
+        # Molecular Database is a promotion/organization action, not the run's
+        # prediction summary. Keep it after the scientific results so it does
+        # not displace the batch comparison at the top of the job page.
+        from mn_molecular_design_studio.molecular_database_results_ui import render_run_database_actions
+
+        render_run_database_actions(run_dir, CURRENT_USER, _studio_projects())
 
     with files_tab:
         st.subheader("Job files")
@@ -7890,6 +8180,7 @@ def _render_database_import_dialog() -> None:
             return
         data = uploaded.getvalue()
         id_column = ""
+        name_column = ""
         smiles_column = ""
         compounds: list[dict[str, Any]] = []
         if Path(uploaded.name).suffix.lower() in {".csv", ".tsv", ".txt"}:
@@ -7900,10 +8191,12 @@ def _render_database_import_dialog() -> None:
                 st.error(f"Could not read this compound table: {exc}")
                 return
             columns = [str(column) for column in preview.columns]
-            id_guess = _guess_database_column(columns, ("compound_id", "id", "name", "zinc_id", "catalog_id"))
+            id_guess = _guess_database_column(columns, ("compound_id", "id", "pubchem_cid", "zinc_id", "catalog_id"))
+            name_guess = _guess_database_column(columns, ("compound_name", "name", "compound", "preferred_name", "common_name", "title"))
             smiles_guess = _guess_database_column(columns, ("smiles", "canonical_smiles", "isomeric_smiles"))
-            mapping = st.columns(2)
+            mapping = st.columns(3)
             id_options = ["", *columns]
+            name_options = ["", *columns]
             smiles_options = ["", *columns]
             id_column = mapping[0].selectbox(
                 "Compound ID column",
@@ -7912,7 +8205,14 @@ def _render_database_import_dialog() -> None:
                 format_func=lambda value: value or "Generate IDs from SMILES",
                 key="database-compound-id-column",
             )
-            smiles_column = mapping[1].selectbox(
+            name_column = mapping[1].selectbox(
+                "Compound name column",
+                name_options,
+                index=name_options.index(name_guess) if name_guess in name_options else 0,
+                format_func=lambda value: value or "Use Compound ID as name",
+                key="database-compound-name-column",
+            )
+            smiles_column = mapping[2].selectbox(
                 "SMILES column *",
                 smiles_options,
                 index=smiles_options.index(smiles_guess) if smiles_guess in smiles_options else 0,
@@ -7926,6 +8226,7 @@ def _render_database_import_dialog() -> None:
                         data,
                         filename=uploaded.name,
                         id_column=id_column,
+                        name_column=name_column,
                         smiles_column=smiles_column,
                     )
                 except ValueError as exc:
@@ -7938,7 +8239,7 @@ def _render_database_import_dialog() -> None:
         if compounds:
             st.success(f"Ready to add {len(compounds):,} compounds to **{import_group_name}**.")
             st.dataframe(
-                [{"Compound": row["compound_id"], "SMILES": row["smiles"]} for row in compounds[:10]],
+                [{"Compound ID": row["compound_id"], "Compound name": row["compound_name"], "SMILES": row["smiles"]} for row in compounds[:10]],
                 hide_index=True,
                 use_container_width=True,
             )

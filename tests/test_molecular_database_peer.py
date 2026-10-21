@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from mn_molecular_design_studio.molecular_database import MolecularDatabase, _id, _json
-from mn_molecular_design_studio.molecular_database_peer import apply_record, capture
+from mn_molecular_design_studio.molecular_database_peer import apply_record, capture, materialize_portable_structures
 from mn_molecular_design_studio.cluster.replication import Replica
 from mn_molecular_design_studio import molecule_imports
 
@@ -58,6 +58,59 @@ def test_synchronized_generator_observations_project_same_common_values(roots):
     assert row["scores"]["common.confidence.generator.target.plddt"] == 90
     assert row["observations"][0]["metrics"]["Target_pLDDT"] == .9
     assert "common.design.sequence_length" in target.metric_fields(OWNER)
+
+
+def test_portable_structure_is_copied_to_peer_database_and_survives_source_offline(roots, monkeypatch):
+    source = MolecularDatabase(roots / "portable-source")
+    target = MolecularDatabase(roots / "portable-target")
+    content = b"HEADER    portable protein structure\nEND\n"
+    imported = source.import_records(
+        OWNER,
+        [{"name": "portable", "components": [{"chain": "A", "type": "protein", "sequence": "ACDE"}],
+          "files": [{"name": "model.pdb", "content": content}]}],
+        name="Portable structures", project_id="project-current",
+    )
+    molecule_id = imported["molecule_ids"][0]
+    with source.connection() as connection:
+        source_structure_id = connection.execute(
+            "SELECT id FROM molecule_structures WHERE group_id=? AND molecule_id=?",
+            (imported["group_id"], molecule_id),
+        ).fetchone()[0]
+    portable = source.make_structure_portable(OWNER, source_structure_id)
+    assert Path(portable["path"]).is_file()
+    assert portable["sha256"] == hashlib.sha256(content).hexdigest()
+
+    replica = Replica()
+    _sync_all(replica, source, target)
+    peer_group_id = _id("peer-", SOURCE + ":" + imported["group_id"])
+    with target.connection() as connection:
+        target_structure = dict(connection.execute(
+            "SELECT * FROM molecule_structures WHERE group_id=? AND molecule_id=?",
+            (peer_group_id, molecule_id),
+        ).fetchone())
+    assert target_structure["path"].startswith("cluster-library://")
+
+    from mn_molecular_design_studio.cluster import transport
+    monkeypatch.setattr(transport, "node_request", lambda *args, **kwargs: content)
+    assert materialize_portable_structures(database=target, peer={"id": SOURCE, "url": "https://source"}) == 1
+    with target.connection() as connection:
+        target_structure = dict(connection.execute(
+            "SELECT * FROM molecule_structures WHERE id=?", (target_structure["id"],)
+        ).fetchone())
+    assert not target_structure["path"].startswith("cluster-library://")
+    assert target.structure_file(OWNER, target_structure["id"]).read_bytes() == content
+
+    # A later metadata refresh must not replace the local portable copy with a
+    # remote URI; that copy remains usable if the source workstation is offline.
+    with source.connection() as connection:
+        connection.execute("UPDATE molecule_groups SET name=? WHERE id=?", ("Renamed portable structures", imported["group_id"]))
+    _sync_all(replica, source, target)
+    with target.connection() as connection:
+        refreshed = dict(connection.execute(
+            "SELECT * FROM molecule_structures WHERE id=?", (target_structure["id"],)
+        ).fetchone())
+    assert not refreshed["path"].startswith("cluster-library://")
+    assert target.structure_file(OWNER, refreshed["id"]).read_bytes() == content
 
 
 def _make_source_with_entry(root):

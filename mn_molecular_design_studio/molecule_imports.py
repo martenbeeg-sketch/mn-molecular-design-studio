@@ -126,11 +126,22 @@ def read_table(data: bytes, filename: str):
     return table
 
 
-def parse_table(data: bytes, filename: str, *, chain_columns: dict[str, dict], name_column: str = "") -> list[dict]:
+def parse_table(
+    data: bytes,
+    filename: str,
+    *,
+    chain_columns: dict[str, dict],
+    name_column: str = "",
+    id_column: str = "",
+) -> list[dict]:
     table = read_table(data, filename)
     if not chain_columns:
         raise ValueError("Map at least one chain column.")
-    if any(column not in table.columns for column in chain_columns) or (name_column and name_column not in table.columns):
+    if (
+        any(column not in table.columns for column in chain_columns)
+        or (name_column and name_column not in table.columns)
+        or (id_column and id_column not in table.columns)
+    ):
         raise ValueError("A mapped column is missing from the table.")
     result = []
     for index, source in enumerate(table.to_dict("records"), 1):
@@ -147,8 +158,19 @@ def parse_table(data: bytes, filename: str, *, chain_columns: dict[str, dict], n
         if not components:
             raise ValueError(f"Row {index} has no molecular chains.")
         canonical_components(components)
-        result.append({"name": str(source.get(name_column) or f"Molecule {index}"), "components": components,
-                       "metadata": {key: value for key, value in source.items() if key not in chain_columns and key != name_column}})
+        molecule_id = str(source.get(id_column) or "").strip() if id_column else ""
+        molecule_name = str(source.get(name_column) or "").strip() if name_column else ""
+        molecule_name = molecule_name or molecule_id or f"Molecule {index}"
+        metadata = {
+            key: value for key, value in source.items()
+            if key not in chain_columns and key not in {name_column, id_column}
+        }
+        if molecule_id:
+            if any(component["type"] == "small_molecule" for component in components):
+                metadata["compound_id"] = molecule_id
+            else:
+                metadata["external_id"] = molecule_id
+        result.append({"name": molecule_name, "components": components, "metadata": metadata})
     if not result:
         raise ValueError("The table contains no molecules.")
     return result

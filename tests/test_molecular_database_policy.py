@@ -52,6 +52,14 @@ def _pdb_acd():
     return "\n".join([*lines, "TER", "END", ""])
 
 
+def _pdb_acd_with_generic_ligand():
+    ligand = [
+        "HETATM   10  C1  LIG B   1       8.000   1.000   1.000  1.00 20.00           C",
+        "HETATM   11  C2  LIG B   1       9.000   1.000   1.000  1.00 20.00           C",
+    ]
+    return _pdb_acd().replace("TER\nEND", "TER\n" + "\n".join(ligand) + "\nEND")
+
+
 def test_library_collection_is_curated_by_origin_and_accumulates_accessible_scores(database):
     imported = database.import_records(A, molecule_imports.parse_smiles("CCO ethanol"), name="Imported")
     molecule_id = imported["molecule_ids"][0]
@@ -97,6 +105,70 @@ def test_generated_complex_refolding_is_library_output(database):
     assert len(library) == 1
     assert library[0]["origin"]["collection_kind"] == "generated"
     assert database.list_molecules(A, group_id=library[0]["id"], collection="library")["total"] == 1
+
+
+def test_prediction_indexes_only_the_best_structure_per_input(database):
+    run = _make_run(database, "optimized-prediction", "best-model", tool="optimized_prediction_boltz2",
+                    workflow="refolding.optimized_prediction", candidates=[
+        {"candidate_id": "model-a", "stage": "complex_refolding", "complex_pdb": "model-a.pdb",
+         "raw_metadata": {"batch_item_id": "input-1", "compound_name": "Probe", "ligand_smiles": ["CCO"]},
+         "metrics": {"ranking_score": .72}},
+        {"candidate_id": "model-b", "stage": "complex_refolding", "complex_pdb": "model-b.pdb",
+         "raw_metadata": {"batch_item_id": "input-1", "compound_name": "Probe", "ligand_smiles": ["CCO"]},
+         "metrics": {"ranking_score": .91}},
+    ])
+    structure = _pdb_acd_with_generic_ligand()
+    (run / "model-a.pdb").write_text(structure)
+    (run / "model-b.pdb").write_text(structure)
+
+    assert ingest_run(run, database=database) == 1
+    row = database.list_molecules(A, collection="all")["items"][0]
+    assert len(row["structures"]) == 1
+    assert row["structures"][0]["context"]["candidate_id"] == "model-b"
+    assert row["structures"][0]["context"]["database_structure_policy"] == "best_prediction"
+    assert row["structures"][0]["context"]["portable"] is True
+    assert Path(row["structures"][0]["path"]).is_relative_to(database.root / "molecular_files")
+    assert len(row["observations"]) == 2
+
+    # Reindexing after a changed ranking replaces the old attached representative.
+    candidate_file = run / "artifacts/normalized_candidates/candidates.jsonl"
+    candidates = [json.loads(line) for line in candidate_file.read_text().splitlines()]
+    candidates[0]["metrics"]["ranking_score"] = .99
+    candidates[1]["metrics"]["ranking_score"] = .4
+    candidate_file.write_text("".join(json.dumps(candidate) + "\n" for candidate in candidates))
+    assert ingest_run(run, database=database, force=True) == 1
+    row = database.list_molecules(A, collection="all")["items"][0]
+    assert len(row["structures"]) == 1
+    assert row["structures"][0]["context"]["candidate_id"] == "model-a"
+
+
+def test_docking_indexes_only_the_top_pose_for_each_compound(database):
+    from mn_molecular_design_studio import ligand_compounds
+
+    run = _make_run(database, "vina", "best-pose", tool="vina", workflow="ligand.docking")
+    ligand_compounds.write_compound_set(
+        run / "artifacts/input/compound_set.json", name="Inputs",
+        compounds=[{"compound_id": "CMP1", "compound_name": "Ethanol", "smiles": "CCO"}],
+        owner_id=A["id"], project_id="project-1", created_at="now",
+    )
+    poses = run / "artifacts/poses"
+    poses.mkdir(parents=True)
+    (poses / "pose-1.pdbqt").write_text("REMARK top-ranked pose\n")
+    (poses / "pose-2.pdbqt").write_text("REMARK lower-ranked pose\n")
+    (run / "artifacts/docking_scores.csv").write_text(
+        "compound_id\tstatus\tpose_rank\tbest_score_kcal_mol\tpose_path\n"
+        "CMP1\tcompleted\t1\t-7.1\tartifacts/poses/pose-1.pdbqt\n"
+        "CMP1\tcompleted\t2\t-8.0\tartifacts/poses/pose-2.pdbqt\n"
+    )
+
+    assert ingest_run(run, database=database) == 1
+    row = next(row for row in database.list_molecules(A, collection="all")["items"] if row["name"] == "Ethanol")
+    assert len(row["structures"]) == 1
+    assert row["structures"][0]["context"]["database_structure_policy"] == "best_docking_pose"
+    assert row["structures"][0]["context"]["portable"] is True
+    assert Path(row["structures"][0]["path"]).suffix == ".pdbqt"
+    assert "top-ranked pose" in Path(row["structures"][0]["path"]).read_text()
+    assert len(row["observations"]) == 2
 
 
 def test_generator_contracts_ingest_common_fields_and_preserve_output_identity(database):
@@ -159,6 +231,52 @@ def test_repeated_evaluations_reuse_original_group_and_accumulate_once(database)
     assert len(rows[0]["observations"]) == 2
     assert {row["run_id"] for row in rows[0]["observations"]} == {"eval-1", "eval-2"}
     assert {row["id"] for row in database.groups(A, collection="all")} == {imported["group_id"]}
+
+
+@pytest.mark.parametrize("mapping_path", [
+    "artifacts/raw/optimized_prediction/input_mapping.json",
+    "artifacts/raw/af3_jax_cofolding/input_mapping.json",
+])
+def test_batched_prediction_inputs_restore_compound_identity_for_database(database, mapping_path):
+    candidates = [
+        {"candidate_id": "batch-1-model", "source_tool": "optimized_prediction_boltz2",
+         "stage": "complex_refolding", "complex_pdb": "compound-1.pdb",
+         "metrics": {"ranking_score": .8}, "raw_metadata": {"batch_item_id": "task-1"}},
+        {"candidate_id": "batch-2-model", "source_tool": "optimized_prediction_boltz2",
+         "stage": "complex_refolding", "complex_pdb": "compound-2.pdb",
+         "metrics": {"ranking_score": .9}, "raw_metadata": {"batch_item_id": "task-2"}},
+    ]
+    run = _make_run(database, "refolding-validation", "compound-batch", candidates=candidates)
+    for filename in ("compound-1.pdb", "compound-2.pdb"):
+        (run / filename).write_text(_pdb_acd_with_generic_ligand())
+    (run / "input.json").write_text(json.dumps({
+        "tool": "optimized_prediction_boltz2",
+        "workflow": "refolding.optimized_prediction",
+        "inputs": {"tasks": [
+            {"name": "Ethanol", "compound_id": "CHEM-101", "compound_name": "Ethanol",
+             "ligand_smiles": [{"id": "B", "smiles": "CCO"}]},
+            {"name": "Cyclopropane", "compound_id": "CHEM-102", "compound_name": "Cyclopropane",
+             "ligand_smiles": [{"id": "B", "smiles": "C1CC1"}]},
+        ]},
+        "params": {"engine": "boltz2"},
+    }))
+    mapping_file = run / mapping_path
+    mapping_file.parent.mkdir(parents=True, exist_ok=True)
+    mapping_file.write_text(json.dumps({"items": [
+        {"id": "task-1", "name": "Ethanol"},
+        {"id": "task-2", "name": "Cyclopropane"},
+    ]}))
+
+    assert ingest_run(run, database=database) == 2
+    assert ingest_run(run, database=database) == 0
+    records = database.list_molecules(A, collection="all")["items"]
+    assert {record["name"] for record in records} == {"Ethanol", "Cyclopropane"}
+    ligand_smiles = {
+        record["name"]: next(component["smiles"] for component in record["components"] if component["type"] == "small_molecule")
+        for record in records
+    }
+    assert ligand_smiles == {"Ethanol": "CCO", "Cyclopropane": "C1CC1"}
+    assert {record["metadata"]["compound_id"] for record in records} == {"CHEM-101", "CHEM-102"}
 
 
 def test_save_run_selection_is_exact_repeatable_and_copies_run_context(database):

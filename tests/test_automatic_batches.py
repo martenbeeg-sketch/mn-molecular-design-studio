@@ -36,6 +36,8 @@ def test_compound_collection_is_native_prediction_batch(compound_file, engine):
     )
     assert len(prepared.normalized_tasks) == 40
     assert {task["name"] for task in prepared.normalized_tasks} == {f"compound_{i}" for i in range(40)}
+    assert {task["compound_name"] for task in prepared.normalized_tasks} == {f"compound_{i}" for i in range(40)}
+    assert {task["compound_id"] for task in prepared.normalized_tasks} == {f"compound_{i}" for i in range(40)}
     assert all(len(task["proteins"]) == 1 and len(task["ligand_smiles"]) == 1 for task in prepared.normalized_tasks)
     if engine == "boltz2":
         assert prepared.selected_options["use_potentials"] is True
@@ -46,11 +48,21 @@ def test_compound_collection_is_native_prediction_batch(compound_file, engine):
 def test_multiple_ligand_chains_in_one_complex_are_not_split():
     prepared = optimized_prediction._prepare_prediction(
         engine="boltz2", protein_sequences="ACDEFGHIK:KLMNPQ", ligand_smiles="CCO\nCCN",
+        compound_name="Probe complex",
         samples=1, resolve_random_seed=False,
     )
     assert len(prepared.normalized_tasks) == 1
     assert len(prepared.normalized_tasks[0]["proteins"]) == 2
     assert len(prepared.normalized_tasks[0]["ligand_smiles"]) == 2
+    assert prepared.normalized_tasks[0]["compound_id"] == "Probe complex"
+
+
+def test_manual_ligand_prediction_requires_explicit_compound_name():
+    with pytest.raises(ValueError, match="compound name"):
+        optimized_prediction._prepare_prediction(
+            engine="boltz2", protein_sequences="ACDEFGHIK", ligand_smiles="CCO",
+            samples=1, resolve_random_seed=False,
+        )
 
 
 def test_default_compound_limit_keeps_whole_selection(compound_file):

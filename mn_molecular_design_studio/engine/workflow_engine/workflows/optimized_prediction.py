@@ -1901,6 +1901,8 @@ def _prepare_prediction(
     rna_sequences: str = "",
     ligand_ccd_codes: str = "",
     ligand_smiles: str = "",
+    compound_id: str = "",
+    compound_name: str = "",
     tasks: list[dict[str, Any]] | None = None,
     engine_options: dict[str, Any] | None = None,
     validation_sources: list[dict[str, Any]] | None = None,
@@ -1973,6 +1975,8 @@ def _prepare_prediction(
         "rna_sequences": rna_sequences,
         "ligand_ccd_codes": ligand_ccd_codes,
         "ligand_smiles": ligand_smiles,
+        "compound_id": compound_id,
+        "compound_name": compound_name,
     }]
     from mn_molecular_design_studio.batching import MAX_PREDICTION_ITEMS, prediction_collection_tasks
     if compound_set_file or sequence_file:
@@ -2036,6 +2040,23 @@ def _prepare_prediction(
         task_ccd_codes, task_smiles = _parse_ligands(
             molecule_text["ligand_ccd_codes"], molecule_text["ligand_smiles"],
         )
+        yaml_has_ligand = bool(raw_boltz_yaml and any(
+            isinstance(row, dict) and isinstance(row.get("ligand"), dict)
+            for row in raw_boltz_yaml.get("sequences", [])
+        ))
+        yaml_ligand_smiles = [
+            str(row["ligand"].get("smiles") or "").strip()
+            for row in (raw_boltz_yaml or {}).get("sequences", [])
+            if isinstance(row, dict) and isinstance(row.get("ligand"), dict)
+            and str(row["ligand"].get("smiles") or "").strip()
+        ]
+        has_ligand = bool(task_ccd_codes or task_smiles or yaml_has_ligand)
+        task_compound_name = str(raw_task.get("compound_name") or "").strip()
+        task_compound_id = str(raw_task.get("compound_id") or raw_task.get("source_compound_id") or "").strip()
+        if has_ligand and not task_compound_name:
+            raise ValueError(f"Task {index} needs a compound name for its ligand input.")
+        if has_ligand and not task_compound_id:
+            task_compound_id = task_compound_name
         target_ids: list[str] = []
         binder_ids: list[str] = []
         if is_boltzgen:
@@ -2115,7 +2136,10 @@ def _prepare_prediction(
             "index": index,
             "id": item_id,
             "name": task_name,
-            "source_input_name": str(raw_task.get("name") or default_input_name),
+            "source_input_name": str(task_compound_name or raw_task.get("name") or default_input_name),
+            "compound_id": task_compound_id,
+            "compound_name": task_compound_name,
+            "compound_smiles": [str(row.get("smiles") or "") for row in task_smiles] + yaml_ligand_smiles,
             "job_name": task_job_name,
             "proteins": task_proteins,
             "target_protein_ids": target_ids,
@@ -2140,7 +2164,8 @@ def _prepare_prediction(
                 raw_task.get("structure_templates"), supported=bool(profile.get("supports_templates"))),
             "validation_reference": raw_task.get("validation_reference"),
             "source_candidate_id": str(raw_task.get("source_candidate_id") or ""),
-            "source_compound_id": str(raw_task.get("source_compound_id") or ""),
+            "source_compound_id": str(raw_task.get("source_compound_id") or task_compound_id),
+            "source_compound_name": task_compound_name,
             "source_run_dir": str(raw_task.get("source_run_dir") or ""),
             "binder_use_msa": bool(raw_task.get("binder_use_msa", True)),
             "raw_yaml_proteins": raw_yaml_proteins,
@@ -2245,6 +2270,8 @@ def run_optimized_prediction(
     rna_sequences: str = "",
     ligand_ccd_codes: str = "",
     ligand_smiles: str = "",
+    compound_id: str = "",
+    compound_name: str = "",
     tasks: list[dict[str, Any]] | None = None,
     engine_options: dict[str, Any] | None = None,
     validation_sources: list[dict[str, Any]] | None = None,
@@ -2264,6 +2291,7 @@ def run_optimized_prediction(
         target_msa_a3m=target_msa_a3m, binder_sequence=binder_sequence,
         dna_sequences=dna_sequences, rna_sequences=rna_sequences,
         ligand_ccd_codes=ligand_ccd_codes, ligand_smiles=ligand_smiles,
+        compound_id=compound_id, compound_name=compound_name,
         tasks=tasks, engine_options=engine_options,
         validation_sources=validation_sources, validation_mode=validation_mode,
         use_target_template=use_target_template, target_use_msa=target_use_msa,
@@ -2302,6 +2330,7 @@ def run_optimized_prediction(
                 "rna_chains": [{"id": row["id"], "sequence": row["sequence"]} for row in task["rna"]],
                 "ligand_ccd_codes": task["ligand_ccd_codes"],
                 "ligand_smiles": task["ligand_smiles"],
+                "compound_id": task["compound_id"], "compound_name": task["compound_name"],
                 "restraints": task["restraints"],
                 "target_chain_id": task["target_chain_id"] if is_boltzgen else None,
                 "binder_sequence": task["binder_sequence"] if is_boltzgen else None,
@@ -2378,6 +2407,7 @@ def run_optimized_prediction(
                 chai_template_hits.append(input_details["chai_template_hits"])
             input_mappings.append({
                 "id": task["id"], "name": task["name"], "source_input_name": task["source_input_name"],
+                "compound_id": task["compound_id"], "compound_name": task["compound_name"],
                 "protein_chains": [
                     {"id": row["id"], "length": len(row["sequence"]),
                      "role": (
@@ -2390,6 +2420,7 @@ def run_optimized_prediction(
                 "dna_chains": [{"id": row["id"], "length": len(row["sequence"])} for row in task["dna"]],
                 "rna_chains": [{"id": row["id"], "length": len(row["sequence"])} for row in task["rna"]],
                 "ligand_ccd_codes": task["ligand_ccd_codes"],
+                "ligand_smiles": [row.get("smiles") for row in task["ligand_smiles"]],
                 "ligand_smiles_count": len(task["ligand_smiles"]),
                 "raw_yaml": bool(task["boltz_yaml_text"]),
                 "input_file": input_path.relative_to(job.run_dir).as_posix(),
@@ -2622,6 +2653,10 @@ def run_optimized_prediction(
                         "optimization_mode": selected_mode, "seed": int(seed),
                         "confidence_outputs": confidence, "batch_item_id": task["id"],
                         "input_name": task["source_input_name"], "source_compound_id": task["source_compound_id"],
+                        "source_compound_name": task["source_compound_name"],
+                        "compound_id": task["compound_id"], "compound_name": task["compound_name"],
+                        "ligand_smiles": task["compound_smiles"],
+                        "ligand_ccd_codes": task["ligand_ccd_codes"],
                         **({"source_run_dir": task["source_run_dir"]} if task.get("source_run_dir") else {}),
                         "protein_chains": [
                             {

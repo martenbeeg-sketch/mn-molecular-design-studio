@@ -369,10 +369,12 @@ def _boltz_probe_defaults(compound_input: dict | None) -> list[dict[str, str]]:
         try:
             stat = path.stat()
             source_id = str((compound_input or {}).get("group_id") or (compound_input or {}).get("source_sha256") or path.resolve())
-            for index, (compound_id, smiles) in enumerate(_compound_preview_rows(str(path), stat.st_mtime_ns, stat.st_size)[:10]):
+            for index, (compound_id, compound_name, smiles) in enumerate(_compound_preview_rows(str(path), stat.st_mtime_ns, stat.st_size)[:10]):
+                display_name = compound_name or compound_id
                 rows.append({
                     "id": f"imported:{source_id}:{index}:{compound_id}", "source": "imported", "chain": "",
-                    "label": f"Imported compound {compound_id}", "smiles": smiles,
+                    "label": f"Imported compound {compound_id} · {display_name}",
+                    "compound_id": compound_id, "compound_name": display_name, "smiles": smiles,
                 })
         except (OSError, ValueError, json.JSONDecodeError):
             pass
@@ -390,6 +392,8 @@ def _sync_boltz_probes(defaults: list[dict[str, str]]) -> list[dict[str, str]]:
                 saved_values[str(row.get("id") or "")] = str(
                     st.session_state.get(f"vina-probe-{index}", row.get("smiles") or "")
                 )
+                row["compound_id"] = str(st.session_state.get(f"vina-probe-id-{index}", row.get("compound_id") or ""))
+                row["compound_name"] = str(st.session_state.get(f"vina-probe-name-{index}", row.get("compound_name") or ""))
     else:
         old_rows = []
 
@@ -407,6 +411,9 @@ def _sync_boltz_probes(defaults: list[dict[str, str]]) -> list[dict[str, str]]:
             saved_values.get(probe_id, row["smiles"])
             if old is None else saved_values.get(probe_id, str(old.get("smiles") or row["smiles"]))
         )
+        if old is not None:
+            row["compound_id"] = str(old.get("compound_id") or row.get("compound_id") or "")
+            row["compound_name"] = str(old.get("compound_name") or row.get("compound_name") or "")
         rows.append(row)
 
     for old in old_rows:
@@ -417,7 +424,8 @@ def _sync_boltz_probes(defaults: list[dict[str, str]]) -> list[dict[str, str]]:
             rows.append({**old, "smiles": saved_values.get(probe_id, str(old.get("smiles") or ""))})
 
     if "vina-probe-initialized" not in st.session_state and not rows:
-        rows.append({"id": "manual:0", "source": "manual", "chain": "", "label": "Probe", "smiles": ""})
+        rows.append({"id": "manual:0", "source": "manual", "chain": "", "label": "Probe",
+                     "compound_id": "", "compound_name": "", "smiles": ""})
         st.session_state["vina-probe-next-id"] = 1
     if len(rows) > 10:
         rows = rows[:10]
@@ -425,8 +433,12 @@ def _sync_boltz_probes(defaults: list[dict[str, str]]) -> list[dict[str, str]]:
     # Reindex after a chain is deselected, while retaining edited values by stable ID.
     for index in range(10):
         st.session_state.pop(f"vina-probe-{index}", None)
+        st.session_state.pop(f"vina-probe-id-{index}", None)
+        st.session_state.pop(f"vina-probe-name-{index}", None)
     for index, row in enumerate(rows):
         st.session_state[f"vina-probe-{index}"] = row["smiles"]
+        st.session_state[f"vina-probe-id-{index}"] = row.get("compound_id") or ""
+        st.session_state[f"vina-probe-name-{index}"] = row.get("compound_name") or ""
         saved_values[row["id"]] = row["smiles"]
     st.session_state["vina-probe-rows"] = rows
     st.session_state["vina-probe-values"] = saved_values
@@ -439,7 +451,8 @@ def _add_boltz_probe() -> None:
     rows = list(st.session_state.get("vina-probe-rows") or [])
     if len(rows) < 10:
         next_id = int(st.session_state.get("vina-probe-next-id", 0))
-        rows.append({"id": f"manual:{next_id}", "source": "manual", "chain": "", "label": "Probe", "smiles": ""})
+        rows.append({"id": f"manual:{next_id}", "source": "manual", "chain": "", "label": "Probe",
+                     "compound_id": "", "compound_name": "", "smiles": ""})
         st.session_state["vina-probe-rows"] = rows
         st.session_state["vina-probe-next-id"] = next_id + 1
 
@@ -452,8 +465,16 @@ def _remove_boltz_probe(index: int) -> None:
         str(st.session_state.get(f"vina-probe-{current}", row.get("smiles") or ""))
         for current, row in enumerate(rows)
     ]
+    identities = [
+        (
+            str(st.session_state.get(f"vina-probe-id-{current}", row.get("compound_id") or "")),
+            str(st.session_state.get(f"vina-probe-name-{current}", row.get("compound_name") or "")),
+        )
+        for current, row in enumerate(rows)
+    ]
     removed = rows.pop(index)
     values.pop(index)
+    identities.pop(index)
     probe_id = str(removed.get("id") or "")
     if removed.get("source") != "manual" and probe_id:
         dismissed = set(st.session_state.get("vina-probe-dismissed") or ())
@@ -463,9 +484,15 @@ def _remove_boltz_probe(index: int) -> None:
     saved_values.pop(probe_id, None)
     for current in range(10):
         st.session_state.pop(f"vina-probe-{current}", None)
-    for current, (row, value) in enumerate(zip(rows, values)):
+        st.session_state.pop(f"vina-probe-id-{current}", None)
+        st.session_state.pop(f"vina-probe-name-{current}", None)
+    for current, (row, value, (compound_id, compound_name)) in enumerate(zip(rows, values, identities)):
         row["smiles"] = value
+        row["compound_id"] = compound_id
+        row["compound_name"] = compound_name
         st.session_state[f"vina-probe-{current}"] = value
+        st.session_state[f"vina-probe-id-{current}"] = compound_id
+        st.session_state[f"vina-probe-name-{current}"] = compound_name
         saved_values[str(row.get("id") or "")] = value
     st.session_state["vina-probe-rows"] = rows
     st.session_state["vina-probe-values"] = saved_values
@@ -546,18 +573,36 @@ def _render_boltz_pocket(
         f"{docking_engine} then docks against the imported receptor."
     )
     probe_values = []
+    probe_identities = []
     for index, row in enumerate(probe_rows):
-        columns = st.columns([10, 1.2])
-        value = columns[0].text_input(
+        columns = st.columns([2.4, 2.8, 5, 1.2])
+        compound_id = columns[0].text_input(
+            "Compound ID",
+            value=str(row.get("compound_id") or ""),
+            key=f"vina-probe-id-{index}",
+            help="Stable identifier retained in results. Leave blank to use the compound name.",
+        )
+        compound_name = columns[1].text_input(
+            "Compound name *",
+            value=str(row.get("compound_name") or ""),
+            key=f"vina-probe-name-{index}",
+            help="Required; shown with the ID in prediction results and tables.",
+        )
+        value = columns[2].text_input(
             f"{row['label']} · SMILES",
             key=f"vina-probe-{index}",
             help="Imported compound SMILES are prefilled when available. Edit the SMILES or remove this probe.",
         )
-        columns[1].button(
+        columns[3].button(
             "Remove", key=f"vina-remove-probe-{index}",
             on_click=_remove_boltz_probe, args=(index,),
         )
         probe_values.append(value)
+        probe_identities.append({
+            "compound_id": compound_id.strip() or compound_name.strip(),
+            "compound_name": compound_name.strip(),
+            "smiles": value.strip(),
+        })
     st.button("+ Add Probe", disabled=len(probe_rows) >= 10, key="vina-add-probe", on_click=_add_boltz_probe)
     probes = [value.strip() for value in probe_values if value.strip()]
     st.caption(f"{len(probes)}/10 probes")
@@ -569,13 +614,15 @@ def _render_boltz_pocket(
         missing_requirements.append("select at least one protein chain")
     if not probes:
         missing_requirements.append("provide at least one probe SMILES")
+    if any(probe["smiles"] and not probe["compound_name"] for probe in probe_identities):
+        missing_requirements.append("enter a compound name for each probe")
     if sequence_error:
         missing_requirements.append("correct the protein sequence input")
     if missing_requirements:
         st.caption(f"To enable pocket prediction, {', '.join(missing_requirements)}.")
     prediction_context = {
         "target_hash": hashlib.sha256(target_text.encode()).hexdigest(),
-        "request_signature": _boltz_request_signature(target_text, proteins, probes, distance, job_name),
+        "request_signature": _boltz_request_signature(target_text, proteins, probes, distance, job_name, probe_identities),
         "distance": distance, "project_id": str(project_id or ""),
         "selected_chains": [row["chain"] for row in protein_sequence_rows],
         "protein_sequences": selected_proteins, "probe_smiles": probes,
@@ -603,7 +650,10 @@ def _render_boltz_pocket(
                 raise ValueError("Select at least one chain from the imported PDB or add a protein sequence.")
             parameters = optimized_prediction.boltz2_prediction_parameters(
                 [
-                    {"name": f"probe_{i + 1}", "protein_sequences": proteins, "ligand_smiles": value}
+                    {"name": f"probe_{i + 1}", "protein_sequences": proteins,
+                     "compound_id": probe_identities[i]["compound_id"],
+                     "compound_name": probe_identities[i]["compound_name"],
+                     "ligand_smiles": value}
                     for i, value in enumerate(probes)
                 ],
                 settings={
@@ -639,7 +689,7 @@ def _render_boltz_pocket(
     pending_placement = st.session_state.get("vina-pending-placement")
     if isinstance(pending_placement, dict):
         pending_context = pending_placement.get("prediction_context", {})
-        current_signature = _boltz_request_signature(target_text, proteins, probes, distance, job_name)
+        current_signature = _boltz_request_signature(target_text, proteins, probes, distance, job_name, probe_identities)
         if pending_context.get("request_signature") != current_signature:
             st.warning("The protein, probe, or pocket settings changed. Start prediction again to refresh workstation availability.")
             if st.button("Dismiss workstation choices", key="vina-dismiss-stale-placement"):
@@ -752,8 +802,11 @@ def _render_prediction_progress(pending: dict, target_text: str, distance: float
         st.error(f"Could not update the binding-site prediction: {exc}")
 
 
-def _boltz_request_signature(target_text: str, proteins: str, probes: list[str], distance: float, job_name: str) -> str:
-    value = json.dumps([target_text, proteins, probes, float(distance), job_name], separators=(",", ":"))
+def _boltz_request_signature(
+    target_text: str, proteins: str, probes: list[str], distance: float, job_name: str,
+    probe_identities: list[dict[str, str]] | None = None,
+) -> str:
+    value = json.dumps([target_text, proteins, probes, probe_identities or [], float(distance), job_name], separators=(",", ":"))
     return hashlib.sha256(value.encode()).hexdigest()
 
 
@@ -791,13 +844,17 @@ def _set_ligand_preview_index(state_key: str, index: int) -> None:
 
 
 @st.cache_data(show_spinner=False, max_entries=32)
-def _compound_preview_rows(path: str, modified_ns: int, file_size: int) -> tuple[tuple[str, str], ...]:
-    """Read compound IDs and SMILES for the preview navigator; cache by file version."""
+def _compound_preview_rows(path: str, modified_ns: int, file_size: int) -> tuple[tuple[str, str, str], ...]:
+    """Read compound IDs, names, and SMILES for ligand previews and probes."""
     del modified_ns, file_size  # Included in the cache key to invalidate changed files.
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     compounds = payload.get("compounds") or []
     return tuple(
-        (str(row.get("compound_id") or f"Compound {index}"), str(row.get("smiles") or ""))
+        (
+            str(row.get("compound_id") or f"Compound {index}"),
+            str(row.get("compound_name") or (row.get("properties") or {}).get("name") or row.get("compound_id") or f"Compound {index}"),
+            str(row.get("smiles") or ""),
+        )
         for index, row in enumerate(compounds, start=1)
     )
 
@@ -836,13 +893,13 @@ def _render_ligand_2d_preview(compound_set: dict) -> None:
             disabled=index >= count - 1,
             on_click=_set_ligand_preview_index, args=(state_key, index + 1),
         )
-    compound_id, smiles = compounds[index]
+    compound_id, compound_name, smiles = compounds[index]
     if not smiles:
         return
     from mn_molecular_design_studio.cofolding_input import _smiles_preview
 
     preview = _smiles_preview(smiles)
-    label = html.escape(compound_id)
+    label = html.escape(compound_id if compound_id == compound_name else f"{compound_id} · {compound_name}")
     if not preview:
         st.caption(f"2D structure preview is unavailable for {label} in the configured chemistry environment.")
         return

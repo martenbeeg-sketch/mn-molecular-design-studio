@@ -411,6 +411,8 @@ def run_af3_jax_cofolding(
     rna_sequences: str = "",
     ligand_ccd_codes: str = "",
     ligand_smiles: str = "",
+    compound_id: str = "",
+    compound_name: str = "",
     model_name: Literal[
         "openbind0", "openfold3", "boltz2", "protenix2", "rosettafold3",
         "intellifold2", "opendde", "alphafold3",
@@ -435,6 +437,20 @@ def run_af3_jax_cofolding(
     structure_templates = validate_uploads(structure_templates, supported=True)
     seeds = _parse_seeds(seeds)
     job_name = str(job_name or "af3-jax-cofold").strip() or "af3-jax-cofold"
+    proteins, dna, rna, ccd_codes, smiles = parse_molecule_fields(
+        protein_sequences,
+        dna_sequences,
+        rna_sequences,
+        ligand_ccd_codes,
+        ligand_smiles,
+    )
+    has_ligand = bool(ccd_codes or smiles)
+    compound_name = str(compound_name or "").strip()
+    compound_id = str(compound_id or compound_name).strip()
+    if has_ligand and not compound_name:
+        raise ValueError("Enter a compound name for this ligand complex.")
+    if has_ligand and not compound_id:
+        compound_id = compound_name
     params = {
         "model_name": model_name,
         "model_label": model_profile["label"],
@@ -449,6 +465,8 @@ def run_af3_jax_cofolding(
         "gpu_device": str(gpu_device),
         "accept_alphafold3_terms": bool(accept_alphafold3_terms),
         "container_image": AF3_IMAGE,
+        "compound_id": compound_id if has_ligand else "",
+        "compound_name": compound_name if has_ligand else "",
     }
     molecule_inputs = {
         "protein_sequences": protein_sequences,
@@ -456,6 +474,8 @@ def run_af3_jax_cofolding(
         "rna_sequences": rna_sequences,
         "ligand_ccd_codes": ligand_ccd_codes,
         "ligand_smiles": ligand_smiles,
+        "compound_id": compound_id if has_ligand else "",
+        "compound_name": compound_name if has_ligand else "",
     }
     job = create_job(
         "refolding-validation",
@@ -498,13 +518,6 @@ def run_af3_jax_cofolding(
         if not 1 <= int(cpu_cores) <= 256:
             raise ValueError("CPU cores to reserve must be between 1 and 256.")
 
-        proteins, dna, rna, ccd_codes, smiles = parse_molecule_fields(
-            protein_sequences,
-            dna_sequences,
-            rna_sequences,
-            ligand_ccd_codes,
-            ligand_smiles,
-        )
         gpu_ids = _gpu_ids(gpu_device)
         uses_two_gpu_big = optimization_mode == "big" and bool(model_profile["two_gpu_big"])
         if uses_two_gpu_big and gpu_ids[:2] != ["0", "1"]:
@@ -596,6 +609,9 @@ def run_af3_jax_cofolding(
                 "rna_chains": [{"id": chain["id"], "length": len(chain["sequence"])} for chain in rna],
                 "ligand_ccd_codes": ccd_codes,
                 "ligand_smiles_count": len(smiles),
+                "ligand_smiles": smiles,
+                "compound_id": compound_id if has_ligand else "",
+                "compound_name": str(compound_name or "").strip() if has_ligand else "",
                 "msa_source": msa_source,
                 "msa_source_by_chain": msa_source_by_chain,
                 "msa_files_by_chain": {
@@ -698,6 +714,10 @@ def run_af3_jax_cofolding(
                         "rna_chains": {chain["id"]: chain["sequence"] for chain in rna},
                         "ligand_ccd_codes": ccd_codes,
                         "ligand_smiles": smiles,
+                        "compound_id": compound_id if has_ligand else "",
+                        "compound_name": str(compound_name or "").strip() if has_ligand else "",
+                        "source_compound_id": compound_id if has_ligand else "",
+                        "source_compound_name": str(compound_name or "").strip() if has_ligand else "",
                         "model_name": model_name,
                         "model_label": model_profile["label"],
                         "optimization_mode": optimization_mode,

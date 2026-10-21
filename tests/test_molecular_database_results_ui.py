@@ -11,6 +11,21 @@ from mn_molecular_design_studio.molecular_database import MolecularDatabase
 USER = {"id": "a" * 32, "role": "user", "_cluster_project_ids": []}
 
 
+def test_database_table_exposes_compound_id_name_and_smiles():
+    from mn_molecular_design_studio.database_ui import _table_row
+
+    row = _table_row({
+        "id": "mol-1", "name": "Bepristat 1a", "type": "small_molecule",
+        "components": [{"chain": "L", "smiles": "CCN"}],
+        "metadata": {"compound_id": "70701262"}, "scores": {}, "structures": [],
+        "created_at": "2026-10-21T12:00:00Z", "origin": {},
+    })
+    assert row["values"]["Compound ID"] == "70701262"
+    assert row["values"]["Name"] == "Bepristat 1a"
+    assert row["values"]["SMILES"] == "CCN"
+    assert row["values"]["L"] == "CCN"
+
+
 def _isolate_workspace(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_HOME", str(workspace))

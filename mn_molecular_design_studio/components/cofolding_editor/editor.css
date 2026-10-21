@@ -4,3 +4,5 @@
 
 .upload{position:relative}.upload input[type=file]{display:block!important;position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
 .pocket-fields>label{display:flex;flex-direction:column;align-items:flex-start;gap:4px;flex:1;min-width:0}.pocket-fields>label select,.pocket-fields>label input{width:100%}
+.compound-identity{border:1px solid #dce4de;border-radius:6px;padding:12px 14px;margin:12px 0;background:#fbfcfb}.compound-identity h3{font-size:14px;margin:0 0 9px}.identity-fields{display:grid;grid-template-columns:1fr 2fr;gap:12px}.identity-fields label{font-size:12px;font-weight:600}.identity-fields input{box-sizing:border-box;width:100%;margin-top:5px;padding:8px 10px;border:1px solid #cbd5ce;border-radius:4px;font:inherit;font-weight:400}.compound-identity p{font-size:11px;color:#869087;margin:7px 0 0}
+@media(max-width:620px){.identity-fields{grid-template-columns:1fr}}

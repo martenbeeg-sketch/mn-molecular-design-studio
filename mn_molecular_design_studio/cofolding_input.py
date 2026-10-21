@@ -62,6 +62,7 @@ def _smiles_preview(smiles: str) -> str:
 def default_model() -> dict[str, Any]:
     return {
         "cards": [{"id": 1, "kind": "protein", "value": "", "copies": 1, "modifications": []}],
+        "compound_id": "", "compound_name": "",
         "restraints": [], "templates": [], "msa_files": [], "yaml_files": [], "yaml_text": "",
         "settings": {
             "samples": 5, "optimization_mode": "off", "use_yaml": False,
@@ -138,6 +139,16 @@ def model_to_payload(model: dict[str, Any]) -> dict[str, Any]:
         "affinity_binder": settings.get("affinity_binder") if settings.get("predict_affinity") else "",
         "input_error": errors[0] if errors else "", "chain_catalog": catalog,
     }
+    has_ligand = bool(groups["ccd"] or groups["smiles"])
+    compound_name = str(model.get("compound_name") or "").strip()
+    compound_id = str(model.get("compound_id") or "").strip() or compound_name
+    if has_ligand and not compound_name:
+        values["input_error"] = values["input_error"] or "Enter a compound name for this ligand complex."
+    values.update({
+        "compound_id": compound_id if has_ligand else "",
+        "compound_name": compound_name if has_ligand else "",
+        "name": compound_name if has_ligand else "",
+    })
     if settings["use_yaml"]:
         values.update({key: "" for key in ("protein_sequences", "dna_sequences", "rna_sequences", "ligand_ccd_codes", "ligand_smiles")})
         values.update({
@@ -237,8 +248,21 @@ def render_molecule_editor(
     values = model_to_payload(model)
     if not boltz_settings:
         values["structure_templates"] = values.pop("boltz_templates", []) if supports_templates else []
+    if model.get("settings", {}).get("use_yaml"):
+        yaml_has_ligand = any(row.get("kind") == "ligand" for row in yaml_chains)
+        if yaml_has_ligand:
+            values["compound_name"] = str(model.get("compound_name") or "").strip()
+            values["compound_id"] = str(model.get("compound_id") or "").strip() or values["compound_name"]
+            values["name"] = values["compound_name"]
+            if not values["compound_name"]:
+                values["input_error"] = "Enter a compound name for this ligand complex."
+        else:
+            values.update({"compound_id": "", "compound_name": "", "name": ""})
     if yaml_error and model.get("settings", {}).get("use_yaml"):
         values["input_error"] = yaml_error
+    if (model.get("settings", {}).get("use_yaml") and any(row.get("kind") == "ligand" for row in yaml_chains)
+            and not str(model.get("compound_name") or "").strip()):
+        values["input_error"] = "Enter a compound name for this ligand complex."
     if not (supports_cyclic or supports_modifications or supports_msa_upload):
         values["molecule_chain_options"] = []
     return values, model["settings"], submitted

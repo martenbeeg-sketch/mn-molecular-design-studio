@@ -266,7 +266,9 @@ def _optimized_prediction_tasks(engine: str, source: dict, params: dict) -> list
         library = candidate.get("raw_metadata") or {}
         if library.get("studio_molecule_id") and library.get("components"):
             components = library["components"]
-            tasks.append({
+            ligands = [row for row in components if row["type"] == "small_molecule"]
+            identity_metadata = library.get("metadata") if isinstance(library.get("metadata"), dict) else {}
+            task = {
                 "name": candidate_id,
                 "source_candidate_id": candidate_id, "source_run_dir": str(run_dir),
                 "protein_sequences": ":".join(row["sequence"] for row in components if row["type"] == "protein"),
@@ -274,7 +276,13 @@ def _optimized_prediction_tasks(engine: str, source: dict, params: dict) -> list
                 "rna_sequences": ":".join(row["sequence"] for row in components if row["type"] == "rna"),
                 "ligand_smiles": "\n".join(row["smiles"] for row in components if row["type"] == "small_molecule" and row.get("smiles")),
                 "ligand_ccd_codes": ":".join(row["ccd"] for row in components if row["type"] == "small_molecule" and not row.get("smiles") and row.get("ccd")),
-            })
+            }
+            if ligands:
+                task.update({
+                    "compound_id": str(identity_metadata.get("compound_id") or identity_metadata.get("pubchem_cid") or candidate_id),
+                    "compound_name": str(identity_metadata.get("compound_name") or library.get("name") or candidate_id),
+                })
+            tasks.append(task)
             continue
         info = design_validation.candidate_description(run_dir, candidate)
         target_chains = list(info["target_chains"])
@@ -593,8 +601,11 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
                 if not re.fullmatch(r'[A-Z0-9]{1,5}',code):
                     raise ValueError('Boltz-2 needs a CCD or SMILES ligand definition. This motif uses a custom ligand fragment; connect RosettaFold3 to preserve its input atom graph.')
                 if not candidate.get('binder_sequence'):raise ValueError('The generated design has no binder sequence.')
-                tasks.append({'name':candidate['candidate_id'],'binder_sequence':candidate['binder_sequence'],
-                              'ligand_ccd_codes':code,'molecule_chain_options':[{'id':'A','use_msa':False}]})
+                tasks.append({
+                    'name': candidate['candidate_id'], 'binder_sequence': candidate['binder_sequence'],
+                    'ligand_ccd_codes': code, 'compound_id': code, 'compound_name': code,
+                    'molecule_chain_options': [{'id': 'A', 'use_msa': False}],
+                })
             return {'schema_version':1,'workflow':'refolding.optimized_prediction','parameters':{
                 'engine':'boltz2','job_name':name,'tasks':tasks,'samples':int(p['diffusion_samples']),
                 'num_recycles':int(p['recycling_steps']),

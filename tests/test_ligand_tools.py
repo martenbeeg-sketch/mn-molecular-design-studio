@@ -150,9 +150,9 @@ ui._render_vina_setup(
     chains.set_value(["B"]).run()
     assert not app.exception
     assert app.multiselect(key="vina-boltz-selected-chains").value == ["B"]
-    probe_widgets = [widget for widget in app.text_input if str(widget.key).startswith("vina-probe-")]
-    assert len(probe_widgets) == 1
     assert "Imported compound imatinib-CID5291" in app.text_input(key="vina-probe-0").label
+    assert app.text_input(key="vina-probe-id-0").value == "imatinib-CID5291"
+    assert app.text_input(key="vina-probe-name-0").value == "Imatinib"
     imported_smiles = "Cc1ccc(NC(=O)c2ccc(CN3CCN(C)CC3)cc2)cc1Nc1nccc(-c2cccnc2)n1"
     assert app.text_input(key="vina-probe-0").value == imported_smiles
     app.button(key="vina-predict-pocket").click().run()
@@ -162,6 +162,8 @@ ui._render_vina_setup(
     assert len(prediction["parameters"]["tasks"]) == 1
     assert prediction["parameters"]["tasks"][0]["protein_sequences"] == chain_sequence
     assert prediction["parameters"]["tasks"][0]["ligand_smiles"] == imported_smiles
+    assert prediction["parameters"]["tasks"][0]["compound_id"] == "imatinib-CID5291"
+    assert prediction["parameters"]["tasks"][0]["compound_name"] == "Imatinib"
     assert "output_format" not in prediction["parameters"]["engine_options"]
     from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import validate_prediction_request
     validate_prediction_request(prediction["parameters"])
@@ -453,6 +455,16 @@ def test_generated_compound_csv_uses_canonical_isomeric_smiles():
     assert rows[0]["properties"] == {"generation_engine": "lddm"}
 
 
+def test_compound_import_keeps_distinct_id_name_and_smiles():
+    rows = ligand_compounds.parse_compound_table(
+        b"compound_id,compound_name,canonical_smiles\n70701262,Bepristat_1a,CCN\n",
+        filename="compounds.csv",
+    )
+    assert rows[0]["compound_id"] == "70701262"
+    assert rows[0]["compound_name"] == "Bepristat_1a"
+    assert rows[0]["smiles"] == "CCN"
+
+
 def test_smi_parser_and_compound_set_round_trip(tmp_path):
     compounds = ligand_compounds.parse_smi_text("CCO ethanol\nc1ccccc1 benzene\n")
     path = tmp_path / "set.json"
@@ -506,6 +518,17 @@ def test_database_compound_set_detects_content_changes(tmp_path):
 
     with pytest.raises(ValueError, match="content-integrity"):
         ligand_compounds.load_compound_set(path)
+
+
+def test_legacy_compound_sets_migrate_to_named_schema_without_losing_integrity(tmp_path):
+    path = tmp_path / "legacy.json"
+    old_compounds = [{"compound_id": "ethanol", "smiles": "CCO", "properties": {}}]
+    digest = hashlib.sha256(json.dumps(old_compounds, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    path.write_text(json.dumps({"schema_version": 1, "record_type": "compound_set", "compound_set_id": "old",
+        "content_sha256": digest, "compounds": old_compounds}))
+    loaded = ligand_compounds.load_compound_set(path)
+    assert loaded["schema_version"] == 2
+    assert loaded["compounds"][0]["compound_name"] == "ethanol"
 
 
 def test_nesso_yaml_uses_protein_ligand_affinity_contract():
