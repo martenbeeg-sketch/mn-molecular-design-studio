@@ -638,7 +638,10 @@ def _submit(request: dict, parent: Path, node: dict, *, owner_id: str, project_i
     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import submit_workflow_request
     from mn_molecular_design_studio.workspace import mark_studio_job
     request = copy.deepcopy(request)
-    request["resources"] = {"gpu_device": gpu_device, "cpu_cores": 4}
+    from mn_molecular_design_studio.quality_tools import WORKFLOWS as quality_workflows
+    workflow = str(request.get("workflow", ""))
+    cpu_analysis = workflow.startswith("analysis.") and not quality_workflows.get(workflow, {}).get("gpu", False)
+    request["resources"] = {"gpu_device": "none" if cpu_analysis else gpu_device, "cpu_cores": 4}
     path = parent / "requests" / f"{node['id']}.json"
     # Workflow submission resolves relative paths against the request file's
     # parent directory. `write_json` stores managed paths relative to the

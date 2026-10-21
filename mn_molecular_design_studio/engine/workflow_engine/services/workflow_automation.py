@@ -162,6 +162,7 @@ _SPECS = (
     _spec("design.bindcraft2", "bindcraft2", "enqueue_bindcraft2_design", "design", "bindcraft2", "bindcraft2_design", "Run a native BindCraft 2 design job.", "direct"),
     _spec("design.bindcraft2_generator", "bindcraft2", "enqueue_bindcraft2_design", "design", "bindcraft2_generator", "bindcraft2_generator", "Run BindCraft2 gradient design and emit only trajectories that pass the pre-ProteinMPNN handoff gate.", "direct"),
     _spec("design.rfdiffusion3", "rfdiffusion3", "run_rfdiffusion3_design", "design", "rfdiffusion3", "rfdiffusion3_design", "All-atom protein, enzyme, nucleic-acid and small-molecule conditioned design with RFdiffusion3."),
+    _spec("design.rfd4_proteina", "rfd4_proteina", "run_rfd4_proteina_design", "design", "rfd4_proteina", "rfd4_proteina_design", "Generate sequence and structure together with RFDiffusion4-Proteina using guided binder inputs, annotated CIFs, or native YAML/JSON conditions."),
     _spec("design.rfantibody", "rfantibody", "run_rfantibody_design", "design", "rfantibody", "rfantibody_design", "Run RFdiffusion, ProteinMPNN and RF2 antibody or nanobody design."),
     _spec("design.rfpeptides", "rfpeptides", "run_rfpeptides_design", "design", "rfpeptides", "rfpeptides_design", "Generate cyclic peptide binder backbones with the RFpeptides RFdiffusion protocol."),
     _spec("design.rfdiffusion3_foundry", "design", "run_rfdiffusion3_foundry", "design", "rfdiffusion3_foundry", "design_campaign", "Run RFdiffusion3 / Foundry design."),
@@ -220,6 +221,11 @@ _SPECS = (
     _spec("benchmark.matrix_workspace", "benchmark", "create_benchmark_matrix_workspace", "benchmark", "benchmark_matrix_workspace", "benchmark_matrix_workspace", "Create a metric-matrix workspace from selected benchmark runs.", "direct"),
 )
 
+from mn_molecular_design_studio.quality_tools import TOOLS as _QC_TOOLS
+_SPECS = (*_SPECS, *(
+    _spec("analysis." + key, "quality", "run_" + key, "analysis", key, "analysis",
+        profile["name"] + ": analyze the selected collection in one batch with per-item status and preserved source lineage.")
+    for key, profile in _QC_TOOLS.items()))
 WORKFLOWS: dict[str, WorkflowSpec] = {spec.workflow_id: spec for spec in _SPECS}
 
 
@@ -534,8 +540,10 @@ def _resolve_source_job(
         parameters.setdefault("source_run_dir", run_dir)
     if "candidates_jsonl" in signature.parameters:
         if not candidates.is_file():
-            raise AutomationError(f"Source job {row['run_id']} has no normalized candidates file: {candidates}")
-        parameters.setdefault("candidates_jsonl", candidates)
+            if signature.parameters["candidates_jsonl"].default is not None:
+                raise AutomationError(f"Source job {row['run_id']} has no normalized candidates file: {candidates}")
+        else:
+            parameters.setdefault("candidates_jsonl", candidates)
     return parameters
 
 
@@ -772,6 +780,22 @@ def _validate_workflow_inputs(spec: WorkflowSpec, parameters: dict[str, Any]) ->
         from mn_molecular_design_studio.rfdiffusion3_input import prepare_request
         try:
             prepare_request(parameters)
+        except (TypeError, ValueError, OSError) as exc:
+            raise AutomationError(str(exc)) from exc
+    if spec.workflow_id == "design.rfd4_proteina":
+        from tempfile import TemporaryDirectory
+        from mn_molecular_design_studio.rfd4_proteina_input import prepare_request
+        try:
+            if _schema_only_paths.get():
+                task = parameters.get("task", "protein_binder")
+                mode = parameters.get("input_mode", "guided_binder")
+                if task not in {"protein_binder", "nanobody", "antibody", "tcr", "motif_scaffolding", "enzyme", "small_molecule_binder", "dna_binder", "rna_design", "existing_structure", "custom_conditions", "unconditional"}:
+                    raise ValueError("Choose a supported RFDiffusion4-Proteina design task.")
+                if mode not in {"guided_binder", "annotated_cif", "condition_spec", "unconditional"}:
+                    raise ValueError("Choose a supported RFDiffusion4-Proteina input method.")
+            else:
+                with TemporaryDirectory(prefix="studio-rfd4-validate-") as temporary:
+                    prepare_request(parameters, run_dir=Path(temporary))
         except (TypeError, ValueError, OSError) as exc:
             raise AutomationError(str(exc)) from exc
     if spec.workflow_id == "design.rfantibody":

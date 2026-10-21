@@ -111,6 +111,20 @@ NODE_CATALOG = {
 }
 NODE_CATALOG["complexa_generator"]["inputs"][0]["optional"] = True
 
+from mn_molecular_design_studio.quality_tools import TOOLS as QUALITY_TOOLS
+for _key, _profile in QUALITY_TOOLS.items():
+    _fields = []
+    if _key in {"sequence_qc", "pep_patch"}:
+        _fields.append(field("ph", "pH", 7.4, minimum=0., maximum=14.))
+    if _key in {"biotite_interface", "interface_clustering"}:
+        _fields.append(field("contact_distance", "Contact cutoff (Å)", 5., minimum=.1, maximum=20.))
+    if _profile.get("cohort"):
+        _fields.append(field("similarity_threshold", "Similarity threshold", .8 if _key == "sequence_clustering" else .5, minimum=.01, maximum=1.))
+    if _key == "foldseek":
+        _fields.append(field("coverage", "Alignment coverage", .8, minimum=.01, maximum=1.))
+    NODE_CATALOG[_key] = _spec(_key, _profile["name"], "Analysis", "Analyze one collection as a batch; retain all candidates and their per-item outcomes.",
+        accepts=["sequence", "prediction", "candidates"], output="prediction", workflow="analysis." + _key, fields=_fields, color="#9a7854")
+
 
 # These are the same public workflow parameters used by the standalone input
 # pages. Graph adapters supply structures, candidate collections and execution

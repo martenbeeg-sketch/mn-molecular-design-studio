@@ -109,7 +109,7 @@ function MolstarCustomComponent(props: Props) {
           [PluginConfig.VolumeStreaming.Enabled, true],
           [PluginConfig.Viewport.ShowExpand, false],            // hide the full screen button as we use the fullscreen
           [PluginConfig.Viewport.ShowToggleFullscreen, !props.minimalViewer],
-          [PluginConfig.Viewport.ShowAnimation, false],         // we do not need animation controls
+          [PluginConfig.Viewport.ShowAnimation, props.structures.some((structure) => structure.trajectory?.format === "xtc")],
           [PluginConfig.Viewport.ShowXR, false],                // we also do not need AR/VR
           [PluginConfig.Viewport.ShowControls, !props.minimalViewer],
           [PluginConfig.Viewport.ShowSettings, !props.minimalViewer],
@@ -345,7 +345,9 @@ function MolstarCustomComponent(props: Props) {
         colorParams: {
           ...colorParams,
           ...{
-            value: Color(colorParams?.value ? parseInt(colorParams.value, 16) : 0xffffff)
+            // Use the application-wide protein green when callers omit a
+            // color, so newly added Mol* viewers share the same default.
+            value: Color(colorParams?.value ? parseInt(colorParams.value, 16) : 0x318c70)
           }
         }
       } as const;
@@ -414,8 +416,32 @@ function MolstarCustomComponent(props: Props) {
 
     let data: StateObjectSelector;
     let trajectory: StateObjectSelector;
+    let model: StateObjectSelector | undefined;
 
-    if (isUrl(structureToLoad.pdb)) {
+    if (structureToLoad.trajectory?.format === "xtc") {
+      data = await plugin.builders.data.rawData({
+        data: structureToLoad.pdb,
+        label: "BioEmu topology",
+      });
+      trajectory = await plugin.builders.structure.parseTrajectory(data, "mmcif");
+      const topologyModel = await plugin.builders.structure.createModel(trajectory);
+      const coordinateBytes = Uint8Array.from(atob(structureToLoad.trajectory.coordinates_base64), (character) => character.charCodeAt(0));
+      const coordinateData = await plugin.builders.data.rawData({
+        data: coordinateBytes,
+        label: "BioEmu XTC coordinates",
+      });
+      const xtcProvider = plugin.dataFormats.get("xtc");
+      if (!xtcProvider) throw new Error("Mol* XTC coordinates provider is unavailable.");
+      const coordinates = await xtcProvider.parse(plugin, coordinateData);
+      model = await plugin.state.data.build()
+        .toRoot()
+        .apply(StateTransforms.Model.TrajectoryFromModelAndCoordinates, {
+          modelRef: topologyModel.ref,
+          coordinatesRef: coordinates.ref,
+        }, { dependsOn: [topologyModel.ref, coordinates.ref] })
+        .apply(StateTransforms.Model.ModelFromTrajectory, { modelIndex: 0 })
+        .commit();
+    } else if (isUrl(structureToLoad.pdb)) {
       data = await plugin.builders.data.download({
         url: Asset.Url(structureToLoad.pdb),
         isBinary: false
@@ -461,7 +487,9 @@ function MolstarCustomComponent(props: Props) {
       }
     }
 
-    const model = await plugin.builders.structure.createModel(trajectory);
+    if (!model) {
+      model = await plugin.builders.structure.createModel(trajectory);
+    }
     const structure = await plugin.builders.structure.createStructure(model, { name: 'model', params: {} });
 
     const polymer = await plugin.builders.structure.tryCreateComponentStatic(structure, 'polymer');

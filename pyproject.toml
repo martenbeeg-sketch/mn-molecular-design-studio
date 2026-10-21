@@ -15,10 +15,12 @@ dependencies = [
   "matplotlib",
   "openpyxl",
   "pandas",
+  "plotly>=5.24,<7",
   "pyyaml",
   "py2Dmol @ git+https://github.com/sokrypton/py2Dmol.git@67cbe73f06f49645291ea3e79a06293b0abaa3a7",
   "rdkit",
   "streamlit",
+  "zstandard",
   "typer",
   "uvicorn",
 ]
@@ -46,6 +48,7 @@ include = ["mn_molecular_design_studio*"]
 
 [tool.setuptools.package-data]
 "mn_molecular_design_studio.engine.workflow_engine.vendor.ligand_runtime" = ["scripts/*.py"]
+"mn_molecular_design_studio.engine.workflow_engine.workflows.qc_ovo" = ["LICENSE", "PROVENANCE.md", "*.json"]
 "*" = [
   "*.yaml",
   "*.nf",

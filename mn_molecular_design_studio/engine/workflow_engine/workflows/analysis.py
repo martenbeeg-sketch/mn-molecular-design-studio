@@ -46,10 +46,7 @@ DEFAULT_THRESHOLDS = {
 METRIC_ALIASES = {
     "binder_plddt": [
         "binder_plddt",
-        "plddt",
-        "boltz2_binder_plddt",
-        "boltz2_complex_plddt",
-        "boltz2_confidence_score",
+        "af2_binder_plddt",
     ],
     "confidence": [
         "confidence",
@@ -370,6 +367,12 @@ def _allocated_cpu_cores(requested: int | None = None) -> int:
             cores = 1
     if cores < 1:
         raise ValueError("CPU allocation must be at least one core.")
+    granted = os.getenv("MN_MOLECULAR_DESIGN_STUDIO_JOB_CPU_CORES")
+    if granted:
+        try:
+            cores = min(cores, max(1, int(granted)))
+        except ValueError:
+            pass
     return cores
 
 
@@ -1056,11 +1059,17 @@ def run_ipsae_analysis_contract(
     candidates_jsonl: Path,
     pae_cutoff: float = 10.0,
     dist_cutoff: float = 10.0,
+    candidate_ids: list[str] | None = None,
 ) -> Path:
     """Compute ipSAE as a standalone result analysis over saved complex predictions."""
     source_run_dir = Path(source_run_dir)
     candidates_jsonl = Path(candidates_jsonl)
     candidates = _analysis_source_candidates(source_run_dir, candidates_jsonl)
+    if candidate_ids is not None:
+        selected_ids = {str(value).strip() for value in candidate_ids if str(value).strip()}
+        candidates = [candidate for candidate in candidates if str(candidate.get("candidate_id") or "") in selected_ids]
+        if not candidates:
+            raise ValueError("None of the selected Database candidate IDs are present in this source run.")
     matrix_count = sum(
         1
         for candidate in candidates
@@ -1079,7 +1088,8 @@ def run_ipsae_analysis_contract(
         source_run_dir,
         candidates_jsonl,
         tool="ipsae",
-        params={"pae_cutoff": pae_cutoff, "dist_cutoff": dist_cutoff},
+        params={"pae_cutoff": pae_cutoff, "dist_cutoff": dist_cutoff,
+                "candidate_ids": sorted(selected_ids) if candidate_ids is not None else None},
         note="Calculate standalone ipSAE interface scores from each selected complex structure and its saved pairwise PAE matrix.",
         mode="internal+docker",
     )
@@ -1263,11 +1273,6 @@ def _metric_value(flat_metrics: dict[str, Any], canonical: str) -> float | None:
             value = _safe_float(lowered[alias.lower()])
             if value is not None:
                 return value
-    for key, value in lowered.items():
-        if any(key.endswith(f".{alias.lower()}") for alias in aliases):
-            number = _safe_float(value)
-            if number is not None:
-                return number
     return None
 
 
@@ -1292,13 +1297,14 @@ def _add_hotspot_metrics(source_run_dir: Path, candidates: list[dict[str, Any]])
     return enhanced
 
 
-def _score_row(row: dict[str, Any]) -> float:
+def _score_row(row: dict[str, Any], fields=None) -> float | None:
+    fields = fields if fields is not None else [key for key in ("binder_plddt", "iptm", "ipsae", "ipae", "ipde", "binder_rmsd", "monomer_rmsd", "hotspot_contact_fraction") if row.get(key) is not None]
+    if not fields:
+        return None
+    row = {key: row.get(key) for key in fields}
     score = 0.0
     if row.get("binder_plddt") is not None:
         score += min(max(float(row["binder_plddt"]), 0.0), 100.0) / 100.0
-    if row.get("confidence") is not None:
-        confidence = float(row["confidence"])
-        score += confidence if confidence <= 1.5 else confidence / 100.0
     if row.get("iptm") is not None:
         score += float(row["iptm"])
     if row.get("ipsae") is not None:
@@ -1313,7 +1319,7 @@ def _score_row(row: dict[str, Any]) -> float:
         score += max(0.0, 1.0 - float(row["monomer_rmsd"]) / 10.0)
     if row.get("hotspot_contact_fraction") is not None:
         score += min(1.0, max(0.0, float(row["hotspot_contact_fraction"])))
-    return round(score, 4)
+    return round(score / len(fields), 6)
 
 
 def _passes_thresholds(row: dict[str, Any], thresholds: dict[str, float]) -> tuple[bool, list[str]]:
@@ -1335,6 +1341,8 @@ def _passes_thresholds(row: dict[str, Any], thresholds: dict[str, float]) -> tup
             continue
         value = row.get(metric)
         if value is None:
+            if float(threshold) != 0:
+                failures.append(f"{metric} missing")
             continue
         if op == ">=" and float(value) < float(threshold):
             failures.append(f"{metric} < {threshold:g}")
@@ -1380,7 +1388,11 @@ def build_analysis_table(
 ) -> pd.DataFrame:
     thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
     rows: list[dict[str, Any]] = []
+    cohort_methods: dict[str, set[str]] = {}
     for source_index, candidate in enumerate(candidates):
+        from mn_molecular_design_studio.output_vocabulary import candidate_output
+        output = candidate_output(candidate)
+        common = output["metrics"]
         flat_metrics = _flatten_metrics(candidate.get("metrics") or {})
         row = {
             "source_index": source_index,
@@ -1399,8 +1411,12 @@ def build_analysis_table(
                 row[metric] = _metric_value(flat_metrics, metric) if "boltz" in backend else None
             else:
                 row[metric] = _metric_value(flat_metrics, metric)
-            if metric == "binder_plddt" and row[metric] is not None and float(row[metric]) <= 1.5:
-                row[metric] = float(row[metric]) * 100.0
+        for metric, field in {"binder_plddt": "confidence.validation.bound_binder.plddt", "iptm": "confidence.validation.complex.iptm",
+                              "ipae": "confidence.validation.interface.mean_pae", "ipsae": "interface.ipsae.minimum"}.items():
+            if field in common:
+                row[metric] = common[field]
+            if row.get(metric) is not None:
+                cohort_methods.setdefault(metric, set()).add(output.get("provenance", {}).get(field, {}).get("method") or str(candidate.get("source_tool")))
         for metric in BINDCRAFT_METRICS:
             if metric in flat_metrics:
                 row[f"bindcraft_{metric}"] = flat_metrics[metric]
@@ -1411,7 +1427,7 @@ def build_analysis_table(
         native_pass_filters = flat_metrics.get("pass_filters")
         row["native_pass_filters"] = native_pass_filters if isinstance(native_pass_filters, bool) else None
         row["ipsae_error"] = str(flat_metrics.get("ipsae_error") or "")
-        row["analysis_score"] = _score_row(row)
+        row["analysis_score"] = None
         passed, failures = _passes_thresholds(row, thresholds)
         row["passes_filters"] = passed
         row["filter_failures"] = "; ".join(failures)
@@ -1419,6 +1435,12 @@ def build_analysis_table(
     df = pd.DataFrame(rows)
     if df.empty:
         return df
+    score_fields = [field for field in ("binder_plddt", "iptm", "ipsae", "ipae", "ipde", "binder_rmsd", "monomer_rmsd", "hotspot_contact_fraction")
+                    if field in df and df[field].notna().all() and len(cohort_methods.get(field, set())) <= 1]
+    df["analysis_score"] = [_score_row(row, score_fields) for row in df.to_dict("records")]
+    df["comparison_metrics"] = ", ".join(score_fields)
+    df["metric_coverage"] = df[[field for field in METRIC_ALIASES if field in df]].notna().sum(axis=1)
+    df["ranking_status"] = "Shared metrics" if score_fields else "No shared scoring metrics"
     sort_cols, ascending = _ranking_sort_columns(ranking_metric)
     selected_sort = [(column, direction) for column, direction in zip(sort_cols, ascending) if column in df.columns]
     selected_columns = [column for column, _direction in selected_sort]

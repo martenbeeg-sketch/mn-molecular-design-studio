@@ -103,6 +103,15 @@ def _list_authorized_run(run_dir, user, database):
             by_molecule.setdefault(source["molecule_id"], set()).add(source["group_id"])
     items = []
     for record in result["items"]:
+        from mn_molecular_design_studio.evaluations import project_observation, evaluation_descriptor
+        run_observations = [observation for observation in record["observations"] if observation["run_id"] == run_id]
+        if run_observations:
+            run_observations.sort(key=lambda obs: (not evaluation_descriptor(obs)["preferred"], obs["id"]))
+            chosen = run_observations[0]
+            record["scores"], record["score_sources"], _ = project_observation(chosen)
+            record["selected_evaluation"] = evaluation_descriptor(chosen)
+            record["observations"] = run_observations
+            record["structures"] = [s for s in record.get("representations", []) if s["context"].get("run_id") == run_id]
         run_group_ids = sorted(by_molecule.get(record["id"], set()))
         run_group_ids.sort(key=lambda group_id: (
             {"generated": 0, "curated": 1, "inputs": 2, "evaluation": 3, "intermediate": 4}.get(

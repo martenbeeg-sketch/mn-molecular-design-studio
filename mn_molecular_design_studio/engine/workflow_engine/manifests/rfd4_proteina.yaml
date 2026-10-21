@@ -1,0 +1,22 @@
+tool: rfd4_proteina
+group: design
+image: mn-rfd4-proteina:0.0.3-cu130
+gpu: true
+description: RFDiffusion4-Proteina sequence and structure co-design; CUDA 13 build for RTX 4090 and RTX 5090 hosts.
+inputs:
+  target_structure: {type: structure, required: false}
+  input_files: {type: structure_list, required: false}
+params:
+  task: {type: enum, values: [protein_binder, nanobody, antibody, tcr, motif_scaffolding, enzyme, small_molecule_binder, dna_binder, rna_design, existing_structure, custom_conditions, unconditional], default: protein_binder}
+  input_mode: {type: enum, values: [guided_binder, annotated_cif, condition_spec, unconditional], default: guided_binder}
+  num_designs: {type: int, default: 8}
+  batch_size: {type: int, default: 1}
+  nsteps: {type: int, default: 60}
+  seed: {type: int, default: 0}
+outputs:
+  candidates:
+    path: artifacts/normalized_candidates/candidates.jsonl
+    type: candidate_set
+  structures:
+    path: artifacts/rfd4_proteina/output/inference_samples
+    type: structure_ensemble

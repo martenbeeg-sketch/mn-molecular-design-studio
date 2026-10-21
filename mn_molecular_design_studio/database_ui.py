@@ -286,6 +286,21 @@ def _structure_text(path, context):
 
 
 def render_details(database, user, record):
+    from mn_molecular_design_studio.evaluations import evaluation_descriptor
+    evaluation = record.get("selected_evaluation") or {}
+    history = {evaluation_descriptor(obs)["id"]: evaluation_descriptor(obs) for obs in record.get("observations", [])}
+    if history:
+        current = (record.get("selected_evaluation") or {}).get("id")
+        options = list(history)
+        choice = st.selectbox("Evaluation", options, index=options.index(current) if current in options else 0,
+            format_func=lambda value: f"{history[value]['evaluator']} · {history[value]['run_id']} · {history[value]['candidate_id'] or value[-8:]}",
+            key="database-evaluation-" + record["id"])
+        if choice != current:
+            selected = database.list_molecules(user, molecule_ids=[record["id"]], evaluation_filters={"evaluation_id": choice})["items"]
+            if selected:
+                record = selected[0]
+        evaluation = record.get("selected_evaluation") or {}
+        st.caption("Scores and structure belong to this evaluation. Target: " + (evaluation.get("target_id") or "unspecified in historical result"))
     st.markdown("**" + html.escape(record["name"]) + "**")
     st.caption(record["id"])
     source_workstation = _remote_source_workstation(record.get("origin"))
@@ -295,7 +310,13 @@ def render_details(database, user, record):
     with molecule_tab:
         structures = record["structures"]
         if structures:
-            selected = st.selectbox("Structure", range(len(structures)), format_func=lambda index: structures[index]["label"], key="database-structure-" + record["id"])
+            # The available representations are filtered to the selected
+            # evaluation. Include that evaluation in the widget key so
+            # Streamlit does not carry an old engine's structure index across
+            # a change in the Evaluation selector.
+            evaluation_id = str(evaluation.get("id") or (choice if history else ""))
+            structure_key = f"database-structure-{record['id']}-{evaluation_id or 'all'}"
+            selected = st.selectbox("Structure", range(len(structures)), format_func=lambda index: structures[index]["label"], key=structure_key)
             structure = structures[selected]
             try:
                 if source_workstation and str(structure.get("path", "")).startswith("cluster-library://"):
@@ -322,13 +343,44 @@ def render_details(database, user, record):
                 if path.suffix.lower() in {".pdb", ".ent", ".cif", ".mmcif", ".sdf", ".mol", ".pdbqt"} and path.stat().st_size < 50_000_000:
                     from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer import molstar_custom_component
                     from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer.dataclasses import StructureVisualization
-                    # Keep protein structures in cartoon form in the Database viewer so
-                    # side-chain atoms do not obscure the overall complex. Small
-                    # molecules remain ball-and-stick for chemical detail.
-                    representations = [StructureVisualization(pdb=_structure_text(path, structure["context"]), color="chain-id", representation_type="ball-and-stick" if record["type"] == "small_molecule" else "cartoon")]
-                    target = structure["context"].get("target_path")
-                    if target and Path(target).is_file():
-                        representations.insert(0, StructureVisualization(pdb=Path(target).read_text(), color="uniform", color_params={"value": "318c70"}, representation_type="cartoon"))
+                    structure_context = structure.get("context") or {}
+                    policy = structure_context.get("database_structure_policy")
+                    if record["type"] == "small_molecule" and policy in {"best_docking_pose", "best_prediction"}:
+                        from mn_molecular_design_studio.docking_results import pose_visualizations
+                        receptor_text = None
+                        receptor_name = ""
+                        target = structure_context.get("target_path")
+                        if target and Path(target).is_file():
+                            receptor_path = Path(target)
+                            receptor_text = receptor_path.read_text(errors="replace")
+                            receptor_name = receptor_path.name
+                        elif structure_context.get("target_molecule_id"):
+                            targets = database.list_molecules(
+                                user, molecule_ids=[structure_context["target_molecule_id"]], limit=1
+                            ).get("items") or []
+                            if targets:
+                                target_structures = sorted(
+                                    targets[0].get("structures") or [],
+                                    key=lambda item: item.get("format") not in {"pdb", "ent"},
+                                )
+                                for target_structure in target_structures:
+                                    try:
+                                        receptor_path = database.structure_file(user, target_structure["id"])
+                                    except (OSError, ValueError, PermissionError):
+                                        continue
+                                    receptor_text = receptor_path.read_text(errors="replace")
+                                    receptor_name = receptor_path.name
+                                    break
+                        representations = pose_visualizations(
+                            path.read_text(errors="replace"), path.name,
+                            receptor_text=receptor_text, receptor_name=receptor_name,
+                            include_pocket_sidechains=False,
+                        )
+                    else:
+                        # Ordinary protein structures stay in cartoon form; the
+                        # specialized pose path above splits a ligand complex so
+                        # multiple PDBQT poses cannot pile up in the viewer.
+                        representations = [StructureVisualization(pdb=_structure_text(path, structure_context), color="chain-id", representation_type="ball-and-stick" if record["type"] == "small_molecule" else "cartoon")]
                     molstar_custom_component(representations, key="database-molstar-" + structure["id"], height=310, show_controls=False, show_structure_tools=False)
             except (OSError, ValueError) as exc:
                 st.caption(str(exc))
@@ -407,7 +459,7 @@ def render_details(database, user, record):
         if not record["observations"]:
             st.caption("No scores recorded yet.")
         else:
-            st.caption("Latest recorded scores appear in the sheet. All runs remain available here.")
+            st.caption("The sheet uses one selected evaluation. All recorded runs remain available here.")
             common_rows = []
             for observation in record["observations"]:
                 output = observation.get("normalized_output") or {}
@@ -418,7 +470,7 @@ def render_details(database, user, record):
                         "Method": info["method"], "Scope": info["scope"], "Run": observation["run_id"]})
             if common_rows:
                 st.dataframe(common_rows, hide_index=True, use_container_width=True)
-                st.caption("Common columns use the latest available measurement. Each source run and original value is retained below.")
+                st.caption("This history includes separate evaluations; each source run and original value is retained below.")
             rows = []
             for observation in record["observations"]:
                 for key, value in observation["metrics"].items():
@@ -482,7 +534,9 @@ def render_database(user, projects):
     if pending_group:
         destination = database.group(pending_group, user)
         st.session_state["molecular-project-filter"] = destination["project_id"]
-        st.session_state["molecular-scope"] = "My groups" if destination["owner_id"] == user["id"] else "Organization"
+        st.session_state["molecular-scope"] = (
+            "Shared" if destination["project_id"] else "Mine" if destination["owner_id"] == user["id"] else "All"
+        )
         st.session_state["molecular-group-search"] = ""
         st.session_state["molecular-query"] = ""
         st.session_state["molecular-type-filter"] = ""
@@ -517,14 +571,38 @@ def render_database(user, projects):
                 help="Library shows imported, curated, and final generated collections. All indexed also shows automatic and intermediate job collections.",
             )
             collection = "library" if collection_label == "Library" else "all"
-            scope_label = st.segmented_control("Scope", ["My groups", "Organization"], default="Organization" if user.get("role") == "admin" else "My groups", key="molecular-scope", label_visibility="collapsed")
-            scope = "mine" if scope_label == "My groups" else "organization"
+            scope_options = ["Mine", "Shared", "All"]
+            old_scope = st.session_state.get("molecular-scope")
+            scope_aliases = {"My groups": "Mine", "Organization": "All", "organization": "All", "mine": "Mine", "shared": "Shared", "all": "All"}
+            if old_scope in scope_aliases:
+                st.session_state["molecular-scope"] = scope_aliases[old_scope]
+            if st.session_state.get("molecular-scope") not in scope_options:
+                st.session_state["molecular-scope"] = "All"
+            scope_label = st.segmented_control(
+                "Collection access",
+                scope_options,
+                default="All",
+                key="molecular-scope",
+                label_visibility="visible",
+                help="Mine shows personal collections. Shared shows project collections. All combines both.",
+            )
+            scope = {"Mine": "mine", "Shared": "shared", "All": "all"}[scope_label]
+            st.caption("Mine: personal · Shared: project collections · All: both")
+            hide_smoke_test = st.checkbox(
+                "Hide smoke/test groups",
+                value=True,
+                key="molecular-hide-smoke-test-groups",
+                help="Hides collections whose name or source is marked smoke/test. Turn this off to inspect them.",
+            )
             with st.popover("Import Method", use_container_width=True):
                 methods = [value for value, label in IMPORT_METHODS.items() if st.checkbox(label, value=True, key="molecular-method-" + value)]
             project_id = _projects(projects, "molecular-project-filter", label="Project filter")
             if not methods:
                 methods = ["__none__"]
-            groups = database.groups(user, project_id=project_id, scope=scope, methods=methods, collection=collection)
+            groups = database.groups(
+                user, project_id=project_id, scope=scope, methods=methods, collection=collection,
+                hide_smoke_test=hide_smoke_test,
+            )
             filtered_groups = [row for row in groups if not group_query or group_query.casefold() in row["name"].casefold()]
             options = ["", *[row["id"] for row in filtered_groups]]
             if st.session_state.get("database-selected-group") not in options:
@@ -539,7 +617,13 @@ def render_database(user, projects):
                     return label + (f" · from {source}" if source else "")
                 group_id = st.radio("Molecule groups", options, format_func=group_label, key="database-selected-group", label_visibility="collapsed")
         group_name = next((row["name"] for row in groups if row["id"] == group_id), "All molecules")
-        query_args = {"group_id": group_id, "project_id": project_id, "scope": scope, "methods": methods, "collection": collection}
+        active_group = next((row for row in groups if row["id"] == group_id), {})
+        if st.session_state.get("database-comparison-group") != group_id:
+            st.session_state["database-comparison-group"] = group_id
+            if (active_group.get("origin") or {}).get("comparison_spec"):
+                st.session_state["molecular-plot"] = True
+        query_args = {"group_id": group_id, "project_id": project_id, "scope": scope, "methods": methods,
+                      "collection": collection, "hide_smoke_test": hide_smoke_test}
         metric_fields = database.metric_fields(user, **query_args)
         with main:
             title, file_col, edit_col, view_col, export_col = st.columns([3, 1, 1, 1, 1.3])
@@ -555,7 +639,22 @@ def render_database(user, projects):
                 if st.button("Add column…", disabled=not can_edit, key="molecular-add-column"):
                     st.session_state["molecular-column-open"] = True
             with view_col.popover("View", use_container_width=True):
-                plot = st.checkbox("Plot scores", key="molecular-plot", disabled=len(metric_fields) < 2)
+                plot = st.checkbox("Compare candidates", key="molecular-plot")
+            evaluation_options = database.evaluation_options(
+                user, group_id=group_id, project_id=project_id, collection=collection,
+                scope=scope, hide_smoke_test=hide_smoke_test,
+            )
+            evaluation_filters = {}
+            with st.expander("Choose the scores shown in the molecule table", expanded=False):
+                for field, label in (("target_id", "Target"), ("evaluator", "Tool"), ("run_id", "Run")):
+                    options = ["", *evaluation_options[field]]
+                    key = "database-context-" + field + "-" + (group_id or "all")
+                    if st.session_state.get(key, "") not in options:
+                        st.session_state[key] = ""
+                    value = st.selectbox(label, options, format_func=lambda item: item or "Latest matching result", key=key)
+                    if value:
+                        evaluation_filters[field] = value
+                st.caption("Each molecule row shows scores from one result: the latest representative model or pose by default. Use these selectors to choose a target, tool or run. Other model results remain available on Results.")
             search, sort_col, order_col, filter_col = st.columns([4, 1.5, 1, 1])
             query = search.text_input("Search molecules", placeholder="Search name, sequence, SMILES, tag…", label_visibility="collapsed", key="molecular-query")
             sort_options = ["added", "name", *metric_fields]
@@ -574,7 +673,8 @@ def render_database(user, projects):
                     operator = left.selectbox(field + " comparison", [">=", "<=", ">", "<", "="], key="molecular-op-" + field, label_visibility="collapsed")
                     value = right.number_input(field_label(field), value=0.0, key="molecular-value-" + field)
                     filters.append({"field": field, "operator": operator, "value": value})
-            args = {**query_args, "query": query, "molecule_type": kind, "sort": sort, "descending": descending, "metric_filters": filters}
+            args = {**query_args, "query": query, "molecule_type": kind, "sort": sort, "descending": descending, "metric_filters": filters,
+                    "evaluation_filters": evaluation_filters or None}
             signature = hashlib.sha1(json.dumps(args, sort_keys=True).encode()).hexdigest()
             if st.session_state.get("molecular-view-signature") != signature:
                 st.session_state["database-selection"] = []
@@ -675,13 +775,34 @@ def render_database(user, projects):
                 ready = st.session_state.get("molecular-export-ready") or {}
                 if ready.get("signature") == export_signature:
                     st.download_button("Download " + export_format, ready["data"], file_name=group_name[:60].replace(" ", "-") + "." + ready["suffix"], mime=ready["mime"], key="molecular-export-download")
-            if plot and len(metric_fields) >= 2 and records:
-                import pandas as pd
-                x = st.selectbox("X axis", metric_fields, format_func=field_label, key="molecular-plot-x")
-                y = st.selectbox("Y axis", metric_fields, index=1, format_func=field_label, key="molecular-plot-y")
-                st.scatter_chart(pd.DataFrame([{x: row["scores"].get(x), y: row["scores"].get(y), "Name": row["name"]} for row in records]), x=x, y=y)
+            if plot and page["total"]:
+                from mn_molecular_design_studio.comparison_ui import render_comparison
+                comparison_records = database.list_molecules(user, **args, limit=100000)["items"]
+                st.caption("Comparison includes the entire filtered collection, independently of table pagination.")
+                saved_settings = (database.group(group_id, user).get("origin", {}).get("comparison_spec") or {}).get("settings") if group_id else None
+                show_all_default = bool(group_id and len(evaluation_options.get("run_id") or []) > 1)
+                all_evaluations = st.checkbox(
+                    "Show every tool result as a separate row",
+                    value=show_all_default,
+                    key="database-show-all-evaluations-" + (group_id or "all"),
+                    help="Each stored prediction, docking, affinity or analysis run gets its own row. Turn this off to show one selected result per compound.",
+                )
+                comparison_rows = database.evaluation_rows(user, **query_args, query=query, molecule_type=kind,
+                    molecule_ids=[row["id"] for row in comparison_records], evaluation_filters=evaluation_filters or None) if all_evaluations else comparison_records
+                render_comparison(comparison_rows, key="database-comparison-" + signature, database=database, user=user,
+                                  project_id=project_id, selected_ids_key="database-selection",
+                                  settings=saved_settings)
         with details, st.container(key="database-details"):
             record = next((row for row in records if row["id"] == st.session_state.get("database-focus")), records[0] if records else None)
+            focus = st.session_state.get("database-focus")
+            if focus and not any(row["id"] == focus for row in records):
+                focused = database.list_molecules(
+                    user, project_id=project_id, scope=scope, methods=methods, collection=collection,
+                    molecule_ids=[focus], evaluation_filters=evaluation_filters or None,
+                    hide_smoke_test=hide_smoke_test,
+                )["items"]
+                if focused:
+                    record = focused[0]
             if record:
                 render_details(database, user, record)
             else:
@@ -703,6 +824,8 @@ def render_use_selection(database, user, projects, ids, project_id=""):
         options.update({name: workflow for name, workflow in [("AutoDock Vina", "ligand.docking.vina"), ("GNINA", "ligand.docking.gnina"), ("Uni-Dock Pro", "ligand.docking.unidock_pro"), ("RosettaLigand", "ligand.docking.rosetta_ligand"), ("Nesso-1", "ligand.affinity.nesso")]})
     if all(any(component["type"] == "protein" for component in row["components"]) for row in records):
         options["Pipeline canvas"] = "pipeline"
+        from mn_molecular_design_studio.quality_tools import WORKFLOWS
+        options.update({profile["name"]: workflow for workflow, profile in WORKFLOWS.items()})
     if records:
         options["Boltz-2"] = "boltz2"
     if len(records) == 1:

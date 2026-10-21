@@ -21,7 +21,7 @@ class ChainVisualization:
     chain_id : str
         The chain ID.
     color : Literal["uniform", "chain-id", "hydrophobicity", "plddt", "molecule-type", "secondary-structure", "residue-name", "residue-charge"], optional
-        The color scheme to use, by default "uniform".
+        The color scheme to use, by default uniform application green (0x318c70).
     color_params : dict, optional
         Color parameters.
         In the case of "uniform", the `color_params` field should be for example {"value": "0x00ff00"}.
@@ -45,7 +45,7 @@ class ChainVisualization:
         "residue-name",
         "residue-charge",
     ] = "uniform"
-    color_params: dict | None = None
+    color_params: dict | None = dataclasses.field(default_factory=lambda: {"value": "0x318c70"})
     representation_type: Literal[
         "cartoon", "cartoon+ball-and-stick", "molecular-surface", "gaussian-surface", "ball-and-stick"
     ] = "cartoon"
@@ -64,7 +64,7 @@ class StructureVisualization:
     contigs : list[ContigSegment], optional
         A list of contig segments to show (e.g. on the top of the viewer), by default None.
     color : Literal["uniform", "chain-id", "hydrophobicity", "plddt", "molecule-type", "secondary-structure", "residue-name", "residue-charge"], optional
-        The color scheme to use, by default "uniform".
+        The color scheme to use, by default uniform application green (0x318c70).
     color_params : dict, optional
         Color parameters.
         In the case of "uniform", the `color_params` field should be for example {"value": "0x00ff00"}.
@@ -89,13 +89,14 @@ class StructureVisualization:
         "residue-name",
         "residue-charge",
     ] = "uniform"
-    color_params: dict | None = None
+    color_params: dict | None = dataclasses.field(default_factory=lambda: {"value": "0x318c70"})
     representation_type: (
         Literal["cartoon", "cartoon+ball-and-stick", "molecular-surface", "gaussian-surface", "ball-and-stick"] | None
     ) = "cartoon"
     highlighted_selections: list[str] | None = None
     chains: list[ChainVisualization] | None = None
     docking_box: dict | None = None
+    trajectory: dict | None = None
 
     def __post_init__(self):
         if self.chains:

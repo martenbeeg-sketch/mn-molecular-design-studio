@@ -160,6 +160,28 @@ def test_generated_complex_reindex_keeps_binder_identity_and_only_passing_design
     assert rows[0]["structures"][0]["context"]["portable"] is True
 
 
+@pytest.mark.parametrize("complex_identity", [False, True])
+def test_protein_qc_reuses_the_exact_frozen_database_identity(database, complex_identity):
+    binder = {"type": "protein", "chain": "B", "role": "binder", "sequence": "ACD"}
+    target = {"type": "protein", "chain": "A", "role": "target", "sequence": "ACD"}
+    components = [target, binder] if complex_identity else [binder]
+    imported = database.import_records(A, [{"name": "Source design", "components": components}], project_id="project-1")
+    molecule = imported["molecule_ids"][0]
+    run = _make_run(database, "analysis", "qc-identity", tool="sequence_qc", workflow="analysis.sequence_qc", candidates=[{
+        "candidate_id": "qc-source", "stage": "analysis", "binder_sequence": "ACD", "binder_chains": ["B"], "target_chains": ["A"],
+        "complex_pdb": "complex.pdb", "metrics": {"qc_status": "completed", "qc_sequence_length": 3},
+        "raw_metadata": {"analysis_subject": "protein", "studio_molecule_id": molecule, "components": components},
+    }])
+    protein_lines = [line for line in _pdb_acd().splitlines() if line.startswith("ATOM")]
+    (run / "complex.pdb").write_text("\n".join([*protein_lines, "TER", *[line[:21] + "B" + line[22:] for line in protein_lines], "TER", "END", ""]))
+    assert ingest_run(run, database=database) == 1
+    rows = database.list_molecules(A, collection="all")["items"]
+    assert len(rows) == 1
+    assert rows[0]["id"] == molecule
+    assert rows[0]["scores"]["sequence_qc.qc_sequence_length"] == 3
+    assert rows[0]["structures"]
+
+
 def test_prediction_indexes_only_the_best_structure_per_input(database):
     run = _make_run(database, "optimized-prediction", "best-model", tool="optimized_prediction_boltz2",
                     workflow="refolding.optimized_prediction", candidates=[

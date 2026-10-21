@@ -148,10 +148,15 @@ def requirements(payload, *, references=(), installed_images=None):
             cpu_only = False
         elif workflow.startswith("analysis."):
             from mn_molecular_design_studio.engine.workflow_engine.workflows.analysis import IPSAE_IMAGE, PYROSETTA_IMAGE
+            from mn_molecular_design_studio.quality_tools import WORKFLOWS as quality_workflows
             if "ipsae" in workflow:
                 needed_images.add(IPSAE_IMAGE)
             elif "rosetta" in workflow:
                 needed_images.add(PYROSETTA_IMAGE)
+            elif workflow in quality_workflows:
+                needed_images.add(quality_workflows[workflow]["image"])
+                needed_refs.update(quality_workflows[workflow].get("references", []))
+                cpu_only = cpu_only and not quality_workflows[workflow].get("gpu", False)
         elif workflow.startswith("design.bindcraft2"):
             from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import BINDCRAFT2_IMAGE
             needed_images.add(p.get("docker_image") or BINDCRAFT2_IMAGE)
@@ -185,6 +190,9 @@ def requirements(payload, *, references=(), installed_images=None):
                 cpu_only = False
             if "rfdiffusion3" in workflow:
                 needed_images.add("mn-foundry:cu128"); needed_refs.add("foundry/rfd3_latest.ckpt")
+            if workflow == "design.rfd4_proteina":
+                from mn_molecular_design_studio.rfd4_proteina_input import IMAGE
+                needed_images.add(IMAGE)
             from mn_molecular_design_studio import generator_input
             if workflow in generator_input.WORKFLOWS.values():
                 engine = next(k for k, v in generator_input.WORKFLOWS.items() if v == workflow)

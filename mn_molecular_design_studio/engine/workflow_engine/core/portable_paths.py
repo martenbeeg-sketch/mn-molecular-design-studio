@@ -19,6 +19,7 @@ _PATH_KEY_PARTS: Final = (
 _PATH_KEY_SUFFIXES: Final = (
     "_a3m", "_cif", "_csv", "_dir", "_fasta", "_fa", "_file", "_folder", "_json", "_jsonl",
     "_mmcif", "_msa", "_pdb", "_path", "_root", "_structure", "_table", "_tsv", "_weights", "_yaml", "_yml",
+    "_pae", "_pae_matrix", "_trajectory", "_trajectories", "_trajectory_set", "_traj",
 )
 _PROVENANCE_KEY_PARTS: Final = ("command", "argv", "executable", "queued_command")
 _INLINE_CONTENT_KEYS: Final = frozenset({
@@ -27,12 +28,14 @@ _INLINE_CONTENT_KEYS: Final = frozenset({
 _INLINE_CONTENT_SUFFIXES: Final = ("_text", "_sequence", "_sequences", "_smiles")
 _PATH_VALUE_EXTENSIONS: Final = frozenset({
     ".a3m", ".cif", ".csv", ".fa", ".fasta", ".json", ".jsonl", ".mmcif",
-    ".msa", ".pdb", ".tsv", ".yaml", ".yml",
+    ".msa", ".pdb", ".tsv", ".yaml", ".yml", ".dcd", ".h5", ".hdf5",
+    ".nc", ".netcdf", ".npy", ".npz", ".trr", ".xtc",
 })
 _RELATIVE_PATH_KEY_SUFFIXES: Final = (
     "_a3m", "_cif", "_csv", "_dir", "_directory", "_fa", "_fasta", "_file", "_folder",
     "_json", "_jsonl", "_mmcif", "_msa", "_pdb", "_path", "_repository", "_root",
-    "_structure", "_table", "_tsv", "_weights", "_yaml", "_yml",
+    "_structure", "_table", "_tsv", "_weights", "_yaml", "_yml", "_pae", "_pae_matrix",
+    "_trajectory", "_trajectories", "_trajectory_set", "_traj",
 )
 
 
@@ -73,6 +76,11 @@ def is_operational_path_key(key: str) -> bool:
     lowered = key.lower()
     if _is_inline_content_key(lowered):
         return False
+    # These names are common in scientific schemas as direct artifact fields
+    # (rather than ``*_file``/``*_path``). Treat them as paths so managed
+    # PAE matrices and MD trajectories retain their owning-workstation affinity.
+    if lowered in {"pae", "pae_matrix", "trajectory", "trajectories", "trajectory_set", "traj"}:
+        return True
     # Format names such as "pdb" and "mmcif" are values, even when the key
     # contains "input" or "output"; they must not be resolved as filesystem paths.
     if lowered.endswith("_format"):
@@ -142,7 +150,9 @@ def resolve_managed_paths(value: object, *, run_dir: Path | None = None, key: st
     if _is_named_resource_key(key) and not value.startswith((".", "/")) and "/" not in value and "\\" not in value:
         return value
     path_value = value.startswith(".") or Path(value).suffix.lower() in _PATH_VALUE_EXTENSIONS
-    path_key = _relative_path_key(key)
+    path_key = _relative_path_key(key) or key.lower() in {
+        "pae", "pae_matrix", "trajectory", "trajectories", "trajectory_set", "traj"
+    }
     if is_operational_path_key(key) and not Path(value).is_absolute() and (path_value or path_key):
         resolved = resolve_stored_path(value, run_dir=run_dir)
         return str(resolved) if resolved is not None else value

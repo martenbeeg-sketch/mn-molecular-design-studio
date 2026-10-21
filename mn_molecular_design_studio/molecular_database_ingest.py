@@ -319,6 +319,15 @@ def _is_cofolding_prediction(tool, metadata, inputs, mode):
     )
 
 
+def _prediction_engine_label(tool):
+    value = str(tool or "").casefold().replace("_", "-")
+    if "boltz" in value:
+        return "Boltz-2"
+    if "alphafold3" in value or "af3" in value:
+        return "AlphaFold 3"
+    return str(tool or "Prediction").replace("_", " ").title()
+
+
 def _enrich_prediction_candidates(run_dir, candidates):
     """Read the same confidence sidecars used by the cofolding results page."""
     from mn_molecular_design_studio.cofolding_results import enrich_candidate
@@ -388,6 +397,70 @@ def _prune_stale_run_structures(database, task_group, run_id, keep_ids, *, candi
                 connection.execute("DELETE FROM molecule_structures WHERE id=?", (row["id"],))
 
 
+def _prune_empty_evaluation_members(database, memberships):
+    """Remove old automatic evaluation entries after their data is rehomed."""
+    if not memberships:
+        return
+    with database.connection() as connection:
+        for group_id, molecule_id in memberships:
+            group = connection.execute(
+                "SELECT origin FROM molecule_groups WHERE id=?", (group_id,)
+            ).fetchone()
+            if not group:
+                continue
+            try:
+                origin = json.loads(group["origin"])
+            except (TypeError, ValueError):
+                origin = {}
+            if origin.get("type") != "job" or origin.get("collection_kind") != "evaluation":
+                continue
+            remaining = any(connection.execute(
+                f"SELECT 1 FROM {table} WHERE group_id=? AND molecule_id=? LIMIT 1",
+                (group_id, molecule_id),
+            ).fetchone() for table in ("molecule_sources", "molecule_structures", "molecule_observations"))
+            if not remaining:
+                connection.execute(
+                    "DELETE FROM molecule_members WHERE group_id=? AND molecule_id=?",
+                    (group_id, molecule_id),
+                )
+
+
+def _run_input_compounds(run_dir):
+    """Read a run's staged compound set, including TSV-only Rosetta inputs."""
+    json_path = Path(run_dir) / "artifacts/input/compound_set.json"
+    if json_path.is_file():
+        try:
+            from mn_molecular_design_studio.ligand_compounds import load_compound_set
+            compounds = list(load_compound_set(json_path).get("compounds") or [])
+            if compounds:
+                return compounds
+        except (OSError, ValueError, KeyError, TypeError):
+            log.info("Could not read staged compound set %s", json_path)
+    for path in (Path(run_dir) / "artifacts/input/compounds.tsv", Path(run_dir) / "input/compounds.tsv"):
+        if not path.is_file():
+            continue
+        try:
+            with path.open(newline="", encoding="utf-8-sig") as handle:
+                rows = csv.DictReader(handle, delimiter="\t")
+                compounds = []
+                for row in rows:
+                    compound_id = str(row.get("compound_id") or row.get("id") or "").strip()
+                    smiles = str(row.get("smiles") or row.get("SMILES") or "").strip()
+                    if not compound_id or not smiles:
+                        continue
+                    compounds.append({
+                        "compound_id": compound_id,
+                        "compound_name": str(row.get("compound_name") or row.get("name") or compound_id).strip(),
+                        "smiles": smiles,
+                        "properties": {},
+                    })
+                if compounds:
+                    return compounds
+        except (OSError, UnicodeError, csv.Error):
+            log.info("Could not read run compound table %s", path)
+    return []
+
+
 def _prune_generated_group(database, group_id, keep_ids):
     """Remove superseded or rejected entries from one run's generated group."""
     keep_ids = set(keep_ids)
@@ -404,6 +477,41 @@ def _prune_generated_group(database, group_id, keep_ids):
             connection.execute("DELETE FROM molecule_members WHERE group_id=? AND molecule_id=?", (group_id, molecule_id))
 
 
+def _candidate_structure_signature(run_dir):
+    """Track referenced structure files so late-written outputs are re-indexed."""
+    manifest = Path(run_dir) / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+    try:
+        lines = manifest.read_text(errors="ignore").splitlines()
+    except OSError:
+        return []
+    signature = []
+    for line in lines:
+        try:
+            candidate = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(candidate, dict):
+            continue
+        for field in ("complex_pdb", "binder_pdb", "target_pdb"):
+            reference = candidate.get(field)
+            if not reference:
+                continue
+            path = _path(reference, Path(run_dir))
+            try:
+                stat = path.stat() if path else None
+            except OSError:
+                stat = None
+            signature.append({
+                "candidate_id": str(candidate.get("candidate_id") or ""),
+                "field": field,
+                "reference": str(reference),
+                "path": str(path) if path else None,
+                "size": stat.st_size if stat else None,
+                "mtime_ns": stat.st_mtime_ns if stat else None,
+            })
+    return signature
+
+
 def ingest_run(run_dir: Path, *, database=None, force=False):
     from mn_molecular_design_studio.workspace import is_studio_job
     from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
@@ -417,18 +525,23 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     owner = str(marker.get("studio_owner_id") or metadata.get("owner_id") or embedded.get("studio_owner_id") or "legacy-unassigned")
     project = str(marker.get("project_id") or metadata.get("project_id") or embedded.get("project_id") or "")
     user = {"id": owner, "role": "admin"}  # Trusted job adapter; all reads still enforce group access.
+    tool = str(metadata.get("tool") or inputs.get("tool") or run_dir.parent.name)
+    mode = _run_mode(run_dir, metadata, inputs)
+    needs_compound_identity_refresh = run_dir.parent.name == "ligand-docking" or _is_cofolding_prediction(tool, metadata, inputs, mode)
     source_key = f"{socket.gethostname()}/{run_dir.parent.name}/{run_dir.name}"
     observed_paths = [run_dir / name for name in (
         "input.json", "result.json", "metadata.json", "molecular_design_studio.json", "selection_snapshot.json",
         "artifacts/normalized_candidates/candidates.jsonl", "artifacts/input/compound_set.json",
+        "artifacts/input/compounds.tsv", "input/compounds.tsv",
         "artifacts/generated_compound_set.json", "artifacts/generated_compounds.sdf",
         "artifacts/docking_scores.csv", "artifacts/nesso_affinity.csv", "artifacts/input/receptor.pdb",
         "artifacts/input/target.pdb", "artifacts/input/complex.pdb",
         "artifacts/raw/optimized_prediction/input_mapping.json",
         "artifacts/raw/af3_jax_cofolding/input_mapping.json")]
-    signature = _json({"ingestion_version": 5, "files": [
+    signature = _json({"ingestion_version": 7 if needs_compound_identity_refresh else 6, "files": [
         (str(path.relative_to(run_dir)), path.stat().st_mtime_ns, path.stat().st_size)
-        for path in observed_paths if path.is_file()]})
+        for path in observed_paths if path.is_file()],
+        "candidate_structures": _candidate_structure_signature(run_dir)})
     with database.connection() as connection:
         previous = connection.execute("SELECT signature FROM molecular_ingestions WHERE source_key=?", (source_key,)).fetchone()
     if not force and previous and previous[0] == signature:
@@ -439,12 +552,10 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                                (source_key, signature, _now()))
         return 0
 
-    tool = str(metadata.get("tool") or inputs.get("tool") or run_dir.parent.name)
     name = str(metadata.get("campaign_name") or (inputs.get("params") or {}).get("job_name") or metadata.get("job_name") or run_dir.name)
     stamp = str(metadata.get("completed_at") or metadata.get("created_at") or _now())
     origin = {"type": "job", "run_id": run_dir.name, "task_group": run_dir.parent.name, "run_dir": str(run_dir.resolve()),
               "tool": tool, "workstation": socket.gethostname(), "status": metadata.get("status")}
-    mode = _run_mode(run_dir, metadata, inputs)
     output_method = "user_uploads" if mode == "curated" else "tool_output"
     seen_molecules = set()
     candidate_groups = {}
@@ -481,10 +592,11 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         best_prediction_ids = {id(candidate) for candidate in best_candidates_by_complex(with_structures)}
 
     input_set_path = run_dir / "artifacts/input/compound_set.json"
+    input_compounds = _run_input_compounds(run_dir)
     generated_set_path = run_dir / "artifacts/generated_compound_set.json"
     score_paths = [run_dir / "artifacts" / filename for filename in ("docking_scores.csv", "nesso_affinity.csv")]
     md_metrics_supported = "md" in run_dir.parent.name and bool(result.get("metrics"))
-    if not candidate_records and not generated_set_path.is_file() and not (input_set_path.is_file() and any(path.is_file() for path in score_paths)) and not md_metrics_supported:
+    if not candidate_records and not generated_set_path.is_file() and not (input_compounds and any(path.is_file() for path in score_paths)) and not md_metrics_supported:
         with database.connection() as connection:
             connection.execute("INSERT INTO molecular_ingestions VALUES (?,?,?) ON CONFLICT(source_key) DO UPDATE SET signature=excluded.signature,updated_at=excluded.updated_at",
                                (source_key, signature, _now()))
@@ -496,6 +608,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     preferred_prediction_structure_ids = set()
     prediction_candidate_ids = set()
     generated_molecule_ids = set()
+    stale_evaluation_memberships = set()
     for candidate, record in candidate_records:
         stage = str(candidate.get("stage") or "")
         sequence = candidate.get("binder_sequence") or candidate.get("sequence")
@@ -508,8 +621,36 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         provenance = {**origin, "candidate_id": candidate.get("candidate_id"), "parents": candidate.get("parents") or []}
         candidate_id = str(candidate.get("candidate_id") or _canonical_fingerprint(record))
         source_for_molecule = f"{source_key}:{candidate_id}"
+        with database.connection() as connection:
+            previous_source = connection.execute(
+                "SELECT molecule_id,group_id FROM molecule_sources WHERE source_key=?",
+                (source_for_molecule,),
+            ).fetchone()
         prediction_candidate_ids.add(candidate_id)
         identity_record = {**record, "files": []}
+        ligand_analysis = (candidate.get("raw_metadata") or {}).get("analysis_subject") == "ligand"
+        protein_analysis = (candidate.get("raw_metadata") or {}).get("analysis_subject") == "protein"
+        prediction_ligand = prediction_run and sum(
+            component.get("type") == "small_molecule" for component in record.get("components") or []
+        ) == 1
+        if prediction_ligand:
+            # Match the prediction to its imported ligand identity, while the
+            # full complex remains attached below as the prediction structure.
+            identity_record["components"] = [
+                component for component in record["components"]
+                if component.get("type") == "small_molecule"
+            ]
+        if ligand_analysis:
+            identity_record["components"] = [component for component in record["components"] if component.get("type") == "small_molecule"]
+        if protein_analysis:
+            designed = [component for component in record["components"] if component.get("chain") in (candidate.get("binder_chains") or []) and component.get("type") == "protein"]
+            selected_components = (candidate.get("raw_metadata") or {}).get("components")
+            if _explicit_molecule_ids(candidate) and isinstance(selected_components, list) and selected_components:
+                # Frozen Database selections preserve whether the original
+                # identity was a complete complex or just its designed chains.
+                identity_record["components"] = selected_components
+            elif designed:
+                identity_record["components"] = designed
         if mode == "generated" and sequence:
             # Generated designs are identified by their designed chain(s).
             # A later structure parse may add the target chain to the same
@@ -534,7 +675,8 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             if mode == "generated":
                 generated_molecule_ids.add(molecule_id)
         elif not rejected and not is_backbone:
-            molecule_id, destination, matched = _find_original_group(database, user["id"], project, record, candidate)
+            lookup_record = identity_record if ligand_analysis or protein_analysis or prediction_ligand else record
+            molecule_id, destination, matched = _find_original_group(database, user["id"], project, lookup_record, candidate)
             if not matched:
                 if mode == "evaluation" or stage in {"complex_refolding", "analysis", "benchmark", "monomer_refolding"}:
                     destination = output_group("evaluation")
@@ -553,12 +695,20 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             with database.connection() as connection:
                 molecule_id = database._put(connection, destination, identity_record, source_key=source_for_molecule, origin=provenance, stamp=stamp)
 
+        if previous_source and (previous_source["molecule_id"], previous_source["group_id"]) != (molecule_id, destination):
+            stale_evaluation_memberships.add((previous_source["group_id"], previous_source["molecule_id"]))
+
         attach_candidate_structure = not prediction_run or id(candidate) in best_prediction_ids
         candidate_files = (record.get("files") or []) if attach_candidate_structure else []
         for item in candidate_files:
             selected_item = dict(item)
             if prediction_run:
                 selected_item["database_structure_policy"] = "best_prediction"
+                label = f"{_prediction_engine_label(tool)} best complex"
+                selected_item["label"] = label
+                # Include the label in the structure identity so old generic
+                # "Complex Pdb" records are replaced during re-indexing.
+                selected_item["database_structure_label"] = label
             structure_id = database.attach_structure(destination, molecule_id, selected_item,
                                                     context=provenance, created_at=stamp)
             # These are the representative structures users expect to open
@@ -571,17 +721,25 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         candidate_groups[candidate_id] = (molecule_id, destination)
         seen_molecules.add(molecule_id)
         metrics = _numeric(candidate.get("metrics") or {})
-        if metrics or (candidate.get("normalized_output") or {}).get("metrics"):
+        if metrics or (candidate.get("normalized_output") or {}).get("metrics") or (candidate.get("metrics") or {}).get("qc_status"):
             # Include the actual producing adapter, rather than only the run's
             # parent engine (a generator may contain several sequence methods).
             raw = candidate.get("raw_metadata") or {}
-            candidate_context = {key: candidate.get(key) for key in ("source_tool", "stage", "binder_sequence", "binder_chains", "target_chains")}
-            candidate_context["raw_metadata"] = {key: raw[key] for key in ("fasta_header", "engine_version", "operation", "structure_kind") if key in raw}
-            settings = {key: value for key, value in (inputs.get("params") or {}).items()
-                        if key in {"model_type", "model_name", "checkpoint_path", "noise_level", "sampling_temp", "temperature", "seed", "engine", "engine_version", "task"}
-                        and isinstance(value, (str, int, float, bool))}
+            candidate_context = {key: candidate.get(key) for key in ("candidate_id", "source_tool", "stage", "binder_sequence", "binder_chains", "target_chains", "complex_pdb", "binder_pdb", "target_pdb")}
+            candidate_context["raw_metadata"] = {key: raw[key] for key in ("fasta_header", "engine_version", "operation", "structure_kind", "image_digest") if key in raw}
+            settings = inputs.get("params") or {}
+            from mn_molecular_design_studio.evaluations import file_digest
+            target_source = _path(candidate.get("target_pdb"), run_dir)
+            target_components = [component for component in record.get("components", []) if component.get("role") == "target"]
+            evaluation_target = {"target_id": _id("target-", _json(target_components))} if target_components else {}
             database.add_observation(destination, molecule_id, tool, run_dir.name, metrics,
-                context={**provenance, "candidate": candidate_context, "settings": settings},
+                context={**provenance, **evaluation_target, "candidate": candidate_context, "settings": settings,
+                         "status": (candidate.get("metrics") or {}).get("qc_status") or "completed",
+                         "error": (candidate.get("metrics") or {}).get("qc_error") or "",
+                         "image_digest": raw.get("image_digest") or "",
+                         "target_structure_digest": raw.get("target_structure_digest") or (file_digest(target_source) if target_source else ""),
+                         "structure_digest": raw.get("structure_digest") or "",
+                         "is_representative": not prediction_run or id(candidate) in best_prediction_ids},
                 source_key=f"{source_for_molecule}:metrics", created_at=stamp)
 
     if mode == "generated":
@@ -590,17 +748,22 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     if prediction_run:
         _prune_stale_run_structures(database, run_dir.parent.name, run_dir.name,
                                     preferred_prediction_structure_ids, candidate_ids=prediction_candidate_ids)
+    _prune_empty_evaluation_members(database, stale_evaluation_memberships)
 
     # The ligand contracts preserve exactly the consumed and generated sets.
     compound_rows = {}
-    set_paths = [(input_set_path, False), (generated_set_path, True)]
-    for path, generated in set_paths:
-        if not path.is_file():
-            continue
+    set_payloads = [(input_compounds, False)]
+    if generated_set_path.is_file():
         from mn_molecular_design_studio.ligand_compounds import load_compound_set
-        payload = load_compound_set(path)
+        try:
+            set_payloads.append((list(load_compound_set(generated_set_path).get("compounds") or []), True))
+        except (OSError, ValueError, KeyError, TypeError):
+            log.info("Could not read generated compound set %s", generated_set_path)
+    for compounds, generated in set_payloads:
+        if not compounds:
+            continue
         destination = output_group("generated") if generated else None
-        for index, compound in enumerate(payload["compounds"]):
+        for index, compound in enumerate(compounds):
             record = {"name": compound.get("compound_name") or compound["compound_id"], "components": [{"type": "small_molecule", "chain": "L", "smiles": compound["smiles"]}],
                       "metadata": {**(compound.get("properties") or {}), "compound_id": compound["compound_id"],
                                    "source_tool": tool, "stage": "generated" if generated else "input"}}
@@ -683,7 +846,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                 database.make_structure_portable(user, structure_id)
                 preferred_docking_structure_ids.add(structure_id)
             database.add_observation(destination, molecule_id, tool, run_dir.name, _numeric({key: value for key, value in row.items() if key != "compound_id"}),
-                context={**context, "row": row}, source_key=f"{source_key}:{filename}:{index}", created_at=stamp)
+                context={**context, "row": row, "is_representative": index in best_pose_indices}, source_key=f"{source_key}:{filename}:{index}", created_at=stamp)
     if has_docking_scores:
         _prune_stale_run_structures(database, run_dir.parent.name, run_dir.name,
                                     preferred_docking_structure_ids, docking=True)
@@ -838,9 +1001,25 @@ def sync_workspace(user, *, force=False, database=None):
 def record_completed_run(run_dir):
     """Indexing cannot change the scientific job's completion status."""
     try:
-        from mn_molecular_design_studio.runtime import runs_root
-        if not Path(run_dir).resolve().is_relative_to(runs_root().resolve()):
+        from mn_molecular_design_studio.workspace import is_studio_job
+        run_dir = Path(run_dir).resolve()
+        if not is_studio_job(run_dir):
             return
-        ingest_run(Path(run_dir))
+        metadata = _read(run_dir / "metadata.json")
+        result = _read(run_dir / "result.json")
+        if not _is_completed_success(metadata, result):
+            return
+        # Completion is the authoritative indexing event. Bypass the change
+        # signature so a prior queued-run scan cannot suppress final outputs.
+        for attempt in range(3):
+            try:
+                ingest_run(run_dir, force=True)
+                return
+            except Exception:
+                if attempt == 2:
+                    log.exception("Molecular Database could not index completed run %s; refresh will retry", run_dir)
+                    return
+                log.warning("Molecular Database indexing attempt %d failed for %s; retrying", attempt + 1, run_dir, exc_info=True)
+                time.sleep(0.25 * (2 ** attempt))
     except Exception:
         log.exception("Molecular Database could not index completed run %s; refresh will retry", run_dir)

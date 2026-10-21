@@ -39,6 +39,7 @@ export type StructureVisualization = {
     highlighted_selections: string[] | null;
     chains: ChainVisualization[] | null;
     docking_box?: { center: [number, number, number]; size: [number, number, number] } | null;
+    trajectory?: { coordinates_base64: string; format: "xtc" } | null;
 };
 
 export type ColorParameters = {

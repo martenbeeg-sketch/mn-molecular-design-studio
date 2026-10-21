@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sqlite3
 import tempfile
 import time
@@ -24,6 +25,7 @@ from mn_molecular_design_studio.output_vocabulary import PREFIX, normalize_metri
 
 IMPORT_METHODS = {"user_uploads": "User uploads", "tool_inputs": "Tool inputs", "tool_output": "Tool output", "agent_inputs": "Agent inputs"}
 COLLECTION_KINDS = {"curated", "generated", "inputs", "evaluation", "intermediate"}
+_SMOKE_TEST_GROUP = re.compile(r"(?<![a-z0-9])(smoke|test|testing)(?![a-z0-9])", re.IGNORECASE)
 _SYNC_TIMES: dict[str, float] = {}
 
 
@@ -94,6 +96,8 @@ class MolecularDatabase:
                 source_key TEXT PRIMARY KEY, signature TEXT NOT NULL, updated_at TEXT NOT NULL
             );
         ''')
+        from mn_molecular_design_studio.evaluations import install_schema
+        install_schema(connection)
         try:
             with connection:
                 yield connection
@@ -141,9 +145,27 @@ class MolecularDatabase:
         # view. Groups created or imported by users remain in the library.
         return "intermediate" if origin.get("type") == "job" else "curated"
 
-    def groups(self, user: dict, *, project_id="", scope="organization", methods=None, collection="all") -> list[dict]:
+    @staticmethod
+    def _is_smoke_test_group(group) -> bool:
+        origin = group.get("origin") if isinstance(group, dict) else None
+        if isinstance(origin, str):
+            try:
+                origin = json.loads(origin)
+            except (TypeError, ValueError):
+                origin = {}
+        origin = origin if isinstance(origin, dict) else {}
+        if any(origin.get(key) is True for key in ("is_test", "test", "smoke", "is_smoke_test")):
+            return True
+        labels = [str(group.get("name") or "")]
+        labels.extend(str(origin.get(key) or "") for key in ("name", "label", "run_name", "campaign", "workflow", "description"))
+        return any(_SMOKE_TEST_GROUP.search(label) for label in labels)
+
+    def groups(self, user: dict, *, project_id="", scope="organization", methods=None, collection="all",
+               hide_smoke_test=False) -> list[dict]:
         if collection not in {"all", "library"}:
             raise ValueError("Collection must be 'all' or 'library'.")
+        if scope not in {"organization", "all", "mine", "shared"}:
+            raise ValueError("Scope must be 'mine', 'shared', or 'all'.")
         with self.connection() as connection:
             rows = connection.execute("SELECT g.*, COUNT(mm.molecule_id) AS molecule_count FROM molecule_groups g "
                                       "LEFT JOIN molecule_members mm ON mm.group_id=g.id GROUP BY g.id ORDER BY g.updated_at DESC").fetchall()
@@ -154,7 +176,11 @@ class MolecularDatabase:
             item["collection_kind"] = self._collection_kind(item)
             if not self._can_read(row, user) or (project_id and row["project_id"] != project_id):
                 continue
-            if scope == "mine" and row["owner_id"] != user["id"]:
+            if scope == "mine" and (row["owner_id"] != user["id"] or bool(row["project_id"])):
+                continue
+            if scope == "shared" and not row["project_id"]:
+                continue
+            if hide_smoke_test and self._is_smoke_test_group(item):
                 continue
             if not row["molecule_count"] and row["import_method"] not in {"user_uploads", "agent_inputs"}:
                 continue
@@ -249,12 +275,26 @@ class MolecularDatabase:
         return {"group_id": group_id, "molecule_ids": list(dict.fromkeys(ids)), "imported_count": len(records), "unique_count": len(set(ids))}
 
     def add_observation(self, group_id, molecule_id, namespace, run_id, metrics, *, context=None, source_key=None, created_at=None):
+        from mn_molecular_design_studio.evaluations import file_digest
+        context = dict(context or {})
+        if context.get("target_path"):
+            context.setdefault("target_structure_digest", file_digest(context["target_path"]))
         clean = {str(key): value for key, value in metrics.items() if value is not None and
                  not (isinstance(value, float) and not math.isfinite(value))}
         observation_id = _id("score-", source_key or _json([group_id, molecule_id, namespace, run_id, context or {}]))
         with self.connection() as connection:
             if not connection.execute("SELECT 1 FROM molecule_members WHERE group_id=? AND molecule_id=?", (group_id, molecule_id)).fetchone():
                 raise ValueError("The observation's molecule must belong to its source group.")
+            if not context.get("representation_id") and context.get("is_representative") is not False:
+                structures = connection.execute("SELECT * FROM molecule_structures WHERE molecule_id=? AND group_id=? ORDER BY created_at DESC,id DESC",
+                                                (molecule_id, group_id)).fetchall()
+                for structure in structures:
+                    provenance = json.loads(structure["context"])
+                    if provenance.get("run_id") != run_id or (context.get("candidate_id") and provenance.get("candidate_id") != context["candidate_id"]):
+                        continue
+                    context["representation_id"] = structure["id"]
+                    context["structure_digest"] = file_digest(structure["path"])
+                    break
             connection.execute("INSERT INTO molecule_observations VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
                                "molecule_id=excluded.molecule_id,group_id=excluded.group_id,namespace=excluded.namespace,"
                                "run_id=excluded.run_id,metrics=excluded.metrics,context=excluded.context,created_at=excluded.created_at", (
@@ -296,17 +336,20 @@ class MolecularDatabase:
                                (str(destination), _json(context), structure_id))
         return {"structure_id": structure_id, "path": str(destination), "sha256": digest}
 
-    def _visible_ids(self, user, group_id="", project_id="", scope="organization", methods=None, collection="all"):
-        groups = self.groups(user, project_id=project_id, scope=scope, methods=methods, collection=collection)
+    def _visible_ids(self, user, group_id="", project_id="", scope="organization", methods=None, collection="all",
+                     hide_smoke_test=False):
+        groups = self.groups(user, project_id=project_id, scope=scope, methods=methods, collection=collection,
+                             hide_smoke_test=hide_smoke_test)
         if group_id:
             groups = [row for row in groups if row["id"] == group_id]
         return [row["id"] for row in groups]
 
-    def metric_fields(self, user, *, group_id="", project_id="", scope="organization", methods=None, collection="all"):
-        ids = self._visible_ids(user, group_id, project_id, scope, methods, collection)
+    def metric_fields(self, user, *, group_id="", project_id="", scope="organization", methods=None, collection="all",
+                      hide_smoke_test=False):
+        ids = self._visible_ids(user, group_id, project_id, scope, methods, collection, hide_smoke_test)
         # Collection selection controls which molecules are listed, while
         # scientific history may accumulate through any group the user can read.
-        accessible = self._visible_ids(user, project_id=project_id, collection="all")
+        accessible = self._visible_ids(user, project_id=project_id, collection="all", hide_smoke_test=hide_smoke_test)
         with self.connection() as connection:
             rows = connection.execute("SELECT DISTINCT o.namespace,j.key FROM molecule_observations o, json_each(o.metrics) j "
                                       "WHERE o.group_id IN (SELECT value FROM json_each(?)) AND o.molecule_id IN "
@@ -320,16 +363,22 @@ class MolecularDatabase:
         return [*[PREFIX + row[0] for row in common], *[f"{row[0]}.{row[1]}" for row in rows]]
 
     def list_molecules(self, user, *, group_id="", project_id="", scope="organization", methods=None, collection="all",
-                       query="", molecule_type="", limit=100, offset=0, sort="added", descending=True, metric_filters=None, molecule_ids=None):
+                       query="", molecule_type="", limit=100, offset=0, sort="added", descending=True, metric_filters=None, molecule_ids=None,
+                       evaluation_filters=None, hide_smoke_test=False):
+        from mn_molecular_design_studio.evaluations import rebuild_missing, selection_clause, project_observation
+        if group_id and evaluation_filters is None:
+            group = next((g for g in self.groups(user, collection="all") if g["id"] == group_id), {})
+            saved = (group.get("origin") or {}).get("comparison_spec") or {}
+            evaluation_filters = saved.get("evaluation_filters")
         if not 1 <= int(limit) <= 100_000 or int(offset) < 0:
             raise ValueError("Invalid molecular page size or offset.")
         if metric_filters is not None and (not isinstance(metric_filters, list) or any(not isinstance(value, dict) for value in metric_filters)):
             raise ValueError("Metric filters must be a list of comparisons.")
-        visible = self._visible_ids(user, group_id, project_id, scope, methods, collection)
+        visible = self._visible_ids(user, group_id, project_id, scope, methods, collection, hide_smoke_test)
         visibility = _json(visible)
         # Keep observations and representations from every accessible group,
         # even when the displayed collection is filtered to curated library.
-        accessible = _json(self._visible_ids(user, project_id=project_id, collection="all"))
+        accessible = _json(self._visible_ids(user, project_id=project_id, collection="all", hide_smoke_test=hide_smoke_test))
         parameters: list[Any] = [visibility]
         clause = "EXISTS (SELECT 1 FROM molecule_members mm WHERE mm.molecule_id=m.id AND mm.group_id IN (SELECT value FROM json_each(?)))"
         if query:
@@ -342,21 +391,20 @@ class MolecularDatabase:
         if molecule_ids is not None:
             clause += " AND m.id IN (SELECT value FROM json_each(?))"
             parameters.append(_json(molecule_ids))
+        def selected_evaluation(params):
+            params.append(accessible)
+            selected = selection_clause(evaluation_filters, params)
+            return ("(SELECT e.observation_id FROM molecule_evaluations e WHERE e.molecule_id=m.id "
+                    "AND e.group_id IN (SELECT value FROM json_each(?)) AND " + selected +
+                    " ORDER BY e.preferred DESC,e.created_at DESC,e.observation_id DESC LIMIT 1)")
+
         def metric_expression(field, params):
-            if field.startswith(PREFIX):
-                key = '$.' + json.dumps(field[len(PREFIX):])
-                params.extend([key, accessible, key])
-                return ("(SELECT json_extract(studio_common_metrics(o.metrics,o.namespace,o.context),?) "
-                        "FROM molecule_observations o WHERE o.molecule_id=m.id "
-                        "AND o.group_id IN (SELECT value FROM json_each(?)) "
-                        "AND json_type(studio_common_metrics(o.metrics,o.namespace,o.context),?) IN ('integer','real') "
-                        "ORDER BY o.created_at DESC,o.id DESC LIMIT 1)")
-            namespace, separator, key = field.partition(".")
-            if not separator:
+            if "." not in field:
                 raise ValueError("Invalid metric field.")
-            params.extend(['$.' + json.dumps(key), accessible, namespace])
-            return ("(SELECT json_extract(o.metrics,?) FROM molecule_observations o WHERE o.molecule_id=m.id "
-                    "AND o.group_id IN (SELECT value FROM json_each(?)) AND o.namespace=? ORDER BY o.created_at DESC,o.id DESC LIMIT 1)")
+            params.append(field)
+            return "(SELECT v.value_number FROM molecule_metric_values v WHERE v.field=? AND v.observation_id=" + selected_evaluation(params) + ")"
+        if evaluation_filters:
+            clause += " AND " + selected_evaluation(parameters) + " IS NOT NULL"
         for item in metric_filters or []:
             operator = item.get("operator", ">=")
             if operator not in {">", ">=", "<", "<=", "="}:
@@ -365,6 +413,7 @@ class MolecularDatabase:
             clause += f" AND CAST({expression} AS REAL) {operator} ?"
             parameters.append(float(item["value"]))
         with self.connection() as connection:
+            rebuild_missing(connection)
             total = connection.execute("SELECT COUNT(*) FROM molecules m WHERE " + clause, parameters).fetchone()[0]
             ordering_params = []
             if sort == "name":
@@ -375,7 +424,7 @@ class MolecularDatabase:
             else:
                 ordering = metric_expression(sort, ordering_params)
             rows = connection.execute("SELECT m.* FROM molecules m WHERE " + clause + " ORDER BY " + ordering +
-                                      (" DESC" if descending else " ASC") + ",m.id LIMIT ? OFFSET ?",
+                                      (" DESC" if descending else " ASC") + " NULLS LAST,m.id LIMIT ? OFFSET ?",
                                       [*parameters, *ordering_params, int(limit), int(offset)]).fetchall()
             ids = _json([row["id"] for row in rows])
             members = connection.execute("SELECT mm.*,g.name AS group_name,g.origin,g.schema_json FROM molecule_members mm JOIN molecule_groups g ON g.id=mm.group_id "
@@ -385,6 +434,12 @@ class MolecularDatabase:
             structures = connection.execute("SELECT * FROM molecule_structures WHERE molecule_id IN (SELECT value FROM json_each(?)) AND group_id IN (SELECT value FROM json_each(?)) ORDER BY created_at DESC", (ids, accessible)).fetchall()
             observations = connection.execute("SELECT * FROM molecule_observations WHERE molecule_id IN (SELECT value FROM json_each(?)) AND group_id IN (SELECT value FROM json_each(?)) ORDER BY created_at DESC,id DESC", (ids, accessible)).fetchall()
             sources = connection.execute("SELECT * FROM molecule_sources WHERE molecule_id IN (SELECT value FROM json_each(?)) AND group_id IN (SELECT value FROM json_each(?))", (ids, accessible)).fetchall()
+            selection_parameters = []
+            selection_sql = selected_evaluation(selection_parameters)
+            selected = dict(connection.execute("SELECT m.id," + selection_sql + " FROM molecules m WHERE m.id IN (SELECT value FROM json_each(?))",
+                                               [*selection_parameters, ids]).fetchall())
+            evaluations = {row["observation_id"]: json.loads(row["descriptor"]) for row in connection.execute(
+                "SELECT * FROM molecule_evaluations WHERE observation_id IN (SELECT value FROM json_each(?))", (_json(list(selected.values())),)).fetchall()}
         result = {row["id"]: {**dict(row), "components": json.loads(row["components"]), "groups": [], "structures": [], "observations": [], "sources": [], "scores": {}} for row in rows}
         for member in members:
             record = result[member["molecule_id"]]
@@ -398,23 +453,86 @@ class MolecularDatabase:
             observation = {**dict(row), "metrics": json.loads(row["metrics"]), "context": json.loads(row["context"])}
             observation["normalized_output"] = normalize_metrics(observation["metrics"], row["namespace"], observation["context"])
             record["observations"].append(observation)
-            for key, value in observation["metrics"].items():
-                record["scores"].setdefault(row["namespace"] + "." + key, value)
-            for key, value in observation["normalized_output"]["metrics"].items():
-                field = PREFIX + key
-                if field not in record["scores"]:
-                    record["scores"][field] = value
-                    record.setdefault("score_sources", {})[field] = {"observation_id": row["id"], "run_id": row["run_id"],
-                        "namespace": row["namespace"], "created_at": row["created_at"],
-                        **observation["normalized_output"]["provenance"][key]}
+            if selected.get(row["molecule_id"]) == row["id"]:
+                record["scores"], record["score_sources"], _ = project_observation(observation)
+                record["selected_evaluation"] = evaluations.get(row["id"])
         for row in sources:
             result[row["molecule_id"]]["sources"].append({"source_key": row["source_key"], **json.loads(row["provenance"])})
         from mn_molecular_design_studio.molecule_schema import evaluate
         for record in result.values():
+            record["evaluation_count"] = len(record["observations"])
+            record["representations"] = list(record["structures"])
+            evaluation = record.get("selected_evaluation")
+            if evaluation:
+                if evaluation["representation_id"]:
+                    record["structures"] = [s for s in record["structures"] if s["id"] == evaluation["representation_id"]]
+                else:
+                    matched = [s for s in record["structures"] if s["context"].get("run_id") == evaluation["run_id"]
+                               and (not evaluation["candidate_id"] or s["context"].get("candidate_id") == evaluation["candidate_id"])]
+                    record["structures"] = matched[:1]
             for field in record.get("schema", {}).get("fields", []):
                 if field.get("formula"):
                     record["metadata"][field["name"]] = evaluate(field["formula"], {**record["metadata"], **record["scores"]})
         return {"items": list(result.values()), "total": total, "next_offset": offset + len(rows) if offset + len(rows) < total else None}
+
+    def evaluation_options(self, user, *, group_id="", project_id="", collection="all", scope="organization",
+                           hide_smoke_test=False):
+        from mn_molecular_design_studio.evaluations import rebuild_missing
+        visible = self._visible_ids(user, group_id=group_id, project_id=project_id, scope=scope, collection=collection,
+                                    hide_smoke_test=hide_smoke_test)
+        accessible = self._visible_ids(user, project_id=project_id, hide_smoke_test=hide_smoke_test)
+        with self.connection() as connection:
+            rebuild_missing(connection)
+            rows = connection.execute("SELECT DISTINCT e.target_id,e.evaluator,e.run_id FROM molecule_evaluations e "
+                "WHERE e.group_id IN (SELECT value FROM json_each(?)) AND e.molecule_id IN "
+                "(SELECT molecule_id FROM molecule_members WHERE group_id IN (SELECT value FROM json_each(?))) ORDER BY 1,2,3",
+                (_json(accessible), _json(visible))).fetchall()
+        return {key: sorted({row[key] for row in rows if row[key]}) for key in ("target_id", "evaluator", "run_id")}
+
+    def evaluation_rows(self, user, *, evaluation_filters=None, **filters):
+        from mn_molecular_design_studio.evaluations import evaluation_descriptor, project_observation
+        if filters.get("group_id") and evaluation_filters is None:
+            saved = self.group(filters["group_id"], user)["origin"].get("comparison_spec") or {}
+            evaluation_filters = saved.get("evaluation_filters")
+        records = self.list_molecules(user, limit=100000, evaluation_filters=evaluation_filters, **filters)["items"]
+        result = []
+        for record in records:
+            for observation in record["observations"]:
+                evaluation = evaluation_descriptor(observation)
+                if any(value and (evaluation["id"] not in value if key == "evaluation_ids" else evaluation.get("id" if key == "evaluation_id" else key) != value)
+                       for key, value in (evaluation_filters or {}).items()):
+                    continue
+                scores, sources, _ = project_observation(observation)
+                result.append({"molecule_id": record["id"], "name": record["name"], "metadata": record.get("metadata", {}),
+                               "components": record["components"], "evaluation": evaluation, "scores": scores, "score_sources": sources})
+        return result
+
+    def save_comparison(self, user, name, molecule_ids, *, project_id="", evaluation_filters=None, settings=None):
+        from mn_molecular_design_studio.comparisons import compare, prepare_rows, compatibility_warnings
+        if not isinstance(molecule_ids, list) or not molecule_ids or len(molecule_ids) > 100000:
+            raise ValueError("Select between 1 and 100,000 molecules.")
+        if not isinstance(settings or {}, dict) or set(settings or {}) - {"fields", "directions", "weights", "thresholds", "method", "combine_same_subject", "evaluator_runs"}:
+            raise ValueError("Unsupported comparison settings.")
+        rows = self.list_molecules(user, molecule_ids=molecule_ids, project_id=project_id,
+                                  evaluation_filters=evaluation_filters, limit=100000)["items"]
+        if set(molecule_ids) != {row["id"] for row in rows}:
+            raise ValueError("Some selected molecules have no accessible matching evaluation.")
+        evaluations = self.evaluation_rows(user, molecule_ids=molecule_ids, project_id=project_id, evaluation_filters=evaluation_filters)
+        compare(evaluations, **(settings or {}))
+        prepared = prepare_rows(evaluations, combine_same_subject=(settings or {}).get("combine_same_subject", False), evaluator_runs=(settings or {}).get("evaluator_runs"))
+        frozen = sorted({evaluation_id for row in prepared for evaluation_id in (row["evaluation"].get("source_evaluation_ids") or [row["evaluation"]["id"]])})
+        if not frozen:
+            raise ValueError("Select at least one completed evaluation to save a comparison.")
+        if set(molecule_ids) != {row["molecule_id"] for row in prepared}:
+            raise ValueError("Some selected molecules have no evaluation in the contributing runs.")
+        warnings = compatibility_warnings(prepared, (settings or {}).get("fields") or [])
+        if warnings:
+            raise ValueError("; ".join(warnings))
+        specification = {"version": "studio.comparison.v1", "evaluation_filters": {"evaluation_ids": frozen},
+                         "settings": settings or {}, "selection_policy": "frozen evaluations"}
+        group = self.create_group(user, name, project_id=project_id, origin={"type": "comparison", "collection_kind": "curated", "comparison_spec": specification})
+        self.add_to_group(user, group, molecule_ids)
+        return {"group_id": group, "molecule_count": len(rows), "comparison_spec": specification}
 
     def molecules_by_ids(self, user, ids: list[str]) -> list[dict]:
         if not ids:

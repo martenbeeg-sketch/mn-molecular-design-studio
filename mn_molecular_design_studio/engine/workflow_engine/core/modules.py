@@ -39,6 +39,7 @@ MODULE_SPECS: dict[str, ModuleSpec] = {
             "rfdiffusion_classic",
             "bindcraft",
             "rfdiffusion3_foundry",
+            "rfd4_proteina",
             "boltzgen",
             "pxdesign",
             "genie3",

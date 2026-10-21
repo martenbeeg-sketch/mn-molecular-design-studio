@@ -45,6 +45,21 @@ def _sync_all(replica, source_database, target_database, author=SOURCE):
             apply_record(kind, key, value, author, database=target_database)
 
 
+def test_saved_comparison_keeps_canonical_evaluations_across_sync(roots):
+    source, target = MolecularDatabase(roots / "source-evals"), MolecularDatabase(roots / "target-evals")
+    imported = source.import_records(OWNER, molecule_imports.parse_sequences("ACDE"))
+    molecule, group = imported["molecule_ids"][0], imported["group_id"]
+    source.add_observation(group, molecule, "test", "first", {"score": 1}, context={"target_id": "t"}, created_at="2026-01-01")
+    source.add_observation(group, molecule, "test", "second", {"score": 2}, context={"target_id": "t"}, created_at="2026-02-01")
+    saved = source.save_comparison(OWNER, "Frozen", [molecule], evaluation_filters={"run_id": "first"})
+    _sync_all(Replica(), source, target)
+    replica_group = _id("peer-", SOURCE + ":" + saved["group_id"])
+    restored = target.list_molecules(OWNER, group_id=replica_group)["items"]
+    assert len(restored) == 1
+    assert restored[0]["scores"]["test.score"] == 1
+    assert restored[0]["selected_evaluation"]["id"] == source.list_molecules(OWNER, group_id=saved["group_id"])["items"][0]["selected_evaluation"]["id"]
+
+
 def test_synchronized_generator_observations_project_same_common_values(roots):
     source = MolecularDatabase(roots / "generator-source")
     target = MolecularDatabase(roots / "generator-target")
@@ -58,6 +73,27 @@ def test_synchronized_generator_observations_project_same_common_values(roots):
     assert row["scores"]["common.confidence.generator.target.plddt"] == 90
     assert row["observations"][0]["metrics"]["Target_pLDDT"] == .9
     assert "common.design.sequence_length" in target.metric_fields(OWNER)
+
+
+def test_composed_comparison_preserves_subject_and_sources_across_peer_sync(roots):
+    from mn_molecular_design_studio.comparisons import compare
+    source, target = MolecularDatabase(roots / "source-composition"), MolecularDatabase(roots / "target-composition")
+    imported = source.import_records(OWNER, molecule_imports.parse_sequences("ACDE"))
+    molecule, group = imported["molecule_ids"][0], imported["group_id"]
+    context = {"target_id": "t", "structure_digest": "shared-digest", "target_structure_digest": "target-digest"}
+    source.add_observation(group, molecule, "prediction", "p", {"score": .9}, context=context)
+    source.add_observation(group, molecule, "quality", "q", {"solubility": .5}, context=context)
+    settings = {"combine_same_subject": True, "fields": ["prediction.score", "quality.solubility"],
+                "directions": {"prediction.score": "higher", "quality.solubility": "higher"}}
+    saved = source.save_comparison(OWNER, "Combined", [molecule], settings=settings)
+    expected = compare(source.evaluation_rows(OWNER, group_id=saved["group_id"]), **settings)
+    _sync_all(Replica(), source, target)
+    replica_group = _id("peer-", SOURCE + ":" + saved["group_id"])
+    actual = compare(target.evaluation_rows(OWNER, group_id=replica_group), **settings)
+    assert len(actual) == 1
+    assert actual.iloc[0]["Source evaluations"] == expected.iloc[0]["Source evaluations"]
+    assert actual.iloc[0]["Evaluation ID"] == expected.iloc[0]["Evaluation ID"]
+    assert actual.iloc[0]["Comparison rank"] == 1
 
 
 def test_portable_structure_is_copied_to_peer_database_and_survives_source_offline(roots, monkeypatch):

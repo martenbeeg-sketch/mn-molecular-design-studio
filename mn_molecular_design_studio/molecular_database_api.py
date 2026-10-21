@@ -51,6 +51,17 @@ class RunSelectionRequest(BaseModel):
     project_id: str | None = None
 
 
+class ComparisonRequest(SelectionRequest):
+    evaluation_filters: dict = Field(default_factory=dict)
+    settings: dict = Field(default_factory=dict)
+
+
+class ComparisonPreviewRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    selection: dict = Field(default_factory=dict)
+    settings: dict = Field(default_factory=dict)
+
+
 def install(app, current_user):
     router = APIRouter(prefix="/api/v1/molecules", tags=["molecular database"])
 
@@ -126,6 +137,41 @@ def install(app, current_user):
     def freeze_compounds(payload: SelectionRequest, user=Depends(current_user)):
         return call(MolecularDatabase().compound_snapshot, user, payload.molecule_ids, name=payload.name, project_id=payload.project_id)
 
+    @router.get("/evaluations/options")
+    def evaluation_options(group_id: str = "", project_id: str = "", collection: str = "all", user=Depends(current_user)):
+        return call(MolecularDatabase().evaluation_options, user, group_id=group_id, project_id=project_id, collection=collection)
+
+    @router.post("/evaluations/search")
+    def evaluation_search(payload: dict = Body(...), user=Depends(current_user)):
+        allowed = {"group_id", "project_id", "scope", "collection", "query", "molecule_type", "molecule_ids", "evaluation_filters"}
+        if set(payload) - allowed:
+            raise HTTPException(422, "Unsupported evaluation search fields.")
+        rows = call(MolecularDatabase().evaluation_rows, user, **payload)
+        return {"items": rows, "total": len(rows)}
+
+    @router.post("/comparisons", status_code=201)
+    def save_comparison(payload: ComparisonRequest, user=Depends(current_user)):
+        return call(MolecularDatabase().save_comparison, user, payload.name, payload.molecule_ids,
+                    project_id=payload.project_id, evaluation_filters=payload.evaluation_filters, settings=payload.settings)
+
+    @router.post("/comparisons/preview")
+    def compare_evaluations(payload: ComparisonPreviewRequest, user=Depends(current_user)):
+        from mn_molecular_design_studio.comparisons import compare, compatibility_warnings, prepare_rows
+        selection = payload.selection
+        if set(selection) - {"group_id", "project_id", "molecule_ids", "evaluation_filters"}:
+            raise HTTPException(422, "Unsupported comparison selection.")
+        settings = payload.settings
+        if set(settings) - {"fields", "directions", "weights", "thresholds", "method", "combine_same_subject", "evaluator_runs"}:
+            raise HTTPException(422, "Unsupported comparison settings.")
+        rows = call(MolecularDatabase().evaluation_rows, user, **selection)
+        frame = call(compare, rows, **settings)
+        prepared = call(prepare_rows, rows, combine_same_subject=settings.get("combine_same_subject", False), evaluator_runs=settings.get("evaluator_runs"))
+        warnings = compatibility_warnings(prepared, settings.get("fields") or [])
+        if warnings and settings.get("fields"):
+            raise HTTPException(422, "; ".join(warnings))
+        import json
+        return {"items": json.loads(frame.to_json(orient="records")), "total": len(frame), "warnings": warnings}
+
     @router.post("/selections/proteins")
     def freeze_proteins(payload: SelectionRequest, user=Depends(current_user)):
         from mn_molecular_design_studio.database_selections import freeze_protein_selection
@@ -178,7 +224,7 @@ def install(app, current_user):
 
     @router.post("/search")
     def search(payload: dict = Body(...), user=Depends(current_user)):
-        allowed = {"group_id", "project_id", "collection", "query", "molecule_type", "sort", "descending", "limit", "offset", "metric_filters", "molecule_ids"}
+        allowed = {"group_id", "project_id", "collection", "query", "molecule_type", "sort", "descending", "limit", "offset", "metric_filters", "molecule_ids", "evaluation_filters"}
         if set(payload) - allowed:
             raise HTTPException(422, "Unsupported molecular search fields.")
         return call(MolecularDatabase().list_molecules, user, **payload)

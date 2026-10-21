@@ -30,6 +30,7 @@ GENERATOR_WORKFLOWS = {
     "design.rfdiffusion3": "rfdiffusion3", "design.bindcraft2": "bindcraft2",
     "design.bindcraft2_generator": "bindcraft2", "design.boltzgen": "boltzgen",
     "design.boltzgen_generator": "boltzgen", "design.pxdesign_generate": "pxdesign",
+    "design.rfd4_proteina": "rfd4_proteina",
     "design.genie3_generate": "genie3", "design.protpardelle_generate": "protpardelle",
     "design.proteina_complexa": "proteina_complexa", "design.proteina_complexa_generate": "proteina_complexa",
     "design.rfantibody": "rfantibody", "design.rfpeptides": "rfpeptides",
@@ -73,6 +74,10 @@ class Measure:
     transform: str = "identity"
     stages: tuple[str, ...] = ()
     requires: tuple[tuple[str, object], ...] = ()
+    description: str = ""
+    value_type: str = "number"
+    prerequisites: tuple[str, ...] = ()
+    aggregation: str = "scalar"
 
 
 # Shared measurements computed by Studio for every generator. Native output
@@ -121,9 +126,47 @@ for model in sorted(MPNN_ENGINES):
     ):
         MEASURES.append(Measure(f"sequence.{model}.{key}", f"{model} {label}", unit, "global" if key == "global_nll" else "redesigned residues near ligand" if key == "ligand_probability" else "redesigned residues", model, aliases, direction, maximum=maximum, engines=(model,), transform=transform))
 MEASURES.extend([
+    Measure("diversity.representative", "Selected cluster representative", "0/1", "comparison cohort", "declared clustering method", ("diversity_representative",), maximum=1, transform="bool_to_indicator",
+            description="Source-order cluster representative, for explicit selection; this is not a quality score."),
     Measure("sequence.recovery_designed", "Sequence recovery over redesigned residues", "fraction", "redesigned residues", "identity to input sequence", ("seq_recovery", "seq_rec"), maximum=1, engines=tuple(sorted(MPNN_ENGINES))),
     Measure("sequence.esm_if1.log_likelihood", "ESM-IF1 log likelihood", "native", "designed sequence", "ESM-IF1", ("esm_if1_log_likelihood",), "higher", minimum=None, engines=("esm_if1",)),
     Measure("sequence.caliby.energy", "Caliby energy", "native", "designed sequence", "Caliby", ("caliby_energy",), "lower", minimum=None, engines=("caliby",)),
+])
+# Evaluation descriptors are defined here as well, so ranking and UI use the
+# same conversions and cannot substitute confidence for an unrelated measure.
+for engine in ("af2_initial_guess", "boltz2_initial_guess", "boltz2", "af3_jax_cofolding", "optimized_prediction", "openfold3", "protenix", "protenix_v1"):
+    for quantity in ("ptm", "iptm"):
+        MEASURES.append(Measure(f"confidence.validation.complex.{quantity}", f"Validation complex {quantity}", "0–1", "complex interfaces" if quantity == "iptm" else "complex", engine,
+            (quantity,), "higher", maximum=1, engines=(engine,), stages=("complex_refolding",)))
+MEASURES.append(Measure("confidence.validation.bound_binder.plddt", "Validation bound binder pLDDT", "0–100", "binder in complex", "AF2 binder confidence",
+    ("af2_binder_plddt", "af2_average_binder_plddt"), "higher", maximum=100))
+for key, label, unit, scope, method, aliases, direction, minimum, maximum in (
+    ("interface.ipsae.minimum", "Minimum directional ipSAE", "0–1", "selected chain pair", "ipSAE", ("ipsae_min", "ipSAE_min"), "higher", 0, 1),
+    ("interface.ipsae.maximum", "Maximum directional ipSAE", "0–1", "selected chain pair", "ipSAE", ("ipsae_max", "ipSAE_max"), "higher", 0, 1),
+    ("interface.ipsae.mean", "Mean directional ipSAE", "0–1", "selected chain pair", "ipSAE", ("ipsae_avg", "ipSAE_avg"), "higher", 0, 1),
+    ("energy.rosetta.interface_dg", "Rosetta interface energy", "REU", "binder–target interface", "PyRosetta InterfaceAnalyzer", ("rosetta_interface_dG",), "lower", None, None),
+    ("interface.rosetta.buried_area", "Rosetta buried interface area", "Å²", "binder–target interface", "PyRosetta InterfaceAnalyzer", ("rosetta_interface_dSASA",), "", 0, None),
+    ("developability.rosetta.sap", "Spatial aggregation propensity", "Rosetta SAP", "binder", "PyRosetta SapScoreMetric", ("rosetta_binder_sap",), "lower", None, None),
+    ("sequence.charge", "Sequence charge", "e", "selected protein chains", "Biopython ProteinAnalysis", ("qc_sequence_charge",), "", None, None),
+    ("sequence.isoelectric_point", "Isoelectric point", "pH", "selected protein chains", "Biopython ProteinAnalysis", ("qc_sequence_pi",), "", 0, 14),
+    ("sequence.entropy", "Composition entropy", "bits", "selected protein chains", "Shannon amino-acid composition", ("qc_sequence_entropy",), "", 0, None),
+    ("sequence.gravy", "Mean hydropathy", "Kyte–Doolittle", "selected protein chains", "Biopython ProteinAnalysis", ("qc_sequence_gravy",), "", None, None),
+    ("sequence.proteinsol", "Protein-Sol scaled solubility", "Protein-Sol", "selected protein chains", "Protein-Sol", ("proteinsol_scaled_solubility",), "higher", None, None),
+    ("interface.contacts", "Interface heavy-atom contact pairs", "pairs", "selected chain groups", "Biotite distance contacts", ("qc_interface_contact_pairs",), "", 0, None),
+    ("interface.residue_contacts", "Interface residue contact pairs", "pairs", "selected chain groups", "Biotite distance contacts", ("qc_interface_residue_pairs",), "", 0, None),
+    ("interface.hydrogen_bonds", "Interface hydrogen bonds", "bonds", "selected chain groups", "Biotite geometric hydrogen bonds", ("qc_interface_hydrogen_bonds",), "", 0, None),
+    ("diversity.cluster", "Diversity cluster", "cluster ID", "comparison cohort", "declared clustering method", ("diversity_cluster",), "", 0, None),
+):
+    MEASURES.append(Measure(key, label, unit, scope, method, aliases, direction, minimum, maximum,
+        description=f"{label}. Scope: {scope}. Method and settings remain part of the producing evaluation."))
+MEASURES.append(Measure("surface.peppatch.area", "PEP-Patch surface area", "Å²", "selected protein chains", "PEP-Patch 65da35b", ("peppatch_total_area",),
+    prerequisites=("protein structure", "complete heavy atoms")))
+MEASURES.extend([
+    Measure("sequence.esm1v.native_probability", "ESM-1v native amino-acid probability", "fraction", "selected sequence", "ESM-1v five-model unmasked wild-type marginals", ("esm1v_native_probability",), "higher", maximum=1),
+    Measure("sequence.esmif.native_log_likelihood", "ESM-IF1 native conditional log likelihood", "nats/residue", "selected chains in complex backbone", "ESM-IF1", ("esmif_native_log_likelihood",), "higher", minimum=None, maximum=0),
+    Measure("ligand.posebusters.passed", "All PoseBusters checks passed", "0/1", "selected ligand pose and receptor", "PoseBusters 1a5f26a", ("posebusters_passed_all",), "higher", maximum=1, transform="bool_to_indicator"),
+    Measure("ligand.plip.interactions", "PLIP interaction count", "interactions", "selected ligand pose and receptor", "PLIP", ("plip_interaction_count",)),
+    Measure("ligand.pandamap.interactions", "PandaMap interaction count", "interactions", "selected ligand pose and receptor", "PandaMap 0007347", ("pandamap_interaction_count",)),
 ])
 DEFINITIONS = {measure.key: measure for measure in reversed(MEASURES)}
 
@@ -138,7 +181,8 @@ def vocabulary():
     return {"version": VERSION, "field_prefix": PREFIX, "engine_aliases": dict(ENGINE_ALIASES),
             "generator_workflows": dict(GENERATOR_WORKFLOWS),
             "measures": [{"field": PREFIX + key, "key": key,
-                          **{name: getattr(definition, name) for name in ("label", "unit", "scope", "direction", "minimum", "maximum")},
+                          **{name: getattr(definition, name) for name in ("label", "unit", "scope", "direction", "minimum", "maximum", "description", "value_type", "prerequisites", "aggregation")},
+                          "group": key.split(".", 1)[0],
                           "rules": [asdict(rule) for rule in MEASURES if rule.key == key]}
                          for key, definition in DEFINITIONS.items()]}
 
@@ -170,6 +214,8 @@ def normalize_metrics(metrics, tool="", context=None):
             value = values.get(alias)
             if value is None:
                 continue
+            if measure.transform == "bool_to_indicator" and isinstance(value, bool):
+                value = float(value)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 issues.append({"field": alias, "reason": "not a finite number"})
                 continue

@@ -97,8 +97,10 @@ guessing units from numeric magnitude.
 
 Database keeps native observations unchanged and projects common fields when
 reading them. Common fields appear first in the column chooser, have readable
-unit labels, and support sorting, filtering, plotting and export. The latest
-available common value is shown in the sheet; `score_sources` identifies its
+unit labels, and support sorting, filtering, plotting and export. The sheet now
+selects a coherent evaluation, preferring the most recent representative model
+or pose. Target/evaluator/run selectors restrict that choice. A missing metric
+is never borrowed from another evaluation. `score_sources` identifies the exact
 observation and run. Details retain every run and its original scores.
 
 The observation context stores the producing adapter, stage, chain roles,
@@ -107,11 +109,19 @@ generator's name in inherited metadata from replacing the sequence tool that
 actually produced the result. Sequence-only designs are not registered under
 the molecular identity of a target-only PDB.
 
-No raw metric rename or SQL schema migration is required. Existing local runs
+No raw metric rename is required. An additive, rebuildable SQL metric index
+accelerates selection and filtering; raw observations remain authoritative. Existing local runs
 are reindexed on the next ordinary Database refresh to add missing context;
 observations already carrying enough context can be projected immediately.
 Synchronized observations use the same dictionary on the receiving machine.
 All machines need this code version for the new common view.
+
+The shared comparison view operates on the entire filtered cohort, rather than
+only the current table page. It separates native ranks from declared comparison
+ranks and records missing coverage. A saved comparison freezes evaluation IDs,
+metric directions, weights, thresholds and rank method in a curated group.
+These definitions use the existing peer synchronization protocol; the derived
+SQL index is rebuilt on each computer. See [Evaluation and QC guide](evaluations-and-qc.md).
 
 Pipeline filters accept the same common IDs, for example
 `common.geometry.binder.ca_rg`, across candidates from several generators.

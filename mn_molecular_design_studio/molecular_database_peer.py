@@ -338,6 +338,9 @@ def apply_record(kind, key, value, author, *, database=None):
         for row, context in observations:
             current_observations.add(_id("peer-score-", author + ":" + row["id"]))
             context.pop("target_path", None)
+            if context.get("representation_id"):
+                context["_replica_representation"] = context["representation_id"]
+                context["representation_id"] = _id("peer-structure-", author + ":" + context["representation_id"])
             context.update(source_node=author, _replica_node=author, _replica_observation=row["id"])
             connection.execute("INSERT OR REPLACE INTO molecule_observations VALUES (?,?,?,?,?,?,?,?)", (_id("peer-score-", author + ":" + row["id"]), molecule_id, group_id, row["namespace"], row["run_id"], row["metrics"], _json(context), row["created_at"]))
         current_sources = set()

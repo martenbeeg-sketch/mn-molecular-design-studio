@@ -224,18 +224,27 @@ def pose_visualizations(
     pose_name: str,
     receptor_text: str | None = None,
     receptor_name: str = "",
+    *,
+    include_pocket_sidechains: bool = True,
 ) -> list[StructureVisualization]:
     """Return Mol* structures for a full complex or a ligand pose plus receptor."""
     suffix = Path(pose_name).suffix.casefold()
     if suffix in {".cif", ".mmcif"}:
-        return [StructureVisualization(pdb=pose_text, color="molecule-type", representation_type="cartoon+ball-and-stick")]
+        # Use one common PDB path for complex splitting so predicted CIFs render
+        # with the same protein/ligand styling as docking poses.
+        from mn_molecular_design_studio.docking_preparations import pdb_text
+        converted = pdb_text(pose_text)
+        if not any(line.startswith(("ATOM  ", "HETATM")) for line in converted.splitlines()):
+            raise ValueError("Could not convert this prediction structure for the Database viewer.")
+        pose_text = converted
+        suffix = ".pdb"
 
     ligand_text = pdbqt_to_pdb(pose_text) if suffix == ".pdbqt" else pose_text
     protein_residues, ligand_atoms = _protein_residue_and_ligand_counts(ligand_text)
     if suffix != ".pdbqt" and protein_residues >= 5 and ligand_atoms > 0:
         protein_pdb = _protein_only_pdb(pose_text)
         ligand_pdb = _ligand_only_pdb(pose_text)
-        nearby_residues = _nearby_residue_visualizations(protein_pdb, ligand_pdb)
+        nearby_residues = _nearby_residue_visualizations(protein_pdb, ligand_pdb) if include_pocket_sidechains else []
         return [
             StructureVisualization(
                 pdb=protein_pdb,
@@ -261,7 +270,7 @@ def pose_visualizations(
         receptor_pdb = _protein_only_pdb(receptor_text)
     structures = []
     if any(line.startswith("ATOM  ") for line in receptor_pdb.splitlines()):
-        nearby_residues = _nearby_residue_visualizations(receptor_pdb, ligand_text)
+        nearby_residues = _nearby_residue_visualizations(receptor_pdb, ligand_text) if include_pocket_sidechains else []
         structures.append(StructureVisualization(
             pdb=receptor_pdb,
             color="uniform",

@@ -20,6 +20,33 @@ TYPE_LABELS = {
 log = logging.getLogger(__name__)
 
 
+def render_run_comparison(run_dir, user, project_id=""):
+    from mn_molecular_design_studio.molecular_database_results import list_run_molecules
+    from mn_molecular_design_studio.evaluations import evaluation_descriptor, project_observation
+    from mn_molecular_design_studio.comparison_ui import render_comparison
+    try:
+        database = MolecularDatabase()
+        records = list_run_molecules(run_dir, user, database=database)
+    except (PermissionError, FileNotFoundError):
+        return
+    if not records or not any(record.get("observations") for record in records):
+        return
+    key = "run-comparison-" + hashlib.sha1(str(run_dir).encode()).hexdigest()[:12]
+    with st.expander("Compare evaluations", expanded=False):
+        all_models = st.checkbox("Include alternative models and poses", key=key + "-all")
+        rows = []
+        for record in records:
+            observations = record.get("observations") or []
+            if not all_models:
+                chosen = (record.get("selected_evaluation") or {}).get("id")
+                observations = [o for o in observations if evaluation_descriptor(o)["id"] == chosen]
+            for observation in observations:
+                scores, sources, _ = project_observation(observation)
+                rows.append({"molecule_id": record["id"], "name": record["name"], "metadata": record.get("metadata", {}),
+                             "components": record["components"], "evaluation": evaluation_descriptor(observation), "scores": scores, "score_sources": sources})
+        render_comparison(rows, key=key, database=database, user=user, project_id=project_id)
+
+
 def _record_label(record: dict) -> str:
     name = str(record.get("name") or record.get("id") or "Molecule")
     molecule_type = TYPE_LABELS.get(str(record.get("type") or ""), str(record.get("type") or "Molecule"))

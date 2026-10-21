@@ -127,11 +127,15 @@ def test_database_common_fields_filter_sort_and_sources_from_old_observations(tm
     field = PREFIX + "geometry.binder.ca_rg"
     assert field in db.metric_fields(user)
     assert [row["name"] for row in db.list_molecules(user, sort=field, descending=False)["items"]] == ["two", "one"]
-    rows = db.list_molecules(user, metric_filters=[{"field": field, "operator": ">", "value": 10}])["items"]
+    # A newer sequence evaluation must not borrow geometry from an older model.
+    assert db.list_molecules(user, metric_filters=[{"field": field, "operator": ">", "value": 10}])["items"] == []
+    rows = db.list_molecules(user, evaluation_filters={"run_id": "old"}, metric_filters=[{"field": field, "operator": ">", "value": 10}])["items"]
     assert len(rows) == 1
     assert rows[0]["scores"][field] == 12
     assert rows[0]["score_sources"][field]["run_id"] == "old"
-    assert rows[0]["scores"]["common.sequence.recovery_designed"] == .25
+    assert "common.sequence.recovery_designed" not in rows[0]["scores"]
+    latest = db.list_molecules(user, molecule_ids=[one])["items"][0]
+    assert latest["scores"]["common.sequence.recovery_designed"] == .25
     assert rows[0]["scores"]["genie3_generator.binder_ca_radius_of_gyration"] == 12
     assert rows[0]["observations"][0]["metrics"] == {}
     # A private observation about the same identity must not leak via common fields.

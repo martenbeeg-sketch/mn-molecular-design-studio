@@ -43,6 +43,7 @@ def load_settings(home: Path | None = None) -> dict:
         "results_directory": str(_default_results_dir()),
         "reference_directory": str(_default_reference_dir(workspace)),
         "api_base_url": "http://127.0.0.1:8766",
+        "catalog_highlight_days": 30,
     }
     try:
         payload = json.loads((workspace / "settings.json").read_text(encoding="utf-8"))
@@ -55,6 +56,16 @@ def load_settings(home: Path | None = None) -> dict:
     reference_directory = str(payload.get("reference_directory") or defaults["reference_directory"]).strip()
     defaults["reference_directory"] = reference_directory or str(_default_reference_dir(workspace))
     defaults["api_base_url"] = str(payload.get("api_base_url") or defaults["api_base_url"]).rstrip("/")
+    raw_highlight_days = payload.get("catalog_highlight_days", defaults["catalog_highlight_days"])
+    try:
+        highlight_days = int(raw_highlight_days)
+    except (TypeError, ValueError):
+        highlight_days = defaults["catalog_highlight_days"]
+    defaults["catalog_highlight_days"] = (
+        highlight_days
+        if not isinstance(raw_highlight_days, bool) and 1 <= highlight_days <= 365
+        else defaults["catalog_highlight_days"]
+    )
     return defaults
 
 
@@ -86,6 +97,14 @@ def save_settings(settings: dict, home: Path | None = None) -> dict:
             "api_base_url": api_url,
         }
     )
+    if "catalog_highlight_days" in settings:
+        try:
+            highlight_days = int(settings["catalog_highlight_days"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Tool catalog highlight duration must be a whole number of days.") from exc
+        if isinstance(settings["catalog_highlight_days"], bool) or not 1 <= highlight_days <= 365:
+            raise ValueError("Tool catalog highlight duration must be between 1 and 365 days.")
+        payload["catalog_highlight_days"] = highlight_days
     path = workspace / "settings.json"
     temporary_path = path.with_suffix(".json.tmp")
     temporary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

@@ -24,7 +24,7 @@ def freeze_protein_selection(database, user, ids, project_id, *, name="Database 
     for identifier in ids:
         record = by_id[identifier]
         proteins = [row for row in record["components"] if row["type"] == "protein"]
-        lead = next((row for row in proteins if row.get("role") == "lead"), proteins[0])
+        lead = next((row for row in proteins if row.get("role") in {"lead", "binder"}), proteins[0])
         structures = [row for row in record["structures"] if row["format"] in {"pdb", "ent", "cif", "mmcif"}]
         path = None
         if structures:
@@ -93,6 +93,34 @@ def set_editor_selection(prefix, record):
     st.session_state[prefix + "-library-epoch"] = st.session_state.get(prefix + "-library-epoch", 0) + 1
 
 
+def _analysis_candidate_map(database, user, ids):
+    """Map a selected Database cohort to source runs that contain every molecule."""
+    records = database.list_molecules(
+        user, molecule_ids=ids, limit=max(1, len(ids)), collection="all"
+    )["items"]
+    molecule_ids = {str(value) for value in ids}
+    candidates_by_run: dict[str, set[str]] = {}
+    molecules_by_run: dict[str, set[str]] = {}
+    for record in records:
+        molecule_id = str(record["id"])
+        for source in record.get("sources") or []:
+            task_group = str(source.get("task_group") or "").strip()
+            run_id = str(source.get("run_id") or "").strip()
+            candidate_id = str(source.get("candidate_id") or "").strip()
+            if not task_group or not run_id or not candidate_id:
+                continue
+            reference = f"{task_group}/{run_id}"
+            candidates_by_run.setdefault(reference, set()).add(candidate_id)
+            molecules_by_run.setdefault(reference, set()).add(molecule_id)
+    # A single source job is the scheduler's affinity unit. Only offer a
+    # candidate subset when that one run accounts for the complete selection.
+    return {
+        reference: sorted(candidates_by_run[reference])
+        for reference, molecule_set in molecules_by_run.items()
+        if molecule_set == molecule_ids
+    }
+
+
 def open_in_tool(database, user, ids, workflow, project_id):
     import streamlit as st
     from mn_molecular_design_studio.auth import require_project_access
@@ -100,6 +128,31 @@ def open_in_tool(database, user, ids, workflow, project_id):
     rows = database.molecules_by_ids(user, ids)
     if workflow == "pipeline":
         open_in_pipeline(database, user, ids, project_id)
+        return
+    from mn_molecular_design_studio.quality_tools import WORKFLOWS as quality_workflows
+    if workflow in quality_workflows:
+        if workflow == "analysis.ipsae":
+            candidate_map = _analysis_candidate_map(database, user, ids)
+            suffix = f"{workflow}-{project_id}"
+            st.session_state["analysis-source-candidate-map-" + suffix] = candidate_map
+            st.session_state["analysis-source-selection-from-database-" + suffix] = {
+                "molecule_count": len(ids),
+                "source_count": len(candidate_map),
+            }
+            st.session_state["analysis-source-job-prefill-" + suffix] = True
+            if not candidate_map:
+                st.session_state.pop("analysis-source-job-" + suffix, None)
+            st.session_state.setdefault("project-pending-selection", {})[f"workflow-{workflow}-project-id"] = project_id
+            st.session_state["selected_workflow"] = workflow
+            st.session_state["page"] = "Workflow setup"
+            return
+        source = freeze_protein_selection(database, user, ids, project_id)
+        reference = source.parent.name + "/" + source.name
+        st.session_state["quality-source-selection-" + workflow] = {"reference": reference, "label": f"Database selection · {len(ids)} molecules", "row": {"run_dir": str(source)}}
+        st.session_state[f"analysis-source-job-{workflow}-{project_id}"] = reference
+        st.session_state.setdefault("project-pending-selection", {})[f"workflow-{workflow}-project-id"] = project_id
+        st.session_state["selected_workflow"] = workflow
+        st.session_state["page"] = "Workflow setup"
         return
     if workflow == "boltz2":
         if all(len(row["components"]) == 1 and row["components"][0].get("smiles") for row in rows):

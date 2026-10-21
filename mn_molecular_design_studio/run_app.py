@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import csv
 import hashlib
 from html import escape
@@ -33,6 +34,7 @@ importlib.reload(pipeline_graph)
 importlib.reload(complexa_input)
 WORKFLOW_ROLES = pipeline_graph.WORKFLOW_ROLES
 from mn_molecular_design_studio.design_validation_ui import render_batch_controls, render_comparison
+from mn_molecular_design_studio.tool_catalog_history import tool_discovery_category
 
 from mn_molecular_design_studio.workspace import (
     ensure_studio_workspace,
@@ -87,6 +89,7 @@ from mn_molecular_design_studio.engine.workflow_engine.services.local_automation
 )
 from mn_molecular_design_studio.engine.workflow_engine.core.artifacts import build_run_zip
 from mn_molecular_design_studio.engine.workflow_engine.core.candidates import STAGE_COMPLEX_REFOLDING, read_candidates
+from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
 from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation
 # Refresh catalog additions in an already running Streamlit session.
 importlib.reload(workflow_automation)
@@ -159,6 +162,7 @@ WORKFLOW_TITLES = {
     "Rfdiffusion Classic": "RFdiffusion",
     "Rfdiffusion3 Foundry": "RFdiffusion3",
     "Rfdiffusion3": "RFdiffusion3",
+    "Rfd4 Proteina": "RFDiffusion4-Proteina",
     "Ipsae": "ipSAE Scoring",
     "Rosetta Metrics": "Rosetta Interface Metrics",
     "Pesto": "PeSTo",
@@ -201,6 +205,7 @@ TOOL_CATALOG_WORKFLOW_IDS = {
     "design.bindcraft2",
     "design.bindcraft2_generator",
     "design.rfdiffusion3",
+    "design.rfd4_proteina",
     "design.rfantibody",
     "design.rfpeptides",
     "design.boltzgen",
@@ -288,6 +293,7 @@ TOOL_WORKFLOW_CODE_VERSIONS = {
     "design.bindcraft2_generator": ("BindCraft 2 v1.0.4", False),
     "design.rfdiffusion_classic": ("RFdiffusion · version not pinned", False),
     "design.rfdiffusion3": ("RFdiffusion3 a36d29c · Foundry 0.1.9", False),
+    "design.rfd4_proteina": ("RFDiffusion4-Proteina 0.0.3 · 9d35ee4", False),
     "design.rfantibody": ("RFantibody 3e5a5bb · CUDA 11.8", False),
     "design.rfpeptides": ("RFpeptides · RFdiffusion 86507b6 · CUDA 12.8", False),
     "design.boltzgen": ("BoltzGen 0.3.2", True),
@@ -331,7 +337,9 @@ TOOL_CATALOG_GROUPS = {
     },
 }
 
-ANALYSIS_SOURCE_WORKFLOWS = {"analysis.ipsae", "analysis.rosetta"}
+from mn_molecular_design_studio.quality_tools import WORKFLOWS as QUALITY_WORKFLOWS
+ANALYSIS_SOURCE_WORKFLOWS = {"analysis.ipsae", "analysis.rosetta", *QUALITY_WORKFLOWS}
+TOOL_CATALOG_WORKFLOW_IDS = (*TOOL_CATALOG_WORKFLOW_IDS, *QUALITY_WORKFLOWS)
 
 # Each optimized prediction profile gets its own engine card. Version labels
 # below refer to the upstream engine code, not the container or batch wrapper.
@@ -723,6 +731,14 @@ if cluster_config.enabled():
 
 def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
     workflow = str(row.get("workflow", ""))
+    if workflow in QUALITY_WORKFLOWS:
+        profile = QUALITY_WORKFLOWS[workflow]
+        function = "Diversity Analysis" if profile.get("cohort") else {
+            "sequence": "Sequence Analysis", "interface": "Interface Analysis",
+            "ligand": "Protein–Ligand Analysis", "structure": "Structure Quality",
+        }[profile["kind"]]
+        return {"functions": [function], "modalities": ["Protein", "Ligand"] if profile["kind"] == "ligand" else ["Protein", "Antibody", "Peptide"],
+                "input_types": ["Existing Results", "Database Selection"]}
     prefix = workflow.split(".", 1)[0]
     function_by_prefix = {
         "ligand": "Molecular Docking & Affinity",
@@ -817,6 +833,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "design.proteina_complexa": ["Structure (PDB)", "Structure (mmCIF)"],
         "design.proteina_complexa_generate": ["Structure (PDB)", "Structure (mmCIF)"],
         "design.rfdiffusion3": ["Structure (PDB)", "Structure (mmCIF)", "JSON"],
+        "design.rfd4_proteina": ["Structure (PDB)", "Structure (mmCIF)", "Annotated CIF", "YAML / JSON"],
         "design.rfpeptides": ["Structure (PDB)", "Structure (mmCIF)"],
         "refolding.esmfold2_cofolding": ["Protein Sequences"],
         "refolding.af3_jax_cofolding": ["Molecule Fields"],
@@ -1006,7 +1023,7 @@ def _render_tool_catalog() -> None:
                 "key": workflow_id,
                 "group_id": None,
                 "workflow": workflow_id,
-                "title": WORKFLOW_TITLES.get(base_title, base_title),
+                "title": QUALITY_WORKFLOWS.get(workflow_id, {}).get("name") or WORKFLOW_TITLES.get(base_title, base_title),
                 "description": row["description"],
                 "workflow_ids": [workflow_id],
                 "workflow_rows": [row],
@@ -1048,9 +1065,21 @@ def _render_tool_catalog() -> None:
             })
 
     tool_rows.sort(key=lambda row: row["title"].casefold())
+    settings = load_settings(STUDIO_WORKSPACE)
+    highlight_days = settings.get("catalog_highlight_days", 30)
+    for row in tool_rows:
+        row["discovery_category"] = tool_discovery_category(row, highlight_days)
+
     modalities = sorted({tag for row in tool_rows for tag in row["tags"]["modalities"]})
     functions = sorted({tag for row in tool_rows for tag in row["tags"]["functions"]})
     input_types = sorted({tag for row in tool_rows for tag in row["tags"]["input_types"]})
+    discovery_category = st.radio(
+        "Tool category",
+        ["All", "New", "Modified"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="tools-discovery-category",
+    )
     search_col, modality_col, function_col, input_col = st.columns([2.2, 1, 1, 1])
     query = search_col.text_input("Search tools", placeholder="Try BindCraft2, RFdiffusion, or structure prediction")
     with modality_col.popover("Modality", use_container_width=True):
@@ -1061,6 +1090,8 @@ def _render_tool_catalog() -> None:
         selected_input_types = st.multiselect("Input type", input_types, key="tools-input-type-filter", label_visibility="collapsed")
 
     rows = tool_rows
+    if discovery_category != "All":
+        rows = [row for row in rows if row["discovery_category"] == discovery_category]
     if selected_modalities:
         rows = [row for row in rows if set(row["tags"]["modalities"]) & set(selected_modalities)]
     if selected_functions:
@@ -1085,7 +1116,11 @@ def _render_tool_catalog() -> None:
             ).lower()
         ]
 
-    st.caption(f"{len(rows)} tools")
+    st.caption(f"{len(rows)} tools · {discovery_category} · Added or materially changed within {highlight_days} days")
+    if not rows:
+        st.info("No tools match the selected category and filters.")
+        if discovery_category == "Modified":
+            st.caption("Material tool changes are tracked in the catalog history.")
     column_count = 3
     for row_start in range(0, len(rows), column_count):
         row_columns = st.columns(column_count, gap="medium")
@@ -3041,21 +3076,27 @@ def _render_parameter_fields(parameters: list[dict], *, workflow_id: str, group:
     return values
 
 
-def _analysis_source_job_options(project_id: str) -> list[dict]:
+def _analysis_source_job_options(project_id: str, *, require_complex=True, allow_docking=False) -> list[dict]:
     """List completed, accessible complex-result jobs from one selected project."""
     result = search_jobs(statuses=["completed", "succeeded"], project_id=project_id, limit=1000)
     options: list[dict] = []
+    seen_runs: set[tuple[str, str]] = set()
     for row in result.get("items", []):
         run_dir = Path(str(row.get("run_dir") or ""))
         candidates_path = run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl"
         if not candidates_path.is_file():
+            if allow_docking and (run_dir / "artifacts/docking_scores.csv").is_file():
+                options.append({"reference": f"{row.get('task_group', '')}/{row.get('run_id', '')}",
+                                "label": f"{row.get('campaign_name') or row.get('tool')} · {row.get('job_code') or row.get('run_id')} · best pose per compound", "row": row})
+                seen_runs.add((str(row.get("task_group") or ""), str(row.get("run_id") or "")))
             continue
         candidates = read_candidates(candidates_path)
-        complex_candidates = [candidate for candidate in candidates if candidate.get("complex_pdb")]
+        complex_candidates = [candidate for candidate in candidates if candidate.get("complex_pdb") or (not require_complex and candidate.get("binder_sequence"))]
         if not complex_candidates:
             continue
         reference = f"{row.get('task_group', '')}/{row.get('run_id', '')}"
         name = str(row.get("campaign_name") or row.get("tool") or row.get("job_type") or "Results")
+        seen_runs.add((str(row.get("task_group") or ""), str(row.get("run_id") or "")))
         options.append(
             {
                 "reference": reference,
@@ -3063,16 +3104,63 @@ def _analysis_source_job_options(project_id: str) -> list[dict]:
                 "row": row,
             }
         )
+
+    # A synchronized Database may contain results whose PAE matrices and other
+    # source-run artifacts remain on another workstation. Include those runs
+    # as choices; source_job affinity will send the analysis to that owner.
+    cluster_settings = cluster_config.load()
+    if cluster_settings.get("mode") != "disabled":
+        try:
+            from mn_molecular_design_studio.cluster.service import shared_jobs
+
+            token = str(st.session_state.get("studio-session-token") or ("development-mode" if is_development_mode() else ""))
+            shared = shared_jobs(
+                CURRENT_USER,
+                token=token,
+                project_id=project_id,
+                statuses=["completed", "succeeded"],
+                limit=1000,
+            )
+            local_node_id = cluster_config.identity()
+            for row in shared.get("items", []):
+                task_group = str(row.get("task_group") or "")
+                run_id = str(row.get("run_id") or "")
+                node_id = str(row.get("node_id") or "")
+                if not task_group or not run_id or (task_group, run_id) in seen_runs or node_id == local_node_id:
+                    continue
+                # The job manifest is intentionally not copied to this machine.
+                # Its complex/PAE artifacts are checked by the workflow on owner.
+                job_id = str(row.get("cluster_job_id") or "")
+                if not job_id:
+                    local_reference = str(row.get("local_reference") or f"{task_group}/{run_id}")
+                    job_id = cluster_config.job_id(node_id, local_reference)
+                reference = "cluster:" + job_id
+                label = " · ".join(filter(None, (
+                    str(row.get("campaign_name") or row.get("tool") or row.get("job_type") or "Results"),
+                    str(row.get("job_code") or run_id),
+                    f"source files on {cluster_config.display_name(row.get('node_name') or node_id)}",
+                )))
+                options.append({"reference": reference, "label": label, "row": row})
+                seen_runs.add((task_group, run_id))
+        except Exception as exc:
+            st.warning(f"Could not refresh results from other workstations: {exc}")
     return options
 
 
-def _source_job_pae_availability(source_job: dict) -> tuple[int, int]:
+def _source_job_pae_availability(source_job: dict, candidate_ids: list[str] | None = None) -> tuple[int | None, int | None]:
     """Count source complex candidates with a saved pairwise PAE matrix file."""
+    if str(source_job.get("run_dir") or "").startswith("cluster://"):
+        # The artifact is remote by design. It will be verified after the job
+        # reaches its owner workstation, which also holds the PAE sidecars.
+        return None, None
     from mn_molecular_design_studio.engine.workflow_engine.workflows.analysis import _find_pae_path, _resolve_path
 
     run_dir = Path(str(source_job.get("run_dir") or ""))
     candidates_path = run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl"
     candidates = [candidate for candidate in read_candidates(candidates_path) if candidate.get("complex_pdb")]
+    if candidate_ids is not None:
+        selected_ids = {str(value) for value in candidate_ids}
+        candidates = [candidate for candidate in candidates if str(candidate.get("candidate_id") or "") in selected_ids]
     available = 0
     for candidate in candidates:
         structure = _resolve_path(run_dir, str(candidate.get("complex_pdb") or ""))
@@ -3739,9 +3827,20 @@ def _render_workflow_setup() -> None:
         bioemu2_ui.render_setup(
             schema,
             owner_id=str(CURRENT_USER["id"]),
+            user=CURRENT_USER,
             project_selector=_render_project_selector,
             submit=_submit_cofolding_job,
             source_job_options=_analysis_source_job_options,
+        )
+        return
+    if workflow_id == "design.rfd4_proteina":
+        from mn_molecular_design_studio import rfd4_proteina_ui
+        importlib.reload(rfd4_proteina_ui)
+        rfd4_proteina_ui.render_setup(
+            schema,
+            owner_id=str(CURRENT_USER["id"]),
+            project_selector=_render_project_selector,
+            submit=_submit_cofolding_job,
         )
         return
     if workflow_id.startswith("ligand."):
@@ -3858,7 +3957,7 @@ def _render_workflow_setup() -> None:
         return
 
     base_title = workflow_id.split(".", 1)[-1].replace("_", " ").title()
-    title = WORKFLOW_TITLES.get(base_title, base_title)
+    title = QUALITY_WORKFLOWS.get(workflow_id, {}).get("name") or WORKFLOW_TITLES.get(base_title, base_title)
 
     if st.button("← Back to All tools", key="back-to-all-tools"):
         st.session_state["page"] = "All tools"
@@ -3876,15 +3975,38 @@ def _render_workflow_setup() -> None:
     source_jobs: list[dict] = []
     selected_source_job: str | None = None
     selected_source_pae_count: int | None = None
+    selected_source_candidate_ids: list[str] | None = None
+    database_source_selection = None
+    database_source_candidate_map: dict[str, list[str]] = {}
+    database_source_selection_invalid = False
     if analysis_source_workflow:
         st.subheader("Existing results")
         if not project_id:
             st.info("Select a project first. Only completed results from that project will be available here.")
         else:
             try:
-                source_jobs = _analysis_source_job_options(project_id)
+                source_jobs = _analysis_source_job_options(project_id, require_complex=workflow_id not in QUALITY_WORKFLOWS,
+                    allow_docking=QUALITY_WORKFLOWS.get(workflow_id, {}).get("kind") == "ligand")
+                frozen = st.session_state.get("quality-source-selection-" + workflow_id)
+                if frozen and not any(item["reference"] == frozen["reference"] for item in source_jobs):
+                    source_jobs.insert(0, frozen)
             except Exception as exc:
                 st.error(f"Could not load existing candidate results: {exc}")
+        if project_id:
+            selection_suffix = f"{workflow_id}-{project_id}"
+            database_source_selection = st.session_state.get("analysis-source-selection-from-database-" + selection_suffix)
+            database_source_candidate_map = st.session_state.get("analysis-source-candidate-map-" + selection_suffix) or {}
+            select_key = f"analysis-source-job-{workflow_id}-{project_id}"
+            prefill_key = "analysis-source-job-prefill-" + selection_suffix
+            if source_jobs and st.session_state.pop(prefill_key, False):
+                mapped_references = [
+                    item["reference"] for item in source_jobs
+                    if f"{item['row'].get('task_group', '')}/{item['row'].get('run_id', '')}" in database_source_candidate_map
+                ]
+                if len(mapped_references) == 1:
+                    st.session_state[select_key] = mapped_references[0]
+                else:
+                    st.session_state.pop(select_key, None)
         if project_id and source_jobs:
             selected_source_job = st.selectbox(
                 "Results to analyze",
@@ -3895,8 +4017,40 @@ def _render_workflow_setup() -> None:
                 key=f"analysis-source-job-{workflow_id}-{project_id}",
                 help="The selected job is read as input. This tool creates a separate analysis result and leaves its original ranking and files unchanged.",
             )
+            selected_source = next(
+                (item for item in source_jobs if item["reference"] == selected_source_job),
+                None,
+            )
+            selected_row = (selected_source or {}).get("row") or {}
+            if selected_source_job.startswith("cluster:") or str(selected_row.get("run_dir") or "").startswith("cluster://"):
+                owner_name = cluster_config.display_name(
+                    selected_row.get("node_name") or selected_row.get("node_id") or "the owning workstation"
+                )
+                st.info(
+                    f"This source run's files are stored on {owner_name}. The analysis will be scheduled on that workstation, "
+                    "so PAE matrices, MD trajectories, and other source-run artifacts are read in place. "
+                    "It will wait there if that workstation is offline or busy."
+                )
         elif project_id:
             st.info("No completed jobs with saved complex structures are available in this project yet.")
+
+        if database_source_selection and workflow_id == "analysis.ipsae":
+            if not database_source_candidate_map:
+                database_source_selection_invalid = True
+                st.warning(
+                    f"The {database_source_selection['molecule_count']} selected Database molecules do not all map to one source run. "
+                    "ipSAE needs the original PAE files, so it cannot use only the portable Database structures for this selection. "
+                    "Select a cohort from one prediction run or open that run from Results."
+                )
+            elif selected_source_job:
+                selected_row = next((item["row"] for item in source_jobs if item["reference"] == selected_source_job), {})
+                source_key = f"{selected_row.get('task_group', '')}/{selected_row.get('run_id', '')}"
+                selected_source_candidate_ids = database_source_candidate_map.get(source_key)
+                if selected_source_candidate_ids:
+                    st.caption(f"Limited to the {len(selected_source_candidate_ids)} selected Database candidate(s) from this source run.")
+                else:
+                    database_source_selection_invalid = True
+                    st.warning("Choose a source run that contains the full selected Database cohort to keep this analysis limited to your selection.")
 
         if workflow_id == "analysis.ipsae" and selected_source_job:
             selected_source = next(
@@ -3904,9 +4058,13 @@ def _render_workflow_setup() -> None:
                 None,
             )
             if selected_source:
-                pae_count, complex_count = _source_job_pae_availability(selected_source["row"])
+                pae_count, complex_count = _source_job_pae_availability(
+                    selected_source["row"], candidate_ids=selected_source_candidate_ids
+                )
                 selected_source_pae_count = pae_count
-                if pae_count:
+                if pae_count is None:
+                    st.caption("The source workstation will check that run's PAE matrices when the analysis starts.")
+                elif pae_count:
                     st.caption(f"Pairwise PAE matrix files found for {pae_count} of {complex_count} complex candidate(s).")
                 else:
                     st.warning(
@@ -3919,7 +4077,7 @@ def _render_workflow_setup() -> None:
         parameters = [
             parameter
             for parameter in parameters
-            if parameter.get("name") not in {"source_run_dir", "candidates_jsonl", "tool"}
+            if parameter.get("name") not in {"source_run_dir", "candidates_jsonl", "tool", "candidate_ids"}
         ]
     if workflow_id == "analysis.rosetta":
         parameters = [parameter for parameter in parameters if parameter.get("name") != "nprocs"]
@@ -3960,7 +4118,8 @@ def _render_workflow_setup() -> None:
             use_container_width=True,
             disabled=not project_id
             or (analysis_source_workflow and not selected_source_job)
-            or (workflow_id == "analysis.ipsae" and selected_source_pae_count == 0),
+            or (workflow_id == "analysis.ipsae" and selected_source_pae_count == 0)
+            or database_source_selection_invalid,
         )
 
     if submitted:
@@ -3983,6 +4142,8 @@ def _render_workflow_setup() -> None:
             }
             if analysis_source_workflow:
                 payload["source_job"] = selected_source_job
+            if workflow_id == "analysis.ipsae" and selected_source_candidate_ids:
+                payload["parameters"]["candidate_ids"] = selected_source_candidate_ids
             validation = _post_local_api("/api/v1/workflows/validate", payload)
             if not validation.get("valid"):
                 st.error("The workflow inputs did not pass validation.")
@@ -7202,14 +7363,14 @@ def _render_job_details() -> None:
     )
     is_design_validation = any(isinstance(item, dict) and (item.get("raw_metadata") or {}).get("validation_reference") for item in result_candidates)
     is_rfdiffusion3 = analysis_tool == "rfdiffusion3"
+    is_rfd4_proteina = analysis_tool == "rfd4_proteina" or "design.rfd4_proteina" in workflow_identity
     is_beta_pairing = analysis_tool == "rfdiffusion_beta_pairing" or "rfdiffusion_beta_pairing" in workflow_identity
     is_rfantibody = analysis_tool == "rfantibody" or "rfantibody" in workflow_identity
     is_rfpeptides = analysis_tool == "rfpeptides" or "rfpeptides" in workflow_identity
-    has_dedicated_prediction_results = is_rfantibody or is_rfpeptides or is_rfdiffusion3 or is_af3_jax_cofolding or is_esmfold2_cofolding or is_optimized_prediction or is_design_validation
+    has_dedicated_prediction_results = is_rfantibody or is_rfpeptides or is_rfdiffusion3 or is_rfd4_proteina or is_af3_jax_cofolding or is_esmfold2_cofolding or is_optimized_prediction or is_design_validation
     pipeline_execution = {}
     surface_nodes = []
     if str(job.get("tool")) == "visual_pipeline":
-        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
         pipeline_execution = read_json(run_dir / "graph_execution.json")
         surface_nodes = [
             (node_id, state["output"]["analysis_run"])
@@ -7285,6 +7446,10 @@ def _render_job_details() -> None:
     is_generator_tool=str(job.get('tool')) in generator_input.TOOLS.values()
 
     with results_tab:
+        if "analysis." + analysis_tool in QUALITY_WORKFLOWS:
+            from mn_molecular_design_studio.quality_ui import render_progress, render_contact_maps
+            render_progress(run_dir, str(job.get("status") or ""), run_id)
+            render_contact_maps(run_dir, run_id)
         batch_rows = result.get("outputs", {}).get("batch_items")
         if isinstance(batch_rows, list):
             st.subheader("Selected inputs")
@@ -7331,6 +7496,9 @@ def _render_job_details() -> None:
         elif is_rfdiffusion3:
             from mn_molecular_design_studio.rfdiffusion3_ui import render_results
             render_results(run_id, run_dir, result_candidates, input_params, result)
+        elif is_rfd4_proteina:
+            from mn_molecular_design_studio import rfd4_proteina_ui
+            rfd4_proteina_ui.render_results(run_id, run_dir, result_candidates, input_params, result)
         elif is_beta_pairing:
             from mn_molecular_design_studio import rfdiffusion_beta_pairing_ui
             rfdiffusion_beta_pairing_ui.render_results(run_id, run_dir, result_candidates, input_params, result)
@@ -7383,6 +7551,14 @@ def _render_job_details() -> None:
         else:
             visible_structure_artifacts = structure_artifacts
 
+        # BioEmu writes sampled coordinates separately from their topology.
+        # Offer each XTC alongside ordinary structure files when its matching
+        # topology.cif is present in the same per-input output directory.
+        from mn_molecular_design_studio.bioemu2_results import trajectory_preview_artifacts as _bioemu2_trajectory_previews
+        trajectory_preview_artifacts = _bioemu2_trajectory_previews(
+            str(job.get("tool") or ""), run_dir, artifact_paths
+        )
+
         csv_artifacts = (
             []
             if has_dedicated_prediction_results or has_dedicated_surface_results
@@ -7390,6 +7566,7 @@ def _render_job_details() -> None:
         )
         preferred_csv_names = (
             ("ipsae_metrics.csv",) if is_ipsae
+            else ("qc_metrics.csv",) if "analysis." + analysis_tool in QUALITY_WORKFLOWS
             else ("!_ranked.csv", "!_refolded.csv", "!_trajectories.csv")
         )
         csv_artifacts.sort(
@@ -7592,30 +7769,64 @@ def _render_job_details() -> None:
 
         if is_docking_job:
             _render_docking_pose_preview(run_id, run_dir, artifact_paths, result)
-        elif visible_structure_artifacts and not has_dedicated_prediction_results and not has_dedicated_surface_results:
+        elif (visible_structure_artifacts or trajectory_preview_artifacts) and not has_dedicated_prediction_results and not has_dedicated_surface_results:
             st.subheader("Structure preview")
+            preview_options = [
+                ("trajectory", item, path, topology_path)
+                for item, path, topology_path in trajectory_preview_artifacts
+            ]
+            preview_options.extend(("structure", item, path, None) for item, path in visible_structure_artifacts)
             structure_index = st.selectbox(
                 "Structure file",
-                range(len(visible_structure_artifacts)),
+                range(len(preview_options)),
                 format_func=lambda index: (
-                    f"[{_structure_design_status(*visible_structure_artifacts[index])}] "
-                    f"{visible_structure_artifacts[index][0].get('relative_path', visible_structure_artifacts[index][1].name)}"
+                    (
+                        "[XTC trajectory] "
+                        f"{preview_options[index][1].get('relative_path', preview_options[index][2].name)}"
+                    )
+                    if preview_options[index][0] == "trajectory"
+                    else (
+                        f"[{_structure_design_status(preview_options[index][1], preview_options[index][2])}] "
+                        f"{preview_options[index][1].get('relative_path', preview_options[index][2].name)}"
+                    )
                 ),
                 key=f"job-structure-{run_id}-{design_scope.casefold().replace(' ', '-')}",
             )
-            _, structure_path = visible_structure_artifacts[structure_index]
+            preview_kind, _structure_item, structure_path, topology_path = preview_options[structure_index]
             try:
-                if structure_path.stat().st_size > 50 * 1024 * 1024:
-                    st.info("This structure is over 50 MB; download it from the Files tab to inspect it locally.")
+                if preview_kind == "trajectory":
+                    if structure_path.stat().st_size > 50 * 1024 * 1024:
+                        st.info("This trajectory is over 50 MB; download it from the Files tab to inspect it locally.")
+                    else:
+                        topology_text = topology_path.read_text(encoding="utf-8", errors="replace")
+                        trajectory_base64 = base64.b64encode(structure_path.read_bytes()).decode("ascii")
+                        molstar_custom_component(
+                            [
+                                StructureVisualization(
+                                    pdb=topology_text,
+                                    trajectory={"coordinates_base64": trajectory_base64, "format": "xtc"},
+                                    color="uniform",
+                                    color_params={"value": "0x318c70"},
+                                    representation_type="cartoon",
+                                )
+                            ],
+                            key=f"job-trajectory-viewer-{run_id}-{structure_index}",
+                            height=520,
+                            show_controls=False,
+                        )
+                        st.caption("BioEmu XTC coordinates loaded with their matching topology.cif. Mol* animation controls are available for trajectories with multiple frames.")
                 else:
-                    structure_text = structure_path.read_text(encoding="utf-8", errors="replace")
-                    molstar_custom_component(
-                        [StructureVisualization(pdb=structure_text, color="plddt", representation_type="cartoon")],
-                        key=f"job-structure-viewer-compact-{run_id}-{structure_index}",
-                        height=520,
-                        show_controls=False,
-                    )
-                    st.caption("Structure colored by per-residue pLDDT confidence (stored in the structure B-factor field).")
+                    if structure_path.stat().st_size > 50 * 1024 * 1024:
+                        st.info("This structure is over 50 MB; download it from the Files tab to inspect it locally.")
+                    else:
+                        structure_text = structure_path.read_text(encoding="utf-8", errors="replace")
+                        molstar_custom_component(
+                            [StructureVisualization(pdb=structure_text, color="plddt", representation_type="cartoon")],
+                            key=f"job-structure-viewer-compact-{run_id}-{structure_index}",
+                            height=520,
+                            show_controls=False,
+                        )
+                        st.caption("Structure colored by per-residue pLDDT confidence (stored in the structure B-factor field).")
             except OSError as exc:
                 st.warning(f"Could not load this structure preview: {exc}")
         elif not is_docking_job and not has_dedicated_prediction_results and not has_dedicated_surface_results:
@@ -7651,8 +7862,9 @@ def _render_job_details() -> None:
         # Molecular Database is a promotion/organization action, not the run's
         # prediction summary. Keep it after the scientific results so it does
         # not displace the batch comparison at the top of the job page.
-        from mn_molecular_design_studio.molecular_database_results_ui import render_run_database_actions
+        from mn_molecular_design_studio.molecular_database_results_ui import render_run_database_actions, render_run_comparison
 
+        render_run_comparison(run_dir, CURRENT_USER, str((read_json(run_dir / "molecular_design_studio.json") or {}).get("project_id") or ""))
         render_run_database_actions(run_dir, CURRENT_USER, _studio_projects())
 
     with files_tab:
@@ -8959,8 +9171,34 @@ def _render_projects() -> None:
 
 def _render_settings() -> None:
     st.title("Settings")
-    st.subheader("Runtime folders")
     settings = load_settings(STUDIO_WORKSPACE)
+    st.subheader("Tool catalog")
+    st.caption(
+        "New and Modified include tools added or materially changed within this period. "
+        "This duration preference is stored on this computer."
+    )
+    catalog_highlight_days = st.number_input(
+        "New and Modified duration (days)",
+        min_value=1,
+        max_value=365,
+        value=settings["catalog_highlight_days"],
+        step=1,
+        key="settings-catalog-highlight-days",
+    )
+    if st.button("Save tool catalog settings", key="settings-save-catalog"):
+        try:
+            save_settings(
+                {**settings, "catalog_highlight_days": int(catalog_highlight_days)},
+                STUDIO_WORKSPACE,
+            )
+            st.session_state["settings-catalog-saved"] = True
+            st.rerun()
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            st.error(f"Could not save tool catalog settings: {exc}")
+    if st.session_state.pop("settings-catalog-saved", False):
+        st.success("Tool catalog settings saved.")
+
+    st.subheader("Runtime folders")
     st.caption(
         f"Job catalog: `{catalog_path()}`. It stores searchable job details and links to files; run files remain in the Results folder."
     )

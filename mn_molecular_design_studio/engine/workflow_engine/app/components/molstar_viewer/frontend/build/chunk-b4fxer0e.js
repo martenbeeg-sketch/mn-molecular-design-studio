@@ -62363,12 +62363,12 @@ function rr(e) {
     for (let P = 0;P < T; P++) {
       if (!i(C))
         return A;
-      ct.addUnchecked(w, C.tokenStart, C.tokenEnd), A++;
+      ut.addUnchecked(w, C.tokenStart, C.tokenEnd), A++;
     }
     return A;
   }
   function c(C, T) {
-    let w = ct.create(C.data, T * 2);
+    let w = ut.create(C.data, T * 2);
     return l(C, T, w), w;
   }
   e.markLines = c;
@@ -62380,7 +62380,7 @@ function rr(e) {
   }
   e.readLines = u;
   async function d(C, T, w, A = 1e5) {
-    let P = ct.create(C.data, T * 2), E = 0;
+    let P = ut.create(C.data, T * 2), E = 0;
     return await dc(w, A, C, (R, F) => {
       let M = Math.min(T - E, R);
       return l(F, M, P), E += M, M;
@@ -62388,9 +62388,9 @@ function rr(e) {
   }
   e.readLinesAsync = d;
   function m(C) {
-    let T = e(C), w = ct.create(T.data, Math.max(C.length / 80, 2));
+    let T = e(C), w = ut.create(T.data, Math.max(C.length / 80, 2));
     while (i(T))
-      ct.add(w, T.tokenStart, T.tokenEnd);
+      ut.add(w, T.tokenStart, T.tokenEnd);
     return w;
   }
   e.readAllLines = m;
@@ -62399,12 +62399,12 @@ function rr(e) {
     for (let P = 0;P < T; P++) {
       if (!i(C))
         return A;
-      ct.add(w, C.tokenStart, C.tokenEnd), A++;
+      ut.add(w, C.tokenStart, C.tokenEnd), A++;
     }
     return A;
   }
   async function g(C, T, w = 1e5) {
-    let A = e(C), P = ct.create(A.data, Math.max(C.length / 80, 2));
+    let A = e(C), P = ut.create(A.data, Math.max(C.length / 80, 2));
     return await dc(T, w, A, (E, R) => (f(R, E, P), R.position < R.length ? E : 0), (E, R) => E.update({ message: "Parsing...", current: R.position, max: R.length })), P;
   }
   e.readAllLinesAsync = g;
@@ -62484,7 +62484,7 @@ function axe(e, t, r) {
     i = e.charCodeAt(--o);
   return e.substring(n, o + 1);
 }
-var ct;
+var ut;
 (function(e) {
   function t(a) {
     let s = new Uint32Array(1.61 * a.indices.length | 0);
@@ -62515,7 +62515,7 @@ var ct;
     };
   }
   e.create = i;
-})(ct || (ct = {}));
+})(ut || (ut = {}));
 
 // node_modules/molstar/lib/mol-io/reader/result.js
 var eo;
@@ -62895,7 +62895,7 @@ function Pot(e, t) {
 function Dot(e, t) {
   let { tokenizer: r, tokens: n, fieldCount: o } = t, i = t.tokenCount, a = 0;
   while (r.tokenType === xl.Value && a < e)
-    ct.add(n[i++ % o], r.tokenStart, r.tokenEnd), P2(r), a++;
+    ut.add(n[i++ % o], r.tokenStart, r.tokenEnd), P2(r), a++;
   return t.tokenCount = i, a;
 }
 function kot(e, t) {
@@ -62909,7 +62909,7 @@ async function Mot(e, t) {
     i[i.length] = o ? dK(e) : dK(e).substring(n.length + 1), P2(e);
   let a = n === "_atom_site" ? e.data.length / 100 | 0 : 32, s = [], l = i.length;
   for (let d = 0;d < l; d++)
-    s[d] = ct.create(e.data, a);
+    s[d] = ut.create(e.data, a);
   let c = {
     fieldCount: l,
     tokenCount: 0,
@@ -82665,12 +82665,12 @@ function oTe(e) {
 function Tut(e, t) {
   let { elements: r, tokenizer: n } = e, { count: o, properties: i } = t, a = i.length, s = [], l = [], c = [], u = /* @__PURE__ */ new Map;
   for (let d = 0, m = a;d < m; ++d) {
-    let f = ct.create(n.data, o * 2);
+    let f = ut.create(n.data, o * 2);
     c.push(f);
   }
   for (let d = 0, m = o;d < m; ++d)
     for (let f = 0, g = a;f < g; ++f)
-      rr.skipWhitespace(n), rr.markStart(n), rr.eatValue(n), ct.addUnchecked(c[f], n.tokenStart, n.tokenEnd);
+      rr.skipWhitespace(n), rr.markStart(n), rr.eatValue(n), ut.addUnchecked(c[f], n.tokenStart, n.tokenEnd);
   for (let d = 0, m = a;d < m; ++d) {
     let { type: f, name: g } = i[d], h = VN(c[d], oTe(f));
     s.push(g), l.push(f), u.set(g, h);
@@ -82684,11 +82684,11 @@ function Tut(e, t) {
   });
 }
 function Aut(e, t) {
-  let { elements: r, tokenizer: n } = e, { count: o, property: i } = t, a = ct.create(n.data, o * 2 * 3), s = new Uint32Array(o + 1), l = 0;
+  let { elements: r, tokenizer: n } = e, { count: o, property: i } = t, a = ut.create(n.data, o * 2 * 3), s = new Uint32Array(o + 1), l = 0;
   for (let d = 0, m = o;d < m; ++d) {
     rr.skipWhitespace(n), rr.markStart(n);
     while (rr.skipWhitespace(n) !== 10)
-      ++l, rr.markStart(n), rr.eatValue(n), ct.addToken(a, n);
+      ++l, rr.markStart(n), rr.eatValue(n), ut.addToken(a, n);
     s[d + 1] = l;
   }
   let c = {
@@ -82727,7 +82727,7 @@ function kut(e, t) {
   };
 }
 async function Mut(e, t) {
-  let { tokenizer: r } = e, n = ct.create(r.data, t * 2), o = ct.create(r.data, t * 2), i = ct.create(r.data, t * 2), a = ct.create(r.data, t * 2), s = ct.create(r.data, t * 2), l = ct.create(r.data, t * 2), c = ct.create(r.data, t * 2), u = ct.create(r.data, t * 2), { position: d } = r, m = _U(r).trim();
+  let { tokenizer: r } = e, n = ut.create(r.data, t * 2), o = ut.create(r.data, t * 2), i = ut.create(r.data, t * 2), a = ut.create(r.data, t * 2), s = ut.create(r.data, t * 2), l = ut.create(r.data, t * 2), c = ut.create(r.data, t * 2), u = ut.create(r.data, t * 2), { position: d } = r, m = _U(r).trim();
   r.position = d;
   let f = m.split(CU).length === 7, g = f ? 6 : 8, { length: h } = r, b = 0;
   return await dc(e.runtimeCtx, 1e5, void 0, (v) => {
@@ -82737,49 +82737,49 @@ async function Mut(e, t) {
         if (aTe(r), tZ(r), sTe(r), f)
           switch (T) {
             case 0:
-              ct.addUnchecked(n, r.tokenStart, r.tokenEnd);
+              ut.addUnchecked(n, r.tokenStart, r.tokenEnd);
               break;
             case 1:
-              ct.addUnchecked(i, r.tokenStart, r.tokenEnd);
+              ut.addUnchecked(i, r.tokenStart, r.tokenEnd);
               break;
             case 2:
-              ct.addUnchecked(s, r.tokenStart, r.tokenEnd);
+              ut.addUnchecked(s, r.tokenStart, r.tokenEnd);
               break;
             case 3:
-              ct.addUnchecked(l, r.tokenStart, r.tokenEnd);
+              ut.addUnchecked(l, r.tokenStart, r.tokenEnd);
               break;
             case 4:
-              ct.addUnchecked(c, r.tokenStart, r.tokenEnd);
+              ut.addUnchecked(c, r.tokenStart, r.tokenEnd);
               break;
             case 5:
-              ct.addUnchecked(u, r.tokenStart, r.tokenEnd);
+              ut.addUnchecked(u, r.tokenStart, r.tokenEnd);
               break;
           }
         else
           switch (T) {
             case 0:
-              ct.addUnchecked(n, r.tokenStart, r.tokenEnd);
+              ut.addUnchecked(n, r.tokenStart, r.tokenEnd);
               break;
             case 1:
-              ct.addUnchecked(o, r.tokenStart, r.tokenEnd);
+              ut.addUnchecked(o, r.tokenStart, r.tokenEnd);
               break;
             case 2:
-              ct.addUnchecked(i, r.tokenStart, r.tokenEnd);
+              ut.addUnchecked(i, r.tokenStart, r.tokenEnd);
               break;
             case 3:
-              ct.addUnchecked(a, r.tokenStart, r.tokenEnd);
+              ut.addUnchecked(a, r.tokenStart, r.tokenEnd);
               break;
             case 4:
-              ct.addUnchecked(s, r.tokenStart, r.tokenEnd);
+              ut.addUnchecked(s, r.tokenStart, r.tokenEnd);
               break;
             case 5:
-              ct.addUnchecked(l, r.tokenStart, r.tokenEnd);
+              ut.addUnchecked(l, r.tokenStart, r.tokenEnd);
               break;
             case 6:
-              ct.addUnchecked(c, r.tokenStart, r.tokenEnd);
+              ut.addUnchecked(c, r.tokenStart, r.tokenEnd);
               break;
             case 7:
-              ct.addUnchecked(u, r.tokenStart, r.tokenEnd);
+              ut.addUnchecked(u, r.tokenStart, r.tokenEnd);
               break;
           }
       Put(r), tZ(r);
@@ -82798,17 +82798,17 @@ async function Mut(e, t) {
   };
 }
 async function Rut(e, t) {
-  let { tokenizer: r } = e, n = ct.create(r.data, t * 2), o = ct.create(r.data, t * 2), { length: i } = r, a = 0;
+  let { tokenizer: r } = e, n = ut.create(r.data, t * 2), o = ut.create(r.data, t * 2), { length: i } = r, a = 0;
   return await dc(e.runtimeCtx, 10, void 0, (s) => {
     let l = Math.min(t - a, s);
     for (let c = 0;c < l; ++c)
       for (let u = 0;u < 2; ++u)
         switch (aTe(r), tZ(r), sTe(r), u) {
           case 0:
-            ct.addUnchecked(n, r.tokenStart, r.tokenEnd);
+            ut.addUnchecked(n, r.tokenStart, r.tokenEnd);
             break;
           case 1:
-            ct.addUnchecked(o, r.tokenStart, r.tokenEnd);
+            ut.addUnchecked(o, r.tokenStart, r.tokenEnd);
             break;
         }
     return a += l, l;
@@ -83060,7 +83060,7 @@ function Wut(e) {
   return r;
 }
 function N2(e, t, r, n) {
-  let { tokenizer: o } = e, i = ct.create(o.data, t * 2), a = 0;
+  let { tokenizer: o } = e, i = ut.create(o.data, t * 2), a = 0;
   while (o.tokenEnd < o.length) {
     if (o.data.charAt(o.position) === "%")
       break;
@@ -83068,7 +83068,7 @@ function N2(e, t, r, n) {
     let s = Math.min(a + r, t);
     for (let l = 0;a < s; ++l, ++a) {
       let c = o.position;
-      jut(o, o.position, o.position + n), ct.addUnchecked(i, o.tokenStart, o.tokenEnd), o.position = c + n;
+      jut(o, o.position, o.position + n), ut.addUnchecked(i, o.tokenStart, o.tokenEnd), o.position = c + n;
     }
     pTe(o);
   }
@@ -83174,7 +83174,7 @@ function tdt(e) {
   return r;
 }
 function rdt(e) {
-  let { tokenizer: t } = e, r = ct.create(t.data, 64), n = ct.create(t.data, 64), o = ct.create(t.data, 64), i = ct.create(t.data, 64), a = ct.create(t.data, 64), s = ct.create(t.data, 64), l = ct.create(t.data, 64), c = ct.create(t.data, 64);
+  let { tokenizer: t } = e, r = ut.create(t.data, 64), n = ut.create(t.data, 64), o = ut.create(t.data, 64), i = ut.create(t.data, 64), a = ut.create(t.data, 64), s = ut.create(t.data, 64), l = ut.create(t.data, 64), c = ut.create(t.data, 64);
   while (t.tokenEnd < t.length) {
     z2(t);
     let u = t.data.charAt(t.position);
@@ -83187,28 +83187,28 @@ function rdt(e) {
     for (let d = 0;d < 8; ++d)
       switch (z2(t), wU(t), nZ(t), d) {
         case 0:
-          ct.add(r, t.tokenStart, t.tokenEnd);
+          ut.add(r, t.tokenStart, t.tokenEnd);
           break;
         case 1:
-          ct.add(n, t.tokenStart, t.tokenEnd);
+          ut.add(n, t.tokenStart, t.tokenEnd);
           break;
         case 2:
-          ct.add(o, t.tokenStart, t.tokenEnd);
+          ut.add(o, t.tokenStart, t.tokenEnd);
           break;
         case 3:
-          ct.add(i, t.tokenStart, t.tokenEnd);
+          ut.add(i, t.tokenStart, t.tokenEnd);
           break;
         case 4:
-          ct.add(a, t.tokenStart, t.tokenEnd);
+          ut.add(a, t.tokenStart, t.tokenEnd);
           break;
         case 5:
-          ct.add(s, t.tokenStart, t.tokenEnd);
+          ut.add(s, t.tokenStart, t.tokenEnd);
           break;
         case 6:
-          ct.add(l, t.tokenStart, t.tokenEnd);
+          ut.add(l, t.tokenStart, t.tokenEnd);
           break;
         case 7:
-          ct.add(c, t.tokenStart, t.tokenEnd);
+          ut.add(c, t.tokenStart, t.tokenEnd);
           break;
       }
     U2(t);
@@ -83225,7 +83225,7 @@ function rdt(e) {
   });
 }
 function ndt(e) {
-  let { tokenizer: t } = e, r = ct.create(t.data, 64), n = ct.create(t.data, 64);
+  let { tokenizer: t } = e, r = ut.create(t.data, 64), n = ut.create(t.data, 64);
   while (t.tokenEnd < t.length) {
     z2(t);
     let o = t.data.charAt(t.position);
@@ -83238,10 +83238,10 @@ function ndt(e) {
     for (let i = 0;i < 2; ++i)
       switch (z2(t), wU(t), nZ(t), i) {
         case 0:
-          ct.add(r, t.tokenStart, t.tokenEnd);
+          ut.add(r, t.tokenStart, t.tokenEnd);
           break;
         case 1:
-          ct.add(n, t.tokenStart, t.tokenEnd);
+          ut.add(n, t.tokenStart, t.tokenEnd);
           break;
       }
     U2(t);
@@ -83271,7 +83271,7 @@ function odt(e) {
   return r;
 }
 function idt(e) {
-  let { tokenizer: t } = e, r = ct.create(t.data, 64), n = ct.create(t.data, 64);
+  let { tokenizer: t } = e, r = ut.create(t.data, 64), n = ut.create(t.data, 64);
   while (t.tokenEnd < t.length) {
     if (z2(t), t.position >= t.length)
       break;
@@ -83285,10 +83285,10 @@ function idt(e) {
     for (let i = 0;i < 2; ++i)
       switch (z2(t), wU(t), nZ(t), i) {
         case 0:
-          ct.add(r, t.tokenStart, t.tokenEnd);
+          ut.add(r, t.tokenStart, t.tokenEnd);
           break;
         case 1:
-          ct.add(n, t.tokenStart, t.tokenEnd);
+          ut.add(n, t.tokenStart, t.tokenEnd);
           break;
       }
     Zut(t), wU(t);
@@ -84720,17 +84720,17 @@ function DI(e, t, r, n) {
   while ((a === 32 || a >= 48 && a <= 57) && i >= o)
     a = t.charCodeAt(--i);
   if (++i, o === i)
-    return ct.add(e, o, i);
+    return ut.add(e, o, i);
   if (o + 1 === i)
-    return ct.add(e, o, i);
+    return ut.add(e, o, i);
   if (a = t.charCodeAt(o), o + 2 === i) {
     let s = t.charCodeAt(o + 1);
     if ((a === 78 || a === 110) && (s === 65 || s === 97) || (a === 67 || a === 99) && (s === 76 || s === 108) || (a === 70 || a === 102) && (s === 69 || s === 101) || (a === 83 || a === 115) && (s === 73 || s === 105) || (a === 66 || a === 98) && (s === 82 || s === 114) || (a === 65 || a === 97) && (s === 83 || s === 115))
-      return ct.add(e, o, o + 2);
+      return ut.add(e, o, o + 2);
   }
   if (a === 67 || a === 99 || a === 72 || a === 104 || a === 78 || a === 110 || a === 79 || a === 111 || a === 80 || a === 112 || a === 83 || a === 115)
-    return ct.add(e, o, o + 1);
-  ct.add(e, o, o);
+    return ut.add(e, o, o + 1);
+  ut.add(e, o, o);
 }
 var Kdt = /* @__PURE__ */ new Set(["NA", "CL", "FE", "SI", "BR", "AS", "LI"]), $dt = /* @__PURE__ */ new Set(["C", "H", "N", "O", "P", "S", "F", "B"]), Zdt = /^[\s\d]+|[\s\d]+$/g;
 function zg(e, t) {
@@ -85147,7 +85147,7 @@ function iAe(e, t, r) {
 
 // node_modules/molstar/lib/mol-model-formats/structure/pdb/atom-site.js
 function aAe(e, t) {
-  let r = () => [], n = () => ct.create(e, 2 * t);
+  let r = () => [], n = () => ut.create(e, 2 * t);
   return {
     index: 0,
     group_PDB: n(),
@@ -85253,23 +85253,23 @@ function sAe(e, t, r) {
 }
 function SZ(e, t, r, n, o, i) {
   let { data: a } = r, s = o - n;
-  if (ct.addToken(e.group_PDB, rr.trim(r, n, n + 6)), rr.trim(r, n + 6, n + 11), e.id[e.index] = r.data.substring(r.tokenStart, r.tokenEnd), ct.addToken(e.auth_atom_id, rr.trim(r, n + 12, n + 16)), a.charCodeAt(n + 16) === 32)
-    ct.add(e.label_alt_id, 0, 0);
+  if (ut.addToken(e.group_PDB, rr.trim(r, n, n + 6)), rr.trim(r, n + 6, n + 11), e.id[e.index] = r.data.substring(r.tokenStart, r.tokenEnd), ut.addToken(e.auth_atom_id, rr.trim(r, n + 12, n + 16)), a.charCodeAt(n + 16) === 32)
+    ut.add(e.label_alt_id, 0, 0);
   else
-    ct.add(e.label_alt_id, n + 16, n + 17);
-  if (ct.addToken(e.auth_comp_id, rr.trim(r, n + 17, n + 21)), ct.add(e.auth_asym_id, n + 21, n + 22), ct.addToken(e.auth_seq_id, rr.trim(r, n + 22, n + 26)), a.charCodeAt(n + 26) === 32)
-    ct.add(e.pdbx_PDB_ins_code, 0, 0);
+    ut.add(e.label_alt_id, n + 16, n + 17);
+  if (ut.addToken(e.auth_comp_id, rr.trim(r, n + 17, n + 21)), ut.add(e.auth_asym_id, n + 21, n + 22), ut.addToken(e.auth_seq_id, rr.trim(r, n + 22, n + 26)), a.charCodeAt(n + 26) === 32)
+    ut.add(e.pdbx_PDB_ins_code, 0, 0);
   else
-    ct.add(e.pdbx_PDB_ins_code, n + 26, n + 27);
-  if (ct.addToken(e.Cartn_x, rr.trim(r, n + 30, n + 38)), ct.addToken(e.Cartn_y, rr.trim(r, n + 38, n + 46)), ct.addToken(e.Cartn_z, rr.trim(r, n + 46, n + 54)), ct.addToken(e.occupancy, rr.trim(r, n + 54, n + 60)), s >= 66)
-    ct.addToken(e.B_iso_or_equiv, rr.trim(r, n + 60, n + 66));
+    ut.add(e.pdbx_PDB_ins_code, n + 26, n + 27);
+  if (ut.addToken(e.Cartn_x, rr.trim(r, n + 30, n + 38)), ut.addToken(e.Cartn_y, rr.trim(r, n + 38, n + 46)), ut.addToken(e.Cartn_z, rr.trim(r, n + 46, n + 54)), ut.addToken(e.occupancy, rr.trim(r, n + 54, n + 60)), s >= 66)
+    ut.addToken(e.B_iso_or_equiv, rr.trim(r, n + 60, n + 66));
   else
-    ct.add(e.B_iso_or_equiv, 0, 0);
+    ut.add(e.B_iso_or_equiv, 0, 0);
   if (i)
-    ct.addToken(e.partial_charge, rr.trim(r, n + 70, n + 76));
+    ut.addToken(e.partial_charge, rr.trim(r, n + 70, n + 76));
   if (s >= 78 && !i)
     if (rr.trim(r, n + 76, n + 78), r.tokenStart < r.tokenEnd)
-      ct.addToken(e.type_symbol, r);
+      ut.addToken(e.type_symbol, r);
     else
       DI(e.type_symbol, a, n + 12, n + 16);
   else
@@ -85279,7 +85279,7 @@ function SZ(e, t, r, n, o, i) {
 
 // node_modules/molstar/lib/mol-model-formats/structure/pdb/anisotropic.js
 function lAe(e, t) {
-  let r = () => [], n = () => new Float32Array(t), o = () => ct.create(e, 2 * t);
+  let r = () => [], n = () => new Float32Array(t), o = () => ut.create(e, 2 * t);
   return {
     index: 0,
     count: t,
@@ -85322,17 +85322,17 @@ function cAe(e) {
 }
 function uAe(e, t, r, n, o) {
   let { data: i } = r, a = o - n;
-  if (rr.trim(r, n + 6, n + 11), e.id[e.index] = i.substring(r.tokenStart, r.tokenEnd), ct.addToken(e.pdbx_auth_atom_id, rr.trim(r, n + 12, n + 16)), i.charCodeAt(n + 16) === 32)
-    ct.add(e.pdbx_label_alt_id, 0, 0);
+  if (rr.trim(r, n + 6, n + 11), e.id[e.index] = i.substring(r.tokenStart, r.tokenEnd), ut.addToken(e.pdbx_auth_atom_id, rr.trim(r, n + 12, n + 16)), i.charCodeAt(n + 16) === 32)
+    ut.add(e.pdbx_label_alt_id, 0, 0);
   else
-    ct.add(e.pdbx_label_alt_id, n + 16, n + 17);
-  if (ct.addToken(e.pdbx_auth_comp_id, rr.trim(r, n + 17, n + 21)), ct.add(e.pdbx_auth_asym_id, n + 21, n + 22), ct.addToken(e.pdbx_auth_seq_id, rr.trim(r, n + 22, n + 26)), i.charCodeAt(n + 26) === 32)
-    ct.add(e.pdbx_PDB_ins_code, 0, 0);
+    ut.add(e.pdbx_label_alt_id, n + 16, n + 17);
+  if (ut.addToken(e.pdbx_auth_comp_id, rr.trim(r, n + 17, n + 21)), ut.add(e.pdbx_auth_asym_id, n + 21, n + 22), ut.addToken(e.pdbx_auth_seq_id, rr.trim(r, n + 22, n + 26)), i.charCodeAt(n + 26) === 32)
+    ut.add(e.pdbx_PDB_ins_code, 0, 0);
   else
-    ct.add(e.pdbx_PDB_ins_code, n + 26, n + 27);
+    ut.add(e.pdbx_PDB_ins_code, n + 26, n + 27);
   if (e["U[1][1]"][e.index] = Wx(i, n + 28, n + 35) / 1e4, e["U[2][2]"][e.index] = Wx(i, n + 35, n + 42) / 1e4, e["U[3][3]"][e.index] = Wx(i, n + 42, n + 49) / 1e4, e["U[1][2]"][e.index] = Wx(i, n + 49, n + 56) / 1e4, e["U[1][3]"][e.index] = Wx(i, n + 56, n + 63) / 1e4, e["U[2][3]"][e.index] = Wx(i, n + 63, n + 70) / 1e4, a >= 78)
     if (rr.trim(r, n + 76, n + 78), r.tokenStart < r.tokenEnd)
-      ct.addToken(e.type_symbol, r);
+      ut.addToken(e.type_symbol, r);
     else
       DI(e.type_symbol, i, n + 12, n + 16);
   else
@@ -90372,11 +90372,11 @@ function jAe(e) {
   }
 }
 function UZ(e, t) {
-  let r = ct.create(e.data, t * 2), n = ct.create(e.data, t * 2), o = ct.create(e.data, t * 2), i = ct.create(e.data, t * 2), a = ct.create(e.data, t * 2);
+  let r = ut.create(e.data, t * 2), n = ut.create(e.data, t * 2), o = ut.create(e.data, t * 2), i = ut.create(e.data, t * 2), a = ut.create(e.data, t * 2);
   for (let s = 0;s < t; ++s) {
     rr.markLine(e);
     let { tokenStart: l, position: c } = e;
-    rr.trim(e, l, l + 10), ct.addUnchecked(r, e.tokenStart, e.tokenEnd), rr.trim(e, l + 10, l + 20), ct.addUnchecked(n, e.tokenStart, e.tokenEnd), rr.trim(e, l + 20, l + 30), ct.addUnchecked(o, e.tokenStart, e.tokenEnd), rr.trim(e, l + 31, l + 34), ct.addUnchecked(i, e.tokenStart, e.tokenEnd), rr.trim(e, l + 36, l + 39), ct.addUnchecked(a, e.tokenStart, e.tokenEnd), e.position = c;
+    rr.trim(e, l, l + 10), ut.addUnchecked(r, e.tokenStart, e.tokenEnd), rr.trim(e, l + 10, l + 20), ut.addUnchecked(n, e.tokenStart, e.tokenEnd), rr.trim(e, l + 20, l + 30), ut.addUnchecked(o, e.tokenStart, e.tokenEnd), rr.trim(e, l + 31, l + 34), ut.addUnchecked(i, e.tokenStart, e.tokenEnd), rr.trim(e, l + 36, l + 39), ut.addUnchecked(a, e.tokenStart, e.tokenEnd), e.position = c;
   }
   return {
     count: t,
@@ -90388,11 +90388,11 @@ function UZ(e, t) {
   };
 }
 function zZ(e, t) {
-  let r = ct.create(e.data, t * 2), n = ct.create(e.data, t * 2), o = ct.create(e.data, t * 2);
+  let r = ut.create(e.data, t * 2), n = ut.create(e.data, t * 2), o = ut.create(e.data, t * 2);
   for (let i = 0;i < t; ++i) {
     rr.markLine(e);
     let { tokenStart: a, position: s } = e;
-    rr.trim(e, a, a + 3), ct.addUnchecked(r, e.tokenStart, e.tokenEnd), rr.trim(e, a + 3, a + 6), ct.addUnchecked(n, e.tokenStart, e.tokenEnd), rr.trim(e, a + 6, a + 9), ct.addUnchecked(o, e.tokenStart, e.tokenEnd), e.position = s;
+    rr.trim(e, a, a + 3), ut.addUnchecked(r, e.tokenStart, e.tokenEnd), rr.trim(e, a + 3, a + 6), ut.addUnchecked(n, e.tokenStart, e.tokenEnd), rr.trim(e, a + 6, a + 9), ut.addUnchecked(o, e.tokenStart, e.tokenEnd), e.position = s;
   }
   return {
     count: t,
@@ -90766,12 +90766,12 @@ function qZ(e, t, r) {
       let a = t[i++];
       if (!a)
         continue;
-      ct.addUnchecked(a, r.tokenStart, r.tokenEnd);
+      ut.addUnchecked(a, r.tokenStart, r.tokenEnd);
     }
     if (i > n)
       n = i;
     for (let a = i;a < t.length; a++)
-      ct.addUnchecked(t[a], 0, 0);
+      ut.addUnchecked(t[a], 0, 0);
   }
   return n + 1;
 }
@@ -90779,7 +90779,7 @@ async function Yft(e) {
   let { tokenizer: t, molecule: r } = e;
   while (Oh(t) !== "@<TRIPOS>ATOM" && t.position < t.data.length)
     Lh(t);
-  let { position: n, lineNumber: o } = t, i = ct.create(t.data, r.num_atoms * 2), a = ct.create(t.data, r.num_atoms * 2), s = ct.create(t.data, r.num_atoms * 2), l = ct.create(t.data, r.num_atoms * 2), c = ct.create(t.data, r.num_atoms * 2), u = ct.create(t.data, r.num_atoms * 2), d = ct.create(t.data, r.num_atoms * 2), m = ct.create(t.data, r.num_atoms * 2), f = ct.create(t.data, r.num_atoms * 2), g = ct.create(t.data, r.num_atoms * 2), h = K.Undefined(r.num_atoms, K.Schema.float), b = K.Undefined(r.num_atoms, K.Schema.int), v = K.Undefined(r.num_atoms, K.Schema.str);
+  let { position: n, lineNumber: o } = t, i = ut.create(t.data, r.num_atoms * 2), a = ut.create(t.data, r.num_atoms * 2), s = ut.create(t.data, r.num_atoms * 2), l = ut.create(t.data, r.num_atoms * 2), c = ut.create(t.data, r.num_atoms * 2), u = ut.create(t.data, r.num_atoms * 2), d = ut.create(t.data, r.num_atoms * 2), m = ut.create(t.data, r.num_atoms * 2), f = ut.create(t.data, r.num_atoms * 2), g = ut.create(t.data, r.num_atoms * 2), h = K.Undefined(r.num_atoms, K.Schema.float), b = K.Undefined(r.num_atoms, K.Schema.int), v = K.Undefined(r.num_atoms, K.Schema.str);
   t.position = n, t.lineNumber = o;
   let S = 0, C = [
     i,
@@ -90814,7 +90814,7 @@ async function Xft(e) {
   let { tokenizer: t, molecule: r } = e;
   while (Oh(t) !== "@<TRIPOS>BOND" && t.position < t.data.length)
     Lh(t);
-  let { position: n, lineNumber: o } = t, i = ct.create(t.data, r.num_bonds * 2), a = ct.create(t.data, r.num_bonds * 2), s = ct.create(t.data, r.num_bonds * 2), l = ct.create(t.data, r.num_bonds * 2), c = ct.create(t.data, r.num_bonds * 2), u = K.Undefined(r.num_bonds, K.Schema.str);
+  let { position: n, lineNumber: o } = t, i = ut.create(t.data, r.num_bonds * 2), a = ut.create(t.data, r.num_bonds * 2), s = ut.create(t.data, r.num_bonds * 2), l = ut.create(t.data, r.num_bonds * 2), c = ut.create(t.data, r.num_bonds * 2), u = K.Undefined(r.num_bonds, K.Schema.str);
   t.position = n, t.lineNumber = o;
   let d = 0, m = [
     i,
@@ -90841,7 +90841,7 @@ async function Kft(e) {
     return;
   while (Oh(t) !== "@<TRIPOS>SUBSTRUCTURE" && t.position < t.data.length)
     Lh(t);
-  let { position: n, lineNumber: o } = t, i = ct.create(t.data, r.num_subst * 2), a = ct.create(t.data, r.num_subst * 2), s = ct.create(t.data, r.num_subst * 2), l = ct.create(t.data, r.num_subst * 2), c = ct.create(t.data, r.num_subst * 2), u = ct.create(t.data, r.num_subst * 2), d = ct.create(t.data, r.num_subst * 2), m = ct.create(t.data, r.num_subst * 2), f = ct.create(t.data, r.num_subst * 2), g = K.Undefined(r.num_subst, K.Schema.int), h = K.Undefined(r.num_subst, K.Schema.str);
+  let { position: n, lineNumber: o } = t, i = ut.create(t.data, r.num_subst * 2), a = ut.create(t.data, r.num_subst * 2), s = ut.create(t.data, r.num_subst * 2), l = ut.create(t.data, r.num_subst * 2), c = ut.create(t.data, r.num_subst * 2), u = ut.create(t.data, r.num_subst * 2), d = ut.create(t.data, r.num_subst * 2), m = ut.create(t.data, r.num_subst * 2), f = ut.create(t.data, r.num_subst * 2), g = K.Undefined(r.num_subst, K.Schema.int), h = K.Undefined(r.num_subst, K.Schema.str);
   t.position = n, t.lineNumber = o;
   let b = 0, v = [
     i,
@@ -91538,7 +91538,7 @@ function amt(e, t) {
   };
 }
 async function smt(e, t, r) {
-  let { tokenizer: n } = e, o = ct.create(n.data, t * 2), i = ct.create(n.data, t * 2), a = ct.create(n.data, t * 2), s = ct.create(n.data, t * 2), l = ct.create(n.data, t * 2), c = ct.create(n.data, t * 2), u = ct.create(n.data, t * 2), d = {
+  let { tokenizer: n } = e, o = ut.create(n.data, t * 2), i = ut.create(n.data, t * 2), a = ut.create(n.data, t * 2), s = ut.create(n.data, t * 2), l = ut.create(n.data, t * 2), c = ut.create(n.data, t * 2), u = ut.create(n.data, t * 2), d = {
     full: [o, i, a, s, l, c, u],
     atomic: [o, a, l, c, u],
     bond: [o, i, a, l, c, u]
@@ -91552,7 +91552,7 @@ async function smt(e, t, r) {
         o3e(n), $Z(n), i3e(n);
         let T = d[r][C];
         if (T)
-          ct.addUnchecked(T, n.tokenStart, n.tokenEnd);
+          ut.addUnchecked(T, n.tokenStart, n.tokenEnd);
       }
       imt(n), $Z(n);
     }
@@ -91569,23 +91569,23 @@ async function smt(e, t, r) {
   };
 }
 async function lmt(e, t) {
-  let { tokenizer: r } = e, n = ct.create(r.data, t * 2), o = ct.create(r.data, t * 2), i = ct.create(r.data, t * 2), a = ct.create(r.data, t * 2), { length: s } = r, l = 0;
+  let { tokenizer: r } = e, n = ut.create(r.data, t * 2), o = ut.create(r.data, t * 2), i = ut.create(r.data, t * 2), a = ut.create(r.data, t * 2), { length: s } = r, l = 0;
   return await dc(e.runtimeCtx, 10, void 0, (c) => {
     let u = Math.min(t - l, c);
     for (let d = 0;d < u; ++d)
       for (let m = 0;m < 4; ++m)
         switch (o3e(r), $Z(r), i3e(r), m) {
           case 0:
-            ct.addUnchecked(n, r.tokenStart, r.tokenEnd);
+            ut.addUnchecked(n, r.tokenStart, r.tokenEnd);
             break;
           case 1:
-            ct.addUnchecked(o, r.tokenStart, r.tokenEnd);
+            ut.addUnchecked(o, r.tokenStart, r.tokenEnd);
             break;
           case 2:
-            ct.addUnchecked(i, r.tokenStart, r.tokenEnd);
+            ut.addUnchecked(i, r.tokenStart, r.tokenEnd);
             break;
           case 3:
-            ct.addUnchecked(a, r.tokenStart, r.tokenEnd);
+            ut.addUnchecked(a, r.tokenStart, r.tokenEnd);
             break;
         }
     return l += u, u;
@@ -91715,7 +91715,7 @@ function hmt(e, t) {
   };
 }
 async function gmt(e, t, r) {
-  let { tokenizer: n } = e, o = Object.fromEntries(r.map((C, T) => [C, T])), i = r.findIndex((C) => C[0] === "x"), a = r.findIndex((C) => C[0] === "y"), s = r.findIndex((C) => C[0] === "z"), l = r[i], c = ct.create(n.data, t * 2), u = ct.create(n.data, t * 2), d = ct.create(n.data, t * 2), m = ct.create(n.data, t * 2), f = ct.create(n.data, t * 2), g = ct.create(n.data, t * 2), { position: h } = n;
+  let { tokenizer: n } = e, o = Object.fromEntries(r.map((C, T) => [C, T])), i = r.findIndex((C) => C[0] === "x"), a = r.findIndex((C) => C[0] === "y"), s = r.findIndex((C) => C[0] === "z"), l = r[i], c = ut.create(n.data, t * 2), u = ut.create(n.data, t * 2), d = ut.create(n.data, t * 2), m = ut.create(n.data, t * 2), f = ut.create(n.data, t * 2), g = ut.create(n.data, t * 2), { position: h } = n;
   n.position = h;
   let b = r.length, { length: v } = n, S = 0;
   return await dc(e.runtimeCtx, 1e5, void 0, (C) => {
@@ -91724,22 +91724,22 @@ async function gmt(e, t, r) {
       for (let A = 0;A < b; ++A)
         switch (fmt(n), l3e(n), mmt(n), A) {
           case o.id:
-            ct.addUnchecked(c, n.tokenStart, n.tokenEnd);
+            ut.addUnchecked(c, n.tokenStart, n.tokenEnd);
             break;
           case o.mol:
-            ct.addUnchecked(u, n.tokenStart, n.tokenEnd);
+            ut.addUnchecked(u, n.tokenStart, n.tokenEnd);
             break;
           case o.type:
-            ct.addUnchecked(d, n.tokenStart, n.tokenEnd);
+            ut.addUnchecked(d, n.tokenStart, n.tokenEnd);
             break;
           case i:
-            ct.addUnchecked(m, n.tokenStart, n.tokenEnd);
+            ut.addUnchecked(m, n.tokenStart, n.tokenEnd);
             break;
           case a:
-            ct.addUnchecked(f, n.tokenStart, n.tokenEnd);
+            ut.addUnchecked(f, n.tokenStart, n.tokenEnd);
             break;
           case s:
-            ct.addUnchecked(g, n.tokenStart, n.tokenEnd);
+            ut.addUnchecked(g, n.tokenStart, n.tokenEnd);
             break;
         }
       pmt(n), l3e(n);
@@ -91877,14 +91877,14 @@ function u3e(e) {
   return e.trim().endsWith("V3000");
 }
 function d3e(e) {
-  let t = ct.create(e.data, 1), r = ct.create(e.data, 1);
+  let t = ut.create(e.data, 1), r = ut.create(e.data, 1);
   return rr.eatLine(e), h1(e), h1(e), h1(e), p1(e, t), p1(e, r), rr.eatLine(e), {
     atomCount: kr(t)(K.Schema.int).value(0),
     bondCount: kr(r)(K.Schema.int).value(0)
   };
 }
 function f3e(e, t) {
-  let r = ct.create(e.data, t * 2), n = ct.create(e.data, t * 2), o = ct.create(e.data, t * 2), i = ct.create(e.data, t * 2);
+  let r = ut.create(e.data, t * 2), n = ut.create(e.data, t * 2), o = ut.create(e.data, t * 2), i = ut.create(e.data, t * 2);
   for (let a = 0;a < t; ++a) {
     rr.markLine(e), h1(e), h1(e), h1(e);
     let { position: s } = e;
@@ -91900,7 +91900,7 @@ function f3e(e, t) {
   };
 }
 function m3e(e, t) {
-  let r = ct.create(e.data, t * 2), n = ct.create(e.data, t * 2), o = ct.create(e.data, t * 2);
+  let r = ut.create(e.data, t * 2), n = ut.create(e.data, t * 2), o = ut.create(e.data, t * 2);
   for (let i = 0;i < t; ++i) {
     rr.markLine(e), h1(e), h1(e), h1(e);
     let { position: a } = e;
@@ -91918,13 +91918,13 @@ function h1(e) {
 }
 function p1(e, t) {
   let { position: r } = e;
-  rr.skipWhitespace(e), rr.eatValue(e), rr.trim(e, r, e.position), ct.addUnchecked(t, e.tokenStart, e.tokenEnd);
+  rr.skipWhitespace(e), rr.eatValue(e), rr.trim(e, r, e.position), ut.addUnchecked(t, e.tokenStart, e.tokenEnd);
 }
 
 // node_modules/molstar/lib/mol-io/reader/sdf/parser.js
 var tQ = "$$$$";
 function vmt(e) {
-  let t = ct.create(e.data, 32), r = ct.create(e.data, 32);
+  let t = ut.create(e.data, 32), r = ut.create(e.data, 32);
   while (e.position < e.length) {
     let n = rr.readLine(e);
     if (n.startsWith(tQ))
@@ -91932,18 +91932,18 @@ function vmt(e) {
     if (!n)
       continue;
     if (n.startsWith("> ")) {
-      ct.add(t, e.tokenStart + 2, e.tokenEnd), rr.markLine(e);
+      ut.add(t, e.tokenStart + 2, e.tokenEnd), rr.markLine(e);
       let { tokenStart: o, tokenEnd: i } = e, a = !1;
       while (e.position < e.length) {
         let s = rr.readLine(e);
         if (!s || s.startsWith(tQ) || s.startsWith("> ")) {
-          ct.add(r, o, i), a = !0;
+          ut.add(r, o, i), a = !0;
           break;
         }
         i = e.tokenEnd;
       }
       if (!a)
-        ct.add(r, o, i);
+        ut.add(r, o, i);
     }
   }
   return {
@@ -94320,7 +94320,7 @@ function UU(e, t, r) {
 }
 
 // node_modules/molstar/lib/mol-plugin-state/transforms.js
-var ut = {
+var ct = {
   Data: lZ,
   Misc: cZ,
   Model: vQ,
@@ -103241,9 +103241,9 @@ var iPe = Sf.create({
   setup(e, t, r) {
     let n = r.state.data, o = !e.target || e.target === "all" ? An.RootRef : e.target, i = n.select(Hr.Generators.ofType(ve.Molecule.Structure.Representation3D, o)), a = n.build(), s = !1;
     for (let l of i) {
-      if (n.select(Hr.Generators.ofTransformer(ut.Representation.UnwindStructureAssemblyRepresentation3D, l.transform.ref)).length > 0)
+      if (n.select(Hr.Generators.ofTransformer(ct.Representation.UnwindStructureAssemblyRepresentation3D, l.transform.ref)).length > 0)
         continue;
-      s = !0, a.to(l).apply(ut.Representation.UnwindStructureAssemblyRepresentation3D, { t: 0 }, { tags: "animate-assembly-unwind" });
+      s = !0, a.to(l).apply(ct.Representation.UnwindStructureAssemblyRepresentation3D, { t: 0 }, { tags: "animate-assembly-unwind" });
     }
     if (!s)
       return;
@@ -103259,7 +103259,7 @@ var iPe = Sf.create({
     return i.commit();
   },
   async apply(e, t, r) {
-    let n = r.plugin.state.data, o = !r.params.target || r.params.target === "all" ? An.RootRef : r.params.target, i = n.select(Hr.Generators.ofTransformer(ut.Representation.UnwindStructureAssemblyRepresentation3D, o));
+    let n = r.plugin.state.data, o = !r.params.target || r.params.target === "all" ? An.RootRef : r.params.target, i = n.select(Hr.Generators.ofTransformer(ct.Representation.UnwindStructureAssemblyRepresentation3D, o));
     if (i.length === 0)
       return { kind: "finished" };
     let a = n.build(), s = (t.current - t.lastApplied) / r.params.durationInMs, l = e.t + s, c = !1;
@@ -103334,7 +103334,7 @@ var cPe = Sf.create({
     })
   }),
   canApply(e) {
-    let t = e.state.data, r = t.select(Hr.Generators.ofTransformer(ut.Model.ModelFromTrajectory));
+    let t = e.state.data, r = t.select(Hr.Generators.ofTransformer(ct.Model.ModelFromTrajectory));
     for (let n of r) {
       let o = Hr.findAncestorOfType(t.tree, t.cells, n.transform.ref, ve.Molecule.Trajectory);
       if (o && o.obj && o.obj.data.frameCount > 1)
@@ -103347,7 +103347,7 @@ var cPe = Sf.create({
     if (((r = e.duration) === null || r === void 0 ? void 0 : r.name) === "fixed")
       return { kind: "fixed", durationMs: e.duration.params.durationInS * 1000 };
     else if (e.duration.name === "computed") {
-      let n = t.state.data, o = n.select(Hr.Generators.ofTransformer(ut.Model.ModelFromTrajectory)), i = 0;
+      let n = t.state.data, o = n.select(Hr.Generators.ofTransformer(ct.Model.ModelFromTrajectory)), i = 0;
       for (let a of o) {
         let s = Hr.findAncestorOfType(n.tree, n.cells, a.transform.ref, ve.Molecule.Trajectory);
         if (!s || !s.obj)
@@ -103363,7 +103363,7 @@ var cPe = Sf.create({
   async apply(e, t, r) {
     if (r.params.duration.name === "sequential" && t.current > 0 && t.current - t.lastApplied < 1000 / r.params.duration.params.maxFps)
       return { kind: "skip" };
-    let n = r.plugin.state.data, o = n.select(Hr.Generators.ofTransformer(ut.Model.ModelFromTrajectory));
+    let n = r.plugin.state.data, o = n.select(Hr.Generators.ofTransformer(ct.Model.ModelFromTrajectory));
     if (o.length === 0)
       return { kind: "finished" };
     let i = n.build(), a = r.params, s = e.palindromeDirections || {}, l = !1, c = !0;
@@ -121211,7 +121211,7 @@ function dRe(e, t, r = {}) {
 
 // node_modules/molstar/lib/mol-plugin/behavior/dynamic/selection/structure-focus-representation.js
 var $2t = (e) => {
-  let t = ut.Representation.StructureRepresentation3D.definition.params(void 0, e);
+  let t = ct.Representation.StructureRepresentation3D.definition.params(void 0, e);
   return {
     expandRadius: _.Numeric(5, { min: 1, max: 10, step: 1 }),
     targetParams: _.Group(t, {
@@ -121274,16 +121274,16 @@ class mRe extends ro.WithSubscribers {
     var t;
     let r = this.plugin.state.data, n = r.tree, o = r.build(), i = Hr.findUniqueTagsInSubtree(n, e.transform.ref, Z2t);
     if (!i[ns.TargetSel])
-      i[ns.TargetSel] = o.to(e).apply(ut.Model.StructureSelectionFromBundle, { bundle: fo.Empty, label: "[Focus] Target" }, { tags: ns.TargetSel }).ref;
+      i[ns.TargetSel] = o.to(e).apply(ct.Model.StructureSelectionFromBundle, { bundle: fo.Empty, label: "[Focus] Target" }, { tags: ns.TargetSel }).ref;
     if (!i[ns.SurrSel])
-      i[ns.SurrSel] = o.to(e).apply(ut.Model.StructureSelectionFromExpression, { expression: pe.struct.generator.empty(), label: this.surrLabel }, { tags: ns.SurrSel }).ref;
+      i[ns.SurrSel] = o.to(e).apply(ct.Model.StructureSelectionFromExpression, { expression: pe.struct.generator.empty(), label: this.surrLabel }, { tags: ns.SurrSel }).ref;
     let a = this.params.components;
     if (a.indexOf("target") >= 0 && !i[ns.TargetRepr])
-      i[ns.TargetRepr] = o.to(i[ns.TargetSel]).apply(ut.Representation.StructureRepresentation3D, this.getReprParams(this.params.targetParams), { tags: ns.TargetRepr }).ref;
+      i[ns.TargetRepr] = o.to(i[ns.TargetSel]).apply(ct.Representation.StructureRepresentation3D, this.getReprParams(this.params.targetParams), { tags: ns.TargetRepr }).ref;
     if (a.indexOf("surroundings") >= 0 && !i[ns.SurrRepr])
-      i[ns.SurrRepr] = o.to(i[ns.SurrSel]).apply(ut.Representation.StructureRepresentation3D, this.getReprParams(this.params.surroundingsParams), { tags: ns.SurrRepr }).ref;
+      i[ns.SurrRepr] = o.to(i[ns.SurrSel]).apply(ct.Representation.StructureRepresentation3D, this.getReprParams(this.params.surroundingsParams), { tags: ns.SurrRepr }).ref;
     if (a.indexOf("interactions") >= 0 && !i[ns.SurrNciRepr] && e.obj && _E.isApplicable((t = e.obj) === null || t === void 0 ? void 0 : t.data))
-      i[ns.SurrNciRepr] = o.to(i[ns.SurrSel]).apply(ut.Representation.StructureRepresentation3D, this.getReprParams(this.params.nciParams), { tags: ns.SurrNciRepr }).ref;
+      i[ns.SurrNciRepr] = o.to(i[ns.SurrSel]).apply(ct.Representation.StructureRepresentation3D, this.getReprParams(this.params.nciParams), { tags: ns.SurrNciRepr }).ref;
     return { state: r, builder: o, refs: i };
   }
   clear(e) {
@@ -121294,10 +121294,10 @@ class mRe extends ro.WithSubscribers {
       return;
     let o = t.build(), i = fo.Empty;
     for (let s of r)
-      o.to(s).update(ut.Model.StructureSelectionFromBundle, (l) => ({ ...l, bundle: i }));
+      o.to(s).update(ct.Model.StructureSelectionFromBundle, (l) => ({ ...l, bundle: i }));
     let a = pe.struct.generator.empty();
     for (let s of n)
-      o.to(s).update(ut.Model.StructureSelectionFromExpression, (l) => ({ ...l, expression: a }));
+      o.to(s).update(ct.Model.StructureSelectionFromExpression, (l) => ({ ...l, expression: a }));
     return Ot.State.Update(this.plugin, { state: t, tree: o, options: { doNotLogTiming: !0, doNotUpdateCurrent: !0 } });
   }
   async focus(e) {
@@ -121316,7 +121316,7 @@ class mRe extends ro.WithSubscribers {
         by: i
       });
     let { state: s, builder: l, refs: c } = this.ensureShape(t);
-    l.to(c[ns.TargetSel]).update(ut.Model.StructureSelectionFromBundle, (u) => ({ ...u, bundle: o })), l.to(c[ns.SurrSel]).update(ut.Model.StructureSelectionFromExpression, (u) => ({ ...u, expression: a, label: this.surrLabel })), await Ot.State.Update(this.plugin, { state: s, tree: l, options: { doNotLogTiming: !0, doNotUpdateCurrent: !0 } });
+    l.to(c[ns.TargetSel]).update(ct.Model.StructureSelectionFromBundle, (u) => ({ ...u, bundle: o })), l.to(c[ns.SurrSel]).update(ct.Model.StructureSelectionFromExpression, (u) => ({ ...u, expression: a, label: this.surrLabel })), await Ot.State.Update(this.plugin, { state: s, tree: l, options: { doNotLogTiming: !0, doNotUpdateCurrent: !0 } });
   }
   register(e) {
     this.subscribeObservable(this.plugin.managers.structure.focus.behaviors.current, (t) => {
@@ -121786,7 +121786,7 @@ var oCt = {
   },
   parse: async (e, t, r) => {
     var n, o;
-    let a = e.state.data.build().to(t).apply(ut.Data.ParseCif, void 0, { state: { isGhost: !0 } }), s = await a.apply(ut.Model.TrajectoryFromMmCif, void 0, { tags: r === null || r === void 0 ? void 0 : r.trajectoryTags }).commit({ revertOnError: !0 });
+    let a = e.state.data.build().to(t).apply(ct.Data.ParseCif, void 0, { state: { isGhost: !0 } }), s = await a.apply(ct.Model.TrajectoryFromMmCif, void 0, { tags: r === null || r === void 0 ? void 0 : r.trajectoryTags }).commit({ revertOnError: !0 });
     if ((((o = (n = a.selector.cell) === null || n === void 0 ? void 0 : n.obj) === null || o === void 0 ? void 0 : o.data.blocks.length) || 0) > 1)
       e.state.data.updateCellState(a.ref, { isGhost: !1 });
     return { trajectory: s };
@@ -121804,7 +121804,7 @@ var oCt = {
   },
   parse: async (e, t, r) => {
     var n, o;
-    let a = e.state.data.build().to(t).apply(ut.Data.ParseCif, void 0, { state: { isGhost: !0 } }), s = await a.apply(ut.Model.TrajectoryFromCifCore, void 0, { tags: r === null || r === void 0 ? void 0 : r.trajectoryTags }).commit({ revertOnError: !0 });
+    let a = e.state.data.build().to(t).apply(ct.Data.ParseCif, void 0, { state: { isGhost: !0 } }), s = await a.apply(ct.Model.TrajectoryFromCifCore, void 0, { tags: r === null || r === void 0 ? void 0 : r.trajectoryTags }).commit({ revertOnError: !0 });
     if ((((o = (n = a.selector.cell) === null || n === void 0 ? void 0 : n.obj) === null || o === void 0 ? void 0 : o.data.blocks.length) || 0) > 1)
       e.state.data.updateCellState(a.ref, { isGhost: !1 });
     return { trajectory: s };
@@ -121819,35 +121819,35 @@ var aCt = {
   description: "PDB",
   category: Vp,
   stringExtensions: ["pdb", "ent"],
-  parse: A1(ut.Model.TrajectoryFromPDB),
+  parse: A1(ct.Model.TrajectoryFromPDB),
   visuals: Uy
 }, sCt = {
   label: "PDBQT",
   description: "PDBQT",
   category: Vp,
   stringExtensions: ["pdbqt"],
-  parse: A1(ut.Model.TrajectoryFromPDB, { isPdbqt: !0 }),
+  parse: A1(ct.Model.TrajectoryFromPDB, { isPdbqt: !0 }),
   visuals: Uy
 }, lCt = {
   label: "XYZ",
   description: "XYZ",
   category: Vp,
   stringExtensions: ["xyz"],
-  parse: A1(ut.Model.TrajectoryFromXYZ),
+  parse: A1(ct.Model.TrajectoryFromXYZ),
   visuals: Uy
 }, cCt = {
   label: "Lammps Data",
   description: "Lammps Data",
   category: Vp,
   stringExtensions: ["data"],
-  parse: A1(ut.Model.TrajectoryFromLammpsData),
+  parse: A1(ct.Model.TrajectoryFromLammpsData),
   visuals: Uy
 }, uCt = {
   label: "Lammps Trajectory Data",
   description: "Lammps Trajectory Data",
   category: Vp,
   stringExtensions: ["lammpstrj"],
-  parse: A1(ut.Model.TrajectoryFromLammpsTrajData),
+  parse: A1(ct.Model.TrajectoryFromLammpsTrajData),
   visuals: Uy
 }, dCt = {
   label: "GRO",
@@ -121855,28 +121855,28 @@ var aCt = {
   category: Vp,
   stringExtensions: ["gro"],
   binaryExtensions: [],
-  parse: A1(ut.Model.TrajectoryFromGRO),
+  parse: A1(ct.Model.TrajectoryFromGRO),
   visuals: Uy
 }, fCt = {
   label: "MOL",
   description: "MOL",
   category: Vp,
   stringExtensions: ["mol"],
-  parse: A1(ut.Model.TrajectoryFromMOL),
+  parse: A1(ct.Model.TrajectoryFromMOL),
   visuals: Uy
 }, mCt = {
   label: "SDF",
   description: "SDF",
   category: Vp,
   stringExtensions: ["sdf", "sd"],
-  parse: A1(ut.Model.TrajectoryFromSDF),
+  parse: A1(ct.Model.TrajectoryFromSDF),
   visuals: Uy
 }, pCt = {
   label: "MOL2",
   description: "MOL2",
   category: Vp,
   stringExtensions: ["mol2"],
-  parse: A1(ut.Model.TrajectoryFromMOL2),
+  parse: A1(ct.Model.TrajectoryFromMOL2),
   visuals: Uy
 }, fV = [
   ["mmcif", oCt],
@@ -121918,7 +121918,7 @@ var gCt = Xu({
   category: TE,
   stringExtensions: ["psf"],
   parse: async (e, t) => {
-    let r = e.state.data.build().to(t).apply(ut.Data.ParsePsf, {}, { state: { isGhost: !0 } }), n = r.apply(ut.Model.TopologyFromPsf);
+    let r = e.state.data.build().to(t).apply(ct.Data.ParsePsf, {}, { state: { isGhost: !0 } }), n = r.apply(ct.Model.TopologyFromPsf);
     return await r.commit(), { format: r.selector, topology: n.selector };
   }
 });
@@ -121928,7 +121928,7 @@ var yCt = Xu({
   category: TE,
   stringExtensions: ["prmtop", "parm7"],
   parse: async (e, t) => {
-    let r = e.state.data.build().to(t).apply(ut.Data.ParsePrmtop, {}, { state: { isGhost: !0 } }), n = r.apply(ut.Model.TopologyFromPrmtop);
+    let r = e.state.data.build().to(t).apply(ct.Data.ParsePrmtop, {}, { state: { isGhost: !0 } }), n = r.apply(ct.Model.TopologyFromPrmtop);
     return await r.commit(), { format: r.selector, topology: n.selector };
   }
 });
@@ -121938,7 +121938,7 @@ var bCt = Xu({
   category: TE,
   stringExtensions: ["top"],
   parse: async (e, t) => {
-    let r = e.state.data.build().to(t).apply(ut.Data.ParseTop, {}, { state: { isGhost: !0 } }), n = r.apply(ut.Model.TopologyFromTop);
+    let r = e.state.data.build().to(t).apply(ct.Data.ParseTop, {}, { state: { isGhost: !0 } }), n = r.apply(ct.Model.TopologyFromTop);
     return await r.commit(), { format: r.selector, topology: n.selector };
   }
 }), vRe = [
@@ -121954,35 +121954,35 @@ var vCt = Xu({
   description: "DCD",
   category: xC,
   binaryExtensions: ["dcd"],
-  parse: (e, t) => e.state.data.build().to(t).apply(ut.Model.CoordinatesFromDcd).commit()
+  parse: (e, t) => e.state.data.build().to(t).apply(ct.Model.CoordinatesFromDcd).commit()
 });
 var xCt = Xu({
   label: "XTC",
   description: "XTC",
   category: xC,
   binaryExtensions: ["xtc"],
-  parse: (e, t) => e.state.data.build().to(t).apply(ut.Model.CoordinatesFromXtc).commit()
+  parse: (e, t) => e.state.data.build().to(t).apply(ct.Model.CoordinatesFromXtc).commit()
 });
 var SCt = Xu({
   label: "TRR",
   description: "TRR",
   category: xC,
   binaryExtensions: ["trr"],
-  parse: (e, t) => e.state.data.build().to(t).apply(ut.Model.CoordinatesFromTrr).commit()
+  parse: (e, t) => e.state.data.build().to(t).apply(ct.Model.CoordinatesFromTrr).commit()
 });
 var CCt = Xu({
   label: "NCTRAJ",
   description: "NCTRAJ",
   category: xC,
   binaryExtensions: ["nc", "nctraj"],
-  parse: (e, t) => e.state.data.build().to(t).apply(ut.Model.CoordinatesFromNctraj).commit()
+  parse: (e, t) => e.state.data.build().to(t).apply(ct.Model.CoordinatesFromNctraj).commit()
 });
 var _Ct = Xu({
   label: "LAMMPSTRAJ",
   description: "LAMMPSTRAJ",
   category: xC,
   stringExtensions: ["lammpstrj"],
-  parse: (e, t) => e.state.data.build().to(t).apply(ut.Model.CoordinatesFromLammpstraj).commit()
+  parse: (e, t) => e.state.data.build().to(t).apply(ct.Model.CoordinatesFromLammpstraj).commit()
 }), xRe = [
   ["dcd", vCt],
   ["xtc", xCt],
@@ -122159,7 +122159,7 @@ var PB = eu.build({
     by: _.Optional(_.Numeric(1, { min: -1, max: 1, step: 1 }))
   }
 })(({ params: e, state: t }) => {
-  let r = t.selectQ((o) => o.ofTransformer(ut.Model.ModelFromTrajectory)), n = t.build();
+  let r = t.selectQ((o) => o.ofTransformer(ct.Model.ModelFromTrajectory)), n = t.build();
   if (e.action === "reset")
     for (let o of r)
       n.to(o).update({ modelIndex: 0 });
@@ -122212,7 +122212,7 @@ var PB = eu.build({
   let o = [e.model, e.coordinates], i = t.build().toRoot().apply(NU, {
     modelRef: e.model,
     coordinatesRef: e.coordinates
-  }, { dependsOn: o }).apply(ut.Model.ModelFromTrajectory, { modelIndex: 0 });
+  }, { dependsOn: o }).apply(ct.Model.ModelFromTrajectory, { modelIndex: 0 });
   await t.updateTree(i).runInContext(n);
   let a = await r.builders.structure.createStructure(i.selector);
   await r.builders.structure.representation.applyPreset(a, "auto");
@@ -122290,7 +122290,7 @@ var PB = eu.build({
     let c = o.name === "url" ? await i(o.params.coordinates.url, o.params.coordinates.format, !0) : await a(o.params.coordinates), u = [l.ref, c.ref], d = t.build().toRoot().apply(NU, {
       modelRef: l.ref,
       coordinatesRef: c.ref
-    }, { dependsOn: u }).apply(ut.Model.ModelFromTrajectory, { modelIndex: 0 });
+    }, { dependsOn: u }).apply(ct.Model.ModelFromTrajectory, { modelIndex: 0 });
     await t.updateTree(d).runInContext(n);
     let m = await r.builders.structure.createStructure(d.selector);
     await r.builders.structure.representation.applyPreset(m, "auto");
@@ -122418,7 +122418,7 @@ var RCt = eu.build({
       return { ref: _.Text("", { isHidden: !0, label: "Volume" }) };
     return { ref: _.Select(r[0].transform.ref, r.map((n) => [n.transform.ref, n.obj.label]), { label: "Volume" }) };
   }
-})(({ ref: e, params: t, state: r }, n) => n.build().to(e).apply(ut.Volume.AssignColorVolume, { ref: t.ref }, { dependsOn: [t.ref] }).commit());
+})(({ ref: e, params: t, state: r }, n) => n.build().to(e).apply(ct.Volume.AssignColorVolume, { ref: t.ref }, { dependsOn: [t.ref] }).commit());
 
 // node_modules/molstar/lib/mol-plugin-state/actions/file.js
 async function mV(e, t, r, n) {
@@ -122580,9 +122580,9 @@ var _Re = Sf.create({
   async setup(e, t, r) {
     let n = r.state.data, o = n.select(Hr.Generators.ofType(ve.Molecule.Structure.Representation3D)), i = n.build(), a = !1;
     for (let s of o) {
-      if (n.select(Hr.Generators.ofTransformer(ut.Representation.SpinStructureRepresentation3D, s.transform.ref)).length > 0)
+      if (n.select(Hr.Generators.ofTransformer(ct.Representation.SpinStructureRepresentation3D, s.transform.ref)).length > 0)
         continue;
-      a = !0, i.to(s.transform.ref).apply(ut.Representation.SpinStructureRepresentation3D, { t: 0 }, { tags: "animate-structure-spin" });
+      a = !0, i.to(s.transform.ref).apply(ct.Representation.SpinStructureRepresentation3D, { t: 0 }, { tags: "animate-structure-spin" });
     }
     if (!a)
       return;
@@ -122599,7 +122599,7 @@ var _Re = Sf.create({
   },
   async apply(e, t, r) {
     var n;
-    let o = r.plugin.state.data, i = o.select(Hr.Generators.ofTransformer(ut.Representation.SpinStructureRepresentation3D));
+    let o = r.plugin.state.data, i = o.select(Hr.Generators.ofTransformer(ct.Representation.SpinStructureRepresentation3D));
     if (i.length === 0)
       return { kind: "finished" };
     let a = o.build(), s = (t.current - t.lastApplied) / r.params.durationInMs, l = (e.t + s) % 1;
@@ -122665,43 +122665,43 @@ var IRe = () => ({
     Nn.Action(eB),
     Nn.Action(oPe),
     Nn.Action(tB),
-    Nn.Action(ut.Data.Download),
-    Nn.Action(ut.Data.ParseCif),
-    Nn.Action(ut.Data.ParseCcp4),
-    Nn.Action(ut.Data.ParseDsn6),
-    Nn.Action(ut.Model.TrajectoryFromMmCif),
-    Nn.Action(ut.Model.TrajectoryFromCifCore),
-    Nn.Action(ut.Model.TrajectoryFromPDB),
-    Nn.Action(ut.Model.TransformStructureConformation),
-    Nn.Action(ut.Model.StructureInstances),
-    Nn.Action(ut.Model.StructureFromModel),
-    Nn.Action(ut.Model.StructureFromTrajectory),
-    Nn.Action(ut.Model.ModelFromTrajectory),
-    Nn.Action(ut.Model.StructureSelectionFromScript),
-    Nn.Action(ut.Representation.StructureRepresentation3D),
-    Nn.Action(ut.Representation.StructureSelectionsDistance3D),
-    Nn.Action(ut.Representation.StructureSelectionsAngle3D),
-    Nn.Action(ut.Representation.StructureSelectionsDihedral3D),
-    Nn.Action(ut.Representation.StructureSelectionsLabel3D),
-    Nn.Action(ut.Representation.StructureSelectionsOrientation3D),
-    Nn.Action(ut.Representation.ModelUnitcell3D),
-    Nn.Action(ut.Representation.StructureBoundingBox3D),
-    Nn.Action(ut.Representation.ExplodeStructureRepresentation3D),
-    Nn.Action(ut.Representation.SpinStructureRepresentation3D),
-    Nn.Action(ut.Representation.UnwindStructureAssemblyRepresentation3D),
-    Nn.Action(ut.Representation.OverpaintStructureRepresentation3DFromScript),
-    Nn.Action(ut.Representation.TransparencyStructureRepresentation3DFromScript),
-    Nn.Action(ut.Representation.ClippingStructureRepresentation3DFromScript),
-    Nn.Action(ut.Representation.SubstanceStructureRepresentation3DFromScript),
-    Nn.Action(ut.Representation.ThemeStrengthRepresentation3D),
+    Nn.Action(ct.Data.Download),
+    Nn.Action(ct.Data.ParseCif),
+    Nn.Action(ct.Data.ParseCcp4),
+    Nn.Action(ct.Data.ParseDsn6),
+    Nn.Action(ct.Model.TrajectoryFromMmCif),
+    Nn.Action(ct.Model.TrajectoryFromCifCore),
+    Nn.Action(ct.Model.TrajectoryFromPDB),
+    Nn.Action(ct.Model.TransformStructureConformation),
+    Nn.Action(ct.Model.StructureInstances),
+    Nn.Action(ct.Model.StructureFromModel),
+    Nn.Action(ct.Model.StructureFromTrajectory),
+    Nn.Action(ct.Model.ModelFromTrajectory),
+    Nn.Action(ct.Model.StructureSelectionFromScript),
+    Nn.Action(ct.Representation.StructureRepresentation3D),
+    Nn.Action(ct.Representation.StructureSelectionsDistance3D),
+    Nn.Action(ct.Representation.StructureSelectionsAngle3D),
+    Nn.Action(ct.Representation.StructureSelectionsDihedral3D),
+    Nn.Action(ct.Representation.StructureSelectionsLabel3D),
+    Nn.Action(ct.Representation.StructureSelectionsOrientation3D),
+    Nn.Action(ct.Representation.ModelUnitcell3D),
+    Nn.Action(ct.Representation.StructureBoundingBox3D),
+    Nn.Action(ct.Representation.ExplodeStructureRepresentation3D),
+    Nn.Action(ct.Representation.SpinStructureRepresentation3D),
+    Nn.Action(ct.Representation.UnwindStructureAssemblyRepresentation3D),
+    Nn.Action(ct.Representation.OverpaintStructureRepresentation3DFromScript),
+    Nn.Action(ct.Representation.TransparencyStructureRepresentation3DFromScript),
+    Nn.Action(ct.Representation.ClippingStructureRepresentation3DFromScript),
+    Nn.Action(ct.Representation.SubstanceStructureRepresentation3DFromScript),
+    Nn.Action(ct.Representation.ThemeStrengthRepresentation3D),
     Nn.Action(ete),
-    Nn.Action(ut.Volume.VolumeFromCcp4),
-    Nn.Action(ut.Volume.VolumeFromDsn6),
-    Nn.Action(ut.Volume.VolumeFromCube),
-    Nn.Action(ut.Volume.VolumeFromDx),
-    Nn.Action(ut.Representation.VolumeRepresentation3D),
-    Nn.Action(ut.Volume.VolumeTransform),
-    Nn.Action(ut.Volume.VolumeInstances)
+    Nn.Action(ct.Volume.VolumeFromCcp4),
+    Nn.Action(ct.Volume.VolumeFromDsn6),
+    Nn.Action(ct.Volume.VolumeFromCube),
+    Nn.Action(ct.Volume.VolumeFromDx),
+    Nn.Action(ct.Representation.VolumeRepresentation3D),
+    Nn.Action(ct.Volume.VolumeTransform),
+    Nn.Action(ct.Volume.VolumeInstances)
   ],
   behaviors: [
     Nn.Behavior(im.Representation.HighlightLoci),
@@ -132292,7 +132292,7 @@ async function wre(e, t, r, n, o) {
       i.to(s).update(tc.toBundle(m));
     } else {
       let d = O4e([u], l);
-      i.to(a.transform.ref).apply(ut.Representation.OverpaintStructureRepresentation3DFromBundle, tc.toBundle(d), { tags: N4e });
+      i.to(a.transform.ref).apply(ct.Representation.OverpaintStructureRepresentation3DFromBundle, tc.toBundle(d), { tags: N4e });
     }
   });
 }
@@ -132300,7 +132300,7 @@ async function T3t(e, t, r) {
   let n = e.state.data, o = n.build();
   for (let i of t)
     for (let a of i.representations) {
-      let s = n.select(Hr.Generators.ofTransformer(ut.Representation.OverpaintStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(N4e));
+      let s = n.select(Hr.Generators.ofTransformer(ct.Representation.OverpaintStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(N4e));
       await r(o, a.cell, s[0]);
     }
   return o.commit({ doNotUpdateCurrent: !0 });
@@ -132328,7 +132328,7 @@ async function V4e(e, t, r, n, o) {
       i.to(s).update(la.toBundle(m));
     } else {
       let d = U4e([u], l);
-      i.to(a.transform.ref).apply(ut.Representation.ClippingStructureRepresentation3DFromBundle, la.toBundle(d), { tags: z4e });
+      i.to(a.transform.ref).apply(ct.Representation.ClippingStructureRepresentation3DFromBundle, la.toBundle(d), { tags: z4e });
     }
   });
 }
@@ -132336,7 +132336,7 @@ async function A3t(e, t, r) {
   let n = e.state.data, o = n.build();
   for (let i of t)
     for (let a of i.representations) {
-      let s = n.select(Hr.Generators.ofTransformer(ut.Representation.ClippingStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(z4e));
+      let s = n.select(Hr.Generators.ofTransformer(ct.Representation.ClippingStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(z4e));
       await r(o, a.cell, s[0]);
     }
   return o.commit({ doNotUpdateCurrent: !0 });
@@ -132364,7 +132364,7 @@ async function G4e(e, t, r, n, o) {
       i.to(s).update(rc.toBundle(m));
     } else {
       let d = H4e([u], l);
-      i.to(a.transform.ref).apply(ut.Representation.TransparencyStructureRepresentation3DFromBundle, rc.toBundle(d), { tags: j4e });
+      i.to(a.transform.ref).apply(ct.Representation.TransparencyStructureRepresentation3DFromBundle, rc.toBundle(d), { tags: j4e });
     }
   });
 }
@@ -132372,7 +132372,7 @@ async function I3t(e, t, r) {
   let n = e.state.data, o = n.build();
   for (let i of t)
     for (let a of i.representations) {
-      let s = n.select(Hr.Generators.ofTransformer(ut.Representation.TransparencyStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(j4e));
+      let s = n.select(Hr.Generators.ofTransformer(ct.Representation.TransparencyStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(j4e));
       await r(o, a.cell, s[0]);
     }
   return o.commit({ doNotUpdateCurrent: !0 });
@@ -132401,7 +132401,7 @@ async function Tre(e, t, r, n, o) {
       i.to(s).update(nc.toBundle(m));
     } else {
       let d = q4e([u], l);
-      i.to(a.transform.ref).apply(ut.Representation.SubstanceStructureRepresentation3DFromBundle, nc.toBundle(d), { tags: W4e });
+      i.to(a.transform.ref).apply(ct.Representation.SubstanceStructureRepresentation3DFromBundle, nc.toBundle(d), { tags: W4e });
     }
   });
 }
@@ -132409,7 +132409,7 @@ async function E3t(e, t, r) {
   let n = e.state.data, o = n.build();
   for (let i of t)
     for (let a of i.representations) {
-      let s = n.select(Hr.Generators.ofTransformer(ut.Representation.SubstanceStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(W4e));
+      let s = n.select(Hr.Generators.ofTransformer(ct.Representation.SubstanceStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(W4e));
       await r(o, a.cell, s[0]);
     }
   return o.commit({ doNotUpdateCurrent: !0 });
@@ -132437,7 +132437,7 @@ async function K4e(e, t, r, n, o) {
       i.to(s).update(oc.toBundle(m));
     } else {
       let d = Y4e([u], l);
-      i.to(a.transform.ref).apply(ut.Representation.EmissiveStructureRepresentation3DFromBundle, oc.toBundle(d), { tags: X4e });
+      i.to(a.transform.ref).apply(ct.Representation.EmissiveStructureRepresentation3DFromBundle, oc.toBundle(d), { tags: X4e });
     }
   });
 }
@@ -132445,7 +132445,7 @@ async function P3t(e, t, r) {
   let n = e.state.data, o = n.build();
   for (let i of t)
     for (let a of i.representations) {
-      let s = n.select(Hr.Generators.ofTransformer(ut.Representation.EmissiveStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(X4e));
+      let s = n.select(Hr.Generators.ofTransformer(ct.Representation.EmissiveStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(X4e));
       await r(o, a.cell, s[0]);
     }
   return o.commit({ doNotUpdateCurrent: !0 });
@@ -132939,12 +132939,12 @@ var V3t = [
       e.currentModel = hT(e, t, $4e, t);
     e.hierarchy.models.push(e.currentModel);
   }, (e) => e.currentModel = void 0],
-  [p8(ut.Model.CustomModelProperties), (e, t) => {
+  [p8(ct.Model.CustomModelProperties), (e, t) => {
     if (!e.currentModel)
       return !1;
     e.currentModel.properties = hT(e, t, k3t, t, e.currentModel);
   }, gT],
-  [p8(ut.Representation.ModelUnitcell3D), (e, t) => {
+  [p8(ct.Representation.ModelUnitcell3D), (e, t) => {
     if (!e.currentModel)
       return !1;
     e.currentModel.unitcell = hT(e, t, M3t, t, e.currentModel);
@@ -132956,12 +132956,12 @@ var V3t = [
       e.currentStructure = hT(e, t, Z4e, t);
     e.hierarchy.structures.push(e.currentStructure);
   }, (e) => e.currentStructure = void 0],
-  [p8(ut.Model.CustomStructureProperties), (e, t) => {
+  [p8(ct.Model.CustomStructureProperties), (e, t) => {
     if (!e.currentStructure)
       return !1;
     e.currentStructure.properties = hT(e, t, R3t, t, e.currentStructure);
   }, gT],
-  [p8(ut.Model.TransformStructureConformation), (e, t) => {
+  [p8(ct.Model.TransformStructureConformation), (e, t) => {
     if (!e.currentStructure)
       return !1;
     e.currentStructure.transform = hT(e, t, B3t, t, e.currentStructure);
@@ -133826,7 +133826,7 @@ class kre extends Wu {
     let e = this.plugin.state.data, t = Hr.findTagInSubtree(e.tree, An.RootRef, Pre), r = this.plugin.state.data.build();
     if (t)
       return r.to(t);
-    return r.toRoot().group(ut.Misc.CreateGroup, { label: "Measurements" }, { tags: Pre });
+    return r.toRoot().group(ct.Misc.CreateGroup, { label: "Measurements" }, { tags: Pre });
   }
   async setOptions(e) {
     if (this.updateState({ options: e }))
@@ -133858,14 +133858,14 @@ class kre extends Wu {
       return;
     let i = [n.transform.ref];
     $a(i, o.transform.ref);
-    let s = this.getGroup().apply(ut.Model.MultiStructureSelectionFromBundle, {
+    let s = this.getGroup().apply(ct.Model.MultiStructureSelectionFromBundle, {
       selections: [
         { key: "a", groupId: "a", ref: n.transform.ref, ...qh(e) },
         { key: "b", groupId: "b", ref: o.transform.ref, ...qh(t) }
       ],
       isTransitive: !0,
       label: "Distance"
-    }, { dependsOn: i, tags: r === null || r === void 0 ? void 0 : r.selectionTags }), l = s.apply(ut.Representation.StructureSelectionsDistance3D, {
+    }, { dependsOn: i, tags: r === null || r === void 0 ? void 0 : r.selectionTags }), l = s.apply(ct.Representation.StructureSelectionsDistance3D, {
       customText: (r === null || r === void 0 ? void 0 : r.customText) || "",
       unitLabel: this.state.options.distanceUnitLabel,
       textColor: this.state.options.textColor,
@@ -133881,7 +133881,7 @@ class kre extends Wu {
       return;
     let s = [o.transform.ref];
     $a(s, i.transform.ref), $a(s, a.transform.ref);
-    let c = this.getGroup().apply(ut.Model.MultiStructureSelectionFromBundle, {
+    let c = this.getGroup().apply(ct.Model.MultiStructureSelectionFromBundle, {
       selections: [
         { key: "a", ref: o.transform.ref, ...qh(e) },
         { key: "b", ref: i.transform.ref, ...qh(t) },
@@ -133889,7 +133889,7 @@ class kre extends Wu {
       ],
       isTransitive: !0,
       label: "Angle"
-    }, { dependsOn: s, tags: n === null || n === void 0 ? void 0 : n.selectionTags }), u = c.apply(ut.Representation.StructureSelectionsAngle3D, {
+    }, { dependsOn: s, tags: n === null || n === void 0 ? void 0 : n.selectionTags }), u = c.apply(ct.Representation.StructureSelectionsAngle3D, {
       customText: (n === null || n === void 0 ? void 0 : n.customText) || "",
       textColor: this.state.options.textColor,
       ...n === null || n === void 0 ? void 0 : n.lineParams,
@@ -133904,7 +133904,7 @@ class kre extends Wu {
       return;
     let c = [i.transform.ref];
     $a(c, a.transform.ref), $a(c, s.transform.ref), $a(c, l.transform.ref);
-    let d = this.getGroup().apply(ut.Model.MultiStructureSelectionFromBundle, {
+    let d = this.getGroup().apply(ct.Model.MultiStructureSelectionFromBundle, {
       selections: [
         { key: "a", ref: i.transform.ref, ...qh(e) },
         { key: "b", ref: a.transform.ref, ...qh(t) },
@@ -133913,7 +133913,7 @@ class kre extends Wu {
       ],
       isTransitive: !0,
       label: "Dihedral"
-    }, { dependsOn: c, tags: o === null || o === void 0 ? void 0 : o.selectionTags }), m = d.apply(ut.Representation.StructureSelectionsDihedral3D, {
+    }, { dependsOn: c, tags: o === null || o === void 0 ? void 0 : o.selectionTags }), m = d.apply(ct.Representation.StructureSelectionsDihedral3D, {
       customText: (o === null || o === void 0 ? void 0 : o.customText) || "",
       textColor: this.state.options.textColor,
       ...o === null || o === void 0 ? void 0 : o.lineParams,
@@ -133926,13 +133926,13 @@ class kre extends Wu {
     let r = this.plugin.helpers.substructureParent.get(e.structure);
     if (!r)
       return;
-    let n = [r.transform.ref], i = this.getGroup().apply(ut.Model.MultiStructureSelectionFromBundle, {
+    let n = [r.transform.ref], i = this.getGroup().apply(ct.Model.MultiStructureSelectionFromBundle, {
       selections: [
         { key: "a", ref: r.transform.ref, ...qh(e) }
       ],
       isTransitive: !0,
       label: "Label"
-    }, { dependsOn: n, tags: t === null || t === void 0 ? void 0 : t.selectionTags }), a = i.apply(ut.Representation.StructureSelectionsLabel3D, {
+    }, { dependsOn: n, tags: t === null || t === void 0 ? void 0 : t.selectionTags }), a = i.apply(ct.Representation.StructureSelectionsLabel3D, {
       textColor: this.state.options.textColor,
       ...t === null || t === void 0 ? void 0 : t.labelParams,
       ...t === null || t === void 0 ? void 0 : t.visualParams
@@ -133949,11 +133949,11 @@ class kre extends Wu {
     }
     if (t.length === 0)
       return;
-    let o = this.getGroup().apply(ut.Model.MultiStructureSelectionFromBundle, {
+    let o = this.getGroup().apply(ct.Model.MultiStructureSelectionFromBundle, {
       selections: t,
       isTransitive: !0,
       label: "Orientation"
-    }, { dependsOn: r }), i = o.apply(ut.Representation.StructureSelectionsOrientation3D), a = this.plugin.state.data;
+    }, { dependsOn: r }), i = o.apply(ct.Representation.StructureSelectionsOrientation3D), a = this.plugin.state.data;
     return await Ot.State.Update(this.plugin, { state: a, tree: i, options: { doNotLogTiming: !0 } }), { selection: o.selector, representation: i.selector };
   }
   async addPlane(e) {
@@ -133966,11 +133966,11 @@ class kre extends Wu {
     }
     if (t.length === 0)
       return;
-    let n = this.getGroup(), o = n.apply(ut.Model.MultiStructureSelectionFromBundle, {
+    let n = this.getGroup(), o = n.apply(ct.Model.MultiStructureSelectionFromBundle, {
       selections: t,
       isTransitive: !0,
       label: "Plane"
-    }, { dependsOn: r }), i = o.apply(ut.Representation.StructureSelectionsPlane3D), a = this.plugin.state.data;
+    }, { dependsOn: r }), i = o.apply(ct.Representation.StructureSelectionsPlane3D), a = this.plugin.state.data;
     return await Ot.State.Update(this.plugin, { state: a, tree: n, options: { doNotLogTiming: !0 } }), { selection: o.selector, representation: i.selector };
   }
   async addOrderLabels(e) {
@@ -133983,13 +133983,13 @@ class kre extends Wu {
       if (!a)
         continue;
       let s = [a.transform.ref];
-      t.apply(ut.Model.MultiStructureSelectionFromBundle, {
+      t.apply(ct.Model.MultiStructureSelectionFromBundle, {
         selections: [
           { key: "a", ref: a.transform.ref, ...qh(i) }
         ],
         isTransitive: !0,
         label: "Order"
-      }, { dependsOn: s, tags: y8 }).apply(ut.Representation.StructureSelectionsLabel3D, {
+      }, { dependsOn: s, tags: y8 }).apply(ct.Representation.StructureSelectionsLabel3D, {
         textColor: Ye.fromRgb(255, 255, 255),
         borderColor: Ye.fromRgb(0, 0, 0),
         textSize: 0.33,
@@ -134009,18 +134009,18 @@ class kre extends Wu {
   }
   sync() {
     let e = [];
-    for (let r of this.getTransforms(ut.Representation.StructureSelectionsLabel3D)) {
+    for (let r of this.getTransforms(ct.Representation.StructureSelectionsLabel3D)) {
       let n = r.obj.tags;
       if (!n || !n.includes(y8))
         e.push(r);
     }
     if (this.updateState({
       labels: e,
-      distances: this.getTransforms(ut.Representation.StructureSelectionsDistance3D),
-      angles: this.getTransforms(ut.Representation.StructureSelectionsAngle3D),
-      dihedrals: this.getTransforms(ut.Representation.StructureSelectionsDihedral3D),
-      orientations: this.getTransforms(ut.Representation.StructureSelectionsOrientation3D),
-      planes: this.getTransforms(ut.Representation.StructureSelectionsPlane3D)
+      distances: this.getTransforms(ct.Representation.StructureSelectionsDistance3D),
+      angles: this.getTransforms(ct.Representation.StructureSelectionsAngle3D),
+      dihedrals: this.getTransforms(ct.Representation.StructureSelectionsDihedral3D),
+      orientations: this.getTransforms(ct.Representation.StructureSelectionsOrientation3D),
+      planes: this.getTransforms(ct.Representation.StructureSelectionsPlane3D)
     }))
       this.stateUpdated();
   }
@@ -135197,7 +135197,7 @@ class Ure extends Gp {
     if (r.structures.length !== 1)
       return null;
     let n = r.structures[0].model;
-    if (!n || n.cell.transform.transformer !== ut.Model.ModelFromTrajectory)
+    if (!n || n.cell.transform.transformer !== ct.Model.ModelFromTrajectory)
       return null;
     if (!n.cell.obj || xr.TrajectoryInfo.get(n.cell.obj.data).size <= 1)
       return null;
@@ -135223,7 +135223,7 @@ class Ure extends Gp {
     let t = e.structures[0];
     if (!t.cell.parent)
       return null;
-    let r = Hr.tryFindDecorator(this.plugin.state.data, t.cell.transform.ref, ut.Model.TransformStructureConformation);
+    let r = Hr.tryFindDecorator(this.plugin.state.data, t.cell.transform.ref, ct.Model.TransformStructureConformation);
     if (!r)
       return;
     return Af.jsx(jc, { header: "Conformation Transform", children: Af.jsx(ep, { state: r.parent, transform: r.transform, customHeader: "none", noMargin: !0, autoHideApply: !0 }) });
@@ -135417,7 +135417,7 @@ class bT extends _v {
   }
   addRepresentation(e, t) {
     var r;
-    return this.dataState.build().to(e.cell).apply(ut.Representation.VolumeRepresentation3D, R1(this.plugin, (r = e.cell.obj) === null || r === void 0 ? void 0 : r.data, {
+    return this.dataState.build().to(e.cell).apply(ct.Representation.VolumeRepresentation3D, R1(this.plugin, (r = e.cell.obj) === null || r === void 0 ? void 0 : r.data, {
       type: t
     })).commit({ canUndo: "Add Representation" });
   }
@@ -135653,7 +135653,7 @@ class Hre extends Gp {
           throw Error("Failed to parse any volume.");
         let g = a.build();
         for (let h of i)
-          g.to((c = (s = m.volumes) === null || s === void 0 ? void 0 : s[(l = h.volumeIndex) !== null && l !== void 0 ? l : 0]) !== null && c !== void 0 ? c : m.volume).apply(ut.Representation.VolumeRepresentation3D, R1(this.plugin, f.data, {
+          g.to((c = (s = m.volumes) === null || s === void 0 ? void 0 : s[(l = h.volumeIndex) !== null && l !== void 0 ? l : 0]) !== null && c !== void 0 ? c : m.volume).apply(ct.Representation.VolumeRepresentation3D, R1(this.plugin, f.data, {
             type: "isosurface",
             typeParams: { alpha: (u = h.alpha) !== null && u !== void 0 ? u : 1, isoValue: h.type === "absolute" ? { kind: "absolute", absoluteValue: h.value } : { kind: "relative", relativeValue: h.value } },
             color: "uniform",
@@ -136862,12 +136862,12 @@ class FFe extends hs {
     let n = ls.resolveAndCheck(this.plugin.state.data, e);
     if (!n)
       return;
-    let o = this.plugin.state.data.selectQ((l) => l.byRef(n.transform.ref).subtree().withTransformer(ut.Model.TransformStructureConformation))[0], a = {
+    let o = this.plugin.state.data.selectQ((l) => l.byRef(n.transform.ref).subtree().withTransformer(ct.Model.TransformStructureConformation))[0], a = {
       transform: {
         name: "matrix",
         params: { data: r && !ee.isIdentity(r.matrix) ? ee.mul(ee(), r.matrix, t) : t, transpose: !1 }
       }
-    }, s = o ? this.plugin.state.data.build().to(o).update(a) : this.plugin.state.data.build().to(e).insert(ut.Model.TransformStructureConformation, a, { tags: RIt });
+    }, s = o ? this.plugin.state.data.build().to(o).update(a) : this.plugin.state.data.build().to(e).insert(ct.Model.TransformStructureConformation, a, { tags: RIt });
     await this.plugin.runTask(this.plugin.state.data.updateTree(s));
   }
   getRootStructure(e) {
@@ -139190,7 +139190,7 @@ class kne extends Mn {
   constructor() {
     super(...arguments);
     this.state = { show: !1, label: "" }, this.update = () => {
-      let e = this.plugin.state.data, t = e.selectQ((i) => i.ofTransformer(ut.Model.ModelFromTrajectory));
+      let e = this.plugin.state.data, t = e.selectQ((i) => i.ofTransformer(ct.Model.ModelFromTrajectory));
       if (t.length === 0) {
         this.setState({ show: !1 });
         return;
@@ -141868,13 +141868,13 @@ function BC(e) {
 }
 (function(e) {
   e.CommonParams = (t, r) => ({
-    modelProperties: _.Optional(_.Group(Et.getParamDefinition(ut.Model.CustomModelProperties, void 0, r))),
-    structureProperties: _.Optional(_.Group(Et.getParamDefinition(ut.Model.CustomStructureProperties, void 0, r))),
+    modelProperties: _.Optional(_.Group(Et.getParamDefinition(ct.Model.CustomModelProperties, void 0, r))),
+    structureProperties: _.Optional(_.Group(Et.getParamDefinition(ct.Model.CustomStructureProperties, void 0, r))),
     representationPreset: _.Optional(_.Text("auto"))
   });
 })(BC || (BC = {}));
 var F8 = BC.CommonParams, EPt = (e, t) => ({
-  model: _.Optional(_.Group(Et.getParamDefinition(ut.Model.ModelFromTrajectory, e, t))),
+  model: _.Optional(_.Group(Et.getParamDefinition(ct.Model.ModelFromTrajectory, e, t))),
   showUnitcell: _.Optional(_.Boolean(!1)),
   structure: _.Optional(gv.getParams(void 0, "assembly").type),
   representationPresetParams: _.Optional(_.Group(du.CommonParams)),
@@ -141929,7 +141929,7 @@ var F8 = BC.CommonParams, EPt = (e, t) => ({
     return { models: s, structures: l };
   }
 }), sOe = (e, t) => ({
-  model: _.Optional(_.Group(Et.getParamDefinition(ut.Model.ModelFromTrajectory, e, t))),
+  model: _.Optional(_.Group(Et.getParamDefinition(ct.Model.ModelFromTrajectory, e, t))),
   ...F8(e, t)
 });
 async function lOe(e, t, r, n) {
@@ -141971,7 +141971,7 @@ var kPt = BC({
     return await lOe({ ijkMin: x.create(-1, -1, -1), ijkMax: x.create(1, 1, 1), theme: "operator-hkl" }, e, t, r);
   }
 }), RPt = (e, t) => ({
-  model: _.Optional(_.Group(Et.getParamDefinition(ut.Model.ModelFromTrajectory, e, t))),
+  model: _.Optional(_.Group(Et.getParamDefinition(ct.Model.ModelFromTrajectory, e, t))),
   ...F8(e, t)
 }), BPt = BC({
   id: "preset-trajectory-crystal-contacts",
@@ -142089,7 +142089,7 @@ class soe {
     return n;
   }
   parseTrajectoryBlob(e, t) {
-    return this.dataState.build().to(e).apply(ut.Data.ParseBlob, t, { state: { isGhost: !0 } }).apply(ut.Model.TrajectoryFromBlob, void 0).commit({ revertOnError: !0 });
+    return this.dataState.build().to(e).apply(ct.Data.ParseBlob, t, { state: { isGhost: !0 } }).apply(ct.Model.TrajectoryFromBlob, void 0).commit({ revertOnError: !0 });
   }
   parseTrajectory(e, t) {
     let r = ls.resolveAndCheck(this.dataState, e);
@@ -142101,10 +142101,10 @@ class soe {
       return this.parseTrajectoryData(e, t);
   }
   createModel(e, t, r) {
-    return this.dataState.build().to(e).apply(ut.Model.ModelFromTrajectory, t || { modelIndex: 0 }, { state: r }).commit({ revertOnError: !0 });
+    return this.dataState.build().to(e).apply(ct.Model.ModelFromTrajectory, t || { modelIndex: 0 }, { state: r }).commit({ revertOnError: !0 });
   }
   insertModelProperties(e, t, r) {
-    return this.dataState.build().to(e).apply(ut.Model.CustomModelProperties, t, { state: r }).commit({ revertOnError: !0 });
+    return this.dataState.build().to(e).apply(ct.Model.CustomModelProperties, t, { state: r }).commit({ revertOnError: !0 });
   }
   tryCreateUnitcell(e, t, r) {
     var n, o, i;
@@ -142114,7 +142114,7 @@ class soe {
     let l = (i = Da.Provider.get(s)) === null || i === void 0 ? void 0 : i.spacegroup.cell;
     if (qs.isZero(l))
       return;
-    return a.build().to(e).apply(ut.Representation.ModelUnitcell3D, t, { state: r }).commit({ revertOnError: !0 });
+    return a.build().to(e).apply(ct.Representation.ModelUnitcell3D, t, { state: r }).commit({ revertOnError: !0 });
   }
   createStructure(e, t, r, n) {
     var o;
@@ -142127,17 +142127,17 @@ class soe {
           t = { name: "model", params: {} };
       }
     }
-    return i.build().to(e).apply(ut.Model.StructureFromModel, { type: t || { name: "assembly", params: {} } }, { state: r, tags: n }).commit({ revertOnError: !0 });
+    return i.build().to(e).apply(ct.Model.StructureFromModel, { type: t || { name: "assembly", params: {} } }, { state: r, tags: n }).commit({ revertOnError: !0 });
   }
   insertStructureProperties(e, t) {
-    return this.dataState.build().to(e).apply(ut.Model.CustomStructureProperties, t).commit({ revertOnError: !0 });
+    return this.dataState.build().to(e).apply(ct.Model.CustomStructureProperties, t).commit({ revertOnError: !0 });
   }
   isComponentTransform(e) {
-    return e.transform.transformer === ut.Model.StructureComponent;
+    return e.transform.transformer === ct.Model.StructureComponent;
   }
   async tryCreateComponent(e, t, r, n) {
     var o, i;
-    let a = this.dataState, s = a.build().to(e), l = `structure-component-${r}`, c = s.applyOrUpdateTagged(l, ut.Model.StructureComponent, t, {
+    let a = this.dataState, s = a.build().to(e), l = `structure-component-${r}`, c = s.applyOrUpdateTagged(l, ct.Model.StructureComponent, t, {
       tags: n ? [...n, l] : [l]
     });
     await c.commit();
@@ -142245,7 +142245,7 @@ async function coe(e, t) {
   let r = {}, n = t.volume.data && cOe(t.volume.data);
   if (n)
     r.isoValue = n;
-  return [await e.build().to(t.volume).apply(ut.Representation.VolumeRepresentation3D, R1(e, t.volume.data, {
+  return [await e.build().to(t.volume).apply(ct.Representation.VolumeRepresentation3D, R1(e, t.volume.data, {
     type: "isosurface",
     typeParams: r
   })).commit()];
@@ -142256,7 +142256,7 @@ var FPt = Xu({
   category: eP,
   binaryExtensions: ["ccp4", "mrc", "map"],
   parse: async (e, t, r) => {
-    let n = e.build().to(t).apply(ut.Data.ParseCcp4, {}, { state: { isGhost: !0 } }), o = n.apply(ut.Volume.VolumeFromCcp4, { entryId: r === null || r === void 0 ? void 0 : r.entryId });
+    let n = e.build().to(t).apply(ct.Data.ParseCcp4, {}, { state: { isGhost: !0 } }), o = n.apply(ct.Volume.VolumeFromCcp4, { entryId: r === null || r === void 0 ? void 0 : r.entryId });
     return await n.commit({ revertOnError: !0 }), await x5(e, o.selector.data), { format: n.selector, volume: o.selector };
   },
   visuals: coe
@@ -142266,7 +142266,7 @@ var FPt = Xu({
   category: eP,
   binaryExtensions: ["dsn6", "brix"],
   parse: async (e, t, r) => {
-    let n = e.build().to(t).apply(ut.Data.ParseDsn6, {}, { state: { isGhost: !0 } }), o = n.apply(ut.Volume.VolumeFromDsn6, { entryId: r === null || r === void 0 ? void 0 : r.entryId });
+    let n = e.build().to(t).apply(ct.Data.ParseDsn6, {}, { state: { isGhost: !0 } }), o = n.apply(ct.Volume.VolumeFromDsn6, { entryId: r === null || r === void 0 ? void 0 : r.entryId });
     return await n.commit({ revertOnError: !0 }), await x5(e, o.selector.data), { format: n.selector, volume: o.selector };
   },
   visuals: coe
@@ -142277,7 +142277,7 @@ var FPt = Xu({
   stringExtensions: ["dx"],
   binaryExtensions: ["dxbin"],
   parse: async (e, t, r) => {
-    let o = e.build().to(t).apply(ut.Data.ParseDx, {}, { state: { isGhost: !0 } }).apply(ut.Volume.VolumeFromDx, { entryId: r === null || r === void 0 ? void 0 : r.entryId });
+    let o = e.build().to(t).apply(ct.Data.ParseDx, {}, { state: { isGhost: !0 } }).apply(ct.Volume.VolumeFromDx, { entryId: r === null || r === void 0 ? void 0 : r.entryId });
     return await o.commit({ revertOnError: !0 }), await x5(e, o.selector.data), { volume: o.selector };
   },
   visuals: coe
@@ -142287,19 +142287,19 @@ var FPt = Xu({
   category: eP,
   stringExtensions: ["cub", "cube"],
   parse: async (e, t, r) => {
-    let n = e.build().to(t).apply(ut.Data.ParseCube, {}, { state: { isGhost: !0 } }), o = n.apply(ut.Volume.VolumeFromCube, { entryId: r === null || r === void 0 ? void 0 : r.entryId }), i = n.apply(ut.Model.TrajectoryFromCube, void 0, { state: { isGhost: !0 } }).apply(ut.Model.ModelFromTrajectory).apply(ut.Model.StructureFromModel);
+    let n = e.build().to(t).apply(ct.Data.ParseCube, {}, { state: { isGhost: !0 } }), o = n.apply(ct.Volume.VolumeFromCube, { entryId: r === null || r === void 0 ? void 0 : r.entryId }), i = n.apply(ct.Model.TrajectoryFromCube, void 0, { state: { isGhost: !0 } }).apply(ct.Model.ModelFromTrajectory).apply(ct.Model.StructureFromModel);
     return await n.commit({ revertOnError: !0 }), await x5(e, o.selector.data), { format: n.selector, volume: o.selector, structure: i.selector };
   },
   visuals: async (e, t) => {
     var r, n;
     let o = e.build(), i = [], a = (n = (r = t.volume.cell) === null || r === void 0 ? void 0 : r.obj) === null || n === void 0 ? void 0 : n.data;
     if (a && at.isOrbitals(a)) {
-      let c = o.to(t.volume).apply(ut.Representation.VolumeRepresentation3D, R1(e, a, {
+      let c = o.to(t.volume).apply(ct.Representation.VolumeRepresentation3D, R1(e, a, {
         type: "isosurface",
         typeParams: { isoValue: at.IsoValue.relative(1), alpha: 0.4 },
         color: "uniform",
         colorParams: { value: Yr.blue }
-      })), u = o.to(t.volume).apply(ut.Representation.VolumeRepresentation3D, R1(e, a, {
+      })), u = o.to(t.volume).apply(ct.Representation.VolumeRepresentation3D, R1(e, a, {
         type: "isosurface",
         typeParams: { isoValue: at.IsoValue.relative(-1), alpha: 0.4 },
         color: "uniform",
@@ -142307,7 +142307,7 @@ var FPt = Xu({
       }));
       i.push(c.selector, u.selector);
     } else {
-      let c = o.to(t.volume).apply(ut.Representation.VolumeRepresentation3D, R1(e, a, {
+      let c = o.to(t.volume).apply(ct.Representation.VolumeRepresentation3D, R1(e, a, {
         type: "isosurface",
         typeParams: { isoValue: at.IsoValue.relative(2), alpha: 0.4 },
         color: "uniform",
@@ -142332,7 +142332,7 @@ var FPt = Xu({
   isApplicable: (e, t) => wE(e, t) === "dscif" ? !0 : !1,
   parse: async (e, t, r) => {
     var n;
-    let o = await e.build().to(t).apply(ut.Data.ParseCif).commit(), i = e.build().to(o), a = o.obj.data.blocks;
+    let o = await e.build().to(t).apply(ct.Data.ParseCif).commit(), i = e.build().to(o), a = o.obj.data.blocks;
     if (a.length === 0)
       throw Error("no data blocks");
     let s = [], l = 0;
@@ -142341,7 +142341,7 @@ var FPt = Xu({
         continue;
       let u = Array.isArray(r === null || r === void 0 ? void 0 : r.entryId) ? r === null || r === void 0 ? void 0 : r.entryId[l] : r === null || r === void 0 ? void 0 : r.entryId;
       if (((n = c.categories.volume_data_3d_info) === null || n === void 0 ? void 0 : n.rowCount) > 0)
-        s.push(i.apply(ut.Volume.VolumeFromDensityServerCif, { blockHeader: c.header, entryId: u }).selector), l++;
+        s.push(i.apply(ct.Volume.VolumeFromDensityServerCif, { blockHeader: c.header, entryId: u }).selector), l++;
     }
     await i.commit();
     for (let c of s)
@@ -142352,11 +142352,11 @@ var FPt = Xu({
     let { volumes: r } = t, n = e.build(), o = [];
     if (r.length > 0) {
       let i = r[0].data && cOe(r[0].data) || at.IsoValue.relative(1.5);
-      o[0] = n.to(r[0]).apply(ut.Representation.VolumeRepresentation3D, $g.getDefaultParamsStatic(e, "isosurface", { isoValue: i, alpha: 1 }, "uniform", { value: Yr.teal })).selector;
+      o[0] = n.to(r[0]).apply(ct.Representation.VolumeRepresentation3D, $g.getDefaultParamsStatic(e, "isosurface", { isoValue: i, alpha: 1 }, "uniform", { value: Yr.teal })).selector;
     }
     if (r.length > 1) {
       let i = $g.getDefaultParamsStatic(e, "isosurface", { isoValue: at.IsoValue.relative(3), alpha: 0.3 }, "uniform", { value: Yr.green }), a = $g.getDefaultParamsStatic(e, "isosurface", { isoValue: at.IsoValue.relative(-3), alpha: 0.3 }, "uniform", { value: Yr.red });
-      o[o.length] = n.to(r[1]).apply(ut.Representation.VolumeRepresentation3D, i).selector, o[o.length] = n.to(r[1]).apply(ut.Representation.VolumeRepresentation3D, a).selector;
+      o[o.length] = n.to(r[1]).apply(ct.Representation.VolumeRepresentation3D, i).selector, o[o.length] = n.to(r[1]).apply(ct.Representation.VolumeRepresentation3D, a).selector;
     }
     return await n.commit(), o;
   }
@@ -142369,7 +142369,7 @@ var FPt = Xu({
   isApplicable: (e, t) => wE(e, t) === "segcif" ? !0 : !1,
   parse: async (e, t) => {
     var r;
-    let n = await e.build().to(t).apply(ut.Data.ParseCif).commit(), o = e.build().to(n), i = n.obj.data.blocks;
+    let n = await e.build().to(t).apply(ct.Data.ParseCif).commit(), o = e.build().to(n), i = n.obj.data.blocks;
     if (i.length === 0)
       throw Error("no data blocks");
     let a = [];
@@ -142377,7 +142377,7 @@ var FPt = Xu({
       if (s.header.toUpperCase() === "SERVER")
         continue;
       if (((r = s.categories.volume_data_3d_info) === null || r === void 0 ? void 0 : r.rowCount) > 0)
-        a.push(o.apply(ut.Volume.VolumeFromSegmentationCif, { blockHeader: s.header }).selector);
+        a.push(o.apply(ct.Volume.VolumeFromSegmentationCif, { blockHeader: s.header }).selector);
     }
     return await o.commit(), { volumes: a };
   },
@@ -142385,7 +142385,7 @@ var FPt = Xu({
     let { volumes: r } = t, n = e.build(), o = [];
     if (r.length > 0) {
       if (at.Segmentation.get(r[0].data))
-        o[o.length] = n.to(r[0]).apply(ut.Representation.VolumeRepresentation3D, $g.getDefaultParams(e, "segment", r[0].data, { alpha: 1, instanceGranularity: !0 }, "volume-segment", {})).selector;
+        o[o.length] = n.to(r[0]).apply(ct.Representation.VolumeRepresentation3D, $g.getDefaultParams(e, "segment", r[0].data, { alpha: 1, instanceGranularity: !0 }, "volume-segment", {})).selector;
     }
     return await n.commit(), o;
   }
@@ -142405,11 +142405,11 @@ var VPt = "Shape", HPt = Xu({
   category: VPt,
   stringExtensions: ["ply"],
   parse: async (e, t) => {
-    let r = e.state.data.build().to(t).apply(ut.Data.ParsePly, {}, { state: { isGhost: !0 } }), n = r.apply(ut.Model.ShapeFromPly);
+    let r = e.state.data.build().to(t).apply(ct.Data.ParsePly, {}, { state: { isGhost: !0 } }), n = r.apply(ct.Model.ShapeFromPly);
     return await r.commit(), { format: r.selector, shape: n.selector };
   },
   visuals(e, t) {
-    return e.state.data.build().to(t.shape).apply(ut.Representation.ShapeRepresentation3D).commit();
+    return e.state.data.build().to(t.shape).apply(ct.Representation.ShapeRepresentation3D).commit();
   }
 }), dOe = [
   ["ply", HPt]
@@ -151241,7 +151241,7 @@ function lBt(e) {
           [mn.VolumeStreaming.Enabled, !0],
           [mn.Viewport.ShowExpand, !1],
           [mn.Viewport.ShowToggleFullscreen, !e.minimalViewer],
-          [mn.Viewport.ShowAnimation, !1],
+          [mn.Viewport.ShowAnimation, e.structures.some((R) => R.trajectory?.format === "xtc")],
           [mn.Viewport.ShowXR, !1],
           [mn.Viewport.ShowControls, !e.minimalViewer],
           [mn.Viewport.ShowSettings, !e.minimalViewer],
@@ -151351,7 +151351,7 @@ function lBt(e) {
     if ($n.dockingBoxLoaded)
       await P.build().delete(U7).commit(), $n.dockingBoxLoaded = !1;
     let L = P.build();
-    if (L.toRoot().apply(ut.Shape.BoxShape3D, B, { ref: U7 }).apply(ut.Representation.ShapeRepresentation3D), await L.commit(), O)
+    if (L.toRoot().apply(ct.Shape.BoxShape3D, B, { ref: U7 }).apply(ct.Representation.ShapeRepresentation3D), await L.commit(), O)
       P.managers.camera.setSnapshot(O, 0);
     $n.dockingBoxLoaded = !0;
   }, l = async (A) => {
@@ -151379,7 +151379,7 @@ function lBt(e) {
         colorParams: {
           ...P,
           ...{
-            value: Ye(P?.value ? parseInt(P.value, 16) : 16777215)
+            value: Ye(P?.value ? parseInt(P.value, 16) : 3247216)
           }
         }
       };
@@ -151418,8 +151418,24 @@ function lBt(e) {
       let L = E.build();
       L.delete($n.structures[P]), await L.commit();
     }
-    let R, F;
-    if (c(A.pdb))
+    let R, F, M;
+    if (A.trajectory?.format === "xtc") {
+      R = await E.builders.data.rawData({
+        data: A.pdb,
+        label: "BioEmu topology"
+      }), F = await E.builders.structure.parseTrajectory(R, "mmcif");
+      let L = await E.builders.structure.createModel(F), U = Uint8Array.from(atob(A.trajectory.coordinates_base64), (ie) => ie.charCodeAt(0)), z = await E.builders.data.rawData({
+        data: U,
+        label: "BioEmu XTC coordinates"
+      }), Y = E.dataFormats.get("xtc");
+      if (!Y)
+        throw Error("Mol* XTC coordinates provider is unavailable.");
+      let Z = await Y.parse(E, z);
+      M = await E.state.data.build().toRoot().apply(ct.Model.TrajectoryFromModelAndCoordinates, {
+        modelRef: L.ref,
+        coordinatesRef: Z.ref
+      }, { dependsOn: [L.ref, Z.ref] }).apply(ct.Model.ModelFromTrajectory, { modelIndex: 0 }).commit();
+    } else if (c(A.pdb))
       if (R = await E.builders.data.download({
         url: _o.Url(A.pdb),
         isBinary: !1
@@ -151450,7 +151466,9 @@ COMPND   3 CHAIN: ${Z.chain_id};`;
         data: z
       }), F = await E.builders.structure.parseTrajectory(R, "pdb");
     }
-    let M = await E.builders.structure.createModel(F), B = await E.builders.structure.createStructure(M, { name: "model", params: {} }), O = await E.builders.structure.tryCreateComponentStatic(B, "polymer");
+    if (!M)
+      M = await E.builders.structure.createModel(F);
+    let B = await E.builders.structure.createStructure(M, { name: "model", params: {} }), O = await E.builders.structure.tryCreateComponentStatic(B, "polymer");
     if (O && A.representation_type) {
       let L = A.representation_type.split("+");
       for (let U of L) {
@@ -151485,7 +151503,7 @@ COMPND   3 CHAIN: ${Z.chain_id};`;
     e.contigs[A].forEach((R, F) => {
       let M = Array.from(Array(R.end - R.start + 1), (O, L) => L + R.start), B = fo.fromSelection(S($n.plugin, R.chain, M, A));
       E.push({ bundle: B, color: Ye.fromHexString((R.color ?? "#808080").replace("#", "0x")), clear: !1 });
-    }), $n.representations[A].map((R) => P.to(R).apply(ut.Representation.OverpaintStructureRepresentation3DFromBundle, { layers: E })), await P.commit();
+    }), $n.representations[A].map((R) => P.to(R).apply(ct.Representation.OverpaintStructureRepresentation3DFromBundle, { layers: E })), await P.commit();
   }, f = (A) => {
     let P = A[0], E = A[A.length - 1] - P + 1;
     return Array.from(Array(E), (F, M) => M + P);
@@ -151581,7 +151599,7 @@ COMPND   3 CHAIN: ${Z.chain_id};`;
     if (!$n.plugin || !A)
       return;
     for (let E = 0;E < A.length; E++) {
-      let R = A[E], F = $n.plugin.state.data.build(), M = `chain_${R.chain_id}_${P}_${E}`, B = F.to($n.structures[P]).apply(ut.Misc.CreateGroup, { label: M }, { ref: M }), O;
+      let R = A[E], F = $n.plugin.state.data.build(), M = `chain_${R.chain_id}_${P}_${E}`, B = F.to($n.structures[P]).apply(ct.Misc.CreateGroup, { label: M }, { ref: M }), O;
       if (R.residues && R.residues.length > 0)
         O = pe.struct.generator.atomGroups({
           "chain-test": pe.core.rel.eq([pe.struct.atomProperty.macromolecular.auth_asym_id(), R.chain_id]),
@@ -151592,9 +151610,9 @@ COMPND   3 CHAIN: ${Z.chain_id};`;
         O = pe.struct.generator.atomGroups({
           "chain-test": pe.core.rel.eq([pe.struct.atomProperty.macromolecular.auth_asym_id(), R.chain_id])
         });
-      let L = pe.struct.modifier.wholeResidues({ 0: O }), U = B.apply(ut.Model.StructureSelectionFromExpression, { expression: L }), z = R.representation_type.split("+");
+      let L = pe.struct.modifier.wholeResidues({ 0: O }), U = B.apply(ct.Model.StructureSelectionFromExpression, { expression: L }), z = R.representation_type.split("+");
       for (let Y of z)
-        U.apply(ut.Representation.StructureRepresentation3D, yC($n.plugin, $n.structures[P].data, {
+        U.apply(ct.Representation.StructureRepresentation3D, yC($n.plugin, $n.structures[P].data, {
           type: Y,
           size: "physical",
           sizeParams: { scale: 1.05 },
