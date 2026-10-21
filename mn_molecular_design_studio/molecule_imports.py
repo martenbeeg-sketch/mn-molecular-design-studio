@@ -212,7 +212,19 @@ def parse_structure(data: bytes, filename: str, *, include_ligands: bool = True,
     suffix = Path(filename).suffix.lower()
     if suffix in {".sdf", ".mol"}:
         return parse_sdf(data, filename)
-    parser = MMCIFParser(QUIET=True) if suffix in {".cif", ".mmcif"} else PDBParser(QUIET=True)
+    if suffix in {".cif", ".mmcif"}:
+        class _OptionalOccupancyMMCIFParser(MMCIFParser):
+            def _build_structure(self, structure_id):
+                # Some generated mmCIFs (including BindCraft2 ranked outputs)
+                # omit the optional occupancy column. Biopython currently
+                # expects it unconditionally, so use the mmCIF default of 1.0.
+                atom_count = len(self._mmcif_dict.get("_atom_site.id", []))
+                self._mmcif_dict.setdefault("_atom_site.occupancy", ["1.0"] * atom_count)
+                return super()._build_structure(structure_id)
+
+        parser = _OptionalOccupancyMMCIFParser(QUIET=True)
+    else:
+        parser = PDBParser(QUIET=True)
     try:
         model = next(parser.get_structure("molecule", io.StringIO(data.decode("utf-8"))).get_models())
     except Exception as exc:
