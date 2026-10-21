@@ -126,6 +126,7 @@ importlib.reload(generators)
 API_BASE_URL = (os.environ.get("MDS_API_BASE_URL") or load_settings(STUDIO_WORKSPACE)["api_base_url"]).rstrip("/")
 
 WORKFLOW_TITLES = {
+    "Bioemu2": "BioEmu-2",
     "Esm If1": "ESM-IF1",
     "Caliby": "Caliby",
     "Boltzgen Inverse": "BoltzGen Inverse Folding",
@@ -243,12 +244,14 @@ TOOL_CATALOG_WORKFLOW_IDS = {
     "ligand.generation.pgmg",
     "ligand.md.gromacs",
     "ligand.md.openmm",
+    "simulation.bioemu2",
 }
 
 # Upstream code versions for tool tiles. Values describe engine code or a pinned
 # source revision, never the Docker image tag. Some legacy shared images have no
 # pinned upstream release, which is shown explicitly.
 TOOL_WORKFLOW_CODE_VERSIONS = {
+    "simulation.bioemu2": ("BioEmu-2 · 0.1.0rc0 · Microsoft source f99e0d8", False),
     "ligand.complex.prepare": ("Complex Preparation · Studio bundled runtime", False),
     "ligand.docking.vina": ("AutoDock Vina · 1.2.7", False),
     "ligand.docking.autodock_gpu": ("AutoDock-GPU · 1.6", False),
@@ -281,8 +284,8 @@ TOOL_WORKFLOW_CODE_VERSIONS = {
     "detection.surf2spot": ("Surf2Spot a38a7a7", False),
     "detection.masif_seed": ("MaSIF-seed 7715391", False),
     "detection.surface_analysis": ("PeSTo · ScanNet · Surf2Spot · MaSIF-seed", False),
-    "design.bindcraft2": ("BindCraft 2 c0ee638", False),
-    "design.bindcraft2_generator": ("BindCraft 2 c0ee638", False),
+    "design.bindcraft2": ("BindCraft 2 v1.0.4", False),
+    "design.bindcraft2_generator": ("BindCraft 2 v1.0.4", False),
     "design.rfdiffusion_classic": ("RFdiffusion · version not pinned", False),
     "design.rfdiffusion3": ("RFdiffusion3 a36d29c · Foundry 0.1.9", False),
     "design.rfantibody": ("RFantibody 3e5a5bb · CUDA 11.8", False),
@@ -723,6 +726,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
     prefix = workflow.split(".", 1)[0]
     function_by_prefix = {
         "ligand": "Molecular Docking & Affinity",
+        "simulation": "Biomolecular Simulation",
         "target": "Target Preparation",
         "detection": "Binding-site Detection",
         "design": "De Novo Binder Design",
@@ -734,6 +738,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "campaign": "Multi-step Validation",
     }
     function_by_workflow = {
+        "simulation.bioemu2": "Conformational Ensemble Sampling",
         "ligand.complex.prepare": "Complex Preparation",
         "target.prepare": "Structure Preparation",
         "target.crop": "Structure Cropping",
@@ -775,6 +780,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "ligand.md.openmm": "Molecular Dynamics",
     }
     modalities_by_prefix = {
+        "simulation": ["Protein", "Ligand", "DNA", "RNA"],
         "ligand": ["Protein", "Ligand"],
         "target": ["Protein"],
         "detection": ["Protein"],
@@ -787,6 +793,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "campaign": ["Protein", "Antibody", "Peptide"],
     }
     input_types_by_prefix = {
+        "simulation": ["Protein Complex (PDB/mmCIF)", "Protein Sequences"],
         "ligand": ["Protein Structure (PDB)", "Compound Set"],
         "target": ["Structure (PDB)"],
         "detection": ["Structure (PDB)"],
@@ -834,6 +841,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "ligand.generation.pgmg": ["Protein Structure (PDB)", "Pharmacophore Hypothesis (.posp)"],
         "ligand.md.gromacs": ["Protein–Ligand Complex (PDB)", "Bound Ligand (SDF)"],
         "ligand.md.openmm": ["Protein–Ligand Complex (PDB)", "Bound Ligand (SDF)"],
+        "simulation.bioemu2": ["Target–Design Complexes (PDB/mmCIF)", "Protein Sequences"],
         "import.bindcraft": ["Result Folder"],
         "import.table": ["CSV / Table", "Structure (PDB)", "Sequence"],
         "benchmark.dataset": ["CSV / Table", "Result Folder", "Structure (PDB)", "Existing Results"],
@@ -3725,6 +3733,17 @@ def _render_workflow_setup() -> None:
         return
 
     schema = workflow_schema(workflow_id)
+    if workflow_id == "simulation.bioemu2":
+        from mn_molecular_design_studio import bioemu2_ui
+        importlib.reload(bioemu2_ui)
+        bioemu2_ui.render_setup(
+            schema,
+            owner_id=str(CURRENT_USER["id"]),
+            project_selector=_render_project_selector,
+            submit=_submit_cofolding_job,
+            source_job_options=_analysis_source_job_options,
+        )
+        return
     if workflow_id.startswith("ligand."):
         from mn_molecular_design_studio import ligand_tools_ui
         importlib.reload(ligand_tools_ui)
@@ -6996,6 +7015,15 @@ def _render_job_details() -> None:
     is_generator_tool=str(job.get('tool')) in generator_input.TOOLS.values()
 
     with results_tab:
+        batch_rows = result.get("outputs", {}).get("batch_items")
+        if isinstance(batch_rows, list):
+            st.subheader("Selected inputs")
+            st.dataframe([
+                {"Input": row.get("name") or row.get("id"), "Status": row.get("status"),
+                 "Error": row.get("error", ""), **row.get("metrics", {})}
+                for row in batch_rows
+            ], hide_index=True, use_container_width=True)
+            st.caption("All inputs share this job. Per-input files are under artifacts/batch_items in Files.")
         if str(job.get("tool")) == "visual_pipeline":
             if surface_nodes:
                 snapshot = read_json(run_dir / "graph_snapshot.json")

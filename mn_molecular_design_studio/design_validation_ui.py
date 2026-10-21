@@ -1,4 +1,4 @@
-"""Project and design selection inside each cofolding engine's batch controls."""
+"""Automatic collection inputs shared by all cofolding engine tiles."""
 from pathlib import Path
 
 import numpy as np
@@ -11,9 +11,17 @@ from mn_molecular_design_studio.cofolding_input import prediction_settings_for, 
 def render_batch_controls(engine_id, profile, project_id, job_name, schema, *, search_jobs, submit, allow_new_batch=True):
     key = f"design-validation-{profile.get('form_key', engine_id)}-{project_id or 'no-project'}"
     sources = []
-    with st.expander("Batch mode", expanded=False):
-        kind = st.radio("Batch input", ["New molecular inputs", "Validate existing designs"],
+    with st.container():
+        choices = ["New molecular inputs", "Sequence collection", "Database molecules", "Validate existing designs"]
+        if profile["input_kind"] == "boltzgen":
+            choices = ["New molecular inputs", "Validate existing designs"]
+        if "ligand_smiles" in profile.get("molecule_inputs", ()):
+            choices.insert(1, "Compound collection")
+        kind = st.radio("Input source", choices,
                         key=f"{key}-kind", horizontal=True)
+        if kind in {"Compound collection", "Sequence collection", "Database molecules"}:
+            _render_collection_inputs(engine_id, profile, project_id, job_name, schema, kind, key, submit)
+            return True, 0
         if kind == "New molecular inputs":
             count = int(st.number_input("Independent complexes", min_value=1, max_value=32, value=1,
                                         key=f"{key}-count")) if allow_new_batch else 1
@@ -89,6 +97,119 @@ def render_batch_controls(engine_id, profile, project_id, job_name, schema, *, s
         except (ValueError, TypeError, KeyError) as exc:
             st.error(f"Could not submit design validation: {exc}")
     return True, 0
+
+
+def _render_collection_inputs(engine_id, profile, project_id, job_name, schema, kind, key, submit):
+    import hashlib
+    from mn_molecular_design_studio import batching
+    from mn_molecular_design_studio.auth import user_input_root
+    from mn_molecular_design_studio.ligand_compounds import parse_compound_table, write_compound_set
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import utc_now
+    user = st.session_state.get("_molecular_database_user")
+    if not user or not project_id:
+        st.info("Select a project to choose the inputs for this calculation.")
+        return
+    input_parameters, count, tasks = {}, 0, None
+    prefix = f"{key}-collection"
+    if kind == "Compound collection":
+        from mn_molecular_design_studio.molecular_database import MolecularDatabase
+        collections = MolecularDatabase().compound_options(user)
+        pending = st.session_state.get(prefix + "-selected")
+        if pending:
+            collections = [pending, *[row for row in collections if row["path"] != pending["path"]]]
+        source = st.radio("Compounds", ["My compounds", "Upload file"], key=prefix + "-source", horizontal=True)
+        if source == "My compounds":
+            if collections:
+                selected = st.selectbox("Compound collection", collections, format_func=lambda row: f"{row['name']} · {row['compound_count']:,} compounds", key=prefix + "-compounds")
+                input_parameters["compound_set_file"] = selected["path"]
+                count = selected["compound_count"]
+            else:
+                st.info("Import compounds into Database or upload a compound file here.")
+        else:
+            uploaded = st.file_uploader("Compound file", type=["sdf", "csv", "tsv", "smi", "smiles"], key=prefix + "-upload")
+            if uploaded:
+                try:
+                    content = uploaded.getvalue()
+                    compounds = parse_compound_table(content, filename=uploaded.name)
+                    path = user_input_root(user["id"]) / "prediction_collections" / (hashlib.sha256(content).hexdigest() + ".json")
+                    write_compound_set(path, name=uploaded.name, compounds=compounds,
+                                       owner_id=user["id"], project_id=project_id, created_at=utc_now())
+                    input_parameters["compound_set_file"] = str(path)
+                    count = len(compounds)
+                except ValueError as exc:
+                    st.error(str(exc))
+        st.caption("Enter the shared target below. Every selected compound is predicted independently in one job.")
+    elif kind == "Sequence collection":
+        uploaded = st.file_uploader("Sequence file", type=["fasta", "fa", "faa", "txt"], key=prefix + "-sequences")
+        text = uploaded.getvalue().decode("utf-8-sig") if uploaded else st.text_area("Sequences", key=prefix + "-sequence-text", placeholder=">sequence_1\nACDEFGHIK\n>sequence_2\nACDEFGHIL")
+        if text.strip():
+            try:
+                count = len(batching.sequence_tasks(text))
+                path = user_input_root(user["id"]) / "prediction_collections" / (hashlib.sha256(text.encode()).hexdigest() + ".fasta")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text)
+                input_parameters["sequence_file"] = str(path)
+            except ValueError as exc:
+                st.error(str(exc))
+        st.caption("Each FASTA record or plain sequence line is an independent prediction. Use ':' between chains belonging to the same complex.")
+    else:
+        from mn_molecular_design_studio.database_ui import render_molecule_picker
+        from mn_molecular_design_studio.database_selections import editor_model
+        from mn_molecular_design_studio.cofolding_input import model_to_payload
+        allowed = {"protein", *[kind for kind, field in (("dna", "dna_sequences"), ("rna", "rna_sequences"), ("small_molecule", "ligand_smiles")) if field in profile.get("molecule_inputs", ())]}
+        selected = render_molecule_picker(user, key=prefix, allowed_types=allowed, multiple=True)
+        if selected:
+            st.session_state[prefix + "-molecules"] = selected
+        records = st.session_state.get(prefix + "-molecules") or []
+        tasks = []
+        for record in records:
+            values = model_to_payload(editor_model(record))
+            values.pop("input_error", None)
+            values.pop("chain_catalog", None)
+            tasks.append({**values, "name": record["name"]})
+        count = len(tasks)
+    if count:
+        st.caption(f"{count:,} selected inputs → one job. Per-input structures, scores and errors are retained.")
+        if count > batching.MAX_PREDICTION_ITEMS:
+            st.error(f"Select at most {batching.MAX_PREDICTION_ITEMS:,} prediction inputs for one run.")
+    config = prediction_settings_for(profile)
+    if engine_id == "boltz2" and kind == "Compound collection":
+        config["fields"] = [{**field, "default": True} if field["key"] == "use_potentials" else field for field in config["fields"]]
+    values, settings, submitted = render_molecule_editor(
+        prefix + "-settings", tuple(field for field in profile.get("molecule_inputs", ()) if field not in {"ligand_smiles", "ligand_ccd_codes"}),
+        prediction_settings=config, settings_only=kind != "Compound collection",
+        supports_templates=bool(profile.get("supports_templates")),
+        modes=tuple(profile["modes"]), can_submit=bool(count and count <= batching.MAX_PREDICTION_ITEMS),
+    )
+    if not submitted:
+        return
+    if kind == "Compound collection" and (values.get("input_error") or not values.get("protein_sequences", "").strip()):
+        st.error("Enter the target protein sequence or select a target from My molecules.")
+        return
+    mode = str(settings.get("optimization_mode", "off"))
+    parameters = {
+        "engine": engine_id, "job_name": job_name, "optimization_mode": mode,
+        "seed": int(settings.get("seed") or 0), "samples": int(settings.get("samples") or 1),
+        "num_recycles": int(settings.get("num_recycles", profile.get("default_recycles", 10))),
+        "cpu_cores": int(settings.get("cpu_cores") or 4),
+        "gpu_device": "0,1" if profile.get("gpu_count", {}).get(mode, 1) == 2 else "0",
+        "accept_alphafold3_terms": bool(settings.get("accept_terms")),
+        "engine_options": {field["key"]: settings[field["key"]] for field in profile.get("settings", ()) if field["key"] in settings},
+        **input_parameters,
+    }
+    if kind == "Compound collection":
+        parameters["protein_sequences"] = values["protein_sequences"]
+        # Preserve target chain templates/MSA choices in every expanded item.
+        context = {field: values[field] for field in ("protein_sequences", "dna_sequences", "rna_sequences", "molecule_chain_options", "structure_templates", "boltz_templates") if field in values}
+        tasks = batching.prediction_collection_tasks(context, compound_set_file=input_parameters["compound_set_file"])
+        parameters.pop("compound_set_file", None)
+        parameters.pop("protein_sequences", None)
+    if tasks is not None:
+        parameters["tasks"] = tasks
+    try:
+        submit(schema, "refolding.optimized_prediction", parameters, project_id, settings, profile["label"])
+    except (ValueError, TypeError, KeyError) as exc:
+        st.error(f"Could not submit the selected inputs: {exc}")
 
 
 def comparison_viewer(original, aligned, reference, chain_map):

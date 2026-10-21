@@ -1,0 +1,31 @@
+tool: bioemu2
+group: structure-sampling
+image: mn-bioemu2:0.1.0rc0-f99e0d8-cu130
+gpu: true
+description: BioEmu-2 protein conformational ensemble sampling and time-lagged propagation.
+inputs:
+  structure_paths:
+    type: structure_list
+    required: false
+  protein_sequences:
+    type: sequence_list
+    required: false
+params:
+  mode: {type: enum, values: [propagate, sample-equilibrium, predict-structure], default: propagate}
+  num_samples: {type: int, default: 8}
+  lag_time_ns: {type: float, default: 1.0}
+  sampler: {type: enum, values: [edm, edm_gd, edm_fk, edm_fkc], default: edm}
+  physicality_filter: {type: enum, values: [high_quality, high_quality_per_residue, no_violations, no_filter], default: high_quality}
+  precision: {type: enum, values: [bf16-mixed, 32-true], default: bf16-mixed}
+  matmul_precision: {type: enum, values: [highest, high, medium], default: high}
+  batch_size: {type: int, default: null}
+  num_steps: {type: int, default: null}
+  seed: {type: int, default: 0}
+  compile_denoiser: {type: bool, default: false}
+outputs:
+  ensemble:
+    path: artifacts/bioemu2
+    type: structure_ensemble
+  summary:
+    path: artifacts/bioemu2/studio_summary.json
+    type: bioemu2_summary

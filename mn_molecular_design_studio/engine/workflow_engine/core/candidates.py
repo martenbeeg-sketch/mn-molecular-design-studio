@@ -108,6 +108,8 @@ def normalize_candidate(payload: dict[str, Any]) -> dict[str, Any]:
         normalized["raw_metadata"]["legacy_tool"] = payload.get("tool")
     if payload.get("sequence") and normalized["binder_sequence"] == payload.get("sequence"):
         normalized["raw_metadata"].setdefault("legacy_sequence_key", "sequence")
+    from mn_molecular_design_studio.output_vocabulary import candidate_output
+    normalized["normalized_output"] = candidate_output(normalized)
     return normalized
 
 

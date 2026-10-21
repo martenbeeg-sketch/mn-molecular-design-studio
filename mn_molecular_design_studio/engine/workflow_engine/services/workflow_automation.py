@@ -190,6 +190,7 @@ _SPECS = (
     _spec("refolding.esmfold2_cofolding", "esmfold2_cofolding", "run_esmfold2_cofolding", "refolding-validation", "esmfold2_cofolding", "complex_refolding", "Cofold protein sequences with the optimized ESMFold2 image."),
     _spec("refolding.af3_jax_cofolding", "af3_jax_cofolding", "run_af3_jax_cofolding", "refolding-validation", "af3_jax_cofolding", "complex_refolding", "Cofold protein and biomolecular inputs with selectable AF3-family JAX models in MN Cofolding's optimized image."),
     _spec("refolding.optimized_prediction", "optimized_prediction", "run_optimized_prediction", "refolding-validation", "optimized_prediction", "complex_refolding", "Run cofolding engines through the shared molecule input and prediction result format."),
+    _spec("simulation.bioemu2", "bioemu2", "run_bioemu2", "simulation", "bioemu2", "bioemu2_sampling", "Sample BioEmu-2 conformational ensembles from uploaded target–design complexes or sequence-defined protein systems."),
     _spec("refolding.esmfold_monomer", "refolding", "run_esmfold_monomer_refolding", "refolding-validation", "esmfold", "monomer_refolding", "Refold candidate sequences with ESMFold."),
     _spec("refolding.boltz2_monomer", "refolding", "run_boltz2_monomer_refolding", "refolding-validation", "boltz2_monomer", "monomer_refolding", "Refold candidate sequences with Boltz-2 monomer mode."),
     _spec("refolding.complex", "refolding", "run_complex_refolding_contract", "refolding-validation", "af2_initial_guess", "complex_refolding", "Run a configured complex refolding backend."),
@@ -375,6 +376,11 @@ def workflow_schema(workflow_id: str) -> dict[str, Any]:
     if {"source_run_dir", "candidates_jsonl"}.issubset(inspect.signature(function).parameters) or workflow_id == "campaign.validation_sequence":
         request_fields.append("source_job")
     schema = {"schema_version": WORKFLOW_SCHEMA_VERSION, **row, "request_fields": request_fields}
+    schema["collection_execution"] = {
+        "automatic": True, "one_job_per_selection": True,
+        "parameters_accepts": ["object", "array"] if spec.mode == "queued" else ["object"],
+        "strategy": "native_batch_when_available",
+    }
     if spec.mode in {"target_refolding_evaluation", "candidate_refolding"}:
         from mn_molecular_design_studio.engine.workflow_engine.workflows.benchmark import run_de_novo_binder_scoring_dataset
 
@@ -901,6 +907,46 @@ def _direct_result(spec: WorkflowSpec, function, parameters: dict[str, Any]) -> 
     return Path(result), {}
 
 
+def _prepare_selection(spec, payload, request_path):
+    """Validate every selected input, then prefer the tool's native batch API."""
+    from mn_molecular_design_studio.batching import parameter_items, coalesce_prediction_parameters
+    try:
+        selected = parameter_items(payload.get("parameters", {}))
+    except ValueError as exc:
+        raise AutomationError(str(exc)) from exc
+    if len(selected) > 1 and spec.mode != "queued":
+        raise AutomationError(f"{spec.workflow_id} uses native selection inputs; pass its collection in one parameters object.")
+    cpu, gpu = _validate_resources(payload.get("resources"))
+    normalized = []
+    for item in selected:
+        parameters, function = _validate_generic_parameters(spec, item, request_path, source_job=payload.get("source_job"))
+        parameters = _resolve_source_job(parameters, payload.get("source_job"), function, spec)
+        _apply_resource_parameters(spec, function, parameters, cpu_cores=cpu, gpu_device=gpu)
+        _validate_workflow_inputs(spec, parameters)
+        normalized.append(parameters)
+    merged = coalesce_prediction_parameters(spec.workflow_id, normalized)
+    if merged is not None:
+        _validate_workflow_inputs(spec, merged)
+        return merged, function, cpu, gpu
+    if len(normalized) == 1:
+        return normalized[0], function, cpu, gpu
+    signature = inspect.signature(function).parameters
+    from mn_molecular_design_studio.engine.workflow_engine.core.workflow_queue import _nested_cpu_thread_requests
+    default_cpu_parameter = signature.get("cpu_cores") or signature.get("cpu_threads")
+    default_cpu = default_cpu_parameter.default if default_cpu_parameter is not None else 4
+    cores = [item.get("cpu_cores") or item.get("cpu_threads") or
+             max(_nested_cpu_thread_requests(item), default=default_cpu) for item in normalized]
+    cpu = cpu or max((int(value) for value in cores if value is not None and value is not inspect.Parameter.empty), default=4)
+    if gpu is None:
+        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import _queue_resource_for
+        default = signature["gpu_device"].default if "gpu_device" in signature else ("all" if _queue_resource_for(spec.tool, selected[0]) else "none")
+        devices = {str(item.get("gpu_device", default)) for item in normalized}
+        if len(devices) > 1:
+            raise AutomationError("Selected inputs must share one GPU allocation; set resources.gpu_device for the batch.")
+        gpu = devices.pop()
+    return normalized, function, cpu, gpu
+
+
 def submit_workflow_request(request_file: str | Path) -> dict[str, Any]:
     """Validate and submit one allowlisted workflow request."""
     request_path = Path(request_file).expanduser().resolve()
@@ -921,26 +967,19 @@ def submit_workflow_request(request_file: str | Path) -> dict[str, Any]:
     if not isinstance(workflow_id, str) or workflow_id not in WORKFLOWS:
         raise AutomationError(f"Unknown workflow '{workflow_id}'. Use 'workflow list' to see supported IDs.")
     spec = WORKFLOWS[workflow_id]
-    parameters, function = _validate_generic_parameters(
-        spec,
-        payload.get("parameters", {}),
-        request_path,
-        source_job=payload.get("source_job"),
-    )
-    parameters = _resolve_source_job(parameters, payload.get("source_job"), function, spec)
-    cpu_cores, resource_gpu = _validate_resources(payload.get("resources"))
-    _apply_resource_parameters(
-        spec,
-        function,
-        parameters,
-        cpu_cores=cpu_cores,
-        gpu_device=resource_gpu,
-    )
-
-    _validate_workflow_inputs(spec, parameters)
+    parameters, function, cpu_cores, resource_gpu = _prepare_selection(spec, payload, request_path)
 
     with submission_priority(priority):
-        if spec.mode != "queued":
+        if isinstance(parameters, list):
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.input_batch import run_input_batch
+            run_dir = enqueue_workflow_call(
+                run_input_batch, task_group=spec.task_group, tool=spec.tool, job_type=spec.job_type,
+                kwargs={"workflow_id": workflow_id, "items": parameters, "cpu_cores": cpu_cores,
+                        "gpu_device": resource_gpu, "job_name": parameters[0].get("job_name") or "Selected inputs"},
+                cpu_cores=cpu_cores, gpu_device=resource_gpu,
+            )
+            related = {}
+        elif spec.mode != "queued":
             run_dir, related = _direct_result(spec, function, parameters)
             if spec.mode in {"target_prepare", "target_refolding_evaluation", "sequence_pipeline", "candidate_refolding", "enqueue"}:
                 _apply_custom_resource_request(run_dir, cpu_cores=cpu_cores, gpu_device=resource_gpu)
@@ -1005,22 +1044,7 @@ def validate_workflow_request(request_file: str | Path) -> dict[str, Any]:
     if unknown:
         raise AutomationError(f"Unsupported workflow request field(s): {', '.join(unknown)}")
     priority = _request_priority(payload)
-    parameters, function = _validate_generic_parameters(
-        spec,
-        payload.get("parameters", {}),
-        request_path,
-        source_job=payload.get("source_job"),
-    )
-    parameters = _resolve_source_job(parameters, payload.get("source_job"), function, spec)
-    cpu_cores, gpu_device = _validate_resources(payload.get("resources"))
-    _apply_resource_parameters(
-        spec,
-        function,
-        parameters,
-        cpu_cores=cpu_cores,
-        gpu_device=gpu_device,
-    )
-    _validate_workflow_inputs(spec, parameters)
+    parameters, function, cpu_cores, gpu_device = _prepare_selection(spec, payload, request_path)
     return {
         "valid": True,
         "schema_version": WORKFLOW_SCHEMA_VERSION,

@@ -20,6 +20,7 @@ from typing import Any
 
 from mn_molecular_design_studio import molecule_imports as imports
 from mn_molecular_design_studio.runtime import app_home
+from mn_molecular_design_studio.output_vocabulary import PREFIX, normalize_metrics, sql_common_metrics
 
 IMPORT_METHODS = {"user_uploads": "User uploads", "tool_inputs": "Tool inputs", "tool_output": "Tool output", "agent_inputs": "Agent inputs"}
 COLLECTION_KINDS = {"curated", "generated", "inputs", "evaluation", "intermediate"}
@@ -48,6 +49,7 @@ class MolecularDatabase:
     def connection(self):
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
+        connection.create_function("studio_common_metrics", 3, sql_common_metrics, deterministic=True)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=30000")
         connection.execute("PRAGMA journal_mode=WAL")
@@ -290,7 +292,12 @@ class MolecularDatabase:
                                       "WHERE o.group_id IN (SELECT value FROM json_each(?)) AND o.molecule_id IN "
                                       "(SELECT molecule_id FROM molecule_members WHERE group_id IN (SELECT value FROM json_each(?))) "
                                       "AND j.type IN ('real','integer') ORDER BY 1,2", (_json(accessible), _json(ids))).fetchall()
-        return [f"{row[0]}.{row[1]}" for row in rows]
+            common = connection.execute("SELECT DISTINCT j.key FROM molecule_observations o, "
+                                        "json_each(studio_common_metrics(o.metrics,o.namespace,o.context)) j "
+                                        "WHERE o.group_id IN (SELECT value FROM json_each(?)) AND o.molecule_id IN "
+                                        "(SELECT molecule_id FROM molecule_members WHERE group_id IN (SELECT value FROM json_each(?))) "
+                                        "ORDER BY j.key", (_json(accessible), _json(ids))).fetchall()
+        return [*[PREFIX + row[0] for row in common], *[f"{row[0]}.{row[1]}" for row in rows]]
 
     def list_molecules(self, user, *, group_id="", project_id="", scope="organization", methods=None, collection="all",
                        query="", molecule_type="", limit=100, offset=0, sort="added", descending=True, metric_filters=None, molecule_ids=None):
@@ -316,6 +323,14 @@ class MolecularDatabase:
             clause += " AND m.id IN (SELECT value FROM json_each(?))"
             parameters.append(_json(molecule_ids))
         def metric_expression(field, params):
+            if field.startswith(PREFIX):
+                key = '$.' + json.dumps(field[len(PREFIX):])
+                params.extend([key, accessible, key])
+                return ("(SELECT json_extract(studio_common_metrics(o.metrics,o.namespace,o.context),?) "
+                        "FROM molecule_observations o WHERE o.molecule_id=m.id "
+                        "AND o.group_id IN (SELECT value FROM json_each(?)) "
+                        "AND json_type(studio_common_metrics(o.metrics,o.namespace,o.context),?) IN ('integer','real') "
+                        "ORDER BY o.created_at DESC,o.id DESC LIMIT 1)")
             namespace, separator, key = field.partition(".")
             if not separator:
                 raise ValueError("Invalid metric field.")
@@ -361,9 +376,17 @@ class MolecularDatabase:
         for row in observations:
             record = result[row["molecule_id"]]
             observation = {**dict(row), "metrics": json.loads(row["metrics"]), "context": json.loads(row["context"])}
+            observation["normalized_output"] = normalize_metrics(observation["metrics"], row["namespace"], observation["context"])
             record["observations"].append(observation)
             for key, value in observation["metrics"].items():
                 record["scores"].setdefault(row["namespace"] + "." + key, value)
+            for key, value in observation["normalized_output"]["metrics"].items():
+                field = PREFIX + key
+                if field not in record["scores"]:
+                    record["scores"][field] = value
+                    record.setdefault("score_sources", {})[field] = {"observation_id": row["id"], "run_id": row["run_id"],
+                        "namespace": row["namespace"], "created_at": row["created_at"],
+                        **observation["normalized_output"]["provenance"][key]}
         for row in sources:
             result[row["molecule_id"]]["sources"].append({"source_key": row["source_key"], **json.loads(row["provenance"])})
         from mn_molecular_design_studio.molecule_schema import evaluate

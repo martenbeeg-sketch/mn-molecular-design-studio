@@ -338,7 +338,7 @@ ui.render_setup(
     assert parameters["compound_set_file"] == example_set["path"]
     assert parameters["recycling_steps"] == 5
     assert parameters["seed"] == 42
-    assert parameters["compound_limit"] == 100
+    assert parameters["compound_limit"] == 0
     ligand_tools.validate_ligand_tool_request(
         "ligand.affinity.nesso", parameters, require_files=False,
     )

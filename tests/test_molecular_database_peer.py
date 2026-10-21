@@ -45,6 +45,21 @@ def _sync_all(replica, source_database, target_database, author=SOURCE):
             apply_record(kind, key, value, author, database=target_database)
 
 
+def test_synchronized_generator_observations_project_same_common_values(roots):
+    source = MolecularDatabase(roots / "generator-source")
+    target = MolecularDatabase(roots / "generator-target")
+    imported = source.import_records(OWNER, molecule_imports.parse_sequences("ACDE"), name="Generated designs")
+    source.add_observation(imported["group_id"], imported["molecule_ids"][0], "bindcraft2_generator", "generation-1",
+        {"pTM": .8, "Target_pLDDT": .9}, context={"candidate": {"source_tool": "bindcraft2_generator", "stage": "generation.backbone_sequence", "binder_sequence": "ACDE"}})
+    replica = Replica()
+    _sync_all(replica, source, target)
+    row = target.list_molecules(OWNER)["items"][0]
+    assert row["scores"]["common.confidence.generator.complex.ptm"] == .8
+    assert row["scores"]["common.confidence.generator.target.plddt"] == 90
+    assert row["observations"][0]["metrics"]["Target_pLDDT"] == .9
+    assert "common.design.sequence_length" in target.metric_fields(OWNER)
+
+
 def _make_source_with_entry(root):
     database = MolecularDatabase(root)
     imported = database.import_records(

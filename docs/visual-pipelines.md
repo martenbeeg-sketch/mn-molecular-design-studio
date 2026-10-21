@@ -41,6 +41,11 @@ its active owned child jobs. Previous runs remain available in the results secti
 The Results block collects candidate structures and metrics for the studio results UI;
 it does not run a separate new RMSD calculation by itself.
 
+Selections of compounds, designs, sequences and candidates remain collections at
+every connected calculation step. Cofolding Inputs can reference a Database
+compound snapshot or a FASTA sequence collection; all selected records are passed
+to the engine's native batch runner in one job. See [automatic collection execution](automatic-collections.md).
+
 ## Verification
 
 The graph/API/queue tests use temporary files and simulated child jobs; they do not launch

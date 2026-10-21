@@ -31,6 +31,7 @@ GPU_TOOL_KEYWORDS = (
     "af3",
     "binder_scoring",
     "boltz",
+    "bioemu2",
     "colabfold",
     "esmfold",
     "foundry",
@@ -442,6 +443,8 @@ def _adopt_queued_job(task_group: str, job_type: str, tool: str, inputs: dict, p
         metadata.pop("queue_resource", None)
     metadata["updated_at"] = utc_now()
     write_json(job.run_dir / "metadata.json", metadata)
+    from mn_molecular_design_studio.batching import record_collection
+    record_collection(job.run_dir, inputs, params)
     return job
 
 
@@ -478,6 +481,8 @@ def create_job(task_group: str, job_type: str, tool: str, inputs: dict, params: 
     tag_created_job(run_dir, metadata)
     write_json(run_dir / "metadata.json", metadata)
     write_json(run_dir / "command.json", {"mode": "internal", "command": []})
+    from mn_molecular_design_studio.batching import record_collection
+    record_collection(run_dir, inputs, params)
     return JobPaths(task_group=task_group, run_id=run_id, run_dir=run_dir)
 
 

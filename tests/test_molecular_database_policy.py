@@ -99,6 +99,49 @@ def test_generated_complex_refolding_is_library_output(database):
     assert database.list_molecules(A, group_id=library[0]["id"], collection="library")["total"] == 1
 
 
+def test_generator_contracts_ingest_common_fields_and_preserve_output_identity(database):
+    definitions = [
+        ("bindcraft2_generator", "generation.backbone_sequence", "ACD", {"pTM": .8, "binder_ca_radius_of_gyration": 10}),
+        ("boltzgen_generator", "generation.backbone_sequence", "ACE", {"binder_ca_radius_of_gyration": 11}),
+        ("rfdiffusion3_foundry", "generation.backbone", None, {"binder_ca_radius_of_gyration": 12}),
+    ]
+    for index, (tool, stage, sequence, metrics) in enumerate(definitions):
+        candidate = {"candidate_id": f"design-{index}", "source_tool": tool, "stage": stage,
+                     "binder_sequence": sequence, "binder_chains": ["A"], "metrics": metrics}
+        if not sequence:
+            candidate["binder_pdb"] = "backbone.pdb"
+        run = _make_run(database, "design", f"generator-{index}", tool=tool, workflow="design_generation", candidates=[candidate])
+        if not sequence:
+            (run / "backbone.pdb").write_text(_pdb_acd())
+        assert ingest_run(run, database=database) == 1
+        assert ingest_run(run, database=database) == 0
+    page = database.list_molecules(A, sort="common.geometry.binder.ca_rg", descending=False)
+    assert page["total"] == 3
+    assert [row["scores"]["common.geometry.binder.ca_rg"] for row in page["items"]] == [10, 11, 12]
+    first = page["items"][0]
+    assert first["scores"]["common.confidence.generator.complex.ptm"] == .8
+    assert first["metadata"]["output_kind"] == "designed_structure"
+    assert len(first["observations"]) == 1
+    assert first["components"][0]["role"] == "binder"
+    assert len(database.list_molecules(A, collection="library")["items"]) == 2
+    assert page["items"][2]["metadata"]["output_kind"] == "backbone_proposal"
+    assert "common.design.sequence_length" not in page["items"][2]["scores"]
+
+
+def test_sequence_only_design_is_not_identified_as_target_structure(database):
+    from mn_molecular_design_studio.molecular_database_ingest import _record
+    target = database.root / "target.pdb"
+    target.write_text(_pdb_acd())
+    record = _record({"candidate_id": "new-design", "stage": "sequence_design", "binder_sequence": "KKK",
+                      "binder_chains": ["Z"], "target_chains": ["A"], "target_pdb": str(target),
+                      "source_tool": "esm_if1", "raw_metadata": {"source_tool": "rfdiffusion_generator"}}, database.root)
+    assert record["components"][0]["sequence"] == "KKK"
+    assert record["components"][0]["chain"] == "Z"
+    assert record["components"][0]["role"] == "binder"
+    assert record["metadata"]["source_tool"] == "esm_if1"
+    assert record["files"] == []
+
+
 def test_repeated_evaluations_reuse_original_group_and_accumulate_once(database):
     components = [{"chain": "A", "type": "protein", "sequence": "ACDE"}]
     imported = database.import_records(A, [{"name": "input", "components": components}], name="Original", project_id="project-1")

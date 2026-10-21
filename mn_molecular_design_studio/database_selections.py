@@ -95,9 +95,16 @@ def open_in_tool(database, user, ids, workflow, project_id):
         open_in_pipeline(database, user, ids, project_id)
         return
     if workflow == "boltz2":
-        if len(rows) != 1:
-            raise ValueError("Select one molecular complex for this input page.")
-        set_editor_selection("optimized-boltz2-1", rows[0])
+        if all(len(row["components"]) == 1 and row["components"][0].get("smiles") for row in rows):
+            key = f"design-validation-boltz2-{project_id}"
+            st.session_state[key + "-kind"] = "Compound collection"
+            st.session_state[key + "-collection-selected"] = database.compound_snapshot(user, ids, name="Database selection", project_id=project_id)
+        elif len(rows) == 1:
+            set_editor_selection("optimized-boltz2-1", rows[0])
+        else:
+            key = f"design-validation-boltz2-{project_id}"
+            st.session_state[key + "-kind"] = "Database molecules"
+            st.session_state[key + "-collection-molecules"] = rows
         st.session_state["selected_workflow"] = "refolding.optimized_prediction"
         st.session_state["selected_workflow_engine"] = "boltz2"
         st.session_state.setdefault("project-pending-selection", {})["optimized-prediction-boltz2-project-id"] = project_id

@@ -290,11 +290,11 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
             task_type = values["task_type"]
             st.caption("Provide sequence inputs for this task. A target PDB path is optional for most models and required by AlphaFold2 Initial Guess and BoltzGen Fold.")
             st.caption("The starter template includes every registered model that supports this molecule type. Ligand notation also affects which models are compatible.")
-            visible = {"target_protein_sequences", "target_pdb", "target_chain_id"}
+            visible = {"target_protein_sequences", "target_pdb", "target_chain_id", "sequence_file"}
             if task_type in {"protein_protein", "protein_macrocyclic"}:
                 visible.add("partner_protein_sequences")
             elif task_type == "protein_ligand":
-                visible.update({"ligand_input_type", "ligand_ccd_codes", "ligand_smiles"})
+                visible.update({"ligand_input_type", "ligand_ccd_codes", "ligand_smiles", "compound_set_file"})
             elif task_type == "protein_dna":
                 visible.add("dna_sequences")
             elif task_type == "protein_rna":
@@ -302,7 +302,7 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
             for field in spec["fields"]:
                 if field["name"] in visible and field["name"] != "task_type":
                     values[field["name"]] = _render_field(field, values, key)
-            target = bool(values.get("target_protein_sequences", "").strip())
+            target = bool(values.get("target_protein_sequences", "").strip() or values.get("sequence_file"))
             partner = bool(values.get("partner_protein_sequences", "").strip())
             if task_type == "protein":
                 ready = target
@@ -311,10 +311,10 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
             elif task_type == "protein_ligand":
                 if values.get("ligand_input_type") == "ccd":
                     values["ligand_smiles"] = ""
-                    ready = target and bool(values.get("ligand_ccd_codes", "").strip())
+                    ready = target and bool(values.get("compound_set_file") or values.get("ligand_ccd_codes", "").strip())
                 else:
                     values["ligand_ccd_codes"] = ""
-                    ready = target and bool(values.get("ligand_smiles", "").strip())
+                    ready = target and bool(values.get("compound_set_file") or values.get("ligand_smiles", "").strip())
             elif task_type == "protein_dna":
                 ready = target and bool(values.get("dna_sequences", "").strip())
             elif task_type == "protein_rna":

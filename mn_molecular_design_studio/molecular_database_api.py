@@ -67,6 +67,17 @@ def install(app, current_user):
         call(sync_workspace, user)
         return {"items": call(MolecularDatabase().groups, user, project_id=project_id, scope=scope, collection=collection)}
 
+    @router.get("/output-vocabulary")
+    def output_vocabulary(user=Depends(current_user)):
+        from mn_molecular_design_studio.output_vocabulary import vocabulary
+        return vocabulary()
+
+    @router.get("/metrics")
+    def metrics(group_id: str = "", project_id: str = "", scope: str = "organization", collection: str = "all", user=Depends(current_user)):
+        call(sync_workspace, user)
+        return {"items": call(MolecularDatabase().metric_fields, user, group_id=group_id,
+                              project_id=project_id, scope=scope, collection=collection)}
+
     @router.post("/groups", status_code=201)
     def create_group(payload: GroupRequest, user=Depends(current_user)):
         database = MolecularDatabase()

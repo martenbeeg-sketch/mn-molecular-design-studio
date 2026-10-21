@@ -95,6 +95,7 @@ def source_generations(source_run_dir: str, project_id: str, selected_ids=None, 
 
 
 def source_molecule_selection(source_run_dir: str, project_id: str, selected_ids=None):
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
     run_dir = _path(source_run_dir)
     marker = read_json(run_dir / "molecular_design_studio.json")
     metadata = read_json(run_dir / "metadata.json")
@@ -243,20 +244,38 @@ def _optimized_prediction_tasks(engine: str, source: dict, params: dict) -> list
                     "query_chain_id": query_ids[index], "template_chain_id": chain_id,
                 })
             task["structure_templates"] = templates
-        return [task]
+        from mn_molecular_design_studio.batching import prediction_collection_tasks
+        return prediction_collection_tasks(
+            task, compound_set_file=task_input.get("compound_set_file"),
+            sequence_file=task_input.get("sequence_file"),
+        )
 
     run_dir = _path(source["run_dir"])
     rows = _absolute_candidates(source)
     if not rows:
         raise ValueError(f"{profile['label']} needs at least one connected candidate complex.")
-    if len(rows) > 32:
-        raise ValueError(f"{profile['label']} accepts up to 32 candidate complexes per pipeline step; reduce the upstream design or sequence count.")
+    from mn_molecular_design_studio.batching import MAX_PREDICTION_ITEMS
+    if len(rows) > MAX_PREDICTION_ITEMS:
+        raise ValueError(f"{profile['label']} accepts up to {MAX_PREDICTION_ITEMS} candidate complexes per pipeline step; reduce the upstream selection.")
     tasks = []
     chain_ids = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
     for candidate in rows:
         candidate_id = str(candidate.get("candidate_id") or "")
         if not candidate_id:
             raise ValueError(f"{profile['label']} cannot map a candidate without an ID back to its input.")
+        library = candidate.get("raw_metadata") or {}
+        if library.get("studio_molecule_id") and library.get("components"):
+            components = library["components"]
+            tasks.append({
+                "name": candidate_id,
+                "source_candidate_id": candidate_id, "source_run_dir": str(run_dir),
+                "protein_sequences": ":".join(row["sequence"] for row in components if row["type"] == "protein"),
+                "dna_sequences": ":".join(row["sequence"] for row in components if row["type"] == "dna"),
+                "rna_sequences": ":".join(row["sequence"] for row in components if row["type"] == "rna"),
+                "ligand_smiles": "\n".join(row["smiles"] for row in components if row["type"] == "small_molecule" and row.get("smiles")),
+                "ligand_ccd_codes": ":".join(row["ccd"] for row in components if row["type"] == "small_molecule" and not row.get("smiles") and row.get("ccd")),
+            })
+            continue
         info = design_validation.candidate_description(run_dir, candidate)
         target_chains = list(info["target_chains"])
         binder_chains = list(info["binder_chains"])
@@ -370,7 +389,8 @@ def filter_candidates(rows: list[dict], settings: dict) -> list[dict]:
     metric = str(settings.get("metric") or "").strip()
     compare = {">=": operator.ge, "<=": operator.le, ">": operator.gt, "<": operator.lt}[settings["operator"]]
     def score(row):
-        value = row.get("metrics", {}).get(metric)
+        from mn_molecular_design_studio.output_vocabulary import metric_value
+        value = metric_value(row, metric)
         try:
             return float(value) if value is not None and not isinstance(value, bool) else None
         except (TypeError, ValueError):
@@ -934,7 +954,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     if kind == 'cofold_input':
                         task = {key: copy.deepcopy(params.get(key, '')) for key in (
                             'task_type', 'target_protein_sequences', 'partner_protein_sequences',
-                            'dna_sequences', 'rna_sequences', 'ligand_input_type', 'ligand_ccd_codes', 'ligand_smiles',
+                            'dna_sequences', 'rna_sequences', 'ligand_input_type', 'ligand_ccd_codes', 'ligand_smiles', 'compound_set_file', 'sequence_file',
                             'cyclic_partner', 'target_chain_id',
                         )}
                         target_pdb = str(params.get('target_pdb') or '').strip()

@@ -120,6 +120,73 @@ def test_api_creates_one_engine_specific_named_job_before_dispatch(api_queue, en
     assert listed["items"][0]["campaign_name"] == f"test-{engine}"
 
 
+@pytest.mark.parametrize("engine", prediction.ENGINE_PROFILES)
+def test_api_selected_prediction_inputs_automatically_share_one_native_job(api_queue, engine):
+    payload = request_for(engine)
+    parameters = payload["parameters"]
+    payload["parameters"] = [parameters, {**parameters, "job_name": "second selected input"}]
+    response = api_queue.client.post("/api/v1/workflows", json=payload)
+    assert response.status_code == 202, response.text
+    run = Path(response.json()["job"]["run_dir"])
+    invocation = jobs.read_json(run / "worker_request.json")
+    assert invocation["function"] == "run_optimized_prediction"
+    assert len(invocation["kwargs"]["tasks"]) == 2
+    assert len(api_queue.dispatched) == 1
+    assert len(list(api_queue.root.glob("*/*/metadata.json"))) == 1
+    assert jobs.read_json(run / "metadata.json")["batch"]["item_count"] == 2
+
+
+def test_invalid_selected_input_does_not_partially_submit_batch(api_queue):
+    payload = request_for("boltz2")
+    parameters = payload["parameters"]
+    payload["parameters"] = [parameters, {**parameters, "tasks": [{}]}]
+    response = api_queue.client.post("/api/v1/workflows", json=payload)
+    assert response.status_code == 422
+    assert api_queue.dispatched == []
+    assert not list(api_queue.root.glob("*/*/metadata.json"))
+
+
+@pytest.mark.parametrize("engine", ["boltz2", "alphafold3", "af3_torch", "protenix_v2"])
+def test_selected_inputs_reach_container_as_one_native_batch(api_queue, monkeypatch, engine):
+    reference = api_queue.root.parent / "reference"
+    cache = reference / "boltz_models"
+    cache.mkdir(parents=True)
+    for name in ("boltz2_conf.ckpt", "boltz2_aff.ckpt", "ccd.pkl", "mols.tar"):
+        (cache / name).write_bytes(b"test reference")
+    payload = request_for(engine)
+    parameters = payload["parameters"]
+    payload["parameters"] = [parameters, {**parameters, "job_name": "second selected input"}]
+    response = api_queue.client.post("/api/v1/workflows", json=payload)
+    assert response.status_code == 202, response.text
+    run = Path(response.json()["job"]["run_dir"])
+    metadata = jobs.read_json(run / "metadata.json")
+    jobs.write_json(run / "metadata.json", {**metadata, "scheduler_backend": central_scheduler.BACKEND})
+    invocations = []
+    def stage(run_dir, **kwargs):
+        path = run_dir / "artifacts" / (kwargs["item_id"] + ".json")
+        path.write_text("{}")
+        return path, {}
+    def predict(command, *, cwd, **kwargs):
+        invocations.append(command)
+        raw = cwd / "artifacts/raw/optimized_prediction"
+        manifest = json.loads((raw / "mn_predict_manifest.json").read_text())
+        assert len(manifest["items"]) == 2
+        rows = []
+        for item in manifest["items"]:
+            structure = raw / "output" / (item["id"] + ".pdb")
+            structure.write_text(PDB)
+            rows.append({"id": item["id"], "status": "completed", "outputs": [structure.relative_to(cwd).as_posix()]})
+        (raw / "output/mn-batch-result.json").write_text(json.dumps({"items": rows}))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(prediction, "_stage_native_input", stage)
+    monkeypatch.setattr(prediction.subprocess, "run", predict)
+    workflow_queue.run_workflow_call(run, jobs.read_json(run / "worker_request.json"))
+    assert len(invocations) == 1
+    assert jobs.read_json(run / "metadata.json")["status"] == "completed"
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+    assert len(read_candidates(run)) == 2
+
+
 @pytest.mark.parametrize("changes", [
     {"tasks": []},
     {"tasks": [{}]},

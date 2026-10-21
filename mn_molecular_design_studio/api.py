@@ -306,6 +306,11 @@ def _validate_user_path_values(value: Any, user: dict[str, Any], request_dir: Pa
 
 def _guard_source_job(payload: dict[str, Any], user: dict[str, Any], *, project_id: str) -> None:
     parameters = payload.get("parameters")
+    if isinstance(parameters, list):
+        from mn_molecular_design_studio.batching import parameter_items
+        for item in _call(parameter_items, parameters):
+            _guard_source_job({**payload, "parameters": item}, user, project_id=project_id)
+        return
     if payload.get("workflow") in {"sequence.mpnn", "sequence.esm_if1", "sequence.caliby", "sequence.boltzgen_inverse"} and isinstance(parameters, dict) and parameters.get("source_run_dir"):
         from mn_molecular_design_studio.job_catalog import get_job_access_record
         run_dir = resolve_stored_path(parameters["source_run_dir"], must_exist=True)

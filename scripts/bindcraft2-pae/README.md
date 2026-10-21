@@ -16,4 +16,4 @@ Build the Studio image overlay from the existing CUDA image with:
 bash scripts/build_bindcraft2_pae_image.sh
 ```
 
-The default output image is `mn-bindcraft2:c0ee638-cu13-pae-v1`. Set `BINDCRAFT2_BASE_IMAGE` and/or `BINDCRAFT2_PAE_IMAGE` to override those tags.
+The default output image is `mn-bindcraft2:v1.0.4-cu13-pae-v1`. Set `BINDCRAFT2_BASE_IMAGE` and/or `BINDCRAFT2_PAE_IMAGE` to override those tags.

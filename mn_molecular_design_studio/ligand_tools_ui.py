@@ -646,7 +646,7 @@ def render_setup(
         }
         with st.expander("Preparation and sampling", expanded=False):
             cols = st.columns(3)
-            compound_limit = int(cols[0].number_input("Maximum compounds", min_value=1, max_value=5000, value=10, step=1, key="ligand-rosetta-limit"))
+            compound_limit = int(cols[0].number_input("Compound limit (0 = all selected)", min_value=0, max_value=5000, value=0, step=1, key="ligand-rosetta-limit"))
             cpu_cores = int(cols[1].number_input("CPU workers", min_value=1, max_value=128, value=8, step=1, key="ligand-rosetta-cpu"))
             replicates = int(cols[2].number_input("Replicates", min_value=1, max_value=100, value=1, step=1, key="ligand-rosetta-replicates"))
             cols = st.columns(3)
@@ -685,7 +685,7 @@ def render_setup(
             else:
                 exhaustiveness = int(search_cols[0].number_input("Exhaustiveness", min_value=1, max_value=1024, value=8, step=1, key=f"ligand-{tool_key}-exhaustiveness"))
             num_modes = 9 if is_autodock_gpu else int(search_cols[1].number_input("Poses per compound", min_value=1, max_value=100, value=9, step=1, key=f"ligand-{tool_key}-modes"))
-            compound_limit = int(search_cols[1 if is_autodock_gpu else 2].number_input("Maximum compounds", min_value=1, max_value=5000, value=100, step=10, key=f"ligand-{tool_key}-limit"))
+            compound_limit = int(search_cols[1 if is_autodock_gpu else 2].number_input("Compound limit (0 = all selected)", min_value=0, max_value=5000, value=0, step=10, key=f"ligand-{tool_key}-limit"))
             cpu_label = "CPU cores / Vina compound workers" if is_vina else "CPU cores"
             cpu_help = (
                 "This is the total CPU allocation. Vina docks up to this many compounds concurrently, using one CPU thread per compound."
@@ -802,7 +802,7 @@ def render_setup(
             settings_cols = st.columns(3)
             recycling_steps = int(settings_cols[0].number_input("Recycling steps", min_value=1, max_value=64, value=5, step=1, key="ligand-nesso-recycles"))
             seed = int(settings_cols[1].number_input("Seed", min_value=1, max_value=2_147_483_646, value=42, step=1, key="ligand-nesso-seed"))
-            compound_limit = int(settings_cols[2].number_input("Maximum compounds", min_value=1, max_value=5000, value=100, step=10, key="ligand-nesso-limit"))
+            compound_limit = int(settings_cols[2].number_input("Compound limit (0 = all selected)", min_value=0, max_value=5000, value=0, step=10, key="ligand-nesso-limit"))
         parameters = {
             "recycling_steps": recycling_steps, "seed": seed,
             "compound_limit": compound_limit, "gpu_device": "0",

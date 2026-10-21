@@ -3,8 +3,8 @@ set -euo pipefail
 
 studio_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 patch_directory="$studio_root/scripts/bindcraft2-pae"
-base_image="${BINDCRAFT2_BASE_IMAGE:-mn-bindcraft2:c0ee638-cu13}"
-image_tag="${BINDCRAFT2_PAE_IMAGE:-mn-bindcraft2:c0ee638-cu13-pae-v1}"
+base_image="${BINDCRAFT2_BASE_IMAGE:-mn-bindcraft2:v1.0.4-cu13}"
+image_tag="${BINDCRAFT2_PAE_IMAGE:-mn-bindcraft2:v1.0.4-cu13-pae-v1}"
 
 docker image inspect "$base_image" >/dev/null
 docker build \

@@ -1907,6 +1907,8 @@ def _prepare_prediction(
     validation_mode: Literal["complex", "binder"] | None = None,
     use_target_template: bool = True,
     target_use_msa: bool = True,
+    compound_set_file: Path | None = None,
+    sequence_file: Path | None = None,
     *,
     resolve_random_seed: bool = True,
 ) -> _PreparedPrediction:
@@ -1948,7 +1950,7 @@ def _prepare_prediction(
             profile = {**profile, "label": model_profile["label"],
                        "gpu_count": {"big": 2} if model_profile["two_gpu_big"] else {}}
     if validation_sources is not None:
-        if tasks is not None or protein_sequences.strip() or binder_sequence.strip():
+        if tasks is not None or protein_sequences.strip() or binder_sequence.strip() or compound_set_file or sequence_file:
             raise ValueError("Use selected designs or new molecule inputs in one batch, not both.")
         tasks = design_validation.build_tasks(
             validation_sources, mode=validation_mode or "complex", profile=profile,
@@ -1972,7 +1974,14 @@ def _prepare_prediction(
         "ligand_ccd_codes": ligand_ccd_codes,
         "ligand_smiles": ligand_smiles,
     }]
-    task_limit = 1024 if validation_sources is not None else 32
+    from mn_molecular_design_studio.batching import MAX_PREDICTION_ITEMS, prediction_collection_tasks
+    if compound_set_file or sequence_file:
+        if tasks is not None:
+            raise ValueError("Use a collection or explicit prediction tasks, not both.")
+        raw_tasks = prediction_collection_tasks(raw_tasks[0], compound_set_file=compound_set_file, sequence_file=sequence_file)
+    if supports_boltz_features and isinstance(raw_tasks, list) and any(task.get("source_compound_id") for task in raw_tasks if isinstance(task, dict)):
+        selected_options["use_potentials"] = bool((engine_options or {}).get("use_potentials", True))
+    task_limit = MAX_PREDICTION_ITEMS
     if not isinstance(raw_tasks, list) or not 1 <= len(raw_tasks) <= task_limit:
         raise ValueError(f"Submit between 1 and {task_limit} independent tasks per batch.")
     normalized_tasks: list[dict[str, Any]] = []
@@ -2106,6 +2115,7 @@ def _prepare_prediction(
             "index": index,
             "id": item_id,
             "name": task_name,
+            "source_input_name": str(raw_task.get("name") or default_input_name),
             "job_name": task_job_name,
             "proteins": task_proteins,
             "target_protein_ids": target_ids,
@@ -2125,11 +2135,12 @@ def _prepare_prediction(
             "boltz_templates": raw_task.get("boltz_templates") or [],
             "template_distance_threshold": raw_task.get("template_distance_threshold"),
             "boltz_custom_msas": raw_task.get("boltz_custom_msas") or [],
-            "affinity_binder": str(raw_task.get("affinity_binder") or "").strip(),
+            "affinity_binder": str(raw_task.get("affinity_binder") or (smiles_entities[0]["id"] if supports_boltz_features and raw_task.get("source_compound_id") and smiles_entities else "")).strip(),
             "structure_templates": structure_templates.validate_uploads(
                 raw_task.get("structure_templates"), supported=bool(profile.get("supports_templates"))),
             "validation_reference": raw_task.get("validation_reference"),
             "source_candidate_id": str(raw_task.get("source_candidate_id") or ""),
+            "source_compound_id": str(raw_task.get("source_compound_id") or ""),
             "source_run_dir": str(raw_task.get("source_run_dir") or ""),
             "binder_use_msa": bool(raw_task.get("binder_use_msa", True)),
             "raw_yaml_proteins": raw_yaml_proteins,
@@ -2240,6 +2251,8 @@ def run_optimized_prediction(
     validation_mode: Literal["complex", "binder"] | None = None,
     use_target_template: bool = True,
     target_use_msa: bool = True,
+    compound_set_file: Path | None = None,
+    sequence_file: Path | None = None,
 ) -> Path:
     """Run one engine using the same input checks as API preflight validation."""
     prepared = _prepare_prediction(
@@ -2254,6 +2267,7 @@ def run_optimized_prediction(
         tasks=tasks, engine_options=engine_options,
         validation_sources=validation_sources, validation_mode=validation_mode,
         use_target_template=use_target_template, target_use_msa=target_use_msa,
+        compound_set_file=compound_set_file, sequence_file=sequence_file,
     )
     profile = prepared.profile
     selected_mode = prepared.selected_mode
@@ -2274,6 +2288,7 @@ def run_optimized_prediction(
         inputs={
             "tasks": [{
                 "name": task["name"],
+                "source_input_name": task["source_input_name"],
                 "protein_chains": [
                     {"id": row["id"], "sequence": row["sequence"],
                      "role": (
@@ -2362,7 +2377,7 @@ def run_optimized_prediction(
             if input_details.get("chai_template_hits"):
                 chai_template_hits.append(input_details["chai_template_hits"])
             input_mappings.append({
-                "id": task["id"], "name": task["name"],
+                "id": task["id"], "name": task["name"], "source_input_name": task["source_input_name"],
                 "protein_chains": [
                     {"id": row["id"], "length": len(row["sequence"]),
                      "role": (
@@ -2606,6 +2621,7 @@ def run_optimized_prediction(
                         "engine": engine, "image": profile["image"], "api_engine": profile["api_engine"],
                         "optimization_mode": selected_mode, "seed": int(seed),
                         "confidence_outputs": confidence, "batch_item_id": task["id"],
+                        "input_name": task["source_input_name"], "source_compound_id": task["source_compound_id"],
                         **({"source_run_dir": task["source_run_dir"]} if task.get("source_run_dir") else {}),
                         "protein_chains": [
                             {

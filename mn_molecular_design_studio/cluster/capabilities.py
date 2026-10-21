@@ -106,7 +106,8 @@ def requirements(payload, *, references=(), installed_images=None):
             if spec.get("workflow"):
                 workflows.append((spec["workflow"], node["data"].get("params", {})))
     else:
-        workflows.append((payload["workflow"], payload.get("parameters", {})))
+        from mn_molecular_design_studio.batching import parameter_items
+        workflows.extend((payload["workflow"], item) for item in parameter_items(payload.get("parameters", {})))
     cpu_only = True
     minimum_gpus = 0
     for workflow, p in workflows:
@@ -197,7 +198,8 @@ def requirements(payload, *, references=(), installed_images=None):
                     needed_refs.add(directory)
     installed = installed_images if installed_images is not None else images()
     requested = payload.get("resources", {})
-    p = payload.get("parameters", {})
+    selected = payload.get("parameters", {})
+    p = selected[0] if isinstance(selected, list) else selected
     default_device = "auto"
     if payload.get("graph"):
         default_device = "all"
@@ -206,6 +208,9 @@ def requirements(payload, *, references=(), installed_images=None):
         parameter = inspect.signature(_get_function(WORKFLOWS[workflows[0][0]])).parameters.get("gpu_device")
         if parameter is not None and parameter.default is not inspect.Parameter.empty:
             default_device = parameter.default
+    devices = {str(item.get("gpu_device", default_device)) for _, item in workflows}
+    if len(devices) > 1 and not requested.get("gpu_device") and not payload.get("graph"):
+        raise ValueError("Selected inputs must share one GPU allocation; set resources.gpu_device for the batch.")
     device = str(requested.get("gpu_device", payload.get("gpu_device", p.get("gpu_device", default_device)))).removeprefix("device=")
     gpu_ids = [int(v) for v in device.split(",")] if device and all(v.isdigit() for v in device.split(",")) else []
     if gpu_ids and len(gpu_ids) < minimum_gpus:
@@ -214,5 +219,5 @@ def requirements(payload, *, references=(), installed_images=None):
     return {"images": {image: installed.get(image, "") for image in sorted(needed_images)}, "references": sorted(needed_refs),
             "code_revision": code_revision(), "gpu_count": gpu_count, "gpu_ids": gpu_ids,
             "all_gpus": not cpu_only and device == "all",
-            "min_vram_gb": 8 if gpu_count else 0, "cpu_threads": requested.get("cpu_cores") or p.get("cpu_cores") or 4,
+            "min_vram_gb": 8 if gpu_count else 0, "cpu_threads": requested.get("cpu_cores") or max((item.get("cpu_cores") or item.get("cpu_threads") or 4 for _, item in workflows), default=4),
             "ram_gb": 0, "scratch_gb": 1}

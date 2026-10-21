@@ -536,11 +536,8 @@ def _read_fasta_sequences(path: Path) -> list[dict[str, Any]]:
         rows.append({"header": header, "sequence": "".join(seq)})
     parsed: list[dict[str, Any]] = []
     for row in rows:
-        metrics: dict[str, Any] = {}
-        for key in ["score", "global_score", "seq_recovery"]:
-            match = re.search(rf"{key}=(-?\d+(?:\.\d+)?)", row["header"])
-            if match:
-                metrics[key] = float(match.group(1))
+        from mn_molecular_design_studio.output_vocabulary import fasta_metrics
+        metrics = fasta_metrics(row["header"])
         parsed.append({**row, "metrics": metrics})
     return parsed
 

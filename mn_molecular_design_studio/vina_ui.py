@@ -1165,7 +1165,7 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
                         type=["sdf"], key="ligand-rosetta-reference-ligand",
                     )
                     cols = st.columns(3)
-                    limit = int(cols[0].number_input("Maximum compounds", value=10, min_value=1, max_value=5000, step=1, key="ligand-rosetta-limit"))
+                    limit = int(cols[0].number_input("Compound limit (0 = all selected)", value=0, min_value=0, max_value=5000, step=1, key="ligand-rosetta-limit"))
                     cores = int(cols[1].number_input("CPU workers", value=8, min_value=1, max_value=128, key="ligand-rosetta-cpu"))
                     replicates = int(cols[2].number_input("Replicates", value=1, min_value=1, max_value=100, key="ligand-rosetta-replicates"))
                     cols = st.columns(3)
@@ -1219,7 +1219,7 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
                             help="Number of AutoDock4 genetic-algorithm runs per ligand. AutoDock-GPU returns its best pose.",
                         ))
                         limit = int(cols[1].number_input(
-                            "Maximum compounds", value=100, min_value=1, max_value=5000,
+                            "Compound limit (0 = all selected)", value=0, min_value=0, max_value=5000,
                             key="ligand-autodock-gpu-compound-limit",
                         ))
                         cores = int(cols[2].number_input(
@@ -1247,7 +1247,7 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
                             key=f"ligand-{tool_key}-num-modes",
                             help="Maximum binding modes to return. This does not increase search effort, and the engine may return fewer.",
                         ))
-                        limit = int(cols[2].number_input("Maximum compounds", value=100, min_value=1, max_value=5000, key=f"ligand-{tool_key}-compound-limit"))
+                        limit = int(cols[2].number_input("Compound limit (0 = all selected)", value=0, min_value=0, max_value=5000, key=f"ligand-{tool_key}-compound-limit"))
                         cores = int(cols[3].number_input("CPU cores", value=4, min_value=1, max_value=256, key=f"ligand-{tool_key}-cpu-cores"))
                         gpu_device = st.text_input("GPU device", value="0", key=f"ligand-{tool_key}-gpu", help="Use a device ID such as 0.") if (is_gnina or is_unidock) else "none"
                     seed = int(st.number_input("Random seed", value=42, min_value=1, max_value=2_147_483_646, key=f"ligand-{tool_key}-seed"))

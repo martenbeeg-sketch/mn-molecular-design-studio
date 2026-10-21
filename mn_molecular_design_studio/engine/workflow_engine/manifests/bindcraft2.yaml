@@ -1,6 +1,6 @@
 tool: bindcraft2
 group: design
-image: mn-bindcraft2:c0ee638-cu13
+image: mn-bindcraft2:v1.0.4-cu13-pae-v1
 gpu: true
 description: BindCraft 2 design against a PDB/mmCIF structure or a disordered FASTA sequence, with AlphaFold validation.
 inputs:

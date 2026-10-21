@@ -1,8 +1,9 @@
 # Refolding selected designs
 
-Open a cofolding engine tile, select a project, then open **Batch mode → Validate
+Open a cofolding engine tile, select a project, then choose **Input source → Validate
 existing designs**. Select design campaigns and the individual designs to predict.
 Submission is manual and uses the existing API and compute scheduler.
+The full selection is automatically one native batch job; no batch-mode switch is required.
 
 ## Eligibility and project scope
 

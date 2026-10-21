@@ -193,10 +193,12 @@ def _safe_id(value: object, index: int) -> str:
 
 
 def _validated_compound_set(path: Path, compound_limit: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    if type(compound_limit) is not int or not 1 <= compound_limit <= _MAX_COMPOUNDS_PER_LAUNCH:
-        raise ValueError(f"compound_limit must be between 1 and {_MAX_COMPOUNDS_PER_LAUNCH}.")
+    if type(compound_limit) is not int or not 0 <= compound_limit <= _MAX_COMPOUNDS_PER_LAUNCH:
+        raise ValueError(f"compound_limit must be between 0 (all selected) and {_MAX_COMPOUNDS_PER_LAUNCH}.")
     payload = ligand_compounds.load_compound_set(Path(path))
-    compounds = payload["compounds"][:compound_limit]
+    compounds = payload["compounds"][:compound_limit] if compound_limit else payload["compounds"]
+    if len(compounds) > _MAX_COMPOUNDS_PER_LAUNCH:
+        raise ValueError(f"Select at most {_MAX_COMPOUNDS_PER_LAUNCH} compounds for this run; no compounds were silently omitted.")
     if not compounds:
         raise ValueError("The selected compound set is empty.")
     return payload, compounds
@@ -726,9 +728,9 @@ def validate_ligand_tool_request(workflow_id: str, parameters: dict[str, Any], *
     if workflow_id.startswith("ligand.generation."):
         _validate_generator_tile_request(workflow_id, parameters, require_files=require_files)
         return
-    compound_limit = parameters.get("compound_limit", 100)
-    if type(compound_limit) is not int or not 1 <= compound_limit <= _MAX_COMPOUNDS_PER_LAUNCH:
-        raise ValueError(f"compound_limit must be between 1 and {_MAX_COMPOUNDS_PER_LAUNCH}.")
+    compound_limit = parameters.get("compound_limit", 0)
+    if type(compound_limit) is not int or not 0 <= compound_limit <= _MAX_COMPOUNDS_PER_LAUNCH:
+        raise ValueError(f"compound_limit must be between 0 (all selected) and {_MAX_COMPOUNDS_PER_LAUNCH}.")
     if require_files:
         validate_target_pdb(Path(parameters["target_pdb"]))
         _validated_compound_set(Path(parameters["compound_set_file"]), compound_limit)
@@ -1533,7 +1535,7 @@ def run_ligand_autodock_gpu(
     size_z: float = 20.0,
     nrun: int = 20,
     seed: int = 42,
-    compound_limit: int = 100,
+    compound_limit: int = 0,
     cpu_cores: int = 4,
     gpu_device: str = "0",
     align_longest_axis_to_x: bool = False,
@@ -1698,7 +1700,7 @@ def run_ligand_vina(
     exhaustiveness: int = 32,
     num_modes: int = 10,
     seed: int = 42,
-    compound_limit: int = 100,
+    compound_limit: int = 0,
     cpu_cores: int = 4,
     gpu_device: str = "none",
     align_longest_axis_to_x: bool = False,
@@ -1737,7 +1739,7 @@ def run_ligand_gnina(
     exhaustiveness: int = 8,
     num_modes: int = 9,
     seed: int = 42,
-    compound_limit: int = 100,
+    compound_limit: int = 0,
     cpu_cores: int = 4,
     compound_workers: int = 2,
     gpu_device: str = "0",
@@ -1780,7 +1782,7 @@ def run_ligand_unidock_pro(
     search_mode: str = "balance",
     num_modes: int = 9,
     seed: int = 42,
-    compound_limit: int = 100,
+    compound_limit: int = 0,
     cpu_cores: int = 4,
     gpu_device: str = "0",
     align_longest_axis_to_x: bool = False,
@@ -2064,7 +2066,7 @@ def run_ligand_rosetta_ligand(
     protocol: str = "vsh",
     reference_mode: str = "pocket_center",
     reference_ligand_sdf: Path | None = None,
-    compound_limit: int = 10,
+    compound_limit: int = 0,
     cpu_cores: int = 8,
     ph: float = 7.4,
     conformers: int = 20,
@@ -2669,7 +2671,7 @@ def run_ligand_nesso(
     compound_set_file: Path,
     recycling_steps: int = 5,
     seed: int = 42,
-    compound_limit: int = 100,
+    compound_limit: int = 0,
     gpu_device: str = "0",
 ) -> Path:
     """Predict affinity for a Studio Database compound set with Nesso-1."""

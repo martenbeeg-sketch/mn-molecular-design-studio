@@ -14,6 +14,7 @@ import streamlit as st
 from mn_molecular_design_studio import molecule_imports as imports
 from mn_molecular_design_studio.molecular_database import MolecularDatabase, IMPORT_METHODS
 from mn_molecular_design_studio.molecular_database_ingest import sync_workspace
+from mn_molecular_design_studio.output_vocabulary import PREFIX, field_label
 
 TYPE_LABELS = {"protein": "Protein", "small_molecule": "Small molecule", "dna": "DNA", "rna": "RNA", "complex": "Complex"}
 CSS = '''<style>
@@ -347,11 +348,23 @@ def render_details(database, user, record):
             st.caption("No scores recorded yet.")
         else:
             st.caption("Latest recorded scores appear in the sheet. All runs remain available here.")
+            common_rows = []
+            for observation in record["observations"]:
+                output = observation.get("normalized_output") or {}
+                for key, value in output.get("metrics", {}).items():
+                    info = output["provenance"][key]
+                    common_rows.append({"Measurement": field_label(PREFIX + key), "Value": value,
+                        "Tool": info["source_tool"], "Original field": ", ".join(item["source_field"] for item in info["aliases"]),
+                        "Method": info["method"], "Scope": info["scope"], "Run": observation["run_id"]})
+            if common_rows:
+                st.dataframe(common_rows, hide_index=True, use_container_width=True)
+                st.caption("Common columns use the latest available measurement. Each source run and original value is retained below.")
             rows = []
             for observation in record["observations"]:
                 for key, value in observation["metrics"].items():
                     rows.append({"Tool": observation["namespace"], "Metric": key, "Value": value, "Run": observation["run_id"], "Recorded": observation["created_at"][:19], "Units": observation["context"].get("units") or ""})
-            st.dataframe(rows, hide_index=True, use_container_width=True)
+            with st.expander("Original tool scores", expanded=not bool(common_rows)):
+                st.dataframe(rows, hide_index=True, use_container_width=True)
             with st.expander("Calculation context"):
                 observation = st.selectbox("Run", range(len(record["observations"])), format_func=lambda index: record["observations"][index]["namespace"] + " · " + record["observations"][index]["run_id"], key="database-context-" + record["id"])
                 st.json(record["observations"][observation]["context"])
@@ -481,18 +494,18 @@ def render_database(user, projects):
             sort_options = ["added", "name", *metric_fields]
             if st.session_state.get("molecular-sort") not in sort_options:
                 st.session_state["molecular-sort"] = "added"
-            sort = sort_col.selectbox("Sort", sort_options, format_func=lambda value: value.title() if value in {"added", "name"} else value, key="molecular-sort", label_visibility="collapsed")
+            sort = sort_col.selectbox("Sort", sort_options, format_func=lambda value: value.title() if value in {"added", "name"} else field_label(value), key="molecular-sort", label_visibility="collapsed")
             descending = order_col.toggle("Desc", value=True, key="molecular-desc")
             filters = []
             with filter_col.popover("Filter", use_container_width=True):
                 kind = st.selectbox("Molecule type", ["", *TYPE_LABELS], format_func=lambda value: TYPE_LABELS.get(value, "All types"), key="molecular-type-filter")
                 if not set(st.session_state.get("molecular-score-filters") or []).issubset(metric_fields):
                     st.session_state["molecular-score-filters"] = []
-                score_fields = st.multiselect("Score filters", metric_fields, key="molecular-score-filters")
+                score_fields = st.multiselect("Score filters", metric_fields, format_func=field_label, key="molecular-score-filters")
                 for field in score_fields:
                     left, right = st.columns([1, 2])
                     operator = left.selectbox(field + " comparison", [">=", "<=", ">", "<", "="], key="molecular-op-" + field, label_visibility="collapsed")
-                    value = right.number_input(field, value=0.0, key="molecular-value-" + field)
+                    value = right.number_input(field_label(field), value=0.0, key="molecular-value-" + field)
                     filters.append({"field": field, "operator": operator, "value": value})
             args = {**query_args, "query": query, "molecule_type": kind, "sort": sort, "descending": descending, "metric_filters": filters}
             signature = hashlib.sha1(json.dumps(args, sort_keys=True).encode()).hexdigest()
@@ -509,7 +522,9 @@ def render_database(user, projects):
             all_columns = [*basic_columns, *chain_columns, *metric_fields, "Origin", "Added", "Tags", "Notes", "Status", *list(dict.fromkeys(key for row in rows for key in row["values"] if key.startswith("Property · ")))]
             with st.popover("Columns", icon=":material/view_column:"):
                 key = "molecular-columns-" + hashlib.sha1((group_id + "|".join(all_columns)).encode()).hexdigest()[:12]
-                columns = st.multiselect("Visible columns", all_columns, default=[*basic_columns, *chain_columns[:2], *metric_fields[:3]], key=key)
+                preferred = [PREFIX + key for key in ("design.sequence_length", "geometry.binder.ca_rg", "secondary_structure.binder.dssp.helix_fraction") if PREFIX + key in metric_fields]
+                columns = st.multiselect("Visible columns", all_columns, default=[*basic_columns, *chain_columns[:2], *(preferred or metric_fields[:3])], format_func=field_label, key=key)
+                st.caption("Common measurements share a definition and unit across tools. Original tool fields are also available.")
             columns = list(dict.fromkeys(["Name", *columns]))
             if records:
                 from mn_molecular_design_studio.molecule_table import render_table
@@ -517,7 +532,7 @@ def render_database(user, projects):
                 if current_focus not in {row["id"] for row in records}:
                     current_focus = records[0]["id"]
                     st.session_state["database-focus"] = current_focus
-                event = render_table(rows, [{"key": field, "label": field, "kind": "sequence" if field in chain_columns and any(row["values"].get(field) and str(row["values"][field]).isalpha() for row in rows) else "value"} for field in columns], selected_ids=st.session_state.get("database-selection", []), focus_id=current_focus, key="database-sheet-" + signature + str(page_number))
+                event = render_table(rows, [{"key": field, "label": field_label(field), "kind": "sequence" if field in chain_columns and any(row["values"].get(field) and str(row["values"][field]).isalpha() for row in rows) else "value"} for field in columns], selected_ids=st.session_state.get("database-selection", []), focus_id=current_focus, key="database-sheet-" + signature + str(page_number))
                 if event and event.get("token") != st.session_state.get("database-sheet-event"):
                     st.session_state["database-sheet-event"] = event["token"]
                     st.session_state["database-selection"] = event.get("selectedIds") or []
@@ -595,8 +610,8 @@ def render_database(user, projects):
                     st.download_button("Download " + export_format, ready["data"], file_name=group_name[:60].replace(" ", "-") + "." + ready["suffix"], mime=ready["mime"], key="molecular-export-download")
             if plot and len(metric_fields) >= 2 and records:
                 import pandas as pd
-                x = st.selectbox("X axis", metric_fields, key="molecular-plot-x")
-                y = st.selectbox("Y axis", metric_fields, index=1, key="molecular-plot-y")
+                x = st.selectbox("X axis", metric_fields, format_func=field_label, key="molecular-plot-x")
+                y = st.selectbox("Y axis", metric_fields, index=1, format_func=field_label, key="molecular-plot-y")
                 st.scatter_chart(pd.DataFrame([{x: row["scores"].get(x), y: row["scores"].get(y), "Name": row["name"]} for row in records]), x=x, y=y)
         with details, st.container(key="database-details"):
             record = next((row for row in records if row["id"] == st.session_state.get("database-focus")), records[0] if records else None)
@@ -621,8 +636,9 @@ def render_use_selection(database, user, projects, ids, project_id=""):
         options.update({name: workflow for name, workflow in [("AutoDock Vina", "ligand.docking.vina"), ("GNINA", "ligand.docking.gnina"), ("Uni-Dock Pro", "ligand.docking.unidock_pro"), ("RosettaLigand", "ligand.docking.rosetta_ligand"), ("Nesso-1", "ligand.affinity.nesso")]})
     if all(any(component["type"] == "protein" for component in row["components"]) for row in records):
         options["Pipeline canvas"] = "pipeline"
-    if len(records) == 1:
+    if records:
         options["Boltz-2"] = "boltz2"
+    if len(records) == 1:
         detail = database.list_molecules(user, molecule_ids=ids, collection="all")["items"][0]
         if any(row["type"] == "protein" for row in records[0]["components"]) and detail["structures"]:
             options.update({name + " · receptor": workflow + ":receptor" for name, workflow in [("AutoDock Vina", "ligand.docking.vina"), ("GNINA", "ligand.docking.gnina"), ("Uni-Dock Pro", "ligand.docking.unidock_pro"), ("RosettaLigand", "ligand.docking.rosetta_ligand")]})
@@ -637,7 +653,7 @@ def render_use_selection(database, user, projects, ids, project_id=""):
             st.rerun()
 
 
-def render_molecule_picker(user, *, key, allowed_types=None):
+def render_molecule_picker(user, *, key, allowed_types=None, multiple=False):
     database = MolecularDatabase()
     with st.popover("My molecules", icon=":material/storage:"):
         query = st.text_input("Search Database", key=key + "-library-query")
@@ -649,7 +665,8 @@ def render_molecule_picker(user, *, key, allowed_types=None):
         if not rows:
             st.caption("No matching molecules. Import them in Database first.")
             return None
-        selected = st.selectbox("Molecule", [row["id"] for row in rows], format_func=lambda value: next(row["name"] for row in rows if row["id"] == value), key=key + "-library-molecule")
-        if st.button("Use molecule", key=key + "-library-use"):
-            return next(row for row in rows if row["id"] == selected)
+        picker = st.multiselect if multiple else st.selectbox
+        selected = picker("Molecules" if multiple else "Molecule", [row["id"] for row in rows], format_func=lambda value: next(row["name"] for row in rows if row["id"] == value), key=key + "-library-molecule")
+        if st.button("Use selected molecules" if multiple else "Use molecule", key=key + "-library-use", disabled=multiple and not selected):
+            return [row for row in rows if row["id"] in selected] if multiple else next(row for row in rows if row["id"] == selected)
     return None

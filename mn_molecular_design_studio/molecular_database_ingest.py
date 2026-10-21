@@ -40,9 +40,13 @@ def _path(value, run_dir):
 def _record(candidate, run_dir):
     files = []
     components = None
+    sequence = candidate.get("binder_sequence") or candidate.get("sequence")
     # A candidate has one molecular identity. Do not attach target-only or
     # binder-only files as if they represented a different complex's identity.
     for key in ("complex_pdb", "binder_pdb", "target_pdb"):
+        if key == "target_pdb" and sequence:
+            # A target-only file cannot identify the newly designed sequence.
+            continue
         path = _path(candidate.get(key), run_dir)
         if not path:
             continue
@@ -52,7 +56,6 @@ def _record(candidate, run_dir):
             continue
         files = [{"path": str(path), "label": key.replace("_", " ").title(), "dimensions": 3}]
         break
-    sequence = candidate.get("binder_sequence") or candidate.get("sequence")
     raw_components = (candidate.get("raw_metadata") or {}).get("components")
     if components is None and isinstance(raw_components, list):
         try:
@@ -61,8 +64,18 @@ def _record(candidate, run_dir):
             components = None
     if components is None and sequence:
         components = imports.parse_sequences(str(sequence))[0]["components"]
+        designed_chains = list(candidate.get("binder_chains") or [])
+        if len(components) == len(designed_chains):
+            for component, chain in zip(components, designed_chains):
+                component.update(chain=chain, role="binder")
     if not components:
         return None
+    for component in components:
+        chain = component.get("chain")
+        if chain in (candidate.get("binder_chains") or []):
+            component["role"] = "binder"
+        elif chain in (candidate.get("target_chains") or []):
+            component["role"] = "target"
     # An unsequenced poly-glycine backbone is a structure proposal, not an
     # assertion that every generated backbone is the same designed molecule.
     unresolved = str(candidate.get("stage") or "") == "generation.backbone" and not sequence
@@ -71,8 +84,9 @@ def _record(candidate, run_dir):
         identity_context = {"unsequenced_backbone": hashlib.sha256(Path(files[0]["path"]).read_bytes()).hexdigest()}
     return {"name": candidate.get("candidate_id") or "Molecule", "components": components, "files": files,
             "identity_context": identity_context,
-            "metadata": {"stage": candidate.get("stage"), "status": (candidate.get("raw_metadata") or {}).get("status") or ("Unsequenced backbone" if unresolved else ""),
-                         "source_tool": candidate.get("source_tool"), **(candidate.get("raw_metadata") or {})}}
+            "metadata": {"status": (candidate.get("raw_metadata") or {}).get("status") or ("Unsequenced backbone" if unresolved else ""),
+                         **(candidate.get("raw_metadata") or {}), "stage": candidate.get("stage"), "source_tool": candidate.get("source_tool"),
+                         "output_kind": (candidate.get("normalized_output") or {}).get("kind")}}
 
 
 def _candidate_rejected(candidate):
@@ -225,7 +239,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         "artifacts/generated_compound_set.json", "artifacts/generated_compounds.sdf",
         "artifacts/docking_scores.csv", "artifacts/nesso_affinity.csv", "artifacts/input/receptor.pdb",
         "artifacts/input/target.pdb", "artifacts/input/complex.pdb")]
-    signature = _json({"ingestion_version": 2, "files": [
+    signature = _json({"ingestion_version": 3, "files": [
         (str(path.relative_to(run_dir)), path.stat().st_mtime_ns, path.stat().st_size)
         for path in observed_paths if path.is_file()]})
     with database.connection() as connection:
@@ -322,9 +336,18 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         candidate_groups[candidate_id] = (molecule_id, destination)
         seen_molecules.add(molecule_id)
         metrics = _numeric(candidate.get("metrics") or {})
-        if metrics:
+        if metrics or (candidate.get("normalized_output") or {}).get("metrics"):
+            # Include the actual producing adapter, rather than only the run's
+            # parent engine (a generator may contain several sequence methods).
+            raw = candidate.get("raw_metadata") or {}
+            candidate_context = {key: candidate.get(key) for key in ("source_tool", "stage", "binder_sequence", "binder_chains", "target_chains")}
+            candidate_context["raw_metadata"] = {key: raw[key] for key in ("fasta_header", "engine_version", "operation", "structure_kind") if key in raw}
+            settings = {key: value for key, value in (inputs.get("params") or {}).items()
+                        if key in {"model_type", "model_name", "checkpoint_path", "noise_level", "sampling_temp", "temperature", "seed", "engine", "engine_version", "task"}
+                        and isinstance(value, (str, int, float, bool))}
             database.add_observation(destination, molecule_id, tool, run_dir.name, metrics,
-                context=provenance, source_key=f"{source_for_molecule}:metrics", created_at=stamp)
+                context={**provenance, "candidate": candidate_context, "settings": settings},
+                source_key=f"{source_for_molecule}:metrics", created_at=stamp)
 
     # The ligand contracts preserve exactly the consumed and generated sets.
     compound_rows = {}

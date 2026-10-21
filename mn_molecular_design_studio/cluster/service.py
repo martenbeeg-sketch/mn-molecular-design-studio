@@ -38,7 +38,9 @@ def schema_check(payload, kind, request_dir):
     if spec is None:
         raise ValueError("Unknown workflow.")
     with workflows.deferred_path_validation():
-        workflows._validate_generic_parameters(spec, payload.get("parameters", {}), Path(request_dir) / "cluster-request.json", source_job=payload.get("source_job"))
+        from mn_molecular_design_studio.batching import parameter_items
+        for item in parameter_items(payload.get("parameters", {})):
+            workflows._validate_generic_parameters(spec, item, Path(request_dir) / "cluster-request.json", source_job=payload.get("source_job"))
     workflows._validate_resources(payload.get("resources"))
     workflows._request_priority(payload)
 
