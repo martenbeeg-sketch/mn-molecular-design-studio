@@ -65,3 +65,47 @@ def test_images_returns_portable_fingerprints_for_each_tag(monkeypatch):
         "mn-ligandmpnn:backup": capabilities.image_content_fingerprint(first),
         "mn-foundry:cu128": capabilities.image_content_fingerprint(second),
     }
+
+
+def test_rfantibody_generation_only_requires_only_diffusion_weights():
+    from mn_molecular_design_studio.rfantibody_input import IMAGE, MIMOSA_IMAGE
+
+    installed = {IMAGE: "native-image", MIMOSA_IMAGE: "mimosa-image"}
+    for workflow, mimosa_enabled, image in (
+        ("design.rfantibody", False, IMAGE),
+        ("design.rfantibody_mimosa", True, MIMOSA_IMAGE),
+    ):
+        needs = capabilities.requirements(
+            {
+                "workflow": workflow,
+                "parameters": {
+                    "generation_only": True,
+                    "mimosa_enabled": mimosa_enabled,
+                    "gpu_device": "0",
+                },
+            },
+            installed_images=installed,
+        )
+
+        assert needs["images"] == {image: installed[image]}
+        assert "rfantibody/RFdiffusion_Ab.pt" in needs["references"]
+        assert "rfantibody/ProteinMPNN_v48_noise_0.2.pt" not in needs["references"]
+        assert "rfantibody/RF2_ab.pt" not in needs["references"]
+
+
+def test_rfantibody_full_pipeline_retains_required_sequence_and_refold_weights():
+    from mn_molecular_design_studio.rfantibody_input import IMAGE
+
+    needs = capabilities.requirements(
+        {
+            "workflow": "design.rfantibody",
+            "parameters": {"generation_only": False, "use_abmpnn": False, "gpu_device": "0"},
+        },
+        installed_images={IMAGE: "native-image"},
+    )
+
+    assert {
+        "rfantibody/RFdiffusion_Ab.pt",
+        "rfantibody/ProteinMPNN_v48_noise_0.2.pt",
+        "rfantibody/RF2_ab.pt",
+    }.issubset(needs["references"])
