@@ -625,6 +625,24 @@ def test_mn_ligand_axis_transform_rotates_target_and_box_to_global_x(tmp_path):
     assert size == pytest.approx((6.0, 2.0, 4.0))
 
 
+def test_axis_alignment_can_preserve_box_dimensions_in_aligned_frame(tmp_path):
+    ligand = _write_axis_ligand(tmp_path / "axis.sdf")
+    target = tmp_path / "target.pdb"
+    target.write_text(
+        "ATOM      1  CA  ALA A   1       0.000   3.000   0.000  1.00 20.00           C\nEND\n"
+    )
+
+    _rotated, center, size, transform = ligand_tools._docking_axis_alignment(
+        target, (0.0, 2.0, 0.0), (30.0, 20.0, 20.0),
+        align_longest_axis_to_x=True, alignment_ligand_sdf=ligand,
+        preserve_box_size_after_alignment=True,
+    )
+
+    assert transform["aligned_longest_axis"] == [1.0, 0.0, 0.0]
+    assert center == pytest.approx((0.0, 2.0, 0.0))
+    assert size == (30.0, 20.0, 20.0)
+
+
 def test_vina_axis_alignment_records_transform_and_stages_rotated_receptor(tmp_path, monkeypatch):
     target = tmp_path / "target.pdb"
     target.write_text(

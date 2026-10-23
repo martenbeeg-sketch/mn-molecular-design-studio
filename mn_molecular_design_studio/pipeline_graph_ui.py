@@ -188,7 +188,16 @@ def _active_target_options():
             options.append((label, str(path), item.get("name") or label))
     campaign = Path("/mnt/data/RESULTS/unidockpro/20251024_THRa_Large_screen_CD/mn_docking_data/THR_medchem_agonist/targets/thra/4lnw_T3_A_501_protein_mut_protein_refined.pdb")
     if campaign.is_file():
-        options.append(("THRα campaign · 4LNW refined docking receptor", str(campaign), "THRα · 4LNW refined campaign receptor", None))
+        campaign_ligand = campaign.with_name("4lnx_T3_A_502_ligand_refined.sdf")
+        box = {
+            "center": {"x": 26.616, "y": 38.249, "z": 32.711},
+            "size": {"x": 30.0, "y": 20.0, "z": 20.0},
+            "units": "angstrom",
+        }
+        if campaign_ligand.is_file():
+            box["align_longest_axis_to_x"] = True
+            box["alignment_ligand_sdf"] = str(campaign_ligand)
+        options.append(("THRα campaign · 4LNW refined docking receptor", str(campaign), "THRα · 4LNW refined campaign receptor", box))
     user = st.session_state.get("_molecular_database_user")
     if user:
         from mn_molecular_design_studio.molecular_database import MolecularDatabase
@@ -252,6 +261,10 @@ def _render_active_target(params, key):
                     result[f"center_{axis}"] = float(center[axis])
                 if size.get(axis) is not None:
                     result[f"size_{axis}"] = float(size[axis])
+        if "align_longest_axis_to_x" in box:
+            result["align_longest_axis_to_x"] = bool(box["align_longest_axis_to_x"])
+        if "alignment_ligand_sdf" in box:
+            result["alignment_ligand_sdf"] = str(box["alignment_ligand_sdf"])
     return result
 
 

@@ -325,6 +325,10 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                 ready = node["id"] in contexts
                 if ready:
                     values.update(contexts[node["id"]])
+            align_field = next(field for field in spec["fields"] if field["name"] == "align_longest_axis_to_x")
+            values["align_longest_axis_to_x"] = _render_field(align_field, values, key)
+            alignment_field = next(field for field in spec["fields"] if field["name"] == "alignment_ligand_sdf")
+            values["alignment_ligand_sdf"] = _render_field(alignment_field, values, key)
             st.markdown("**Docking box**")
             columns = st.columns(3)
             for index, name in enumerate(("center_x", "center_y", "center_z", "size_x", "size_y", "size_z")):

@@ -157,6 +157,8 @@ NODE_CATALOG.update({
     "active_target": _spec("active_target", "Receptor", "Active learning", "Select an imported receptor structure and define the docking box for this study.", output=_ACTIVE_STATE, color="#758f84", formats=("pdb",), fields=[
         field("target_pdb", "Saved receptor structure", "", kind="text", section="basic"),
         field("target_name", "Receptor name", "", kind="text", section="basic"),
+        field("align_longest_axis_to_x", "Align reference ligand longest axis to X", False, kind="boolean", section="basic"),
+        field("alignment_ligand_sdf", "Reference ligand SDF for axis alignment", "", kind="text", section="basic"),
         field("center_x", "Box center X (Å)", 0.0, minimum=-500, maximum=500, section="basic"),
         field("center_y", "Box center Y (Å)", 0.0, minimum=-500, maximum=500, section="basic"),
         field("center_z", "Box center Z (Å)", 0.0, minimum=-500, maximum=500, section="basic"),

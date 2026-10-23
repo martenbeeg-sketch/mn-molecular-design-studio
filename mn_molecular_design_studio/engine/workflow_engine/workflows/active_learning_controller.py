@@ -146,6 +146,10 @@ def _docking_params(params: dict, target: dict, batch_file: Path, *, round_numbe
         raise ValueError("UniDock Pro exposes the primary score as best_score_kcal_mol (vina_score alias).")
     if str(params.get("score_direction") or "Lower is better") != "Lower is better":
         raise ValueError("UniDock Pro Vina scores rank lower values first.")
+    alignment_enabled = bool(target.get("align_longest_axis_to_x", False))
+    alignment_ligand = str(target.get("alignment_ligand_sdf") or "")
+    if alignment_enabled and (not alignment_ligand or not Path(alignment_ligand).is_file()):
+        raise ValueError("The selected receptor requests axis alignment, but its reference ligand SDF is missing.")
     return {
         "target_pdb": str(target["target_pdb"]),
         "compound_set_file": str(batch_file),
@@ -158,6 +162,11 @@ def _docking_params(params: dict, target: dict, batch_file: Path, *, round_numbe
         "cpu_cores": int(worker["cpu_cores"]),
         "gpu_device": str(worker["gpu_device"]),
         "job_name": f"Active learning round {round_number:03d} · {worker['node_name']}",
+        "align_longest_axis_to_x": alignment_enabled,
+        "alignment_ligand_sdf": alignment_ligand if alignment_enabled else None,
+        # The dimensions configured in the receptor node describe the aligned
+        # frame (for example the requested 30 × 20 × 20 Å THRα box).
+        "preserve_box_size_after_alignment": alignment_enabled,
     }
 
 
@@ -223,12 +232,17 @@ def _dispatch_docking_shard(*, request: dict, worker: dict, campaign: Path,
                                     (local_request, remote_request), (worker_script, remote_worker)):
             subprocess.run(["scp", "-q", str(source), f"{destination}:{remote_path}"],
                            check=True, capture_output=True, text=True, timeout=None)
+        alignment_path = request["parameters"].get("alignment_ligand_sdf")
+        if alignment_path:
+            subprocess.run(["scp", "-q", str(Path(alignment_path)), f"{destination}:{remote_dir}/alignment_ligand.sdf"],
+                           check=True, capture_output=True, text=True, timeout=None)
         # The shard parameters point to the local staged files. Rewrite those
         # two paths in the remote request after transfer.
         rewrite_request = shlex.join([
             "python", "-c",
-            "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['parameters']['target_pdb']=sys.argv[2]; d['parameters']['compound_set_file']=sys.argv[3]; json.dump(d,open(p,'w'))",
+            "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['parameters']['target_pdb']=sys.argv[2]; d['parameters']['compound_set_file']=sys.argv[3]; (d['parameters'].__setitem__('alignment_ligand_sdf',sys.argv[4]) if len(sys.argv)>4 and sys.argv[4] else None); json.dump(d,open(p,'w'))",
             remote_request, remote_dir + "/receptor.pdb", remote_dir + "/compounds.json",
+            remote_dir + "/alignment_ligand.sdf" if alignment_path else "",
         ])
         subprocess.run(
             ["ssh", "-T", "-o", "BatchMode=yes", destination,

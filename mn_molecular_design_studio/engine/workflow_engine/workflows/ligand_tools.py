@@ -378,6 +378,7 @@ def _docking_axis_alignment(
     *,
     align_longest_axis_to_x: bool,
     alignment_ligand_sdf: Path | None,
+    preserve_box_size_after_alignment: bool = False,
 ) -> tuple[str, tuple[float, float, float], tuple[float, float, float], dict[str, Any] | None]:
     target_data = Path(target_pdb).read_text(encoding="utf-8", errors="replace")
     if not align_longest_axis_to_x:
@@ -385,6 +386,14 @@ def _docking_axis_alignment(
     if alignment_ligand_sdf is None:
         raise ValueError("Axis alignment requires a coordinate-bearing reference ligand SDF.")
     transform = ligand_longest_axis_transform(Path(alignment_ligand_sdf))
+    if preserve_box_size_after_alignment:
+        aligned_center = _apply_coordinate_transform(np.asarray([center], dtype=float), transform)[0]
+        return (
+            transform_pdb_data(target_data, transform),
+            tuple(float(value) for value in aligned_center),
+            size,
+            transform,
+        )
     return (
         transform_pdb_data(target_data, transform),
         *transform_axis_aligned_box(center, size, transform),
@@ -1788,6 +1797,7 @@ def run_ligand_unidock_pro(
     gpu_device: str = "0",
     align_longest_axis_to_x: bool = False,
     alignment_ligand_sdf: Path | None = None,
+    preserve_box_size_after_alignment: bool = False,
     job_name: str = "unidock-pro",
     use_scrub: bool = True,
     scrub_ph: float = 7.4,
@@ -1825,6 +1835,7 @@ def run_ligand_unidock_pro(
         tuple(original_box_size),
         align_longest_axis_to_x=align_longest_axis_to_x,
         alignment_ligand_sdf=alignment_ligand_sdf,
+        preserve_box_size_after_alignment=preserve_box_size_after_alignment,
     )
     center_x, center_y, center_z = aligned_center
     size_x, size_y, size_z = aligned_size
@@ -1837,6 +1848,7 @@ def run_ligand_unidock_pro(
         "original_box_size": original_box_size,
         "align_longest_axis_to_x": bool(coordinate_transform),
         "coordinate_transform": coordinate_transform,
+        "preserve_box_size_after_alignment": bool(coordinate_transform and preserve_box_size_after_alignment),
         "num_modes": num_modes, "seed": seed, "compound_limit": compound_limit,
         "cpu_cores": cpu_cores, "gpu_device": str(gpu_device).strip(),
         "compound_set_name": payload.get("name", "Compound set"),

@@ -321,6 +321,8 @@ def test_first_database_receptor_selection_prefills_saved_ligand_centered_box(mo
         "center": {"x": 27.121873292170918, "y": 37.707897689855635, "z": 32.25059854627194},
         "size": {"x": 30, "y": 20, "z": 20},
         "units": "angstrom",
+        "align_longest_axis_to_x": True,
+        "alignment_ligand_sdf": "/database/reference-ligand.sdf",
     }
     option = ("Database · THRα 4LNW", "/database/receptor.pdb", "THRα 4LNW", box)
     monkeypatch.setattr(pipeline_graph_ui, "_active_target_options", lambda: [option])
@@ -332,3 +334,28 @@ def test_first_database_receptor_selection_prefills_saved_ligand_centered_box(mo
     assert selected["target_pdb"] == option[1]
     assert [selected[f"center_{axis}"] for axis in "xyz"] == [box["center"][axis] for axis in "xyz"]
     assert [selected[f"size_{axis}"] for axis in "xyz"] == [30, 20, 20]
+    assert selected["align_longest_axis_to_x"] is True
+    assert selected["alignment_ligand_sdf"] == box["alignment_ligand_sdf"]
+
+
+def test_active_learning_unidock_parameters_include_reference_ligand_alignment(tmp_path):
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.active_learning_controller import _docking_params
+
+    ligand = tmp_path / "reference.sdf"
+    ligand.write_text("reference ligand")
+    target = {
+        "target_pdb": "/db/receptor.pdb",
+        "center_x": 26.6, "center_y": 38.2, "center_z": 32.7,
+        "size_x": 30, "size_y": 20, "size_z": 20,
+        "align_longest_axis_to_x": True,
+        "alignment_ligand_sdf": str(ligand),
+    }
+    params = {"engine": "UniDock Pro", "score_field": "vina_score", "score_direction": "Lower is better"}
+    worker = {"node_name": "RTX 5090", "cpu_cores": 16, "gpu_device": "0"}
+
+    request = _docking_params(params, target, tmp_path / "batch.json", round_number=1, worker=worker, limit=2)
+
+    assert request["align_longest_axis_to_x"] is True
+    assert request["alignment_ligand_sdf"] == str(ligand)
+    assert request["preserve_box_size_after_alignment"] is True
+    assert [request[f"size_{axis}"] for axis in "xyz"] == [30, 20, 20]
