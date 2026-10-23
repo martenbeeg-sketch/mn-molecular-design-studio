@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -10,6 +11,15 @@ from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import app
 from mn_molecular_design_studio.engine.workflow_engine.runtime import reference_root
 
 
+def _docker_is_rootless() -> bool:
+    docker_host = os.getenv("DOCKER_HOST", "").lower()
+    if "rootless" in docker_host or "/run/user/" in docker_host:
+        return True
+    if hasattr(os, "getuid"):
+        return Path(f"/run/user/{os.getuid()}/docker.sock").exists()
+    return False
+
+
 def build_docker_command(
     manifest: dict,
     run_dir: Path,
@@ -18,10 +28,14 @@ def build_docker_command(
     gpu_device: object = "all",
     extra_mounts: Sequence[tuple[Path, str, bool]] | None = None,
     environment: Mapping[str, str] | None = None,
+    use_host_user: bool = False,
 ) -> list[str]:
     command = ["docker", "run", "--rm"]
     if manifest.get("gpu"):
         command.extend(docker_gpu_args(gpu_device))
+    host_user = use_host_user and hasattr(os, "getuid") and not _docker_is_rootless()
+    if host_user:
+        command.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
     command.extend(["-v", f"{run_dir}:/work"])
     reference_path = reference_root_path or reference_root()
     if reference_path.exists():
@@ -35,7 +49,10 @@ def build_docker_command(
             raise ValueError(f"Docker mount destination must be an absolute container path: {destination!r}")
         mount = f"{source}:{destination}" + (":ro" if read_only else "")
         command.extend(["-v", mount])
-    for key, value in (environment or {}).items():
+    docker_environment = dict(environment or {})
+    if host_user:
+        docker_environment.setdefault("HOME", "/tmp")
+    for key, value in docker_environment.items():
         name = str(key)
         setting = str(value)
         if not name or not name.replace("_", "").isalnum() or not name[0].isalpha() or "\n" in setting or "\r" in setting:
@@ -56,6 +73,7 @@ def run_docker_job(
     *,
     extra_mounts: Sequence[tuple[Path, str, bool]] | None = None,
     environment: Mapping[str, str] | None = None,
+    use_host_user: bool = False,
 ) -> int:
     command = build_docker_command(
         manifest,
@@ -64,6 +82,7 @@ def run_docker_job(
         gpu_device=gpu_device,
         extra_mounts=extra_mounts,
         environment=environment,
+        use_host_user=use_host_user,
     )
     write_json(run_dir / "command.json", {"mode": "docker", "command": command, "image": manifest.get("image")})
     update_status(run_dir, "running")

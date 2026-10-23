@@ -1973,7 +1973,13 @@ def run_ligand_unidock_pro(
         "else printf '%s\\tfailed\\t\\t\\t\\t\\tNo pose returned (dock exit %s)\\n' \"$compound_id\" \"$dock_status\" >> artifacts/docking_scores.csv; fi; done; "
         "exit 0"
     )
-    return_code = run_docker_job(job.run_dir, load_manifest("unidock_pro"), ["bash", "-lc", script], gpu_device=str(gpu_device).strip())
+    return_code = run_docker_job(
+        job.run_dir,
+        load_manifest("unidock_pro"),
+        ["bash", "-lc", script],
+        gpu_device=str(gpu_device).strip(),
+        use_host_user=True,
+    )
     score_path = artifacts / "docking_scores.csv"
     rows: list[dict[str, Any]] = []
     if score_path.is_file():

@@ -1,6 +1,6 @@
 tool: unidock_pro
 group: ligand-docking
-image: mn-docking-suite:cu128
+image: mn-docking-suite:cu128-sm120fix
 gpu: true
 description: GPU-accelerated Uni-Dock Pro classic receptor docking for a Studio Database compound set.
 inputs:

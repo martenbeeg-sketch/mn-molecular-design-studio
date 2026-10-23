@@ -973,8 +973,8 @@ def test_unidock_pro_tile_batches_compounds_on_gpu_and_emits_typed_poses(tmp_pat
     monkeypatch.setattr(ligand_tools, "load_manifest", lambda name: {"image": "mn-docking-suite:test", "tool": name, "gpu": True})
     captured = {}
 
-    def fake_docker(run_dir, manifest, args, *, gpu_device):
-        captured.update(manifest=manifest, args=args, gpu_device=gpu_device)
+    def fake_docker(run_dir, manifest, args, *, gpu_device, use_host_user=False):
+        captured.update(manifest=manifest, args=args, gpu_device=gpu_device, use_host_user=use_host_user)
         (run_dir / "artifacts" / "docking_scores.csv").write_text(
             "compound_id\tstatus\tbest_score_kcal_mol\tcnn_score\tcnn_affinity\tpose_path\terror\n"
             "ethanol\tcompleted\t-7.1\t\t\tartifacts/poses/ethanol_out.pdbqt\t\n"
@@ -998,6 +998,7 @@ def test_unidock_pro_tile_batches_compounds_on_gpu_and_emits_typed_poses(tmp_pat
     result = jobs.read_json(run_dir / "result.json")
     assert captured["manifest"]["tool"] == "unidock_pro"
     assert captured["gpu_device"] == "1"
+    assert captured["use_host_user"] is True
     assert "--ligand_index artifacts/input/ligand_index.txt" in script
     assert "--search_mode detail" in script
     assert "xargs -0 -r -n 2 -P 2 bash artifacts/input/prepare_one_ligand.sh" in script
@@ -1563,6 +1564,39 @@ def test_docker_runner_supports_read_only_source_mount_and_environment(tmp_path,
 
     assert f"{source.resolve()}:/studio-ligand-runtime:ro" in command
     assert command[command.index("-e") + 1] == "PYTHONPATH=/studio-ligand-runtime"
+
+
+def test_docker_runner_can_write_outputs_as_host_user(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    docker_runner = "mn_molecular_design_studio.engine.workflow_engine.core.docker_runner"
+    monkeypatch.setattr(f"{docker_runner}.reference_root", lambda: tmp_path / "missing-ref")
+    monkeypatch.setattr(f"{docker_runner}._docker_is_rootless", lambda: False)
+    monkeypatch.setattr(f"{docker_runner}.os.getuid", lambda: 1234)
+    monkeypatch.setattr(f"{docker_runner}.os.getgid", lambda: 2345)
+
+    command = build_docker_command(
+        {"image": "test-image", "gpu": True}, run_dir, ["bash", "-lc", "touch output"],
+        gpu_device="0", use_host_user=True,
+    )
+
+    assert command[command.index("--user") + 1] == "1234:2345"
+    assert "HOME=/tmp" in command
+
+
+def test_docker_runner_skips_explicit_user_for_rootless_docker(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    docker_runner = "mn_molecular_design_studio.engine.workflow_engine.core.docker_runner"
+    monkeypatch.setattr(f"{docker_runner}.reference_root", lambda: tmp_path / "missing-ref")
+    monkeypatch.setattr(f"{docker_runner}._docker_is_rootless", lambda: True)
+
+    command = build_docker_command(
+        {"image": "test-image", "gpu": False}, run_dir, ["touch", "output"], use_host_user=True,
+    )
+
+    assert "--user" not in command
+    assert not any(value.startswith("HOME=") for value in command)
 
 
 def test_nesso_api_validation_checks_compound_set_and_records_affinity_only(tmp_path, monkeypatch):

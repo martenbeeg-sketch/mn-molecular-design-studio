@@ -130,7 +130,7 @@
       "tool_id": "unidock_pro",
       "name": "Uni-Dock Pro",
       "version": "installed image version",
-      "image": "mn-docking-suite:cu128",
+      "image": "mn-docking-suite:cu128-sm120fix",
       "image_digest": "",
       "integration_status": "validated",
       "status_notes": "Worker-owned typed campaign passed a real 4WBK/STE GPU 1 smoke with native affinity, normalized pose and score artifacts, result display, and downstream handoff.",
