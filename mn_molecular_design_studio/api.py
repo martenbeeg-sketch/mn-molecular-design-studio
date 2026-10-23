@@ -673,6 +673,125 @@ def run_visual_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any
     return mark_studio_job(result, project_id=project_id, owner_id=str(user["id"]))
 
 
+@app.post("/api/v1/pipelines/adopt-completed")
+def adopt_completed_pipeline_groups(payload: dict[str, Any] = Body(...), user: dict[str, Any] = Depends(_current_user)):
+    """Group already completed runs in Results without scheduling any work."""
+    if set(payload) != {"project_id", "pipelines"} or not isinstance(payload.get("pipelines"), list):
+        raise HTTPException(status_code=422, detail="Provide project_id and a pipelines list.")
+    _, project_id = _request_payload_and_project({"project_id": payload.get("project_id")}, user)
+    pipelines = payload["pipelines"]
+    if not 1 <= len(pipelines) <= 8:
+        raise HTTPException(status_code=422, detail="Adopt between 1 and 8 completed pipelines.")
+    from mn_molecular_design_studio.job_catalog import get_job_access_record
+
+    resolved_rows: dict[str, dict[str, Any]] = {}
+    normalized: list[dict[str, Any]] = []
+    all_refs: set[str] = set()
+    for pipeline in pipelines:
+        if not isinstance(pipeline, dict) or set(pipeline) != {"name", "steps"}:
+            raise HTTPException(status_code=422, detail="Each pipeline needs exactly a name and three steps.")
+        name = str(pipeline.get("name") or "").strip()
+        steps = pipeline.get("steps")
+        if not name or len(name) > 160 or not isinstance(steps, list) or len(steps) != 3:
+            raise HTTPException(status_code=422, detail="Each pipeline needs a name and exactly three steps.")
+        step_specs = []
+        for index, spec in enumerate(steps):
+            if not isinstance(spec, dict) or set(spec) != {"task_group", "run_id", "stage_label"}:
+                raise HTTPException(status_code=422, detail="Each step needs task_group, run_id, and stage_label.")
+            task_group = str(spec.get("task_group") or "").strip()
+            run_id = str(spec.get("run_id") or "").strip()
+            label = str(spec.get("stage_label") or "").strip()
+            if task_group not in {"design", "refolding-validation"} or not run_id or "/" in run_id or ".." in run_id or not label or len(label) > 120:
+                raise HTTPException(status_code=422, detail="A pipeline step has an invalid run reference or label.")
+            ref = f"{task_group}/{run_id}"
+            if ref in all_refs:
+                raise HTTPException(status_code=422, detail="A completed job cannot be assigned to more than one adopted pipeline.")
+            all_refs.add(ref)
+            row = _resolve_api_job(ref, user)
+            if str(row.get("status") or "").casefold() not in {"completed", "succeeded"} or row.get("success") is False:
+                raise HTTPException(status_code=422, detail=f"{ref} is not a successful completed job.")
+            record = get_job_access_record(task_group, run_id)
+            if not record or str(record.get("owner_id") or "") != str(user["id"]) or str(record.get("project_id") or "") != project_id:
+                raise HTTPException(status_code=422, detail=f"{ref} is not registered to the current user in the selected project.")
+            resolved_rows[ref] = row
+            step_specs.append({"task_group": task_group, "run_id": run_id, "stage_label": label})
+
+        paths = [Path(resolved_rows[f"{step['task_group']}/{step['run_id']}"]["run_dir"]) for step in step_specs]
+        inputs = [json.loads((path / "input.json").read_text(encoding="utf-8")) for path in paths]
+        gen_meta = json.loads((paths[0] / "metadata.json").read_text(encoding="utf-8"))
+        seq_meta = json.loads((paths[1] / "metadata.json").read_text(encoding="utf-8"))
+        refold_meta = json.loads((paths[2] / "metadata.json").read_text(encoding="utf-8"))
+        gen_tool = str(gen_meta.get("tool") or "")
+        seq_params = inputs[1].get("params") if isinstance(inputs[1].get("params"), dict) else {}
+        refold_params = inputs[2].get("params") if isinstance(inputs[2].get("params"), dict) else {}
+        if gen_tool not in {"boltzgen_generator", "rfantibody"}:
+            raise HTTPException(status_code=422, detail=f"{step_specs[0]['task_group']}/{step_specs[0]['run_id']} is not a BoltzGen or RFantibody generator run.")
+        if str(seq_meta.get("tool") or "") != "ligandmpnn" or str(seq_params.get("model_type") or "") != "ab_mpnn" or str(seq_params.get("sabr_mode") or "") != "sabr":
+            raise HTTPException(status_code=422, detail="The middle step must be an existing SAbR-annotated AbMPNN run.")
+        if str(refold_meta.get("tool") or "") != "optimized_prediction_boltz2" or str(refold_params.get("engine") or "") != "boltz2":
+            raise HTTPException(status_code=422, detail="The final step must be an existing Boltz-2 refold.")
+        source_path = resolve_stored_path(seq_params.get("source_run_dir"), must_exist=True)
+        if not source_path or source_path.resolve() != paths[0].resolve():
+            raise HTTPException(status_code=422, detail="The AbMPNN run does not descend from the selected generator run.")
+        selected_ids = seq_params.get("selected_candidate_ids")
+        if not isinstance(selected_ids, list) or len(selected_ids) != 1:
+            raise HTTPException(status_code=422, detail="The adopted AbMPNN run must select exactly one generated candidate.")
+        gen_candidates = paths[0] / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+        try:
+            gen_rows = [json.loads(line) for line in gen_candidates.read_text(encoding="utf-8").splitlines() if line.strip()]
+        except (OSError, json.JSONDecodeError):
+            gen_rows = []
+        if not any(str(candidate.get("candidate_id")) in {str(value) for value in selected_ids} for candidate in gen_rows):
+            raise HTTPException(status_code=422, detail="The selected AbMPNN candidate is absent from the generator outputs.")
+        ab_candidates = paths[1] / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+        try:
+            ab_rows = [json.loads(line) for line in ab_candidates.read_text(encoding="utf-8").splitlines() if line.strip()]
+        except (OSError, json.JSONDecodeError):
+            ab_rows = []
+        binder_sequences = {str(candidate.get("binder_sequence") or "") for candidate in ab_rows if candidate.get("binder_sequence")}
+        refold_inputs = inputs[2].get("inputs") if isinstance(inputs[2].get("inputs"), dict) else {}
+        tasks = refold_inputs.get("tasks") if isinstance(refold_inputs.get("tasks"), list) else []
+        protein_chains = tasks[0].get("protein_chains") if tasks and isinstance(tasks[0].get("protein_chains"), list) else []
+        binder_sequences_in_refold = {str(chain.get("sequence") or "") for chain in protein_chains if chain.get("role") == "binder"}
+        engine_options = refold_params.get("engine_options") if isinstance(refold_params.get("engine_options"), dict) else {}
+        if not binder_sequences or not binder_sequences.intersection(binder_sequences_in_refold):
+            raise HTTPException(status_code=422, detail="The Boltz-2 binder sequence does not match the AbMPNN output.")
+        if engine_options.get("use_msa") is not True:
+            raise HTTPException(status_code=422, detail="The adopted Boltz-2 run must have target MSA enabled.")
+        if not tasks or tasks[0].get("has_target_structure") is not False or tasks[0].get("restraints"):
+            raise HTTPException(status_code=422, detail="The adopted Boltz-2 run must have target structural templates disabled.")
+        mapping_path = paths[2] / "artifacts" / "raw" / "optimized_prediction" / "input_mapping.json"
+        try:
+            mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+            item_details = mapping["items"][0]["input_details"]
+        except (OSError, json.JSONDecodeError, KeyError, IndexError, TypeError):
+            raise HTTPException(status_code=422, detail="The Boltz-2 run is missing its input mapping needed to verify the template configuration.")
+        if mapping["items"][0].get("raw_yaml") is not False or int(item_details.get("template_count") or 0) != 0:
+            raise HTTPException(status_code=422, detail="The adopted Boltz-2 run must use sequence-only inputs with zero templates.")
+        step_specs[0]["selected_candidate_ids"] = [str(value) for value in selected_ids]
+        normalized.append({"name": name, "steps": step_specs})
+
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.pipeline_adoption import adopt_completed_pipelines
+    return _call(adopt_completed_pipelines, normalized, owner_id=str(user["id"]), project_id=project_id, resolved_rows=resolved_rows)
+
+
+@app.post("/api/v1/pipelines/adoptions/{run_id}/undo")
+def undo_completed_pipeline_adoption(run_id: str, project_id: str, user: dict[str, Any] = Depends(_current_user)):
+    _, selected_project = _request_payload_and_project({"project_id": project_id}, user)
+    parent = _resolve_api_job(run_id, user)
+    from mn_molecular_design_studio.job_catalog import get_job_access_record
+    access = get_job_access_record(str(parent.get("task_group") or "campaign"), str(parent.get("run_id") or run_id))
+    if not access or str(access.get("owner_id") or "") != str(user["id"]) or str(access.get("project_id") or "") != selected_project:
+        raise HTTPException(status_code=404, detail="Pipeline not found.")
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.pipeline_adoption import undo_pipeline_adoption
+    return _call(
+        undo_pipeline_adoption,
+        Path(parent["run_dir"]),
+        owner_id=str(user["id"]),
+        project_id=selected_project,
+    )
+
+
 @app.get("/api/v1/jobs")
 def get_jobs(
     task_group: str | None = None,

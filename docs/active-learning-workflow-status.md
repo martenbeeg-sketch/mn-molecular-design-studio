@@ -1,0 +1,34 @@
+# Active-learning docking workflow
+
+## Current implementation
+
+The active-learning canvas now submits a scheduled campaign job through Studio's normal workflow queue. The controller runs the editable graph as a round-based workflow and writes node/worker progress to `graph_execution.json` for the pipeline dialog.
+
+- The centroid library and full screening library are independent registered sources. A random, reproducible centroid sample carries its ID, name, SMILES, 1024-bit fingerprint and source-library ID into the first docking round. Fingerprint settings must match.
+- The initial docking adapter is UniDock Pro in its normal `balance` mode. A round is shuffled and split evenly across selected, online Studio computers; every shard is queued through that computer's scheduler. Remote docking uses the Studio Conda environment and SSH user configured on the docking node. Score tables return to the organizer after each shard so cumulative ranking and model training can continue.
+- Completed scores are accumulated by `(library_id, compound_key)`, retaining the best score for each compound. After each round, the cumulative list is sorted and its top-N compound identities and scores are compared with the previous round. A comparison is stable only when the same compounds remain in the same order and every rank's score change is within the configured tolerance. Consecutive stable rounds, screening-library exhaustion, or the optional iteration limit can stop the loop; `max_iterations=0` means no limit.
+- Binder labels are recalculated from all accumulated docking scores before each training run using the configured percentage schedule. The controller streams fingerprints from the external screening dataset for prediction and selects the best predicted compounds plus random exploration compounds, excluding compounds already docked from that screening library.
+- The final organizer-side output is a compressed Parquet score table, round history, model checkpoint and up to the configured number of best poses. Large working databases, full-library predictions and unselected poses are not retained. Per-ligand preparation files are pruned after the selected poses have been copied.
+- The docking computer selector now defaults each selected machine to its available scheduler CPU slots, reserving one organizer slot for the campaign coordinator. Run details show the computers, CPU/GPU allocation and scheduler job link for docking and model steps.
+- Other docking engines are not connected to this controller yet; the current active-learning graph only offers UniDock Pro so an unsupported choice cannot be submitted accidentally.
+
+The OpenVS-style network uses PyTorch with three 3,000-node hidden layers. Studio environments use PyTorch 2.14.1 with CUDA 13.0 so the organizer can reuse its selected GPU for training and inference after each docking round. RDKit fingerprinting remains CPU-based. UniDock Pro continues using the GPUs selected for docking.
+
+## Verification
+
+The focused active-learning, pipeline, library-preparation, scheduler, and workstation test set passed: 94 passed, with one existing Starlette/httpx deprecation warning. The CUDA PyTorch install and a small CUDA operation still need verification on the three Studio machines. No multi-computer docking smoke run has been launched yet.
+
+## Registered test data
+
+The prepared library in `Spirochem library test random 1m seed 42` contains:
+
+- 1,000,000 screening fingerprints: `/mnt/db/reference_files/SpiroChem/Spirochem library test random 1m seed 42/fingerprints/manifest.json`.
+- 177,430 centroid representatives: `/mnt/db/reference_files/SpiroChem/Spirochem library test random 1m seed 42/centroid-preparation/centroids/manifest.json`.
+
+These are manifests for externally stored files; the full compound table is not imported into Studio's molecule database.
+
+## Before the first smoke run
+
+No docking campaign has been launched from this controller yet. The first smoke run should use a small initial sample and a low maximum iteration count. Confirm the receptor and docking box, which computers are available and their UniDock Pro GPU IDs, and the sample/iteration limits. The draft defaults retain the requested 10,000 compounds per docking round and the configured three-computer selection.
+
+The smoke run should be observed in the Studio job table and pipeline dialog, confirming scheduler dispatch to each selected computer, returned scores, cumulative reranking, dynamic binder labels, model training and the stop decision. Do not use the 1,000,000-compound screening dataset for a full campaign until that small run has been reviewed.

@@ -319,6 +319,34 @@ def install(app, current_user, admin_user):
         from mn_molecular_design_studio.workspace import load_organization
         return {"status": "ok", "organization": load_organization(), "node_id": actor["id"], "reference_probes": store.reference_probes()}
 
+    @router.post("/node/library-transfers/{job_id}/start")
+    def library_transfer_start(job_id: str, payload: dict = Body(...), actor=Depends(node)):
+        from . import library_transfer
+        return call(library_transfer.start, job_id, actor["id"], payload)
+
+    @router.get("/node/library-transfers/{job_id}")
+    def library_transfer_status(job_id: str, actor=Depends(node)):
+        from . import library_transfer
+        return call(library_transfer.status, job_id, actor["id"])
+
+    @router.put("/node/library-transfers/{job_id}/files/{file_name}")
+    async def library_transfer_chunk(job_id: str, file_name: str, request: Request,
+                                    offset: int = Query(..., ge=0), actor=Depends(node)):
+        from . import library_transfer
+        try:
+            return await library_transfer.put_chunk(job_id, actor["id"], file_name, offset, request)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except (ValueError, KeyError, TypeError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @router.post("/node/library-transfers/{job_id}/complete")
+    def library_transfer_complete(job_id: str, actor=Depends(node)):
+        from . import library_transfer
+        return call(library_transfer.complete, job_id, actor["id"])
+
     @router.post("/node/claim")
     def claim(actor=Depends(node), store=Depends(coordinator)):
         result = {"command": call(store.claim, actor["id"])}

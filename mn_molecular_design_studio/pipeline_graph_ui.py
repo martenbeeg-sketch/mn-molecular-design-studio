@@ -10,7 +10,7 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 
-from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, clean_graph, fingerprint, list_definitions, list_versions, migrate_template_graph, new_graph, validate_graph
+from mn_molecular_design_studio.pipeline_graph import ACTIVE_LEARNING_LAYOUT, NODE_CATALOG, clean_graph, fingerprint, list_definitions, list_versions, migrate_template_graph, new_graph, validate_graph
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
 
@@ -58,6 +58,109 @@ def _target_ancestor(graph, node_id):
     return None
 
 
+def _active_library_options():
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    result = []
+    for record in MolecularDatabase().external_library_records():
+        preparations = record.get("preparations") or []
+        features = [item for item in preparations if item.get("schema_version") == "studio.library-fingerprints.v2"
+                    and Path(str(item.get("path") or "")).is_file()]
+        centroids = [item for item in preparations if item.get("schema_version") == "studio.library-centroids.v2"
+                     and Path(str(item.get("path") or "")).is_file()]
+        if features or centroids:
+            result.append((record, features, centroids))
+    return result
+
+
+def _render_active_library(params, key):
+    libraries = [row for row in _active_library_options() if row[1]]
+    if not libraries:
+        st.info("No registered compound library has prepared fingerprints. Prepare a library first in the Library tools.")
+        return None
+    ids = [record["id"] for record, _features, _centroids in libraries]
+    current_id = params.get("library_id")
+    selected_id = current_id if current_id in ids else ids[0]
+    selected_id = st.selectbox("Registered external library", ids,
+        index=ids.index(selected_id),
+        format_func=lambda value: next(
+            f"{record.get('name') or value} · {max((int(p.get('rows') or 0) for p in features), default=0):,} compounds"
+            for record, features, _centroids in libraries if record["id"] == value),
+        key=key + "-library")
+    record, features, _centroids = next(row for row in libraries if row[0]["id"] == selected_id)
+    feature_paths = [str(item["path"]) for item in features]
+    feature_labels = {str(item["path"]): f"{int(item.get('rows') or 0):,} fingerprints · {Path(item['path']).parent.name}" for item in features}
+    current_feature = params.get("feature_manifest")
+    if current_feature not in feature_paths:
+        current_feature = feature_paths[-1]
+    feature_path = st.selectbox("Fingerprint dataset", feature_paths, index=feature_paths.index(current_feature),
+        format_func=lambda value: feature_labels[value], key=key + "-features")
+    st.caption("Prediction and random exploration use this compound library. The centroid input is selected independently in its own node.")
+    return {"library_id": selected_id, "feature_manifest": feature_path}
+
+
+def _render_active_centroids(params, key):
+    libraries = [row for row in _active_library_options() if row[2]]
+    if not libraries:
+        st.info("No registered centroid datasets were found. Create centroids first in the Library tools.")
+        return None
+    ids = [record["id"] for record, _features, _centroids in libraries]
+    selected_id = params.get("library_id") if params.get("library_id") in ids else ids[0]
+    selected_id = st.selectbox("Centroid source library", ids, index=ids.index(selected_id),
+        format_func=lambda value: next(record.get("name") or value for record, _features, _centroids in libraries if record["id"] == value),
+        key=key + "-centroid-library")
+    _record, _features, centroids = next(row for row in libraries if row[0]["id"] == selected_id)
+    centroid_paths = [str(item["path"]) for item in centroids]
+    centroid_labels = {str(item["path"]): f"{int(item.get('rows') or 0):,} centroids · {Path(item['path']).parent.name}" for item in centroids}
+    current_centroid = params.get("centroid_manifest")
+    if current_centroid not in centroid_paths:
+        current_centroid = centroid_paths[-1]
+    centroid_path = st.selectbox("Centroid set for the random seed", centroid_paths,
+        index=centroid_paths.index(current_centroid), format_func=lambda value: centroid_labels[value],
+        key=key + "-centroids")
+    st.caption("This centroid source can differ from the compound library used for prediction. Both must use compatible fingerprint settings.")
+    return {"library_id": selected_id, "centroid_manifest": centroid_path}
+
+
+def _active_target_options():
+    from mn_molecular_design_studio.workspace import _studio_home
+    options = []
+    registry = _studio_home() / "workdir" / "targets" / "mn_ligand_targets.json"
+    try:
+        payload = json.loads(registry.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        payload = {}
+    for item in payload.get("targets", []) if isinstance(payload, dict) else []:
+        path = Path(str(item.get("path") or "")).expanduser()
+        if path.is_file():
+            label = f"MN-Ligand · {item.get('pdb_id') or path.stem} · {item.get('name') or item.get('receptor') or 'imported receptor'}"
+            options.append((label, str(path), item.get("name") or label))
+    campaign = Path("/mnt/data/RESULTS/unidockpro/20251024_THRa_Large_screen_CD/mn_docking_data/THR_medchem_agonist/targets/thra/4lnw_T3_A_501_protein_mut_protein_refined.pdb")
+    if campaign.is_file():
+        options.append(("THRα campaign · 4LNW refined docking receptor", str(campaign), "THRα · 4LNW refined campaign receptor"))
+    unique = {}
+    for row in options:
+        unique.setdefault(row[1], row)
+    return list(unique.values())
+
+
+def _render_active_target(params, key):
+    options = _active_target_options()
+    current = str(params.get("target_pdb") or "")
+    if current and Path(current).is_file() and current not in {item[1] for item in options}:
+        options.insert(0, (params.get("target_name") or Path(current).stem, current, params.get("target_name") or Path(current).stem))
+    if not options:
+        st.info("No saved receptors were found. Import a receptor structure into Studio first.")
+        return None
+    paths = [item[1] for item in options]
+    if current not in paths:
+        current = paths[0]
+    selected = st.selectbox("Existing receptor", paths, index=paths.index(current),
+        format_func=lambda value: next(item[0] for item in options if item[1] == value), key=key + "-target")
+    item = next(option for option in options if option[1] == selected)
+    st.caption("Using a structure already imported into Studio. No upload or duplicate receptor entry is created.")
+    return {"target_pdb": selected, "target_name": item[2]}
+
+
 def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, graph=None):
     from mn_molecular_design_studio.target_editor import TargetSource, _hash, _target_widget_keys, render_target_coldspots, render_target_editor, render_target_source
     from mn_molecular_design_studio.design_validation import design_candidates
@@ -85,6 +188,21 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
         if target.design_path and target.ready and target.valid_trim_ranges:
             contexts[node_id] = {"target_pdb": str(target.design_path), "target_chains": ",".join(target.chains), "hotspots": target.hotspots, "coldspots": target.coldspots}
             params.update(contexts[node_id])
+    elif selected["data"]["kind"] == "active_library":
+        chosen = _render_active_library(params, key)
+        if chosen:
+            contexts[node_id] = chosen
+            params.update(chosen)
+    elif selected["data"]["kind"] == "active_seed":
+        chosen = _render_active_centroids(params, key)
+        if chosen:
+            contexts[node_id] = chosen
+            params.update(chosen)
+    elif selected["data"]["kind"] == "active_target":
+        chosen = _render_active_target(params, key)
+        if chosen:
+            contexts[node_id] = chosen
+            params.update(chosen)
     elif selected["data"]["kind"] == "binder_context":
         context_name = selected["data"].get("label", "Binder Design Context")
         context_subject = context_name.removesuffix(" Context")
@@ -260,7 +378,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     migrated_graph = migrate_template_graph(current_graph)
     if migrated_graph is not current_graph:
         _activate_graph(prefix, migrated_graph)
-    templates = {"Foundry · RFD3 → MPNN → RF3": "foundry",
+    templates = {"Active-learning docking": "unidock_active_learning",
+                 "Foundry · RFD3 → MPNN → RF3": "foundry",
                  "Antibody CDRs · Existing designs → SAbR → AbMPNN → sequence analysis": "abmpnn_cdr_redesign",
                  "PXDesign · MPNN → AF2 + Protenix":"pxdesign","RFdiffusion · MPNN → AF2":"rfdiffusion",
                  "Genie3 · MPNN → AF2 template":"genie3","Protpardelle-1C · MPNN → ESMFold":"protpardelle",
@@ -278,6 +397,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                  "Cofolding · Protein / macrocyclic peptide":"cofold_protein_macrocyclic",
                  "Blank canvas": "blank"}
     template_widget_key = prefix + "-template"
+    if st.session_state.get(template_widget_key) in {"UniDock Pro · THRα active learning", "UniDock Pro · active learning"}:
+        st.session_state[template_widget_key] = "Active-learning docking"
     old_template_label = "All generators → ProteinMPNN → Boltz-2 + analysis"
     if st.session_state.get(template_widget_key) == old_template_label:
         st.session_state[template_widget_key] = "Miniprotein binders · all generators → ProteinMPNN → Boltz-2 + analysis"
@@ -316,18 +437,21 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     if last_job.get("run_dir"):
         last_path = Path(last_job["run_dir"])
         execution = _matching_execution(graph, read_json(last_path/"graph_snapshot.json"), read_json(last_path/"graph_execution.json"))
-    value = _component()(graph=graph, catalog=NODE_CATALOG, reset_token=st.session_state[prefix+"-reset"], input_contexts=contexts, execution=execution, settings_update=st.session_state.get(prefix+"-settings-update"), key=prefix+"-canvas", default=None)
+    value = _component()(graph=graph, catalog=NODE_CATALOG, active_study_layout=ACTIVE_LEARNING_LAYOUT, active_execution_ready=False, reset_token=st.session_state[prefix+"-reset"], input_contexts=contexts, execution=execution, settings_update=st.session_state.get(prefix+"-settings-update"), key=prefix+"-canvas", default=None)
     if value:
         signature = json.dumps(value, sort_keys=True)
         if signature != st.session_state.get(prefix+"-last-value"):
             st.session_state[prefix+"-last-value"] = signature
             try:
-                updated = clean_graph(value["graph"])
+                component_graph = copy.deepcopy(value["graph"])
+                if graph.get("template_id") and not component_graph.get("template_id"):
+                    component_graph["template_id"] = graph["template_id"]
+                updated = clean_graph(component_graph)
                 # Input paths are authored through the trusted upload/project
                 # controls, rather than accepted from component messages.
                 known = {n["id"]: n for n in graph["nodes"]}
                 for n in updated["nodes"]:
-                    if n["data"]["kind"] in {"target", "binder_context", "design_source", "generation_source", "backbone_source", "project_design_source", "complexa_generator", "pxdesign", "rfdiffusion", "genie3", "protpardelle"}:
+                    if n["data"]["kind"] in {"target", "active_library", "active_target", "active_seed", "active_docking", "active_accumulate", "active_binder_rule", "active_train", "active_predict", "active_select", "active_decision", "active_results", "binder_context", "design_source", "generation_source", "backbone_source", "project_design_source", "complexa_generator", "pxdesign", "rfdiffusion", "genie3", "protpardelle"}:
                         previous = known.get(n["id"])
                         n["data"]["params"] = copy.deepcopy(previous["data"]["params"] if previous and previous["data"]["kind"]==n["data"]["kind"] else {f["name"]:f["default"] for f in NODE_CATALOG[n["data"]["kind"]]["fields"]})
                 updated["name"] = graph["name"]

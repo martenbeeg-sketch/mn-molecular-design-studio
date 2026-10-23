@@ -10,12 +10,14 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "biopython",
+  "duckdb>=1.4,<2",
   "fastapi",
   "gemmi",
   "matplotlib",
   "numpy>=1.26.4,<3",
   "openpyxl",
   "pandas",
+  "pyarrow>=14",
   "plotly>=5.24,<7",
   "pyyaml",
   "py2Dmol @ git+https://github.com/sokrypton/py2Dmol.git@67cbe73f06f49645291ea3e79a06293b0abaa3a7",
@@ -56,6 +58,7 @@ include = ["mn_molecular_design_studio*"]
 "mn_molecular_design_studio.vendor.sabr._anarci" = ["LICENSE"]
 "mn_molecular_design_studio.vendor.sabr.assets" = ["*.npz", "*.json"]
 "*" = [
+  "native/*.cpp",
   "*.yaml",
   "*.nf",
   "*.config",

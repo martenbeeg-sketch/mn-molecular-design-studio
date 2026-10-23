@@ -64,13 +64,14 @@ def referenced_nodes(value):
     return nodes
 
 
-def pack(payload, *, base_dir, node_id, authorize_path=lambda p: None):
+def pack(payload, *, base_dir, node_id, authorize_path=lambda p: None, preserve_path_keys=()):
     """Copy only submitted inputs; existing runs and reference files stay local."""
     from mn_molecular_design_studio.runtime import runs_root, reference_root
     from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import is_operational_path_key, resolve_stored_path
     run_root, references = runs_root().resolve(), reference_root().resolve()
     files, required_references = {}, set()
     size = 0
+    preserve_path_keys = {str(key).casefold() for key in preserve_path_keys}
 
     def transform(value, key=""):
         nonlocal size
@@ -79,6 +80,8 @@ def pack(payload, *, base_dir, node_id, authorize_path=lambda p: None):
         if isinstance(value, list):
             return [transform(v, key) for v in value]
         if not isinstance(value, str) or not value or not is_operational_path_key(key):
+            return value
+        if key.casefold() in preserve_path_keys:
             return value
         if value.startswith("cluster://") or value.startswith("cluster-input:///"):
             return value

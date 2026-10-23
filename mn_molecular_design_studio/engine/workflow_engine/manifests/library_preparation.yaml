@@ -1,0 +1,4 @@
+tool: library_preparation
+group: library-preparation
+gpu: false
+description: Register external library metadata and stream packed OpenVS-compatible Morgan fingerprint work across CPU worker processes on selected Studio computers. One scheduled Studio job owns the fan-out; worker outputs are collected after all computers finish. Source libraries remain external.

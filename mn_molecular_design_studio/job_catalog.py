@@ -242,6 +242,11 @@ def _job_payload(run_dir: Path) -> dict[str, Any]:
         if pipeline_parent or is_visual_pipeline
         else ""
     )
+    result_metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+    # Keep the worker rows used by the distributed-library dialog available
+    # in the compact job catalog. Avoid copying arbitrary result metrics into
+    # every catalog response; some workflows retain large result summaries.
+    worker_metrics = result_metrics.get("workers") if isinstance(result_metrics.get("workers"), list) else []
     return {
         "run_id": run_dir.name,
         "task_group": str(metadata.get("task_group") or run_dir.parent.name),
@@ -253,6 +258,8 @@ def _job_payload(run_dir: Path) -> dict[str, Any]:
         "resource_allocation": resource_allocation,
         "scheduler_wait_reason": str(metadata.get("scheduler_wait_reason") or ""),
         "current_phase": str(metadata.get("current_phase") or ""),
+        "worker_plan": metadata.get("worker_plan") if isinstance(metadata.get("worker_plan"), list) else [],
+        "metrics": {"workers": worker_metrics} if worker_metrics else {},
         "current_engine": str(metadata.get("current_engine") or ""),
         "warning": str(metadata.get("warning") or ""),
         "warning_level": str(metadata.get("warning_level") or ("degraded" if metadata.get("warning") else "")),
@@ -589,6 +596,20 @@ def search_jobs(
         item["success"] = None if item["success"] is None else bool(item["success"])
         item["hidden"] = bool(item["hidden"])
         item["capacity_parent"] = bool(item["capacity_parent"])
+        if item.get("job_type") in {"library_preparation", "library_centroids"}:
+            # Keep the distributed-library worker details in the compact
+            # catalog response without adding their operational metrics to
+            # the SQLite index schema.
+            run_dir = Path(item["run_dir"])
+            metadata = _read_json(run_dir / "metadata.json")
+            input_payload = _read_json(run_dir / "input.json")
+            input_params = input_payload.get("params") if isinstance(input_payload.get("params"), dict) else {}
+            result_payload = _read_json(run_dir / "result.json")
+            result_metrics = result_payload.get("metrics") if isinstance(result_payload.get("metrics"), dict) else {}
+            worker_metrics = result_metrics.get("workers") if isinstance(result_metrics.get("workers"), list) else []
+            item["campaign_name"] = item.get("campaign_name") or str(input_params.get("library_name") or "")
+            item["worker_plan"] = metadata.get("worker_plan") if isinstance(metadata.get("worker_plan"), list) else []
+            item["metrics"] = {"workers": worker_metrics} if worker_metrics else {}
         display_tool_params = {}
         if item["tool"] == "ligandmpnn":
             input_payload = _read_json(Path(item["run_dir"]) / "input.json")

@@ -648,6 +648,9 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     run_dir = Path(run_dir)
     if not is_studio_job(run_dir):
         return 0
+    from mn_molecular_design_studio.collection_policy import automatic_collection_allowed
+    if not automatic_collection_allowed(run_dir):
+        return 0
     if (run_dir / "artifacts/md/study.json").is_file():
         from mn_molecular_design_studio.md_database import ingest_completed_md_run
         return ingest_completed_md_run(run_dir, database=database, force=force)
@@ -1185,6 +1188,9 @@ def record_completed_run(run_dir):
         from mn_molecular_design_studio.workspace import is_studio_job
         run_dir = Path(run_dir).resolve()
         if not is_studio_job(run_dir):
+            return
+        from mn_molecular_design_studio.collection_policy import automatic_collection_allowed
+        if not automatic_collection_allowed(run_dir):
             return
         metadata = _read(run_dir / "metadata.json")
         result = _read(run_dir / "result.json")

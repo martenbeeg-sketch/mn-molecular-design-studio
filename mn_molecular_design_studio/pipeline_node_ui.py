@@ -278,6 +278,118 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                 ready = node["id"] in contexts
                 if ready:
                     values.update(contexts[node["id"]])
+        elif kind == "active_library":
+            with st.container(border=True):
+                contexts = render_input()
+                ready = node["id"] in contexts
+                if ready:
+                    values.update(contexts[node["id"]])
+        elif kind == "active_seed":
+            with st.container(border=True):
+                contexts = render_input()
+                ready = node["id"] in contexts
+                if ready:
+                    values.update(contexts[node["id"]])
+            for field_spec in spec["fields"]:
+                if field_spec["name"] in {"sample_size", "sampling_seed"}:
+                    values[field_spec["name"]] = _render_field(field_spec, values, key)
+        elif kind == "active_target":
+            with st.container(border=True):
+                contexts = render_input()
+                ready = node["id"] in contexts
+                if ready:
+                    values.update(contexts[node["id"]])
+            st.markdown("**Docking box**")
+            columns = st.columns(3)
+            for index, name in enumerate(("center_x", "center_y", "center_z", "size_x", "size_y", "size_z")):
+                field_spec = next(field for field in spec["fields"] if field["name"] == name)
+                with columns[index % 3]:
+                    values[name] = _render_field(field_spec, values, key)
+        elif kind == "active_docking":
+            _render_connection_card(node, graph)
+            engine_field = next(field for field in spec["fields"] if field["name"] == "engine")
+            previous_engine = values.get("engine", "UniDock Pro")
+            values["engine"] = _render_field(engine_field, values, key)
+            if values["engine"] != previous_engine:
+                profile = ("total_score", "REU") if values["engine"] == "RosettaLigand" else ("binding_energy", "kcal/mol") if values["engine"] == "AutoDock-GPU" else ("vina_score", "kcal/mol")
+                values.update(score_field=profile[0], score_units=profile[1], score_direction="Lower is better")
+            gpu_engine = values["engine"] in {"UniDock Pro", "GNINA", "AutoDock-GPU"}
+            st.caption("One docking worker is scheduled per selected computer. Each round is divided across them; the organizer gathers scores and retained poses when the round completes.")
+            machines = []
+            try:
+                from mn_molecular_design_studio.cluster.store import Store
+                from mn_molecular_design_studio.cluster import config as cluster_config
+                from mn_molecular_design_studio.cluster.config import display_name
+                for row in Store().nodes():
+                    snapshot = row.get("snapshot") or {}
+                    resources = snapshot.get("resources") or {}
+                    if row.get("availability") != "online" or not snapshot.get("accept_jobs") or not snapshot.get("scheduler_online"):
+                        continue
+                    gpu_list = resources.get("free_gpus") if "free_gpus" in resources else resources.get("gpus", [])
+                    gpu_list = gpu_list or []
+                    if gpu_engine and not gpu_list:
+                        continue
+                    machines.append({"id": row["id"], "name": display_name(row["name"]), "gpus": gpu_list,
+                                     "cpu_free": int(resources.get("cpu_free") or 0),
+                                     "local": row["id"] == cluster_config.identity()})
+            except (OSError, ValueError, KeyError, TypeError):
+                machines = []
+            if not machines:
+                st.warning("No compatible online Studio computer is available for this docking engine.")
+                ready = False
+            else:
+                labels = {machine["id"]: f"{machine['name']} · {str(len(machine['gpus'])) + ' GPU(s)' if gpu_engine else 'CPU'}" for machine in machines}
+                available_ids = list(labels)
+                current_workers = values.get("worker_nodes") if isinstance(values.get("worker_nodes"), list) else []
+                current_ids = [str(item.get("node_id")) for item in current_workers if isinstance(item, dict)]
+                default_ids = [item for item in current_ids if item in available_ids] or available_ids
+                chosen_ids = st.multiselect("Docking computers", available_ids,
+                    default=default_ids, format_func=lambda value: labels[value], key=key + "-docking-machines-" + values["engine"])
+                worker_specs = []
+                no_cpu_slots = False
+                for machine_id in chosen_ids:
+                    machine = next(item for item in machines if item["id"] == machine_id)
+                    gpu_ids = [str(gpu.get("gpu_id", index)) for index, gpu in enumerate(machine["gpus"])]
+                    old = next((item for item in current_workers if isinstance(item, dict) and item.get("node_id") == machine_id), {})
+                    cpu_available = int(machine["cpu_free"])
+                    if machine["local"]:
+                        # The campaign coordinator holds one scheduled CPU slot while it queues the docking shard.
+                        cpu_available = max(0, cpu_available - 1)
+                    if cpu_available < 1:
+                        no_cpu_slots = True
+                        continue
+                    cpu_default = min(cpu_available, max(1, int(old.get("cpu_cores") or cpu_available)))
+                    selected_cpus = st.number_input(
+                        f"CPU worker slots · {machine['name']}", min_value=1, max_value=cpu_available,
+                        value=cpu_default, step=1, key=key + "-docking-cpus-" + machine_id,
+                    )
+                    selected_gpu = "none"
+                    if gpu_engine:
+                        gpu_value = str(old.get("gpu_device") or gpu_ids[0])
+                        if gpu_value not in gpu_ids:
+                            gpu_value = gpu_ids[0]
+                        selected_gpu = st.selectbox(f"GPU · {machine['name']}", gpu_ids, index=gpu_ids.index(gpu_value),
+                            key=key + "-docking-gpu-" + machine_id,
+                            format_func=lambda value: f"GPU {value}")
+                    worker_specs.append({"node_id": machine_id, "gpu_device": selected_gpu,
+                                         "cpu_cores": int(selected_cpus), "name": machine["name"],
+                                         "local": machine["local"]})
+                values["worker_nodes"] = worker_specs
+                fields = [field for field in spec["fields"] if field["name"] not in {"worker_nodes", "engine"}
+                          and (field["name"] != "search_mode" or values["engine"] == "UniDock Pro")]
+                with st.container(border=True):
+                    st.markdown("**Docking and batch settings**")
+                    columns = st.columns(2)
+                    for index, field_spec in enumerate(fields):
+                        with columns[index % 2]:
+                            field_key = key + "-" + values["engine"] if field_spec["name"] in {"score_field", "score_units", "score_direction"} else key
+                            values[field_spec["name"]] = _render_field(field_spec, values, field_key)
+                if no_cpu_slots:
+                    st.warning("A selected computer has no free CPU slots for a docking worker. Free some slots or choose another computer.")
+                    ready = False
+                if not worker_specs:
+                    st.info("Select at least one computer with free CPU slots. The organizer must be included.")
+                    ready = False
         elif kind in {"target", "design_source", "generation_source", "backbone_source", "project_design_source"}:
             with st.container(border=True):
                 contexts = render_input()

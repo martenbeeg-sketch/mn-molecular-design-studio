@@ -21,9 +21,8 @@ dependencies:
   - typer
   - pip
   - pip:
-      # pydssp is called with NumPy coordinates, so CPU PyTorch is sufficient.
-      # Select the CPU wheel to avoid pip pulling the default CUDA-enabled build.
-      - --extra-index-url https://download.pytorch.org/whl/cpu
-      - torch==2.14.1+cpu
+      # CUDA PyTorch is used by the active-learning network on the organizer GPU.
+      - --extra-index-url https://download.pytorch.org/whl/cu130
+      - torch==2.14.1+cu130
       - -e .[secondary-structure]
       - -e ../mn-compute-scheduler

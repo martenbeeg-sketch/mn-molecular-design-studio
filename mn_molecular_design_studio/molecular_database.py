@@ -127,6 +127,10 @@ class MolecularDatabase:
                 PRIMARY KEY(batch_id,row_number)
             );
             CREATE INDEX IF NOT EXISTS molecular_import_rows_status ON molecule_import_rows(batch_id,status,row_number);
+            CREATE TABLE IF NOT EXISTS external_library_records (
+                id TEXT PRIMARY KEY, record_json TEXT NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
         ''')
         from mn_molecular_design_studio.evaluations import install_schema
         install_schema(connection)
@@ -342,6 +346,36 @@ class MolecularDatabase:
                 (group_id,),
             ).fetchall()
         return {row["fingerprint"]: {"id": row["id"], "name": row["name"]} for row in rows}
+
+    def external_library_record(self, library_id):
+        """Read metadata for an external compound library; compounds stay in their source files."""
+        with self.connection() as connection:
+            row = connection.execute("SELECT record_json FROM external_library_records WHERE id=?", (str(library_id),)).fetchone()
+        if not row:
+            raise KeyError("External library metadata record not found.")
+        return json.loads(row["record_json"])
+
+    def external_library_records(self):
+        with self.connection() as connection:
+            rows = connection.execute("SELECT record_json FROM external_library_records ORDER BY updated_at DESC,id").fetchall()
+        return [json.loads(row["record_json"]) for row in rows]
+
+    def save_external_library_record(self, record):
+        """Store one metadata-only library record in the app's SQLite database."""
+        library_id = str(record.get("id") or "")
+        if not library_id.startswith("lib-"):
+            raise ValueError("External library records require a valid library ID.")
+        stamp = _now()
+        with self.connection() as connection:
+            existing = connection.execute("SELECT created_at FROM external_library_records WHERE id=?", (library_id,)).fetchone()
+            created_at = str(record.get("created_at") or (existing["created_at"] if existing else stamp))
+            record = {**record, "created_at": created_at, "updated_at": stamp}
+            connection.execute(
+                "INSERT INTO external_library_records VALUES (?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json,updated_at=excluded.updated_at",
+                (library_id, _json(record), created_at, stamp),
+            )
+        return record
 
     def _save_import_audit(self, connection, user, group_id, audit, records, molecule_ids, source_content=None, batch_id=None):
         if not audit:

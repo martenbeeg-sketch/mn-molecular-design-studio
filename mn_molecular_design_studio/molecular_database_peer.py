@@ -13,7 +13,7 @@ from fastapi import Request
 from mn_molecular_design_studio.molecular_database import IMPORT_METHODS, MolecularDatabase, _id, _json
 from mn_molecular_design_studio import molecule_imports
 
-KINDS = {"molecule_group", "molecule_entry"}
+KINDS = {"molecule_group", "molecule_entry", "external_library"}
 _DIGESTS = {}
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -194,6 +194,14 @@ def capture(replica, *, database=None, node_id=None):
     node_id = node_id or config.identity()
     values = {}
     with database.connection() as connection:
+        for row in connection.execute("SELECT id,record_json FROM external_library_records"):
+            record = _object_json(row["record_json"], "external library")
+            author = record.get("_replica_node")
+            if author not in (None, node_id):
+                continue
+            values[f"external_library:{node_id}:{row['id']}"] = (
+                "external_library", {"node_id": node_id, "record": record},
+            )
         groups = connection.execute("SELECT * FROM molecule_groups").fetchall()
         local_groups = [row for row in groups if not json.loads(row["origin"]).get("_replica_node")]
         for group in local_groups:
@@ -215,7 +223,7 @@ def capture(replica, *, database=None, node_id=None):
                 value = {"node_id": node_id, "group_id": group["id"], "molecule": dict(molecule), "member": dict(member), "structures": structures, "observations": observations, "sources": sources}
                 values[f"molecule_entry:{node_id}:{group['id']}:{member['molecule_id']}"] = ("molecule_entry", value)
     with replica.db() as connection:
-        previous = {row["key"]: row for row in connection.execute("SELECT * FROM records WHERE kind IN ('molecule_group','molecule_entry') AND author=?", (node_id,))}
+        previous = {row["key"]: row for row in connection.execute("SELECT * FROM records WHERE kind IN ('molecule_group','molecule_entry','external_library') AND author=?", (node_id,))}
         for key, (kind, value) in values.items():
             if key not in previous or json.loads(previous[key]["value"]) != value:
                 replica._write(connection, key, kind, value, author=node_id)
@@ -232,6 +240,50 @@ def apply_record(kind, key, value, author, *, database=None):
     if not isinstance(key, str) or not key.startswith(prefix):
         raise PermissionError("Only the source workstation may publish a molecular record.")
     identifier = key[len(prefix):]
+    if kind == "external_library":
+        if not identifier.startswith("lib-") or len(identifier) != 28 or any(c not in "0123456789abcdef" for c in identifier[4:]):
+            raise ValueError("Invalid external library identity.")
+        if value is None:
+            with database.connection() as connection:
+                row = connection.execute("SELECT record_json FROM external_library_records WHERE id=?", (identifier,)).fetchone()
+                if row:
+                    record = _object_json(row["record_json"], "external library")
+                    if record.get("_replica_node") != author:
+                        raise PermissionError("A peer cannot remove an external library owned by another workstation.")
+                    connection.execute("DELETE FROM external_library_records WHERE id=?", (identifier,))
+            return
+        if (not isinstance(value, dict) or value.get("node_id") != author
+                or not isinstance(value.get("record"), dict) or value["record"].get("id") != identifier):
+            raise ValueError("Invalid external library snapshot.")
+        record = dict(value["record"])
+        if record.get("schema_version") != "studio.external-library.v1" or not isinstance(record.get("sources"), list):
+            raise ValueError("Incomplete external library metadata.")
+        if len(json.dumps(record, ensure_ascii=False, allow_nan=False, default=str)) > 1_000_000:
+            raise ValueError("External library metadata exceeds the synchronization limit.")
+        with database.connection() as connection:
+            existing = connection.execute("SELECT record_json FROM external_library_records WHERE id=?", (identifier,)).fetchone()
+            if existing:
+                previous = _object_json(existing["record_json"], "external library")
+                if previous.get("_replica_node") not in (None, author):
+                    raise PermissionError("A peer cannot replace an external library owned by another workstation.")
+                from mn_molecular_design_studio.cluster import config
+                local_preparations = [item for item in previous.get("preparations", [])
+                                      if item.get("owner_node_id") == config.identity()]
+                known = {item.get("sha256") for item in record.get("preparations", [])}
+                record.setdefault("preparations", []).extend(
+                    item for item in local_preparations if item.get("sha256") not in known
+                )
+                if local_preparations:
+                    latest = local_preparations[-1]
+                    if latest.get("schema_version") == "studio.library-fingerprints.v2":
+                        record["prepared_compound_count"] = latest.get("rows")
+                        record["rejected_row_count"] = latest.get("rejected_rows")
+                        record["fingerprint_spec"] = latest.get("fingerprint_spec")
+                    elif latest.get("schema_version") == "studio.library-centroids.v2":
+                        record["centroid_count"] = latest.get("rows")
+        record["_replica_node"] = author
+        database.save_external_library_record(record)
+        return
     if not identifier or (kind == "molecule_entry" and ":" not in identifier):
         raise ValueError("Invalid molecular peer record key.")
     original_group = identifier if kind == "molecule_group" else identifier.rsplit(":", 1)[0]

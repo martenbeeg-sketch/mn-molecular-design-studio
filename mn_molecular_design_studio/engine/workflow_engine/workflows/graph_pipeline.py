@@ -930,6 +930,14 @@ def cancel_graph_children(run_dir: Path) -> None:
 def enqueue_graph_pipeline(graph: dict, *, pipeline_name: str, owner_id: str, project_id: str, reuse_completed=True, gpu_device="all") -> Path:
     from mn_molecular_design_studio.engine.workflow_engine.core.workflow_queue import enqueue_workflow_call
     graph = validate_graph(graph, require_inputs=True)["graph"]
+    if graph.get("template_id") == "unidock_active_learning":
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.active_learning_controller import run_active_learning_pipeline
+        return enqueue_workflow_call(
+            run_active_learning_pipeline, task_group="campaign", tool="visual_pipeline", job_type="visual_pipeline",
+            kwargs={"graph": graph, "pipeline_name": pipeline_name, "owner_id": owner_id,
+                    "project_id": project_id, "reuse_completed": False, "gpu_device": "none"},
+            cpu_cores=1, gpu_device="none",
+        )
     return enqueue_workflow_call(run_graph_pipeline, task_group="campaign", tool="visual_pipeline", job_type="visual_pipeline",
         kwargs={"graph": graph, "pipeline_name": pipeline_name, "owner_id": owner_id, "project_id": project_id, "reuse_completed": reuse_completed, "gpu_device": gpu_device}, cpu_cores=1, gpu_device="none")
 

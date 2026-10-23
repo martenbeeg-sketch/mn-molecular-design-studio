@@ -142,6 +142,78 @@ NODE_CATALOG = {
     "ipsae": _spec("ipsae", "ipSAE Interface Analysis", "Analysis", "Score predicted interfaces using the saved pairwise PAE matrix and complex structure.", accepts=["prediction"], output="prediction", workflow="analysis.ipsae", color="#9a7854", fields=[field("pae_cutoff", "PAE cutoff (Å)", 10., minimum=0., maximum=100.), field("dist_cutoff", "Interface distance cutoff (Å)", 10., minimum=0., maximum=100.)]),
     "rosetta_metrics": _spec("rosetta_metrics", "Rosetta Interface Analysis", "Analysis", "Calculate PyRosetta interface, packing, SASA, hydrogen-bond, and binder surface metrics.", accepts=["prediction"], output="prediction", workflow="analysis.rosetta", color="#9a7854", fields=[]),
 }
+
+# Active-learning docking is represented as ordinary editable canvas nodes.
+# Its feedback edge is marked in the graph and executed by the dedicated
+# controller; the generic DAG runner must not try to schedule these nodes.
+_ACTIVE_STATE = "active_learning_state"
+NODE_CATALOG.update({
+    "active_library": _spec("active_library", "Compound library", "Active learning", "Use a registered external library's packed fingerprints for prediction and random exploration. The initial centroid sample has its own independent source. Compound rows remain in external files; only docked batches are materialized.", output=_ACTIVE_STATE, color="#3879a8", formats=(), fields=[
+        field("library_id", "Registered library ID", "", kind="text", section="basic"),
+        field("feature_manifest", "Fingerprint manifest", "", kind="text", section="basic"),
+        # Retained only so older saved drafts can migrate this value to the seed input.
+        field("centroid_manifest", "Legacy centroid manifest", "", kind="text", section="legacy"),
+    ]),
+    "active_target": _spec("active_target", "Receptor", "Active learning", "Select an imported receptor structure and define the docking box for this study.", output=_ACTIVE_STATE, color="#758f84", formats=("pdb",), fields=[
+        field("target_pdb", "Saved receptor structure", "", kind="text", section="basic"),
+        field("target_name", "Receptor name", "", kind="text", section="basic"),
+        field("center_x", "Box center X (Å)", 0.0, minimum=-500, maximum=500, section="basic"),
+        field("center_y", "Box center Y (Å)", 0.0, minimum=-500, maximum=500, section="basic"),
+        field("center_z", "Box center Z (Å)", 0.0, minimum=-500, maximum=500, section="basic"),
+        field("size_x", "Box size X (Å)", 25.0, minimum=1, maximum=60, section="basic"),
+        field("size_y", "Box size Y (Å)", 25.0, minimum=1, maximum=60, section="basic"),
+        field("size_z", "Box size Z (Å)", 25.0, minimum=1, maximum=60, section="basic"),
+    ]),
+    "active_seed": _spec("active_seed", "Random centroid seed", "Active learning", "Choose a registered centroid dataset and dock a reproducible random sample for the first training round. This source can differ from the full screening library; fingerprint settings must be compatible.", output=_ACTIVE_STATE, color="#3985a7", fields=[
+        field("library_id", "Centroid source library ID", "", kind="text", section="basic"),
+        field("centroid_manifest", "Centroid manifest", "", kind="text", section="basic"),
+        field("sample_size", "Initial compounds", 10000, minimum=1, maximum=1000000, section="basic"),
+        field("sampling_seed", "Sampling seed", 42, minimum=0, maximum=2147483647, section="basic"),
+    ]),
+    "active_docking": _spec("active_docking", "Docking", "Active learning", "Dock each selected round with the chosen engine, splitting the round across selected Studio computers. UniDock Pro in normal mode is the initial configuration.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#427f68", fields=[
+        field("engine", "Docking engine", "UniDock Pro", kind="select", options=["UniDock Pro"], section="basic",
+              help="The active-learning controller currently connects UniDock Pro. Other engines need their score and output adapters before they can run in this loop."),
+        field("score_field", "Score field", "vina_score", kind="text", section="basic"),
+        field("score_units", "Score units", "kcal/mol", kind="text", section="basic", help="Declare the units for the selected scoring function, or use unitless."),
+        field("score_direction", "Score ranking", "Lower is better", kind="select", options=["Lower is better", "Higher is better"], section="basic"),
+        field("batch_size", "Compounds per round", 10000, minimum=1, maximum=1000000, section="basic",
+              help="The round is divided evenly across computers. UniDock Pro allows up to 100,000 compounds in one scheduled worker run."),
+        field("search_mode", "UniDock Pro search", "balance", kind="select", options=["fast", "balance", "detail"], section="basic"),
+        field("num_modes", "Docking poses retained per compound during scoring", 1, minimum=1, maximum=20, section="basic"),
+        field("worker_nodes", "Compute computers", [], kind="json", section="basic", help="Select the organizer and any available compute computers. One scheduled docking worker runs on each selected computer."),
+        field("ssh_user", "SSH user", "compute", kind="text", section="basic"),
+    ]),
+    "active_accumulate": _spec("active_accumulate", "Accumulate docking results", "Active learning", "Merge every completed docking round, keep the best configured score per source library and stable compound ID, and sort the cumulative table using the docking node's ranking direction. Source namespaces preserve distinct compounds when two libraries reuse an ID. Snapshot the top ranks for comparison with the previous cumulative ranking. Keep poses only for the best-ranked compounds.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#668d75", fields=[
+        field("retained_pose_count", "Best poses kept for Database", 1000, minimum=0, maximum=1000000, section="basic"),
+    ]),
+    "active_binder_rule": _spec("active_binder_rule", "Binder labeling rule", "Active learning", "Recalculate binder labels on the cumulative docked dataset before each training round. Change the binder percentage logarithmically from the starting percentage to the final percentage across the selected rounds; keep the final percentage afterwards. Label the best-scoring percentage using the ranking direction declared by the docking node.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#668d75", fields=[
+        field("binder_percent_start", "Starting binder percentage", 10.0, minimum=0.001, maximum=100, section="basic"),
+        field("binder_percent_target", "Final binder percentage", 0.01, minimum=0.001, maximum=100, section="basic"),
+        field("tightening_rounds", "Rounds to reach final percentage", 10, minimum=1, maximum=100, section="basic"),
+    ]),
+    "active_train": _spec("active_train", "Train OpenVS-style neural network", "Active learning", "Train a binary classifier on 1024-bit Morgan fingerprints using the OpenVS dense architecture: three hidden layers of 3000 nodes and dropout 0.5.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#a88845", fields=[
+        field("hidden_nodes", "Nodes per hidden layer", 3000, minimum=1, maximum=20000, section="basic"),
+        field("dropout", "Dropout", 0.5, minimum=0, maximum=0.9, section="basic"),
+        field("epochs", "Training epochs", 20, minimum=1, maximum=500, section="basic"),
+        field("training_batch_size", "Training batch size", 5000, minimum=1, maximum=100000, section="basic"),
+    ]),
+    "active_predict": _spec("active_predict", "Predict compound library", "Active learning", "Stream through the registered fingerprint shards and write only compound ID plus model probability; do not copy the whole library into Studio's molecule database.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#8268a2", fields=[
+        field("prediction_batch_size", "Prediction batch size", 10000, minimum=1, maximum=100000, section="basic"),
+    ]),
+    "active_select": _spec("active_select", "Select predicted hits and random compounds", "Active learning", "Select high-probability undocked compounds plus a uniform random exploration sample from the remaining external library.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#8268a2", fields=[
+        field("predicted_fraction_percent", "Next round from top predictions (%)", 80.0, minimum=0, maximum=100, section="basic"),
+    ]),
+    "active_decision": _spec("active_decision", "Stopping decision", "Active learning", "After accumulating and reordering all docking rounds, compare the top N cumulative scores with the previous round's cumulative top N. Compare the score at each rank using the score units declared by the docking node. Stop after the selected number of stable comparisons, when the library is exhausted, or at the optional iteration limit.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#bd8d42", fields=[
+        field("top_n", "Top ranks compared", 100, minimum=1, maximum=100000, section="basic"),
+        field("score_tolerance", "Stable score change", 0.05, minimum=0, maximum=100, section="basic", help="Use the units declared by the docking node for its selected score field."),
+        field("stable_rounds", "Stable rounds before stopping", 3, minimum=1, maximum=100, section="basic"),
+        field("max_iterations", "Maximum iterations (0 = unlimited)", 0, minimum=0, maximum=100000, section="basic"),
+    ]),
+    "active_results": _spec("active_results", "Active learning results", "Results", "Scores, selected compounds, model checkpoints, iteration history and retained poses are collected in this run and linked to their original compound IDs in the Studio Database.", output=None, accepts=[_ACTIVE_STATE], color="#427f68", formats=()),
+})
+NODE_CATALOG["active_docking"]["inputs"][0]["multiple"] = True
+NODE_CATALOG["active_predict"]["inputs"][0]["multiple"] = True
+NODE_CATALOG["active_select"]["inputs"][0]["multiple"] = True
 NODE_CATALOG["complexa_generator"]["inputs"][0]["optional"] = True
 
 from mn_molecular_design_studio.quality_tools import TOOLS as QUALITY_TOOLS
@@ -495,6 +567,7 @@ for _engine, _metadata in inverse_folding_input.ENGINES.items():
         fields=inverse_folding_input.canvas_fields(_engine), color="#a88845")
 
 TEMPLATE_REFERENCES={
+    'unidock_active_learning':('https://github.com/Novartis/OpenVS','Active-learning study template inspired by OpenVS: an independent centroid sample, configurable docking engine, cumulative score ranking, changing binder percentage, a 1024-bit/3000-node classifier, prediction across the compound library, and selection of predicted hits plus random exploration.'),
     'abmpnn_cdr_redesign':('https://app.tamarind.bio/tools/abmpnn','Select saved project designs, annotate antibody CDRs with SAbR, redesign selected loops with AbMPNN, then independently refold the redesigned sequences with Boltz-2 before sequence analysis and Results.'),
     'rfd4_protein_binder':('https://huggingface.co/spaces/nvidia/rfd4-proteina-zerogpu','RFD4-Proteina co-designs sequence and structure together. This starter sends the generated complex to Boltz-2, then calculates ipSAE and Rosetta interface metrics. Use a protein target structure; edit the RFD4 task options for exact condition controls.'),
     'rfd4_small_molecule':('https://github.com/RosettaCommons/RFD4-Proteina/blob/main/docs/examples/python_api_tutorial.ipynb','Small-molecule pocket design based on RFD4’s annotated-CIF Python tutorial. The RFD4 node accepts either guided ligand controls or an annotated CIF/native condition specification. The connected Boltz-2 step independently predicts the generated protein–ligand complex.'),
@@ -533,7 +606,57 @@ def _cofold_model_kinds(task_type: str) -> list[str]:
     ]
 
 
+ACTIVE_LEARNING_TEMPLATE_VERSION = 4
+ACTIVE_LEARNING_LAYOUT = {
+    "active_seed": {"x": 80, "y": 40, "width": 320, "height": 150},
+    "active_library": {"x": 760, "y": 40, "width": 320, "height": 150},
+    "active_target": {"x": 455, "y": 215, "width": 230, "height": 110},
+    "active_docking": {"x": 80, "y": 330, "width": 320, "height": 180},
+    "active_select": {"x": 760, "y": 330, "width": 320, "height": 180},
+    "active_accumulate": {"x": 80, "y": 610, "width": 320, "height": 180},
+    "active_predict": {"x": 760, "y": 610, "width": 320, "height": 180},
+    "active_decision": {"x": 80, "y": 870, "width": 320, "height": 240},
+    "active_train": {"x": 760, "y": 900, "width": 320, "height": 180},
+    "active_binder_rule": {"x": 455, "y": 930, "width": 230, "height": 120},
+    "active_results": {"x": 80, "y": 1220, "width": 320, "height": 130},
+}
+
+
 def new_graph(template="foundry") -> dict[str, Any]:
+    if template == "unidock_active_learning":
+        kinds = ["active_library", "active_seed", "active_docking", "active_accumulate",
+                 "active_binder_rule", "active_train", "active_predict", "active_select",
+                 "active_decision", "active_results", "active_target"]
+        labels = {"active_library": "Compound library", "active_seed": "Centroid library",
+                  "active_docking": "Docking", "active_accumulate": "Accumulate results",
+                  "active_decision": "Stopping criteria reached?", "active_binder_rule": "Binder labels",
+                  "active_train": "Train NN", "active_predict": "Predict compound library",
+                  "active_select": "Select next docking batch", "active_target": "Receptor",
+                  "active_results": "Final results"}
+        nodes = []
+        for index, kind in enumerate(kinds):
+            position = ACTIVE_LEARNING_LAYOUT[kind]
+            spec = NODE_CATALOG[kind]
+            params = {item["name"]: copy.deepcopy(item["default"]) for item in spec["fields"]}
+            nodes.append({"id": f"{kind}-{index}", "type": "studio", "position": {"x": position["x"], "y": position["y"]},
+                          "data": {"kind": kind, "label": labels[kind], "params": params}})
+        by_kind = {node["data"]["kind"]: node["id"] for node in nodes}
+        pairs = [("active_seed", "active_docking"),
+                 ("active_target", "active_docking"), ("active_docking", "active_accumulate"),
+                 ("active_accumulate", "active_decision"), ("active_decision", "active_binder_rule"),
+                 ("active_binder_rule", "active_train"),
+                 ("active_train", "active_predict"), ("active_predict", "active_select"),
+                 ("active_library", "active_predict"), ("active_library", "active_select"),
+                 ("active_decision", "active_results")]
+        edges = [{"id": f"edge-active-{index}", "source": by_kind[source], "sourceHandle": "out",
+                  "target": by_kind[target], "targetHandle": "in"} for index, (source, target) in enumerate(pairs)]
+        edges.append({"id": "edge-active-loop", "source": by_kind["active_select"], "sourceHandle": "out",
+                      "target": by_kind["active_docking"], "targetHandle": "in", "loop_back": True})
+        return clean_graph({"schema_version": SCHEMA, "id": uuid.uuid4().hex,
+                            "name": "Active-learning docking screen",
+                            "nodes": nodes, "edges": edges,
+                            "viewport": {"x": 0, "y": 0, "zoom": 0.62},
+                            "template_id": template, "template_version": ACTIVE_LEARNING_TEMPLATE_VERSION})
     if template == "abmpnn_cdr_redesign":
         kinds = ["project_design_source", "sabr", "abmpnn", "boltz2", "sequence_qc", "results"]
         positions = [(60, 190), (370, 190), (680, 190), (990, 190), (1300, 80), (1610, 190)]
@@ -904,6 +1027,33 @@ def migrate_template_graph(graph: dict[str, Any]) -> dict[str, Any]:
     non-overlapping columns and route every generator from Binder Design
     Context. This is a one-time layout migration, recorded on the graph.
     """
+    if graph.get("template_id") == "unidock_active_learning":
+        if graph.get("template_version") == ACTIVE_LEARNING_TEMPLATE_VERSION:
+            return graph
+        canonical = new_graph("unidock_active_learning")
+        existing = {node["data"]["kind"]: node for node in graph.get("nodes", [])}
+        if set(existing) != set(ACTIVE_LEARNING_LAYOUT):
+            return graph
+        migrated = copy.deepcopy(graph)
+        seed = next(node for node in migrated["nodes"] if node["data"]["kind"] == "active_seed")
+        library = existing["active_library"]["data"]["params"]
+        if not seed["data"]["params"].get("centroid_manifest") and library.get("centroid_manifest"):
+            seed["data"]["params"]["centroid_manifest"] = library["centroid_manifest"]
+            seed["data"]["params"]["library_id"] = library.get("library_id", "")
+        ids = {}
+        for reference in canonical["nodes"]:
+            node = next(n for n in migrated["nodes"] if n["data"]["kind"] == reference["data"]["kind"])
+            ids[reference["id"]] = node["id"]
+            node["position"] = copy.deepcopy(reference["position"])
+            old_defaults = {"Annotated library", "Annotated compound library", "THRα receptor", "THRα receptor and docking box", "UniDock Pro · normal mode", "Predict across annotated library", "Predict across external library"}
+            if node["data"].get("label") == NODE_CATALOG[node["data"]["kind"]]["label"] or node["data"].get("label") in old_defaults:
+                node["data"]["label"] = reference["data"]["label"]
+        migrated["edges"] = [{**edge, "source": ids[edge["source"]], "target": ids[edge["target"]]}
+                             for edge in canonical["edges"]]
+        migrated["template_version"] = ACTIVE_LEARNING_TEMPLATE_VERSION
+        if migrated.get("name") == "THRα · UniDock Pro active-learning screen":
+            migrated["name"] = canonical["name"]
+        return migrated
     if graph.get("template_id") != "all_generators_boltz2" or graph.get("template_version") == 3:
         return graph
 
@@ -1037,14 +1187,53 @@ def clean_graph(graph: dict) -> dict:
     viewport = graph.get("viewport") or {"x": 0, "y": 0, "zoom": 1}
     if not isinstance(viewport, dict) or any(isinstance(viewport.get(k), bool) or not isinstance(viewport.get(k), (float, int)) or not math.isfinite(viewport[k]) for k in ("x", "y", "zoom")) or not .05 <= viewport["zoom"] <= 5:
         raise ValueError("Invalid canvas viewport.")
+    kinds_by_id = {node["id"]: node.get("data", {}).get("kind") for node in nodes}
     return {"schema_version": SCHEMA, "id": graph["id"], "name": str(graph.get("name") or "Untitled pipeline")[:160], "nodes": cleaned,
-            "edges": [{k: edge[k] for k in ("id", "source", "target", "sourceHandle", "targetHandle") if k in edge} for edge in edges if isinstance(edge, dict)],
+            "edges": [{k: edge[k] for k in ("id", "source", "target", "sourceHandle", "targetHandle") if k in edge}
+                      | ({"loop_back": True} if edge.get("loop_back") is True or (
+                          graph.get("template_id") == "unidock_active_learning"
+                          and kinds_by_id.get(edge.get("source")) == "active_select"
+                          and kinds_by_id.get(edge.get("target")) == "active_docking"
+                      ) else {})
+                      for edge in edges if isinstance(edge, dict)],
             "viewport": viewport,**({'template_id':graph['template_id']} if graph.get('template_id') in TEMPLATE_REFERENCES else {}),
-            **({'template_version':graph['template_version']} if graph.get('template_id') == 'all_generators_boltz2' and type(graph.get('template_version')) is int and 1 <= graph['template_version'] <= 3 else {})}
+            **({'template_version':graph['template_version']} if type(graph.get('template_version')) is int and (
+                graph.get('template_id') == 'all_generators_boltz2' and 1 <= graph['template_version'] <= 3
+                or graph.get('template_id') == 'unidock_active_learning' and 2 <= graph['template_version'] <= ACTIVE_LEARNING_TEMPLATE_VERSION) else {})}
+
+
+def validate_active_library_sources(screening: dict, seed: dict) -> tuple[dict, dict]:
+    """Independent datasets share the model's fingerprint contract, not an ID namespace."""
+    from mn_molecular_design_studio.external_libraries import read_feature_manifest
+    if not screening.get("library_id") or not screening.get("feature_manifest"):
+        raise ValueError("Choose the compound screening library and its fingerprint dataset.")
+    if not seed.get("library_id") or not seed.get("centroid_manifest"):
+        raise ValueError("Choose the initial centroid library and its centroid dataset independently.")
+    try:
+        _path, features = read_feature_manifest(screening["feature_manifest"])
+        centroids = json.loads(Path(seed["centroid_manifest"]).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError("A selected fingerprint or centroid manifest is unavailable or invalid.") from exc
+    if centroids.get("schema_version") != "studio.library-centroids.v2" or centroids.get("status") != "completed":
+        raise ValueError("Choose a completed centroid manifest.")
+    if features.get("library_id") != screening["library_id"]:
+        raise ValueError("The fingerprint dataset must belong to its selected screening library.")
+    if centroids.get("library_id") != seed["library_id"]:
+        raise ValueError("The centroid dataset must belong to its selected centroid source library.")
+    left, right = features.get("fingerprint_spec", {}), centroids.get("fingerprint_spec", {})
+    required = ("algorithm", "bits", "radius", "use_chirality", "use_features")
+    if any(key not in spec for spec in (left, right) for key in required):
+        raise ValueError("Both datasets must declare their Morgan fingerprint settings.")
+    if left["bits"] != 1024 or right["bits"] != 1024:
+        raise ValueError("Both model inputs require 1024-bit Morgan fingerprints.")
+    differences = [key for key in (*required, "hydrogen_policy", "standardization") if left.get(key) != right.get(key)]
+    if differences:
+        raise ValueError("Centroid and screening fingerprints must use compatible settings: " + ", ".join(differences) + ".")
+    return features, centroids
 
 
 def validate_graph(graph: dict, *, require_inputs=False) -> dict:
-    graph = clean_graph(graph)
+    graph = clean_graph(migrate_template_graph(graph))
     nodes = {n["id"]: n for n in graph["nodes"]}
     if len(nodes) != len(graph["nodes"]):
         raise ValueError("Node IDs must be unique.")
@@ -1067,6 +1256,10 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
         accepts = b["inputs"][0]["accepts"]
         if output_type == "candidates" and accepts == ["target"] or output_type != "candidates" and output_type not in accepts:
             raise ValueError(f"{a['label']} outputs cannot connect to {b['label']}.")
+        if edge.get("loop_back") is True:
+            if graph.get("template_id") != "unidock_active_learning" or a["key"] != "active_select" or b["key"] != "active_docking":
+                raise ValueError("Only next-batch selection can return compounds to docking.")
+            continue
         incoming[target].append(source)
         outgoing[source].append(target)
         if len(incoming[target]) > 1 and not b["inputs"][0]["multiple"]:
@@ -1115,11 +1308,19 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
         kind = node["data"]["kind"]
         if NODE_CATALOG[kind]["inputs"] and not incoming[node_id] and not NODE_CATALOG[kind]["inputs"][0].get("optional"):
             raise ValueError(f"Connect an input to {node['data']['label']}.")
-        if kind != "results" and not outgoing[node_id]:
+        if kind not in {"results", "active_results"} and not any(e["source"] == node_id for e in graph["edges"]):
             raise ValueError(f"Connect {node['data']['label']} to a downstream step or Results node.")
         if require_inputs and kind == "target":
             if not node["data"]["params"].get("target_pdb"):
                 raise ValueError("Load a target structure before running the pipeline.")
+        if require_inputs and kind == "active_library":
+            seed = next((n for n in nodes.values() if n["data"]["kind"] == "active_seed"), None)
+            if seed is not None:
+                validate_active_library_sources(node["data"]["params"], seed["data"]["params"])
+        if require_inputs and kind == "active_target":
+            target_path = str(node["data"]["params"].get("target_pdb") or "").strip()
+            if not target_path or not Path(target_path).expanduser().is_file():
+                raise ValueError("Choose an existing imported receptor structure.")
         if require_inputs and kind == 'cofold_input':
             params = node['data']['params']
             task = params.get('task_type')
@@ -1204,8 +1405,16 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
                 raise ValueError("Load a PDB target in RFdiffusion β-pairing or connect a Target block.")
             if not str(p.get("target_beta_strands") or "").strip():
                 raise ValueError("Select target β-strand residue ranges for RFdiffusion β-pairing.")
-    if not any(n["data"]["kind"] == "results" for n in nodes.values()):
+    if not any(n["data"]["kind"] in {"results", "active_results"} for n in nodes.values()):
         raise ValueError("Add a Results node to collect the pipeline outputs.")
+    if graph.get("template_id") == "unidock_active_learning":
+        required = {"active_library", "active_target", "active_seed", "active_docking", "active_accumulate",
+                    "active_binder_rule", "active_train", "active_predict", "active_select", "active_decision", "active_results"}
+        present = {node["data"]["kind"] for node in nodes.values()}
+        if present != required:
+            raise ValueError("The active-learning template needs its complete set of source, docking, learning, decision and Results nodes.")
+        if sum(edge.get("loop_back") is True for edge in graph["edges"]) != 1:
+            raise ValueError("The active-learning template needs exactly one selection-to-docking feedback connection.")
     return {"graph": graph, "order": order, "incoming": incoming, "outgoing": outgoing}
 
 

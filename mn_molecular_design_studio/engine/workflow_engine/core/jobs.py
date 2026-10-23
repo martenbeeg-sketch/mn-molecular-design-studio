@@ -248,7 +248,13 @@ def _queue_resource_for(tool: str, params: dict | None) -> str | None:
         return f"gpu:{gpu_device or '0'}"
     if str(params.get("device") or "").strip().lower() == "cuda":
         return "gpu"
-    if any("gpu" in str(key).lower() for key in params):
+    if any(
+        "gpu" in str(key).lower()
+        and value is not None
+        and value is not False
+        and (not isinstance(value, str) or value.strip().lower() not in {"", "none", "off", "false"})
+        for key, value in params.items()
+    ):
         return "gpu"
     tool_text = str(tool or "").lower()
     if any(keyword in tool_text for keyword in GPU_TOOL_KEYWORDS):
@@ -420,6 +426,14 @@ def adopt_next_job_creation(job: JobPaths):
         _JOB_CREATION_ADOPTION.reset(token)
 
 
+def pending_job_creation_dir() -> Path | None:
+    """Return the queued run directory before the first workflow job adopts it."""
+    adoption = _JOB_CREATION_ADOPTION.get()
+    if adoption is None or adoption.consumed:
+        return None
+    return adoption.job.run_dir
+
+
 def _adopt_queued_job(task_group: str, job_type: str, tool: str, inputs: dict, params: dict) -> JobPaths | None:
     adoption = _JOB_CREATION_ADOPTION.get()
     if adoption is None or adoption.consumed:
@@ -449,10 +463,14 @@ def _adopt_queued_job(task_group: str, job_type: str, tool: str, inputs: dict, p
 
 
 def create_job(task_group: str, job_type: str, tool: str, inputs: dict, params: dict | None = None) -> JobPaths:
+    from mn_molecular_design_studio.collection_policy import tag_created_metadata
     params = params or {}
     tool = job_tool(tool, params)
     adopted_job = _adopt_queued_job(task_group, job_type, tool, inputs, params)
     if adopted_job is not None:
+        adopted_metadata = read_json(adopted_job.run_dir / "metadata.json")
+        tag_created_metadata(adopted_metadata)
+        write_json(adopted_job.run_dir / "metadata.json", adopted_metadata)
         return adopted_job
     run_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:8]}"
     run_dir = runs_root() / task_group / run_id
@@ -473,6 +491,7 @@ def create_job(task_group: str, job_type: str, tool: str, inputs: dict, params: 
         "created_at": created_at,
         "updated_at": created_at,
     }
+    tag_created_metadata(metadata)
     if name := job_name({}, params):
         metadata["campaign_name"] = name
     if queue_resource:

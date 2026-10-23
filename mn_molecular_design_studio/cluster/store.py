@@ -67,6 +67,12 @@ class Store:
                     status TEXT NOT NULL DEFAULT 'queued', lease_token TEXT,
                     lease_until REAL, response TEXT, error TEXT,
                     created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS library_transfers (
+                    job_id TEXT PRIMARY KEY, node_id TEXT NOT NULL, origin_node TEXT NOT NULL,
+                    destination TEXT NOT NULL, library_id TEXT, files TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL DEFAULT 'waiting', total_bytes INTEGER NOT NULL DEFAULT 0,
+                    transferred_bytes INTEGER NOT NULL DEFAULT 0, error TEXT, updated_at TEXT NOT NULL);
+                CREATE UNIQUE INDEX IF NOT EXISTS library_transfers_destination ON library_transfers(destination);
                 CREATE INDEX IF NOT EXISTS cluster_commands_queue ON commands(node_id,status,created_at);
             """)
             if "cancelled" not in {row[1] for row in db.execute("PRAGMA table_info(submissions)")}:
@@ -131,6 +137,7 @@ class Store:
                        (encoded(snapshot), self.clock(), node_id))
             for raw in jobs:
                 row = dict(raw)
+                external_library_record = row.pop("external_library_record", None)
                 group, run = str(row.get("task_group") or ""), str(row.get("run_id") or "")
                 if not group or not run or "/" in group + run or ".." in {group, run}:
                     raise ValueError("Invalid local job reference.")
@@ -193,6 +200,11 @@ class Store:
                            data_state="present", wait_reason="")
                 db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET local_ref=excluded.local_ref,owner_id=excluded.owner_id,project_id=excluded.project_id,payload=excluded.payload",
                            (jid, node_id, local_ref, str(row.get("owner_id") or ""), str(row.get("project_id") or ""), encoded(row), row.get("created_at") or stamp(self.clock())))
+                if external_library_record is not None:
+                    if row.get("tool") not in {"library_preparation", "library_centroids"}:
+                        raise PermissionError("Only a library preparation job can publish external library metadata.")
+                    from mn_molecular_design_studio.external_libraries import LibraryCatalog
+                    LibraryCatalog().import_remote_record(external_library_record, node_id=node_id)
             if known_references is not None and snapshot.get("storage_available", True):
                 known = set(known_references)
                 for old in db.execute("SELECT id,local_ref,payload FROM jobs WHERE node_id=? AND local_ref IS NOT NULL", (node_id,)).fetchall():
@@ -212,12 +224,21 @@ class Store:
     def job(self, jid, user):
         with self.connect() as db:
             row = self._job(db, jid)
+            transfer = db.execute(
+                "SELECT status,total_bytes,transferred_bytes,error FROM library_transfers WHERE job_id=?",
+                (row["id"],),
+            ).fetchone()
         if not visible(row, user):
             raise LookupError("Job not found.")
         item = json.loads(row["payload"])
         node = next((n for n in self.nodes() if n["id"] == row["node_id"]), None)
         item.update(node_name=node["name"] if node else "Not assigned", availability=node["availability"] if node else "pending",
                     last_seen_at=node["last_seen_at"] if node else None)
+        if transfer:
+            item["library_transfer"] = {
+                "status": transfer["status"], "total_bytes": transfer["total_bytes"],
+                "transferred_bytes": transfer["transferred_bytes"], "error": transfer["error"],
+            }
         if node and node["availability"] == "online" and not node["snapshot"].get("storage_available", True):
             item["availability"] = "storage_unavailable"
         elif node and node["availability"] == "online" and item.get("data_state") == "not_found":
@@ -290,6 +311,16 @@ class Store:
                 db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?)", (jid, None, None, user["id"], request["project_id"], encoded(row), row["created_at"]))
                 db.execute("INSERT INTO submissions(job_id,owner_id,idempotency_key,fingerprint,request,requirements,origin_node,placement,affinity_node,command_id) VALUES (?,?,?,?,?,?,?,?,?,NULL)",
                            (jid, user["id"], key, fingerprint, encoded(request), encoded(requirements), origin_node, placement, affinity_node))
+                destination = request.get("organizer_output_directory")
+                if destination:
+                    if request.get("kind") != "workflow" or request.get("payload", {}).get("workflow") not in {"library.prepare", "library.centroids"}:
+                        raise ValueError("Only remote library preparation jobs can register an output transfer.")
+                    if db.execute("SELECT 1 FROM library_transfers WHERE destination=?", (str(destination),)).fetchone():
+                        raise ValueError("This organizer destination is already assigned to another library job.")
+                    db.execute(
+                        "INSERT INTO library_transfers(job_id,node_id,origin_node,destination,status,updated_at) VALUES (?,?,?,?,?,?)",
+                        (jid, placement, origin_node, str(destination), "waiting", stamp(self.clock())),
+                    )
         self.dispatch()
         return {"job": self.job(jid, user)}
 
@@ -528,8 +559,8 @@ class Store:
                 node_id, refresh_local_code = choices[0][0]["id"], choices[0][2]
                 cmd = str(uuid.uuid4())
                 request = json.loads(row["request"])
+                request["origin_node"] = row["origin_node"]
                 if refresh_local_code:
-                    request["origin_node"] = row["origin_node"]
                     request["allow_code_revision_refresh"] = True
                 db.execute("INSERT INTO commands(id,node_id,job_id,kind,payload,owner_id,project_id,created_at) VALUES (?,?,?,?,?,?,?,?)",
                            (cmd, node_id, row["job_id"], request["kind"], encoded(request), row["owner_id"], request["project_id"], stamp(self.clock())))
@@ -682,6 +713,7 @@ class Store:
             ).fetchone()[0]
             db.execute("DELETE FROM commands WHERE job_id=?", (job_id,))
             db.execute("DELETE FROM submissions WHERE job_id=?", (job_id,))
+            db.execute("DELETE FROM library_transfers WHERE job_id=?", (job_id,))
             db.execute("DELETE FROM jobs WHERE id=?", (job_id,))
 
             # Input bundles can be shared across a compound batch. Return a
@@ -766,6 +798,7 @@ class Store:
                 bundle_id = str(request.get("bundle_id") or "")
                 db.execute("DELETE FROM commands WHERE job_id=? AND id<>?", (row["job_id"], command_id))
                 db.execute("DELETE FROM submissions WHERE job_id=?", (row["job_id"],))
+                db.execute("DELETE FROM library_transfers WHERE job_id=?", (row["job_id"],))
                 db.execute("DELETE FROM jobs WHERE id=?", (row["job_id"],))
                 still_referenced = False
                 if bundle_id:

@@ -49,9 +49,42 @@ def submit_from_api(payload, user, *, request_dir, token, authorize_path, kind="
     """Return None for ordinary local execution; otherwise stage and federate."""
     settings = config.load()
     execution = payload.get("execution") or {}
-    if not isinstance(execution, dict) or set(execution) - {"placement", "idempotency_key"}:
-        raise ValueError("execution accepts placement and idempotency_key.")
+    if not isinstance(execution, dict) or set(execution) - {"placement", "idempotency_key", "organizer_output_directory"}:
+        raise ValueError("execution accepts placement, idempotency_key, and organizer_output_directory.")
     placement = execution.get("placement", settings["default_placement"])
+    library_workflow = kind == "workflow" and payload.get("workflow") in {"library.prepare", "library.centroids", "library.seed_dock"}
+    remote_library_paths = False
+    if library_workflow:
+        # Library files are data-local. Explicit node placement runs directly
+        # against paths on that workstation; the multi-workstation input bundle
+        # is never involved, regardless of library size.
+        if user.get("role") != "admin":
+            raise PermissionError("An administrator must register external library paths.")
+        if placement in {"local", "auto", None}:
+            from .agent import Agent
+            if settings["mode"] != "disabled" and not Agent().storage_online():
+                raise transport.ClusterUnavailable("This workstation's Results storage is unavailable.")
+            return None
+        if settings["mode"] == "disabled":
+            raise ValueError("Configure workstation sharing in Settings before selecting a remote compute workstation.")
+        try:
+            uuid.UUID(str(placement))
+        except ValueError as exc:
+            raise ValueError("Select a registered compute workstation, or choose This workstation.") from exc
+        remote_library_paths = True
+    organizer_output = execution.get("organizer_output_directory")
+    if organizer_output is not None:
+        if not remote_library_paths or payload.get("workflow") not in {"library.prepare", "library.centroids"}:
+            raise ValueError("organizer_output_directory is only used for remote library preparation.")
+        from mn_molecular_design_studio.runtime import app_home
+        destination = Path(str(organizer_output)).expanduser()
+        if not destination.is_absolute() or destination.resolve().is_relative_to(app_home()):
+            raise ValueError("Choose an absolute organizer destination outside the Studio workspace.")
+        if destination.exists():
+            raise ValueError("Choose a new organizer destination directory; existing data is never overwritten.")
+        organizer_output = str(destination.resolve())
+    elif remote_library_paths and payload.get("workflow") in {"library.prepare", "library.centroids"}:
+        raise ValueError("Choose a new organizer destination for the generated library outputs.")
     if settings["mode"] == "disabled":
         if placement not in {"local", None} and payload.get("execution"):
             raise ValueError("Configure workstation sharing in Settings before submitting remote jobs.")
@@ -86,7 +119,13 @@ def submit_from_api(payload, user, *, request_dir, token, authorize_path, kind="
     schema_check(request_payload, kind, request_dir)
     if validate_only:
         return {"valid": True, "validation_scope": "request_schema", "file_validation": "Performed on the owning workstation before a scientific job is created."}
-    prepared, bundle_id, references = bundles.pack(request_payload, base_dir=request_dir, node_id=config.identity(), authorize_path=authorize_path)
+    preserve_path_keys = ()
+    if remote_library_paths:
+        preserve_path_keys = {"source_files", "output_directory", "feature_manifest", "centroid_manifest", "target_pdb"}
+    prepared, bundle_id, references = bundles.pack(
+        request_payload, base_dir=request_dir, node_id=config.identity(), authorize_path=authorize_path,
+        preserve_path_keys=preserve_path_keys,
+    )
     owner_nodes = bundles.referenced_nodes(prepared)
     if len(owner_nodes) > 1:
         raise ValueError("Selected inputs belong to multiple workstations. Keep each pipeline branch on its data-owning workstation and compare the resulting scores.")
@@ -94,6 +133,8 @@ def submit_from_api(payload, user, *, request_dir, token, authorize_path, kind="
     envelope = {"kind": kind, "payload": prepared, "project_id": project_id, "bundle_id": bundle_id,
                 "requirements": needs, "origin_node": config.identity(), "placement": placement,
                 "idempotency_key": execution.get("idempotency_key") or str(uuid.uuid4())}
+    if organizer_output is not None:
+        envelope["organizer_output_directory"] = organizer_output
     if settings["mode"] in {"coordinator", "peer"}:
         if bundle_id:
             with Store().connect() as db:
@@ -109,8 +150,8 @@ def placement_options_from_api(payload, user, *, request_dir, token, authorize_p
     """Preview automatic-placement candidates without creating a job."""
     settings = config.load()
     execution = payload.get("execution") or {}
-    if not isinstance(execution, dict) or set(execution) - {"placement", "idempotency_key"}:
-        raise ValueError("execution accepts placement and idempotency_key.")
+    if not isinstance(execution, dict) or set(execution) - {"placement", "idempotency_key", "organizer_output_directory"}:
+        raise ValueError("execution accepts placement, idempotency_key, and organizer_output_directory.")
     placement = execution.get("placement", settings["default_placement"])
     if settings["mode"] == "disabled":
         return {"placement": "local", "candidates": []}
@@ -170,13 +211,33 @@ def accept_submission(envelope, user):
     from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import is_operational_path_key
     store = Store()
     actor = user_record(user)
-    request = {k: envelope.get(k) for k in ("kind", "payload", "project_id", "bundle_id")}
+    request = {k: envelope.get(k) for k in ("kind", "payload", "project_id", "bundle_id", "organizer_output_directory")}
+    payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
+    remote_library_paths = (
+        request.get("kind") == "workflow"
+        and payload.get("workflow") in {"library.prepare", "library.centroids", "library.seed_dock"}
+        and envelope.get("placement") not in {"local", "auto", None}
+    )
+    if remote_library_paths and user.get("role") != "admin":
+        raise PermissionError("Only an administrator can submit remote external-library paths.")
     if request["kind"] not in {"workflow", "pipeline"} or not isinstance(request["payload"], dict):
         raise ValueError("Unsupported cluster submission.")
     project_id = validate_project_id(request["project_id"])
     if not project_id:
         raise ValueError("Select a project.")
     require_project_access(user, project_id)
+    organizer_output = request.get("organizer_output_directory")
+    if organizer_output is not None:
+        if not remote_library_paths or request["payload"].get("workflow") not in {"library.prepare", "library.centroids"}:
+            raise ValueError("An organizer destination is valid only for remote library preparation.")
+        from mn_molecular_design_studio.runtime import app_home
+        destination = Path(str(organizer_output)).expanduser()
+        if (not destination.is_absolute() or destination.resolve().is_relative_to(app_home())
+                or destination.exists()):
+            raise ValueError("Choose a new absolute organizer destination outside the Studio workspace.")
+        request["organizer_output_directory"] = str(destination.resolve())
+    elif remote_library_paths and request["payload"].get("workflow") in {"library.prepare", "library.centroids"}:
+        raise ValueError("Remote library preparation requires an organizer destination directory.")
     origin = str(uuid.UUID(envelope["origin_node"]))
     if origin not in {n["id"] for n in store.nodes()}:
         raise ValueError("The originating workstation must first be enrolled.")
@@ -190,7 +251,11 @@ def accept_submission(envelope, user):
         elif isinstance(value, list):
             for v in value:
                 validate(v, key, named_input=named_input)
-        elif isinstance(value, str) and is_operational_path_key(key):
+        elif isinstance(value, str) and (is_operational_path_key(key) or key in {"feature_manifest", "centroid_manifest"}):
+            if remote_library_paths and key in {"source_files", "output_directory", "feature_manifest", "centroid_manifest", "target_pdb"}:
+                if not Path(value).expanduser().is_absolute():
+                    raise ValueError(f"Use an absolute path on the selected compute workstation for {key}.")
+                return
             if value.startswith("cluster://"):
                 parsed = urlsplit(value)
                 parts = Path(parsed.path.lstrip("/")).parts

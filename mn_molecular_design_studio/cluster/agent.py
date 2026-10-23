@@ -33,6 +33,8 @@ class Agent:
         self._peer_retry = {}
         self._poll_index = 0
         self._processed_purge_receipts = set()
+        self._library_transfer_threads = {}
+        self._library_transfer_lock = threading.Lock()
 
     def snapshot(self):
         if time.monotonic() - self._inventory_time > 120 or not self._inventory:
@@ -83,7 +85,8 @@ class Agent:
                     continue
                 metadata = read_json(run / "metadata.json")
                 marker = read_json(run / "molecular_design_studio.json")
-                metrics = read_json(run / "result.json").get("metrics", {})
+                result_data = read_json(run / "result.json")
+                metrics = result_data.get("metrics", {})
                 jid = (
                     metadata.get("cluster_job_id")
                     or marker.get("cluster_job_id")
@@ -99,6 +102,12 @@ class Agent:
                 item = dict(row, cluster_job_id=jid, metrics=metrics, progress=progress,
                             artifacts=self._artifact_manifests.get(reference, []),
                             location=str(run), last_reported_at=time.time(), _signature=list(signature))
+                if self.settings.get("mode") == "worker":
+                    outputs = result_data.get("outputs")
+                    library_id = outputs.get("library_id") if isinstance(outputs, dict) else None
+                    if library_id:
+                        from mn_molecular_design_studio.external_libraries import LibraryCatalog
+                        item["external_library_record"] = LibraryCatalog().get(library_id)
                 result.append(item)
             offset += len(page["items"])
             if offset >= page["total"] or not page["items"]:
@@ -127,6 +136,7 @@ class Agent:
         if self.settings["mode"] == "coordinator":
             from .store import Store
             Store().cleanup_transfers()
+        self._schedule_library_transfers()
 
     def peer_heartbeat(self):
         from .store import Store
@@ -160,6 +170,141 @@ class Agent:
                 log.warning("Workstation %s synchronization paused: %s", peer.get("name",peer["id"]), exc)
         config.atomic_json(config.home() / "agent-status.json", {"last_heartbeat":time.time(), "node_id":self.node_id, "online":True})
         store.cleanup_transfers()
+        self._schedule_library_transfers()
+
+    def _schedule_library_transfers(self):
+        """Retry finished external-library output copies after each successful sync."""
+        from mn_molecular_design_studio import job_catalog
+        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+
+        try:
+            from mn_molecular_design_studio.runtime import runs_root
+            page_offset = 0
+            while True:
+                page = job_catalog.search_jobs(access_admin=True, limit=1000, offset=page_offset)
+                for row in page["items"]:
+                    if row.get("tool") not in {"library_preparation", "library_centroids"}:
+                        continue
+                    run = Path(row["run_dir"])
+                    metadata = read_json(run / "metadata.json")
+                    result_data = read_json(run / "result.json")
+                    outputs = result_data.get("outputs") if isinstance(result_data.get("outputs"), dict) else {}
+                    manifest = outputs.get("feature_manifest") or outputs.get("centroid_manifest")
+                    library_id = outputs.get("library_id")
+                    organizer_node = metadata.get("organizer_node_id")
+                    destination = metadata.get("organizer_output_directory")
+                    job_id = str(metadata.get("cluster_job_id") or row.get("cluster_job_id") or "")
+                    if (not manifest or not library_id or not organizer_node or not destination
+                            or organizer_node == self.node_id or not job_id
+                            or str(row.get("status") or "").casefold() not in {"completed", "succeeded"}):
+                        continue
+                    receipt_dir = config.home() / "library-transfer-receipts"
+                    receipt_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    receipt = receipt_dir / f"{job_id}.json"
+                    if receipt.exists():
+                        continue
+                    with self._library_transfer_lock:
+                        active = self._library_transfer_threads.get(job_id)
+                        if active and active.is_alive():
+                            continue
+                        thread = threading.Thread(
+                            target=self._transfer_library_outputs,
+                            args=(job_id, str(library_id), Path(manifest), str(organizer_node), str(destination), receipt),
+                            name=f"library-transfer-{job_id[:8]}", daemon=True,
+                        )
+                        self._library_transfer_threads[job_id] = thread
+                        thread.start()
+                page_offset += len(page["items"])
+                if page_offset >= page["total"] or not page["items"]:
+                    break
+        except Exception:
+            log.exception("Could not schedule completed library output transfers")
+
+    def _transfer_library_outputs(self, job_id, library_id, manifest_path, organizer_node, destination, receipt):
+        from mn_molecular_design_studio.external_libraries import FEATURE_SCHEMA, CENTROID_SCHEMA, read_feature_manifest, digest_file
+        import json
+
+        try:
+            settings = config.load()
+            base_url = None
+            if settings["mode"] == "peer":
+                peer = next((item for item in settings.get("peers", []) if item.get("id") == organizer_node), None)
+                if peer is None:
+                    raise ValueError("The originating organizer is not configured as a trusted peer.")
+                base_url = peer["url"]
+            elif settings["mode"] not in {"worker", "coordinator"}:
+                raise ValueError("No organizer route is configured for the completed library output.")
+            elif organizer_node == self.node_id:
+                raise ValueError("A remote output transfer cannot target the compute workstation itself.")
+
+            manifest_path = Path(manifest_path).resolve(strict=True)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest.get("schema_version") == FEATURE_SCHEMA:
+                manifest_path, manifest = read_feature_manifest(manifest_path)
+            elif manifest.get("schema_version") != CENTROID_SCHEMA or manifest.get("status") != "completed":
+                raise ValueError("The completed library manifest type is unsupported.")
+            if manifest.get("library_id") != library_id:
+                raise ValueError("The completed fingerprint manifest belongs to a different library.")
+            output_dir = manifest_path.parent.resolve()
+            files = []
+
+            def add_file(name, expected_sha=None, expected_size=None):
+                path = (output_dir / name).resolve(strict=True)
+                if not path.is_relative_to(output_dir) or not path.is_file():
+                    raise ValueError("A generated library output points outside its manifest directory.")
+                size = path.stat().st_size
+                digest = digest_file(path)
+                if expected_sha and digest != expected_sha or expected_size is not None and size != expected_size:
+                    raise ValueError(f"Generated output {name} changed after fingerprint preparation.")
+                files.append({"path": name, "size_bytes": size, "sha256": digest})
+
+            add_file("manifest.json")
+            if manifest.get("schema_version") == FEATURE_SCHEMA:
+                rejection = manifest.get("rejections", {})
+                if rejection.get("path") != "rejected.parquet":
+                    raise ValueError("The rejected-row manifest path is unsupported.")
+                add_file(rejection["path"], rejection.get("sha256"))
+                for shard in manifest.get("shards", []):
+                    add_file(shard["path"], shard.get("sha256"), shard.get("size_bytes"))
+            else:
+                for item in manifest.get("files", []):
+                    add_file(item["path"], item.get("sha256"))
+
+            prefix = f"/api/v1/cluster/node/library-transfers/{job_id}"
+            response = transport.node_request(prefix + "/start", {"library_id": library_id, "files": files},
+                                               method="POST", timeout=60, base_url=base_url)
+            if response.get("status") == "waiting_for_space":
+                raise ValueError(response.get("error") or "Waiting for organizer disk space.")
+            offsets = {item["path"]: item["offset"] for item in response.get("files", [])}
+            for item in files:
+                path = output_dir / item["path"]
+                offset = int(offsets.get(item["path"], 0))
+                while offset < item["size_bytes"]:
+                    with path.open("rb") as stream:
+                        stream.seek(offset)
+                        block = stream.read(min(8 * 1024 * 1024, item["size_bytes"] - offset))
+                    if not block:
+                        raise ValueError(f"Generated output {item['path']} ended before its declared size.")
+                    try:
+                        chunk_result = transport.node_request(
+                            prefix + "/files/" + item["path"] + f"?offset={offset}",
+                            binary=block, method="PUT", timeout=180, base_url=base_url,
+                        )
+                        offset = int(chunk_result["offset"])
+                    except ValueError:
+                        current = transport.node_request(prefix, base_url=base_url, timeout=30)
+                        refreshed = {entry["path"]: entry["offset"] for entry in current.get("files", [])}
+                        new_offset = int(refreshed.get(item["path"], 0))
+                        if new_offset <= offset:
+                            raise
+                        offset = new_offset
+            completion = transport.node_request(prefix + "/complete", method="POST", timeout=180, base_url=base_url)
+            if completion.get("status") != "completed":
+                raise ValueError("The organizer did not confirm the completed fingerprint output transfer.")
+            config.atomic_json(receipt, {"status": "completed", "job_id": job_id,
+                                         "library_id": library_id, "completed_at": time.time()})
+        except Exception as exc:
+            log.warning("Library output transfer for job %s will retry: %s", job_id, exc)
 
     def execute(self, command):
         directory = config.home() / "receipts"
@@ -392,7 +537,9 @@ class Agent:
             result = mark_studio_job(result, project_id=command["project_id"], owner_id=command["owner_id"])
         run = Path(result["job"]["run_dir"])
         metadata = read_json(run / "metadata.json")
-        metadata.update(cluster_job_id=command["job_id"], execution_node_id=self.node_id)
+        metadata.update(cluster_job_id=command["job_id"], execution_node_id=self.node_id,
+                        organizer_node_id=command.get("payload", {}).get("origin_node"),
+                        organizer_output_directory=command.get("payload", {}).get("organizer_output_directory"))
         write_json(run / "metadata.json", metadata)
         result["job"].update(cluster_job_id=command["job_id"], node_id=self.node_id)
         return result

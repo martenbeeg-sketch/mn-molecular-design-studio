@@ -195,10 +195,11 @@ WORKFLOW_TITLES = {
     "Md.Openmm": "OpenMM",
 }
 
-# Keep the Tools catalog focused on workflows that launch a specific tool or
-# model. App-level preparation, import, ranking, benchmarking, and orchestration
-# workflows remain available to the workflow API without appearing as tool cards.
+# Keep the Tools catalog focused on supported Studio tiles. Internal workflow
+# adapters may remain available to the workflow API without a standalone tile.
 TOOL_CATALOG_WORKFLOW_IDS = {
+    "library.prepare",
+    "library.centroids",
     "detection.scannet",
     "detection.pesto",
     "detection.surf2spot",
@@ -266,6 +267,8 @@ TOOL_CATALOG_WORKFLOW_IDS = {
 # source revision, never the Docker image tag. Some legacy shared images have no
 # pinned upstream release, which is shown explicitly.
 TOOL_WORKFLOW_CODE_VERSIONS = {
+    "library.prepare": ("Studio · library fingerprint preparation v1", False),
+    "library.centroids": ("Studio · library centroid preparation v1", False),
     "simulation.bioemu2": ("BioEmu-2 · 0.1.0rc0 · Microsoft source f99e0d8", False),
     "ligand.complex.prepare": ("Complex Preparation · Studio bundled runtime", False),
     "ligand.docking.vina": ("AutoDock Vina · 1.2.7", False),
@@ -755,6 +758,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
                 "input_types": ["Existing Results", "Database Selection"]}
     prefix = workflow.split(".", 1)[0]
     function_by_prefix = {
+        "library": "Library Preparation",
         "ligand": "Molecular Docking & Affinity",
         "simulation": "Biomolecular Simulation",
         "target": "Target Preparation",
@@ -813,6 +817,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "ligand.md.analysis": "MD Analysis",
     }
     modalities_by_prefix = {
+        "library": ["Ligand"],
         "simulation": ["Protein", "Ligand", "DNA", "RNA"],
         "ligand": ["Protein", "Ligand"],
         "target": ["Protein"],
@@ -826,6 +831,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "campaign": ["Protein", "Antibody", "Peptide"],
     }
     input_types_by_prefix = {
+        "library": ["ID / SMILES table", "Prepared fingerprint manifest"],
         "simulation": ["Protein Complex (PDB/mmCIF)", "Protein Sequences"],
         "ligand": ["Protein Structure (PDB)", "Compound Set"],
         "target": ["Structure (PDB)"],
@@ -1044,7 +1050,7 @@ def _render_tool_catalog() -> None:
                 "key": workflow_id,
                 "group_id": None,
                 "workflow": workflow_id,
-                "title": "RFD4-Proteina Structure Prediction" if workflow_id == "refolding.rfd4_proteina" else (QUALITY_WORKFLOWS.get(workflow_id, {}).get("name") or WORKFLOW_TITLES.get(base_title, base_title)),
+                "title": {"library.prepare": "Prepare library", "library.centroids": "Create centroids"}.get(workflow_id) or ("RFD4-Proteina Structure Prediction" if workflow_id == "refolding.rfd4_proteina" else (QUALITY_WORKFLOWS.get(workflow_id, {}).get("name") or WORKFLOW_TITLES.get(base_title, base_title))),
                 "description": row["description"],
                 "workflow_ids": [workflow_id],
                 "workflow_rows": [row],
@@ -3993,6 +3999,10 @@ def _submit_cofolding_job(schema: dict, workflow_id: str, parameters: dict, proj
         "parameters": parameters, "project_id": project_id,
         "priority": 1000 if settings.get("prioritize") else 0,
     }
+    if workflow_id in {"library.prepare", "library.centroids"}:
+        # These are CPU workflows. Pin their scheduler request explicitly so
+        # a default GPU allocation cannot be inferred from a generic request.
+        payload["resources"] = {"gpu_device": "none"}
     if isinstance(settings.get("_execution"), dict):
         payload["execution"] = settings["_execution"]
     validation = _post_local_api("/api/v1/workflows/validate", payload)
@@ -4165,6 +4175,14 @@ def _render_workflow_setup() -> None:
             project_selector=_render_project_selector,
             submit=_submit_cofolding_job,
         )
+        return
+    if workflow_id == "library.prepare":
+        from mn_molecular_design_studio.library_preparation_ui import render_setup
+        render_setup(schema, user=CURRENT_USER, project_selector=_render_project_selector, submit=_submit_cofolding_job)
+        return
+    if workflow_id == "library.centroids":
+        from mn_molecular_design_studio.library_centroids_ui import render_setup
+        render_setup(schema, user=CURRENT_USER, project_selector=_render_project_selector, submit=_submit_cofolding_job)
         return
     if workflow_id == "ligand.md.analysis":
         from mn_molecular_design_studio.md_analysis_ui import render_md_analysis_setup
@@ -7529,6 +7547,30 @@ def _render_cofolding_prediction_results(
             st.json(result["metrics"], expanded=False)
 
 
+@st.dialog("Pipeline computer details", width="large")
+def _show_pipeline_computer_details(step_label: str, workers: list[dict]) -> None:
+    st.caption(f"{step_label} · scheduled work by computer")
+    if not workers:
+        st.info("No computer-level jobs have been recorded for this step yet.")
+        return
+    for worker in workers:
+        columns = st.columns([2.2, 1, 1, 1, 1.2], vertical_alignment="center")
+        columns[0].markdown(f"**{escape(str(worker.get('name') or worker.get('node_id') or 'Computer'))}**")
+        columns[1].write(str(worker.get("status") or "queued").replace("_", " ").title())
+        columns[2].write(f"{worker.get('cpu_cores') or '—'} CPU")
+        gpu = str(worker.get("gpu_device") or "none")
+        columns[3].write(f"GPU {gpu}" if gpu.lower() not in {"none", "cpu", "off"} else "CPU model")
+        run_dir = str(worker.get("run_dir") or "")
+        if run_dir:
+            job_ref = Path(run_dir).name
+            columns[4].link_button(f"Open {worker.get('job_code') or 'job'}", "/?job_ref=" + job_ref,
+                                   key=f"pipeline-computer-job-{job_ref}")
+        else:
+            columns[4].write(str(worker.get("job_code") or "—"))
+        if worker.get("scored_count") is not None:
+            st.caption(f"{int(worker['scored_count']):,} successful docking scores · Job {worker.get('job_code') or 'pending'}")
+
+
 def _render_job_details() -> None:
     reference = str(st.session_state.get("selected-job-reference") or "")
     if not reference:
@@ -7634,7 +7676,20 @@ def _render_job_details() -> None:
             saved_graph, execution = {}, {}
         with st.expander("Pipeline steps & saved graph", expanded=True):
             labels = {n["id"]: n["data"]["label"] for n in saved_graph.get("nodes", [])}
-            st.dataframe([{"Step": labels.get(n, n), "Status": v.get("status"), "Job": v.get("job_code", ""), "Candidates": v.get("candidate_count"), "Detail": v.get("error", "")} for n, v in execution.get("nodes", {}).items()], hide_index=True, use_container_width=True)
+            step_rows = []
+            for node_id, state in execution.get("nodes", {}).items():
+                workers = state.get("worker_nodes") or []
+                computer_text = ", ".join(f"{item.get('name') or item.get('node_id')} · {item.get('status', 'queued')}" for item in workers)
+                step_rows.append({"Step": labels.get(node_id, node_id), "Status": state.get("status"),
+                                  "Job": state.get("job_code", ""), "Computers": computer_text,
+                                  "Candidates": state.get("candidate_count"), "Detail": state.get("error", "")})
+            st.dataframe(step_rows, hide_index=True, use_container_width=True)
+            for node_id, state in execution.get("nodes", {}).items():
+                workers = state.get("worker_nodes") or []
+                if workers:
+                    step_label = labels.get(node_id, node_id)
+                    if st.button(f"View computers · {step_label} ({len(workers)})", key=f"pipeline-computers-{run_id}-{node_id}"):
+                        _show_pipeline_computer_details(step_label, workers)
             st.caption("This graph is the saved run snapshot. Editing it as a draft keeps these results intact.")
             st.download_button("Download run graph", json.dumps(saved_graph, indent=2), file_name=f"pipeline-{run_id}.json", mime="application/json", key=f"pipeline-graph-download-{run_id}")
             if saved_graph and project_id and st.button("Edit graph as a draft", key=f"pipeline-graph-edit-{run_id}"):

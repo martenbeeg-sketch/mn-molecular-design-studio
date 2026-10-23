@@ -267,6 +267,42 @@ def _request_pipeline_dialog_job_view(click_key, entry_refs):
         _navigate_to_job_details(entry_refs[index])
 
 
+def _request_results_worker_details(click_key, entry_workers):
+    click = st.session_state.get(click_key)
+    if not click:
+        return
+    index = int(click["row"])
+    if 0 <= index < len(entry_workers) and entry_workers[index]:
+        st.session_state["cluster-results-library-workers-request"] = entry_workers[index]
+
+
+def _library_worker_details(row, members):
+    workers = {}
+    for member in members:
+        metrics = member.get("metrics") if isinstance(member.get("metrics"), dict) else {}
+        plans = member.get("worker_plan") if isinstance(member.get("worker_plan"), list) else []
+        actual = metrics.get("workers") if isinstance(metrics.get("workers"), list) else []
+        for item in plans + actual:
+            if not isinstance(item, dict):
+                continue
+            node_id = str(item.get("node_id") or item.get("name") or "")
+            if not node_id:
+                continue
+            current = workers.setdefault(node_id, {"node_id": node_id})
+            current.update(item)
+            if item in actual:
+                current["completed"] = str(item.get("status") or "").casefold() == "completed"
+    if not workers:
+        return None
+    return {
+        "job_name": config.display_text(row.get("campaign_name") or row.get("tool") or "Library preparation"),
+        "job_status": str(row.get("status") or "unknown").replace("_", " ").title(),
+        "current_phase": str(row.get("current_phase") or row.get("progress") or ""),
+        "task_kind": "centroids" if any(w.get("task_kind") == "centroids" for w in workers.values()) else "fingerprints",
+        "workers": sorted(workers.values(), key=lambda item: str(item.get("name") or "").casefold()),
+    }
+
+
 def _navigate_to_job_details(reference):
     st.session_state["selected-job-reference"] = reference
     st.session_state["page"] = "Job details"
@@ -315,8 +351,12 @@ def _render_results_pipeline_steps(members, elapsed_label=None, user=None, token
         "Progress": _progress_summary(child.get("progress")),
         })
     view_key = "cluster-results-pipeline-child-view"
+    styled_steps = pd.DataFrame(step_rows).style.map(
+        lambda _: "color: #2f6fba; font-weight: 600;",
+        subset=["View"],
+    )
     st.dataframe(
-        pd.DataFrame(step_rows),
+        styled_steps,
         hide_index=True,
         width="stretch",
         column_config={"View": st.column_config.ButtonColumn(
@@ -326,6 +366,89 @@ def _render_results_pipeline_steps(members, elapsed_label=None, user=None, token
         )},
         height=min(420, 36 * len(step_rows) + 42),
     )
+
+
+@st.dialog("Distributed library workers", width="large")
+def _render_library_worker_details(details):
+    workers = details.get("workers") or []
+    centroids = details.get("task_kind") == "centroids"
+    st.markdown(f"**{details.get('job_name') or 'Library preparation'}**")
+    caption = f"{details.get('job_status') or 'Unknown'} · One Studio job · {len(workers)} computers"
+    if details.get("current_phase"):
+        caption += f" · {details['current_phase']}"
+    st.caption(caption)
+    st.caption("Random fingerprint chunks are sent from the source workstation to CPU workers. Representatives return after all workers in each round finish; the original library stays in place."
+               if centroids else "The original library file stays on the organizer. Record batches stream to the selected computers; generated outputs return after all workers finish.")
+
+    selected_key = "cluster-results-library-worker-selected"
+    selected_node = st.session_state.get(selected_key)
+    by_node = {str(worker.get("node_id") or worker.get("name")): worker for worker in workers}
+    if selected_node not in by_node:
+        selected_node = None
+        st.session_state.pop(selected_key, None)
+
+    if selected_node:
+        worker = by_node[selected_node]
+        back_col, _ = st.columns([0.2, 0.8])
+        if back_col.button("All computers", key="cluster-library-worker-back"):
+            selected_node = None
+            st.session_state.pop(selected_key, None)
+        if selected_node:
+            st.subheader(config.display_name(worker.get("name") or selected_node))
+            running = details.get("job_status", "").casefold() in {"running", "starting"}
+            status = "completed" if worker.get("completed") else "in progress" if running else "planned"
+            job_completed = details.get("job_status", "").casefold() in {"completed", "succeeded"}
+            summary = [
+                {"Step": "Receive source records", "Status": "Complete" if worker.get("completed") else status.title(),
+                 "Details": (f"{int(worker.get('input_rows') or 0):,} rows streamed from the organizer"
+                             if worker.get("input_rows") is not None else "Source rows are assigned across the selected computers.")},
+                {"Step": "Calculate Morgan fingerprints", "Status": "Complete" if worker.get("completed") else status.title(),
+                 "Details": (f"Feature Morgan · radius 2 · 1024 bits · {int(worker.get('cpu_worker_count') or 0)} CPU processes · "
+                             f"{int(worker.get('row_count') or 0):,} valid compounds"
+                             if worker.get("completed") else "CPU processes calculate fingerprints in bounded batches.")},
+                {"Step": "Write compact Parquet output", "Status": "Complete" if worker.get("completed") else status.title(),
+                 "Details": (f"{int(worker.get('shard_count') or 0):,} fingerprint shards · "
+                             f"{int(worker.get('rejected_rows') or 0):,} rejected rows · "
+                             f"{int(worker.get('output_size_bytes') or 0):,} bytes"
+                             if worker.get("completed") else "Each worker writes compressed output and a rejected-row table.")},
+                {"Step": "Return output to organizer", "Status": "Complete" if worker.get("completed") else "After all workers finish",
+                 "Details": "Only generated fingerprint outputs are copied back; the original source file stays on the organizer."},
+                {"Step": "Organizer merge and validation", "Status": "Complete" if job_completed else "After worker transfer",
+                 "Details": "The organizer verifies shard checksums and unique IDs, then writes the final manifest."},
+            ]
+            if centroids:
+                phase_status = "Complete" if worker.get("completed") else status.title()
+                summary = [
+                    {"Step": "Receive random balanced chunks", "Status": phase_status,
+                     "Details": f"{int(worker.get('chunk_count') or 0):,} chunks across all rounds · {int(worker.get('input_rows') or 0):,} input rows"},
+                    {"Step": "Cluster on CPUs", "Status": phase_status,
+                     "Details": f"{int(worker.get('cpu_worker_count') or 0)} scheduled CPU slots · {int(worker.get('parallel_chunks') or 0)} concurrent chunks · {int(worker.get('cores_per_chunk') or 0)} threads per chunk"},
+                    {"Step": "Write representatives", "Status": phase_status,
+                     "Details": f"{int(worker.get('row_count') or 0):,} representatives produced across all rounds · compressed Parquet"},
+                    {"Step": "Return outputs to coordinator", "Status": phase_status if worker.get("completed") else "After all workers finish the round",
+                     "Details": "Generated representatives are collected and their checksums and row counts verified."},
+                    {"Step": "Final comparison and retention", "Status": "Complete" if job_completed else "After chunk collection",
+                     "Details": "Run the sampled final comparison or further merge rounds. Keep the final centroid table and manifest; remove temporary chunks."},
+                ]
+            st.dataframe(pd.DataFrame(summary), hide_index=True, use_container_width=True)
+    else:
+        for index, worker in enumerate(workers):
+            node_id = str(worker.get("node_id") or worker.get("name") or index)
+            name = config.display_name(worker.get("name") or node_id)
+            cpu_count = int(worker.get("cpu_worker_count") or 0)
+            completed = bool(worker.get("completed"))
+            status = "Completed" if completed else "Assigned" if details.get("job_status", "").casefold() in {"running", "starting"} else "Planned"
+            left, middle, right = st.columns([0.48, 0.25, 0.27], vertical_alignment="center")
+            left.markdown(f"**{name}**")
+            middle.caption(f"{cpu_count} CPU slots")
+            if completed:
+                right.caption(f"{int(worker.get('row_count') or 0):,} representatives · {int(worker.get('chunk_count') or 0):,} chunks"
+                              if centroids else f"{int(worker.get('row_count') or 0):,} fingerprints · {int(worker.get('rejected_rows') or 0):,} rejected")
+            else:
+                right.caption(status)
+            if st.button(f"View {name} steps", key=f"cluster-library-worker-view-{node_id}", type="tertiary"):
+                selected_node = node_id
+                st.session_state[selected_key] = node_id
 
 
 def _render_bindcraft2_progress(row, job_id, token):
@@ -1287,11 +1410,17 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
     if not page_entries:
         st.info("No jobs match your search and filters.")
     else:
+        entry_worker_details = []
+        for entry in page_entries:
+            row = entry["root"] if entry["kind"] == "pipeline" else entry["row"]
+            members = entry["members"] if entry["kind"] == "pipeline" else [row]
+            entry_worker_details.append(_library_worker_details(row, members))
+        show_computers = any(entry_worker_details)
         table_rows = []
         entry_members = []
         entry_pipeline_refs = []
         entry_view_refs = []
-        for entry in page_entries:
+        for entry_index, entry in enumerate(page_entries):
             is_pipeline = entry["kind"] == "pipeline"
             row = entry["root"] if is_pipeline else entry["row"]
             ref = _results_job_reference(row)
@@ -1299,6 +1428,7 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
             entry_members.append(members)
             entry_pipeline_refs.append(ref if is_pipeline else None)
             entry_view_refs.append(_job_details_reference(row))
+            worker_details = entry_worker_details[entry_index]
             availability = "Last known" if stale and row.get("node_id") != config.identity() else str(row.get("availability", "pending")).title()
             if row.get("last_seen_at"):
                 availability += " · " + str(row["last_seen_at"])
@@ -1308,6 +1438,8 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
                 "Job": config.display_text(row.get("campaign_name") or row.get("tool") or "Job"),
                 "View": "View",
             }
+            if show_computers:
+                table_row["Computers"] = f"{len(worker_details['workers'])} computers" if worker_details else None
             if group_pipeline_runs:
                 children = members[1:] if is_pipeline else []
                 finished_steps = sum(
@@ -1334,7 +1466,7 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
         table = pd.DataFrame(table_rows).set_index("_reference")
         table_key = "cluster-results-table-" + hashlib.sha1(
             repr((query, machine, project, tuple(sorted(statuses)), sort_by, show_removed,
-                  group_pipeline_runs, selected_page, page_size, tuple(table.index),
+                  group_pipeline_runs, selected_page, page_size, tuple(table.index), tuple(table.columns),
                   tuple(sorted(selected_jobs)))).encode("utf-8")
         ).hexdigest()[:12]
         column_config = {
@@ -1359,6 +1491,15 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
             "Files": st.column_config.TextColumn("Files", width="medium"),
             "Progress": st.column_config.TextColumn("Progress", width="large"),
         }
+        if show_computers:
+            worker_click_key = table_key + "-computers"
+            column_config["Computers"] = st.column_config.ButtonColumn(
+                "Computers", width="small", type="tertiary",
+                help="Open the distributed worker computers and inspect each computer's processing steps.",
+                key=worker_click_key,
+                on_click=_request_results_worker_details,
+                args=(worker_click_key, entry_worker_details),
+            )
         if group_pipeline_runs:
             click_key = table_key + "-steps"
             column_config["Steps"] = st.column_config.ButtonColumn(
@@ -1368,12 +1509,16 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
                 on_click=_request_results_pipeline_steps,
                 args=(click_key, entry_pipeline_refs),
             )
+        styled_table = table.style.map(
+            lambda _: "color: #2f6fba; font-weight: 600;",
+            subset=[column for column in ("View", "Computers", "Steps") if column in table.columns],
+        )
         st.data_editor(
-            table,
+            styled_table,
             key=table_key,
             hide_index=True,
             num_rows="fixed",
-            disabled=[column for column in table.columns if column not in {"Select", "Steps", "View"}],
+            disabled=[column for column in table.columns if column not in {"Select", "Steps", "View", "Computers"}],
             column_config=column_config,
             on_change=_update_results_table_selection,
             args=(table_key, entry_members),
@@ -1386,6 +1531,9 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
         _render_results_pipeline_steps(
             pipeline_groups[details_reference], elapsed_label, user, token, submit,
         )
+    worker_details_request = st.session_state.pop("cluster-results-library-workers-request", None)
+    if worker_details_request:
+        _render_library_worker_details(worker_details_request)
     st.session_state["cluster-results-selected"] = selected_jobs
     selected_rows = list(selected_jobs.values())
     if selected_rows:
@@ -1544,6 +1692,16 @@ def render_job(reference, user, token, submit):
         st.info(row["wait_reason"])
     if row.get("error"):
         st.error(row["error"])
+    transfer = row.get("library_transfer")
+    if transfer:
+        transferred = int(transfer.get("transferred_bytes") or 0)
+        total = int(transfer.get("total_bytes") or 0)
+        state = str(transfer.get("status") or "waiting").replace("_", " ").title()
+        st.caption(f"Fingerprint outputs to organizer: {state} · {transferred:,} / {total:,} bytes")
+        if total:
+            st.progress(min(1.0, transferred / total))
+        if transfer.get("error"):
+            st.warning(transfer["error"])
     if row.get("status") not in {"completed", "succeeded", "failed", "cancelled"}:
         if st.button("Request cancellation", key="cluster-cancel-" + jid):
             response = _request("/jobs/" + jid + "/actions", token, {"action": "cancel"}, method="POST")

@@ -127,6 +127,9 @@ def _spec(
 
 
 _SPECS = (
+    _spec("library.prepare", "library_preparation", "run_library_preparation", "library-preparation", "library_preparation", "library_preparation", "Register external library metadata and prepare a compact Parquet fingerprint table using CPU worker processes across selected Studio computers inside one scheduled Studio job."),
+    _spec("library.centroids", "library_preparation", "run_library_centroid_preparation", "library-preparation", "library_centroids", "library_centroids", "Create a diverse centroid library with balanced random chunks, parallel CPU workers across computers, and a sampled final comparison or representative merging."),
+    _spec("library.seed_dock", "library_preparation", "run_library_seed_docking", "ligand-docking", "unidock_pro", "ligand_docking", "Sample registered library centroids reproducibly and dock them with Uni-Dock Pro, retaining external library provenance."),
     _spec("ligand.complex.prepare", "ligand_tools", "run_ligand_complex_prepare", "ligand-preparation", "studio_ligand_complex_preparation", "ligand_complex_preparation", "Import and repair a protein-ligand complex with optional C-terminal extension and chain-aware trimming."),
     _spec("ligand.docking.vina", "ligand_tools", "run_ligand_vina", "ligand-docking", "vina", "ligand_docking", "Dock a Database compound set against a target pocket with AutoDock Vina."),
     _spec("ligand.docking.autodock_gpu", "ligand_tools", "run_ligand_autodock_gpu", "ligand-docking", "autodock_gpu", "ligand_docking", "Dock a Database compound set with AutoDock-GPU and AutoGrid affinity maps."),
@@ -737,6 +740,17 @@ def _apply_resource_parameters(
 
 
 def _validate_workflow_inputs(spec: WorkflowSpec, parameters: dict[str, Any]) -> None:
+    if spec.workflow_id in {"library.prepare", "library.centroids", "library.seed_dock"}:
+        try:
+            from mn_molecular_design_studio.engine.workflow_engine.workflows import library_preparation
+            validator = {
+                "library.prepare": library_preparation.validate_library_request,
+                "library.centroids": library_preparation.validate_library_centroid_request,
+                "library.seed_dock": library_preparation.validate_library_seed_dock_request,
+            }[spec.workflow_id]
+            validator(parameters, require_files=not _schema_only_paths.get())
+        except (TypeError, ValueError, OSError) as exc:
+            raise AutomationError(str(exc)) from exc
     if spec.workflow_id.startswith("ligand."):
         from mn_molecular_design_studio.engine.workflow_engine.workflows.ligand_tools import validate_ligand_tool_request
 
@@ -1020,7 +1034,8 @@ def submit_workflow_request(request_file: str | Path) -> dict[str, Any]:
     spec = WORKFLOWS[workflow_id]
     parameters, function, cpu_cores, resource_gpu = _prepare_selection(spec, payload, request_path)
 
-    with submission_priority(priority):
+    from mn_molecular_design_studio.collection_policy import collection_scope
+    with submission_priority(priority), collection_scope("manual" if workflow_id in {"library.prepare", "library.centroids", "library.seed_dock"} else "automatic"):
         if isinstance(parameters, list):
             from mn_molecular_design_studio.engine.workflow_engine.workflows.input_batch import run_input_batch
             run_dir = enqueue_workflow_call(

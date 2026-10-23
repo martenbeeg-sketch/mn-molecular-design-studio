@@ -1,0 +1,174 @@
+"""The study drawing is an iteration, with convergence before retraining."""
+import copy
+import json
+
+import pytest
+
+from mn_molecular_design_studio import pipeline_graph as graph
+from mn_molecular_design_studio.active_learning_settings import ActiveLearningSettings
+
+
+def _pairs(study):
+    kinds = {n["id"]: n["data"]["kind"] for n in study["nodes"]}
+    return {(kinds[e["source"]], kinds[e["target"]]) for e in study["edges"]}
+
+
+def test_stopping_decision_precedes_retraining_and_selected_batch_returns_to_docking():
+    study = graph.new_graph("unidock_active_learning")
+    plan = graph.validate_graph(study)
+    pairs = _pairs(study)
+    assert ("active_accumulate", "active_decision") in pairs
+    assert ("active_decision", "active_binder_rule") in pairs
+    assert ("active_decision", "active_results") in pairs
+    assert ("active_library", "active_predict") in pairs
+    assert ("active_library", "active_select") in pairs
+    assert ("active_library", "active_seed") not in pairs
+    assert ("active_select", "active_docking") in pairs
+    assert ("active_select", "active_decision") not in pairs
+    assert ("active_decision", "active_docking") not in pairs
+    by_kind = {n["data"]["kind"]: n["id"] for n in study["nodes"]}
+    assert plan["order"].index(by_kind["active_decision"]) < plan["order"].index(by_kind["active_train"])
+    feedback = [e for e in study["edges"] if e.get("loop_back")]
+    assert len(feedback) == 1
+    assert feedback[0]["source"] == by_kind["active_select"]
+
+
+def test_legacy_study_migration_keeps_selected_inputs_settings_and_ids():
+    study = graph.new_graph("unidock_active_learning")
+    study.pop("template_version")
+    study["name"] = "My study"
+    for node in study["nodes"]:
+        node["position"] = {"x": 7, "y": 9}
+        if node["data"]["kind"] == "active_library":
+            node["data"]["params"]["library_id"] = "registered-million"
+        if node["data"]["kind"] == "active_binder_rule":
+            node["data"]["params"]["binder_percent_target"] = 0.02
+            node["data"]["label"] = "Custom binder schedule"
+    before = copy.deepcopy(study)
+    migrated = graph.migrate_template_graph(study)
+    assert study == before
+    assert migrated["id"] == study["id"]
+    assert migrated["name"] == "My study"
+    assert [n["id"] for n in migrated["nodes"]] == [n["id"] for n in study["nodes"]]
+    for old, new in zip(study["nodes"], migrated["nodes"]):
+        assert old["data"] == new["data"]
+        position = graph.ACTIVE_LEARNING_LAYOUT[new["data"]["kind"]]
+        assert new["position"] == {axis: position[axis] for axis in ("x", "y")}
+    assert graph.migrate_template_graph(migrated) is migrated
+    graph.validate_graph(migrated)
+
+
+def test_canvas_round_trip_preserves_template_version_and_recovers_feedback_flag():
+    study = graph.new_graph("unidock_active_learning")
+    next(e for e in study["edges"] if e.get("loop_back")).pop("loop_back")
+    cleaned = graph.clean_graph(study)
+    assert cleaned["template_version"] == graph.ACTIVE_LEARNING_TEMPLATE_VERSION
+    assert sum(e.get("loop_back", False) for e in cleaned["edges"]) == 1
+    graph.validate_graph(cleaned)
+
+
+def test_decision_cannot_bypass_training_prediction_and_selection():
+    study = graph.new_graph("unidock_active_learning")
+    decision = next(n["id"] for n in study["nodes"] if n["data"]["kind"] == "active_decision")
+    next(e for e in study["edges"] if e.get("loop_back"))["source"] = decision
+    with pytest.raises(ValueError, match="Only next-batch selection"):
+        graph.validate_graph(study)
+
+
+def test_binder_percentage_changes_logarithmically_each_round_then_holds_final_value():
+    settings = ActiveLearningSettings()
+    percentages = [settings.percentile(i) for i in range(1, 11)]
+    assert percentages[0] == 10
+    assert percentages[-1] == 0.01
+    assert all(a > b for a, b in zip(percentages, percentages[1:]))
+    assert settings.percentile(11) == 0.01
+    assert not settings.iteration_limit_reached(1000000)
+
+
+def _source_manifests(tmp_path):
+    spec = {"algorithm": "morgan", "bits": 1024, "radius": 2, "use_chirality": True, "use_features": True}
+    screening = {"library_id": "screening-source", "schema_version": "studio.library-fingerprints.v2", "status": "completed", "fingerprint_spec": spec}
+    centroids = {"library_id": "different-centroid-source", "schema_version": "studio.library-centroids.v2", "status": "completed", "fingerprint_spec": dict(spec)}
+    feature_path, centroid_path = tmp_path / "features.json", tmp_path / "centroids.json"
+    feature_path.write_text(json.dumps(screening))
+    centroid_path.write_text(json.dumps(centroids))
+    return ({"library_id": screening["library_id"], "feature_manifest": str(feature_path)},
+            {"library_id": centroids["library_id"], "centroid_manifest": str(centroid_path)})
+
+
+def test_initial_centroids_and_screening_library_can_have_different_sources(tmp_path):
+    screening, seed = _source_manifests(tmp_path)
+    features, centroids = graph.validate_active_library_sources(screening, seed)
+    assert features["library_id"] != centroids["library_id"]
+
+
+@pytest.mark.parametrize("setting,value", [("radius", 3), ("use_chirality", False), ("use_features", False)])
+def test_independent_sources_must_still_have_matching_model_inputs(tmp_path, setting, value):
+    screening, seed = _source_manifests(tmp_path)
+    path = tmp_path / "centroids.json"
+    manifest = json.loads(path.read_text())
+    manifest["fingerprint_spec"][setting] = value
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="compatible settings"):
+        graph.validate_active_library_sources(screening, seed)
+
+
+def test_legacy_centroid_selection_migrates_to_independent_input():
+    study = graph.new_graph("unidock_active_learning")
+    study["template_version"] = 2
+    library = next(n for n in study["nodes"] if n["data"]["kind"] == "active_library")
+    seed = next(n for n in study["nodes"] if n["data"]["kind"] == "active_seed")
+    library["data"]["params"].update(library_id="original-source", centroid_manifest="/saved/centroids.json")
+    seed["data"]["params"].pop("library_id")
+    seed["data"]["params"].pop("centroid_manifest")
+    migrated = graph.migrate_template_graph(study)
+    seed = next(n for n in migrated["nodes"] if n["data"]["kind"] == "active_seed")
+    assert seed["data"]["params"]["library_id"] == "original-source"
+    assert seed["data"]["params"]["centroid_manifest"] == "/saved/centroids.json"
+
+
+def test_template_titles_are_generic_and_score_conventions_are_configurable():
+    study = graph.new_graph("unidock_active_learning")
+    assert all("THR" not in n["data"]["label"] and "annotated" not in n["data"]["label"].lower() for n in study["nodes"])
+    docking = next(n for n in study["nodes"] if n["data"]["kind"] == "active_docking")
+    docking["data"]["params"].update(score_field="custom_score", score_units="engine units", score_direction="Higher is better")
+    plan = graph.validate_graph(study)
+    params = next(n["data"]["params"] for n in plan["graph"]["nodes"] if n["data"]["kind"] == "active_docking")
+    assert params["engine"] == "UniDock Pro"
+    assert params["score_field"] == "custom_score" and params["score_units"] == "engine units"
+    assert params["score_direction"] == "Higher is better"
+    assert all("kcal" not in f["label"] for f in graph.NODE_CATALOG["active_decision"]["fields"])
+
+
+def test_active_learning_graph_queues_the_round_controller(monkeypatch, tmp_path):
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import graph_pipeline as runner
+    from mn_molecular_design_studio.engine.workflow_engine.core import workflow_queue
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import active_learning_controller
+    study = graph.new_graph("unidock_active_learning")
+    monkeypatch.setattr(runner, "validate_graph", lambda *_args, **_kwargs: {"graph": study})
+    calls = []
+    monkeypatch.setattr(active_learning_controller, "run_active_learning_pipeline", lambda **kwargs: None)
+    monkeypatch.setattr(workflow_queue, "enqueue_workflow_call", lambda function, **kwargs: calls.append((function, kwargs)) or tmp_path / "queued")
+    queued = runner.enqueue_graph_pipeline(study, pipeline_name="Smoke", owner_id="test", project_id="test")
+    assert queued == tmp_path / "queued"
+    assert calls[0][0] is active_learning_controller.run_active_learning_pipeline
+    assert calls[0][1]["task_group"] == "campaign"
+
+
+def test_source_picker_accepts_libraries_with_only_the_needed_preparation(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import molecular_database, pipeline_graph_ui
+    feature, centroid = tmp_path / "fp.json", tmp_path / "centroids.json"
+    feature.touch()
+    centroid.touch()
+    records = [
+        {"id": "screen", "preparations": [{"schema_version": "studio.library-fingerprints.v2", "path": str(feature)}]},
+        {"id": "seed", "preparations": [{"schema_version": "studio.library-centroids.v2", "path": str(centroid)}]},
+    ]
+    class FakeDatabase:
+        def external_library_records(self):
+            return records
+    monkeypatch.setattr(molecular_database, "MolecularDatabase", FakeDatabase)
+    choices = pipeline_graph_ui._active_library_options()
+    assert [row[0]["id"] for row in choices] == ["screen", "seed"]
+    assert choices[0][1] and not choices[0][2]
+    assert choices[1][2] and not choices[1][1]

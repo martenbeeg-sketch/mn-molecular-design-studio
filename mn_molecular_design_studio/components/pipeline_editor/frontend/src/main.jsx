@@ -1,6 +1,7 @@
 import React, {memo, useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {ReactFlow, ReactFlowProvider, Background, Controls, MiniMap, Handle, Position, applyNodeChanges, applyEdgeChanges, addEdge, useReactFlow, useNodesInitialized, useUpdateNodeInternals} from '@xyflow/react';
+import {StudyEdge, studyConnections, studyInfo, studyRole, studyPortPosition, studyPortStyle} from './activeStudy.jsx';
 import '@xyflow/react/dist/style.css';
 import './style.css';
 
@@ -8,7 +9,7 @@ const post=(type,data={})=>window.parent.postMessage({isStreamlitMessage:true,ty
 const copy=x=>JSON.parse(JSON.stringify(x));
 const uid=()=>crypto.randomUUID().replaceAll('-','');
 let catalog={};
-const authored=(nodes,edges,base,viewport)=>({...base,nodes:nodes.map(n=>({id:n.id,type:'studio',position:n.position,data:{kind:n.data.kind,label:n.data.label,...(n.data.description?{description:n.data.description}:{}),params:n.data.params}})),edges:edges.map(e=>({id:e.id,source:e.source,target:e.target,sourceHandle:e.sourceHandle||'out',targetHandle:e.targetHandle||'in'})),viewport});
+const authored=(nodes,edges,base,viewport)=>({...base,nodes:nodes.map(n=>({id:n.id,type:'studio',position:n.position,data:{kind:n.data.kind,label:n.data.label,...(n.data.description?{description:n.data.description}:{}),params:n.data.params}})),edges:edges.map(e=>({id:e.id,source:e.source,target:e.target,sourceHandle:'out',targetHandle:'in',...(e.loop_back?{loop_back:true}:{})})),viewport});
 const statusLabels={completed:'Complete',cached:'Reused',running:'Running',queued:'Queued',failed:'Failed',blocked:'Blocked',pending:'Pending'};
 
 const StudioNode=memo(({id,data,selected})=>{
@@ -19,6 +20,18 @@ const StudioNode=memo(({id,data,selected})=>{
   const coldspotLabel={native:'Coldspots supported',mapped:'Coldspots supported · mapped',unsupported:'Coldspots not supported'}[spec.coldspot_support];
   const hotspotLabel={native:'Hotspots supported',conditional:'Hotspots depend on task',unsupported:'Hotspots not supported'}[spec.hotspot_support];
   const targetContextLabel=spec.target_context_support==='structure_only'?'Structure + chains only · interface annotations ignored':null;
+  if(data.study){
+    const info=data.studyInfo,compact=data.studySize.width<300;
+    return <div className={`studio-node study-node ${compact?'study-compact':''} study-role-${studyRole(data.kind)} study-${data.kind} ${selected?'is-selected':''}`} style={{height:data.studySize.height,'--node-color':spec.color}}>
+      <div className="study-eyebrow">{info.eyebrow}{data.status&&<span className={`node-status ${data.status}`}>{statusLabels[data.status]||data.status}</span>}</div>
+      <div className="node-title">{data.label||spec.label}</div>
+      <div className="study-summary">{info.summary}</div>
+      {info.detail&&<div className="study-detail">{info.detail}</div>}
+      <span className="study-configure">Configure ↗</span>
+      {data.routeHandles?.incoming.map(handle=><Handle key={handle.id} id={handle.id} type="target" position={studyPortPosition(handle.side)} className="study-handle" style={studyPortStyle(handle)}/>)}
+      {data.routeHandles?.outgoing.map(handle=><Handle key={handle.id} id={handle.id} type="source" position={studyPortPosition(handle.side)} className="study-handle" style={studyPortStyle(handle)}/>)}
+    </div>;
+  }
   return <div className={`studio-node ${selected?'is-selected':''}`} style={{'--node-color':spec.color}}>
     <div className="node-category"><span className="category-dot"/>{spec.category}{data.status&&<span className={`node-status ${data.status}`}>{statusLabels[data.status]||data.status}</span>}</div>
     <div className="node-title">{data.label||spec.label}</div>
@@ -33,13 +46,16 @@ const StudioNode=memo(({id,data,selected})=>{
   </div>;
 });
 const nodeTypes={studio:StudioNode};
+const edgeTypes={study:StudyEdge};
 
 function Editor({args}){
   catalog=args.catalog;
   const initial=args.graph;
+  const activeStudy=initial.template_id==='unidock_active_learning';
+  const fitPadding=activeStudy?.08:.4;
   const [nodes,setNodes]=useState(initial.nodes),[edges,setEdges]=useState(initial.edges);
   const [query,setQuery]=useState(''),[notice,setNotice]=useState(''),[selection,setSelection]=useState(null);
-  const [palette,setPalette]=useState(true),[focus,setFocus]=useState(false),[historyTick,setHistoryTick]=useState(0),[helpOpen,setHelpOpen]=useState(false),[showMap,setShowMap]=useState(false);
+  const [palette,setPalette]=useState(!activeStudy),[focus,setFocus]=useState(false),[historyTick,setHistoryTick]=useState(0),[helpOpen,setHelpOpen]=useState(false),[showMap,setShowMap]=useState(false);
   const [fullscreen,setFullscreen]=useState(false),shellRef=useRef(null);
   const base=useRef(initial),viewport=useRef(initial.viewport||{x:0,y:0,zoom:1}),reset=useRef(args.reset_token),lastSent=useRef('');
   const state=useRef({nodes,edges}),history=useRef({past:[],future:[]}),clipboard=useRef(null),dragSnapshot=useRef(null);
@@ -51,7 +67,7 @@ function Editor({args}){
   const undo=useCallback(()=>{const h=history.current;if(!h.past.length)return;h.future.push(snapshot());restore(h.past.pop());setHistoryTick(x=>x+1);},[snapshot,restore]);
   const redo=useCallback(()=>{const h=history.current;if(!h.future.length)return;h.past.push(snapshot());restore(h.future.pop());setHistoryTick(x=>x+1);},[snapshot,restore]);
   useEffect(()=>{
-    if(reset.current!==args.reset_token){reset.current=args.reset_token;base.current=args.graph;setNodes(copy(args.graph.nodes));setEdges(copy(args.graph.edges));history.current={past:[],future:[]};setSelection(null);viewport.current=args.graph.viewport;fitPending.current=true;}
+    if(reset.current!==args.reset_token){reset.current=args.reset_token;base.current=args.graph;setNodes(copy(args.graph.nodes));setEdges(copy(args.graph.edges));history.current={past:[],future:[]};setSelection(null);if(activeStudy)setPalette(false);viewport.current=args.graph.viewport;fitPending.current=true;}
     base.current={...base.current,name:args.graph.name};
   },[args.reset_token,args.graph.name,rf]);
   const settingsApplied=useRef(args.settings_update?.id);
@@ -72,18 +88,18 @@ function Editor({args}){
     const timer=setTimeout(()=>{const g=snapshot(),serialized=JSON.stringify(g);if(serialized!==lastSent.current){lastSent.current=serialized;post('streamlit:setComponentValue',{value:{graph:g}});}},500);
     return()=>clearTimeout(timer);
   },[nodes,edges,snapshot]);
-  useEffect(()=>{if(initialized&&fitPending.current){const id=requestAnimationFrame(()=>{rf.fitView({padding:.4,maxZoom:1});fitPending.current=false;});return()=>cancelAnimationFrame(id);}},[initialized,nodes,rf,args.reset_token]);
+  useEffect(()=>{if(initialized&&fitPending.current){const id=requestAnimationFrame(()=>{rf.fitView({padding:fitPadding,maxZoom:1});fitPending.current=false;});return()=>cancelAnimationFrame(id);}},[initialized,nodes,rf,args.reset_token,fitPadding]);
   useEffect(()=>{post('streamlit:setFrameHeight',{height:focus?950:760});},[focus]);
   useEffect(()=>{
     const updateFullscreen=()=>{
       const active=(document.fullscreenElement||document.webkitFullscreenElement)===shellRef.current;
       setFullscreen(active);
-      requestAnimationFrame(()=>rf.fitView({padding:.4,duration:180}));
+      requestAnimationFrame(()=>rf.fitView({padding:fitPadding,duration:180}));
     };
     document.addEventListener('fullscreenchange',updateFullscreen);
     document.addEventListener('webkitfullscreenchange',updateFullscreen);
     return()=>{document.removeEventListener('fullscreenchange',updateFullscreen);document.removeEventListener('webkitfullscreenchange',updateFullscreen);};
-  },[rf]);
+  },[rf,fitPadding]);
   useEffect(()=>{if(notice){const t=setTimeout(()=>setNotice(''),5500);return()=>clearTimeout(t);}},[notice]);
   const addNode=useCallback((kind,position)=>{
     const spec=catalog[kind];pushHistory();const pos=position||rf.screenToFlowPosition({x:window.innerWidth*.49,y:330});
@@ -101,10 +117,11 @@ function Editor({args}){
     const accepts=b.inputs[0].accepts,output=infer(source);
     if(output==='candidates'?accepts.includes('target'):!accepts.includes(output))return false;
     if(!b.inputs[0].multiple&&es.some(e=>e.target===target.id))return false;
-    const visit=(id,seen=new Set())=>{if(id===source.id)return true;if(seen.has(id))return false;seen.add(id);return es.filter(e=>e.source===id).some(e=>visit(e.target,seen));};
+    if(base.current.template_id==='unidock_active_learning'&&source.data.kind==='active_select'&&target.data.kind==='active_docking')return !es.some(e=>e.loop_back);
+    const visit=(id,seen=new Set())=>{if(id===source.id)return true;if(seen.has(id))return false;seen.add(id);return es.filter(e=>e.source===id&&!e.loop_back).some(e=>visit(e.target,seen));};
     return !visit(target.id);
   },[]);
-  const onConnect=useCallback(c=>{if(!compatible(c)){setNotice('These sockets are incompatible, already connected, or would create a loop.');return;}pushHistory();setEdges(prev=>addEdge({...c,id:`edge-${uid()}`},prev));},[compatible,pushHistory]);
+  const onConnect=useCallback(c=>{if(!compatible(c)){setNotice('These sockets are incompatible, already connected, or would create a loop.');return;}pushHistory();const ns=state.current.nodes,loopBack=ns.find(n=>n.id===c.source)?.data.kind==='active_select'&&ns.find(n=>n.id===c.target)?.data.kind==='active_docking';setEdges(prev=>addEdge({...c,sourceHandle:'out',targetHandle:'in',id:`edge-${uid()}`,...(loopBack?{loop_back:true}:{})},prev));},[compatible,pushHistory]);
   const duplicate=useCallback(()=>{
     const selected=state.current.nodes.filter(n=>n.selected||n.id===selection);if(!selected.length)return;
     pushHistory();const ids=Object.fromEntries(selected.map(n=>[n.id,`${n.data.kind}-${uid().slice(0,10)}`]));
@@ -121,13 +138,18 @@ function Editor({args}){
       if(mod&&e.key.toLowerCase()==='d'){e.preventDefault();duplicate();}
       if(mod&&e.key.toLowerCase()==='c'){const ns=state.current.nodes.filter(n=>n.selected);clipboard.current={nodes:copy(ns),edges:copy(state.current.edges.filter(e=>ns.some(n=>n.id===e.source)&&ns.some(n=>n.id===e.target)))};}
       if(mod&&e.key.toLowerCase()==='v'&&clipboard.current?.nodes.length){e.preventDefault();pushHistory();const c=clipboard.current,ids=Object.fromEntries(c.nodes.map(n=>[n.id,`${n.data.kind}-${uid().slice(0,10)}`]));setNodes(p=>[...p.map(n=>({...n,selected:false})),...c.nodes.map(n=>({...copy(n),id:ids[n.id],position:{x:n.position.x+70,y:n.position.y+70},selected:true}))]);setEdges(p=>[...p,...c.edges.map(e=>({...e,id:`edge-${uid()}`,source:ids[e.source],target:ids[e.target]}))]);}
-      if(e.key.toLowerCase()==='f'){e.preventDefault();rf.fitView({padding:.4,duration:250});}
+      if(e.key.toLowerCase()==='f'){e.preventDefault();rf.fitView({padding:fitPadding,duration:250});}
       if(e.key==='Escape')setSelection(null);
     };window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);
-  },[undo,redo,duplicate,pushHistory,rf]);
+  },[undo,redo,duplicate,pushHistory,rf,fitPadding]);
   const layout=()=>{
     pushHistory();
     const ns=state.current.nodes,es=state.current.edges;
+    if(activeStudy){
+      setNodes(ns.map(node=>{const position=args.active_study_layout?.[node.data.kind];return position?{...node,position:{x:position.x,y:position.y}}:node;}));
+      setTimeout(()=>rf.fitView({padding:fitPadding,duration:250}),30);
+      return;
+    }
     const levels=new Map(),visiting=new Set();
     const level=id=>{
       if(levels.has(id))return levels.get(id);
@@ -173,6 +195,7 @@ function Editor({args}){
   // Streamlit outside this iframe, so clicking a node first exits fullscreen.
   const canvasOnly=focus&&!fullscreen;
   const connectionLayout=useMemo(()=>{
+    if(activeStudy)return studyConnections(nodes,edges);
     const outgoing=new Map(),incoming=new Map(),handles=new Map(nodes.map(node=>[node.id,{incoming:[],outgoing:[]}]))
     edges.forEach(edge=>{
       outgoing.set(edge.source,[...(outgoing.get(edge.source)||[]),edge]);
@@ -193,33 +216,35 @@ function Editor({args}){
     return {
       handles,
       edges:edges.map(edge=>({...edge,
-        sourceHandle:(outgoing.get(edge.source)?.length||0)>1?`route-out-${edge.id}`:edge.sourceHandle||'out',
-        targetHandle:(incoming.get(edge.target)?.length||0)>1?`route-in-${edge.id}`:edge.targetHandle||'in',
+          sourceHandle:(outgoing.get(edge.source)?.length||0)>1?`route-out-${edge.id}`:edge.sourceHandle||'out',
+          targetHandle:(incoming.get(edge.target)?.length||0)>1?`route-in-${edge.id}`:edge.targetHandle||'in',
       })),
     };
-  },[edges,nodes]);
-  const displayNodes=nodes.map(n=>{
+  },[edges,nodes,activeStudy]);
+  const displayNodes=[...nodes,...(connectionLayout.references||[])].map(n=>{
     const incomingKinds=edges.filter(e=>e.target===n.id).map(e=>nodes.find(source=>source.id===e.source)?.data.kind);
     const hasSurfaceAnalysis=incomingKinds.includes('surface_analysis');
     const hasOtherResults=incomingKinds.some(kind=>kind&&kind!=='surface_analysis');
     const summary=n.data.kind==='results'&&hasSurfaceAnalysis
       ? hasOtherResults?'Candidates + surface evidence':'Residue consensus · surface view'
       : undefined;
-    return {...n,data:{...n.data,status:args.execution?.[n.id]?.status,count:args.execution?.[n.id]?.candidate_count,summary,routeHandles:connectionLayout.handles.get(n.id)}};
+    const studySize=n.data.studySize||args.active_study_layout?.[n.data.kind]||{width:320,height:160};
+    return {...n,...(activeStudy?{style:{width:studySize.width}}:{}),data:{...n.data,status:args.execution?.[n.id]?.status,count:args.execution?.[n.id]?.candidate_count,summary,routeHandles:connectionLayout.handles.get(n.id),...(activeStudy?{study:true,studySize,studyInfo:n.data.studyInfo||studyInfo(n.data.kind,n.data.params,nodes)}:{})}};
   });
   const categories=[...new Set(Object.values(catalog).map(s=>s.category))];
-  return <div ref={shellRef} className={`editor-shell ${focus?'focus-mode':''} ${fullscreen?'fullscreen-mode':''}`}>
-    <header className="editor-toolbar"><div className="toolbar-title"><span className="flow-symbol">◇</span><strong>Pipeline canvas</strong><span className="draft-chip">Draft</span></div><div className="toolbar-actions"><button title="Undo (Ctrl+Z)" disabled={!history.current.past.length} onClick={undo}>↶</button><button title="Redo (Ctrl+Shift+Z)" disabled={!history.current.future.length} onClick={redo}>↷</button><span className="toolbar-divider"/><button onClick={layout} title="Arrange the current graph">Arrange</button><button title="Toggle canvas overview" onClick={()=>setShowMap(!showMap)}>Map</button><button title="Canvas shortcuts and help" onClick={()=>{setHelpOpen(!helpOpen);setSelection(null);}}>?</button><button onClick={()=>{setFocus(!focus);setTimeout(()=>rf.fitView({padding:.4,duration:200}),80);}}>{focus?'Exit focus':'Focus canvas'}</button><button onClick={toggleFullscreen} title={fullscreen?'Exit fullscreen':'Enter fullscreen'}>{fullscreen?'Exit fullscreen':'⛶ Fullscreen'}</button><button onClick={()=>emit('save_version')}>Save version</button><button className="run-button" onClick={()=>emit('run')}>▶ Run pipeline</button></div></header>
+  return <div ref={shellRef} className={`editor-shell ${activeStudy?'active-study':''} ${focus?'focus-mode':''} ${fullscreen?'fullscreen-mode':''}`}>
+    <header className="editor-toolbar"><div className="toolbar-title"><span className="flow-symbol">◇</span><strong>{activeStudy?'Active learning study':'Pipeline canvas'}</strong><span className="draft-chip">Draft</span></div><div className="toolbar-actions"><button title="Undo (Ctrl+Z)" disabled={!history.current.past.length} onClick={undo}>↶</button><button title="Redo (Ctrl+Shift+Z)" disabled={!history.current.future.length} onClick={redo}>↷</button><span className="toolbar-divider"/><button onClick={layout} title="Arrange the current graph">Arrange</button><button title="Toggle canvas overview" onClick={()=>setShowMap(!showMap)}>Map</button><button title="Canvas shortcuts and help" onClick={()=>{setHelpOpen(!helpOpen);setSelection(null);}}>?</button><button onClick={()=>{setFocus(!focus);setTimeout(()=>rf.fitView({padding:fitPadding,duration:200}),80);}}>{focus?'Exit focus':'Focus canvas'}</button><button onClick={toggleFullscreen} title={fullscreen?'Exit fullscreen':'Enter fullscreen'}>{fullscreen?'Exit fullscreen':'⛶ Fullscreen'}</button><button onClick={()=>emit('save_version')}>Save version</button><button className="run-button" disabled={activeStudy&&!args.active_execution_ready} title={activeStudy&&!args.active_execution_ready?'Active-learning round execution is not connected yet. You can configure and save the workflow.':'Run this pipeline'} onClick={()=>emit('run')}>▶ Run pipeline</button></div></header>
     <div className="workspace">
       {palette&&!canvasOnly&&<aside className="node-library"><div className="panel-heading"><span>Add a step</span><button onClick={()=>setPalette(false)} title="Hide library">‹</button></div><input aria-label="Search pipeline tools" placeholder="Search tools…" value={query} onChange={e=>setQuery(e.target.value)}/>{categories.map(category=>{const specs=Object.values(catalog).filter(s=>!s.hidden&&s.category===category&&`${s.label} ${s.description}`.toLowerCase().includes(query.toLowerCase()));return specs.length?<section key={category}><h3>{category}</h3>{specs.map(s=><button key={s.key} className="palette-tool" draggable onDragStart={e=>e.dataTransfer.setData('application/studio-node',s.key)} onClick={()=>addNode(s.key)} title={s.description}><span style={{color:s.color}}>◇</span><span>{s.label}</span><span className="add-plus">+</span></button>)}</section>:null;})}<p className="library-help">Drag a tool onto the canvas, or click to add it.</p></aside>}
       <main className="flow-region" onDragOver={e=>{e.preventDefault();e.dataTransfer.dropEffect='move';}} onDrop={e=>{e.preventDefault();const kind=e.dataTransfer.getData('application/studio-node');if(catalog[kind])addNode(kind,rf.screenToFlowPosition({x:e.clientX,y:e.clientY}));}}>
         {!palette&&!canvasOnly&&<button className="show-library" onClick={()=>setPalette(true)}>+ Tools</button>}
-        <ReactFlow nodes={displayNodes} edges={connectionLayout.edges} nodeTypes={nodeTypes} onNodesChange={changes=>{if(changes.some(c=>c.type==='remove'))pushHistory();setNodes(prev=>applyNodeChanges(changes,prev));}} onEdgesChange={changes=>{if(changes.some(c=>c.type==='remove'))pushHistory();setEdges(prev=>applyEdgeChanges(changes,prev));}}
+        <ReactFlow nodes={displayNodes} edges={connectionLayout.edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={changes=>{if(changes.some(c=>c.type==='remove'))pushHistory();setNodes(prev=>applyNodeChanges(changes,prev));}} onEdgesChange={changes=>{if(changes.some(c=>c.type==='remove'))pushHistory();setEdges(prev=>applyEdgeChanges(changes,prev));}}
           onNodeDragStart={()=>{dragSnapshot.current=snapshot();}} onNodeDragStop={()=>{if(dragSnapshot.current){pushHistory(dragSnapshot.current);dragSnapshot.current=null;}}}
-          onConnect={onConnect} isValidConnection={compatible} onNodeClick={async(event,n)=>{if(!event.target.closest('.react-flow__handle')){setSelection(n.id);setHelpOpen(false);if(!event.shiftKey&&!event.ctrlKey&&!event.metaKey){if((document.fullscreenElement||document.webkitFullscreenElement)===shellRef.current){const exit=document.exitFullscreen||document.webkitExitFullscreen;if(exit)await exit.call(document);}emit({type:'edit_node',node_id:n.id});}}}} onPaneClick={()=>setSelection(null)} onEdgeDoubleClick={(_,edge)=>{pushHistory();setEdges(es=>es.filter(e=>e.id!==edge.id));}}
+          onConnect={onConnect} isValidConnection={compatible} onNodeClick={async(event,n)=>{if(!event.target.closest('.react-flow__handle')){setSelection(n.id);setHelpOpen(false);if(!event.shiftKey&&!event.ctrlKey&&!event.metaKey){if((document.fullscreenElement||document.webkitFullscreenElement)===shellRef.current){const exit=document.exitFullscreen||document.webkitExitFullscreen;if(exit)await exit.call(document);}emit({type:'edit_node',node_id:n.data.reference_to||n.id});}}}} onPaneClick={()=>setSelection(null)} onEdgeDoubleClick={(_,edge)=>{pushHistory();setEdges(es=>es.filter(e=>e.id!==edge.id));}}
           onMoveEnd={(_,v)=>{viewport.current=v;emit();}} minZoom={.18} maxZoom={2} defaultViewport={initial.viewport} snapToGrid snapGrid={[12,12]} selectionKeyCode="Shift" multiSelectionKeyCode="Shift" panOnDrag={[0,1,2]} deleteKeyCode={['Backspace','Delete']} connectionRadius={28} defaultEdgeOptions={{type:'default',pathOptions:{curvature:.12},style:{stroke:'#8ca99b',strokeWidth:2.2},interactionWidth:22}}>
-          <Background gap={24} size={1.2} color="#cad6cf"/><Controls showInteractive={false} fitViewOptions={{padding:.4,maxZoom:1}}/>{showMap&&<MiniMap style={{pointerEvents:'none'}} nodeColor={n=>catalog[n.data.kind]?.color||'#799687'} maskColor="rgba(246,249,246,.72)"/>}
+          <Background gap={24} size={1.2} color="#cad6cf"/><Controls showInteractive={false} fitViewOptions={{padding:fitPadding,maxZoom:1}}/>{showMap&&<MiniMap style={{pointerEvents:'none'}} nodeColor={n=>catalog[n.data.kind]?.color||'#799687'} maskColor="rgba(246,249,246,.72)"/>}
         </ReactFlow>
+        {activeStudy&&<div className="study-legend"><span><i className="legend-input"/>Input</span><span><i className="legend-tool"/>Tool</span><span><i className="legend-math"/>Calculation</span><span><i className="legend-decision"/>Decision</span></div>}
         {notice&&<div className="canvas-notice" role="status">{notice}</div>}
       </main>
       {!canvasOnly&&helpOpen&&<aside className="node-inspector"><div className="panel-heading"><span>Build without losing work</span><button onClick={()=>setHelpOpen(false)} title="Close help">×</button></div><div className="inspector-welcome"><div className="welcome-icon">⌘</div><h2>Connect your experiment</h2><p>Move the blocks freely. Drag between sockets to pass structures and sequences to the next step.</p><p>Click a block to open its familiar input form. Apply changes to save them in this draft.</p><div className="non-destructive-note">Saved versions and run results remain intact when you edit this draft.</div><dl><dt>Pan</dt><dd>Drag the background</dd><dt>Zoom</dt><dd>Scroll</dd><dt>Select several</dt><dd>Shift + drag</dd><dt>Undo / redo</dt><dd>Ctrl + Z / Shift + Z</dd><dt>Duplicate</dt><dd>Ctrl + D</dd><dt>Fit canvas</dt><dd>F</dd><dt>Remove wire</dt><dd>Double-click it</dd></dl></div></aside>}
