@@ -136,7 +136,7 @@ def _connected_inputs(graph, node_id):
         if node["id"] in seen:
             continue
         seen.add(node["id"])
-        if node["data"]["kind"] in {"target", "binder_context", "design_source", "generation_source", "backbone_source", "molecule_source"}:
+        if node["data"]["kind"] in {"target", "binder_context", "design_source", "generation_source", "backbone_source", "molecule_source", "project_design_source"}:
             upstream.append(node)
         queue.extend(nodes[e["source"]] for e in graph["edges"] if e["target"] == node["id"] and e["source"] in nodes)
     return parents, upstream
@@ -203,8 +203,9 @@ def _render_field(field, values, key):
                                min_value=convert(field["min"]) if "min" in field else None,
                                max_value=convert(field["max"]) if "max" in field else None,
                                disabled=name=="cfg_scale" and not values.get("classifier_free_guidance"), **kwargs)
-    if name in {"target_protein_sequences", "partner_protein_sequences", "dna_sequences", "rna_sequences", "ligand_smiles"}:
-        return st.text_area(label, value=str(value), height=110 if "sequence" in name else 85, **kwargs)
+    if name in {"target_protein_sequences", "partner_protein_sequences", "dna_sequences", "rna_sequences", "ligand_smiles", "options_json", "condition_spec"}:
+        height = 170 if name == "options_json" else 220 if name == "condition_spec" else 110 if "sequence" in name else 85
+        return st.text_area(label, value=str(value), height=height, **kwargs)
     return st.text_input(label, value=str(value), **kwargs)
 
 
@@ -277,13 +278,13 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                 ready = node["id"] in contexts
                 if ready:
                     values.update(contexts[node["id"]])
-        elif kind in {"target", "design_source", "generation_source", "backbone_source"}:
+        elif kind in {"target", "design_source", "generation_source", "backbone_source", "project_design_source"}:
             with st.container(border=True):
                 contexts = render_input()
                 ready = node["id"] in contexts
                 if ready:
                     values.update(contexts[node["id"]])
-            if kind in {"design_source","generation_source","backbone_source"}:
+            if kind in {"design_source","generation_source","backbone_source","project_design_source"}:
                 ready = ready and bool(values.get("selected_candidate_ids"))
         elif kind == "cofold_input":
             values["task_type"] = _render_field(next(f for f in spec["fields"] if f["name"] == "task_type"), values, key)
@@ -527,7 +528,7 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                 st.info("Collect candidate structures and metrics from the connected branches. Existing results remain available when you edit the pipeline.")
         st.caption("Apply saves this step to the draft. The pipeline runs only when you choose Run pipeline on the canvas.")
         a,b,c = st.columns([1.3,1,1.3])
-        if a.button("Reset to tool defaults", key=key+"-defaults", disabled=kind in {"target","binder_context","design_source","generation_source","backbone_source","results"}, use_container_width=True):
+        if a.button("Reset to tool defaults", key=key+"-defaults", disabled=kind in {"target","binder_context","design_source","generation_source","backbone_source","project_design_source","results"}, use_container_width=True):
             action="reset"
         if b.button("Cancel", key=key+"-cancel", use_container_width=True):
             action="cancel"

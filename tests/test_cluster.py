@@ -431,6 +431,60 @@ def test_heartbeat_promotes_legacy_fallback_job_to_submission_id_and_replicates_
     assert tombstone is not None and json.loads(tombstone["value"]) is None
 
 
+def test_heartbeat_backfills_legacy_empty_ownership_for_same_local_run(cluster):
+    store, nodes, user, _needs, snapshot, _request, _clock = cluster
+    node = nodes[0]
+    local_ref = "analysis/legacy-pipeline-child"
+    jid = config.job_id(node["node_id"], local_ref)
+    legacy = {
+        "cluster_job_id": jid,
+        "node_id": node["node_id"],
+        "local_reference": local_ref,
+        "task_group": "analysis",
+        "run_id": "legacy-pipeline-child",
+        "owner_id": "",
+        "project_id": "",
+        "status": "completed",
+    }
+    with store.connect() as db:
+        db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?)", (
+            jid, node["node_id"], local_ref, "", "", json.dumps(legacy), "2026-10-23T00:00:00+00:00",
+        ))
+
+    updated = legacy | {"owner_id": user["id"], "project_id": "project-a"}
+    store.heartbeat(node["node_id"], snapshot, [updated])
+
+    with store.connect() as db:
+        row = db.execute("SELECT owner_id,project_id FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["owner_id"] == user["id"]
+    assert row["project_id"] == "project-a"
+
+
+def test_heartbeat_still_rejects_conflicting_ownership_for_same_local_run(cluster):
+    store, nodes, user, _needs, snapshot, _request, _clock = cluster
+    node = nodes[0]
+    local_ref = "analysis/owned-pipeline-child"
+    jid = config.job_id(node["node_id"], local_ref)
+    existing = {
+        "cluster_job_id": jid,
+        "node_id": node["node_id"],
+        "local_reference": local_ref,
+        "task_group": "analysis",
+        "run_id": "owned-pipeline-child",
+        "owner_id": user["id"],
+        "project_id": "project-a",
+        "status": "completed",
+    }
+    with store.connect() as db:
+        db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?)", (
+            jid, node["node_id"], local_ref, user["id"], "project-a", json.dumps(existing), "2026-10-23T00:00:00+00:00",
+        ))
+
+    conflicting = existing | {"owner_id": "other-user", "project_id": "other-project"}
+    with pytest.raises(PermissionError, match="cannot change job ownership or project"):
+        store.heartbeat(node["node_id"], snapshot, [conflicting])
+
+
 def test_replica_import_promotes_canonical_job_before_fallback_tombstone(cluster, monkeypatch):
     from mn_molecular_design_studio.cluster.replication import Replica
 

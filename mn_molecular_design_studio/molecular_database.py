@@ -95,6 +95,38 @@ class MolecularDatabase:
             CREATE TABLE IF NOT EXISTS molecular_ingestions (
                 source_key TEXT PRIMARY KEY, signature TEXT NOT NULL, updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS molecule_import_batches (
+                id TEXT PRIMARY KEY,
+                group_id TEXT NOT NULL REFERENCES molecule_groups(id),
+                created_by TEXT NOT NULL,
+                source_name TEXT NOT NULL,
+                source_sha256 TEXT NOT NULL,
+                source_path TEXT NOT NULL DEFAULT '',
+                mapping_json TEXT NOT NULL,
+                summary_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS molecular_import_batches_group ON molecule_import_batches(group_id,created_at DESC);
+            CREATE TABLE IF NOT EXISTS molecule_import_rows (
+                batch_id TEXT NOT NULL REFERENCES molecule_import_batches(id) ON DELETE CASCADE,
+                row_number INTEGER NOT NULL,
+                source_id TEXT NOT NULL DEFAULT '',
+                name TEXT NOT NULL DEFAULT '',
+                raw_smiles TEXT NOT NULL DEFAULT '',
+                canonical_smiles TEXT NOT NULL DEFAULT '',
+                connectivity_smiles TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                duplicate_of_row INTEGER,
+                stereo_variant_of_row INTEGER,
+                warnings_json TEXT NOT NULL DEFAULT '[]',
+                errors_json TEXT NOT NULL DEFAULT '[]',
+                descriptors_json TEXT NOT NULL DEFAULT '{}',
+                source_data_json TEXT NOT NULL DEFAULT '{}',
+                molecule_id TEXT REFERENCES molecules(id),
+                matched_existing INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(batch_id,row_number)
+            );
+            CREATE INDEX IF NOT EXISTS molecular_import_rows_status ON molecule_import_rows(batch_id,status,row_number);
         ''')
         from mn_molecular_design_studio.evaluations import install_schema
         install_schema(connection)
@@ -215,7 +247,25 @@ class MolecularDatabase:
                 _json(origin or {"type": "user", "user_id": user["id"]}), _json(schema or {}), stamp, stamp))
         return group_id
 
-    def _put(self, connection, group_id: str, record: dict, *, source_key="", origin=None, stamp=None):
+    def set_group_project(self, user: dict, group_id: str, project_id: str) -> dict:
+        """Move an existing molecule collection into a project without changing identities."""
+        from mn_molecular_design_studio.auth import require_project_access
+        from mn_molecular_design_studio.workspace import validate_project_id
+
+        selected_project = validate_project_id(project_id)
+        if not selected_project:
+            raise ValueError("Choose a valid project for this molecule collection.")
+        require_project_access(user, selected_project)
+        group = self.group(group_id, user, write=True)
+        stamp = _now()
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE molecule_groups SET project_id=?,updated_at=? WHERE id=?",
+                (selected_project, stamp, group_id),
+            )
+        return self.group(group_id, user)
+
+    def _put(self, connection, group_id: str, record: dict, *, source_key="", origin=None, stamp=None, preserve_existing=False):
         components, fingerprint, kind = imports.canonical_components(record["components"])
         if record.get("identity_context"):
             fingerprint = hashlib.sha256((fingerprint + _json(record["identity_context"])).encode()).hexdigest()
@@ -223,11 +273,21 @@ class MolecularDatabase:
         stamp = stamp or _now()
         connection.execute("INSERT OR IGNORE INTO molecules VALUES (?,?,?,?,?)",
                            (molecule_id, fingerprint, kind, _json(components), stamp))
-        existing = connection.execute("SELECT metadata FROM molecule_members WHERE group_id=? AND molecule_id=?", (group_id, molecule_id)).fetchone()
-        metadata = {**(json.loads(existing[0]) if existing else {}), **(record.get("metadata") or {})}
+        existing = connection.execute("SELECT name,metadata FROM molecule_members WHERE group_id=? AND molecule_id=?", (group_id, molecule_id)).fetchone()
+        supplied_metadata = record.get("metadata") or {}
+        if preserve_existing:
+            metadata = dict(supplied_metadata)
+            if existing:
+                for key, value in json.loads(existing["metadata"]).items():
+                    if value not in (None, ""):
+                        metadata[key] = value
+            saved_name = existing["name"] if existing else str(record.get("name") or molecule_id)[:250]
+        else:
+            metadata = {**(json.loads(existing["metadata"]) if existing else {}), **supplied_metadata}
+            saved_name = str(record.get("name") or molecule_id)[:250]
         connection.execute("INSERT INTO molecule_members VALUES (?,?,?,?,?,?) ON CONFLICT(group_id,molecule_id) "
                            "DO UPDATE SET metadata=excluded.metadata", (
-                               group_id, molecule_id, str(record.get("name") or molecule_id)[:250], _json(components), _json(metadata), stamp))
+                               group_id, molecule_id, saved_name, _json(components), _json(metadata), stamp))
         if source_key:
             connection.execute("INSERT INTO molecule_sources VALUES (?,?,?,?) ON CONFLICT(source_key) DO UPDATE SET "
                                "molecule_id=excluded.molecule_id,group_id=excluded.group_id,provenance=excluded.provenance",
@@ -257,10 +317,157 @@ class MolecularDatabase:
             os.replace(temporary_path, path)
         return path
 
-    def import_records(self, user: dict, records: list[dict], *, name="Imported molecules", project_id="", group_id=None, import_method="user_uploads", origin=None) -> dict:
+    def _store_import_source(self, name: str, content: bytes) -> Path:
+        """Store the original tabular/SMILES source by content hash."""
+        suffix = Path(name).suffix.lower()
+        if suffix not in {".csv", ".tsv", ".txt", ".xlsx", ".xlsm", ".xls", ".smi", ".smiles"}:
+            suffix = ".bin"
+        digest = hashlib.sha256(content).hexdigest()
+        directory = self.root / "molecular_import_sources" / digest[:2]
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / (digest + suffix)
+        if not path.exists():
+            with tempfile.NamedTemporaryFile(dir=directory, delete=False) as temporary:
+                temporary.write(content)
+                temporary_path = Path(temporary.name)
+            os.replace(temporary_path, path)
+        return path
+
+    def group_identity_map(self, user, group_id):
+        """Return canonical structure fingerprints already present in a group."""
+        self.group(group_id, user)
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT m.fingerprint,m.id,mm.name FROM molecules m JOIN molecule_members mm ON mm.molecule_id=m.id WHERE mm.group_id=?",
+                (group_id,),
+            ).fetchall()
+        return {row["fingerprint"]: {"id": row["id"], "name": row["name"]} for row in rows}
+
+    def _save_import_audit(self, connection, user, group_id, audit, records, molecule_ids, source_content=None, batch_id=None):
+        if not audit:
+            return
+        batch_id = str(batch_id or uuid.uuid4().hex)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", batch_id):
+            raise ValueError("Invalid import batch ID.")
+        source_name = Path(str(audit.get("source_name") or "source file")).name[:250]
+        source_sha256 = str(audit.get("source_sha256") or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", source_sha256):
+            raise ValueError("The import source checksum is invalid.")
+        if source_content is not None and hashlib.sha256(source_content).hexdigest() != source_sha256:
+            raise ValueError("The uploaded source no longer matches its validation report.")
+        if source_content is not None and len(source_content) > imports.MAX_BYTES:
+            raise ValueError("The original import file exceeds 100 MB.")
+        mapping = audit.get("mapping") or {}
+        summary = audit.get("summary") or {}
+        rows = audit.get("rows") or []
+        if len(rows) > imports.MAX_ROWS:
+            raise ValueError("An import report can contain at most 100,000 rows.")
+        source_path = ""
+        if source_content is not None:
+            source_path = str(self._store_import_source(source_name, source_content))
+        molecule_by_smiles = {}
+        for record, molecule_id in zip(records, molecule_ids):
+            smiles = next((component.get("smiles") for component in record.get("components", [])
+                           if component.get("type") == "small_molecule"), None)
+            if smiles:
+                molecule_by_smiles.setdefault(smiles, molecule_id)
+        batch_key = "import-batch-" + batch_id
+        created_at = _now()
+        connection.execute(
+            "INSERT INTO molecule_import_batches VALUES (?,?,?,?,?,?,?,?,?)",
+            (batch_key, group_id, str(user["id"]), source_name, source_sha256, source_path,
+             _json(mapping), _json(summary), created_at),
+        )
+        for row in rows:
+            row_number = int(row.get("row_number") or 0)
+            if row_number < 1:
+                raise ValueError("Invalid source row number in the import report.")
+            canonical = str(row.get("canonical_smiles") or "")
+            molecule_id = molecule_by_smiles.get(canonical)
+            if molecule_id and row.get("status") in {"valid", "duplicate"}:
+                row["molecule_id"] = molecule_id
+            provenance = {
+                "type": "table_import_row",
+                "import_batch_id": batch_key,
+                "source_name": source_name,
+                "source_sha256": source_sha256,
+                "source_row": row_number,
+                "source_id": str(row.get("source_id") or ""),
+                "validation_status": str(row.get("status") or ""),
+                "raw_smiles": str(row.get("raw_smiles") or ""),
+                "canonical_smiles": canonical,
+                "warnings": row.get("warnings") or [],
+                "errors": row.get("errors") or [],
+            }
+            if molecule_id:
+                source_key = f"import-row:{batch_id}:{row_number}"
+                connection.execute(
+                    "INSERT INTO molecule_sources VALUES (?,?,?,?) ON CONFLICT(source_key) DO UPDATE SET "
+                    "molecule_id=excluded.molecule_id,group_id=excluded.group_id,provenance=excluded.provenance",
+                    (source_key, molecule_id, group_id, _json(provenance)),
+                )
+            source_data = row.get("source_data") or {}
+            descriptors = dict(row.get("descriptors") or {})
+            descriptors["normalized_compound_id"] = row.get("compound_id") or ""
+            descriptors["annotation_stripped_candidate"] = row.get("annotation_stripped_candidate") or ""
+            descriptors["candidate_status"] = row.get("candidate_status") or ""
+            connection.execute(
+                "INSERT INTO molecule_import_rows VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (batch_key, row_number, str(row.get("source_id") or "")[:250], str(row.get("name") or "")[:250],
+                 str(row.get("raw_smiles") or ""), canonical, str(row.get("connectivity_smiles") or ""),
+                 str(row.get("status") or "unknown"), row.get("duplicate_of_row"), row.get("stereo_variant_of_row"),
+                 _json(row.get("warnings") or []), _json(row.get("errors") or []), _json(descriptors),
+                 _json(source_data), molecule_id, int(bool(row.get("matched_existing")))),
+            )
+
+    def import_batches(self, user, group_id):
+        self.group(group_id, user)
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM molecule_import_batches WHERE group_id=? ORDER BY created_at DESC,id DESC", (group_id,)
+            ).fetchall()
+        return [{**dict(row), "mapping": json.loads(row["mapping_json"]),
+                 "summary": json.loads(row["summary_json"])} for row in rows]
+
+    def import_batch_rows(self, user, batch_id):
+        with self.connection() as connection:
+            batch = connection.execute("SELECT group_id FROM molecule_import_batches WHERE id=?", (batch_id,)).fetchone()
+            if not batch:
+                raise ValueError("Import report not found.")
+            self.group(batch["group_id"], user)
+            rows = connection.execute(
+                "SELECT * FROM molecule_import_rows WHERE batch_id=? ORDER BY row_number", (batch_id,)
+            ).fetchall()
+        result = []
+        for row in rows:
+            descriptors = json.loads(row["descriptors_json"])
+            result.append({
+                **dict(row),
+                "warnings": json.loads(row["warnings_json"]),
+                "errors": json.loads(row["errors_json"]),
+                "compound_id": descriptors.get("normalized_compound_id", ""),
+                "annotation_stripped_candidate": descriptors.get("annotation_stripped_candidate", ""),
+                "candidate_status": descriptors.get("candidate_status", ""),
+                "descriptors": descriptors,
+                "source_data": json.loads(row["source_data_json"]),
+            })
+        return result
+
+    def import_source_file(self, user, batch_id):
+        with self.connection() as connection:
+            batch = connection.execute("SELECT group_id,source_path FROM molecule_import_batches WHERE id=?", (batch_id,)).fetchone()
+        if not batch:
+            raise ValueError("Import source not found.")
+        self.group(batch["group_id"], user)
+        path = Path(batch["source_path"])
+        if not path.is_file():
+            raise FileNotFoundError("The original import file is unavailable on this workstation.")
+        return path
+
+    def import_records(self, user: dict, records: list[dict], *, name="Imported molecules", project_id="", group_id=None, import_method="user_uploads", origin=None, import_audit=None, source_content=None) -> dict:
         from mn_molecular_design_studio.molecule_schema import validate_record
-        if not records or len(records) > imports.MAX_ROWS:
-            raise ValueError("Import between 1 and 100,000 molecules.")
+        if (not records and not import_audit) or len(records) > imports.MAX_ROWS:
+            raise ValueError("Import between 1 and 100,000 molecules, or save a validation report.")
         for record in records:
             imports.canonical_components(record["components"])
         if group_id:
@@ -269,10 +476,20 @@ class MolecularDatabase:
                 validate_record(record, group["schema"])
         else:
             group_id = self.create_group(user, name, project_id=project_id, import_method=import_method, origin=origin)
+        audit_batch_id = uuid.uuid4().hex if import_audit else None
         with self.connection() as connection:
             origin = origin or {"type": "user", "user_id": user["id"]}
-            ids = [self._put(connection, group_id, record, source_key=record.get("source_key") or _id("import-", _json([group_id, index, record["name"]])), origin=origin) for index, record in enumerate(records)]
-        return {"group_id": group_id, "molecule_ids": list(dict.fromkeys(ids)), "imported_count": len(records), "unique_count": len(set(ids))}
+            ids = []
+            for index, record in enumerate(records):
+                source_key = record.get("source_key") or _id("import-", _json([group_id, index, record["name"]]))
+                if audit_batch_id and record.get("source_row_number"):
+                    source_key = f"import-row:{audit_batch_id}:{int(record['source_row_number'])}"
+                ids.append(self._put(connection, group_id, record, source_key=source_key, origin=origin,
+                                     preserve_existing=bool(import_audit)))
+            self._save_import_audit(connection, user, group_id, import_audit, records, ids,
+                                    source_content=source_content, batch_id=audit_batch_id)
+        return {"group_id": group_id, "molecule_ids": list(dict.fromkeys(ids)), "imported_count": len(records), "unique_count": len(set(ids)),
+                "import_batch_id": "import-batch-" + audit_batch_id if audit_batch_id else None}
 
     def add_observation(self, group_id, molecule_id, namespace, run_id, metrics, *, context=None, source_key=None, created_at=None):
         from mn_molecular_design_studio.evaluations import file_digest

@@ -60,7 +60,7 @@ def _load_example(label, prefix, owner):
     st.session_state[prefix + "-preset"] = p
 
 
-def _structure_fields(p, prefix, owner, *, single_chain=False, allow_non_protein=True):
+def _structure_fields(p, prefix, owner, *, single_chain=False, allow_non_protein=True, abmpnn_only=False):
     fmt = st.pills("Structure format", ["PDB", "CIF"], default="PDB", selection_mode="single", key=prefix + "-source-format", label_visibility="collapsed") or "PDB"
     st.caption("Protein structure file to be designed")
     source = render_target_source(key_prefix=prefix + "-source", label="Structure", owner_id=owner,
@@ -72,7 +72,8 @@ def _structure_fields(p, prefix, owner, *, single_chain=False, allow_non_protein
     if not source.path:
         st.multiselect("Designed Chains", [], disabled=True, key=prefix + "-source-unloaded-chains")
         st.caption("Load a structure and choose chains to enable residue selection.")
-        p["designed_residues"] = st.text_input("Designed Residues", value=p["designed_residues"], disabled=True, key=prefix + "-field-unloaded-residues")
+        if not abmpnn_only:
+            p["designed_residues"] = st.text_input("Designed Residues", value=p["designed_residues"], disabled=True, key=prefix + "-field-unloaded-residues")
         return p, "Upload a PDB/mmCIF structure or fetch a PDB accession."
     p["structure_path"] = str(source.path)
     info = inputs.inventory(source.path)
@@ -107,14 +108,18 @@ def _structure_fields(p, prefix, owner, *, single_chain=False, allow_non_protein
     pending = selection_key + "-pending"
     if pending in st.session_state:
         st.session_state[selection_key] = st.session_state.pop(pending)
-    p["designed_residues"] = st.text_input("Designed Residues", value=p["designed_residues"], key=selection_key,
-        placeholder="e.g. B26-32 B52-56 B95-102", help="Use author residue numbers, ranges, or individual IDs. Leave blank to design every residue in the selected chains.")
-    try:
-        selected = inputs.residues(p["designed_residues"], info, chains=chosen)
-    except ValueError as exc:
+    if abmpnn_only:
         selected = []
-        st.error(str(exc))
-    st.caption(f"{source.name} · {len(chosen)} designed chain(s) · " + (f"{len(selected)} selected residues" if selected else "all residues in those chains"))
+        st.caption(f"{source.name} · {len(chosen)} antibody chain(s) · CDR positions assigned automatically by SAbR")
+    else:
+        p["designed_residues"] = st.text_input("Designed Residues", value=p["designed_residues"], key=selection_key,
+            placeholder="e.g. B26-32 B52-56 B95-102", help="Use author residue numbers, ranges, or individual IDs. Leave blank to design every residue in the selected chains.")
+        try:
+            selected = inputs.residues(p["designed_residues"], info, chains=chosen)
+        except ValueError as exc:
+            selected = []
+            st.error(str(exc))
+        st.caption(f"{source.name} · {len(chosen)} designed chain(s) · " + (f"{len(selected)} selected residues" if selected else "all residues in those chains"))
     with st.expander("Structure & residue selection", expanded=True):
         a, b, _ = st.columns([1, 1, 3])
         if a.button("Select all", key=key + "-all", use_container_width=True):
@@ -139,29 +144,60 @@ def _structure_fields(p, prefix, owner, *, single_chain=False, allow_non_protein
     return p, None if chosen else "Choose at least one designed chain."
 
 
-def render_inputs(*, owner_id, key_prefix, initial=None, connected=False):
-    st.html(STYLE)
+def render_inputs(*, owner_id, key_prefix, initial=None, connected=False, abmpnn_only=False):
+    style = STYLE.replace("mpnn-surface", "abmpnn-surface") if abmpnn_only else STYLE
+    st.html(style)
     p = inputs.defaults() | copy.deepcopy(initial or {})
+    if abmpnn_only:
+        p.update(model_type="ab_mpnn", auto_detect_cdrs=True)
     if not connected:
         p.update(st.session_state.get(key_prefix + "-preset", {}))
     error = None
     prefix = key_prefix
     if not connected:
         st.markdown("**PDB File**")
-        p, error = _structure_fields(p, prefix, owner_id)
+        p, error = _structure_fields(p, prefix, owner_id, abmpnn_only=abmpnn_only)
     else:
         st.caption("Connected structures provide the backbone and chain roles for this step.")
         p["design_chains"] = st.text_input("Designed Chains", value=p["design_chains"], key=prefix + "-field-chains",
             placeholder="Automatic · designed/binder chains from the previous step", help="Leave blank to preserve the upstream target/design chain assignments.")
-        p["designed_residues"] = st.text_input("Designed Residues", value=p["designed_residues"], key=prefix + "-field-residues", placeholder="All designed-chain residues, or e.g. B26-32 B52-56")
+        if not abmpnn_only:
+            p["designed_residues"] = st.text_input("Designed Residues", value=p["designed_residues"], key=prefix + "-field-residues", placeholder="All designed-chain residues, or e.g. B26-32 B52-56")
+        else:
+            st.caption("SAbR will determine the selected CDR residue positions for each candidate.")
     p["num_seq_per_target"] = int(st.number_input("Number of Sequences", min_value=1, max_value=10000, value=int(p["num_seq_per_target"]), key=prefix + "-field-count",
         help="Number of sequences generated for each input backbone."))
-    model = st.pills("Model Type", list(inputs.MODELS), format_func=lambda m: inputs.MODELS[m]["label"],
-        default=p["model_type"], selection_mode="single", key=prefix + "-field-model") or p["model_type"]
-    p["model_type"] = model
-    st.caption(inputs.MODELS[model]["description"])
-    if model == "ab_mpnn":
-        st.caption("Select antibody chains and the CDR or framework residues to redesign. For paired antibodies choose heavy before light.")
+    if abmpnn_only:
+        model = "ab_mpnn"
+        p["model_type"] = model
+        p["cdr_regions"] = st.multiselect(
+            "CDR regions to redesign", ["CDR1", "CDR2", "CDR3"],
+            default=p.get("cdr_regions") or ["CDR1", "CDR2", "CDR3"],
+            key=prefix + "-field-cdr-regions",
+            help="SAbR identifies these loops using IMGT numbering. Antibody framework and unselected CDRs remain fixed.",
+        )
+        p["sabr_chain_type"] = "auto"
+        p["sabr_mode"] = "sabr"
+        p["sabr_noise_level"] = 0.0
+        st.caption("AbMPNN redesigns the selected loops. SAbR identifies CDR positions from the antibody backbone; the target and framework stay fixed.")
+        if p.get("structure_path") and Path(p["structure_path"]).is_file() and p.get("design_chains"):
+            try:
+                from mn_molecular_design_studio.sabr_runtime import cdr_fixed_residues
+                _, selected_cdrs = cdr_fixed_residues(
+                    Path(p["structure_path"]), inputs.chain_list(p["design_chains"]),
+                    p["cdr_regions"], chain_type="auto",
+                )
+                parts = [f"{name}: {len(selected_cdrs[name])} residues" for name in p["cdr_regions"]]
+                st.success("SAbR found " + " · ".join(parts))
+            except Exception as exc:
+                st.warning(f"SAbR will validate the selected antibody chain when the job starts: {exc}")
+    else:
+        model = st.pills("Model Type", list(inputs.MODELS), format_func=lambda m: inputs.MODELS[m]["label"],
+            default=p["model_type"], selection_mode="single", key=prefix + "-field-model") or p["model_type"]
+        p["model_type"] = model
+        st.caption(inputs.MODELS[model]["description"])
+        if model == "ab_mpnn":
+            st.caption("Select antibody chains and the CDR or framework residues to redesign. For paired antibodies choose heavy before light.")
     if not connected:
         p["verify_sequences"] = st.selectbox("Verify Sequences", [False, True], format_func=lambda v: "ESMFold · each designed chain" if v else "None",
             index=int(p.get("verify_sequences", False)), key=prefix + "-field-verify", help="Optionally queue structure verification after sequence design. Other folding engines can be connected on the pipeline canvas.")
@@ -212,7 +248,7 @@ def render_inputs(*, owner_id, key_prefix, initial=None, connected=False):
     return p, error
 
 
-def _existing_results(project, search_jobs, prefix):
+def _existing_results(project, search_jobs, prefix, *, antibody_backbones_only=False):
     if not project:
         st.info("Select a project to choose its completed design results.")
         return {}, "Select a project."
@@ -230,7 +266,8 @@ def _existing_results(project, search_jobs, prefix):
         run = Path(row["run_dir"])
         if read_json(run / "result.json").get("success") is not True:
             continue
-        candidates = [c for c in read_candidates(run / "artifacts/normalized_candidates/candidates.jsonl") if c.get("stage") in STAGES and c.get("complex_pdb")]
+        allowed_stages = {"generation.backbone", "generation.backbone_sequence"} if antibody_backbones_only else set(STAGES)
+        candidates = [c for c in read_candidates(run / "artifacts/normalized_candidates/candidates.jsonl") if c.get("stage") in allowed_stages and c.get("complex_pdb")]
         if candidates:
             rows.append((row, candidates))
     if not rows:
@@ -243,47 +280,54 @@ def _existing_results(project, search_jobs, prefix):
     return {"source_run_dir": row["run_dir"], "candidates_jsonl": str(Path(row["run_dir"]) / "artifacts/normalized_candidates/candidates.jsonl"), "selected_candidate_ids": selected}, None if selected else "Select at least one input design."
 
 
-def render_setup(schema, *, owner_id, project_selector, submit, search_jobs):
-    prefix = "mpnn"
-    st.html(STYLE)
-    if st.button("← Back to All tools", key="mpnn-back"):
+def render_setup(schema, *, owner_id, project_selector, submit, search_jobs, abmpnn_only=False):
+    prefix = "abmpnn" if abmpnn_only else "mpnn"
+    style = STYLE.replace("mpnn-surface", "abmpnn-surface") if abmpnn_only else STYLE
+    st.html(style)
+    if st.button("← Back to All tools", key=prefix + "-back"):
         st.session_state["page"] = "All tools"
         st.rerun()
-    with st.container(key="mpnn-surface"):
-        st.html('<div class="mpnn-header"><div class="mpnn-eyebrow">Inverse folding</div><h1>ProteinMPNN</h1><p>Protein structure to sequence design · ProteinMPNN family, LigandMPNN, HyperMPNN & AbMPNN</p></div>')
+    with st.container(key=prefix + "-surface"):
+        title = "AbMPNN" if abmpnn_only else "ProteinMPNN"
+        subtitle = "Antibody structure to CDR sequence redesign · SAbR IMGT loop detection" if abmpnn_only else "Protein structure to sequence design · ProteinMPNN family, LigandMPNN, HyperMPNN & AbMPNN"
+        st.html(f'<div class="mpnn-header"><div class="mpnn-eyebrow">Inverse folding</div><h1>{title}</h1><p>{subtitle}</p></div>')
         a, b, c, d = st.columns(4)
-        if a.button("Show outputs", key="mpnn-outputs", use_container_width=True):
-            st.session_state["mpnn-show-outputs"] = not st.session_state.get("mpnn-show-outputs", False)
-        if b.button("Show settings", key="mpnn-settings", use_container_width=True):
-            st.session_state["mpnn-show-settings"] = not st.session_state.get("mpnn-show-settings", False)
+        if a.button("Show outputs", key=prefix + "-outputs", use_container_width=True):
+            st.session_state[prefix + "-show-outputs"] = not st.session_state.get(prefix + "-show-outputs", False)
+        if b.button("Show settings", key=prefix + "-settings", use_container_width=True):
+            st.session_state[prefix + "-show-settings"] = not st.session_state.get(prefix + "-show-settings", False)
         c.link_button("Source code", "https://github.com/dauparas/LigandMPNN", use_container_width=True)
-        d.link_button("Input reference", "https://app.tamarind.bio/tools/proteinmpnn", use_container_width=True)
-        if st.session_state.get("mpnn-show-outputs"):
+        d.link_button("Input reference", "https://app.tamarind.bio/tools/abmpnn" if abmpnn_only else "https://app.tamarind.bio/tools/proteinmpnn", use_container_width=True)
+        if st.session_state.get(prefix + "-show-outputs"):
             st.info("Each input backbone produces designed sequences, matching structure files, model scores and parameters. Outputs can be connected to folding and analysis on the pipeline canvas.")
         with st.expander("About this workflow"):
-            st.write("Design all or selected residues on a fixed protein backbone. Keep the target, other chains and fixed motifs unchanged. Use LigandMPNN to retain atomic context around non-protein molecules.")
+            if abmpnn_only:
+                st.write("SAbR assigns antibody numbering and identifies CDR loops from the supplied backbone. AbMPNN redesigns only the selected loops; the target, framework, and unselected loops are kept fixed.")
+            else:
+                st.write("Design all or selected residues on a fixed protein backbone. Keep the target, other chains and fixed motifs unchanged. Use LigandMPNN to retain atomic context around non-protein molecules.")
         a, b = st.columns(2)
-        name = a.text_input("Job name", "proteinmpnn-design", key="mpnn-name").strip()
+        name = a.text_input("Job name", "abmpnn-cdr-redesign" if abmpnn_only else "proteinmpnn-design", key=prefix + "-name").strip()
         with b:
-            project = project_selector("mpnn")
-        mode = st.segmented_control("Input source", ["Structure", "Existing results"], default="Structure", key="mpnn-mode") or "Structure"
-        source, source_error = ({}, None) if mode == "Structure" else _existing_results(project, search_jobs, prefix)
+            project = project_selector(prefix)
+        mode = st.segmented_control("Input source", ["Structure", "Existing results"], default="Structure", key=prefix + "-mode") or "Structure"
+        source, source_error = ({}, None) if mode == "Structure" else _existing_results(project, search_jobs, prefix, antibody_backbones_only=abmpnn_only)
         if mode == "Structure":
             a, b = st.columns(2)
-            for column, label in zip((a, b), EXAMPLES):
-                column.button(label, key="mpnn-example-" + label, on_click=_load_example, args=(label, prefix, owner_id), use_container_width=True)
-        parameters, error = render_inputs(owner_id=owner_id, key_prefix=prefix, connected=mode != "Structure")
+            examples = {"9F6O · Nanobody CDRs": EXAMPLES["9F6O · Nanobody CDRs"]} if abmpnn_only else EXAMPLES
+            for column, label in zip((a, b), examples):
+                column.button(label, key=prefix + "-example-" + label, on_click=_load_example, args=(label, prefix, owner_id), use_container_width=True)
+        parameters, error = render_inputs(owner_id=owner_id, key_prefix=prefix, connected=mode != "Structure", abmpnn_only=abmpnn_only)
         if mode != "Structure":
             parameters["verify_sequences"] = st.selectbox("Verify Sequences", [False, True],
-                format_func=lambda v: "ESMFold · each designed chain" if v else "None", key="mpnn-field-verify-existing")
-        parameters["job_name"] = name or "proteinmpnn-design"
+                format_func=lambda v: "ESMFold · each designed chain" if v else "None", key=prefix + "-field-verify-existing")
+        parameters["job_name"] = name or ("abmpnn-cdr-redesign" if abmpnn_only else "proteinmpnn-design")
         parameters.update(source)
         if mode != "Structure":
             parameters.pop("structure_path", None)
         with st.expander("Scheduler & reference files"):
-            gpu = st.selectbox("GPU assignment", ["Automatic", "GPU 0", "GPU 1"], key="mpnn-gpu")
+            gpu = st.selectbox("GPU assignment", ["Automatic", "GPU 0", "GPU 1"], key=prefix + "-gpu")
             parameters["gpu_device"] = {"Automatic": "all", "GPU 0": "0", "GPU 1": "1"}[gpu]
-            priority = st.checkbox("Prioritize in scheduler queue", key="mpnn-priority")
+            priority = st.checkbox("Prioritize in scheduler queue", key=prefix + "-priority")
             readiness = inputs.readiness(parameters["model_type"], parameters["noise_level"])
             if readiness["ready"]:
                 st.success("Selected checkpoint is available in reference files.")
@@ -293,9 +337,9 @@ def render_setup(schema, *, owner_id, project_selector, submit, search_jobs):
         if error:
             st.caption(error)
         with st.columns([1, 1, 1])[1]:
-            clicked = st.button("Submit", type="primary", key="mpnn-submit", use_container_width=True, disabled=not project or bool(error) or not readiness["ready"])
+            clicked = st.button("Submit", type="primary", key=prefix + "-submit", use_container_width=True, disabled=not project or bool(error) or not readiness["ready"])
         if not project:
             st.caption("Select a project to submit.")
         if clicked:
             allowed = {f["name"] for f in schema["parameters"]}
-            submit(schema, inputs.WORKFLOW, {k: v for k, v in parameters.items() if k in allowed}, project, {"prioritize": priority}, name or "ProteinMPNN")
+            submit(schema, schema["workflow"], {k: v for k, v in parameters.items() if k in allowed}, project, {"prioritize": priority}, name or ("AbMPNN" if abmpnn_only else "ProteinMPNN"))

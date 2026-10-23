@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -48,4 +49,11 @@ def reference_root() -> Path:
     configured = os.getenv("MN_MOLECULAR_DESIGN_STUDIO_REFERENCE_DIR", "").strip()
     if configured:
         return Path(configured).expanduser().resolve()
+    settings_path = app_home() / "settings.json"
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        settings = {}
+    if isinstance(settings, dict) and str(settings.get("reference_directory") or "").strip():
+        return Path(settings["reference_directory"]).expanduser().resolve()
     return (app_home() / "reference_files").expanduser().resolve()

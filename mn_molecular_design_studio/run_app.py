@@ -143,9 +143,11 @@ WORKFLOW_TITLES = {
     "Bindcraft2": "BindCraft2",
     "Bindcraft2 Generator": "BindCraft2 Generator",
     "Rfantibody": "RFantibody",
+    "Rfantibody Mimosa": "MIMOSA · RFantibody",
     "Rfpeptides": "RFpeptides",
     "Bindcraft": "BindCraft",
     "Boltzgen": "BoltzGen",
+    "Boltzgen Mimosa": "MIMOSA · BoltzGen",
     "Boltzgen Generator": "BoltzGen Generator",
     "Af2 Initial Guess": "AlphaFold2 Initial Guess",
     "Esmfold2": "ESMFold2",
@@ -159,10 +161,12 @@ WORKFLOW_TITLES = {
     "Boltz2 Monomer": "Boltz-2 Monomer",
     "Ligandmpnn": "LigandMPNN",
     "Mpnn": "ProteinMPNN",
+    "Abmpnn": "AbMPNN",
+    "Sabr": "SAbR Antibody Numbering",
     "Rfdiffusion Classic": "RFdiffusion",
     "Rfdiffusion3 Foundry": "RFdiffusion3",
     "Rfdiffusion3": "RFdiffusion3",
-    "Rfd4 Proteina": "RFDiffusion4-Proteina",
+    "Rfd4 Proteina": "RFD4-Proteina",
     "Ipsae": "ipSAE Scoring",
     "Rosetta Metrics": "Rosetta Interface Metrics",
     "Pesto": "PeSTo",
@@ -206,9 +210,12 @@ TOOL_CATALOG_WORKFLOW_IDS = {
     "design.bindcraft2_generator",
     "design.rfdiffusion3",
     "design.rfd4_proteina",
+    "refolding.rfd4_proteina",
     "design.rfantibody",
+    "design.rfantibody_mimosa",
     "design.rfpeptides",
     "design.boltzgen",
+    "design.boltzgen_mimosa",
     "design.boltzgen_generator",
     "design.pxdesign_generate",
     "design.genie3_generate",
@@ -217,6 +224,8 @@ TOOL_CATALOG_WORKFLOW_IDS = {
     "design.proteina_complexa",
     "design.proteina_complexa_generate",
     "sequence.mpnn",
+    "sequence.abmpnn",
+    "analysis.sabr",
     "sequence.esm_if1",
     "sequence.caliby",
     "sequence.boltzgen_inverse",
@@ -249,6 +258,7 @@ TOOL_CATALOG_WORKFLOW_IDS = {
     "ligand.generation.pgmg",
     "ligand.md.gromacs",
     "ligand.md.openmm",
+    "ligand.md.analysis",
     "simulation.bioemu2",
 }
 
@@ -276,6 +286,7 @@ TOOL_WORKFLOW_CODE_VERSIONS = {
     "ligand.generation.pgmg": ("PGMG · Studio workflow adapter", False),
     "ligand.md.gromacs": ("GROMACS · Studio bundled runtime", False),
     "ligand.md.openmm": ("OpenMM · Studio bundled runtime", False),
+    "ligand.md.analysis": ("MDTraj · Studio trajectory analysis", False),
     "sequence.esm_if1": ("ESM-IF1 · fair-esm 2.0.1 · 2b369911", False),
     "sequence.caliby": ("Caliby 0.1 · 41d31560", True),
     "sequence.boltzgen_inverse": ("BoltzGen 0.3.2 · a07fea1", False),
@@ -293,10 +304,13 @@ TOOL_WORKFLOW_CODE_VERSIONS = {
     "design.bindcraft2_generator": ("BindCraft 2 v1.0.4", False),
     "design.rfdiffusion_classic": ("RFdiffusion · version not pinned", False),
     "design.rfdiffusion3": ("RFdiffusion3 a36d29c · Foundry 0.1.9", False),
+    "refolding.rfd4_proteina": ("RFD4-Proteina 0.0.3 · native folding", False),
     "design.rfd4_proteina": ("RFDiffusion4-Proteina 0.0.3 · 9d35ee4", False),
     "design.rfantibody": ("RFantibody 3e5a5bb · CUDA 11.8", False),
+    "design.rfantibody_mimosa": ("MIMOSA-RFA · RFantibody 3e5a5bb", False),
     "design.rfpeptides": ("RFpeptides · RFdiffusion 86507b6 · CUDA 12.8", False),
     "design.boltzgen": ("BoltzGen 0.3.2", True),
+    "design.boltzgen_mimosa": ("MIMOSA-BG · BoltzGen 0.3.2", True),
     "design.boltzgen_generator": ("BoltzGen 0.3.2", True),
     "design.pxdesign": ("PXDesign f788441 · Protenix 0.5.0+pxd", False),
     "design.genie3": ("Genie3 d77ae5a", False),
@@ -769,6 +783,8 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "refolding.optimized_prediction": "Cofolding & Structure Prediction",
         "sequence.ligandmpnn": "Protein Sequence Design",
         "sequence.mpnn": "Protein Sequence Design",
+        "sequence.abmpnn": "Antibody Sequence Design",
+        "analysis.sabr": "Antibody Numbering",
         "sequence.esm_if1": "Inverse Folding",
         "sequence.caliby": "Inverse Folding",
         "sequence.boltzgen_inverse": "Inverse Folding",
@@ -794,6 +810,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "ligand.generation.pgmg": "Ligand Generation",
         "ligand.md.gromacs": "Molecular Dynamics",
         "ligand.md.openmm": "Molecular Dynamics",
+        "ligand.md.analysis": "MD Analysis",
     }
     modalities_by_prefix = {
         "simulation": ["Protein", "Ligand", "DNA", "RNA"],
@@ -824,6 +841,8 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
     input_types_by_workflow = {
         "ligand.complex.prepare": ["Protein–Ligand Complex (PDB)"],
         "sequence.mpnn": ["Structure (PDB)", "Structure (mmCIF)", "Existing Results"],
+        "sequence.abmpnn": ["Antibody Structure (PDB/mmCIF)", "Existing Antibody Designs"],
+        "analysis.sabr": ["Antibody Structure (PDB/mmCIF)", "Existing Antibody Designs"],
         "sequence.esm_if1": ["Structure (PDB)", "Structure (mmCIF)", "Existing Results"],
         "sequence.caliby": ["Structure (PDB)", "Structure (mmCIF)", "Existing Results"],
         "sequence.boltzgen_inverse": ["Structure (PDB)", "Structure (mmCIF)", "Existing Results"],
@@ -833,6 +852,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "design.proteina_complexa": ["Structure (PDB)", "Structure (mmCIF)"],
         "design.proteina_complexa_generate": ["Structure (PDB)", "Structure (mmCIF)"],
         "design.rfdiffusion3": ["Structure (PDB)", "Structure (mmCIF)", "JSON"],
+        "refolding.rfd4_proteina": ["FASTA / Sequence", "Structure (PDB)", "Structure (mmCIF)"],
         "design.rfd4_proteina": ["Structure (PDB)", "Structure (mmCIF)", "Annotated CIF", "YAML / JSON"],
         "design.rfpeptides": ["Structure (PDB)", "Structure (mmCIF)"],
         "refolding.esmfold2_cofolding": ["Protein Sequences"],
@@ -858,6 +878,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "ligand.generation.pgmg": ["Protein Structure (PDB)", "Pharmacophore Hypothesis (.posp)"],
         "ligand.md.gromacs": ["Protein–Ligand Complex (PDB)", "Bound Ligand (SDF)"],
         "ligand.md.openmm": ["Protein–Ligand Complex (PDB)", "Bound Ligand (SDF)"],
+        "ligand.md.analysis": ["MD Trajectory", "Matching Topology"],
         "simulation.bioemu2": ["Target–Design Complexes (PDB/mmCIF)", "Protein Sequences"],
         "import.bindcraft": ["Result Folder"],
         "import.table": ["CSV / Table", "Structure (PDB)", "Sequence"],
@@ -1023,7 +1044,7 @@ def _render_tool_catalog() -> None:
                 "key": workflow_id,
                 "group_id": None,
                 "workflow": workflow_id,
-                "title": QUALITY_WORKFLOWS.get(workflow_id, {}).get("name") or WORKFLOW_TITLES.get(base_title, base_title),
+                "title": "RFD4-Proteina Structure Prediction" if workflow_id == "refolding.rfd4_proteina" else (QUALITY_WORKFLOWS.get(workflow_id, {}).get("name") or WORKFLOW_TITLES.get(base_title, base_title)),
                 "description": row["description"],
                 "workflow_ids": [workflow_id],
                 "workflow_rows": [row],
@@ -2255,7 +2276,74 @@ def _render_bindcraft2_setup(schema: dict, *, generator_only: bool = False) -> N
                     target_fasta_staging.unlink(missing_ok=True)
 
 
-def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False) -> None:
+def _load_boltzgen_mimosa_example(example_id: str) -> None:
+    from mn_molecular_design_studio.mimosa_ui import (
+        contacting_partner_residues,
+        fetch_paper_mimosa_example,
+    )
+
+    example_id = str(example_id).strip().lower()
+    owner_id = str(CURRENT_USER["id"])
+    example = fetch_paper_mimosa_example(
+        example_id, user_input_root(owner_id) / "structures" / "mimosa" / example_id
+    )
+    target_path = Path(example["target_path"])
+    source_path = Path(example["source_path"])
+    target_chain = str(example["target_chain"])
+    partner_chain = str(example["source_partner_chain"])
+    source_target_chain = str(example["source_target_chain"])
+    target_contacts = contacting_partner_residues(
+        source_path, source_target_chain, partner_chain, contact_cutoff=5.0
+    )
+
+    st.session_state["boltzgen-fetched-target"] = str(target_path)
+    st.session_state["boltzgen-fetched-target-name"] = str(example["target_name"])
+    st.session_state["boltzgen-mimosa-job-name"] = f"mimosa-{example_id.replace('_', '-')}-boltzgen"
+    st.session_state["boltzgen-pdb-code"] = str(example["target_id"])
+    st.session_state["boltzgen-structure-format"] = "pdb"
+    st.session_state["boltzgen-target-source-view"] = "my_files"
+    st.session_state.pop("boltzgen-target-upload", None)
+    st.session_state[target_editor._target_widget_keys("boltzgen", target_path)["viewer_mode"]] = "Whole complex"
+    st.session_state[f"boltzgen-chains-{target_editor._hash(str(target_path))}"] = [target_chain]
+    st.session_state[target_editor._target_widget_keys("boltzgen", target_path)["hotspots"]] = ",".join(
+        f"{target_chain}{row['position']}" for row in target_contacts
+    )
+    st.session_state["boltzgen-mimosa-num-designs"] = 1
+    st.session_state["boltzgen-mimosa-sampling-steps-v2"] = 500
+    for key, value in {
+        "boltzgen-mimosa-guidance-v2": 0.3,
+        "boltzgen-mimosa-particles-v2": 4,
+        "boltzgen-mimosa-fk-lambda-v2": 4.0,
+        "boltzgen-mimosa-resampling-interval-v2": 3,
+    }.items():
+        st.session_state[key] = value
+    st.session_state["boltzgen-nanobody-scaffold"] = "7eow"
+    st.session_state["boltzgen-mimosa-loaded-source"] = str(source_path)
+    st.session_state["boltzgen-mimosa-paper-template"] = str(example["source_template"])
+    st.session_state["boltzgen-mimosa-condition"] = str(example["condition"])
+    st.session_state["boltzgen-mimosa-binder-chain"] = [
+        chain.strip() for chain in partner_chain.split(",") if chain.strip()
+    ]
+    st.session_state["boltzgen-mimosa-source-target-chain"] = source_target_chain
+    st.session_state["boltzgen-mimosa-design-target-chain"] = target_chain
+    st.session_state["boltzgen-mimosa-design-cdr"] = str(example["design_loop"])
+    st.session_state["boltzgen-mimosa-contact-cutoff"] = 8.0
+    st.session_state.pop("boltzgen-mimosa-complex", None)
+    st.session_state["boltzgen-mimosa-source-positions"] = list(example["motif_positions"])
+    st.session_state["boltzgen-mimosa-source-selection-context"] = (
+        str(source_path.resolve()), partner_chain, source_target_chain, 8.0
+    )
+
+
+def _load_boltzgen_mimosa_example_from_button(example_id: str) -> None:
+    try:
+        _load_boltzgen_mimosa_example(example_id)
+        st.session_state.pop("boltzgen-mimosa-example-load-error", None)
+    except (OSError, ValueError) as exc:
+        st.session_state["boltzgen-mimosa-example-load-error"] = str(exc)
+
+
+def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False, mimosa_only: bool = False) -> None:
     if st.session_state.pop("boltzgen-example-job-pending", False):
         st.session_state[f"boltzgen-job-name-{int(generator_only)}"] = "boltzgen-7jzu-example"
     if st.button("← Back to All tools", key=f"back-from-boltzgen-{int(generator_only)}"):
@@ -2305,8 +2393,8 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False) -> Non
           <div class="boltzgen-tool-meta">__META__</div>
           <p>Run BoltzGen protein, nanobody, peptide, small-molecule, and redesign workflows.</p>
         </div>
-        """.replace("__TITLE__", "BoltzGen Generator" if generator_only else "BoltzGen")
-        .replace("__META__", "Backbone generation only · sequence redesign and evaluation are separate steps" if generator_only else "De novo binder design · Long-running workflow"),
+        """.replace("__TITLE__", "MIMOSA · BoltzGen" if mimosa_only else ("BoltzGen Generator" if generator_only else "BoltzGen"))
+        .replace("__META__", "VHH nanobody scaffold design · geometry-only, sequence-fixed, or unconstrained" if mimosa_only else ("Backbone generation only · sequence redesign and evaluation are separate steps" if generator_only else "De novo binder design · Long-running workflow")),
         unsafe_allow_html=True,
     )
     with st.expander("About this workflow", expanded=False):
@@ -2322,11 +2410,12 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False) -> Non
 
     name_col, project_col = st.columns([1.25, 1.25])
     with name_col:
+        job_name_key = "boltzgen-mimosa-job-name" if mimosa_only else f"boltzgen-job-name-{int(generator_only)}"
         job_name = st.text_input(
             "Job name",
-            value="boltzgen-generator" if generator_only else "boltzgen",
+            value="boltzgen-generator" if generator_only else ("mimosa-keap1-nrf2-boltzgen" if mimosa_only else "boltzgen"),
             placeholder="For example, targetX binder design",
-            key=f"boltzgen-job-name-{int(generator_only)}",
+            key=job_name_key,
         ).strip()
     with project_col:
         project_id = _render_project_selector(f"boltzgen-{int(generator_only)}")
@@ -2342,20 +2431,23 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False) -> Non
         ("yaml", "YAML Configuration"),
     ]
     available_tasks = {task_id for task_id, _ in boltzgen_tasks}
-    selected_task = st.session_state.get("boltzgen-selected-task", "protein")
+    selected_task = "nanobody" if mimosa_only else st.session_state.get("boltzgen-selected-task", "protein")
     if selected_task not in available_tasks:
         selected_task = "protein"
-    task_columns = st.columns(4, gap="small")
-    for index, (task_id, task_label) in enumerate(boltzgen_tasks):
-        with task_columns[index % 4]:
-            if st.button(
-                task_label,
-                key=f"boltzgen-task-{task_id}",
-                type="primary" if selected_task == task_id else "secondary",
-                use_container_width=True,
-            ):
-                st.session_state["boltzgen-selected-task"] = task_id
-                st.rerun()
+    if mimosa_only:
+        st.info("The paper’s BoltzGen MIMOSA results use VHH nanobody templates. Select a scaffold below.")
+    else:
+        task_columns = st.columns(4, gap="small")
+        for index, (task_id, task_label) in enumerate(boltzgen_tasks):
+            with task_columns[index % 4]:
+                if st.button(
+                    task_label,
+                    key=f"boltzgen-task-{task_id}",
+                    type="primary" if selected_task == task_id else "secondary",
+                    use_container_width=True,
+                ):
+                    st.session_state["boltzgen-selected-task"] = task_id
+                    st.rerun()
     task_descriptions = {
         "protein": "De novo protein design with BoltzGen's protein-anything protocol.",
         "nanobody": "Design a single-domain antibody using BoltzGen's bundled nanobody scaffolds and nanobody-anything protocol.",
@@ -2367,45 +2459,45 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False) -> Non
     }
     st.caption(task_descriptions[selected_task])
 
-    st.markdown("#### Example inputs")
-    example_col, example_help_col = st.columns([1.5, 4.5], vertical_alignment="center")
-    with example_col:
-        load_example = st.button(
-            "Load example inputs",
-            key="boltzgen-load-example",
-            type="secondary",
-            use_container_width=True,
-        )
-    with example_help_col:
-        st.caption("Loads the 7JZU target and starter campaign values. Fetching a new example target can take a few seconds.")
-    if load_example:
-        try:
-            request = Request(
-                "https://files.rcsb.org/download/7JZU.pdb",
-                headers={"User-Agent": "MN-Molecular-Design-Studio/0.1"},
+    if not mimosa_only:
+        st.markdown("#### Example inputs")
+        example_col, example_help_col = st.columns([1.5, 4.5], vertical_alignment="center")
+        with example_col:
+            load_example = st.button(
+                "Load example inputs",
+                key="boltzgen-load-example",
+                type="secondary",
+                use_container_width=True,
             )
-            with urlopen(request, timeout=30) as response:
-                content = response.read(50_000_001)
-            if len(content) > 50_000_000:
-                raise ValueError("The example structure is larger than the 50 MB import limit.")
-            example_root = user_input_root(str(CURRENT_USER["id"])) / "structures"
-            example_root.mkdir(parents=True, exist_ok=True)
-            example_path = example_root / f"7JZU-{hashlib.sha256(content).hexdigest()[:12]}.pdb"
-            if not example_path.exists():
-                example_path.write_bytes(content)
-            st.session_state["boltzgen-fetched-target"] = str(example_path)
-            st.session_state["boltzgen-fetched-target-name"] = "7JZU example"
-            st.session_state["boltzgen-pdb-code"] = "7JZU"
-            st.session_state["boltzgen-example-job-pending"] = True
-            st.session_state["boltzgen-binder-length-min"] = 60
-            st.session_state["boltzgen-binder-length-max"] = 180
-            st.session_state["boltzgen-num-designs"] = 10
-            st.session_state["boltzgen-budget"] = 2
-            st.session_state["boltzgen-target-source-view"] = "my_files"
-            st.session_state["boltzgen-selected-task"] = "protein"
-            st.rerun()
-        except (HTTPError, URLError, OSError, ValueError) as exc:
-            st.error(f"Could not load the BoltzGen example: {exc}")
+        with example_help_col:
+            st.caption("Loads the 7JZU target and starter campaign values. Fetching a new example target can take a few seconds.")
+        if load_example:
+            try:
+                request = Request(
+                    "https://files.rcsb.org/download/7JZU.pdb",
+                    headers={"User-Agent": "MN-Molecular-Design-Studio/0.1"},
+                )
+                with urlopen(request, timeout=30) as response:
+                    content = response.read(50_000_001)
+                if len(content) > 50_000_000:
+                    raise ValueError("The example structure is larger than the 50 MB import limit.")
+                example_root = user_input_root(str(CURRENT_USER["id"])) / "structures"
+                example_root.mkdir(parents=True, exist_ok=True)
+                example_path = example_root / f"7JZU-{hashlib.sha256(content).hexdigest()[:12]}.pdb"
+                if not example_path.exists():
+                    example_path.write_bytes(content)
+                st.session_state["boltzgen-fetched-target"] = str(example_path)
+                st.session_state["boltzgen-fetched-target-name"] = "7JZU example"
+                st.session_state["boltzgen-pdb-code"] = "7JZU"
+                st.session_state["boltzgen-example-job-pending"] = True
+                st.session_state["boltzgen-binder-length-min"] = 60
+                st.session_state["boltzgen-binder-length-max"] = 180
+                st.session_state["boltzgen-num-designs"] = 10
+                st.session_state["boltzgen-target-source-view"] = "my_files"
+                st.session_state["boltzgen-selected-task"] = "protein"
+                st.rerun()
+            except (HTTPError, URLError, OSError, ValueError) as exc:
+                st.error(f"Could not load the BoltzGen example: {exc}")
 
     if selected_task == "small_molecule":
         target_source = TargetSource(owner_id=str(CURRENT_USER["id"]))
@@ -2546,7 +2638,11 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False) -> Non
             residue_selection_caption=(
                 "Select protein positions BoltzGen should redesign."
                 if selected_task == "redesign"
-                else "Selected residues condition the designed binder's binding site. This is soft conditioning."
+                else (
+                    "Optional target-site guidance, separate from the source-partner motif selected below. BoltzGen uses these residues to guide the binding site; its adherence filter is a separate optional setting."
+                    if mimosa_only
+                    else "Selected residues condition the designed binder's binding site. This is soft conditioning."
+                )
             ),
             residue_selection_input_label="Chosen redesign residues" if selected_task == "redesign" else "Chosen residues",
         )
@@ -2562,6 +2658,186 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False) -> Non
         )
     else:
         scaffold_name = "7eow"
+
+    mimosa_condition = "unconstrained"
+    mimosa_complex_path = ""
+    mimosa_binder_chain = ""
+    mimosa_complex_target_chain = ""
+    mimosa_target_chain = target_input.chains[0] if target_input.chains else ""
+    mimosa_cdr = "CDR3"
+    mimosa_design_loop = "CDR3"
+    mimosa_source_positions = ""
+    mimosa_contact_cutoff = 8.0
+    mimosa_guidance_scale = 0.3
+    mimosa_num_particles = 4
+    mimosa_fk_lambda = 4.0
+    mimosa_resampling_interval = 3
+    if mimosa_only:
+        st.subheader("MIMOSA condition")
+        st.session_state.setdefault("boltzgen-mimosa-condition", "sequence_fixed")
+        mimosa_condition = st.selectbox(
+            "Condition",
+            ["geometry_only", "sequence_fixed", "unconstrained"],
+            format_func={
+                "geometry_only": "Geometry-only · steer motif geometry; redesign its sequence",
+                "sequence_fixed": "Sequence-fixed · steer geometry; keep placed motif identities",
+                "unconstrained": "Unconstrained · baseline BoltzGen, no MIMOSA guidance",
+            }.get,
+            key="boltzgen-mimosa-condition",
+        )
+        if mimosa_condition != "unconstrained":
+            st.subheader("Source interaction motif")
+            st.caption("Choose amino acids from any protein partner chain in a source interaction complex. The selected residues form the geometric motif; the other chain is aligned to your design target.")
+            upload = st.file_uploader(
+                "Source interaction complex",
+                type=["pdb", "ent", "cif", "mmcif"],
+                key="boltzgen-mimosa-complex",
+            )
+            from mn_molecular_design_studio.mimosa_ui import (
+                PAPER_INTERACTION_TEMPLATES,
+                fetch_paper_interaction_template,
+                render_source_motif_viewer,
+            )
+
+            st.session_state.setdefault("boltzgen-mimosa-paper-template", "2FLU")
+            paper_template = st.selectbox(
+                "Or use a paper interaction template",
+                ["custom", *PAPER_INTERACTION_TEMPLATES],
+                format_func=lambda value: "Upload my own" if value == "custom" else f"{value} · {PAPER_INTERACTION_TEMPLATES[value]}",
+                key="boltzgen-mimosa-paper-template",
+            )
+            st.caption("These PDB entries are interaction templates from the paper; the nanobody scaffold remains the separate choice above.")
+            if paper_template != "custom" and st.button("Load interaction template", key="boltzgen-mimosa-load-template"):
+                template_path = user_input_root(str(CURRENT_USER["id"])) / "structures" / "mimosa" / f"{paper_template}.cif"
+                try:
+                    loaded_path = fetch_paper_interaction_template(paper_template, template_path)
+                    st.session_state["boltzgen-mimosa-loaded-source"] = str(loaded_path)
+                    st.success(f"Loaded {paper_template} interaction complex.")
+                except (OSError, ValueError) as exc:
+                    st.error(str(exc))
+            if upload is not None:
+                suffix = Path(upload.name).suffix.lower()
+                content = upload.getvalue()
+                digest = hashlib.sha256(content).hexdigest()[:16]
+                source_dir = user_input_root(str(CURRENT_USER["id"])) / "structures" / "mimosa"
+                source_dir.mkdir(parents=True, exist_ok=True)
+                mimosa_complex_path = str(source_dir / f"boltzgen-source-{digest}{suffix}")
+                Path(mimosa_complex_path).write_bytes(content)
+            elif st.session_state.get("boltzgen-mimosa-loaded-source"):
+                mimosa_complex_path = str(st.session_state["boltzgen-mimosa-loaded-source"])
+            st.session_state.setdefault("boltzgen-mimosa-contact-cutoff", 8.0)
+            mimosa_contact_cutoff = st.number_input(
+                "Source interface contact cutoff (Å)", min_value=1.0, max_value=20.0, step=0.5,
+                key="boltzgen-mimosa-contact-cutoff",
+                help="A source partner residue is listed when any heavy atom is within this distance of the other source chain.",
+            )
+            if mimosa_complex_path:
+                from mn_molecular_design_studio.mimosa_ui import contacting_partner_residues, source_complex_chains
+
+                try:
+                    source_chain_ids = source_complex_chains(mimosa_complex_path)
+                    if len(source_chain_ids) < 2:
+                        raise ValueError("The source complex needs at least two protein chains.")
+                    partner_key = "boltzgen-mimosa-binder-chain"
+                    stored_partner_chains = st.session_state.get(partner_key)
+                    if isinstance(stored_partner_chains, str):
+                        stored_partner_chains = [item.strip() for item in stored_partner_chains.split(",") if item.strip()]
+                    stored_partner_chains = [chain for chain in (stored_partner_chains or []) if chain in source_chain_ids]
+                    if not stored_partner_chains:
+                        stored_partner_chains = ["H" if "H" in source_chain_ids else source_chain_ids[0]]
+                    st.session_state[partner_key] = stored_partner_chains
+                    selected_partner_chains = st.multiselect(
+                        "Source partner chain(s)", source_chain_ids, key=partner_key,
+                        help="Select multiple partner chains when the source interaction motif spans them, as in the 6WZM antibody example.",
+                    )
+                    mimosa_binder_chain = ",".join(selected_partner_chains)
+                    source_target_options = [chain for chain in source_chain_ids if chain not in selected_partner_chains]
+                    source_target_key = "boltzgen-mimosa-source-target-chain"
+                    if not source_target_options:
+                        raise ValueError("Choose at least one source partner chain and leave a different chain as the source target.")
+                    if st.session_state.get(source_target_key) not in source_target_options:
+                        st.session_state[source_target_key] = "A" if "A" in source_target_options else source_target_options[0]
+                    mimosa_complex_target_chain = st.selectbox("Source target chain", source_target_options, key=source_target_key)
+                    if target_input.chains:
+                        mimosa_target_chain = st.selectbox("Design target chain", target_input.chains, key="boltzgen-mimosa-design-target-chain")
+                    residues = contacting_partner_residues(
+                        mimosa_complex_path, mimosa_binder_chain, mimosa_complex_target_chain,
+                        mimosa_contact_cutoff,
+                    )
+                    position_options = [row["position"] for row in residues]
+                    labels = {row["position"]: f"{row['label']} · {row['distance']}" for row in residues}
+                    if not position_options:
+                        raise ValueError("No contacting amino acids were found on the selected source partner chain(s) at this cutoff.")
+                    selection_key = "boltzgen-mimosa-source-positions"
+                    selection_context_key = "boltzgen-mimosa-source-selection-context"
+                    selection_context = (
+                        str(Path(mimosa_complex_path).resolve()),
+                        mimosa_binder_chain,
+                        mimosa_complex_target_chain,
+                        float(mimosa_contact_cutoff),
+                    )
+                    if st.session_state.get(selection_context_key) != selection_context:
+                        st.session_state[selection_key] = position_options
+                        st.session_state[selection_context_key] = selection_context
+                    else:
+                        old_selection = st.session_state.get(selection_key, position_options)
+                        st.session_state[selection_key] = [value for value in old_selection if value in position_options]
+                    mimosa_source_positions = st.multiselect(
+                        "Source partner amino acids to keep as the motif",
+                        options=position_options,
+                        format_func=lambda value: labels.get(value, value),
+                        key=selection_key,
+                        help="Select the specific contacting residues to reproduce. Select at least one.",
+                    )
+                    st.caption(f"{len(mimosa_source_positions)} of {len(position_options)} contacting source residues selected.")
+                    render_source_motif_viewer(
+                        mimosa_complex_path,
+                        mimosa_binder_chain,
+                        mimosa_source_positions,
+                        key_prefix="boltzgen-mimosa",
+                    )
+                except (OSError, ValueError, KeyError) as exc:
+                    st.error(f"Could not inspect the source interaction complex: {exc}")
+            else:
+                st.info("Upload a source interaction complex to choose its interacting amino acids.")
+            design_loop_col, guide_col2, guide_col3 = st.columns(3)
+            with design_loop_col:
+                design_loop_options = ["CDR1", "CDR2", "CDR3", "all_cdrs"]
+                design_loop_key = "boltzgen-mimosa-design-cdr"
+                if st.session_state.get(design_loop_key) not in design_loop_options:
+                    st.session_state[design_loop_key] = "CDR3"
+                mimosa_design_loop = st.selectbox(
+                    "Generated VHH region(s) to guide",
+                    design_loop_options,
+                    format_func=lambda value: {
+                        "CDR1": "CDR1",
+                        "CDR2": "CDR2",
+                        "CDR3": "CDR3",
+                        "all_cdrs": "All three CDRs · scattered motifs",
+                    }.get(value, value),
+                    key=design_loop_key,
+                )
+            defaults = {
+                "boltzgen-mimosa-guidance-v2": 0.3,
+                "boltzgen-mimosa-particles-v2": 4,
+                "boltzgen-mimosa-fk-lambda-v2": 4.0,
+                "boltzgen-mimosa-resampling-interval-v2": 3,
+            }
+            for key, value in defaults.items():
+                st.session_state.setdefault(key, value)
+            if st.button("Restore paper defaults", key="boltzgen-mimosa-restore-defaults"):
+                for key, value in defaults.items():
+                    st.session_state[key] = value
+            with guide_col2:
+                mimosa_guidance_scale = st.number_input("Maximum coordinate guidance", 0.0, 2.0, step=0.05, key="boltzgen-mimosa-guidance-v2")
+            with guide_col3:
+                mimosa_num_particles = int(st.number_input("Particle trajectories", 1, 64, step=1, key="boltzgen-mimosa-particles-v2"))
+            guide_col4, guide_col5 = st.columns(2)
+            with guide_col4:
+                mimosa_fk_lambda = st.number_input("Feynman–Kac lambda", 0.0, 20.0, step=0.25, key="boltzgen-mimosa-fk-lambda-v2")
+            with guide_col5:
+                mimosa_resampling_interval = int(st.number_input("Resampling interval (steps)", 1, 50, step=1, key="boltzgen-mimosa-resampling-interval-v2"))
+            st.caption("The nanobody scaffold above stays selectable. The chosen motif is guided during diffusion; sequence-fixed mode locks only identities whose final Cα placement is within 2 Å.")
     if selected_task == "cyclotide":
         st.subheader("Cyclotide sequence")
         cyclotide_sequence = "3C8C6C5C3C1C2"
@@ -2653,35 +2929,24 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False) -> Non
         binder_length = "60-180"
 
     st.subheader("Generation" if generator_only else "Design campaign")
-    design_col, budget_col = st.columns(2) if not generator_only else (st.container(), st.container())
-    with design_col:
-        num_designs = int(
-            st.number_input(
-                "Number of designs",
-                min_value=1,
-                max_value=500000,
-                value=10,
-                step=1,
-                key="boltzgen-num-designs",
-                help="How many designs BoltzGen should generate.",
-            )
+    num_designs_key = "boltzgen-mimosa-num-designs" if mimosa_only else "boltzgen-num-designs"
+    st.session_state.setdefault(num_designs_key, 1 if mimosa_only else 10)
+    num_designs = int(
+        st.number_input(
+            "Number of designs",
+            min_value=1,
+            max_value=500000,
+            step=1,
+            key=num_designs_key,
+            help="How many designs BoltzGen should generate.",
         )
+    )
+    # BoltzGen's backend budget is the requested number of final candidates to
+    # retain. Keep it aligned with the campaign size so small local runs (for
+    # example, one design) do not need a second user-facing control.
+    budget = num_designs
     if generator_only:
-        budget = num_designs
         st.caption("BoltzGen will save generated structures without running inverse folding, refolding, filtering, or ranking.")
-    else:
-        with budget_col:
-            budget = int(
-                st.number_input(
-                    "Budget",
-                    min_value=1,
-                    max_value=500000,
-                    value=2,
-                    step=1,
-                    key="boltzgen-budget",
-                    help="How many top-ranked designs to keep in the full pipeline.",
-                )
-            )
 
     with st.expander("Optional settings", expanded=False):
         run_vanilla_pipeline = not generator_only
@@ -2773,14 +3038,17 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False) -> Non
             filter_binding_site_adherence = False
             additional_filters = []
 
+        sampling_steps_key = (
+            "boltzgen-mimosa-sampling-steps-v2" if mimosa_only else "boltzgen-sampling-steps"
+        )
+        st.session_state.setdefault(sampling_steps_key, 500 if mimosa_only else 20)
         sampling_steps = int(
             st.number_input(
                 "Sampling steps",
                 min_value=1,
                 max_value=1000,
-                value=20,
                 step=1,
-                key="boltzgen-sampling-steps",
+                key=sampling_steps_key,
                 help="Diffusion sampling steps used during design.",
             )
         )
@@ -2803,8 +3071,6 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False) -> Non
     if not settings_error:
         if binder_min > binder_max:
             settings_error = "Maximum binder length must be at least the minimum binder length."
-        elif budget > num_designs:
-            settings_error = "Final design budget cannot exceed the number of designs."
         elif not gpu_device:
             settings_error = "Enter a GPU device ID."
         elif omit_amino_acids and (
@@ -2828,6 +3094,22 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False) -> Non
                         "Each BoltzGen filter must use metric>number or metric<number syntax."
                     )
                     break
+    if not settings_error and mimosa_only and mimosa_condition != "unconstrained":
+        if not mimosa_complex_path:
+            settings_error = "Upload a cognate nanobody–target complex for the selected MIMOSA condition."
+        elif not mimosa_binder_chain or not mimosa_complex_target_chain or not mimosa_target_chain:
+            settings_error = "Enter the source nanobody, source target, and design target chain IDs."
+        elif mimosa_target_chain not in target_input.chains:
+            settings_error = "Choose a MIMOSA design target chain from the loaded target structure."
+        else:
+            try:
+                from mn_molecular_design_studio.mimosa_input import normalize_mimosa_source_positions
+
+                mimosa_source_positions = normalize_mimosa_source_positions(mimosa_source_positions)
+                if not mimosa_source_positions:
+                    settings_error = "Select at least one contacting amino acid from the source partner chain."
+            except ValueError as exc:
+                settings_error = str(exc)
     if (
         not settings_error
         and set(filter(None, target_input.hotspots.split(",")))
@@ -2902,6 +3184,19 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False) -> Non
         "redesign_residues": target_input.hotspots if selected_task == "redesign" else "",
         "design_yaml": design_yaml,
         "yaml_protocol": yaml_protocol,
+        "mimosa_condition": mimosa_condition,
+        "mimosa_complex": mimosa_complex_path or None,
+        "mimosa_binder_chain": mimosa_binder_chain,
+        "mimosa_complex_target_chain": mimosa_complex_target_chain,
+        "mimosa_target_chain": mimosa_target_chain,
+        "mimosa_cdr": mimosa_cdr,
+        "mimosa_design_loop": mimosa_design_loop,
+        "mimosa_source_positions": mimosa_source_positions,
+        "mimosa_contact_cutoff": mimosa_contact_cutoff,
+        "mimosa_guidance_scale": mimosa_guidance_scale,
+        "mimosa_num_particles": mimosa_num_particles,
+        "mimosa_fk_lambda": mimosa_fk_lambda,
+        "mimosa_resampling_interval": mimosa_resampling_interval,
     }
     if target_input.design_path:
         parameters["target_pdb"] = str(target_input.design_path)
@@ -2923,6 +3218,33 @@ def _render_boltzgen_setup(schema: dict, *, generator_only: bool = False) -> Non
         key="boltzgen-prioritize-queue",
         help="Moves this design ahead of normal queued work when resources become available. Running jobs are never interrupted.",
     )
+    if mimosa_only:
+        from mn_molecular_design_studio.mimosa_ui import PAPER_MIMOSA_EXAMPLES
+
+        example_ids = list(PAPER_MIMOSA_EXAMPLES)
+        example_key = "boltzgen-mimosa-paper-example"
+        st.session_state.setdefault(example_key, "keap1_nrf2")
+        selected_example = st.selectbox(
+            "Paper interaction example",
+            example_ids,
+            format_func=lambda value: PAPER_MIMOSA_EXAMPLES[value]["label"],
+            key=example_key,
+        )
+        st.button(
+            "Load selected paper example into all fields",
+            icon=":material/science:",
+            use_container_width=True,
+            key="boltzgen-mimosa-load-paper-example",
+            on_click=_load_boltzgen_mimosa_example_from_button,
+            args=(selected_example,),
+        )
+        example_error = st.session_state.pop("boltzgen-mimosa-example-load-error", None)
+        if example_error:
+            st.error(f"Could not load the MIMOSA paper example: {example_error}")
+        st.caption(
+            "Fig. 2 offers contiguous single-loop examples (2FLU, 3PB1); Fig. 3 offers scattered IL-8 motifs from CXCR1 (8IC0) or LY3041658 heavy and light chains (6WZM). "
+            "The loader fills the target, source chains, motif residues, target contact hotspots, and MolView structure."
+        )
     if st.button("Submit generator job" if generator_only else "Submit pipeline job", type="primary", use_container_width=True, disabled=not ready, key=f"boltzgen-submit-{int(generator_only)}"):
         payload = {
             "schema_version": schema["schema_version"],
@@ -2960,7 +3282,7 @@ def _post_local_api(path: str, payload: dict) -> dict:
         payload.setdefault("execution", {"placement": st.session_state.get("cluster-placement", cluster_config.load()["default_placement"]), "idempotency_key": key})
     request = Request(
         f"{API_BASE_URL}{path}",
-        data=json.dumps(payload).encode("utf-8"),
+        data=json.dumps(payload, default=str).encode("utf-8"),
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
         method="POST",
     )
@@ -3833,15 +4155,21 @@ def _render_workflow_setup() -> None:
             source_job_options=_analysis_source_job_options,
         )
         return
-    if workflow_id == "design.rfd4_proteina":
+    if workflow_id in {"design.rfd4_proteina", "refolding.rfd4_proteina"}:
         from mn_molecular_design_studio import rfd4_proteina_ui
         importlib.reload(rfd4_proteina_ui)
         rfd4_proteina_ui.render_setup(
             schema,
+            folding=workflow_id == "refolding.rfd4_proteina",
             owner_id=str(CURRENT_USER["id"]),
             project_selector=_render_project_selector,
             submit=_submit_cofolding_job,
         )
+        return
+    if workflow_id == "ligand.md.analysis":
+        from mn_molecular_design_studio.md_analysis_ui import render_md_analysis_setup
+        render_md_analysis_setup(schema, user=CURRENT_USER, owner_id=str(CURRENT_USER["id"]),
+                                 project_selector=_render_project_selector, submit=_submit_cofolding_job)
         return
     if workflow_id.startswith("ligand."):
         from mn_molecular_design_studio import ligand_tools_ui
@@ -3889,6 +4217,20 @@ def _render_workflow_setup() -> None:
         mpnn_ui.render_setup(workflow_schema("sequence.mpnn"), owner_id=str(CURRENT_USER["id"]),
             project_selector=_render_project_selector, submit=_submit_cofolding_job, search_jobs=search_jobs)
         return
+    if workflow_id == "sequence.abmpnn":
+        from mn_molecular_design_studio import mpnn_ui
+        importlib.reload(mpnn_ui)
+        mpnn_ui.render_setup(schema, owner_id=str(CURRENT_USER["id"]),
+            project_selector=_render_project_selector, submit=_submit_cofolding_job,
+            search_jobs=search_jobs, abmpnn_only=True)
+        return
+    if workflow_id == "analysis.sabr":
+        from mn_molecular_design_studio import sabr_ui
+        importlib.reload(sabr_ui)
+        sabr_ui.render_setup(schema, owner_id=str(CURRENT_USER["id"]),
+            project_selector=_render_project_selector, submit=_submit_cofolding_job,
+            search_jobs=search_jobs)
+        return
     if workflow_id in generator_input.WORKFLOWS.values():
         from mn_molecular_design_studio import generator_ui
         importlib.reload(generator_ui)
@@ -3901,11 +4243,12 @@ def _render_workflow_setup() -> None:
                      header=_render_cofolding_header, project_selector=_render_project_selector,
                      submit=_submit_cofolding_job)
         return
-    if workflow_id == "design.rfantibody":
+    if workflow_id in {"design.rfantibody", "design.rfantibody_mimosa"}:
         from mn_molecular_design_studio import rfantibody_ui
         importlib.reload(rfantibody_ui)
         rfantibody_ui.render_setup(schema, owner_id=str(CURRENT_USER["id"]),
-                                   project_selector=_render_project_selector, submit=_submit_cofolding_job)
+                                   project_selector=_render_project_selector, submit=_submit_cofolding_job,
+                                   mimosa_only=workflow_id == "design.rfantibody_mimosa")
         return
     if workflow_id == "design.rfpeptides":
         from mn_molecular_design_studio import rfpeptides_ui
@@ -3926,8 +4269,12 @@ def _render_workflow_setup() -> None:
     if workflow_id in {"design.bindcraft2", "design.bindcraft2_generator"}:
         _render_bindcraft2_setup(schema, generator_only=workflow_id.endswith("_generator"))
         return
-    if workflow_id in {"design.boltzgen", "design.boltzgen_generator"}:
-        _render_boltzgen_setup(schema, generator_only=workflow_id.endswith("_generator"))
+    if workflow_id in {"design.boltzgen", "design.boltzgen_generator", "design.boltzgen_mimosa"}:
+        _render_boltzgen_setup(
+            schema,
+            generator_only=workflow_id.endswith("_generator"),
+            mimosa_only=workflow_id == "design.boltzgen_mimosa",
+        )
         return
     if workflow_id == "refolding.esmfold2_cofolding":
         _render_esmfold2_cofolding_setup(schema)
@@ -4466,7 +4813,25 @@ def _jobs_csv(rows: list[dict]) -> bytes:
     return stream.getvalue().encode("utf-8-sig")
 
 
+def _navigate_to_local_job_details(reference: str) -> None:
+    st.session_state["selected-job-reference"] = reference
+    st.session_state["page"] = "Job details"
+
+
 def _render_runs() -> None:
+    st.markdown(
+        """<style>
+        div[class*="st-key-results-row-view-"] button,
+        div[class*="st-key-results-row-view-"] button *,
+        [data-testid="stDataEditor"] button,
+        [data-testid="stDataEditor"] button *,
+        button[data-testid="stBaseButton-tertiary"],
+        button[data-testid="stBaseButton-tertiary"] * {
+            color: #2f6fba !important;
+        }
+        </style>""",
+        unsafe_allow_html=True,
+    )
     if cluster_config.enabled():
         from mn_molecular_design_studio.cluster.ui import render_runs
         render_runs(
@@ -4475,6 +4840,7 @@ def _render_runs() -> None:
             search_jobs,
             elapsed_label=_job_elapsed_label,
             elapsed_since=_job_elapsed_since,
+            submit=_post_local_api,
         )
         return
     st.title("My results")
@@ -4523,13 +4889,14 @@ def _render_runs() -> None:
     sort_col, page_size_col = st.columns([0.58, 0.42])
     sort_by = sort_col.selectbox(
         "Sort jobs",
-        ["finished_desc", "name_asc", "status_asc"],
+        ["active_desc", "finished_desc", "name_asc", "status_asc"],
         format_func=lambda value: {
+            "active_desc": "Newest",
             "finished_desc": "Finished (newest first)",
             "name_asc": "Name (A–Z)",
             "status_asc": "Status (A–Z)",
         }[value],
-        key="results-sort-by",
+        key="results-sort-by-v2",
     )
     page_size = page_size_col.selectbox("Rows per page", [10, 25, 50], index=0, key="results-page-size")
     filters_key = (query, tuple(sorted(chosen_statuses)), tuple(sorted(chosen_tools)), selected_project_id, page_size)
@@ -4717,11 +5084,12 @@ def _render_runs() -> None:
                 else:
                     row_cols[index].write(value)
 
-            view_href = f"/?job_ref={quote(str(row['run_id']), safe='')}"
-            row_cols[-1].html(
-                f'<a href="{escape(view_href, quote=True)}" target="_self" '
-                'style="display:inline-block;padding:0.25rem 0.55rem;border-radius:0.4rem;'
-                'background:#e8f1ec;color:#1f6849;font-weight:600;text-decoration:none">View</a>'
+            row_cols[-1].button(
+                "View",
+                key="results-row-view-" + hashlib.sha1(reference.encode()).hexdigest()[:12],
+                type="tertiary",
+                on_click=_navigate_to_local_job_details,
+                args=(reference,),
             )
     st.session_state["results-selected-jobs"] = selected_job_map
 
@@ -7363,7 +7731,7 @@ def _render_job_details() -> None:
     )
     is_design_validation = any(isinstance(item, dict) and (item.get("raw_metadata") or {}).get("validation_reference") for item in result_candidates)
     is_rfdiffusion3 = analysis_tool == "rfdiffusion3"
-    is_rfd4_proteina = analysis_tool == "rfd4_proteina" or "design.rfd4_proteina" in workflow_identity
+    is_rfd4_proteina = analysis_tool == "rfd4_proteina" or "rfd4_proteina" in workflow_identity
     is_beta_pairing = analysis_tool == "rfdiffusion_beta_pairing" or "rfdiffusion_beta_pairing" in workflow_identity
     is_rfantibody = analysis_tool == "rfantibody" or "rfantibody" in workflow_identity
     is_rfpeptides = analysis_tool == "rfpeptides" or "rfpeptides" in workflow_identity
@@ -7446,6 +7814,9 @@ def _render_job_details() -> None:
     is_generator_tool=str(job.get('tool')) in generator_input.TOOLS.values()
 
     with results_tab:
+        if (run_dir / "artifacts/md/study.json").is_file() or str(job.get("tool")) == "md_analysis":
+            from mn_molecular_design_studio.md_results_ui import render_md_results
+            render_md_results(st, run_dir, result)
         if "analysis." + analysis_tool in QUALITY_WORKFLOWS:
             from mn_molecular_design_studio.quality_ui import render_progress, render_contact_maps
             render_progress(run_dir, str(job.get("status") or ""), run_id)

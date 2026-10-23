@@ -12,7 +12,7 @@ import yaml
 from mn_molecular_design_studio.design_validation import protein_chains, read_structure, sequence
 
 
-UPSTREAM_VERSION = "RFDiffusion4-Proteina 0.0.3"
+UPSTREAM_VERSION = "RFD4-Proteina 0.0.3"
 UPSTREAM_COMMIT = "9d35ee4f6328fd9b17f5b84756ee5db99d6d89ac"
 IMAGE = "mn-rfd4-proteina:0.0.3-cu130"
 
@@ -28,22 +28,24 @@ TASKS = {
     "rna_design": "RNA Design",
     "existing_structure": "Existing Structure",
     "custom_conditions": "Custom Conditions",
+    "score_structures": "Score Structures",
     "unconditional": "Unconditional Generation",
 }
 
 TASK_HELP = {
     "protein_binder": "Co-design a binder backbone and sequence around a selected protein target and optional hotspot residues.",
-    "nanobody": "Use an RFDiffusion4-Proteina annotated input or native condition specification for VHH design.",
-    "antibody": "Use an annotated antibody input or a native condition specification for antibody design.",
-    "tcr": "Use an annotated input or native condition specification for TCR design.",
-    "motif_scaffolding": "Scaffold a fixed structural motif with an annotated CIF or native condition specification.",
-    "enzyme": "Build a scaffold around catalytic residues and any retained ligand using an annotated CIF or native specification.",
-    "small_molecule_binder": "Design a protein pocket around a ligand using an annotated CIF or native condition specification.",
-    "dna_binder": "Condition on DNA structure with an annotated CIF or native condition specification.",
-    "rna_design": "Condition RNA design on an annotated CIF or native condition specification.",
-    "existing_structure": "Refine or diversify a previous structure with an annotated CIF or native condition specification.",
+    "nanobody": 'Design CDRs on a built-in VHH framework or a supplied nanobody–target complex.',
+    "antibody": 'Design selected CDR residues while retaining the supplied antibody framework and target.',
+    "tcr": 'Design selected TCR CDR residues in a supplied target–TCR complex.',
+    "motif_scaffolding": 'Build a protein scaffold around selected motif residues and atoms.',
+    "enzyme": 'Scaffold catalytic residues with optional ligand chemistry and pose constraints.',
+    "small_molecule_binder": 'Design a protein around a ligand, with optional protein context.',
+    "dna_binder": 'Design a protein binder conditioned on DNA sequence or structure.',
+    "rna_design": 'Generate RNA sequence and coordinates conditioned on dot-bracket secondary structure.',
+    "existing_structure": 'Diversify a structure, redesign its sequence, predict coordinates, or pack side chains.',
     "custom_conditions": "Provide a native RFDiffusion4-Proteina YAML or JSON condition specification.",
-    "unconditional": "Generate a monomer from the model's bundled short-chain template, or provide a custom specification.",
+    "score_structures": "Run refolding, structural comparison, and task-specific pass criteria on existing structures.",
+    "unconditional": "Generate protein structures and sequences from scratch in the selected length range.",
 }
 
 
@@ -59,7 +61,7 @@ def store_structure_uploads(uploaded: list[Any], owner_id: str) -> list[Path]:
     for item in uploaded:
         name = Path(str(item.name)).name
         suffix = Path(name).suffix.lower()
-        if suffix not in {".cif", ".mmcif"}:
+        if suffix not in {".cif", ".mmcif", ".pdb", ".ent"}:
             raise ValueError("RFD4 native condition specifications require CIF/mmCIF inputs. The guided binder form also accepts PDB.")
         data = item.getvalue()
         total_bytes += len(data)
@@ -208,154 +210,233 @@ def _write_guided_binder_input(
     return spec_path, target_cif, target_sequences
 
 
-def prepare_request(parameters: dict[str, Any], *, run_dir: Path) -> dict[str, Any]:
-    """Validate and stage a request, without starting Docker or loading the model."""
-    task = str(parameters.get("task") or "protein_binder")
-    mode = str(parameters.get("input_mode") or "guided_binder")
-    if task not in TASKS:
-        raise ValueError("Choose one of the supported RFDiffusion4-Proteina design tasks.")
-    if mode not in {"guided_binder", "annotated_cif", "condition_spec", "unconditional"}:
-        raise ValueError("Select a supported RFD4 input mode.")
-    if mode == "unconditional" and task != "unconditional":
-        raise ValueError("The bundled monomer template can only be used with Unconditional Generation.")
-    for field, default, low, high in (
-        ("num_designs", 8, 1, 10000), ("batch_size", 1, 1, 16), ("nsteps", 60, 1, 200),
-        ("cpu_cores", 8, 1, 256), ("seed", 0, 0, 2_147_483_647),
+HF_REVISION = 'a06e2509c7033b010fc43614e9fd840303588502'
+OPERATIONS = {'diversify':'Diversify a Structure','inverse_folding':'Inverse Folding',
+              'structure_prediction':'Structure Prediction','sidechain_packing':'Side Chain Packing'}
+LIGAND_INTERACTIONS = {
+    'Hydrogen-bond donor':('C_HB',1),'Hydrogen-bond acceptor':('C_HB',2),
+    'Hydrogen-bond donor and acceptor':('C_HB',3),'Pi-stacking ring':('C_PISTACK',True),
+    'Cation-pi ring':('C_PICATION',1),'Cation-pi cation':('C_PICATION',2),
+    'Salt bridge, positive':('C_SALT',1),'Salt bridge, negative':('C_SALT',2),
+    'Hydrophobic contact':('C_HPHOB',True),'Metal ion to coordinate':('C_MCOORD',1),
+}
+FRAMEWORKS = ['Vobarilizumab','Caplacizumab','Ozoralizumab','h-NbBCII10','Your own nanobody']
+SCORE_DESIGN_TYPES = {
+    'unconditional', 'protein_binder', 'nanobody', 'antibody', 'tcr',
+    'motif_scaffolding', 'enzyme', 'small_molecule_binder', 'dna_binder',
+}
+
+
+def validate_options(p):
+    o = p.get('options') or {}
+    if not isinstance(o,dict): raise ValueError('RFD4 options must be an object.')
+    for key, choices, default in (
+        ('sampling_effort',['Fast','Balanced','Thorough'],'Balanced'),
+        ('reward_search',['Off','Interface contacts','Low clashes','Best by refolding'],'Off'),
+        ('operation',list(OPERATIONS),'diversify'),
+        ('nanobody_framework',FRAMEWORKS,'Vobarilizumab'),
+        ('motif_atoms',['all','backbone','sidechain_beyond_cb','tip'],'all'),
+        ('hotspot_atoms',['whole','sidechain','tip','single'],'whole'),
+        ('ligand_pose',['generated','fixed'],'generated'),('dna_conditioning',['sequence','structure'],'sequence'),
+        ('framework_atoms',['backbone','all'],'backbone'),('noise_mode',['fraction','levels'],'fraction'),
+        ('ligand_burial',['model','buried','intermediate','exposed'],'model'),
+        ('score_design_type',sorted(SCORE_DESIGN_TYPES),'protein_binder'),
     ):
-        value = parameters.get(field, default)
-        if type(value) is not int or not low <= value <= high:
-            raise ValueError(f"{field} must be an integer between {low} and {high}.")
-    length_min = parameters.get("length_min", 60)
-    length_max = parameters.get("length_max", 120)
-    if type(length_min) is not int or type(length_max) is not int or not (1 <= length_min <= length_max <= 3000):
-        raise ValueError("Binder length must be an ordered range from 1 to 3,000 residues.")
+        if o.get(key,default) not in choices: raise ValueError(f'Invalid {key}.')
+    for key,default,low,high in (
+        ('backbone_noise',1.,.01,1.5),('latent_noise',1.,.01,5.),('backbone_tsr_k',16.,1.,1000.),
+        ('backbone_tsr_sigma',3.,.01,1000.),('latent_tsr_k',4.,1.,1000.),('latent_tsr_sigma',12.,.01,1000.),
+        ('noise_fraction',.3,.05,1.),('interface_error_limit',None,.1,30.),('binder_rmsd_limit',None,.1,30.),
+        ('refold_backbone_rmsd_limit',None,.1,30.),('motif_rmsd_limit',None,.1,30.),
+        ('backbone_level',.8,.01,.99),('sequence_level',.8,.01,.99),('redesign_shell',None,1.,30.),
+    ):
+        value=o.get(key,default)
+        if value is not None and (isinstance(value,bool) or not isinstance(value,(float,int)) or not low<=value<=high):
+            raise ValueError(f'{key} must be between {low} and {high}.')
+    for key in ('repack_target','unindex_motif','deterministic','refold','filter_conditions','apo','energy','developability','cluster','save_trajectory','dock_independently','keep_constant_domains','hold_kept_in_place','scaffold_total_explicit'):
+        if key in o and type(o[key]) is not bool: raise ValueError(f'{key} must be true or false.')
+    for key,maximum in [('cdr_lengths',40),('scaffold_lengths',1024)]:
+        rows=o.get(key) or []
+        if not isinstance(rows,list) or len(rows)>64:raise ValueError(f'{key} must contain at most 64 length ranges.')
+        for row in rows:
+            if not isinstance(row,dict) or any(type(row.get(k)) is not int for k in ('lower_bound','upper_bound')) or not 1<=row['lower_bound']<=row['upper_bound']<=maximum:
+                raise ValueError(f'{key}: use ordered integer bounds from 1 to {maximum}.')
+    interactions=o.get('ligand_interactions') or []
+    if not isinstance(interactions,list) or len(interactions)>64:raise ValueError('Use at most 64 ligand interactions.')
+    for row in interactions:
+        if not isinstance(row,dict) or row.get('interaction') not in LIGAND_INTERACTIONS or not isinstance(row.get('ligand_atoms',''),str):
+            raise ValueError('Choose a supported ligand interaction and atom names.')
+    if o.get('reward_search','Off')!='Off' and p.get('num_designs',8)>16:
+        raise ValueError('Reward Search supports at most 16 designs per request.')
+    if o.get('cath') and not re.fullmatch(r'\d+\.(?:\d+|x)\.(?:\d+|x)',o['cath']):
+        raise ValueError('Use a CATH class.architecture.topology code such as 2.60.40.')
+    for aa in o.get('exclude_amino_acids') or []:
+        if aa not in 'ACDEFGHIKLMNPQRSTVWY': raise ValueError('Select canonical amino acids to exclude.')
+    for aa, probability in (o.get('favor_amino_acids') or {}).items():
+        if aa not in 'ACDEFGHIKLMNPQRSTVWY' or isinstance(probability,bool) or not isinstance(probability,(int,float)) or not 0<=probability<=1:
+            raise ValueError('Amino acid preferences must be probabilities between 0 and 1.')
+    if set(o.get('exclude_amino_acids') or []) & set(o.get('favor_amino_acids') or {}):
+        raise ValueError('An amino acid cannot be both excluded and favored.')
+    if o.get('folding_engine'):
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.rfd4_oracle import compatible_engines
+        molecule_task=o.get('score_design_type','protein_binder') if p.get('task')=='score_structures' else p.get('task','protein_binder')
+        if o['folding_engine'] not in compatible_engines(molecule_task):
+            raise ValueError('Choose a folding engine compatible with this task’s molecules.')
+    if o.get('folding_recycles') is not None and (type(o['folding_recycles']) is not int or not 1<=o['folding_recycles']<=100):
+        raise ValueError('Folding recycles must be an integer from 1 to 100.')
+    if p.get('task')=='rna_design':
+        text=re.sub(r'\s+','',o.get('rna_secondary_structure',''))
+        if not 8<=len(text)<=1024 or not re.fullmatch(r'[.?(\)\[\]{}<>A-Za-z]+',text):
+            raise ValueError('RNA dot-bracket input must contain 8–1024 valid secondary-structure characters.')
+        # The native parser performs the full pseudoknot and bracket validation.
+        o['rna_secondary_structure']=text
+    return o
 
-    root = run_dir / "artifacts" / "rfd4_proteina"
-    input_root = root / "input"
-    input_root.mkdir(parents=True, exist_ok=True)
-    original_files = [Path(p).expanduser().resolve() for p in parameters.get("input_files") or []]
-    target = Path(parameters["target_structure"]).expanduser().resolve() if parameters.get("target_structure") else None
-    if target is not None and target not in original_files:
-        original_files.append(target)
-    if len(original_files) > 128:
-        raise ValueError("Provide no more than 128 input structures.")
-    staged: dict[str, Path] = {}
-    total_bytes = 0
-    for source in original_files:
-        if not source.is_file() or source.suffix.lower() not in {".cif", ".mmcif", ".pdb", ".ent"}:
-            raise ValueError(f"Input structure is missing or has an unsupported format: {source.name}")
-        size = source.stat().st_size
-        total_bytes += size
-        if size > 50_000_000 or total_bytes > 100_000_000:
-            raise ValueError("Input structures must be under 50 MB each and 100 MB total.")
-        if source.suffix.lower() in {".pdb", ".ent"} and mode != "guided_binder":
-            raise ValueError("PDB input is supported by the guided binder form. Native annotated inputs must be CIF/mmCIF.")
-        if source.name in staged and staged[source.name] != source:
-            raise ValueError(f"Input filenames must be unique: {source.name}")
-        destination = input_root / source.name
-        if source.resolve() != destination.resolve():
+
+def _translate_residues(text, chain_map, residue_map):
+    translated=[]
+    for token in re.split(r'[,;\s]+',str(text or '').strip()):
+        if not token: continue
+        m=re.fullmatch(r'([A-Za-z0-9_]+):(-?\d+)(?:-(-?\d+))?',token) or re.fullmatch(r'([A-Za-z_]+)(-?\d+)(?:-(-?\d+))?',token)
+        if not m: raise ValueError(f'Invalid residue selection {token!r}; use A25 or A25-35.')
+        chain,start,end=m[1],int(m[2]),int(m[3] or m[2])
+        if end<start or end-start>10000: raise ValueError('Residue ranges must be ascending and finite.')
+        for number in range(start,end+1):
+            label=residue_map.get((chain,number))
+            if label is None: raise ValueError(f'Residue {chain}{number} is absent or has an ambiguous insertion code.')
+            translated.append(f'{chain_map[chain]}:{label}')
+    return ','.join(translated)
+
+
+def _map_structure_parameters(p,target):
+    import copy
+    p=copy.deepcopy(p)
+    try: chain_map,residue_map=_cif_label_mapping(target)
+    except ValueError:
+        if p.get('target_chains') or p.get('hotspots') or p['task'] not in {'small_molecule_binder','dna_binder'}: raise
+        chain_map,residue_map={},{}
+    for key in ('target_chains',):
+        p[key]=[chain_map.get(c,c) for c in p.get(key) or []]
+    for key in ('design_chains','fixed_chains'):
+        p['options'][key]=[chain_map.get(c,c) for c in p['options'].get(key) or []]
+    p['hotspots']=_translate_residues(p.get('hotspots',''),chain_map,residue_map)
+    for key in ('cdr_residues','motif_residues','keep_residues','helix_residues','strand_residues','loop_residues'):
+        p['options'][key]=_translate_residues(p['options'].get(key,''),chain_map,residue_map)
+    if p['options'].get('active_site_atoms'):
+        rows=[]
+        for token in p['options']['active_site_atoms'].split():
+            residue,sep,atoms=token.rpartition(':')
+            if not sep or not atoms:raise ValueError('Use active-site atoms such as A102:CG,OD2.')
+            translated=_translate_residues(residue,chain_map,residue_map)
+            if ',' in translated:raise ValueError('Specify active-site atoms for one residue at a time.')
+            rows.append(translated+':'+atoms)
+        p['options']['active_site_atoms']=' '.join(rows)
+    if p['options'].get('designed_chain'):
+        p['options']['designed_chain']=chain_map.get(p['options']['designed_chain'],p['options']['designed_chain'])
+    candidates=p['options'].get('source_candidates') or {}
+    original_name=target.name[:-4] if target.name.lower().endswith(('.pdb.cif','.ent.cif')) else target.name
+    if original_name in candidates:
+        parent=copy.deepcopy(candidates[original_name])
+        for key in ('target_chains','binder_chains'):parent[key]=[chain_map.get(c,c) for c in parent.get(key) or []]
+        p['_source_candidate']=parent
+    return p
+
+
+def prepare_request(parameters: dict[str, Any], *, run_dir: Path) -> dict[str, Any]:
+    """Validate/stage inputs; native chemistry and condition validation runs in the image."""
+    import copy
+    from Bio.PDB import MMCIFIO
+    p=copy.deepcopy(parameters)
+    p['options']=validate_options(p)
+    task=p.get('task','protein_binder'); mode=p.get('input_mode','guided')
+    if task not in TASKS: raise ValueError('Select a supported RFD4 task.')
+    if mode not in {'guided','guided_binder','annotated_cif','condition_spec','unconditional'}:
+        raise ValueError('Select a supported RFD4 input method.')
+    for key,default,low,high in [('num_designs',8,1,500000),('batch_size',1,1,16),('nsteps',60,60,120),('cpu_cores',8,1,256)]:
+        if type(p.get(key,default)) is not int or not low<=p.get(key,default)<=high:
+            raise ValueError(f'{key} must be an integer between {low} and {high}.')
+    seed=p.get('seed')
+    if seed is not None and (type(seed) is not int or not 0<=seed<=4294967295):
+        raise ValueError('Random seed must be blank or an integer from 0 to 4294967295.')
+    low,high=p.get('length_min',60),p.get('length_max',120)
+    if type(low) is not int or type(high) is not int or not 20<=low<=high<=1024:
+        raise ValueError('Chain length must be an ordered range from 20 to 1024 residues.')
+    root=run_dir/'artifacts/rfd4_proteina'; staging=root/'input'; staging.mkdir(parents=True,exist_ok=True)
+    staged={}; originals={}; total=0
+    def stage(source):
+        nonlocal total
+        source=Path(source).expanduser().resolve()
+        if not source.is_file() or source.suffix.lower() not in {'.pdb','.ent','.cif','.mmcif'}:
+            raise ValueError(f'Missing or unsupported structure: {source.name}')
+        total+=source.stat().st_size
+        if source.stat().st_size>50_000_000 or total>100_000_000:
+            raise ValueError('Structure inputs must be under 50 MB each and 100 MB total.')
+        if source.name in originals:
+            if originals[source.name]!=source: raise ValueError('Structure filenames must be unique: '+source.name)
+            return staged[source.name]
+        destination=staging/source.name
+        if source.suffix.lower() in {'.pdb','.ent'}:
+            destination=staging/(source.name+'.cif')
+            writer=MMCIFIO(); writer.set_structure(read_structure(source)); writer.save(str(destination))
+        elif source!=destination:
             destination.write_bytes(source.read_bytes())
-        staged[source.name] = destination
-
-    target_sequences: dict[str, str] = {}
-    if mode == "unconditional":
-        spec = {"unconditional": {"input": "/opt/rfd4/data/benchmarks/monomer/monomer-short.cif.zst", "input_as_annotated_cif": True}}
-        spec_path = input_root / "condition_spec.yaml"
-        spec_path.write_text(_as_safe_yaml(spec))
-    elif mode == "guided_binder":
-        if task != "protein_binder":
-            raise ValueError("The guided target-and-hotspot form is for Protein Binder. Use annotated CIF or condition-spec mode for other tasks.")
-        if target is None:
-            raise ValueError("Load a target structure before submitting a protein binder design.")
-        spec_path, target_cif, target_sequences = _write_guided_binder_input(
-            target, list(parameters.get("target_chains") or []), str(parameters.get("hotspots") or ""),
-            length_min, length_max, input_root,
-        )
-        staged[target_cif.name] = target_cif
-    elif mode == "annotated_cif":
-        files = [Path(p).expanduser().resolve() for p in parameters.get("input_files") or []]
-        if not files and target is not None:
-            files = [target]
-        if task == "unconditional" and not files:
-            spec = {"unconditional": {"input": "/opt/rfd4/data/benchmarks/monomer/monomer-short.cif.zst", "input_as_annotated_cif": True}}
-            spec_path = input_root / "condition_spec.yaml"
-            spec_path.write_text(_as_safe_yaml(spec))
-        else:
-            if not files:
-                raise ValueError("Upload at least one annotated CIF/mmCIF structure.")
-            spec = {}
-            for index, source in enumerate(files, 1):
-                if source.suffix.lower() not in {".cif", ".mmcif"}:
-                    raise ValueError("Annotated RFDiffusion4-Proteina inputs must be CIF/mmCIF files.")
-                if source.name not in staged:
-                    destination = input_root / source.name
-                    destination.write_bytes(source.read_bytes())
-                    staged[source.name] = destination
-                key = re.sub(r"[^A-Za-z0-9_-]+", "_", source.stem).strip("_-") or f"design_{index}"
-                while key in spec:
-                    key = f"{key}_{index}"
-                spec[key] = {"input": source.name, "input_as_annotated_cif": True}
-            spec_path = input_root / "condition_spec.yaml"
-            spec_path.write_text(_as_safe_yaml(spec))
-    else:
-        text = str(parameters.get("condition_spec") or "").strip()
-        if not text:
-            raise ValueError("Paste a YAML/JSON condition spec for this input mode.")
-        try:
-            spec = json.loads(text) if text.startswith(("{", "[")) else yaml.safe_load(text)
-        except (ValueError, yaml.YAMLError) as exc:
-            raise ValueError(f"The condition specification is not valid YAML/JSON: {exc}") from exc
-        if not isinstance(spec, dict) or not spec:
-            raise ValueError("The condition specification must be a non-empty mapping of design names to conditions.")
-        if len(spec) > 128:
-            raise ValueError("A condition specification can define at most 128 named designs.")
-        for name, design in spec.items():
-            if name == "global_args":
-                continue
-            if not isinstance(design, dict):
-                raise ValueError(f"Condition entry {name!r} must be a mapping.")
-            references = design.get("input")
-            reference_list = references if isinstance(references, list) else [references]
-            if not reference_list or any(not isinstance(ref, str) for ref in reference_list):
-                raise ValueError(f"Condition entry {name!r} must reference uploaded CIF/mmCIF input files.")
-            rewritten = []
-            for ref in reference_list:
-                basename = Path(ref).name
-                staged_path = staged.get(basename)
-                if staged_path is None:
-                    raise ValueError(f"Condition entry {name!r} refers to {ref!r}; upload that CIF and reference its filename.")
-                if staged_path.suffix.lower() not in {".cif", ".mmcif"}:
-                    raise ValueError("Custom condition specifications require CIF/mmCIF inputs.")
-                rewritten.append("/work/" + staged_path.relative_to(run_dir).as_posix())
-            design["input"] = rewritten if isinstance(references, list) else rewritten[0]
-        spec_path = input_root / "condition_spec.yaml"
-        spec_path.write_text(_as_safe_yaml(spec))
-
-    # Replace local filenames with deterministic paths inside the container.
-    if mode in {"guided_binder", "annotated_cif"}:
-        spec_payload = yaml.safe_load(spec_path.read_text())
-        for name, design in spec_payload.items():
-            if name == "global_args" or not isinstance(design, dict):
-                continue
-            reference = design.get("input")
-            if isinstance(reference, str) and reference in staged:
-                design["input"] = "/work/" + staged[reference].relative_to(run_dir).as_posix()
-        spec_path.write_text(_as_safe_yaml(spec_payload))
-
-    spec_payload = yaml.safe_load(spec_path.read_text())
-    design_count = sum(1 for name in spec_payload if name != "global_args")
-    if not design_count:
-        raise ValueError("The condition specification must include at least one named design.")
-    if design_count * parameters.get("num_designs", 8) > 10_000:
-        raise ValueError("The total request may generate at most 10,000 structures across all named inputs.")
-
-    return {
-        "root": root,
-        "input_root": input_root,
-        "spec_path": spec_path,
-        "staged_files": list(staged.values()),
-        "target_sequences": target_sequences,
-        "target_structure": str(target) if target else None,
-        "target_chains": list(parameters.get("target_chains") or []),
-        "design_count": design_count,
-    }
+        originals[source.name]=source; staged[source.name]=destination
+        return destination
+    files=[stage(x) for x in p.get('input_files') or []]
+    if len(files)>128: raise ValueError('Upload at most 128 structures.')
+    target=stage(p['target_structure']) if p.get('target_structure') else None
+    for key in ('avoid_structures','also_bind_structures'):
+        p[key]=['/work/'+stage(x).relative_to(run_dir).as_posix() for x in p.get(key) or []]
+    if len(p['avoid_structures'])+len(p['also_bind_structures'])>6:
+        raise ValueError('Use at most six structures across both specificity lists.')
+    if task=='score_structures' and (not files or len(files)>100): raise ValueError('Provide 1–100 structures to score.')
+    if mode in {'guided','guided_binder'} and task not in {'unconditional','rna_design','score_structures'} and target is None and not (task=='existing_structure' and files):
+        raise ValueError('Load an input structure for this task.')
+    if task in {'enzyme','small_molecule_binder','dna_binder'} and target is not None and originals.get(Path(parameters['target_structure']).name,Path()).suffix.lower() in {'.pdb','.ent'}:
+        raise ValueError('Use mmCIF for ligand, enzyme, and DNA tasks to retain chemical bonds and charges.')
+    file_parameters={}
+    if mode in {'guided','guided_binder'}:
+        if files and task in {'score_structures','existing_structure'}:
+            file_parameters={'/work/'+path.relative_to(run_dir).as_posix():_map_structure_parameters(p,path) for path in files}
+        if target is not None:p=_map_structure_parameters(p,target)
+    if mode=='unconditional' and task!='unconditional': raise ValueError('Unconditional input requires the unconditional task.')
+    spec_path=staging/'condition_spec.yaml'
+    design_count=1
+    if mode=='annotated_cif':
+        if not files: raise ValueError('Upload annotated CIF structures.')
+        if any(Path(x).suffix.lower() not in {'.cif','.mmcif'} for x in parameters.get('input_files') or []):
+            raise ValueError('Annotated inputs must be CIF/mmCIF files.')
+        spec={f'design_{i+1}':{'input':'/work/'+path.relative_to(run_dir).as_posix(),'input_as_annotated_cif':True} for i,path in enumerate(files)}
+        spec_path.write_text(_as_safe_yaml(spec)); design_count=len(spec)
+    elif mode=='condition_spec':
+        try: spec=yaml.safe_load(str(p.get('condition_spec') or ''))
+        except yaml.YAMLError as exc: raise ValueError('Invalid YAML/JSON condition file.') from exc
+        if not isinstance(spec,dict) or not spec: raise ValueError('Provide a nonempty mapping of named designs.')
+        global_args=spec.get('global_args') or {}
+        if not isinstance(global_args,dict): raise ValueError('global_args must be a mapping.')
+        resolved={}
+        for name,entry in spec.items():
+            if name=='global_args': continue
+            if not isinstance(name,str) or not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}',name): raise ValueError('Use simple, unique design names without paths.')
+            if not isinstance(entry,dict): raise ValueError('Each design must be a mapping.')
+            entry={**copy.deepcopy(global_args),**entry}
+            if set(entry)-{'input','input_as_annotated_cif','contig','conditions'}:
+                raise ValueError(f'{name}: unsupported condition-spec fields; use input, contig, conditions, input_as_annotated_cif.')
+            refs=entry.get('input'); refs=refs if isinstance(refs,list) else [refs]
+            if not refs or any(not isinstance(ref,str) or Path(ref).name not in staged for ref in refs):
+                raise ValueError(f'{name}: reference uploaded input filenames in the condition file.')
+            rewritten=['/work/'+staged[Path(ref).name].relative_to(run_dir).as_posix() for ref in refs]
+            entry['input']=rewritten if isinstance(entry.get('input'),list) else rewritten[0]
+            resolved[name]=entry
+        design_count=len(resolved)
+        if not 1<=design_count<=128: raise ValueError('Provide 1–128 named designs.')
+        spec_path.write_text(_as_safe_yaml(resolved))
+    if design_count*p.get('num_designs',8)>500000: raise ValueError('At most 500,000 structures may be requested in total.')
+    request={'parameters':p,'root':'/work/'+root.relative_to(run_dir).as_posix(),
+             'target_structure':'/work/'+target.relative_to(run_dir).as_posix() if target else None,
+             'input_files':['/work/'+x.relative_to(run_dir).as_posix() for x in files],
+             'spec_path':'/work/'+spec_path.relative_to(run_dir).as_posix(),'file_parameters':file_parameters}
+    request_path=root/'request.json'; request_path.write_text(json.dumps(request,indent=2,default=str))
+    return {'root':root,'input_root':staging,'spec_path':spec_path,'request_path':request_path,
+            'staged_files':list(staged.values()),'design_count':len(files) if task in {'existing_structure','score_structures'} and files else design_count,'parameters':p,
+            'target_structure':str(target) if target else None,'target_chains':p.get('target_chains') or []}

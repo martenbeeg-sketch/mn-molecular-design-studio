@@ -162,6 +162,17 @@ class Replica:
                 with self.db() as db:
                     previous = db.execute("SELECT * FROM records WHERE key=?", (key,)).fetchone()
                     old = json.loads(previous['value']) if previous else None
+                    if kind == 'job' and value is not None:
+                        # A completed purge receipt on this workstation must
+                        # win over a stale job record replayed by a peer.
+                        with Store().connect() as store_db:
+                            purged = store_db.execute(
+                                "SELECT 1 FROM commands WHERE job_id=? AND kind='purge' AND status='completed' "
+                                "AND json_extract(response,'$.status')='purged' LIMIT 1",
+                                (key.split(':', 1)[1],),
+                            ).fetchone()
+                        if purged:
+                            continue
                     # Once accepted, execution-machine ownership outranks origin placeholders.
                     promote = kind == 'job' and value and value.get('local_reference') and not (old or {}).get('local_reference')
                     if kind == 'job' and (old or {}).get('local_reference') and not (value or {}).get('local_reference'):

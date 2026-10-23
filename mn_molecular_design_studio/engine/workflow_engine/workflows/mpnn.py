@@ -7,6 +7,7 @@ from pathlib import Path
 from mn_molecular_design_studio import mpnn_input as inputs
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import JobPaths, create_job, write_json
 from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
 
 STAGES = ["generation.backbone", "generation.backbone_sequence", "sequence_design", "complex_refolding"]
 
@@ -167,6 +168,8 @@ def run_mpnn_sequence_design(
     backend: str = "auto", selected_candidate_ids: list[str] | None = None,
     verify_sequences: bool = False, job_name: str = "proteinmpnn-design",
     require_backbone_hotspot_filter_pass: bool = False, gpu_device: object = "0",
+    auto_detect_cdrs: bool = False, cdr_regions: list[str] | None = None,
+    sabr_chain_type: str = "auto", sabr_mode: str = "sabr", sabr_noise_level: float = 0.0,
     existing_job: JobPaths | None = None,
 ) -> Path:
     from mn_molecular_design_studio.engine.workflow_engine.workflows import sequence_design as native
@@ -174,26 +177,81 @@ def run_mpnn_sequence_design(
     weights = inputs.checkpoint(model_type, noise_level)
     if not weights.is_file():
         raise ValueError(f"Missing {inputs.MODELS[model_type]['label']} checkpoint: {weights}")
+    if not isinstance(auto_detect_cdrs, bool):
+        raise ValueError("Automatic SAbR CDR selection must be enabled or disabled.")
     if structure_path:
-        rows = []
+        chains = inputs.chain_list(design_chains)
+        info = inputs.inventory(Path(structure_path))
+        rows = [{"candidate_id": "input", "stage": "generation.backbone", "source_tool": "structure_input",
+                 "complex_pdb": str(Path(structure_path).resolve()), "binder_chains": chains,
+                 "target_chains": [c for c in info["chains"] if c not in chains], "raw_metadata": {}}]
     else:
         rows = [r for r in read_candidates(Path(candidates_jsonl)) if r.get("stage") in STAGES
                 and (selected_candidate_ids is None or r.get("candidate_id") in selected_candidate_ids)
                 and (not require_backbone_hotspot_filter_pass or r.get("metrics", {}).get("passes_backbone_hotspot_filter") is not False)]
-        if not rows:
-            raise ValueError("Select one or more available input designs.")
+    if not rows:
+        raise ValueError("Select one or more available input designs.")
+    if source_run_dir:
+        from mn_molecular_design_studio.mimosa_motif import hydrate_candidate_fixed_motif
+
+        rows = [hydrate_candidate_fixed_motif(row, source_run_dir) for row in rows]
+    cdr_fixed_by_candidate: dict[str, list[str]] = {}
+    cdr_regions_by_candidate: dict[str, dict[str, list[str]]] = {}
+    if auto_detect_cdrs:
+        from mn_molecular_design_studio.sabr_runtime import (
+            CDR_NAMES, cdr_fixed_residues, fixed_residues_from_annotation,
+        )
+
+        regions = list(cdr_regions or CDR_NAMES)
+        if not set(regions) <= set(CDR_NAMES) or not regions:
+            raise ValueError("Choose one or more of CDR1, CDR2, and CDR3.")
+        autodetect_rows = rows
+        if structure_path:
+            info = inputs.inventory(Path(structure_path))
+            binder_chains = inputs.chain_list(design_chains)
+            autodetect_rows = [{
+                "candidate_id": "input", "complex_pdb": str(Path(structure_path).resolve()),
+                "binder_chains": binder_chains,
+                "target_chains": [chain for chain in info["chains"] if chain not in binder_chains],
+            }]
+        for candidate in autodetect_rows:
+            source_id = str(candidate.get("candidate_id") or "")
+            source_path_text = candidate.get("complex_pdb") or candidate.get("binder_pdb")
+            source_path = resolve_stored_path(
+                source_path_text,
+                run_dir=Path(source_run_dir) if source_run_dir else None,
+                must_exist=True,
+            )
+            if source_path is None:
+                raise ValueError(f"SAbR could not find the structure for candidate {source_id}.")
+            chains = inputs.chain_list(design_chains) or inputs.chain_list(candidate.get("binder_chains"))
+            if not chains:
+                raise ValueError(f"SAbR could not identify an antibody chain for candidate {source_id}.")
+            upstream_sabr = (candidate.get("raw_metadata") or {}).get("sabr_cdr_selection") or {}
+            upstream_regions = upstream_sabr.get("residues_by_region")
+            if upstream_regions and set(upstream_sabr.get("chain_ids") or ()) >= set(chains):
+                fixed, selected = fixed_residues_from_annotation(source_path, chains, regions, upstream_regions)
+            else:
+                fixed, selected = cdr_fixed_residues(
+                    source_path, chains, regions, chain_type=sabr_chain_type,
+                    noise_level=float(sabr_noise_level), mode=sabr_mode,
+                )
+            cdr_fixed_by_candidate[source_id] = list(dict.fromkeys(fixed))
+            cdr_regions_by_candidate[source_id] = selected
+            raw = dict(candidate.get("raw_metadata") or {})
+            raw["sabr_cdr_selection"] = {
+                "chain_ids": chains, "regions": regions, "residues_by_region": selected,
+                "chain_type": sabr_chain_type, "mode": sabr_mode,
+                "noise_level": float(sabr_noise_level),
+            }
+            candidate["raw_metadata"] = raw
+        if not cdr_fixed_by_candidate:
+            raise ValueError("SAbR did not identify any CDRs to redesign.")
     job = existing_job or create_job("design", job_type="sequence_design", tool="ligandmpnn",
                                      inputs={k: str(v) for k, v in {"structure_path": structure_path, "source_run_dir": source_run_dir, "candidates_jsonl": candidates_jsonl}.items() if v}, params=p)
-    if structure_path:
-        chains = inputs.chain_list(design_chains)
-        info = inputs.inventory(structure_path)
-        rows = [{"candidate_id": "input", "stage": "generation.backbone", "source_tool": "structure_input",
-                 "complex_pdb": str(Path(structure_path).resolve()), "binder_chains": chains,
-                 "target_chains": [c for c in info["chains"] if c not in chains], "raw_metadata": {}}]
     source = job.run_dir / "artifacts/mpnn_source"
     source.mkdir(parents=True, exist_ok=True)
     # Save only the selected candidates; original jobs and structures remain immutable.
-    from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
     for row in rows:
         for key in ("target_pdb", "complex_pdb", "binder_pdb"):
             if row.get(key):
@@ -218,13 +276,20 @@ def run_mpnn_sequence_design(
     candidate_file.write_text("".join(json.dumps(r) + "\n" for r in rows))
     p["resolved_backend"] = chosen
     write_json(job.run_dir / "artifacts/mpnn_settings.json", p | {"checkpoint": str(weights)})
+    if cdr_regions_by_candidate:
+        write_json(job.run_dir / "artifacts/sabr_cdr_selection.json", cdr_regions_by_candidate)
     if chosen == "foundry":
         result = native.run_foundry_mpnn_sequence_design(source, candidate_file, batch_size=num_seq_per_target,
             model_type=model_type, gpu_device=gpu_device, existing_job=job, direct_input=p)
     else:
+        direct_options = {k: v for k, v in p.items() if k not in {
+            "auto_detect_cdrs", "cdr_regions", "sabr_chain_type", "sabr_mode", "sabr_noise_level",
+        }}
         result = native.run_ligandmpnn_sequence_design(source, candidate_file, model_type=model_type,
             design_chains=design_chains, num_seq_per_target=num_seq_per_target, sampling_temp=sampling_temp,
-            omit_aas=omit_aas, seed=p["seed"], accepted_stages=STAGES, gpu_device=gpu_device, existing_job=job, direct_input=p)
+            omit_aas=omit_aas, seed=p["seed"], accepted_stages=STAGES,
+            fixed_residues_by_candidate=cdr_fixed_by_candidate,
+            gpu_device=gpu_device, existing_job=job, direct_input=direct_options)
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
     if verify_sequences and read_json(result / "result.json").get("success") is True:
         from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import submit_workflow_request
@@ -239,3 +304,39 @@ def run_mpnn_sequence_design(
         metadata["validation_run_dir"] = verification["job"]["run_dir"]
         write_json(result / "metadata.json", metadata)
     return result
+
+
+def run_abmpnn_sequence_design(
+    source_run_dir: Path | None = None,
+    candidates_jsonl: Path | None = None,
+    structure_path: Path | None = None,
+    design_chains: str = "",
+    cdr_regions: list[str] | None = None,
+    num_seq_per_target: int = 1,
+    sampling_temp: float = 0.1,
+    omit_aas: str = "C",
+    seed: int | None = None,
+    selected_candidate_ids: list[str] | None = None,
+    sabr_chain_type: str = "auto",
+    sabr_mode: str = "sabr",
+    sabr_noise_level: float = 0.0,
+    verify_sequences: bool = False,
+    job_name: str = "abmpnn-cdr-redesign",
+    gpu_device: object = "0",
+    existing_job: JobPaths | None = None,
+) -> Path:
+    """Design selected antibody CDRs with the app's AbMPNN checkpoint."""
+    if structure_path and (source_run_dir or candidates_jsonl):
+        raise ValueError("Choose a structure file or existing design results, not both.")
+    if bool(source_run_dir) != bool(candidates_jsonl):
+        raise ValueError("Existing design results require both the source job and candidate collection.")
+    return run_mpnn_sequence_design(
+        source_run_dir=source_run_dir, candidates_jsonl=candidates_jsonl,
+        structure_path=structure_path, model_type="ab_mpnn", design_chains=design_chains,
+        num_seq_per_target=num_seq_per_target, sampling_temp=sampling_temp,
+        omit_aas=omit_aas, seed=seed, selected_candidate_ids=selected_candidate_ids,
+        verify_sequences=verify_sequences, job_name=job_name, gpu_device=gpu_device,
+        auto_detect_cdrs=True, cdr_regions=cdr_regions,
+        sabr_chain_type=sabr_chain_type, sabr_mode=sabr_mode,
+        sabr_noise_level=sabr_noise_level, existing_job=existing_job,
+    )

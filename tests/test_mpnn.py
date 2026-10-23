@@ -323,7 +323,8 @@ def test_verification_keeps_multiple_designed_chains_separate(design_source_fact
     assert [t["protein_sequences"] for t in request["parameters"]["tasks"]] == ["ACDEFG", "KLMNP"]
 
 
-def test_api_source_is_scoped_to_selected_project(monkeypatch, tmp_path):
+@pytest.mark.parametrize("workflow", ["sequence.mpnn", "sequence.abmpnn", "analysis.sabr"])
+def test_api_source_is_scoped_to_selected_project(monkeypatch, tmp_path, workflow):
     from fastapi import HTTPException
     from mn_molecular_design_studio import api, job_catalog
     run = tmp_path / "design/run"
@@ -331,4 +332,4 @@ def test_api_source_is_scoped_to_selected_project(monkeypatch, tmp_path):
     monkeypatch.setattr(api, "_resolve_api_job", lambda *a: {"task_group": "design"})
     monkeypatch.setattr(job_catalog, "get_job_access_record", lambda *a: {"project_id": "other"})
     with pytest.raises(HTTPException, match="selected project"):
-        api._guard_source_job({"workflow": "sequence.mpnn", "parameters": {"source_run_dir": str(run)}}, {"id": "test"}, project_id="chosen")
+        api._guard_source_job({"workflow": workflow, "parameters": {"source_run_dir": str(run)}}, {"id": "test"}, project_id="chosen")

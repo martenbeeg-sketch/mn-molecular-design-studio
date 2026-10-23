@@ -86,29 +86,56 @@ render_run_database_actions(Path({str(run_dir)!r}), {USER!r}, [])
     assert any("Saved 1 selected molecule" in item.value for item in app.success)
 
 
-def test_open_in_database_preselects_source_group_and_all_indexed_mode(tmp_path, monkeypatch):
+def test_open_in_database_prefers_generated_group_over_tool_inputs(tmp_path, monkeypatch):
     _isolate_workspace(tmp_path, monkeypatch)
     from mn_molecular_design_studio import molecular_database_results, molecular_database_results_ui
 
-    source_group = {
-        "id": "automatic-output-group",
-        "name": "Docking inputs",
+    input_group = {
+        "id": "tool-input-group",
+        "name": "Tool inputs",
         "project_id": "",
         "owner_id": USER["id"],
         "import_method": "tool_inputs",
-        "origin": {"type": "job"},
+        "origin": {"type": "job", "collection_kind": "inputs"},
     }
-    record = {"id": "molecule-a", "name": "Ethanol", "type": "small_molecule", "components": [{"chain": "A", "smiles": "CCO"}], "groups": [source_group], "source_group_id": source_group["id"], "structures": [], "observations": []}
+    output_group = {
+        "id": "automatic-output-group",
+        "name": "RFD4 smoke test generation",
+        "project_id": "",
+        "owner_id": USER["id"],
+        "import_method": "tool_output",
+        "origin": {"type": "job", "collection_kind": "generated", "is_test": True},
+    }
+    input_record = {
+        "id": "molecule-input", "name": "1AAY", "type": "protein",
+        "components": [{"chain": "A", "sequence": "M"}], "groups": [input_group],
+        "source_group_id": input_group["id"], "run_group_ids": [input_group["id"]],
+        "run_groups": [{**input_group, "id": input_group["id"]}], "structures": [], "observations": [],
+    }
+    output_record = {
+        "id": "molecule-generated", "name": "rfd4_000001_dna_binder", "type": "complex",
+        "components": [{"chain": "A", "type": "dna"}, {"chain": "B", "type": "dna"}, {"chain": "C", "type": "protein"}],
+        "groups": [output_group], "source_group_id": output_group["id"],
+        "run_group_ids": [output_group["id"]], "run_groups": [{**output_group, "id": output_group["id"]}],
+        "structures": [], "observations": [],
+    }
     database = MolecularDatabase(tmp_path / "database")
     database.create_group(
         USER,
-        source_group["name"],
+        input_group["name"],
         import_method="tool_inputs",
-        origin={"type": "job"},
-        group_id=source_group["id"],
+        origin=input_group["origin"],
+        group_id=input_group["id"],
+    )
+    database.create_group(
+        USER,
+        output_group["name"],
+        import_method="tool_output",
+        origin=output_group["origin"],
+        group_id=output_group["id"],
     )
     monkeypatch.setattr(molecular_database_results_ui, "MolecularDatabase", lambda: database)
-    monkeypatch.setattr(molecular_database_results, "list_run_molecules", lambda *args, **kwargs: [record])
+    monkeypatch.setattr(molecular_database_results, "list_run_molecules", lambda *args, **kwargs: [input_record, output_record])
     run_dir = (tmp_path / "runs" / "vina" / "run-2").resolve()
     run_key = hashlib.sha1(str(run_dir).encode()).hexdigest()[:12]
     script = f'''\
@@ -118,13 +145,15 @@ render_run_database_actions(Path({str(run_dir)!r}), {USER!r}, [])
 '''
     app = AppTest.from_string(script, default_timeout=10).run()
     assert not app.exception
+    app.session_state["molecular-hide-smoke-test-groups"] = True
     app.button(key=f"run-database-open-{run_key}").click().run()
 
     assert not app.exception
     assert app.session_state["page"] == "Database"
-    assert app.session_state["molecular-preselect-group"] == source_group["id"]
-    assert app.session_state["molecular-preselect-collection"] == "all"
-    assert app.session_state["molecular-preselect-molecule"] == "molecule-a"
+    assert app.session_state["molecular-preselect-group"] == output_group["id"]
+    assert app.session_state["molecular-preselect-collection"] == "library"
+    assert app.session_state["molecular-preselect-molecule"] == "molecule-generated"
+    assert app.session_state["molecular-hide-smoke-test-groups"] is False
 
 
 def test_database_defaults_to_library_and_passes_collection_to_queries(tmp_path, monkeypatch):

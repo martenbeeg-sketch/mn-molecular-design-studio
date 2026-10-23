@@ -438,6 +438,12 @@ def _worker_loop(worker_index: int, stop: threading.Event) -> None:
                 pass
 
 
+def configured_worker_count() -> int:
+    """Return the number of scheduler bridge workers to register."""
+    worker_count = int(os.getenv("MN_MOLECULAR_DESIGN_STUDIO_SCHEDULER_WORKERS", "6"))
+    return max(1, min(worker_count, 32))
+
+
 def run_service() -> int:
     results_root = _refresh_workspace_paths()
     service_dir = _service_dir()
@@ -457,8 +463,10 @@ def run_service() -> int:
     for signum in (signal.SIGTERM, signal.SIGINT):
         previous_handlers[signum] = signal.signal(signum, request_stop)
     try:
-        worker_count = int(os.getenv("MN_MOLECULAR_DESIGN_STUDIO_SCHEDULER_WORKERS", "2"))
-        worker_count = max(1, min(worker_count, 32))
+        # Pipeline coordinator jobs wait for GPU-backed child workflows. Keep
+        # enough bridge workers available for those children while several
+        # coordinators are active; the scheduler still enforces CPU/GPU leases.
+        worker_count = configured_worker_count()
         threads = [
             threading.Thread(target=_worker_loop, args=(index + 1, stop), name=f"mds-scheduler-{index + 1}")
             for index in range(worker_count)

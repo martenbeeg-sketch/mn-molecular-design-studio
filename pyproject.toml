@@ -13,13 +13,15 @@ dependencies = [
   "fastapi",
   "gemmi",
   "matplotlib",
+  "numpy>=1.26.4,<3",
   "openpyxl",
   "pandas",
   "plotly>=5.24,<7",
   "pyyaml",
   "py2Dmol @ git+https://github.com/sokrypton/py2Dmol.git@67cbe73f06f49645291ea3e79a06293b0abaa3a7",
   "rdkit",
-  "streamlit",
+  "scipy>=1.17.1,<2",
+  "streamlit>=1.65",
   "zstandard",
   "typer",
   "uvicorn",
@@ -49,6 +51,10 @@ include = ["mn_molecular_design_studio*"]
 [tool.setuptools.package-data]
 "mn_molecular_design_studio.engine.workflow_engine.vendor.ligand_runtime" = ["scripts/*.py"]
 "mn_molecular_design_studio.engine.workflow_engine.workflows.qc_ovo" = ["LICENSE", "PROVENANCE.md", "*.json"]
+"mn_molecular_design_studio.engine.workflow_engine.workflows.rfd4_oracle_runtime" = ["LICENSE-APACHE", "PROVENANCE.md"]
+"mn_molecular_design_studio.vendor.sabr" = ["LICENSE"]
+"mn_molecular_design_studio.vendor.sabr._anarci" = ["LICENSE"]
+"mn_molecular_design_studio.vendor.sabr.assets" = ["*.npz", "*.json"]
 "*" = [
   "*.yaml",
   "*.nf",

@@ -14,7 +14,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from mn_molecular_design_studio.engine.workflow_engine.core.gpu import gpu_queue_resource
-from mn_molecular_design_studio.engine.workflow_engine.core.job_identity import job_name, job_tool
+from mn_molecular_design_studio.engine.workflow_engine.core.job_identity import job_display_tool, job_name, job_tool
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_managed_paths, store_managed_paths
 from mn_molecular_design_studio.engine.workflow_engine.runtime import runs_root
 
@@ -873,6 +873,7 @@ def collect_jobs(task_group: str | None = None, *, include_hidden: bool = False)
                     "task_group": group,
                     "job_type": metadata.get("job_type") or input_payload.get("job_type", ""),
                     "tool": tool,
+                    "display_tool": job_display_tool(metadata.get("tool") or input_payload.get("tool", ""), input_params),
                     "status": status,
                     "queue_resource": queue_resource,
                     "resource_allocation": resource_allocation,

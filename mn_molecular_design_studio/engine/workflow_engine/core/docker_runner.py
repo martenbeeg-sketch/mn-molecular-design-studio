@@ -41,6 +41,8 @@ def build_docker_command(
         if not name or not name.replace("_", "").isalnum() or not name[0].isalpha() or "\n" in setting or "\r" in setting:
             raise ValueError(f"Invalid Docker environment entry: {name!r}")
         command.extend(["-e", f"{name}={setting}"])
+    if manifest.get("entrypoint"):
+        command.extend(["--entrypoint", str(manifest["entrypoint"])])
     command.append(str(manifest["image"]))
     command.extend(args)
     return apply_docker_cpu_limit(command, run_dir)

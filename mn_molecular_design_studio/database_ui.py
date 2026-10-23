@@ -7,6 +7,7 @@ import json
 import math
 import sqlite3
 import uuid
+import uuid
 from pathlib import Path
 
 import streamlit as st
@@ -52,14 +53,22 @@ def _guess(columns, names):
 
 def _import_content(method):
     records = []
+    audit = None
+    source_content = None
     if method == "Table":
         st.caption("One row per molecule. Map protein, ligand, DNA, or RNA columns to chains; other columns become molecular properties.")
-        upload = st.file_uploader("CSV, TSV, or Excel file", type=["csv", "tsv", "xlsx", "xls", "txt"], key="molecular-import-table")
+        upload = st.file_uploader("CSV, TSV, or Excel file", type=["csv", "tsv", "xlsx", "xlsm", "xls", "txt"], key="molecular-import-table")
         if upload is None:
-            return []
-        table = imports.read_table(upload.getvalue(), upload.name)
+            return [], None, None
+        upload_content = upload.getvalue()
+        signature = hashlib.sha256(upload_content).hexdigest()[:12]
+        sheets = imports.table_sheets(upload_content, upload.name)
+        sheet_name = sheets[0] if sheets else ""
+        if len(sheets) > 1:
+            sheet_name = st.selectbox("Worksheet", list(sheets), key="molecular-import-sheet-" + signature)
+        table = imports.read_table(upload_content, upload.name, sheet_name=sheet_name)
         columns = list(table.columns)
-        id_guess = _guess(columns, {"compound_id", "pubchem_cid", "catalog_id", "zinc_id", "candidate_id", "design_id", "id"})
+        id_guess = _guess(columns, {"compound_id", "pubchem_cid", "catalog_id", "catalog_number", "catalog_no", "vendor_id", "zinc_id", "candidate_id", "design_id", "id"})
         name_guess = _guess(columns, {"compound_name", "preferred_name", "common_name", "molecule_name", "name", "molecule"})
         identity_columns = st.columns(2)
         id_options = ["", *columns]
@@ -79,7 +88,6 @@ def _import_content(method):
             key="molecular-import-name-column",
         )
         defaults = [column for column in columns if column.lower().replace(" ", "_") in {"sequence", "protein_sequence", "binder_sequence", "target_sequence", "smiles", "canonical_smiles", "isomeric_smiles", "dna", "rna", "heavy", "light", "vh", "vl"}]
-        signature = hashlib.sha256(upload.getvalue()).hexdigest()[:12]
         chain_columns = st.multiselect("Molecular chain columns", columns, default=defaults, key="molecular-import-chains-" + signature)
         mapping = {}
         for index, column in enumerate(chain_columns):
@@ -92,10 +100,20 @@ def _import_content(method):
             mapping[column] = {"type": kind, "chain": chain, "role": role}
         st.dataframe(table.head(5), hide_index=True, use_container_width=True)
         if mapping:
-            records = imports.parse_table(
-                upload.getvalue(), upload.name, name_column=name_column,
-                id_column=id_column, chain_columns=mapping,
-            )
+            if len(mapping) == 1 and next(iter(mapping.values())).get("type") == "small_molecule":
+                smiles_column = next(iter(mapping))
+                analysis = imports.analyze_small_molecule_table(
+                    upload_content, upload.name, smiles_column=smiles_column,
+                    name_column=name_column, id_column=id_column, sheet_name=sheet_name,
+                )
+                records = analysis.pop("records")
+                audit = analysis
+                source_content = upload_content
+            else:
+                records = imports.parse_table(
+                    upload_content, upload.name, name_column=name_column,
+                    id_column=id_column, chain_columns=mapping, sheet_name=sheet_name,
+                )
     elif method in {"FASTA", "Paste sequences"}:
         kind = st.selectbox("Sequence type", ["protein", "dna", "rna"], format_func=TYPE_LABELS.get, key="molecular-import-sequence-type")
         if method == "FASTA":
@@ -125,11 +143,24 @@ def _import_content(method):
         if source == "Paste SMILES":
             text = st.text_area("SMILES", placeholder="CCO ethanol\nCC(=O)Oc1ccccc1C(=O)O aspirin", key="molecular-import-smiles", height=150)
             if text.strip():
-                records = imports.parse_smiles(text)
+                analysis = imports.analyze_smiles_text(text)
+                records = analysis.pop("records")
+                source_content = text.encode("utf-8")
+                audit = analysis
+                audit["source_name"] = "pasted-smiles.smi"
+                audit["source_sha256"] = hashlib.sha256(source_content).hexdigest()
         else:
             upload = st.file_uploader(source, type=["sdf", "mol"] if source == "SDF file" else ["smi", "smiles", "txt"], key="molecular-import-smiles-file-" + source)
             if upload:
-                records = imports.parse_sdf(upload.getvalue(), upload.name) if source == "SDF file" else imports.parse_smiles(upload.getvalue().decode("utf-8-sig"))
+                if source == "SDF file":
+                    records = imports.parse_sdf(upload.getvalue(), upload.name)
+                else:
+                    source_content = upload.getvalue()
+                    analysis = imports.analyze_smiles_text(source_content.decode("utf-8-sig"))
+                    records = analysis.pop("records")
+                    audit = analysis
+                    audit["source_name"] = Path(upload.name).name
+                    audit["source_sha256"] = hashlib.sha256(source_content).hexdigest()
     elif method == "Draw molecule":
         from mn_molecular_design_studio.molecule_sketcher import render_sketcher
         name = st.text_input("Molecule name", value="Drawn compound", key="molecular-import-drawn-name")
@@ -150,7 +181,45 @@ def _import_content(method):
         fetched = st.session_state.get("molecular-import-fetched")
         if fetched and fetched["key"] == (source, identifier.strip()):
             records = imports.parse_structure(fetched["content"], fetched["filename"]) if source == "PDB" else imports.parse_sequences(fetched["content"].decode())
-    return records
+    return records, audit, source_content
+
+
+def _import_report_frame(rows):
+    return [{
+        "Row": row["row_number"],
+        "Status": row["status"],
+        "Source ID": row.get("source_id") or "",
+        "Compound ID": row.get("compound_id") or "",
+        "Name": row.get("name") or "",
+        "Input SMILES": row.get("raw_smiles") or "",
+        "Canonical isomeric SMILES": row.get("canonical_smiles") or "",
+        "Annotation candidate (review only)": row.get("annotation_stripped_candidate") or "",
+        "Candidate status": row.get("candidate_status") or "",
+        "Duplicate of row": row.get("duplicate_of_row") or "",
+        "Stereo variant of row": row.get("stereo_variant_of_row") or "",
+        "Destination match": "Yes" if row.get("matched_existing") else "",
+        "Warnings": "; ".join(row.get("warnings") or []),
+        "Errors": "; ".join(row.get("errors") or []),
+        "Formula": (row.get("descriptors") or {}).get("formula", ""),
+        "Molecular weight": (row.get("descriptors") or {}).get("molecular_weight", ""),
+        "Exact mass": (row.get("descriptors") or {}).get("exact_mass", ""),
+        "Heavy atoms": (row.get("descriptors") or {}).get("heavy_atoms", ""),
+        "Formal charge": (row.get("descriptors") or {}).get("formal_charge", ""),
+        "Fragments": (row.get("descriptors") or {}).get("fragment_count", ""),
+        "Disconnected components": json.dumps((row.get("descriptors") or {}).get("components", []), ensure_ascii=False),
+        "HBD": (row.get("descriptors") or {}).get("hbd", ""),
+        "HBA": (row.get("descriptors") or {}).get("hba", ""),
+        "cLogP": (row.get("descriptors") or {}).get("clogp", ""),
+        "TPSA": (row.get("descriptors") or {}).get("tpsa", ""),
+        "QED": (row.get("descriptors") or {}).get("qed", ""),
+        "Other source columns": json.dumps(row.get("source_data") or {}, ensure_ascii=False, default=str),
+    } for row in rows]
+
+
+def _report_csv(rows):
+    import pandas as pd
+    frame = pd.DataFrame(_import_report_frame(rows))
+    return frame.to_csv(index=False).encode("utf-8-sig")
 
 
 @st.dialog("Import molecules", width="large")
@@ -168,34 +237,121 @@ def render_import_dialog(user, projects):
             _reset_import()
         if right.button("Next", type="primary", disabled=not name.strip(), key="molecular-import-next"):
             st.session_state["molecular-import-destination"] = {"group_id": group_id or None, "name": name, "project_id": project}
+            st.session_state["molecular-import-instance"] = uuid.uuid4().hex
             st.session_state["molecular-import-step"] = 1
             st.rerun(scope="app")
         return
     destination = st.session_state["molecular-import-destination"]
+    import_instance = st.session_state.setdefault("molecular-import-instance", uuid.uuid4().hex)
     st.markdown(f"**{html.escape(destination['name'])}**")
     method = st.radio("What are you importing?", ["Table", "FASTA", "Structure files", "Paste sequences", "SMILES", "Draw molecule", "Fetch by identifier"], horizontal=True, key="molecular-import-method")
     records = []
+    audit = None
+    source_content = None
+    review_confirmed = True
+    block_duplicates = False
     try:
-        records = _import_content(method)
+        records, audit, source_content = _import_content(method)
+        if audit:
+            destination_group = destination.get("group_id")
+            existing = database.group_identity_map(user, destination_group) if destination_group else {}
+            existing_fingerprints = set(existing)
+            existing_ids = {}
+            for record in records:
+                _, fingerprint, _ = imports.canonical_components(record["components"])
+                if fingerprint in existing_fingerprints:
+                    existing_ids[fingerprint] = existing[fingerprint]
+            for row in audit["rows"]:
+                if not row.get("canonical_smiles"):
+                    continue
+                _, fingerprint, _ = imports.canonical_components([
+                    {"type": "small_molecule", "chain": "L", "smiles": row["canonical_smiles"]}
+                ])
+                row["matched_existing"] = fingerprint in existing_fingerprints
+                row["existing_molecule_id"] = existing.get(fingerprint, {}).get("id", "")
+            summary = audit["summary"]
+            summary["existing_structure_matches"] = len(existing_ids)
+            summary["reviewable_unique_structures"] = len(records)
+            mapping = audit.get("mapping") or {}
+            st.caption("Worksheet: " + (mapping.get("sheet_name") or "not applicable") +
+                       " · SMILES: " + str(mapping.get("smiles_column") or "") +
+                       " · ID: " + str(mapping.get("id_column") or "not mapped"))
+            label = (f"{summary['rows']:,} source rows · {summary['valid_rows']:,} valid rows · "
+                     f"{summary['unique_structures']:,} unique structures · {summary['invalid_rows']:,} invalid · "
+                     f"{summary['duplicate_rows']:,} exact duplicates · {summary['empty_rows']:,} blank")
+            st.caption(label)
+            if summary["stereo_variants"]:
+                st.info(f"{summary['stereo_variants']:,} row(s) have the same connectivity as another row but different stereochemistry. They remain separate structures.")
+            if summary["duplicate_id_rows"]:
+                st.caption(f"{summary['duplicate_id_rows']:,} duplicate source IDs were assigned unique compound IDs with a __2, __3… suffix; the original IDs remain in the report.")
+            if summary["charged_component_rows"]:
+                st.caption(f"{summary['charged_component_rows']:,} valid source row(s) contain at least one charged disconnected component.")
+            if summary.get("existing_structure_matches"):
+                st.caption(f"{summary['existing_structure_matches']:,} unique structure(s) are already in this destination. Existing names and properties will be preserved; new properties will be added where they are blank.")
+            with st.expander("Review row validation and duplicates", expanded=bool(summary["invalid_rows"] or summary["duplicate_rows"])):
+                view = st.selectbox("Rows", ["All rows", "Problems and duplicates", "Invalid or blank only"], key="molecular-import-report-filter-" + import_instance + audit["batch_id"])
+                report_rows = audit["rows"]
+                if view == "Problems and duplicates":
+                    report_rows = [row for row in report_rows if row["status"] in {"invalid", "empty", "duplicate"} or row.get("warnings") or row.get("matched_existing")]
+                elif view == "Invalid or blank only":
+                    report_rows = [row for row in report_rows if row["status"] in {"invalid", "empty"}]
+                report_frame = _import_report_frame(report_rows)
+                st.dataframe(report_frame[:1000], hide_index=True, use_container_width=True)
+                if len(report_frame) > 1000:
+                    st.caption(f"Showing the first 1,000 of {len(report_frame):,} selected report rows. Download the full report below.")
+                st.download_button(
+                    "Download validation report CSV", _report_csv(audit["rows"]),
+        file_name=Path(audit["source_name"]).stem + "-validation.csv", mime="text/csv",
+                    key="molecular-import-report-download-" + import_instance + audit["batch_id"],
+                )
+                st.caption("Canonical SMILES are used for exact structure matching. Salts, formal charge, and stereochemistry are retained as submitted.")
+            st.caption("The original file and full batch report are saved on this workstation. Imported molecules retain their source row and validation provenance in the Database.")
+            review_confirmed = st.checkbox(
+                "I reviewed the report. Only valid unique structures will be imported; every source row will be retained in the import history.",
+                key="molecular-import-reviewed-" + import_instance + audit["batch_id"],
+            )
+            block_duplicates = st.checkbox(
+                "Require a duplicate-free source file",
+                value=False,
+                disabled=not summary["duplicate_rows"],
+                key="molecular-import-block-duplicates-" + import_instance + audit["batch_id"],
+            )
         fingerprints = {imports.canonical_components(row["components"])[1] for row in records}
-        if records:
+        if records and not audit:
             st.caption(f"{len(records):,} rows · {len(fingerprints):,} unique molecules. Existing molecules retain their saved scores.")
             st.dataframe([{"Name": row["name"], "Chains": ", ".join(component["chain"] for component in row["components"]), "Type": TYPE_LABELS[imports.canonical_components(row["components"])[2]]} for row in records[:10]], hide_index=True, use_container_width=True)
+        elif audit and not records:
+            st.warning("No valid structures are available to import. Correct the source or its column mapping and review the report again.")
     except (ValueError, OSError, UnicodeError) as exc:
         st.error(str(exc))
         records = []
+        audit = None
+        source_content = None
+        review_confirmed = False
     back, cancel, commit = st.columns([1, 1, 2])
     if back.button("← Back", key="molecular-import-back"):
         st.session_state["molecular-import-step"] = 0
         st.rerun(scope="app")
     if cancel.button("Cancel", key="molecular-import-cancel-1"):
         _reset_import()
-    if commit.button("Import molecules", type="primary", disabled=not records, key="molecular-import-commit"):
+    can_commit = (bool(records) or bool(audit)) and review_confirmed and (not block_duplicates or not records)
+    commit_label = "Save validation report" if audit and not records else "Import molecules"
+    if commit.button(commit_label, type="primary", disabled=not can_commit, key="molecular-import-commit"):
         try:
-            result = database.import_records(user, records, **destination)
+            result = database.import_records(user, records, **destination, import_audit=audit, source_content=source_content)
             st.session_state["molecular-preselect-group"] = result["group_id"]
             st.session_state["molecular-preselect-collection"] = "library"
-            st.session_state["molecular-database-flash"] = f"Imported {result['imported_count']:,} rows as {result['unique_count']:,} unique molecules."
+            if audit:
+                summary = audit["summary"]
+                if records:
+                    st.session_state["molecular-database-flash"] = (
+                        f"Imported {summary['valid_rows']:,} valid rows as {result['unique_count']:,} unique molecules. "
+                        f"{summary['invalid_rows'] + summary['empty_rows']:,} invalid or blank rows were retained in the validation report."
+                    )
+                else:
+                    st.session_state["molecular-database-flash"] = "Saved the validation report. No molecules were imported."
+            else:
+                st.session_state["molecular-database-flash"] = f"Imported {result['imported_count']:,} rows as {result['unique_count']:,} unique molecules."
             st.session_state["database-selection"] = []
             _reset_import()
         except (ValueError, PermissionError, OSError) as exc:
@@ -416,37 +572,111 @@ def render_details(database, user, record):
                     st.rerun()
                 except (ValueError, OSError, PermissionError) as exc:
                     st.error(str(exc))
-        with st.expander("Notes and tags"):
+        with st.expander("Edit name, notes, tags, and properties"):
             group_id = record["groups"][0]["id"]
             group = database.group(group_id, user)
             editable = not group["read_only"] and (user.get("role") == "admin" or group["owner_id"] == user["id"])
             with st.form("database-notes-" + record["id"]):
-                tags = st.text_input("Tags", value=str(record.get("metadata", {}).get("tags") or ""), disabled=not editable)
-                notes = st.text_area("Notes", value=str(record.get("metadata", {}).get("notes") or ""), disabled=not editable)
+                molecule_name = st.text_input("Name", value=record["name"], disabled=not editable, key="database-edit-name-" + record["id"])
+                tags = st.text_input("Tags", value=str(record.get("metadata", {}).get("tags") or ""), disabled=not editable, key="database-edit-tags-" + record["id"])
+                notes = st.text_area("Notes", value=str(record.get("metadata", {}).get("notes") or ""), disabled=not editable, key="database-edit-notes-" + record["id"])
                 properties = {}
-                for field in group["schema"].get("fields", []):
-                    if field.get("formula") or field["name"] in {"tags", "notes"}:
+                metadata = record.get("metadata") or {}
+                schema_fields = {field["name"]: field for field in group["schema"].get("fields", [])}
+                computed_fields = {name for name, field in schema_fields.items() if field.get("formula")}
+                for property_name, value in metadata.items():
+                    if property_name in {"tags", "notes"} or property_name in computed_fields:
                         continue
-                    label = field["name"]
-                    value = record.get("metadata", {}).get(label)
+                    property_key = hashlib.sha1(property_name.encode("utf-8")).hexdigest()[:12]
+                    field = schema_fields.get(property_name) or {}
                     if field.get("type") == "number":
-                        properties[label] = st.number_input(label, value=float(value) if value is not None else None, disabled=not editable)
+                        try:
+                            number_value = float(value) if value not in (None, "") else None
+                        except (TypeError, ValueError):
+                            number_value = None
+                        properties[property_name] = st.number_input(
+                            property_name, value=number_value, disabled=not editable,
+                            key=f"database-edit-schema-{record['id']}-{property_key}",
+                        )
                     elif field.get("type") == "boolean":
-                        properties[label] = st.selectbox(label, [None, True, False], index=[None, True, False].index(value) if value in [None, True, False] else 0, disabled=not editable)
+                        normalized = value
+                        if isinstance(value, str):
+                            normalized = True if value.casefold() in {"true", "1", "yes"} else False if value.casefold() in {"false", "0", "no"} else None
+                        options = [None, True, False]
+                        properties[property_name] = st.selectbox(
+                            property_name, options, index=options.index(normalized) if normalized in options else 0,
+                            disabled=not editable, format_func=lambda item: "(unset)" if item is None else str(item),
+                            key=f"database-edit-schema-{record['id']}-{property_key}",
+                        )
                     elif field.get("type") == "category" and field.get("choices"):
                         options = ["", *field["choices"]]
-                        properties[label] = st.selectbox(label, options, index=options.index(value) if value in options else 0, disabled=not editable)
+                        properties[property_name] = st.selectbox(
+                            property_name, options, index=options.index(value) if value in options else 0,
+                            disabled=not editable, key=f"database-edit-schema-{record['id']}-{property_key}",
+                        )
+                    elif isinstance(value, bool):
+                        options = [None, True, False]
+                        properties[property_name] = st.selectbox(
+                            property_name, options, index=options.index(value), disabled=not editable,
+                            format_func=lambda item: "(unset)" if item is None else str(item),
+                            key=f"database-edit-property-{record['id']}-{property_key}",
+                        )
+                    elif isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
+                        properties[property_name] = st.number_input(
+                            property_name, value=float(value), disabled=not editable,
+                            key=f"database-edit-property-{record['id']}-{property_key}",
+                        )
+                    elif isinstance(value, str):
+                        if len(value) > 120:
+                            properties[property_name] = st.text_area(property_name, value=value, height=90, disabled=not editable,
+                                key=f"database-edit-property-{record['id']}-{property_key}")
+                        else:
+                            properties[property_name] = st.text_input(property_name, value=value, disabled=not editable,
+                                key=f"database-edit-property-{record['id']}-{property_key}")
                     else:
-                        properties[label] = st.text_input(label, value=str(value or ""), disabled=not editable)
+                        st.caption(f"{property_name}: structured source value is preserved as read-only JSON.")
+                for field in group["schema"].get("fields", []):
+                    if field.get("formula") or field["name"] in {"tags", "notes"} or field["name"] in properties:
+                        continue
+                    label = field["name"]
+                    value = metadata.get(label)
+                    field_key = hashlib.sha1(label.encode("utf-8")).hexdigest()[:12]
+                    if field.get("type") == "number":
+                        properties[label] = st.number_input(label, value=float(value) if value is not None else None, disabled=not editable,
+                            key=f"database-edit-schema-{record['id']}-{field_key}")
+                    elif field.get("type") == "boolean":
+                        properties[label] = st.selectbox(label, [None, True, False], index=[None, True, False].index(value) if value in [None, True, False] else 0, disabled=not editable,
+                            key=f"database-edit-schema-{record['id']}-{field_key}")
+                    elif field.get("type") == "category" and field.get("choices"):
+                        options = ["", *field["choices"]]
+                        properties[label] = st.selectbox(label, options, index=options.index(value) if value in options else 0, disabled=not editable,
+                            key=f"database-edit-schema-{record['id']}-{field_key}")
+                    else:
+                        properties[label] = st.text_input(label, value=str(value or ""), disabled=not editable,
+                            key=f"database-edit-schema-{record['id']}-{field_key}")
+                st.markdown("**Add a property**")
+                new_property_name = st.text_input("Property name", disabled=not editable, key="database-add-property-name-" + record["id"])
+                new_property_value = st.text_input("Property value", disabled=not editable, key="database-add-property-value-" + record["id"])
                 if st.form_submit_button("Save", disabled=not editable):
                     try:
-                        database.update_metadata(user, group_id, record["id"], {"tags": tags, "notes": notes, **properties})
+                        updates = {"tags": tags, "notes": notes, **properties}
+                        if new_property_name.strip():
+                            if new_property_name.strip() in metadata:
+                                raise ValueError("That property already exists. Edit it above instead.")
+                            updates[new_property_name.strip()] = new_property_value
+                        database.update_metadata(user, group_id, record["id"], updates, name=molecule_name)
                         st.rerun()
                     except ValueError as exc:
                         st.error(str(exc))
         with st.expander("History and sources"):
             for source in record["sources"]:
                 st.write(source.get("tool") or source.get("type") or "Import")
+                if source.get("type") == "table_import_row":
+                    st.caption(f"{source.get('source_name') or 'Source file'} · row {source.get('source_row', '?')}" +
+                               (f" · ID {source['source_id']}" if source.get("source_id") else "") +
+                               (f" · {source.get('validation_status')}" if source.get("validation_status") else ""))
+                    if source.get("warnings"):
+                        st.caption("Warnings: " + "; ".join(source["warnings"]))
                 if source.get("run_id"):
                     st.caption(source["run_id"])
                     if st.button("Open job", key="database-open-job-" + hashlib.sha1(source["source_key"].encode()).hexdigest()):
@@ -640,6 +870,50 @@ def render_database(user, projects):
                     st.session_state["molecular-column-open"] = True
             with view_col.popover("View", use_container_width=True):
                 plot = st.checkbox("Compare candidates", key="molecular-plot")
+            if group_id:
+                batches = database.import_batches(user, group_id)
+                if batches:
+                    show_import_history = st.toggle(
+                        f"Show import validation history · {len(batches):,} batch(es)",
+                        key="molecular-show-import-history-" + group_id,
+                    )
+                    if show_import_history:
+                        selected_batch_id = st.selectbox(
+                            "Import batch", [row["id"] for row in batches],
+                            format_func=lambda value: next(
+                                f"{row['source_name']} · {row['created_at'][:19]} · {row['summary'].get('valid_rows', 0):,} valid / {row['summary'].get('invalid_rows', 0):,} invalid"
+                                for row in batches if row["id"] == value
+                            ),
+                            key="molecular-import-history-batch-" + group_id,
+                        )
+                        selected_batch = next(row for row in batches if row["id"] == selected_batch_id)
+                        summary = selected_batch["summary"]
+                        mapping = selected_batch.get("mapping") or {}
+                        st.caption("Worksheet: " + (mapping.get("sheet_name") or "not applicable") +
+                                   " · SMILES: " + str(mapping.get("smiles_column") or "") +
+                                   " · ID: " + str(mapping.get("id_column") or "not mapped"))
+                        st.json(summary)
+                        saved_rows = database.import_batch_rows(user, selected_batch_id)
+                        history_frame = _import_report_frame(saved_rows)
+                        st.dataframe(history_frame[:1000], hide_index=True, use_container_width=True)
+                        if len(history_frame) > 1000:
+                            st.caption(f"Showing the first 1,000 of {len(history_frame):,} rows. Download the full report for all rows.")
+                        st.download_button(
+                            "Download saved validation report", _report_csv(saved_rows),
+                            file_name=Path(selected_batch["source_name"]).stem + "-validation.csv",
+                            mime="text/csv", key="molecular-import-history-report-" + selected_batch_id,
+                        )
+                        try:
+                            original = database.import_source_file(user, selected_batch_id)
+                            st.download_button(
+                                "Download original source file", original.read_bytes(),
+                                file_name=selected_batch["source_name"],
+                                key="molecular-import-history-source-" + selected_batch_id,
+                            )
+                        except (OSError, ValueError, PermissionError) as exc:
+                            st.caption(str(exc))
+                elif active_group.get("read_only") and _remote_source_workstation(active_group.get("origin")):
+                    st.caption("Full import reports are stored on the source workstation. Per-molecule import row provenance is available under History and sources.")
             evaluation_options = database.evaluation_options(
                 user, group_id=group_id, project_id=project_id, collection=collection,
                 scope=scope, hide_smoke_test=hide_smoke_test,

@@ -38,6 +38,91 @@ def _path(value, run_dir):
     return path if path.is_file() else None
 
 
+def _legacy_attempt_target_context(run_dir, attempt_id, run_metadata):
+    """Resolve the copied receptor and provenance for one bundled MN-Ligand attempt."""
+    attempt_id = str(attempt_id or "").strip()
+    if not attempt_id or Path(attempt_id).name != attempt_id:
+        return {}
+    attempt_dir = Path(run_dir) / "artifacts" / "replicates" / attempt_id
+    if not attempt_dir.is_dir():
+        return {}
+
+    target_path = next(
+        (path for relative in (
+            "input/receptor.pdb",
+            "artifacts/input/receptor.pdb",
+            "input/target.pdb",
+            "artifacts/input/target.pdb",
+            "artifacts/prepared/receptor.pdb",
+        ) if (path := attempt_dir / relative).is_file()),
+        None,
+    )
+    if target_path is None:
+        return {}
+
+    attempt_inputs = _read(attempt_dir / "input.json")
+    attempt_metadata = _read(attempt_dir / "metadata.json")
+    target_ref = attempt_inputs.get("target_artifact") or attempt_inputs.get("prepared_target")
+    if not isinstance(target_ref, dict):
+        nested_inputs = attempt_inputs.get("inputs")
+        nested_inputs = nested_inputs if isinstance(nested_inputs, dict) else {}
+        target_ref = nested_inputs.get("target_artifact") or nested_inputs.get("prepared_target")
+    target_ref = target_ref if isinstance(target_ref, dict) else {}
+    artifact_metadata = target_ref.get("metadata")
+    artifact_metadata = artifact_metadata if isinstance(artifact_metadata, dict) else {}
+    migration_metadata = run_metadata.get("legacy_migration")
+    migration_metadata = migration_metadata if isinstance(migration_metadata, dict) else {}
+    attempt_migration = attempt_metadata.get("legacy_migration")
+    attempt_migration = attempt_migration if isinstance(attempt_migration, dict) else {}
+    pdb_id = str(
+        run_metadata.get("pdb_id")
+        or migration_metadata.get("pdb_id")
+        or attempt_metadata.get("pdb_id")
+        or attempt_migration.get("pdb_id")
+        or ""
+    ).upper()
+    campaign_parts = [part.strip() for part in str(run_metadata.get("campaign_name") or "").split(" · ")]
+    campaign_receptor = campaign_parts[0] if len(campaign_parts) > 1 and campaign_parts[1].upper() == pdb_id else ""
+    receptor = str(
+        run_metadata.get("receptor")
+        or migration_metadata.get("receptor")
+        or attempt_metadata.get("receptor")
+        or attempt_migration.get("receptor")
+        or campaign_receptor
+    )
+    role = str(target_ref.get("role") or target_ref.get("artifact_type") or "")
+    digest = hashlib.sha256(target_path.read_bytes()).hexdigest()
+    display_parts = [part for part in (receptor, pdb_id, role.replace("_", " ")) if part]
+    if not display_parts:
+        display_parts.append("MN-Ligand target")
+    target_label = " · ".join(display_parts) + f" · {digest[:8]}"
+    referenced_digest = str(target_ref.get("sha256") or "")
+
+    return {
+        "target_id": target_label,
+        "target_label": target_label,
+        "target_path": str(target_path.resolve()),
+        "target_structure_digest": digest,
+        "target_variant_sha256": digest,
+        "target_pdb_id": pdb_id,
+        "target_receptor": receptor,
+        "target_source_application": "MN-Ligand",
+        "target_source_attempt_run_id": attempt_id,
+        "prepared_target_run_id": str(
+            target_ref.get("run_id")
+            or attempt_metadata.get("prepared_target_run_id")
+            or attempt_metadata.get("parent_run_id")
+            or ""
+        ),
+        "target_artifact_id": str(target_ref.get("artifact_id") or ""),
+        "target_artifact_role": role,
+        "target_artifact_sha256": referenced_digest,
+        "target_artifact_sha256_matches_input": referenced_digest == digest if referenced_digest else None,
+        "target_coordinate_transform": artifact_metadata.get("coordinate_transform"),
+        "target_artifact": target_ref,
+    }
+
+
 def _record(candidate, run_dir):
     files = []
     components = None
@@ -93,12 +178,21 @@ def _record(candidate, run_dir):
                 component.update(chain=chain, role="binder")
     if not components:
         return None
+    binder_chains = {str(chain) for chain in (candidate.get("binder_chains") or [])}
+    target_chains = {str(chain) for chain in (candidate.get("target_chains") or [])}
     for component in components:
-        chain = component.get("chain")
-        if chain in (candidate.get("binder_chains") or []):
-            component["role"] = "binder"
-        elif chain in (candidate.get("target_chains") or []):
-            component["role"] = "target"
+        # Structure parsers give polymer chains their literal chain ID, but
+        # split non-polymers into synthetic IDs such as ``C_108`` to keep
+        # residues unique. Their residue_key retains the source chain ID
+        # (``C:108``), which is what candidate annotations reference.
+        aliases = {str(component.get("chain") or "")}
+        residue_key = str(component.get("residue_key") or "")
+        if ":" in residue_key:
+            aliases.add(residue_key.split(":", 1)[0])
+        binder_match = bool(aliases & binder_chains)
+        target_match = bool(aliases & target_chains)
+        if binder_match != target_match:
+            component["role"] = "binder" if binder_match else "target"
     # An unsequenced poly-glycine backbone is a structure proposal, not an
     # assertion that every generated backbone is the same designed molecule.
     unresolved = str(candidate.get("stage") or "") == "generation.backbone" and not sequence
@@ -273,7 +367,36 @@ def _put_source(database, group_id, molecule_id, source_key, provenance):
     with database.connection() as connection:
         connection.execute("INSERT INTO molecule_sources VALUES (?,?,?,?) ON CONFLICT(source_key) DO UPDATE SET "
                            "molecule_id=excluded.molecule_id,group_id=excluded.group_id,provenance=excluded.provenance",
-                           (source_key, molecule_id, group_id, _json(provenance)))
+                               (source_key, molecule_id, group_id, _json(provenance)))
+
+
+def _merge_member_roles(database, group_id, molecule_id, components):
+    """Fill missing chain roles when an equivalent candidate joins a group."""
+    if not components:
+        return
+    roles = {str(row.get("chain") or ""): str(row.get("role") or "")
+             for row in components if row.get("role")}
+    if not roles:
+        return
+    with database.connection() as connection:
+        row = connection.execute(
+            "SELECT components FROM molecule_members WHERE group_id=? AND molecule_id=?",
+            (group_id, molecule_id),
+        ).fetchone()
+        if not row:
+            return
+        current = json.loads(row["components"])
+        changed = False
+        for component in current:
+            role = roles.get(str(component.get("chain") or ""))
+            if role and not component.get("role"):
+                component["role"] = role
+                changed = True
+        if changed:
+            connection.execute(
+                "UPDATE molecule_members SET components=? WHERE group_id=? AND molecule_id=?",
+                (_json(current), group_id, molecule_id),
+            )
 
 
 def _find_or_create_input(database, user, project, run_name, source_key, record, *, provenance, source_key_suffix, candidate=None):
@@ -364,7 +487,14 @@ def _best_docking_pose_indices(rows, pose_paths):
     for index, path in enumerate(pose_paths):
         compound_id = str(rows[index].get("compound_id") or "").strip()
         if path is not None and compound_id:
-            candidates.setdefault(compound_id, []).append(index)
+            row = rows[index]
+            source_run_id = str(row.get("legacy_run_id") or "").strip()
+            replicate = str(row.get("replicate") or "").strip()
+            # Grouped MN-Ligand jobs retain source attempt IDs in their
+            # merged score table. Keep one best pose per compound per attempt
+            # (and per explicit intra-attempt replicate when provided).
+            key = (compound_id, source_run_id, replicate) if source_run_id else (compound_id,)
+            candidates.setdefault(key, []).append(index)
     return {min(indices, key=sort_key) for indices in candidates.values()}
 
 
@@ -518,6 +648,9 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     run_dir = Path(run_dir)
     if not is_studio_job(run_dir):
         return 0
+    if (run_dir / "artifacts/md/study.json").is_file():
+        from mn_molecular_design_studio.md_database import ingest_completed_md_run
+        return ingest_completed_md_run(run_dir, database=database, force=force)
     database = database or MolecularDatabase()
     marker = _read(run_dir / "molecular_design_studio.json")
     metadata, inputs, result = (_read(run_dir / name) for name in ("metadata.json", "input.json", "result.json"))
@@ -528,6 +661,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     tool = str(metadata.get("tool") or inputs.get("tool") or run_dir.parent.name)
     mode = _run_mode(run_dir, metadata, inputs)
     needs_compound_identity_refresh = run_dir.parent.name == "ligand-docking" or _is_cofolding_prediction(tool, metadata, inputs, mode)
+    is_legacy_aggregate = (run_dir / "mn_ligand_aggregate.json").is_file()
     source_key = f"{socket.gethostname()}/{run_dir.parent.name}/{run_dir.name}"
     observed_paths = [run_dir / name for name in (
         "input.json", "result.json", "metadata.json", "molecular_design_studio.json", "selection_snapshot.json",
@@ -538,7 +672,21 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         "artifacts/input/target.pdb", "artifacts/input/complex.pdb",
         "artifacts/raw/optimized_prediction/input_mapping.json",
         "artifacts/raw/af3_jax_cofolding/input_mapping.json")]
-    signature = _json({"ingestion_version": 7 if needs_compound_identity_refresh else 6, "files": [
+    if is_legacy_aggregate:
+        replicate_root = run_dir / "artifacts" / "replicates"
+        if replicate_root.is_dir():
+            for replicate_dir in sorted(path for path in replicate_root.iterdir() if path.is_dir()):
+                observed_paths.extend(replicate_dir / relative for relative in (
+                    "input.json",
+                    "metadata.json",
+                    "input/receptor.pdb",
+                    "artifacts/input/receptor.pdb",
+                    "input/target.pdb",
+                    "artifacts/input/target.pdb",
+                    "artifacts/prepared/receptor.pdb",
+                ))
+    ingestion_version = 8 if is_legacy_aggregate else (7 if needs_compound_identity_refresh else 6)
+    signature = _json({"ingestion_version": ingestion_version, "files": [
         (str(path.relative_to(run_dir)), path.stat().st_mtime_ns, path.stat().st_size)
         for path in observed_paths if path.is_file()],
         "candidate_structures": _candidate_structure_signature(run_dir)})
@@ -614,9 +762,17 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         sequence = candidate.get("binder_sequence") or candidate.get("sequence")
         is_backbone = stage == "generation.backbone" and not sequence
         rejected = _candidate_rejected(candidate)
+        raw_candidate = candidate.get("raw_metadata") or {}
+        preserve_failed_native_refold = (
+            mode == "generated" and rejected and stage == "complex_refolding"
+            and raw_candidate.get("result_kind") == "native_pipeline"
+            and raw_candidate.get("candidate_pool_level") == "native_pipeline"
+        )
         # A failed generated design remains visible in its job results and
-        # native tables, but it is not a reusable library candidate.
-        if mode == "generated" and rejected:
+        # native tables, but it is not a reusable library candidate. Native
+        # pipeline refolds with failed tool filters remain as intermediate
+        # observations so their structures and stage metrics are auditable.
+        if mode == "generated" and rejected and not preserve_failed_native_refold:
             continue
         provenance = {**origin, "candidate_id": candidate.get("candidate_id"), "parents": candidate.get("parents") or []}
         candidate_id = str(candidate.get("candidate_id") or _canonical_fingerprint(record))
@@ -651,7 +807,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                 identity_record["components"] = selected_components
             elif designed:
                 identity_record["components"] = designed
-        if mode == "generated" and sequence:
+        if mode == "generated" and sequence and not rejected:
             # Generated designs are identified by their designed chain(s).
             # A later structure parse may add the target chain to the same
             # candidate; that complex should be attached as a representation
@@ -666,6 +822,10 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
 
         if mode == "curated":
             destination = output_group("curated")
+            with database.connection() as connection:
+                molecule_id = database._put(connection, destination, identity_record, source_key=source_for_molecule, origin=provenance, stamp=stamp)
+        elif preserve_failed_native_refold:
+            destination = output_group("intermediate")
             with database.connection() as connection:
                 molecule_id = database._put(connection, destination, identity_record, source_key=source_for_molecule, origin=provenance, stamp=stamp)
         elif not rejected and not is_backbone and (mode == "generated" or (mode == "auto" and stage in {"sequence_design", "generation.backbone_sequence"})):
@@ -694,6 +854,8 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             destination = output_group("intermediate")
             with database.connection() as connection:
                 molecule_id = database._put(connection, destination, identity_record, source_key=source_for_molecule, origin=provenance, stamp=stamp)
+
+        _merge_member_roles(database, destination, molecule_id, record.get("components"))
 
         if previous_source and (previous_source["molecule_id"], previous_source["group_id"]) != (molecule_id, destination):
             stale_evaluation_memberships.add((previous_source["group_id"], previous_source["molecule_id"]))
@@ -726,6 +888,11 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             # parent engine (a generator may contain several sequence methods).
             raw = candidate.get("raw_metadata") or {}
             candidate_context = {key: candidate.get(key) for key in ("candidate_id", "source_tool", "stage", "binder_sequence", "binder_chains", "target_chains", "complex_pdb", "binder_pdb", "target_pdb")}
+            # String QC markers are deliberately excluded from native numeric
+            # observation metrics, but shared output measures may depend on
+            # them for provenance (for example, heavy-atom geometry status).
+            if (candidate.get("metrics") or {}).get("binder_geometry_status") is not None:
+                candidate_context["binder_geometry_status"] = candidate["metrics"]["binder_geometry_status"]
             candidate_context["raw_metadata"] = {key: raw[key] for key in ("fasta_header", "engine_version", "operation", "structure_kind", "image_digest") if key in raw}
             settings = inputs.get("params") or {}
             from mn_molecular_design_studio.evaluations import file_digest
@@ -819,6 +986,14 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                "settings": params, "units": (result.get("metrics") or {}).get("score_units"),
                "primary_ranking_metric": (result.get("metrics") or {}).get("primary_ranking_metric"),
                "ranking_direction": (result.get("metrics") or {}).get("ranking_direction")}
+    target_context_by_attempt = {}
+    if is_legacy_aggregate:
+        replicate_root = run_dir / "artifacts" / "replicates"
+        if replicate_root.is_dir():
+            for replicate_dir in sorted(path for path in replicate_root.iterdir() if path.is_dir()):
+                attempt_context = _legacy_attempt_target_context(run_dir, replicate_dir.name, metadata)
+                if attempt_context:
+                    target_context_by_attempt[replicate_dir.name] = attempt_context
     preferred_docking_structure_ids = set()
     has_docking_scores = False
     for filename in ("docking_scores.csv", "nesso_affinity.csv"):
@@ -837,16 +1012,22 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             if not match:
                 continue
             molecule_id, destination, record = match
+            legacy_run_id = str(row.get("legacy_run_id") or "").strip()
+            row_target_context = target_context_by_attempt.get(legacy_run_id, {})
             pose = pose_paths[index]
             if filename == "docking_scores.csv" and index in best_pose_indices and pose:
+                attempt_label = f" · attempt {legacy_run_id[:8]}" if legacy_run_id else ""
                 structure_id = database.attach_structure(
                     destination, molecule_id,
-                    {"path": str(pose), "label": f"{tool} best pose", "database_structure_policy": "best_docking_pose"},
-                    context={**context, "pose_rank": row.get("pose_rank"), "row": row}, created_at=stamp)
+                    {"path": str(pose), "label": f"{tool} best pose{attempt_label}", "database_structure_policy": "best_docking_pose"},
+                    context={**context, **row_target_context, "pose_rank": row.get("pose_rank"), "legacy_run_id": legacy_run_id,
+                             "attempt_index": row.get("attempt_index"), "row": row}, created_at=stamp)
                 database.make_structure_portable(user, structure_id)
                 preferred_docking_structure_ids.add(structure_id)
             database.add_observation(destination, molecule_id, tool, run_dir.name, _numeric({key: value for key, value in row.items() if key != "compound_id"}),
-                context={**context, "row": row, "is_representative": index in best_pose_indices}, source_key=f"{source_key}:{filename}:{index}", created_at=stamp)
+                context={**context, **row_target_context, "row": row, "legacy_run_id": row.get("legacy_run_id"),
+                         "attempt_index": row.get("attempt_index"), "is_representative": index in best_pose_indices},
+                source_key=f"{source_key}:{filename}:{index}", created_at=stamp)
     if has_docking_scores:
         _prune_stale_run_structures(database, run_dir.parent.name, run_dir.name,
                                     preferred_docking_structure_ids, docking=True)

@@ -116,11 +116,16 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
             contexts[node_id] = {"hotspots": target.hotspots, "coldspots": target.coldspots}
             params.update(contexts[node_id])
     else:
+        project_design=selected['data']['kind']=='project_design_source'
         generated=selected['data']['kind'] in {'generation_source','backbone_source'}
         stage='generation.backbone' if selected['data']['kind']=='backbone_source' else 'generation.backbone_sequence'
-        candidate_loader=(lambda path:generated_candidates(path,stage=stage)) if generated else design_candidates
+        if project_design:
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import source_project_designs
+            candidate_loader=lambda path: source_project_designs(path, project_id)[1]
+        else:
+            candidate_loader=(lambda path:generated_candidates(path,stage=stage)) if generated else design_candidates
         if not project_id:
-            st.info("Select a project to choose its completed generator jobs." if generated else "Select a project to choose its successful design jobs.")
+            st.info("Select a project to choose its completed design jobs." if project_design else "Select a project to choose its completed generator jobs." if generated else "Select a project to choose its successful design jobs.")
             return contexts
         rows=[];cursor=None
         while True:
@@ -130,14 +135,15 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
                 break
         eligible = {str(row["run_dir"]): (row, designs) for row in rows if (designs := candidate_loader(Path(row["run_dir"])))}
         if not eligible:
-            st.info("This project has no completed generator jobs with the required output type." if generated else "This project has no successful design jobs with filter-passing designs.")
+            st.info("This project has no completed jobs with structure-bearing design candidates." if project_design else "This project has no completed generator jobs with the required output type." if generated else "This project has no successful design jobs with filter-passing designs.")
             return contexts
         options = list(eligible)
         default = options.index(params["source_run_dir"]) if params.get("source_run_dir") in options else 0
-        source_dir = st.selectbox("Generator job" if generated else "Successful design job", options, index=default, format_func=lambda p: f"{eligible[p][0].get('campaign_name') or eligible[p][0]['tool']} · {eligible[p][0].get('job_code')}", key=key+"-source")
+        source_dir = st.selectbox("Completed design job" if project_design else "Generator job" if generated else "Successful design job", options, index=default, format_func=lambda p: f"{eligible[p][0].get('campaign_name') or eligible[p][0]['tool']} · {eligible[p][0].get('job_code')}", key=key+"-source")
         ids = [c["candidate_id"] for c in eligible[source_dir][1]]
-        chosen = st.multiselect("Generated designs" if generated else "Filter-passing designs", ids, default=[c for c in params.get("selected_candidate_ids", ids) if c in ids], key=key+"-designs-"+Path(source_dir).name)
-        if generated:st.caption("These designs have not been validated. Connect sequence design and structure prediction steps to assess them.")
+        chosen = st.multiselect("Project design candidates" if project_design else "Generated designs" if generated else "Filter-passing designs", ids, default=[c for c in params.get("selected_candidate_ids", ids) if c in ids], key=key+"-designs-"+Path(source_dir).name)
+        if project_design:st.caption("Choose structures from any completed generator or design job. Antibody designs are annotated by SAbR before AbMPNN redesign.")
+        elif generated:st.caption("These designs have not been validated. Connect sequence design and structure prediction steps to assess them.")
         contexts[node_id] = {"source_run_dir": source_dir, "selected_candidate_ids": chosen}
         params.update(contexts[node_id])
     return contexts
@@ -255,11 +261,15 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     if migrated_graph is not current_graph:
         _activate_graph(prefix, migrated_graph)
     templates = {"Foundry · RFD3 → MPNN → RF3": "foundry",
+                 "Antibody CDRs · Existing designs → SAbR → AbMPNN → sequence analysis": "abmpnn_cdr_redesign",
                  "PXDesign · MPNN → AF2 + Protenix":"pxdesign","RFdiffusion · MPNN → AF2":"rfdiffusion",
                  "Genie3 · MPNN → AF2 template":"genie3","Protpardelle-1C · MPNN → ESMFold":"protpardelle",
                  "ESMFold2 Binder Design → ProteinMPNN → RF3":"esmfold2_binder",
                  "Miniprotein binders · all generators → ProteinMPNN → Boltz-2 + analysis":"all_generators_boltz2",
                  "VHH binders · BindCraft2 + BoltzGen + ESMFold2 → ProteinMPNN → Boltz-2":"vhh_design",
+                 "RFD4 Protein Binder → Boltz-2 → interface analysis":"rfd4_protein_binder",
+                 "RFD4 Small-Molecule Pocket Design → Boltz-2":"rfd4_small_molecule",
+                 "RFD4 Enzyme Motif Scaffolding → Boltz-2":"rfd4_enzyme",
                  "Cofolding · Protein monomer":"cofold_protein",
                  "Cofolding · Protein / protein":"cofold_protein_protein",
                  "Cofolding · Protein / ligand":"cofold_protein_ligand",
@@ -317,7 +327,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 # controls, rather than accepted from component messages.
                 known = {n["id"]: n for n in graph["nodes"]}
                 for n in updated["nodes"]:
-                    if n["data"]["kind"] in {"target", "binder_context", "design_source", "generation_source", "backbone_source", "complexa_generator", "pxdesign", "rfdiffusion", "genie3", "protpardelle"}:
+                    if n["data"]["kind"] in {"target", "binder_context", "design_source", "generation_source", "backbone_source", "project_design_source", "complexa_generator", "pxdesign", "rfdiffusion", "genie3", "protpardelle"}:
                         previous = known.get(n["id"])
                         n["data"]["params"] = copy.deepcopy(previous["data"]["params"] if previous and previous["data"]["kind"]==n["data"]["kind"] else {f["name"]:f["default"] for f in NODE_CATALOG[n["data"]["kind"]]["fields"]})
                 updated["name"] = graph["name"]

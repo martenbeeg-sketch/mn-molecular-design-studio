@@ -19,6 +19,7 @@ from mn_molecular_design_studio.pipeline_graph import (
 )
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import create_job, finish_job, read_json, update_status, utc_now, write_json
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+from mn_molecular_design_studio.mimosa_motif import hydrate_candidate_fixed_motif
 
 
 def file_digest(path: Path) -> str:
@@ -47,6 +48,21 @@ def _absolute_candidates(source: dict) -> list[dict]:
                 if resolved:
                     row[key] = str(resolved)
     return rows
+
+
+def _selected_source_rows(kind: str, selected: list[dict], all_rows: list[dict]) -> list[dict]:
+    """Keep source-loader annotations when materializing a pipeline input node.
+
+    ``project_design_source`` enriches selected rows with verified MIMOSA
+    fixed-residue identities. Re-reading the normalized candidate file is
+    still useful for source kinds that only select rows, but must not replace
+    those enriched project-design rows with their unhydrated originals.
+    """
+    if kind == "project_design_source":
+        return copy.deepcopy(selected)
+    selected_ids = {str(candidate.get("candidate_id") or "") for candidate in selected}
+    return [candidate for candidate in all_rows
+            if str(candidate.get("candidate_id") or "") in selected_ids]
 
 
 def _local_source(parent: Path, node_id: str, candidates: list[dict], target: dict | None = None, analysis_runs: list[dict] | None = None) -> dict:
@@ -92,6 +108,51 @@ def source_generations(source_run_dir: str, project_id: str, selected_ids=None, 
         candidates=[c for c in candidates if c['candidate_id'] in wanted]
     if not candidates:raise ValueError('This job has no completed generation outputs.')
     return run_dir,candidates
+
+
+def source_project_designs(source_run_dir: str, project_id: str, selected_ids=None) -> tuple[Path, list[dict]]:
+    """Load structure-bearing candidates from any completed design job in this project."""
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+
+    run_dir = _path(source_run_dir)
+    marker = read_json(run_dir / "molecular_design_studio.json")
+    metadata = read_json(run_dir / "metadata.json")
+    result = read_json(run_dir / "result.json")
+    if str(marker.get("project_id") or "") != str(project_id):
+        raise ValueError("The selected design job must belong to this project.")
+    if metadata.get("task_group") != "design" or metadata.get("status") not in {"completed", "succeeded"} or result.get("success") is not True:
+        raise ValueError("Choose a completed design job with successful outputs.")
+
+    rows = []
+    for candidate in read_candidates(run_dir / "artifacts/normalized_candidates/candidates.jsonl"):
+        if candidate.get("stage") not in {"generation.backbone", "generation.backbone_sequence", "sequence_design", "complex_refolding"}:
+            continue
+        if not candidate.get("binder_chains"):
+            continue
+        structure = candidate.get("complex_pdb") or candidate.get("binder_pdb")
+        if not structure:
+            continue
+        resolved = resolve_stored_path(structure, run_dir=run_dir, must_exist=True)
+        if resolved is None or not resolved.is_file():
+            continue
+        row = copy.deepcopy(candidate)
+        for key in ("target_pdb", "complex_pdb", "binder_pdb"):
+            if row.get(key):
+                path = resolve_stored_path(row[key], run_dir=run_dir, must_exist=True)
+                if path:
+                    row[key] = str(path)
+        row = hydrate_candidate_fixed_motif(row, run_dir)
+        rows.append(row)
+
+    if selected_ids is not None:
+        wanted = {str(value) for value in selected_ids}
+        available = {str(row.get("candidate_id") or "") for row in rows}
+        if not wanted or not wanted.issubset(available):
+            raise ValueError("Select one or more structure-bearing candidates from this completed design job.")
+        rows = [row for row in rows if str(row.get("candidate_id") or "") in wanted]
+    if not rows:
+        raise ValueError("This completed job has no structure-bearing design candidates.")
+    return run_dir, rows
 
 
 def source_molecule_selection(source_run_dir: str, project_id: str, selected_ids=None):
@@ -416,6 +477,35 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
     """Only allowlisted adapters can turn graph data into a workflow call."""
     workflow = NODE_CATALOG[kind]["workflow"]
     p = copy.deepcopy(params)
+    if kind == "boltz2":
+        # Study validation always uses the target MSA; binder chains remain
+        # single-sequence through _optimized_prediction_tasks.
+        p["target_use_msa"] = True
+    if kind in {"rfd4", "rfd4_fold"}:
+        from mn_molecular_design_studio import design_validation
+        target=source.get("target") or {}
+        p["target_structure"]=p.get("target_structure") or target.get("target_pdb") or None
+        p["job_name"]=name
+        if kind=="rfd4_fold":
+            if source.get("molecule_task"):
+                task=source["molecule_task"]
+                if any(task.get(k) for k in ("dna_sequences","rna_sequences","ligand_smiles","ligand_ccd_codes")):
+                    raise ValueError("The RFD4 protein folding node accepts protein sequences; use the design tool for RNA or molecule-conditioned tasks.")
+                p["protein_sequences"]=":".join(str(task.get(k) or "").strip() for k in ("target_protein_sequences","partner_protein_sequences") if task.get(k))
+            if source.get("candidates_jsonl"):
+                rows=_absolute_candidates(source)
+                p["input_files"]=[str(design_validation.candidate_description(_path(source["run_dir"]),row)["structure_path"]) for row in rows]
+                p.setdefault('options',{})['source_candidates']={Path(path).name:{key:row.get(key) for key in ('candidate_id','target_chains','binder_chains','complex_pdb','target_pdb')} for path,row in zip(p['input_files'],rows)}
+                p["target_structure"]=None
+        else:
+            options=json.loads(p.pop("options_json","{}"))
+            if not isinstance(options,dict): raise ValueError("RFD4 task options must be a JSON object.")
+            p["options"]={**options,"refold":False}
+            p["input_files"]=[x.strip() for x in str(p.get("input_files") or "").splitlines() if x.strip()]
+            chains=target.get("target_chains") or []
+            p["target_chains"]=[x for x in re.split(r"[,;\s]+",chains) if x] if isinstance(chains,str) else chains
+            p["hotspots"]=target.get("hotspots","")
+        return {"schema_version":1,"workflow":workflow,"parameters":p}
     if isinstance(source.get("molecule_task"), dict):
         molecule_task = source["molecule_task"]
         if kind == "af2":
@@ -441,6 +531,12 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
         engine = direct_engines.get(kind) or OPTIMIZED_PREDICTION_NODE_ENGINES.get(kind)
         if engine:
             return _optimized_prediction_request(engine, p, source, name)
+    if kind == "boltz2":
+        # Use the same MSA-aware Boltz-2 runner as the prediction tile. The
+        # legacy initial-guess adapter only injected an MSA when a benchmark
+        # CSV happened to be supplied, despite the graph tile promising one.
+        p["target_use_msa"] = True
+        return _optimized_prediction_request("boltz2", p, source, name)
     if kind == "surface_analysis":
         target = source.get("target") or {}
         target_pdb = target.get("target_pdb")
@@ -611,7 +707,27 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
                 'num_recycles':int(p['recycling_steps']),
                 'engine_options':{'sampling_steps':int(p['sampling_steps']),'use_msa_server':False}}}
         p.update(source_run_dir=source["run_dir"], candidates_jsonl=source["candidates_jsonl"])
-        if kind in {"foundry_mpnn", "ligandmpnn"}:
+        if kind == "abmpnn":
+            from mn_molecular_design_studio import mpnn_input
+            p["num_seq_per_target"] = int(p.pop("sequences", 1))
+            p["cdr_regions"] = [
+                region for region, enabled in (
+                    ("CDR1", p.pop("redesign_cdr1", True)),
+                    ("CDR2", p.pop("redesign_cdr2", True)),
+                    ("CDR3", p.pop("redesign_cdr3", True)),
+                ) if enabled
+            ]
+            if not p["cdr_regions"]:
+                raise ValueError("Select at least one CDR region for AbMPNN redesign.")
+            p["seed"] = int(p.get("seed") or 0) or None
+            p["job_name"] = name
+            # Validate common sequence-design controls; the dedicated workflow
+            # pins the model to AbMPNN and derives fixed framework residues from SAbR.
+            p = mpnn_input.prepare(p | {"model_type": "ab_mpnn", "backend": "shared_ligandmpnn"})
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.mpnn import run_abmpnn_sequence_design
+            allowed = inspect.signature(run_abmpnn_sequence_design).parameters
+            p = {key: value for key, value in p.items() if key in allowed}
+        elif kind in {"foundry_mpnn", "ligandmpnn"}:
             from mn_molecular_design_studio import mpnn_input
             p["num_seq_per_target"] = int(p.pop("sequences")) * int(p.pop("number_of_batches", 1))
             p["noise_level"] = float(p["noise_level"]) if p.get("noise_level") not in (None, "") else None
@@ -874,7 +990,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                 kind, params = node["data"]["kind"], node["data"]["params"]
                 upstream = [outputs[p] for p in parents]
                 source = upstream[0] if upstream else {}
-                if kind in {"ligandmpnn", "foundry_mpnn"} and len(upstream) > 1:
+                if kind in {"ligandmpnn", "foundry_mpnn", "sabr", "abmpnn"} and len(upstream) > 1:
                     merged_rows = []
                     merged_target = next((item.get("target") for item in upstream if item.get("target")), {})
                     for source_id, output in zip(parents, upstream):
@@ -892,11 +1008,14 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                 if kind == "target" or kind == 'cofold_input' and params.get('target_pdb') or kind=='complexa_generator' and params.get('target_pdb'):
                     target_path = _path(params["target_pdb"])
                     key_params["structure_digest"] = file_digest(target_path)
-                if kind in {"design_source","generation_source","backbone_source","molecule_source"}:
-                    loader=source_molecule_selection if kind == 'molecule_source' else source_generations if kind in {'generation_source','backbone_source'} else source_designs
+                if kind in {"design_source","generation_source","backbone_source","molecule_source","project_design_source"}:
+                    loader=(source_molecule_selection if kind == 'molecule_source' else source_project_designs if kind == 'project_design_source' else source_generations if kind in {'generation_source','backbone_source'} else source_designs)
                     extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind in {'generation_source','backbone_source'} else {}
                     source_dir, _ = loader(params["source_run_dir"], project_id, params.get("selected_candidate_ids"),**extra)
                     key_params["source_digest"] = file_digest(source_dir / "artifacts/normalized_candidates/candidates.jsonl")
+                    if kind == "project_design_source":
+                        from mn_molecular_design_studio import mimosa_motif
+                        key_params["mimosa_motif_adapter_digest"] = file_digest(Path(mimosa_motif.__file__))
                 if kind=='complexa_generator':
                     from mn_molecular_design_studio import complexa_input, complexa_container
                     key_params['input_adapter_digest']=file_digest(Path(complexa_input.__file__))
@@ -916,6 +1035,14 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     key_params["input_adapter_digest"] = file_digest(Path(rfdiffusion_beta_pairing_input.__file__))
                     if params.get("target_pdb"):
                         key_params["target_pdb_digest"] = file_digest(_path(params["target_pdb"]))
+                elif kind == "sabr":
+                    from mn_molecular_design_studio import sabr_runtime
+                    key_params["implementation_digest"] = file_digest(Path(sabr_runtime.__file__))
+                elif kind == "abmpnn":
+                    from mn_molecular_design_studio import mpnn_input
+                    from mn_molecular_design_studio import mimosa_motif
+                    key_params["checkpoint_digest"] = file_digest(mpnn_input.checkpoint("ab_mpnn"))
+                    key_params["mimosa_motif_adapter_digest"] = file_digest(Path(mimosa_motif.__file__))
                 if NODE_CATALOG[kind]["workflow"]:
                     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS, _get_function
                     implementation = _get_function(WORKFLOWS[NODE_CATALOG[kind]["workflow"]])
@@ -985,12 +1112,12 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             target["hotspots"] = params.get("hotspots") or target.get("hotspots", "")
                             target["coldspots"] = params.get("coldspots") or target.get("coldspots", "")
                         complete(node_id, {"target": target}, key);progressed=True;continue
-                    if kind in {"design_source","generation_source","backbone_source","molecule_source"}:
-                        loader=source_molecule_selection if kind == 'molecule_source' else source_generations if kind in {'generation_source','backbone_source'} else source_designs
+                    if kind in {"design_source","generation_source","backbone_source","molecule_source","project_design_source"}:
+                        loader=(source_molecule_selection if kind == 'molecule_source' else source_project_designs if kind == 'project_design_source' else source_generations if kind in {'generation_source','backbone_source'} else source_designs)
                         extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind in {'generation_source','backbone_source'} else {}
                         source_dir, selected = loader(params["source_run_dir"], project_id, params.get("selected_candidate_ids"),**extra)
                         all_rows = _absolute_candidates({"run_dir": str(source_dir), "candidates_jsonl": str(source_dir / "artifacts/normalized_candidates/candidates.jsonl")})
-                        selected_ids = {c["candidate_id"] for c in selected}
+                        selected_rows = _selected_source_rows(kind, selected, all_rows)
                         if kind in {'generation_source','backbone_source'}:
                             source_input = read_json(source_dir/'input.json')
                             source_params = source_input.get('params', {}) if isinstance(source_input.get('params'), dict) else {}
@@ -1012,9 +1139,16 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                 target['target_chains'] = next((row.get('target_chains') for row in all_rows if row.get('target_chains')), [])
                             if not target.get('hotspots'):
                                 target['hotspots'] = next((row.get('hotspots') for row in all_rows if row.get('hotspots')), [])
+                        elif kind == 'project_design_source':
+                            first = selected_rows[0] if selected_rows else {}
+                            target = {
+                                "target_pdb": first.get("target_pdb", ""),
+                                "target_chains": first.get("target_chains") or [],
+                                "hotspots": first.get("hotspots", ""),
+                            }
                         else:
                             target = {}
-                        complete(node_id, _local_source(parent, node_id, [c for c in all_rows if c["candidate_id"] in selected_ids],target), key);progressed=True;continue
+                        complete(node_id, _local_source(parent, node_id, selected_rows,target), key);progressed=True;continue
                     if kind in {"filter", "results"}:
                         rows = []
                         analysis_runs = []
@@ -1031,6 +1165,44 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         if kind == "filter":
                             rows = filter_candidates(rows, params)
                         complete(node_id, _local_source(parent, node_id, rows, source.get("target"), analysis_runs if kind == "results" else []), key);progressed=True;continue
+                    if kind == "sabr":
+                        from mn_molecular_design_studio import sabr_runtime
+                        from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+                        rows = _absolute_candidates(source) if source.get("candidates_jsonl") else []
+                        if not rows:
+                            raise ValueError("SAbR needs at least one connected antibody design with a structure.")
+                        for row in rows:
+                            path_text = row.get("complex_pdb") or row.get("binder_pdb")
+                            path = resolve_stored_path(path_text, run_dir=_path(source["run_dir"]), must_exist=True)
+                            if path is None:
+                                raise ValueError(f"SAbR could not locate a structure for {row.get('candidate_id', 'candidate')}.")
+                            chains = [str(chain) for chain in row.get("binder_chains") or []]
+                            if not chains:
+                                raise ValueError(f"SAbR could not identify the antibody chain for {row.get('candidate_id', 'candidate')}.")
+                            annotation = sabr_runtime.annotate_file(
+                                path, chains, chain_type=params.get("chain_type", "auto"),
+                                noise_level=float(params.get("noise_level", 0.0)),
+                                mode=params.get("mode", "sabr"), scheme="imgt",
+                            )
+                            residues_by_region = {region: [] for region in sabr_runtime.CDR_NAMES}
+                            for chain_data in annotation["chains"].values():
+                                for region, labels in chain_data["cdr_residues"].items():
+                                    residues_by_region[region].extend(labels)
+                            raw = dict(row.get("raw_metadata") or {})
+                            raw["sabr_cdr_selection"] = {
+                                "chain_ids": chains,
+                                "regions": list(sabr_runtime.CDR_NAMES),
+                                "residues_by_region": residues_by_region,
+                                "chain_type": params.get("chain_type", "auto"),
+                                "mode": params.get("mode", "sabr"),
+                                "noise_level": float(params.get("noise_level", 0.0)),
+                                "scheme": "imgt",
+                            }
+                            raw["sabr_annotation"] = annotation
+                            row["raw_metadata"] = raw
+                        complete(node_id, _local_source(parent, node_id, rows, source.get("target")), key)
+                        progressed = True
+                        continue
                     if source.get("candidates_jsonl") and not source.get("candidate_count"):
                         complete(node_id, _local_source(parent, node_id, [], source.get("target")), key, "skipped");progressed=True;continue
                     request = node_request(kind, params, source, f"{pipeline_name} · {node['data']['label']}")

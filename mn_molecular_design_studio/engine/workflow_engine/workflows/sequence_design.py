@@ -583,6 +583,56 @@ def _collect_artifacts(run_dir: Path, root: Path, patterns: list[tuple[str, str]
     return artifacts
 
 
+def _verify_mimosa_fixed_identity_sequence(
+    source: dict[str, Any], binder_sequence: str, design_chains: list[str], input_pdb: Path | None,
+    role_metadata: dict[str, Any],
+) -> dict[str, Any] | None:
+    raw = source.get("raw_metadata") if isinstance(source.get("raw_metadata"), dict) else {}
+    if not raw.get("fixed_motif_required"):
+        return None
+    if raw.get("motif_mapping_verified") is not True:
+        raise ValueError(raw.get("motif_mapping_warning") or "AbMPNN requires a verified MIMOSA fixed-motif mapping.")
+    identities = raw.get("mimosa_fixed_residue_identities")
+    if not isinstance(identities, dict) or not identities or input_pdb is None:
+        raise ValueError("AbMPNN cannot verify the MIMOSA fixed-motif identities against its staged input.")
+
+    import mn_molecular_design_studio.mpnn_input as mpnn_input
+
+    info = mpnn_input.inventory(input_pdb)
+    source_to_engine = role_metadata.get("source_to_engine_residues") or {}
+    chain_offsets: dict[str, int] = {}
+    offset = 0
+    for chain in design_chains:
+        chain_offsets[str(chain)] = offset
+        rows = info.get("chains", {}).get(str(chain), {}).get("residues", [])
+        if not rows:
+            raise ValueError(f"AbMPNN cannot map fixed motif positions on antibody chain {chain}.")
+        offset += len(rows)
+
+    expected: dict[str, str] = {}
+    for source_label, amino_acid in identities.items():
+        engine_label = str(source_to_engine.get(str(source_label), source_label))
+        residue = info.get("residues", {}).get(engine_label)
+        if not residue:
+            raise ValueError(f"AbMPNN cannot map fixed MIMOSA motif residue {source_label} into its redesigned sequence.")
+        chain = engine_label[: -(len(str(residue["number"])) + len(str(residue.get("insertion_code") or "")))]
+        chain_rows = info.get("chains", {}).get(chain, {}).get("residues", [])
+        try:
+            sequence_offset = chain_offsets[chain] + next(i for i, row in enumerate(chain_rows) if row["label"] == engine_label)
+        except (KeyError, StopIteration) as exc:
+            raise ValueError(f"Fixed MIMOSA residue {source_label} is outside the AbMPNN-designed antibody chains.") from exc
+        amino_acid = str(amino_acid).upper()
+        if sequence_offset >= len(binder_sequence):
+            raise ValueError(f"Fixed MIMOSA residue {source_label} lies outside the AbMPNN output sequence.")
+        expected[engine_label] = amino_acid
+        observed = binder_sequence[sequence_offset].upper()
+        if observed != amino_acid:
+            raise ValueError(
+                f"AbMPNN changed fixed MIMOSA residue {source_label}: expected {amino_acid}, observed {observed}."
+            )
+    return {"status": "verified", "count": len(expected), "identities": expected}
+
+
 def _normalize_ligandmpnn_candidates(
     run_dir: Path,
     source_candidates: list[dict[str, Any]],
@@ -628,6 +678,30 @@ def _normalize_ligandmpnn_candidates(
                         input_pdb,
                         design_chains,
                     )
+                mimosa_fixed_validation = _verify_mimosa_fixed_identity_sequence(
+                    source, binder_sequence, design_chains, input_pdb, role_metadata
+                )
+                metrics = dict(seq_row.get("metrics") or {})
+                raw_metadata = {
+                    **dict(source.get("raw_metadata") or {}),
+                    "source_candidate": source,
+                    "fasta": _rel_path(run_dir, fasta_path),
+                    "fasta_header": seq_row.get("header"),
+                    "sequence_index": sequence_index,
+                    "ligandmpnn_design_index": design_index,
+                    "fixed_residues": params.get("fixed_residues_by_candidate", {}).get(source_id, []),
+                    "chain_role_schema": role_metadata.get("chain_role_schema"),
+                    "chain_roles": role_metadata.get("chain_roles"),
+                    "binder_source_chains": role_metadata.get("binder_source_chains", []),
+                    "target_source_chains": role_metadata.get("target_source_chains", []),
+                }
+                if mimosa_fixed_validation:
+                    metrics["mimosa_fixed_identity_preservation_status"] = "verified"
+                    metrics["mimosa_fixed_identity_preserved_count"] = mimosa_fixed_validation["count"]
+                    raw_metadata["mimosa_fixed_identity_validation"] = mimosa_fixed_validation
+                    raw_metadata["mimosa_fixed_identity_input_patches"] = params.get(
+                        "mimosa_fixed_identity_input_patches_by_candidate", {}
+                    ).get(source_id, {})
                 normalized.append(
                     {
                         "candidate_id": f"{source_id}_{params['model_type']}_{sequence_index:03d}",
@@ -644,23 +718,9 @@ def _normalize_ligandmpnn_candidates(
                         "hotspots": source.get("hotspots", []),
                         "binder_length": str(len(binder_sequence)) if binder_sequence else source.get("binder_length"),
                         "contig": source.get("contig"),
-                        "metrics": seq_row.get("metrics") or {},
+                        "metrics": metrics,
                         "parents": [source_id],
-                        "raw_metadata": {
-                            **dict(source.get('raw_metadata') or {}),
-                            "source_candidate": source,
-                            "fasta": _rel_path(run_dir, fasta_path),
-                            "fasta_header": seq_row.get("header"),
-                            "sequence_index": sequence_index,
-                            "ligandmpnn_design_index": design_index,
-                            "fixed_residues": params.get("fixed_residues_by_candidate", {}).get(
-                                source_id, []
-                            ),
-                            "chain_role_schema": role_metadata.get("chain_role_schema"),
-                            "chain_roles": role_metadata.get("chain_roles"),
-                            "binder_source_chains": role_metadata.get("binder_source_chains", []),
-                            "target_source_chains": role_metadata.get("target_source_chains", []),
-                        },
+                        "raw_metadata": raw_metadata,
                     }
                 )
     return write_candidates(run_dir, params["model_type"], normalized)
@@ -776,6 +836,11 @@ def run_ligandmpnn_sequence_design(
                 raw = dict(candidate.get("raw_metadata") or {})
                 if raw.get("fixed_residues"):
                     raw["fixed_residues"] = [labels.get(r, r) for r in raw["fixed_residues"]]
+                if isinstance(raw.get("mimosa_fixed_residue_identities"), dict):
+                    raw["mimosa_fixed_residue_identities"] = {
+                        labels.get(str(label), str(label)): amino_acid
+                        for label, amino_acid in raw["mimosa_fixed_residue_identities"].items()
+                    }
                 candidate["raw_metadata"] = raw
             else:
                 refolding_workflow._cif_to_pdb(source_pdb, converted_pdb)
@@ -795,8 +860,20 @@ def run_ligandmpnn_sequence_design(
             requested_design_chains=candidate_input.get("design_chains", design_chains),
         )
         extended = None
-        if direct_input:
+        raw_metadata = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+        if direct_input or raw_metadata.get("fixed_motif_required"):
             role_metadata["source_to_engine_residues"] = mpnn.residue_map(source_pdb, role_metadata)
+        if raw_metadata.get("fixed_motif_required"):
+            from mn_molecular_design_studio.mimosa_motif import apply_fixed_motif_identities
+
+            applied = apply_fixed_motif_identities(
+                candidate, staged_pdb, role_metadata.get("source_to_engine_residues") or {}
+            )
+            raw_metadata = dict(raw_metadata)
+            raw_metadata["mimosa_fixed_identity_input_patches"] = applied
+            candidate["raw_metadata"] = raw_metadata
+            params.setdefault("mimosa_fixed_identity_input_patches_by_candidate", {})[source_id] = applied
+        if direct_input:
             extended = mpnn.candidate_options(
                 candidate_input,
                 source_pdb,

@@ -23,7 +23,7 @@ _PATH_KEY_SUFFIXES: Final = (
 )
 _PROVENANCE_KEY_PARTS: Final = ("command", "argv", "executable", "queued_command")
 _INLINE_CONTENT_KEYS: Final = frozenset({
-    "bias_by_res_json", "design_yaml", "target_msa_a3m", "text", "sequence", "sequences", "smiles",
+    "bias_by_res_json", "design_yaml", "rna_secondary_structure", "target_msa_a3m", "text", "sequence", "sequences", "smiles",
 })
 _INLINE_CONTENT_SUFFIXES: Final = ("_text", "_sequence", "_sequences", "_smiles")
 _PATH_VALUE_EXTENSIONS: Final = frozenset({

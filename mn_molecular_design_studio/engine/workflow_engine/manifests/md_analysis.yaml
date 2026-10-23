@@ -1,0 +1,26 @@
+tool: md_analysis
+group: md-analysis
+image: mn-md:cu128
+gpu: false
+description: Streamed protein-aligned RMSD and geometric residue-contact analysis for an existing molecular-dynamics trajectory.
+inputs:
+  source_run_dir: {type: md_source_run, required: true}
+  topology_path: {type: md_topology, required: true}
+  trajectory_path: {type: md_trajectory, required: true}
+params:
+  ligand_selection: {type: str, required: true}
+  protein_selection: {type: str, default: protein}
+  stride: {type: int, default: 1}
+  start_ns: {type: float, default: 0.0}
+  end_ns: {type: float, default: null}
+  contact_cutoff_angstrom: {type: float, default: 4.5}
+  pbc_mode: {type: str, default: auto}
+  dcd_frame_interval_ps: {type: float, default: null}
+  dcd_first_time_ps: {type: float, default: null}
+  chunk_size: {type: int, default: 100}
+  cpu_cores: {type: int, default: 8}
+outputs:
+  analysis_summary: {path: artifacts/md_analysis/summary.json, type: md_analysis_summary}
+  timeseries: {path: artifacts/md_analysis/timeseries.csv, type: md_analysis_timeseries_csv}
+  residue_contacts: {path: artifacts/md_analysis/residue_contacts.csv, type: md_residue_contact_map_csv}
+  representative_frame: {path: artifacts/md_analysis/representative_frame.pdb, type: md_representative_frame_pdb}

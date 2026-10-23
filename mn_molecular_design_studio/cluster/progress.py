@@ -76,6 +76,11 @@ def bindcraft2_progress(run_dir: Path) -> dict | None:
     ) if isinstance(terminated, dict) else 0
 
     accepted = _setting(state, "accepted") or 0
+    metadata = _read_object(run_dir / "metadata.json")
+    terminal = str(metadata.get("status") or "").casefold() in {
+        "completed", "succeeded", "failed", "cancelled", "canceled",
+    }
+    unfinished = max(0, attempted - completed)
     try:
         updated_at = state_path.stat().st_mtime
     except OSError:
@@ -85,7 +90,8 @@ def bindcraft2_progress(run_dir: Path) -> dict | None:
         "engine": "bindcraft2",
         "trajectories_started": attempted,
         "trajectories_completed": completed,
-        "trajectories_in_progress": max(0, attempted - completed),
+        "trajectories_in_progress": 0 if terminal else unfinished,
+        "trajectories_interrupted": unfinished if terminal else 0,
         "trajectory_limit": _setting(settings, "max_trajectories"),
         "designs_accepted": accepted,
         "design_target": _setting(settings, "number_of_final_designs"),

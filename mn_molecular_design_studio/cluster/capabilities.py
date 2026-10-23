@@ -190,9 +190,23 @@ def requirements(payload, *, references=(), installed_images=None):
                 cpu_only = False
             if "rfdiffusion3" in workflow:
                 needed_images.add("mn-foundry:cu128"); needed_refs.add("foundry/rfd3_latest.ckpt")
-            if workflow == "design.rfd4_proteina":
-                from mn_molecular_design_studio.rfd4_proteina_input import IMAGE
+            if workflow in {"design.rfd4_proteina","refolding.rfd4_proteina"}:
+                from mn_molecular_design_studio.rfd4_proteina_input import IMAGE,HF_REVISION
                 needed_images.add(IMAGE)
+                bundle="rfd4-proteina/huggingface/hub/models--nvidia--RFD4-Proteina/snapshots/"+HF_REVISION
+                needed_refs.update(bundle+"/"+name for name in ("config.json","model.safetensors"))
+                o=p.get("options") or {}
+                needs_oracle=workflow=="design.rfd4_proteina" and (o.get("refold",True) or o.get("apo") or o.get("reward_search")=="Best by refolding" or p.get("avoid_structures") or p.get("also_bind_structures"))
+                if needs_oracle:
+                    engine=o.get("folding_engine","openfold3_jax")
+                    from mn_molecular_design_studio.engine.workflow_engine.workflows.rfd4_oracle import ORACLE_IMAGE
+                    needed_images.add(ORACLE_IMAGE if engine=="openfold3_jax" else ENGINE_PROFILES[engine]["image"])
+                    if engine=="openfold3_jax":
+                        needed_refs.update(bundle+"/openfold3/weights/"+name for name in ("of3_ported_weights.bin.zst","of3_ported_weights.provenance.json"))
+                    else:
+                        other=requirements({"workflow":"refolding.optimized_prediction","parameters":{"engine":engine}},installed_images=installed_images)
+                        needed_refs.update(other["references"])
+                if o.get("cluster"): needed_images.add("mn-foldseek:10-941cd33-qc1")
             from mn_molecular_design_studio import generator_input
             if workflow in generator_input.WORKFLOWS.values():
                 engine = next(k for k, v in generator_input.WORKFLOWS.items() if v == workflow)

@@ -15,3 +15,20 @@ Smoke-check the image without starting a design:
 ```bash
 docker run --rm --gpus all mn-rfd4-proteina:0.0.3-cu130 --help
 ```
+
+## Native independent refolding
+
+RFD4's native OpenFold3 oracle requires NVIDIA's matching runtime in addition to
+its weights. The general Studio OpenFold3 image has a different API.
+
+```bash
+python scripts/rfd4-proteina/setup_oracle.py --reference-dir /mnt/db/reference_files
+```
+
+This downloads the pinned official SIF, verifies its published SHA256, and imports
+it as `mn-rfd4-oracle:598acab-cu13`. Docker and `unsquashfs` are required. Set the
+reference directory to the same path configured in Studio. The generator receives
+only a job-scoped Unix socket; it is not given access to the Docker socket.
+
+See [implementation and testing handoff](../../docs/integrations/rfd4-proteina.md)
+for task coverage, evidence, and remaining production validation.

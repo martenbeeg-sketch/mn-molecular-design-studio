@@ -11,6 +11,7 @@ from Bio.PDB import MMCIFIO
 
 from mn_molecular_design_studio import design_validation as validation, structure_templates
 from mn_molecular_design_studio import cofolding_msa
+from mn_molecular_design_studio.engine.workflow_engine.core.candidates import _parse_structure
 from mn_molecular_design_studio.engine.workflow_engine.workflows import optimized_prediction as prediction
 
 
@@ -50,6 +51,78 @@ def test_bindcraft_cif_without_occupancy_can_be_used(design_source_factory, comp
     if compressed:
         target = path.with_suffix(".cif.gz"); target.write_bytes(gzip.compress(path.read_bytes())); path = target
     assert {c: len(r) for c, r in validation.protein_chains(validation.read_structure(path)).items()} == {"A": 6, "B": 5}
+
+
+def test_candidate_reader_accepts_missing_bfactor_and_occupancy(tmp_path):
+    cif = b"""data_model
+#
+loop_
+_atom_site.group_PDB
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.auth_seq_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_atom_id
+_atom_site.label_entity_id
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.pdbx_PDB_model_num
+_atom_site.id
+ATOM N N . ALA A 1 . 1 ALA A N 1 0.0 0.0 0.0 1 1
+ATOM C CA . ALA A 1 . 1 ALA A CA 1 1.4 0.0 0.0 1 2
+ATOM C C . ALA A 1 . 1 ALA A C 1 2.8 0.0 0.0 1 3
+ATOM O O . ALA A 1 . 1 ALA A O 1 3.3 1.2 0.0 1 4
+#
+"""
+    path = tmp_path / "generated.cif"
+    path.write_bytes(cif)
+
+    structure = _parse_structure(path)
+    model = next(structure.get_models())
+    atoms = list(model["A"].get_atoms())
+
+    assert validation.sequence(validation.protein_chains(structure)["A"]) == "A"
+    assert np.allclose(atoms[1].coord, [1.4, 0.0, 0.0])
+    assert np.isnan(atoms[0].bfactor)
+    assert path.read_bytes() == cif
+
+
+def test_candidate_reader_still_rejects_malformed_mmcif_coordinates(tmp_path):
+    path = tmp_path / "malformed.cif"
+    path.write_text("""data_model
+#
+loop_
+_atom_site.group_PDB
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.auth_seq_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_atom_id
+_atom_site.label_entity_id
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.pdbx_PDB_model_num
+_atom_site.id
+ATOM N N . ALA A 1 . 1 ALA A N 1 invalid 0.0 0.0 1 1
+#
+""")
+
+    with pytest.raises((ValueError, KeyError)):
+        _parse_structure(path)
 
 
 @pytest.mark.parametrize("mode", ["complex", "binder"])

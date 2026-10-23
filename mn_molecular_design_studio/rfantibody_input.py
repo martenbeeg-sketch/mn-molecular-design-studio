@@ -7,11 +7,14 @@ import math
 from pathlib import Path
 
 from Bio.SeqUtils import seq1
+from mn_molecular_design_studio.mimosa_input import normalize_mimosa_source_positions
 
 EXAMPLE_INPUTS = Path(__file__).resolve().parent / "resources" / "rfantibody"
 UPSTREAM_COMMIT = "3e5a5bb1cb98befde9fc049ae3ff58cabb491f67"
 CODE_VERSION = f"RFantibody · {UPSTREAM_COMMIT[:8]}"
 IMAGE = "mn-rfantibody:3e5a5bb-cu128"
+MIMOSA_IMAGE = "mn-rfantibody:mimosa-local"
+MIMOSA_ENGINE_ROOT = Path(__file__).resolve().parents[2] / "tools-to-implement" / "RFantibody_mimosa"
 TASKS = {"antibody": "Antibody", "nanobody": "Nanobody"}
 FRAMEWORKS = {
     "hu-4D5-8_Fv": "Humanized antibody · hu-4D5-8 Fv",
@@ -173,6 +176,66 @@ def validate_request(parameters: dict, *, require_files: bool = True) -> dict:
                 raise ValueError(f"Hotspot {hotspot} does not match a residue without an insertion code in the target structure.")
     regions = normalize_regions(task, parameters.get("regions", NANOBODY_REGIONS if task == "nanobody" else CDR_REGIONS))
     loops = normalize_loop_lengths(task, regions, parameters.get("loop_lengths"))
+    enabled_value = parameters.get("mimosa_enabled")
+    mimosa_enabled = bool(enabled_value) if enabled_value is not None else False
+    mimosa_condition = str(
+        parameters.get("mimosa_condition", "sequence_fixed" if mimosa_enabled else "unconstrained")
+    ).strip().lower()
+    if mimosa_condition not in {"geometry_only", "sequence_fixed", "unconstrained"}:
+        raise ValueError("MIMOSA condition must be geometry_only, sequence_fixed, or unconstrained.")
+    if enabled_value is None:
+        mimosa_enabled = mimosa_condition != "unconstrained"
+    elif mimosa_enabled and mimosa_condition == "unconstrained":
+        raise ValueError("Choose a MIMOSA condition when motif guidance is enabled.")
+    elif not mimosa_enabled:
+        # The explicit tile toggle is authoritative. Standard RFantibody calls
+        # still carry the MIMOSA condition default, but must remain unconstrained.
+        mimosa_condition = "unconstrained"
+    mimosa_complex = Path(parameters["mimosa_complex"]).expanduser() if parameters.get("mimosa_complex") else None
+    mimosa_binder_chain = str(parameters.get("mimosa_binder_chain", "") or "").strip()
+    mimosa_complex_target_chain = str(parameters.get("mimosa_complex_target_chain", "") or "").strip()
+    mimosa_target_chain = str(parameters.get("mimosa_target_chain", "") or "").strip()
+    mimosa_cdr = str(parameters.get("mimosa_cdr", "") or "").strip().upper()
+    mimosa_design_loop = str(parameters.get("mimosa_design_loop", "") or "").strip().upper()
+    mimosa_source_positions = normalize_mimosa_source_positions(
+        parameters.get("mimosa_source_positions", "")
+    )
+    if mimosa_enabled:
+        if not mimosa_source_positions:
+            raise ValueError("Select at least one contacting amino acid from the source partner chain to form the MIMOSA motif.")
+        if require_files and (mimosa_complex is None or not mimosa_complex.is_file()):
+            raise ValueError("MIMOSA requires a cognate binder-target complex PDB or mmCIF.")
+        if mimosa_complex is not None and mimosa_complex.suffix.lower() not in {".pdb", ".ent", ".cif", ".mmcif"}:
+            raise ValueError("MIMOSA source complexes must be PDB or mmCIF files.")
+        if not all((mimosa_binder_chain, mimosa_complex_target_chain, mimosa_target_chain)):
+            raise ValueError("Select the source binder, source target, and design-target chains for MIMOSA.")
+        if mimosa_target_chain not in target_chains:
+            raise ValueError("The MIMOSA design-target chain must be selected as an antigen chain.")
+        if mimosa_cdr not in {"CDR1", "CDR2", "CDR3"}:
+            raise ValueError("Choose source antibody CDR1, CDR2, or CDR3 for MIMOSA.")
+        if mimosa_design_loop == "ALL_CDRS":
+            if not {"H1", "H2", "H3"}.issubset(regions):
+                raise ValueError("Scattered MIMOSA assignment requires H1, H2, and H3 in Regions to design.")
+        elif mimosa_design_loop not in regions:
+            raise ValueError("The MIMOSA design loop must also be selected in Regions to design.")
+    try:
+        mimosa_contact_cutoff = float(parameters.get("mimosa_contact_cutoff", 8.0))
+        mimosa_guidance_scale = float(parameters.get("mimosa_guidance_scale", 0.3))
+        mimosa_num_particles = int(parameters.get("mimosa_num_particles", 4))
+        mimosa_fk_lambda = float(parameters.get("mimosa_fk_lambda", 4.0))
+        mimosa_resampling_interval = int(parameters.get("mimosa_resampling_interval", 3))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("MIMOSA numeric settings must contain valid numbers.") from exc
+    if mimosa_contact_cutoff <= 0 or not math.isfinite(mimosa_contact_cutoff):
+        raise ValueError("MIMOSA contact cutoff must be a positive finite value.")
+    if mimosa_guidance_scale < 0 or not math.isfinite(mimosa_guidance_scale):
+        raise ValueError("MIMOSA guidance scale must be a non-negative finite value.")
+    if not 1 <= mimosa_num_particles <= 64:
+        raise ValueError("MIMOSA particle count must be between 1 and 64.")
+    if mimosa_fk_lambda < 0 or not math.isfinite(mimosa_fk_lambda):
+        raise ValueError("MIMOSA Feynman–Kac lambda must be a non-negative finite value.")
+    if mimosa_resampling_interval < 1:
+        raise ValueError("MIMOSA resampling interval must be at least one diffusion step.")
     try:
         number_of_designs = int(parameters.get("number_of_designs", 1))
         number_of_sequences = int(parameters.get("number_of_sequences", 1))
@@ -183,6 +246,8 @@ def validate_request(parameters: dict, *, require_files: bool = True) -> dict:
         mpnn_temperature = float(parameters.get("mpnn_temperature", 0.1))
         augment_eps = float(parameters.get("augment_eps", 0.05))
         hotspot_show_prop = float(parameters.get("hotspot_show_prop", 0.1))
+        rf2_seed = int(parameters["rf2_seed"]) if parameters.get("rf2_seed") is not None else None
+        diffusion_deterministic = bool(parameters.get("diffusion_deterministic", False))
     except (TypeError, ValueError) as exc:
         raise ValueError("Numeric RFantibody settings must contain valid numbers.") from exc
     for value, label, low, high in (
@@ -195,6 +260,8 @@ def validate_request(parameters: dict, *, require_files: bool = True) -> dict:
     ):
         if not low <= value <= high:
             raise ValueError(f"{label} must be between {low} and {high}.")
+    if rf2_seed is not None and not 0 <= rf2_seed <= 2_147_483_647:
+        raise ValueError("RF2 seed must be an integer between 0 and 2147483647.")
     if not 0.01 <= mpnn_temperature <= 2.0:
         raise ValueError("ProteinMPNN temperature must be between 0.01 and 2.0.")
     if not 0.0 <= augment_eps <= 1.0:
@@ -256,6 +323,8 @@ def validate_request(parameters: dict, *, require_files: bool = True) -> dict:
         "number_of_designs": number_of_designs,
         "number_of_sequences": number_of_sequences,
         "rf2_repeats": rf2_repeats,
+        "rf2_seed": rf2_seed,
+        "diffusion_deterministic": diffusion_deterministic,
         "num_recycles": num_recycles,
         "num_connections": num_connections,
         "cpu_cores": cpu_cores,
@@ -267,4 +336,18 @@ def validate_request(parameters: dict, *, require_files: bool = True) -> dict:
         "bias_by_res_json": bias_by_res_json,
         "use_abmpnn": use_abmpnn,
         "abmpnn_checkpoint": abmpnn_checkpoint,
+        "mimosa_enabled": mimosa_enabled,
+        "mimosa_condition": mimosa_condition,
+        "mimosa_complex": mimosa_complex,
+        "mimosa_binder_chain": mimosa_binder_chain,
+        "mimosa_complex_target_chain": mimosa_complex_target_chain,
+        "mimosa_target_chain": mimosa_target_chain,
+        "mimosa_cdr": mimosa_cdr,
+        "mimosa_design_loop": mimosa_design_loop,
+        "mimosa_source_positions": mimosa_source_positions,
+        "mimosa_contact_cutoff": mimosa_contact_cutoff,
+        "mimosa_guidance_scale": mimosa_guidance_scale,
+        "mimosa_num_particles": mimosa_num_particles,
+        "mimosa_fk_lambda": mimosa_fk_lambda,
+        "mimosa_resampling_interval": mimosa_resampling_interval,
     }

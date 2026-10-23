@@ -146,6 +146,7 @@ _SPECS = (
     _spec("ligand.generation.pgmg", "ligand_tools", "run_ligand_pgmg", "ligand-generation", "pgmg_generation", "ligand_generation", "Generate compounds from a PGMG-compatible pharmacophore hypothesis."),
     _spec("ligand.md.gromacs", "ligand_tools", "run_ligand_gromacs_md", "ligand-md", "gromacs_md", "ligand_md", "Prepare a bound protein–ligand complex and run explicit-solvent GROMACS dynamics."),
     _spec("ligand.md.openmm", "ligand_tools", "run_ligand_openmm_md", "ligand-md", "openmm_md", "ligand_md", "Prepare a bound protein–ligand complex and run explicit-solvent OpenMM dynamics."),
+    _spec("ligand.md.analysis", "md_analysis", "run_md_analysis", "md-analysis", "md_analysis", "md_analysis", "Analyze a recorded MD segment with protein-aligned RMSD and residue contact occupancy."),
     _spec("target.prepare", "target_prep", "enqueue_target_preparation", "target-prep", "internal_pdb_cleaner", "target_preparation", "Clean, trim, and optionally prepare MSAs for a PDB target.", "target_prepare"),
     _spec("target.crop", "target_crop", "run_target_crop", "target-crop", "internal_pdb_cropper", "target_cropping", "Crop a prepared target by residue ranges or Mol* selection coordinates."),
     _spec("target.mask", "target_masking", "create_masked_target", "target-prep", "internal_target_masker", "target_masking", "Create a mutation/masked-target job with recorded mutation details.", "direct"),
@@ -163,10 +164,13 @@ _SPECS = (
     _spec("design.bindcraft2_generator", "bindcraft2", "enqueue_bindcraft2_design", "design", "bindcraft2_generator", "bindcraft2_generator", "Run BindCraft2 gradient design and emit only trajectories that pass the pre-ProteinMPNN handoff gate.", "direct"),
     _spec("design.rfdiffusion3", "rfdiffusion3", "run_rfdiffusion3_design", "design", "rfdiffusion3", "rfdiffusion3_design", "All-atom protein, enzyme, nucleic-acid and small-molecule conditioned design with RFdiffusion3."),
     _spec("design.rfd4_proteina", "rfd4_proteina", "run_rfd4_proteina_design", "design", "rfd4_proteina", "rfd4_proteina_design", "Generate sequence and structure together with RFDiffusion4-Proteina using guided binder inputs, annotated CIFs, or native YAML/JSON conditions."),
+    _spec("refolding.rfd4_proteina", "rfd4_proteina", "run_rfd4_structure_prediction", "refolding", "rfd4_proteina", "rfd4_structure_prediction", "Predict protein structure with RFD4-Proteina’s own sequence-conditioned model from FASTA or a structure."),
     _spec("design.rfantibody", "rfantibody", "run_rfantibody_design", "design", "rfantibody", "rfantibody_design", "Run RFdiffusion, ProteinMPNN and RF2 antibody or nanobody design."),
+    _spec("design.rfantibody_mimosa", "rfantibody", "run_rfantibody_design", "design", "rfantibody_mimosa", "rfantibody_design", "Run paper-based MIMOSA geometry or sequence-fixed guidance with the RFantibody VHH workflow."),
     _spec("design.rfpeptides", "rfpeptides", "run_rfpeptides_design", "design", "rfpeptides", "rfpeptides_design", "Generate cyclic peptide binder backbones with the RFpeptides RFdiffusion protocol."),
     _spec("design.rfdiffusion3_foundry", "design", "run_rfdiffusion3_foundry", "design", "rfdiffusion3_foundry", "design_campaign", "Run RFdiffusion3 / Foundry design."),
     _spec("design.boltzgen", "design", "run_boltzgen", "design", "boltzgen", "design_campaign", "De novo protein binder design with BoltzGen's protein-anything protocol."),
+    _spec("design.boltzgen_mimosa", "design", "run_boltzgen", "design", "boltzgen_mimosa", "design_campaign", "Run paper-based MIMOSA geometry or sequence-fixed guidance with BoltzGen nanobody templates."),
     _spec("design.boltzgen_generator", "design", "run_boltzgen", "design", "boltzgen_generator", "design_generation", "Generate BoltzGen backbones only; sequence redesign, refolding, and ranking are separate steps."),
     _spec("design.pxdesign", "design", "run_pxdesign", "design", "pxdesign", "design_campaign", "Run PXDesign."),
     _spec("design.genie3", "design", "run_genie3", "design", "genie3", "design_campaign", "Run Genie3."),
@@ -180,6 +184,8 @@ _SPECS = (
     _spec("design.genie3_generate", "generators", "run_genie3_generation", "design", "genie3_generator", "design_generation", "Generate binder, unconditional, or motif-conditioned structures with Genie3."),
     _spec("design.protpardelle_generate", "generators", "run_protpardelle_generation", "design", "protpardelle_generator", "design_generation", "Generate protein structures with sidechain, motif, partial diffusion, and multichain conditioning."),
     _spec("sequence.mpnn", "mpnn", "run_mpnn_sequence_design", "design", "ligandmpnn", "sequence_design", "Design sequences from structures or project designs using ProteinMPNN, LigandMPNN, SolubleMPNN, HyperMPNN, AbMPNN or membrane models."),
+    _spec("sequence.abmpnn", "mpnn", "run_abmpnn_sequence_design", "design", "abmpnn", "sequence_design", "Redesign selected antibody CDRs with AbMPNN, using SAbR numbering while keeping the framework and target fixed."),
+    _spec("analysis.sabr", "sabr", "run_sabr_annotation", "analysis", "sabr", "antibody_numbering", "Number antibody chains and annotate CDRs with SAbR; optionally save a renumbered structure copy."),
     _spec("sequence.esm_if1", "inverse_folding", "run_esm_if1", "design", "esm_if1", "sequence_design", "Design protein sequences from any structure with ESM-IF1, optionally using other chains as structural context."),
     _spec("sequence.caliby", "inverse_folding", "run_caliby", "design", "caliby", "sequence_design", "Design or score sequences with Caliby or SolubleCaliby, using single structures or structural ensembles."),
     _spec("sequence.boltzgen_inverse", "inverse_folding", "run_boltzgen_inverse", "design", "boltzgen_inverse", "sequence_design", "Use BoltzGen's inverse-folding model on existing structures from any generator or prediction engine."),
@@ -245,7 +251,7 @@ def _type_hints(function) -> dict[str, Any]:
 
 
 def _parameters_for(spec: WorkflowSpec) -> dict[str, inspect.Parameter]:
-    if spec.workflow_id in {"design.bindcraft2", "design.bindcraft2_generator", "design.boltzgen", "design.boltzgen_generator"}:
+    if spec.workflow_id in {"design.bindcraft2", "design.bindcraft2_generator", "design.boltzgen", "design.boltzgen_generator", "design.boltzgen_mimosa"}:
         function = _get_function(spec)
         if spec.workflow_id in {"design.bindcraft2", "design.bindcraft2_generator"}:
             hidden = {"trajectory_only"}
@@ -769,6 +775,22 @@ def _validate_workflow_inputs(spec: WorkflowSpec, parameters: dict[str, Any]) ->
             prepare(parameters, require_input=True)
         except (TypeError, ValueError, OSError) as exc:
             raise AutomationError(str(exc)) from exc
+    if spec.workflow_id == "sequence.abmpnn":
+        from mn_molecular_design_studio.mpnn_input import prepare
+        from mn_molecular_design_studio.sabr_runtime import CDR_NAMES
+        try:
+            regions = parameters.get("cdr_regions") or list(CDR_NAMES)
+            if not isinstance(regions, list) or not regions or not set(regions) <= set(CDR_NAMES):
+                raise ValueError("Choose one or more of CDR1, CDR2, and CDR3.")
+            prepare(parameters | {"model_type": "ab_mpnn", "backend": "shared_ligandmpnn"}, require_input=True)
+        except (TypeError, ValueError, OSError) as exc:
+            raise AutomationError(str(exc)) from exc
+    if spec.workflow_id == "analysis.sabr":
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.sabr import validate_sabr_request
+        try:
+            validate_sabr_request(parameters, require_files=not _schema_only_paths.get())
+        except (TypeError, ValueError, OSError) as exc:
+            raise AutomationError(str(exc)) from exc
     from mn_molecular_design_studio import generator_input
     if spec.workflow_id in generator_input.WORKFLOWS.values():
         engine=next(k for k,v in generator_input.WORKFLOWS.items() if v==spec.workflow_id)
@@ -784,20 +806,25 @@ def _validate_workflow_inputs(spec: WorkflowSpec, parameters: dict[str, Any]) ->
             raise AutomationError(str(exc)) from exc
     if spec.workflow_id == "design.rfd4_proteina":
         from tempfile import TemporaryDirectory
-        from mn_molecular_design_studio.rfd4_proteina_input import prepare_request
+        from mn_molecular_design_studio.rfd4_proteina_input import prepare_request, TASKS
         try:
             if _schema_only_paths.get():
                 task = parameters.get("task", "protein_binder")
                 mode = parameters.get("input_mode", "guided_binder")
-                if task not in {"protein_binder", "nanobody", "antibody", "tcr", "motif_scaffolding", "enzyme", "small_molecule_binder", "dna_binder", "rna_design", "existing_structure", "custom_conditions", "unconditional"}:
+                if task not in TASKS:
                     raise ValueError("Choose a supported RFDiffusion4-Proteina design task.")
-                if mode not in {"guided_binder", "annotated_cif", "condition_spec", "unconditional"}:
+                if mode not in {"guided", "guided_binder", "annotated_cif", "condition_spec", "unconditional"}:
                     raise ValueError("Choose a supported RFDiffusion4-Proteina input method.")
             else:
                 with TemporaryDirectory(prefix="studio-rfd4-validate-") as temporary:
                     prepare_request(parameters, run_dir=Path(temporary))
         except (TypeError, ValueError, OSError) as exc:
             raise AutomationError(str(exc)) from exc
+    if spec.workflow_id == "refolding.rfd4_proteina":
+        if not any(parameters.get(k) for k in ("target_structure","protein_sequences","input_files")):
+            raise AutomationError("Provide protein sequence(s), a structure, or connected input structures.")
+        if parameters.get("target_structure") and (parameters.get("protein_sequences") or parameters.get("input_files")):
+            raise AutomationError("Choose one folding input source.")
     if spec.workflow_id == "design.rfantibody":
         from mn_molecular_design_studio.rfantibody_input import validate_request
         try:

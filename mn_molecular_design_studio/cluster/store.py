@@ -137,6 +137,15 @@ class Store:
                 local_ref = group + "/" + run
                 existing = db.execute("SELECT * FROM jobs WHERE node_id=? AND local_ref=?", (node_id, local_ref)).fetchone()
                 jid = str(row.get("cluster_job_id") or config.job_id(node_id, local_ref))
+                purged = db.execute(
+                    "SELECT 1 FROM commands WHERE job_id=? AND kind='purge' AND status='completed' "
+                    "AND json_extract(response,'$.status')='purged' LIMIT 1",
+                    (jid,),
+                ).fetchone()
+                if purged:
+                    # A successful purge is authoritative even if an older
+                    # workstation catalog still reports the removed run.
+                    continue
                 superseded_payload = {}
                 if existing and existing["id"] != jid:
                     # Older agents could publish the deterministic machine-local
@@ -157,8 +166,21 @@ class Store:
                     else:
                         db.execute("UPDATE jobs SET id=? WHERE id=?", (jid, existing["id"]))
                 collision = db.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
-                if collision and (collision["node_id"] != node_id or collision["owner_id"] != str(row.get("owner_id") or "") or collision["project_id"] != str(row.get("project_id") or "")):
-                    raise PermissionError("A workstation cannot change job ownership or adopt another workstation's run.")
+                if collision:
+                    # A pipeline child can be indexed before its project marker
+                    # has propagated into the shared catalog. Allow the owning
+                    # workstation to backfill those legacy empty fields for the
+                    # exact same local run, while preserving any established
+                    # ownership and rejecting conflicting identities.
+                    if collision["node_id"] not in {None, node_id} or collision["local_ref"] not in {None, local_ref}:
+                        raise PermissionError("A workstation cannot change job ownership or adopt another workstation's run.")
+                    for field in ("owner_id", "project_id"):
+                        previous_value = str(collision[field] or "")
+                        incoming_value = str(row.get(field) or "")
+                        if previous_value and incoming_value and previous_value != incoming_value:
+                            raise PermissionError("A workstation cannot change job ownership or project.")
+                        if previous_value and not incoming_value:
+                            row[field] = previous_value
                 if collision:
                     previous = json.loads(collision["payload"])
                     row = previous | superseded_payload | row
@@ -169,7 +191,7 @@ class Store:
                 row.update(cluster_job_id=jid, node_id=node_id, local_reference=local_ref,
                            run_dir=config.artifact_uri(node_id, group, run), location=row.get("location") or raw.get("run_dir"),
                            data_state="present", wait_reason="")
-                db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET local_ref=excluded.local_ref,payload=excluded.payload",
+                db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET local_ref=excluded.local_ref,owner_id=excluded.owner_id,project_id=excluded.project_id,payload=excluded.payload",
                            (jid, node_id, local_ref, str(row.get("owner_id") or ""), str(row.get("project_id") or ""), encoded(row), row.get("created_at") or stamp(self.clock())))
             if known_references is not None and snapshot.get("storage_available", True):
                 known = set(known_references)
@@ -517,7 +539,7 @@ class Store:
                 db.execute("UPDATE jobs SET node_id=?,payload=? WHERE id=?", (node_id, encoded(job), row["job_id"]))
 
     def action(self, jid, kind, payload, user):
-        if kind not in {"inspect", "artifact", "cancel", "hide", "restore", "retry", "change_gpu", "purge"}:
+        if kind not in {"inspect", "artifact", "cancel", "hide", "restore", "retry", "change_gpu", "purge", "md_source_options"}:
             raise ValueError("Unsupported workstation action.")
         job = self.job(jid, user)
         if kind == "purge" and job.get("status") not in TERMINAL:

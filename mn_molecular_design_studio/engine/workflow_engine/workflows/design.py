@@ -39,9 +39,11 @@ from mn_molecular_design_studio.engine.workflow_engine.workflows.target_msa impo
     ensure_boltz_msas_for_target as _shared_ensure_boltz_msas_for_target,
     ensure_pxdesign_msa_dirs_for_target,
 )
+from mn_molecular_design_studio.mimosa_input import normalize_mimosa_source_positions
 
 
 DESIGN_GROUP = "design"
+MIMOSA_BOLTZGEN_IMAGE = "mn-boltzgen-opt:mimosa-local"
 RFDIFFUSION_SCAFFOLD_LIBRARY_CONTAINER_DIR = "/models/ppi_scaffolds"
 BINDCRAFT_RESOURCE_DIR = Path(__file__).resolve().parents[1] / "data" / "bindcraft"
 RFDIFFUSION_BUNDLED_SCAFFOLD_TAR = (
@@ -625,12 +627,23 @@ def _normalize_boltzgen_generation_candidates(
         [
             *(run_dir / "artifacts").glob("raw/boltzgen/run-generation-only/intermediate_designs/*.cif"),
             *(run_dir / "artifacts").glob("raw/boltzgen/run-vanilla/intermediate_designs/*.cif"),
+            *(run_dir / "artifacts").glob("raw/boltzgen/run-vanilla/rejected_backbones/*.cif"),
         ]
     )
-    metadata_paths = {
-        path.stem: path
-        for path in sorted((run_dir / "artifacts").glob("raw/boltzgen/run-generation-only/intermediate_designs/*.npz"))
-    }
+    metadata_files = [
+        *(run_dir / "artifacts").glob("raw/boltzgen/**/intermediate_designs/*.npz"),
+        *(run_dir / "artifacts").glob("raw/boltzgen/**/rejected_backbones/*.npz"),
+    ]
+    metadata_paths = {path.stem: path for path in sorted(metadata_files)}
+    integrity_report_path = run_dir / "artifacts/raw/boltzgen/run-vanilla/mimosa_integrity_results.json"
+    integrity_by_file = {}
+    if integrity_report_path.is_file():
+        try:
+            integrity_by_file = {
+                row.get("file"): row for row in json.loads(integrity_report_path.read_text()).get("candidates", [])
+            }
+        except (OSError, ValueError, TypeError):
+            integrity_by_file = {}
     candidates: list[dict] = []
     for index, structure_path in enumerate(structure_paths, start=1):
         binder_chains, target_chains, chain_inference = _infer_generated_chain_roles(
@@ -641,6 +654,15 @@ def _normalize_boltzgen_generation_candidates(
         sequences = _sequences_by_chain(structure_path)
         binder_sequence = "".join(sequences.get(chain, "") for chain in binder_chains) or None
         metadata_path = metadata_paths.get(structure_path.stem)
+        mimosa_metrics, mimosa_diagnostics = _mimosa_generation_metadata(metadata_path)
+        backbone_integrity = _mimosa_backbone_integrity(structure_path, binder_chains) if params.get("mimosa_enabled") else {}
+        integrity_record = integrity_by_file.get(structure_path.name, {})
+        if integrity_record:
+            backbone_integrity = {
+                "backbone_integrity_status": integrity_record.get("status", "not_checked"),
+                "backbone_bad_bond_count": int(integrity_record.get("bad_bond_count", 0)),
+                "backbone_checked_bond_count": int(integrity_record.get("checked_bond_count", 0)),
+            }
         candidate = {
             "candidate_id": f"boltzgen_{index:05d}",
             "source_tool": source_tool,
@@ -656,13 +678,19 @@ def _normalize_boltzgen_generation_candidates(
             "contig": None,
             "metrics": {
                 "target_chain_inference": chain_inference,
-                **({"result_kind": "generated"} if params.get("generator_only_tile") else {}),
+                **mimosa_metrics,
+                **{key: value for key, value in backbone_integrity.items() if key != "backbone_bad_bonds"},
+                **({"result_kind": "structural_rejection"} if backbone_integrity.get("backbone_integrity_status") == "rejected" else {}),
+                **({"result_kind": "generated"} if params.get("generator_only_tile") and backbone_integrity.get("backbone_integrity_status") != "rejected" else {}),
             },
             "raw_metadata": {
                 "result_kind": "generation_only",
                 "metadata_path": _rel_path(run_dir, metadata_path),
                 "input_target_chains": params.get("target_chains", []),
                 "target_chain_inference": chain_inference,
+                **({"mimosa_diagnostics": mimosa_diagnostics} if mimosa_diagnostics else {}),
+                **({"backbone_bad_bonds": backbone_integrity.get("backbone_bad_bonds", [])} if backbone_integrity else {}),
+                **({"backbone_bad_bonds": integrity_record.get("bad_bonds", [])} if integrity_record else {}),
             },
         }
         candidates.append(candidate)
@@ -784,6 +812,74 @@ def _numeric_or_text(value: str) -> object:
     return number
 
 
+def _mimosa_generation_metadata(metadata_path: Path | None) -> tuple[dict, dict]:
+    """Read the MIMOSA writer's scalar JSON fields without loading object arrays."""
+    if metadata_path is None or not metadata_path.is_file():
+        return {}, {}
+    try:
+        import numpy as np
+
+        with np.load(metadata_path, allow_pickle=False) as archive:
+            def scalar_json(key):
+                if key not in archive.files:
+                    return {}
+                value = archive[key]
+                try:
+                    value = value.item()
+                except ValueError:
+                    pass
+                return json.loads(str(value)) if value is not None else {}
+
+            generated = scalar_json("mimosa_generated_metrics")
+            diagnostics = scalar_json("mimosa_diagnostics")
+            fixed = archive["mimosa_fixed_aa"] if "mimosa_fixed_aa" in archive.files else None
+            fixed_count = int((fixed >= 0).sum()) if fixed is not None else 0
+        metrics = {
+            "generated_motif_rmsd_angstrom": generated.get("generated_motif_rmsd_angstrom"),
+            "generated_motif_potential_half_sum_angstrom2": generated.get("potential_half_sum_angstrom_squared"),
+            "fixed_motif_residue_count": fixed_count,
+        }
+        return {key: value for key, value in metrics.items() if value is not None}, diagnostics
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return {}, {}
+
+
+def _mimosa_backbone_integrity(structure_path: Path, binder_chains: list[str]) -> dict:
+    """Check C–N bonds between consecutive modeled polymer residues in binder chains."""
+    if not binder_chains:
+        return {}
+    try:
+        model = _first_model(_parse_structure(structure_path))
+    except Exception:
+        return {}
+    if model is None:
+        return {}
+    bad = []
+    checked = 0
+    source_gaps = 0
+    for chain_id in binder_chains:
+        if chain_id not in model:
+            continue
+        residues = [r for r in model[chain_id] if getattr(r, "id", ("",))[0] == " "]
+        for left, right in zip(residues, residues[1:]):
+            lid, rid = left.id, right.id
+            # Chothia/IMGT residue numbering is intentionally discontinuous.
+            # Check the actual ordered polymer neighbors, independent of IDs.
+            if int(rid[1]) > int(lid[1]) + 1:
+                source_gaps += int(rid[1]) - int(lid[1]) - 1
+            if "C" not in left or "N" not in right:
+                continue
+            checked += 1
+            distance = float(left["C"] - right["N"])
+            if abs(distance - 1.329) > 0.5:
+                bad.append({"chain": str(chain_id), "left": f"{lid[1]}{str(lid[2]).strip()}",
+                            "right": f"{rid[1]}{str(rid[2]).strip()}", "distance_angstrom": distance})
+    return {"backbone_integrity_status": "rejected" if bad else "passed" if checked else "not_checked",
+            "backbone_bad_bond_count": len(bad), "backbone_checked_bond_count": checked,
+            "backbone_unresolved_source_gap_count": source_gaps,
+            "backbone_bad_bonds": bad}
+
+
 def _float_or_none(value: object) -> float | None:
     if value in {None, ""}:
         return None
@@ -809,11 +905,17 @@ def _normalize_boltzgen_vanilla_candidates(run_dir: Path, params: dict, target_a
             params.get("target_chains", []),
         )
         sequences = _sequences_by_chain(structure_path)
+        # BoltzGen's ``designed_sequence`` column can contain only the
+        # redesigned residues (for example, a CDR), while
+        # ``designed_chain_sequence`` and the ranked CIF contain the complete
+        # binder. Prefer the sequence parsed from the actual output structure
+        # so the normalized candidate and database identity describe the
+        # displayed complex.
         binder_sequence = (
-            row.get("designed_sequence")
+            "".join(sequences.get(chain, "") for chain in binder_chains)
             or row.get("designed_chain_sequence")
             or row.get("sequence")
-            or "".join(sequences.get(chain, "") for chain in binder_chains)
+            or row.get("designed_sequence")
             or None
         )
         metrics = {key: _numeric_or_text(value) for key, value in row.items() if value not in {"", None}}
@@ -3477,6 +3579,19 @@ def run_boltzgen(
     redesign_residues: str = "",
     design_yaml: str = "",
     yaml_protocol: str = "protein-anything",
+    mimosa_condition: str = "unconstrained",
+    mimosa_complex: Path | None = None,
+    mimosa_binder_chain: str = "",
+    mimosa_complex_target_chain: str = "",
+    mimosa_target_chain: str = "",
+    mimosa_cdr: str = "CDR3",
+    mimosa_design_loop: str = "CDR3",
+    mimosa_source_positions: str | list[str] = "",
+    mimosa_contact_cutoff: float = 8.0,
+    mimosa_guidance_scale: float = 0.3,
+    mimosa_num_particles: int = 4,
+    mimosa_fk_lambda: float = 4.0,
+    mimosa_resampling_interval: int = 3,
 ) -> Path:
     supported_tasks = {"protein", "nanobody", "small_molecule", "peptide", "cyclotide", "redesign", "yaml"}
     if task not in supported_tasks:
@@ -3506,9 +3621,49 @@ def run_boltzgen(
     native_protocols = {"protein-anything", "peptide-anything", "protein-small_molecule", "nanobody-anything"}
     if task == "yaml" and yaml_protocol not in native_protocols:
         raise ValueError("Choose a native BoltzGen protocol for the YAML configuration.")
+    mimosa_condition = str(mimosa_condition).strip().lower()
+    mimosa_source_positions = normalize_mimosa_source_positions(mimosa_source_positions)
+    if mimosa_condition not in {"geometry_only", "sequence_fixed", "unconstrained"}:
+        raise ValueError("MIMOSA condition must be geometry_only, sequence_fixed, or unconstrained.")
+    mimosa_enabled = mimosa_condition != "unconstrained"
+    if mimosa_enabled:
+        if task != "nanobody":
+            raise ValueError("BoltzGen MIMOSA currently supports its nanobody VHH scaffold workflow.")
+        if generator_only_tile:
+            raise ValueError("MIMOSA needs BoltzGen's inverse-folding stage; use the full pipeline.")
+        if mimosa_complex is None or not Path(mimosa_complex).is_file():
+            raise ValueError("MIMOSA requires a cognate binder–target complex PDB or mmCIF.")
+        if Path(mimosa_complex).suffix.lower() not in {".pdb", ".ent", ".cif", ".mmcif"}:
+            raise ValueError("MIMOSA source complexes must be PDB or mmCIF files.")
+        if not all((mimosa_binder_chain, mimosa_complex_target_chain, mimosa_target_chain)):
+            raise ValueError("Select the source partner, source target, and design-target chains for MIMOSA.")
+        if mimosa_target_chain not in target_chains:
+            raise ValueError("The MIMOSA design-target chain must be among the selected target chains.")
+        if mimosa_design_loop not in {"CDR1", "CDR2", "CDR3", "all_cdrs"}:
+            raise ValueError("Choose one nanobody CDR or all CDRs for MIMOSA guidance.")
+        if not mimosa_source_positions:
+            raise ValueError("Select at least one contacting amino acid from the source partner chain.")
+        if not 0 < float(mimosa_contact_cutoff) <= 20:
+            raise ValueError("MIMOSA contact cutoff must be greater than 0 and at most 20 Å.")
+        if not 0 <= float(mimosa_guidance_scale) <= 2:
+            raise ValueError("MIMOSA guidance scale must be between 0 and 2.")
+        if not 1 <= int(mimosa_num_particles) <= 64:
+            raise ValueError("MIMOSA particle count must be between 1 and 64.")
+        if float(mimosa_fk_lambda) < 0:
+            raise ValueError("MIMOSA Feynman-Kac lambda must be non-negative.")
+        if int(mimosa_resampling_interval) < 1:
+            raise ValueError("MIMOSA resampling interval must be at least one step.")
     lengths = parse_binder_lengths(binder_length)
     binder_sequence_spec = str(lengths[0]) if len(lengths) == 1 else f"{lengths[0]}..{lengths[1]}"
     manifest = load_manifest("boltzgen")
+    if mimosa_enabled:
+        manifest["image"] = MIMOSA_BOLTZGEN_IMAGE
+        image_check = subprocess.run(["docker", "image", "inspect", MIMOSA_BOLTZGEN_IMAGE], capture_output=True, text=True, check=False)
+        if image_check.returncode != 0:
+            raise RuntimeError(
+                f"MIMOSA runtime image {MIMOSA_BOLTZGEN_IMAGE!r} is unavailable. "
+                "Restore or rebuild the Studio runtime image before submitting this job."
+            )
     if diffusion_batch_size is not None and diffusion_batch_size < 1:
         raise ValueError("BoltzGen diffusion batch size must be at least 1.")
     invalid_amino_acids = sorted(set(omit_amino_acids) - set("ACDEFGHIKLMNPQRSTVWY"))
@@ -3561,6 +3716,20 @@ def run_boltzgen(
         "redesign_residues": redesign_residues,
         "design_yaml": design_yaml,
         "yaml_protocol": yaml_protocol,
+        "mimosa_enabled": mimosa_enabled,
+        "mimosa_condition": mimosa_condition,
+        "mimosa_complex": str(mimosa_complex) if mimosa_complex else None,
+        "mimosa_binder_chain": mimosa_binder_chain,
+        "mimosa_complex_target_chain": mimosa_complex_target_chain,
+        "mimosa_target_chain": mimosa_target_chain,
+        "mimosa_cdr": mimosa_cdr,
+        "mimosa_design_loop": mimosa_design_loop,
+        "mimosa_source_positions": mimosa_source_positions,
+        "mimosa_contact_cutoff": float(mimosa_contact_cutoff),
+        "mimosa_guidance_scale": float(mimosa_guidance_scale),
+        "mimosa_num_particles": int(mimosa_num_particles),
+        "mimosa_fk_lambda": float(mimosa_fk_lambda),
+        "mimosa_resampling_interval": int(mimosa_resampling_interval),
     }
     job = create_job(
         DESIGN_GROUP,
@@ -3592,6 +3761,19 @@ def run_boltzgen(
                 chain_id: {residue: index for index, residue in enumerate(residues, start=1)}
                 for chain_id, residues in residues_by_chain.items()
             }
+    mimosa_source_artifact: Path | None = None
+    if mimosa_enabled:
+        source_path = Path(mimosa_complex).expanduser()
+        source_suffix = source_path.suffix.lower()
+        mimosa_source_artifact = artifact_path(
+            job.run_dir, "raw/boltzgen/input", f"mimosa_source_complex{source_suffix}"
+        )
+        shutil.copy2(source_path, mimosa_source_artifact)
+        if run_vanilla_pipeline:
+            integrity_script = Path(__file__).resolve().parents[4] / "scripts" / "check_mimosa_backbone.py"
+            if not integrity_script.is_file():
+                raise ValueError("The MIMOSA peptide-bond integrity checker is missing from the Studio source tree.")
+            shutil.copy2(integrity_script, raw_dir / "input" / "check_mimosa_backbone.py")
     binding_by_chain: dict[str, list[str]] = {}
     boltzgen_hotspot_map: dict[str, str] = {}
     unmapped_hotspots: list[str] = []
@@ -3699,6 +3881,14 @@ def run_boltzgen(
         yaml_text = "entities:\n  - file:\n      path: " + target_artifact.name + "\n      include:\n"
         for chain_id in target_chains:
             yaml_text += f"        - chain:\n            id: {json.dumps(chain_id)}\n"
+        if binding_by_chain or non_binding_by_chain:
+            yaml_text += "      binding_types:\n"
+            for chain_id in sorted(set(binding_by_chain) | set(non_binding_by_chain)):
+                yaml_text += f"        - chain:\n            id: {json.dumps(chain_id)}\n"
+                if binding_by_chain.get(chain_id):
+                    yaml_text += f"            binding: {','.join(binding_by_chain[chain_id])}\n"
+                if non_binding_by_chain.get(chain_id):
+                    yaml_text += f"            not_binding: {','.join(non_binding_by_chain[chain_id])}\n"
         yaml_text += f"  - file:\n      path: {scaffold_name}.yaml\n"
     elif task == "redesign":
         yaml_text = "entities:\n  - file:\n      path: " + target_artifact.name + "\n      include:\n"
@@ -3859,8 +4049,59 @@ def run_boltzgen(
         )
     else:
         output_check = f"test -n \"$(find {output_dir}/intermediate_designs -maxdepth 1 -type f -name '*.cif' -print -quit)\""
+    mimosa_prepare = ""
+    if mimosa_enabled:
+        if target_artifact is None or mimosa_source_artifact is None:
+            raise ValueError("MIMOSA needs both the target structure and cognate complex artifacts.")
+        motif_command = [
+            "python", "/workspace/scripts/prepare_mimosa_motif.py",
+            "--complex", f"/work/artifacts/raw/boltzgen/{mimosa_source_artifact.relative_to(raw_dir)}",
+            "--target", f"/work/artifacts/raw/boltzgen/{target_artifact.relative_to(raw_dir)}",
+            "--binder-chain", mimosa_binder_chain,
+            "--complex-target-chain", mimosa_complex_target_chain,
+            "--target-chain", mimosa_target_chain,
+            "--cdr", mimosa_cdr,
+            "--contact-cutoff", str(mimosa_contact_cutoff),
+            "--guidance-scale", str(mimosa_guidance_scale),
+            "--fk-lambda", str(mimosa_fk_lambda),
+            "--resampling-interval", str(mimosa_resampling_interval),
+            "--num-particles", str(mimosa_num_particles),
+            "--condition", mimosa_condition,
+            "--design-loop", mimosa_design_loop,
+            "--output", "/work/artifacts/raw/boltzgen/input/target_binder.mimosa.json",
+        ]
+        if mimosa_source_positions:
+            motif_command.extend(["--source-residues", *mimosa_source_positions])
+        mimosa_prepare = shlex.join(motif_command) + "; "
+    mimosa_split_pipeline = ""
+    if mimosa_enabled and run_vanilla_pipeline:
+        all_steps = "--steps " + " ".join(steps)
+        generation_args = run_args.replace(all_steps, "--steps design")
+        post_generation_steps = [step for step in steps if step != "design"]
+        if not post_generation_steps:
+            raise ValueError("BoltzGen MIMOSA needs inverse-folding/refolding stages after the integrity check.")
+        downstream_args = run_args.replace(all_steps, "--steps " + " ".join(post_generation_steps))
+        integrity_report = "run-vanilla/mimosa_integrity_results.json"
+        integrity_check = shlex.quote(
+            "import json,sys; d=json.load(open(" + repr(integrity_report) + ")); "
+            "sys.exit(0 if d.get('candidate_count',0)>0 and d.get('candidate_count')==d.get('rejected_count') else 1)"
+        )
+        target_inside = f"/work/artifacts/raw/boltzgen/input/{target_artifact.name}"
+        checker_inside = "/work/artifacts/raw/boltzgen/input/check_mimosa_backbone.py"
+        mimosa_split_pipeline = (
+            f"{generation_args}; "
+            f"python {shlex.quote(checker_inside)} run-vanilla/intermediate_designs {shlex.quote(target_inside)} {shlex.quote(integrity_report)}; "
+            f"if python -c {integrity_check}; then echo '[MIMOSA] All generated backbones were rejected by the peptide-bond filter'; "
+            f"else {downstream_args}; fi; "
+        )
+        output_check = (
+            f"if python -c {integrity_check}; then echo '[MIMOSA] Structural rejection report is the completed result'; "
+            f"else test -n \"$(find run-vanilla/final_ranked_designs -type f -path '*/final_*_designs/*.cif' -print -quit)\" "
+            f"&& python -c {pae_archive_check}; fi"
+        )
     script = (
         "set -euxo pipefail; cd /work/artifacts/raw/boltzgen; "
+        + mimosa_prepare
         + (
             "python /work/artifacts/raw/boltzgen/input/normalize_boltzgen_yaml.py; "
             if task == "yaml"
@@ -3872,7 +4113,7 @@ def run_boltzgen(
             else ""
         )
         + f"boltzgen check input/target_binder.yaml --output checked --cache /cache; rm -rf {output_dir}; "
-        + f"{run_args}; "
+        + (mimosa_split_pipeline if mimosa_split_pipeline else f"{run_args}; ")
         + f"{output_check}"
     )
     command = [
@@ -3908,6 +4149,7 @@ def run_boltzgen(
         [
             ("raw/boltzgen/**/*.cif", "cif"),
             ("raw/boltzgen/**/*.npz", "npz"),
+            ("raw/boltzgen/**/*.json", "json"),
             ("raw/boltzgen/**/*.csv", "csv"),
             ("raw/boltzgen/**/*.pdf", "pdf"),
             ("raw/boltzgen/**/*.yaml", "yaml"),

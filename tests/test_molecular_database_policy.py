@@ -160,6 +160,42 @@ def test_generated_complex_reindex_keeps_binder_identity_and_only_passing_design
     assert rows[0]["structures"][0]["context"]["portable"] is True
 
 
+def test_failed_native_refold_is_kept_as_intermediate_observation(database):
+    complex_text = "\n".join([
+        "ATOM      1  CA  ALA A   1       1.000   1.000   1.000  1.00 20.00           C",
+        "ATOM      2  CA  CYS A   2       2.000   1.000   1.000  1.00 20.00           C",
+        "ATOM      3  CA  ASP A   3       3.000   1.000   1.000  1.00 20.00           C",
+        "ATOM      4  CA  GLU B   1       8.000   1.000   1.000  1.00 20.00           C",
+        "ATOM      5  CA  PHE B   2       9.000   1.000   1.000  1.00 20.00           C",
+        "ATOM      6  CA  GLY B   3      10.000   1.000   1.000  1.00 20.00           C",
+        "END", "",
+    ])
+    candidate = {
+        "candidate_id": "boltzgen_00001", "stage": "complex_refolding",
+        "complex_pdb": "complex.pdb", "binder_pdb": "complex.pdb",
+        "binder_sequence": "EFG", "binder_chains": ["B"], "target_chains": ["A"],
+        "metrics": {"pass_filters": False, "refolded_motif_rmsd_angstrom": 3.2},
+        "normalized_output": {"metrics": {"mimosa.refolded_motif_rmsd": {
+            "value": 3.2, "unit": "Å", "scope": "refolded motif",
+        }}},
+        "raw_metadata": {"result_kind": "native_pipeline", "candidate_pool_level": "native_pipeline"},
+    }
+    run = _make_run(database, "design", "failed-native-refold", workflow="design_generation", tool="boltzgen",
+                    candidates=[candidate])
+    (run / "complex.pdb").write_text(complex_text)
+
+    assert ingest_run(run, database=database) == 1
+    assert database.groups(A, collection="library") == []
+    group = next(group for group in database.groups(A, collection="all")
+                 if group["origin"].get("run_id") == "failed-native-refold")
+    assert group["origin"]["collection_kind"] == "intermediate"
+    items = database.list_molecules(A, group_id=group["id"], collection="all")["items"]
+    assert len(items) == 1
+    assert len(items[0]["structures"]) == 1
+    assert len(items[0]["observations"]) == 1
+    assert items[0]["observations"][0]["metrics"]["refolded_motif_rmsd_angstrom"] == 3.2
+
+
 @pytest.mark.parametrize("complex_identity", [False, True])
 def test_protein_qc_reuses_the_exact_frozen_database_identity(database, complex_identity):
     binder = {"type": "protein", "chain": "B", "role": "binder", "sequence": "ACD"}
@@ -287,6 +323,42 @@ def test_sequence_only_design_is_not_identified_as_target_structure(database):
     assert record["components"][0]["role"] == "binder"
     assert record["metadata"]["source_tool"] == "esm_if1"
     assert record["files"] == []
+
+
+def test_target_role_maps_through_synthetic_small_molecule_chain_id(database):
+    from mn_molecular_design_studio.molecular_database_ingest import _record
+    candidate = {
+        "candidate_id": "ligand-binder",
+        "stage": "generation.backbone_sequence",
+        "binder_sequence": "ACD",
+        "binder_chains": ["A"],
+        "target_chains": ["C"],
+        "raw_metadata": {"components": [
+            {"type": "small_molecule", "chain": "C_108", "residue_key": "C:108", "ccd": "RAP"},
+            {"type": "protein", "chain": "A", "sequence": "ACD"},
+        ]},
+    }
+    record = _record(candidate, database.root)
+    components = {component["chain"]: component for component in record["components"]}
+    assert components["A"]["role"] == "binder"
+    assert components["C_108"]["role"] == "target"
+    assert components["C_108"]["residue_key"] == "C:108"
+
+
+def test_matching_candidate_fills_missing_member_roles_without_overwriting_existing_roles(database):
+    from mn_molecular_design_studio.molecular_database_ingest import _merge_member_roles
+    imported = database.import_records(A, [{"name": "complex", "components": [
+        {"type": "small_molecule", "chain": "C_108", "residue_key": "C:108", "ccd": "RAP"},
+        {"type": "protein", "chain": "A", "sequence": "ACD", "role": "binder"},
+    ]}])
+    molecule_id = imported["molecule_ids"][0]
+    _merge_member_roles(database, imported["group_id"], molecule_id, [
+        {"type": "small_molecule", "chain": "C_108", "residue_key": "C:108", "ccd": "RAP", "role": "target"},
+        {"type": "protein", "chain": "A", "sequence": "ACD", "role": "binder"},
+    ])
+    row = database.list_molecules(A, group_id=imported["group_id"])["items"][0]
+    roles = {component["chain"]: component["role"] for component in row["components"]}
+    assert roles == {"C_108": "target", "A": "binder"}
 
 
 def test_repeated_evaluations_reuse_original_group_and_accumulate_once(database):

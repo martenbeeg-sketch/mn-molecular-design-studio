@@ -8,8 +8,8 @@ import sys
 import uuid
 import csv
 import io
+import time
 from pathlib import Path, PurePosixPath
-from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
@@ -61,6 +61,7 @@ _TOOL_LABELS = {
     "boltz2_monomer": "Boltz-2",
     "boltz2_initial_guess": "Boltz-2",
     "ligandmpnn": "ProteinMPNN",
+    "abmpnn": "AbMPNN",
     "foundry_mpnn": "ProteinMPNN (Foundry)",
     "esm_if1": "ESM-IF1",
     "caliby": "Caliby",
@@ -75,7 +76,7 @@ _TOOL_LABELS = {
 
 
 def display_tool_label(row):
-    tool = str(row.get("tool") or row.get("job_type") or "").strip()
+    tool = str(row.get("display_tool") or row.get("tool") or row.get("job_type") or "").strip()
     optimized_prefix = "optimized_prediction_"
     if tool.startswith(optimized_prefix):
         engine = tool[len(optimized_prefix):]
@@ -111,6 +112,7 @@ def display_tool_label(row):
         "design.protpardelle_generate": "Protpardelle-1C Generator",
         "sequence.mpnn": "ProteinMPNN",
         "sequence.ligandmpnn": "ProteinMPNN",
+        "sequence.abmpnn": "AbMPNN",
         "sequence.foundry_mpnn": "ProteinMPNN (Foundry)",
         "sequence.esm_if1": "ESM-IF1",
         "sequence.caliby": "Caliby",
@@ -156,12 +158,174 @@ def _progress_summary(progress):
         return ""
     completed = int(progress.get("trajectories_completed") or 0)
     active = int(progress.get("trajectories_in_progress") or 0)
+    interrupted = int(progress.get("trajectories_interrupted") or 0)
     accepted = int(progress.get("designs_accepted") or 0)
     trajectory_limit = progress.get("trajectory_limit")
     design_target = progress.get("design_target")
     trajectory_label = f"{completed:,} / {int(trajectory_limit):,}" if trajectory_limit else f"{completed:,} completed"
     design_label = f"{accepted:,} / {int(design_target):,}" if design_target else f"{accepted:,} accepted"
-    return f"Progress: {trajectory_label} trajectories · {active:,} running · {design_label} accepted"
+    activity_label = f"{interrupted:,} interrupted" if interrupted else f"{active:,} running"
+    return f"Progress: {trajectory_label} trajectories · {activity_label} · {design_label} accepted"
+
+
+_RESULTS_TERMINAL_STATUSES = {"completed", "succeeded", "failed", "cancelled", "canceled"}
+
+
+def _results_job_reference(row):
+    return str(row.get("cluster_job_id") or (str(row.get("task_group") or "") + "/" + str(row.get("run_id") or "")))
+
+
+def _is_visual_pipeline_row(row):
+    return str(row.get("tool") or "").casefold() == "visual_pipeline" or str(row.get("job_type") or "").casefold() == "visual_pipeline"
+
+
+def _visual_pipeline_groups(rows):
+    """Group visual-pipeline children with their parent run, keyed by its stable run reference."""
+    roots = {}
+    for row in rows:
+        if _is_visual_pipeline_row(row) and row.get("run_id"):
+            roots[(str(row.get("node_id") or ""), str(row["run_id"]))] = row
+
+    groups = {_results_job_reference(root): [root] for root in roots.values()}
+    row_to_group = {reference: reference for reference in groups}
+    for row in rows:
+        if _is_visual_pipeline_row(row):
+            continue
+        parent_id = str(row.get("campaign_id") or "").strip()
+        if not parent_id:
+            continue
+        root = roots.get((str(row.get("node_id") or ""), parent_id))
+        if not root:
+            continue
+        row_project = str(row.get("project_id") or "")
+        root_project = str(root.get("project_id") or "")
+        if row_project and root_project and row_project != root_project:
+            continue
+        root_ref = _results_job_reference(root)
+        row_ref = _results_job_reference(row)
+        if row_ref == root_ref:
+            continue
+        groups[root_ref].append(row)
+        row_to_group[row_ref] = root_ref
+
+    for members in groups.values():
+        members[1:] = sorted(
+            members[1:],
+            key=lambda row: (str(row.get("created_at") or ""), str(row.get("job_code") or "")),
+        )
+    return groups, row_to_group
+
+
+def _pipeline_step_label(row, pipeline_name):
+    name = str(row.get("campaign_step") or row.get("campaign_name") or "").strip()
+    prefix = str(pipeline_name or "").strip() + " · "
+    if prefix != " · " and name.startswith(prefix):
+        name = name[len(prefix):].strip()
+    return name or display_tool_label(row)
+
+
+def _update_results_table_selection(table_key, entry_members):
+    selected_jobs = st.session_state.setdefault("cluster-results-selected", {})
+    edits = st.session_state.get(table_key, {}).get("edited_rows", {})
+    for index, changes in edits.items():
+        if "Select" not in changes or not 0 <= int(index) < len(entry_members):
+            continue
+        for member in entry_members[int(index)]:
+            reference = _results_job_reference(member)
+            if changes["Select"]:
+                selected_jobs[reference] = member
+            else:
+                selected_jobs.pop(reference, None)
+    st.session_state["cluster-results-selected"] = selected_jobs
+    st.session_state.pop("cluster-results-pending-remove-and-purge", None)
+
+
+def _request_results_pipeline_steps(click_key, entry_refs):
+    click = st.session_state.get(click_key)
+    if not click:
+        return
+    index = int(click["row"])
+    if 0 <= index < len(entry_refs) and entry_refs[index]:
+        st.session_state["cluster-results-pipeline-details-request"] = entry_refs[index]
+
+
+def _request_results_job_view(click_key, entry_refs):
+    click = st.session_state.get(click_key)
+    if not click:
+        return
+    index = int(click["row"])
+    if 0 <= index < len(entry_refs) and entry_refs[index]:
+        _navigate_to_job_details(entry_refs[index])
+
+
+def _request_pipeline_dialog_job_view(click_key, entry_refs):
+    click = st.session_state.get(click_key)
+    if not click:
+        return
+    index = int(click["row"])
+    if 0 <= index < len(entry_refs) and entry_refs[index]:
+        _navigate_to_job_details(entry_refs[index])
+
+
+def _navigate_to_job_details(reference):
+    st.session_state["selected-job-reference"] = reference
+    st.session_state["page"] = "Job details"
+    st.rerun(scope="app")
+
+
+def _job_details_reference(row):
+    if row.get("cluster_job_id"):
+        return "cluster:" + str(row["cluster_job_id"])
+    return _results_job_reference(row)
+
+
+@st.dialog("Pipeline steps", width="large")
+def _render_results_pipeline_steps(members, elapsed_label=None, user=None, token=None, submit=None):
+    root, *children = members
+    pipeline_name = config.display_text(root.get("pipeline_name") or root.get("campaign_name") or "Pipeline run")
+    st.markdown(f"**{pipeline_name}**")
+    st.caption(
+        f"{str(root.get('status') or 'unknown').replace('_', ' ').title()} · "
+        f"{root.get('job_code') or root.get('run_id') or ''} · "
+        f"{config.display_name(root.get('node_name') or 'Not assigned')}"
+    )
+    st.button(
+        "View pipeline run",
+        key="cluster-results-pipeline-root-view",
+        type="tertiary",
+        on_click=_navigate_to_job_details,
+        args=(_job_details_reference(root),),
+    )
+    if not children:
+        st.info("No tool-call jobs have been created for this pipeline yet.")
+        return
+    child_refs = []
+    step_rows = []
+    for child in children:
+        child_ref = _results_job_reference(child)
+        child_refs.append(child_ref)
+        step_rows.append({
+        "Step": _pipeline_step_label(child, pipeline_name),
+        "View": "View",
+        "Tool": display_tool_label(child),
+        "#": str(child.get("job_code") or ""),
+        "Status": str(child.get("status") or "unknown").replace("_", " ").title(),
+        "Elapsed": elapsed_label(child) if elapsed_label else "—",
+        "Workstation": config.display_name(child.get("node_name") or "Not assigned"),
+        "Progress": _progress_summary(child.get("progress")),
+        })
+    view_key = "cluster-results-pipeline-child-view"
+    st.dataframe(
+        pd.DataFrame(step_rows),
+        hide_index=True,
+        width="stretch",
+        column_config={"View": st.column_config.ButtonColumn(
+            "View", width="small", type="tertiary", key=view_key,
+            on_click=_request_pipeline_dialog_job_view,
+            args=(view_key, [_job_details_reference(child) for child in children]),
+        )},
+        height=min(420, 36 * len(step_rows) + 42),
+    )
 
 
 def _render_bindcraft2_progress(row, job_id, token):
@@ -695,6 +859,39 @@ def catalog(user, token, *, include_hidden=False):
             return {"items": [], "total": 0}, True
 
 
+def _refresh_results_snapshot(user, token, local_search):
+    """Load remote and local rows once for Results filtering and display."""
+    page, stale = catalog(user, token, include_hidden=True)
+    rows = list(page["items"])
+    local_page = local_search(limit=1000)
+    local = list(local_page["items"])
+    while len(local) < local_page["total"]:
+        more = local_search(limit=1000, offset=len(local))["items"]
+        if not more:
+            break
+        local.extend(more)
+    local_name = config.load()["name"]
+    known = {(r.get("node_id"), r.get("task_group"), r.get("run_id")): i for i, r in enumerate(rows)}
+    for row in local:
+        key = (config.identity(), row["task_group"], row["run_id"])
+        item = dict(row, node_id=config.identity(), node_name=local_name, availability="online")
+        if _is_bindcraft2_job(item):
+            item["progress"] = _row_progress(item)
+        if key in known:
+            rows[known[key]] = rows[known[key]] | item
+        else:
+            rows.append(item)
+    for row in rows:
+        if _is_bindcraft2_job(row) and not row.get("progress"):
+            row["progress"] = _row_progress(row)
+    return {
+        "items": rows,
+        "stale": stale,
+        "user_id": str(user.get("id") or ""),
+        "refreshed_at": time.monotonic(),
+    }
+
+
 def execution_selector(user, token):
     if not config.enabled():
         return
@@ -791,28 +988,59 @@ def settings(user, token):
                 st.caption("This file grants access to one workstation agent. Copy it privately to that workstation.")
 
 
-def render_runs(user, token, local_search, *, elapsed_label=None, elapsed_since=None):
-    run_every = 2 if st.session_state.get("cluster-results-purge-operations") else 15
+def render_runs(user, token, local_search, *, elapsed_label=None, elapsed_since=None, submit=None):
+    live_updates = bool(st.session_state.get("cluster-results-live-updates", False))
+    has_active_jobs = bool(st.session_state.get("cluster-results-has-active-jobs", False))
+    run_every = 2 if st.session_state.get("cluster-results-purge-operations") else (
+        15 if live_updates and has_active_jobs else None
+    )
     @st.fragment(run_every=run_every)
     def live_results():
-        _render_runs_content(user, token, local_search, elapsed_label=elapsed_label, elapsed_since=elapsed_since)
+        _render_runs_content(
+            user, token, local_search, elapsed_label=elapsed_label,
+            elapsed_since=elapsed_since, submit=submit,
+        )
 
     live_results()
 
 
-def _render_runs_content(user, token, local_search, *, elapsed_label=None, elapsed_since=None):
+def _rerun_results_app():
+    st.rerun(scope="app")
+
+
+def _render_runs_content(user, token, local_search, *, elapsed_label=None, elapsed_since=None, submit=None):
+    st.markdown(
+        """<style>
+        button[data-testid="stBaseButton-tertiary"],
+        button[data-testid="stBaseButton-tertiary"] *,
+        [data-testid="stDataEditor"] button,
+        [data-testid="stDataEditor"] button * {
+            color: #2f6fba !important;
+        }
+        </style>""",
+        unsafe_allow_html=True,
+    )
     if st.session_state.pop("cluster-results-reset-selection", False):
         for key in list(st.session_state):
-            if str(key).startswith("cluster-results-select-"):
+            if str(key).startswith(("cluster-results-select-", "cluster-results-table-", "cluster-results-pipeline-select-")):
                 st.session_state.pop(key, None)
         st.session_state["cluster-results-selected"] = {}
-    st.title("My results")
+    title_col, refresh_col, live_col = st.columns([0.66, 0.17, 0.17], vertical_alignment="center")
+    title_col.title("My results")
+    live_updates = live_col.toggle(
+        "Live updates",
+        key="cluster-results-live-updates",
+        help="Refresh the job list every 15 seconds while jobs are active.",
+        on_change=_rerun_results_app,
+    )
+    refresh_requested = refresh_col.button("Refresh", icon=":material/refresh:", key="cluster-results-refresh")
     if message := st.session_state.pop("cluster-results-flash", None):
         st.success(message)
     if failures := st.session_state.pop("cluster-results-purge-errors", None):
         for failure in failures:
             st.error(failure)
     purge_operations = list(st.session_state.get("cluster-results-purge-operations") or [])
+    purge_poll_finished = False
     if purge_operations:
         remaining_operations = []
         completed_operations = 0
@@ -837,60 +1065,134 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
             st.info(f"Physically removing {len(remaining_operations)} run folder(s) on the owning workstation(s)…")
         else:
             st.session_state.pop("cluster-results-purge-operations", None)
+            purge_poll_finished = True
+            st.session_state["cluster-results-force-refresh"] = True
             if completed_operations:
                 st.success(f"Physically removed {completed_operations} remote run folder(s) and their automatic Database records.")
-    show_removed = st.toggle("Show removed jobs", key="cluster-results-show-removed")
-    # Keep hidden rows in the merged view so local jobs do not reappear when
-    # they are filtered out by the coordinator's default Results query.
-    page, stale = catalog(user, token, include_hidden=True)
+    snapshot = st.session_state.get("cluster-results-catalog-snapshot")
+    same_user = isinstance(snapshot, dict) and snapshot.get("user_id") == str(user.get("id") or "")
+    if not same_user:
+        snapshot = None
+    refresh_due = bool(
+        live_updates
+        and snapshot
+        and time.monotonic() - float(snapshot.get("refreshed_at") or 0) >= 14.5
+    )
+    force_refresh = st.session_state.pop("cluster-results-force-refresh", False)
+    if refresh_requested or force_refresh or snapshot is None or refresh_due:
+        try:
+            snapshot = _refresh_results_snapshot(user, token, local_search)
+            st.session_state["cluster-results-catalog-snapshot"] = snapshot
+        except (OSError, ValueError, transport.ClusterUnavailable, sqlite3.Error) as exc:
+            if snapshot is None:
+                st.error(f"Could not load jobs: {exc}")
+                return
+            st.error(f"Refresh failed; showing the last loaded jobs. {exc}")
+    rows = list(snapshot.get("items") or [])
+    stale = bool(snapshot.get("stale"))
     if stale:
         st.info("Coordinator unavailable. Showing the last synchronized catalog and current local jobs. Remote status is last known.")
-    rows = list(page["items"])
-    local_page = local_search(limit=1000)
-    local = list(local_page["items"])
-    while len(local) < local_page["total"]:
-        more = local_search(limit=1000, offset=len(local))["items"]
-        if not more:
-            break
-        local.extend(more)
-    known = {(r.get("node_id"), r.get("task_group"), r.get("run_id")): i for i, r in enumerate(rows)}
-    for row in local:
-        key = (config.identity(), row["task_group"], row["run_id"])
-        item = dict(row, node_id=config.identity(), node_name=config.load()["name"], availability="online")
-        if _is_bindcraft2_job(item):
-            item["progress"] = _row_progress(item)
-        if key in known:
-            rows[known[key]] = rows[known[key]] | item
-        else:
-            rows.append(item)
+    show_removed = st.toggle("Show removed jobs", key="cluster-results-show-removed")
+    old_has_active = bool(st.session_state.get("cluster-results-has-active-jobs", False))
+    active_statuses = {
+        "queued", "pending", "starting", "preparing", "running", "cancelling",
+        "cancel_requested", "submitted", "scheduled", "staging", "waiting", "waiting_for_workstation",
+        "paused", "holding",
+    }
+    has_active_jobs = any(str(row.get("status") or "").casefold() in active_statuses for row in rows)
+    st.session_state["cluster-results-has-active-jobs"] = has_active_jobs
+    if purge_poll_finished or (live_updates and old_has_active != has_active_jobs):
+        st.rerun(scope="app")
+    if live_updates and not has_active_jobs:
+        st.caption("No active jobs to track. Refresh manually to check for new jobs.")
+    if snapshot:
+        age_seconds = max(0, int(time.monotonic() - float(snapshot.get("refreshed_at") or time.monotonic())))
+        age_label = "just now" if age_seconds < 5 else f"{age_seconds}s ago" if age_seconds < 60 else f"{age_seconds // 60}m ago"
+        st.caption(f"Job list refreshed {age_label}.")
     status_options = sorted({str(r.get("status") or "unknown").replace("_", " ").title() for r in rows}, key=str.casefold)
     status_key = "cluster-results-status-filter"
     if not set(st.session_state.get(status_key, [])).issubset(status_options):
         st.session_state[status_key] = []
-    search_col, machine_col, status_col, sort_col, refresh_col = st.columns([0.31, 0.20, 0.19, 0.20, 0.10])
+    group_pipeline_runs = st.toggle(
+        "Group pipeline steps",
+        value=True,
+        key="cluster-results-group-pipelines",
+        help="Show each pipeline once. Its checkbox selects all its jobs; the Steps button opens its tool-call jobs.",
+    )
+    search_col, machine_col, status_col, sort_col = st.columns([0.38, 0.21, 0.21, 0.20])
     query = search_col.text_input("Search jobs", placeholder="Name, engine, or run ID", key="cluster-results-query").casefold()
     names = {r.get("node_id"): config.display_name(r.get("node_name") or "Not assigned") for r in rows if r.get("node_id")}
     machine = machine_col.selectbox("Workstation", ["", *names], format_func=lambda v: names.get(v, "All workstations"), key="cluster-results-machine")
     statuses = status_col.multiselect("Status", status_options, key=status_key, placeholder="All statuses")
     sort_by = sort_col.selectbox(
         "Sort jobs",
-        ["finished_desc", "name_asc", "status_asc"],
+        ["active_desc", "finished_desc", "name_asc", "status_asc"],
         format_func=lambda value: {
+            "active_desc": "Newest",
             "finished_desc": "Finished (newest first)",
             "name_asc": "Name (A–Z)",
             "status_asc": "Status (A–Z)",
         }[value],
-        key="cluster-results-sort-by",
+        key="cluster-results-sort-by-v2",
     )
-    if refresh_col.button("Refresh", key="cluster-results-refresh"):
-        st.rerun()
-    projects = sorted({r.get("project_id") for r in rows if r.get("project_id")})
     from mn_molecular_design_studio.workspace import load_organization
-    project_names = {p["id"]: p["name"] for p in load_organization().get("projects", [])}
-    project = st.selectbox("Project", ["", *projects], format_func=lambda v: project_names.get(v, "All projects"), key="cluster-results-project")
-    chosen = [r for r in rows if (show_removed or not r.get("hidden"))
-              and (not machine or r.get("node_id") == machine) and (not project or r.get("project_id") == project)
-              and (not statuses or str(r.get("status") or "unknown").replace("_", " ").title() in statuses)
+    project_records = [p for p in load_organization().get("projects", []) if isinstance(p, dict) and p.get("id")]
+    known_project_ids = {str(p["id"]) for p in project_records}
+    for row in rows:
+        project_id = str(row.get("project_id") or "")
+        if project_id and project_id not in known_project_ids:
+            project_records.append({"id": project_id, "name": f"Project {project_id[:8]}"})
+            known_project_ids.add(project_id)
+    project_names = {str(p["id"]): str(p.get("name") or "Unnamed project") for p in project_records}
+    project_activity = {}
+    for row in rows:
+        project_id = str(row.get("project_id") or "")
+        updated_at = str(row.get("updated_at") or row.get("completed_at") or row.get("created_at") or "")
+        if project_id and updated_at > project_activity.get(project_id, ""):
+            project_activity[project_id] = updated_at
+    project_col, project_order_col = st.columns([0.72, 0.28])
+    project_order = project_order_col.selectbox(
+        "Project order",
+        ["modified_desc", "created_desc", "name_asc"],
+        format_func=lambda value: {
+            "modified_desc": "Last modified (newest first)",
+            "created_desc": "Created (newest first)",
+            "name_asc": "Name (A–Z)",
+        }[value],
+        key="cluster-results-project-order",
+        help="Last modified is based on the newest updated job in each project; projects without jobs fall back to their creation date.",
+    )
+    if project_order == "name_asc":
+        project_records.sort(key=lambda p: (str(p.get("name") or "").casefold(), str(p.get("id") or "")))
+    elif project_order == "created_desc":
+        project_records.sort(key=lambda p: (str(p.get("name") or "").casefold(), str(p.get("id") or "")))
+        project_records.sort(key=lambda p: str(p.get("created_at") or ""), reverse=True)
+    else:
+        project_records.sort(key=lambda p: (str(p.get("name") or "").casefold(), str(p.get("id") or "")))
+        project_records.sort(
+            key=lambda p: max(
+                str(p.get("updated_at") or ""),
+                project_activity.get(str(p.get("id") or ""), ""),
+                str(p.get("created_at") or ""),
+            ),
+            reverse=True,
+        )
+    project_options = ["", *[str(p["id"]) for p in project_records]]
+    project = project_col.selectbox(
+        "Project",
+        project_options,
+        format_func=lambda value: project_names.get(value, "All projects"),
+        key="cluster-results-project",
+    )
+    filters_key = (query, machine, project, tuple(sorted(statuses)), sort_by, show_removed, group_pipeline_runs)
+    if st.session_state.get("cluster-results-filter-state") != filters_key:
+        st.session_state["cluster-results-filter-state"] = filters_key
+        st.session_state["cluster-results-page"] = 1
+    scope_rows = [r for r in rows if (show_removed or not r.get("hidden"))
+                  and (not machine or r.get("node_id") == machine)
+                  and (not project or r.get("project_id") == project)]
+    chosen = [r for r in scope_rows
+              if (not statuses or str(r.get("status") or "unknown").replace("_", " ").title() in statuses)
               and (not query or query in " ".join(f"{r.get(k, '')} {config.display_text(r.get(k, ''))}" for k in ("campaign_name", "pipeline_name", "run_id", "tool", "job_code")).casefold())]
     page_sort_key = "cluster-results-last-sort"
     if st.session_state.get(page_sort_key) != sort_by:
@@ -910,6 +1212,16 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
                 str(r.get("created_at") or ""),
             )
         )
+    elif sort_by == "active_desc":
+        finished_statuses = {"completed", "succeeded", "failed", "cancelled", "canceled"}
+        active_rows = [r for r in chosen if str(r.get("status") or "unknown").casefold() not in finished_statuses]
+        finished_rows = [r for r in chosen if str(r.get("status") or "unknown").casefold() in finished_statuses]
+        def newest_key(row):
+            return str(row.get("updated_at") or row.get("completed_at") or row.get("created_at") or "")
+
+        active_rows.sort(key=newest_key, reverse=True)
+        finished_rows.sort(key=newest_key, reverse=True)
+        chosen = active_rows + finished_rows
     else:
         finished_statuses = {"completed", "succeeded", "failed", "cancelled", "canceled"}
         chosen.sort(
@@ -920,56 +1232,160 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
             ),
             reverse=True,
         )
-    st.caption(f"{len(chosen)} jobs · Job status and file availability are tracked separately.")
-    pages = max(1, (len(chosen) + 49) // 50)
+    selected_jobs = st.session_state.setdefault("cluster-results-selected", {})
+    row_by_ref = {_results_job_reference(row): row for row in rows}
+    for reference in list(selected_jobs):
+        if reference in row_by_ref:
+            selected_jobs[reference] = row_by_ref[reference]
+        else:
+            selected_jobs.pop(reference, None)
+
+    pipeline_groups, row_to_group = _visual_pipeline_groups(rows)
+    if group_pipeline_runs:
+        for root_ref, members in pipeline_groups.items():
+            if root_ref in selected_jobs:
+                selected_jobs.update((_results_job_reference(member), member) for member in members)
+    display_entries = []
+    seen_groups = set()
+    for row in chosen:
+        reference = _results_job_reference(row)
+        group_ref = row_to_group.get(reference) if group_pipeline_runs else None
+        if group_ref:
+            if group_ref in seen_groups:
+                continue
+            seen_groups.add(group_ref)
+            members = pipeline_groups[group_ref]
+            display_entries.append({
+                "kind": "pipeline",
+                "root": members[0],
+                "members": members,
+            })
+        else:
+            display_entries.append({"kind": "job", "row": row})
+
+    grouped_count = sum(entry["kind"] == "pipeline" for entry in display_entries)
+    caption = f"{len(chosen)} jobs · Job status and file availability are tracked separately."
+    if grouped_count:
+        caption += f" {grouped_count} pipeline run{'s' if grouped_count != 1 else ''} grouped."
+    st.caption(caption)
+    page_size_col, page_col, range_col = st.columns([0.24, 0.24, 0.52], vertical_alignment="bottom")
+    page_size = page_size_col.selectbox("Entries per page", [25, 50, 100], index=1, key="cluster-results-page-size")
+    page_size_key = "cluster-results-page-size-last"
+    if st.session_state.get(page_size_key) != page_size:
+        st.session_state[page_size_key] = page_size
+        st.session_state["cluster-results-page"] = 1
+    pages = max(1, (len(display_entries) + page_size - 1) // page_size)
     page_key = "cluster-results-page"
     if st.session_state.get(page_key, 1) > pages:
-        st.session_state[page_key] = 1
-    selected_page = int(st.number_input("Page", min_value=1, max_value=pages, value=1, step=1, key=page_key))
-    header = st.columns([0.35, 2.8, 1, 1.25, 1, 1.3, 0.7])
-    header[0].caption("Select")
-    for column, label in zip(
-        header[1:],
-        ("Job name · tool · pipeline", "Status", "Elapsed", "Workstation", "File availability", "Open"),
-    ):
-        column.caption(label)
-    selected_jobs = st.session_state.setdefault("cluster-results-selected", {})
-    for row in chosen[(selected_page - 1) * 50:selected_page * 50]:
-        ref = str(row.get("cluster_job_id") or (str(row.get("task_group") or "") + "/" + str(row.get("run_id") or "")))
-        checkbox_key = "cluster-results-select-" + hashlib.sha1(ref.encode()).hexdigest()[:12]
-        with st.container(border=True):
-            select_col, title, state, elapsed, machine, access, action = st.columns([0.35, 2.8, 1, 1.25, 1, 1.3, 0.7])
-            if select_col.checkbox("Select job", value=ref in selected_jobs, key=checkbox_key, label_visibility="collapsed"):
-                selected_jobs[ref] = row
-            else:
-                selected_jobs.pop(ref, None)
-            title.write(config.display_text(row.get("campaign_name") or row.get("tool") or "Job"))
-            pipeline_name = str(row.get("pipeline_name") or "").strip() or "—"
-            title.caption(f"Tool: {display_tool_label(row)} · Pipeline: {config.display_text(pipeline_name)}")
-            title.caption(project_names.get(row.get("project_id"), "Project") + " · " + str(row.get("job_code", "")))
-            progress_label = _progress_summary(_row_progress(row))
-            if progress_label:
-                title.caption(progress_label)
-            state.write(str(row.get("status", "unknown")).replace("_", " ").title())
-            elapsed.write(elapsed_label(row) if elapsed_label else "—")
-            since = elapsed_since(row) if elapsed_since else ""
-            if since:
-                elapsed.caption(since)
-            machine.write(config.display_name(row.get("node_name") or "Not assigned"))
-            availability = "last known" if stale and row.get("node_id") != config.identity() else row.get("availability", "pending")
-            access.write(availability.title())
+        st.session_state[page_key] = pages
+    selected_page = int(page_col.number_input("Page", min_value=1, max_value=pages, value=1, step=1, key=page_key))
+    first_index = (selected_page - 1) * page_size
+    last_index = min(first_index + page_size, len(display_entries))
+    range_col.caption(f"{first_index + 1 if display_entries else 0}–{last_index} of {len(display_entries)}")
+    page_entries = display_entries[first_index:last_index]
+
+    if not page_entries:
+        st.info("No jobs match your search and filters.")
+    else:
+        table_rows = []
+        entry_members = []
+        entry_pipeline_refs = []
+        entry_view_refs = []
+        for entry in page_entries:
+            is_pipeline = entry["kind"] == "pipeline"
+            row = entry["root"] if is_pipeline else entry["row"]
+            ref = _results_job_reference(row)
+            members = entry["members"] if is_pipeline else [row]
+            entry_members.append(members)
+            entry_pipeline_refs.append(ref if is_pipeline else None)
+            entry_view_refs.append(_job_details_reference(row))
+            availability = "Last known" if stale and row.get("node_id") != config.identity() else str(row.get("availability", "pending")).title()
             if row.get("last_seen_at"):
-                access.caption(str(row["last_seen_at"]))
-            view_ref = "cluster:" + row["cluster_job_id"] if row.get("cluster_job_id") else row["run_id"]
-            if row.get("node_id") == config.identity() and row.get("run_id"):
-                view_ref = row["run_id"]
-            view_href = "?job_ref=" + quote(str(view_ref), safe="")
-            action.markdown(
-                f'<a href="{view_href}" target="_self" '
-                'style="display:inline-block;padding:0.35rem 0.65rem;border:1px solid #d5dbe1;'
-                'border-radius:0.4rem;background:#fff;color:#26352d;text-decoration:none">View</a>',
-                unsafe_allow_html=True,
+                availability += " · " + str(row["last_seen_at"])
+            table_row = {
+                "_reference": ref,
+                "Select": all(_results_job_reference(member) in selected_jobs for member in members),
+                "Job": config.display_text(row.get("campaign_name") or row.get("tool") or "Job"),
+                "View": "View",
+            }
+            if group_pipeline_runs:
+                children = members[1:] if is_pipeline else []
+                finished_steps = sum(
+                    str(child.get("status") or "unknown").casefold() in _RESULTS_TERMINAL_STATUSES
+                    for child in children
+                )
+                table_row["Steps"] = f"{finished_steps}/{len(children)} finished" if is_pipeline else None
+            table_row.update({
+                "Project": project_names.get(row.get("project_id"), "Project"),
+                "Tool": display_tool_label(row),
+            })
+            if not group_pipeline_runs:
+                table_row["Pipeline"] = config.display_text(str(row.get("pipeline_name") or "").strip() or "—")
+            table_row.update({
+                "Code": str(row.get("job_code") or ""),
+                "Status": str(row.get("status") or "unknown").replace("_", " ").title(),
+                "Elapsed": elapsed_label(row) if elapsed_label else "—",
+                "Updated": elapsed_since(row) if elapsed_since else "",
+                "Workstation": config.display_name(row.get("node_name") or "Not assigned"),
+                "Files": availability,
+                "Progress": _progress_summary(row.get("progress")),
+            })
+            table_rows.append(table_row)
+        table = pd.DataFrame(table_rows).set_index("_reference")
+        table_key = "cluster-results-table-" + hashlib.sha1(
+            repr((query, machine, project, tuple(sorted(statuses)), sort_by, show_removed,
+                  group_pipeline_runs, selected_page, page_size, tuple(table.index),
+                  tuple(sorted(selected_jobs)))).encode("utf-8")
+        ).hexdigest()[:12]
+        column_config = {
+            "Select": st.column_config.CheckboxColumn(
+                "Select", width="small",
+                help="Selecting a pipeline includes its parent run and every tool-call job. Finish or cancel jobs before purging them.",
+            ),
+            "Job": st.column_config.TextColumn("Job", width="large"),
+            "View": st.column_config.ButtonColumn(
+                "View", width="small", type="tertiary", key=table_key + "-view",
+                on_click=_request_results_job_view,
+                args=(table_key + "-view", entry_view_refs),
+            ),
+            "Project": st.column_config.TextColumn("Project", width="medium"),
+            "Tool": st.column_config.TextColumn("Tool", width="medium"),
+            "Pipeline": st.column_config.TextColumn("Pipeline", width="medium"),
+            "Code": st.column_config.TextColumn("#", width="small"),
+            "Status": st.column_config.TextColumn("Status", width="small"),
+            "Elapsed": st.column_config.TextColumn("Elapsed", width="small"),
+            "Updated": st.column_config.TextColumn("Updated", width="medium"),
+            "Workstation": st.column_config.TextColumn("Workstation", width="medium"),
+            "Files": st.column_config.TextColumn("Files", width="medium"),
+            "Progress": st.column_config.TextColumn("Progress", width="large"),
+        }
+        if group_pipeline_runs:
+            click_key = table_key + "-steps"
+            column_config["Steps"] = st.column_config.ButtonColumn(
+                "Steps", width=120, type="tertiary",
+                help="Open all tool-call jobs for this pipeline, including steps outside the current filters.",
+                key=click_key,
+                on_click=_request_results_pipeline_steps,
+                args=(click_key, entry_pipeline_refs),
             )
+        st.data_editor(
+            table,
+            key=table_key,
+            hide_index=True,
+            num_rows="fixed",
+            disabled=[column for column in table.columns if column not in {"Select", "Steps", "View"}],
+            column_config=column_config,
+            on_change=_update_results_table_selection,
+            args=(table_key, entry_members),
+            width="stretch",
+            row_height=36,
+            height=min(680, len(table_rows) * 36 + 42),
+        )
+    details_reference = st.session_state.pop("cluster-results-pipeline-details-request", None)
+    if details_reference in pipeline_groups:
+        _render_results_pipeline_steps(
+            pipeline_groups[details_reference], elapsed_label, user, token, submit,
+        )
     st.session_state["cluster-results-selected"] = selected_jobs
     selected_rows = list(selected_jobs.values())
     if selected_rows:
@@ -998,6 +1414,7 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
                         failures.append(str(exc))
                 st.session_state["cluster-results-selected"] = {}
                 st.session_state["cluster-results-reset-selection"] = True
+                st.session_state["cluster-results-force-refresh"] = True
                 if restored:
                     st.session_state["cluster-results-flash"] = f"Restored {restored} job{'s' if restored != 1 else ''}."
                 for failure in failures:
@@ -1005,8 +1422,19 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
                 st.rerun()
         else:
             pending_key = "cluster-results-pending-remove-and-purge"
-            if st.button("Remove and purge selected", key="cluster-results-remove-and-purge-request"):
-                st.session_state[pending_key] = [dict(row) for row in selected_rows]
+            active_selected = any(
+                str(row.get("status") or "unknown").casefold() not in _RESULTS_TERMINAL_STATUSES
+                for row in selected_rows
+            )
+            pending = st.session_state.get(pending_key)
+            if pending and (active_selected or {_results_job_reference(row) for row in pending} != set(selected_jobs)):
+                st.session_state.pop(pending_key, None)
+            if active_selected:
+                st.info("Finish or cancel the selected jobs before removing them. A pipeline selection includes all its steps.")
+            if st.button("Remove and purge selected", key="cluster-results-remove-and-purge-request", disabled=active_selected):
+                pending_rows = [dict(row) for row in selected_rows]
+                pending_rows.sort(key=_is_visual_pipeline_row)
+                st.session_state[pending_key] = pending_rows
             pending = st.session_state.get(pending_key)
             if pending:
                 st.warning("Confirming permanently deletes each selected finished run folder from its workstation's Results directory and removes its automatic Database records. Queued or running jobs cannot be purged. Molecules explicitly saved to user collections are kept. Remote runs are deleted when their workstation receives the request.")
@@ -1060,6 +1488,7 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
                     st.session_state.pop(pending_key, None)
                     st.session_state["cluster-results-selected"] = {}
                     st.session_state["cluster-results-reset-selection"] = True
+                    st.session_state["cluster-results-force-refresh"] = True
                     if queued_operations:
                         st.session_state["cluster-results-purge-operations"] = queued_operations
                     messages = []
@@ -1121,6 +1550,9 @@ def render_job(reference, user, token, submit):
             st.success("Cancellation requested. The workstation will confirm when execution has stopped.")
     if row.get("metrics"):
         st.json(row.get("metrics", {}), expanded=False)
+    if str(row.get("task_group") or "") in {"ligand-md", "ligand-mmgbsa", "md-analysis"} and row.get("availability") == "online":
+        from mn_molecular_design_studio.md_remote_ui import render_remote_md_results
+        render_remote_md_results(st, jid, row, token, _fetch_remote_artifact_text)
     if row.get("local_reference"):
         if st.button("Load full results from workstation", key="cluster-inspect-" + jid):
             operation = _request("/jobs/" + jid + "/actions", token, {"action": "inspect"}, method="POST")

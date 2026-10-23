@@ -56,7 +56,7 @@ def _record_label(record: dict) -> str:
 
 
 def _source_group(records: list[dict]) -> dict | None:
-    """Return a group explicitly identified as belonging to this run."""
+    """Return the highest-priority output group explicitly linked to this run."""
     counts: dict[str, int] = {}
     groups: dict[str, dict] = {}
     for record in records:
@@ -82,7 +82,38 @@ def _source_group(records: list[dict]) -> dict | None:
             groups[group_id] = {**visible_by_id.get(group_id, {}), **groups.get(group_id, {}), **item, "id": group_id}
     if not counts:
         return None
-    return groups[max(counts, key=counts.get)]
+
+    def priority(group: dict) -> int:
+        origin = group.get("origin") or {}
+        kind = group.get("collection_kind") or (
+            origin.get("collection_kind") if isinstance(origin, dict) else None
+        )
+        # Prefer generated output structures, then evaluation collections.
+        # Inputs remain a useful fallback for workflows with no output group.
+        return {
+            "generated": 0,
+            "evaluation": 1,
+            "curated": 2,
+            "intermediate": 3,
+            "inputs": 4,
+        }.get(kind, 5)
+
+    best_group_id = min(counts, key=lambda group_id: (priority(groups[group_id]), -counts[group_id]))
+    return groups[best_group_id]
+
+
+def _record_belongs_to_group(record: dict, group_id: str) -> bool:
+    """Check the run's group associations, including compact ID-only forms."""
+    for key in ("source_group", "run_group", "run_groups", "source_group_id", "run_group_id", "source_group_ids", "run_group_ids", "groups"):
+        value = record.get(key)
+        if not value:
+            continue
+        for item in value if isinstance(value, list) else [value]:
+            if isinstance(item, dict):
+                item = item.get("id")
+            if str(item or "") == str(group_id):
+                return True
+    return False
 
 
 def _collection_for_group(group: dict | None) -> str:
@@ -196,7 +227,19 @@ def render_run_database_actions(run_dir, user: dict, projects: list[dict]) -> No
     if open_col.button("Open in Database", key=f"run-database-open-{run_key}"):
         st.session_state["molecular-preselect-group"] = source_group.get("id") if source_group else None
         st.session_state["molecular-preselect-collection"] = collection
-        st.session_state["molecular-preselect-molecule"] = ids[0]
+        focus_id = next(
+            (
+                str(record["id"])
+                for record in records
+                if source_group and _record_belongs_to_group(record, source_group["id"])
+            ),
+            ids[0],
+        )
+        st.session_state["molecular-preselect-molecule"] = focus_id
+        if source_group and database._is_smoke_test_group(source_group):
+            # Explicit navigation from this run should reveal its own source
+            # collection, even when the browser normally hides smoke groups.
+            st.session_state["molecular-hide-smoke-test-groups"] = False
         if not source_group:
             st.session_state["database-selected-group"] = ""
             st.session_state["molecular-project-filter"] = ""

@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from mn_molecular_design_studio.engine.workflow_engine.core.job_identity import job_name, job_tool
+from mn_molecular_design_studio.engine.workflow_engine.core.job_identity import job_display_tool, job_name, job_tool
 
 _SCHEMA_LOCK = threading.Lock()
 _RECONCILE_LOCK = threading.Lock()
@@ -490,6 +490,12 @@ def search_jobs(
         raise ValueError("offset must be a non-negative integer")
     order_by = {
         "created_desc": "j.created_at DESC, j.run_id DESC",
+        "active_desc": (
+            "CASE WHEN lower(j.status) IN ('completed','succeeded','failed','cancelled','canceled') "
+            "THEN 1 ELSE 0 END ASC, "
+            "COALESCE(NULLIF(j.updated_at,''), j.created_at) DESC, "
+            "j.created_at DESC, j.run_id DESC"
+        ),
         "finished_desc": (
             "CASE WHEN lower(j.status) IN ('completed','succeeded','failed','cancelled','canceled') "
             "THEN 0 ELSE 1 END ASC, "
@@ -503,7 +509,7 @@ def search_jobs(
         "status_asc": "replace(lower(j.status), '_', ' ') ASC, j.created_at DESC, j.run_id DESC",
     }.get(sort_by)
     if order_by is None:
-        raise ValueError("sort_by must be created_desc, finished_desc, name_asc, or status_asc")
+        raise ValueError("sort_by must be created_desc, active_desc, finished_desc, name_asc, or status_asc")
     if cursor is not None:
         try:
             cursor_offset = int(cursor)
@@ -583,6 +589,11 @@ def search_jobs(
         item["success"] = None if item["success"] is None else bool(item["success"])
         item["hidden"] = bool(item["hidden"])
         item["capacity_parent"] = bool(item["capacity_parent"])
+        display_tool_params = {}
+        if item["tool"] == "ligandmpnn":
+            input_payload = _read_json(Path(item["run_dir"]) / "input.json")
+            display_tool_params = input_payload.get("params") if isinstance(input_payload.get("params"), dict) else {}
+        item["display_tool"] = job_display_tool(item["tool"], display_tool_params)
         items.append(item)
     return {
         "items": items,

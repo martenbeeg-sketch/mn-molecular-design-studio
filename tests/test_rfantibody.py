@@ -184,6 +184,33 @@ def test_rfantibody_results_end_with_score_interpretation(monkeypatch, tmp_path)
     assert any("<10 Å" in block.value and "0.90 corresponds to 90/100" in block.value for block in at.markdown)
 
 
+def test_rfantibody_mimosa_results_separate_stages_and_default_to_best_rf2(monkeypatch, tmp_path):
+    from mn_molecular_design_studio import rfantibody_ui
+
+    structure = tmp_path / "complex.pdb"
+    structure.write_text("ATOM sample\n")
+    monkeypatch.setattr(rfantibody_ui, "molstar_custom_component", lambda *args, **kwargs: None)
+    candidates = [
+        {"candidate_id": "generated", "stage": "generation.backbone", "binder_chains": ["H"], "complex_pdb": str(structure), "metrics": {"generated_motif_rmsd_angstrom": 1.2}},
+        {"candidate_id": "rf2-1", "stage": "complex_refolding", "complex_pdb": str(structure), "metrics": {"rf2_repeat": 1, "pred_lddt": 0.90, "interaction_pae": 5.0}},
+        {"candidate_id": "rf2-2", "stage": "complex_refolding", "complex_pdb": str(structure), "metrics": {"rf2_repeat": 2, "pred_lddt": 0.92, "interaction_pae": 7.0}},
+    ]
+    at = AppTest.from_string(
+        "from pathlib import Path\n"
+        "from mn_molecular_design_studio.rfantibody_ui import render_results\n"
+        f"render_results('mimosa-run', Path({str(tmp_path)!r}), "
+        f"{candidates!r}, {{}}, {{}})"
+    ).run()
+    assert not at.exception
+    assert any("1 generated backbone · 2 RF2 predictions" in block.value for block in at.caption)
+    assert at.selectbox[0].value == 2
+    table = at.dataframe[0].value
+    assert table.loc[0, "Stage"] == "Generated backbone"
+    assert table.loc[1, "Stage"] == "RF2 prediction"
+    assert table.loc[0, "Rank"] == "—"
+    assert table.loc[0, "Sequence"] == "—"
+
+
 def test_workflow_registration_and_schema_validation(tmp_path):
     schema = automation.workflow_schema("design.rfantibody")
     assert schema["workflow"] == "design.rfantibody"

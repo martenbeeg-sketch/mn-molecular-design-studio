@@ -32,6 +32,7 @@ class Agent:
         self._stop = threading.Event()
         self._peer_retry = {}
         self._poll_index = 0
+        self._processed_purge_receipts = set()
 
     def snapshot(self):
         if time.monotonic() - self._inventory_time > 120 or not self._inventory:
@@ -131,6 +132,9 @@ class Agent:
         from .store import Store
         from .replication import Replica, capture_identity, sync_peer, locked
         store = Store()
+        # Reconcile completed purges before rebuilding the catalog or publishing
+        # the peer mirror. Otherwise the stale mirrored row can be sent again.
+        self._reconcile_purged_peer_jobs()
         jobs = self.catalog() if self.storage_online() else []
         probes = set(store.reference_probes())
         for path in config.home().glob("peer-probes-*.json"):
@@ -180,6 +184,15 @@ class Agent:
                 from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import inspect_job, job_results
                 ref = command["payload"]["local_reference"]
                 response = inspect_job(ref) | {"results": job_results(ref, include_candidates=True)}
+            elif command["kind"] == "md_source_options":
+                from mn_molecular_design_studio.auth import list_users
+                from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import resolve_job
+                from mn_molecular_design_studio.md_analysis_ui import md_source_options_for_job
+                actor = next((u for u in list_users() if u["id"] == command["owner_id"] and not u.get("disabled")), None)
+                if actor is None:
+                    raise PermissionError("The MD source request's account is unavailable.")
+                source_job = resolve_job(command["payload"]["local_reference"])
+                response = md_source_options_for_job(source_job, actor)
             elif command["kind"] == "cancel":
                 from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import cancel_job
                 response = {"job": cancel_job(command["payload"]["local_reference"], reason="Cancelled through the shared workstation catalog")}
@@ -192,8 +205,69 @@ class Agent:
         except Exception as exc:
             error = str(exc)
             log.exception("Workstation operation failed: %s", command["id"])
-        config.atomic_json(receipt, {"state": "finished", "response": response, "error": error})
+        config.atomic_json(receipt, {
+            "state": "finished", "job_id": command["job_id"],
+            "command_id": command["id"], "kind": command["kind"],
+            "response": response, "error": error,
+        })
+        if command["kind"] == "purge" and not error:
+            self._reconcile_purged_peer_jobs()
         return response, error
+
+    def _reconcile_purged_peer_jobs(self):
+        """Publish tombstones for jobs whose remote purge has completed.
+
+        In peer mode the synchronized Store mirror can outlive the run folder.
+        If it is left in place after a purge, ``capture_jobs`` republishes it
+        and the coordinator recreates the supposedly deleted Results row.
+        Receipts also let a restarted agent repair mirrors from older purges.
+        """
+        if not config.is_peer():
+            return
+        receipts_dir = config.home() / "receipts"
+        purge_receipts = []
+        for receipt_path in receipts_dir.glob("*.json"):
+            if receipt_path.name in self._processed_purge_receipts:
+                continue
+            try:
+                receipt = json.loads(receipt_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(receipt, dict):
+                continue
+            response = receipt.get("response")
+            if (receipt.get("state") != "finished" or receipt.get("error")
+                    or not isinstance(response, dict) or response.get("status") != "purged"):
+                continue
+            purge_receipts.append((receipt_path.name, str(receipt.get("job_id") or ""),
+                                   str(receipt.get("command_id") or receipt_path.stem)))
+        if not purge_receipts:
+            return
+
+        from .replication import Replica, capture_identity, locked
+        from .store import Store
+
+        processed_receipts = set()
+        with Store().connect() as db:
+            for receipt_name, job_id, command_id in purge_receipts:
+                if not job_id:
+                    command = db.execute("SELECT job_id FROM commands WHERE id=?", (command_id,)).fetchone()
+                    job_id = str(command["job_id"] or "") if command else ""
+                if not job_id:
+                    # Keep the receipt eligible for a later retry in case its
+                    # synchronized command record has not arrived yet.
+                    continue
+                row = db.execute("SELECT node_id,local_ref FROM jobs WHERE id=?", (job_id,)).fetchone()
+                if row and row["node_id"] == self.node_id and row["local_ref"]:
+                    db.execute("DELETE FROM commands WHERE job_id=?", (job_id,))
+                    db.execute("DELETE FROM submissions WHERE job_id=?", (job_id,))
+                    db.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+                processed_receipts.add(receipt_name)
+
+        with locked():
+            capture_identity()
+            Replica().capture_jobs()
+        self._processed_purge_receipts.update(processed_receipts)
 
     def purge(self, command):
         """Remove a terminal run and its run-derived records on this workstation."""
@@ -262,6 +336,7 @@ class Agent:
 
         from mn_molecular_design_studio.job_catalog import reconcile
         reconcile(root)
+        self._reconcile_purged_peer_jobs()
         return {
             "status": "purged",
             "run_files_removed": run_files_removed,

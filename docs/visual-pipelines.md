@@ -21,6 +21,18 @@ Sequence design, prediction, filtering, and collection are explicit downstream s
 Connections are checked for compatible inputs, structure formats, and cycles.
 Not every studio engine has a canvas adapter yet; the library lists the supported steps.
 
+## RFD4-Proteina starter workflows
+
+The starter menu includes three RFD4-Proteina paths:
+
+- **Protein binder → Boltz-2 → interface analysis** connects a Target and Binder Design Context to RFD4, then passes its co-designed sequence and structure through Boltz-2, ipSAE, and Rosetta metrics.
+- **Small-molecule pocket design → Boltz-2** starts from a protein–ligand mmCIF, runs RFD4's small-molecule binder task, then predicts the generated complex independently with Boltz-2. Its ligand restraints are prefilled for the tutorial's 5ENI/5QA example.
+- **Enzyme motif scaffolding → Boltz-2** starts from the tutorial's 5ENI/5QA example. Its motif residues, partial atom anchors, ligand chlorine restraints, and hydrogen-bond roles are prefilled; edit them when using another structure.
+
+RFD4 generates sequence and structure together, so these starters do not add ProteinMPNN. The task-specific `options_json` field is multiline. For atom-level ligand constraints, use options such as `ligand_atoms_to_hold`, `ligand_interactions`, `ligand_hbond_donors`, and `ligand_hbond_acceptors`; enzyme motif workflows use `motif_residues`, `motif_atoms`, and `active_site_atoms`. The standalone RFD4 form exposes these controls directly.
+
+The [Python API tutorial](https://github.com/RosettaCommons/RFD4-Proteina/blob/main/docs/examples/python_api_tutorial.ipynb) demonstrates building an annotated CIF with pocket residues, fixed and tip atoms, ligand hydrogen-bond roles, and coordinate variants. Its enzyme starter uses those same example selections and expects the 5ENI/5QA complex; the small-molecule starter uses the ligand atom restraints from the tutorial. Change chain, residue, and atom names if you use another input. You can also pass your own annotated CIFs to the RFD4 node by setting **Input method** to **annotated_cif** and listing their paths in **Input structure files**. The [Hugging Face ZeroGPU Space](https://huggingface.co/spaces/nvidia/rfd4-proteina-zerogpu) uses AtomWorks Studio to edit annotated CIF conditions before calling the native sampler; these starters borrow its edit-to-generate pattern and add Studio's own downstream prediction and analysis.
+
 ## Drafts, versions, and results
 
 Drafts autosave within the selected project. **Save version** keeps an immutable copy;

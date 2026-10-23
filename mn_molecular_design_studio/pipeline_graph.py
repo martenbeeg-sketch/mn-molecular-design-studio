@@ -64,6 +64,19 @@ NODE_CATALOG = {
     "molecule_source": _spec("molecule_source", "Database selection", "Input", "An immutable selection of Database molecules, prepared through Use in pipeline.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Selection snapshot", "", kind="text")]),
     "design_source": _spec("design_source", "Successful project designs", "Input", "Selected filter-passing designs from a successful job in this project.", output="sequence", color="#758f84", fields=[field("source_run_dir", "Source run", "", kind="text")]),
     "generation_source": _spec("generation_source", "Generated project designs", "Input", "Select generated structures and sequences from a completed generator job in this project.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Generator run", "", kind="text")]),
+    "project_design_source": _spec("project_design_source", "Existing project designs", "Input", "Select structure-bearing candidates from any completed design job in this project, including generator and refold outputs.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Design job", "", kind="text")]),
+    "rfd4": _spec("rfd4", "RFD4-Proteina", "Design engine", "Co-design sequence and structure; attach any compatible prediction and analysis nodes.", accepts=["target"], output="sequence", workflow="design.rfd4_proteina", fields=[
+        field("task", "Design task", "protein_binder", kind="select", options=["protein_binder","nanobody","antibody","tcr","motif_scaffolding","enzyme","small_molecule_binder","dna_binder","rna_design","existing_structure","custom_conditions","score_structures","unconditional"]),
+        field("target_structure", "Input structure", "", kind="text"),
+        field("input_mode", "Input method", "guided", kind="select", options=["guided","annotated_cif","condition_spec"]),
+        field("condition_spec", "Native condition specification", "", kind="text", help="Native YAML/JSON design specification used with the condition_spec input method."),
+        field("input_files", "Input structure files (one path per line)", "", kind="text", help="For annotated_cif mode, list one annotated CIF path per design. Structure scoring can also take multiple inputs."),
+        field("options_json", "Task options (JSON)", "{}", kind="text", help="Multiline JSON matching the RFD4 task options, including motif residues, active-site atoms and ligand interactions. The standalone RFD4 form exposes these controls directly."),
+        COUNT, field("length_min", "Minimum length", 60, minimum=20, maximum=1024), field("length_max", "Maximum length", 120, minimum=20, maximum=1024),
+        field("nsteps", "Sampling steps", 60, minimum=60, maximum=120), SEED], formats=("cif",)),
+    "rfd4_fold": _spec("rfd4_fold", "RFD4-Proteina Structure Prediction", "Structure prediction", "Fold supplied protein sequences or connected generated structures using RFD4 itself.", accepts=["sequence","prediction","target","molecule_task"], output="prediction", workflow="refolding.rfd4_proteina", fields=[
+        field("protein_sequences", "Protein sequence(s) / FASTA", "", kind="text"), field("target_structure", "Input structure", "", kind="text"),
+        field("num_designs", "Predictions per input", 1, minimum=1, maximum=1000),field("nsteps", "Sampling steps",60,minimum=60,maximum=120),SEED], formats=("cif",)),
     "rfd3": _spec("rfd3", "RFdiffusion3", "Design engine", "Generate backbones only; sequence design and refolding are separate nodes.", accepts=["target"], workflow="design.rfdiffusion3", fields=[COUNT, LENGTH, STEPS, SEED], formats=("cif",)),
     "rfdiffusion": _spec("rfdiffusion", "RFdiffusion", "Design engine", "Generate binder backbones without running the bundled downstream pipeline.", accepts=["target"], workflow="design.rfdiffusion_classic", fields=[COUNT, LENGTH, STEPS], formats=("pdb",)),
     "genie3": _spec("genie3", "Genie3", "Design engine", "Generation only; connect sequence design and prediction nodes.", accepts=["target"], workflow="design.genie3", fields=[COUNT, LENGTH, SEED], formats=("pdb",)),
@@ -84,8 +97,28 @@ NODE_CATALOG = {
     "esm_binder": _spec("esm_binder", "ESMFold2 Binder Generator", "Design engine", "Generate miniprotein, scFv, or VHH binder sequences against one target chain. ESMFold2 structure prediction is part of the gradient-guided design loop; sequences and predicted complexes remain available for downstream MPNN redesign or independent structure prediction.", accepts=["target"], output="sequence", workflow="design.esmfold2_binder", fields=[field("num_designs", "Number of designs", 1, minimum=1, maximum=128, section="basic"), field("binder_type", "Binder type", "miniprotein", kind="select", options=["miniprotein", "scfv", "vhh"], section="basic"), field("binder_framework", "Framework", "auto", kind="select", options=["auto", "trastuzumab_framework_vhvl", "atezolizumab_framework_vhvl", "ocankitug_framework_vhvl", "caplacizumab_vhh", "ozoralizumab_tnf_vhh", "vobarilizumab_il6r_vhh", "custom"], section="basic"), field("binder_template", "Custom VHH masked template", "", kind="text"), field("binder_length", "Miniprotein length", 80, minimum=40, maximum=200), field("optimization_steps", "Optimization steps", 150, minimum=1, maximum=2000), SEED], color="#427f68"),
     "foundry_mpnn": _spec("foundry_mpnn", "Foundry MPNN", "Sequence design", "Redesign binder chains while preserving the target sequence.", accepts=["backbone"], output="sequence", workflow="sequence.foundry_mpnn", fields=[SEQUENCES, field("model_type", "MPNN model", "protein_mpnn", kind="select", options=["protein_mpnn", "ligand_mpnn"])], color="#a88845", formats=("cif",)),
     "ligandmpnn": _spec("ligandmpnn", "ProteinMPNN / LigandMPNN", "Sequence design", "Sequence design on PDB or CIF candidate backbones; keep target fixed.", accepts=["backbone", "sequence", "prediction"], output="sequence", workflow="sequence.ligandmpnn", fields=[SEQUENCES, field("model_type", "MPNN model", "protein_mpnn", kind="select", options=["protein_mpnn", "ligand_mpnn", "soluble_mpnn"]), field("sampling_temp", "Sampling temperature", 0.1, minimum=0.000001, maximum=2)], color="#a88845"),
+    "sabr": _spec("sabr", "SAbR · Antibody CDR Annotation", "Antibody analysis", "Apply SAbR numbering to each connected antibody design and annotate CDR1, CDR2, and CDR3. This step passes the same structures and candidate metadata downstream.", accepts=["backbone", "sequence", "prediction", "candidates"], output="sequence", color="#54866c", fields=[
+        field("chain_type", "Antibody chain type", "auto", kind="select", options=["auto", "H", "K", "L"]),
+        field("mode", "Alignment mode", "sabr", kind="select", options=["sabr", "softalign"]),
+        field("noise_level", "Reference backbone noise (Å)", 0.0, minimum=0.0, maximum=2.0),
+    ]),
+    "abmpnn": _spec("abmpnn", "AbMPNN · CDR Sequence Redesign", "Sequence design", "Redesign selected antibody CDRs using the connected SAbR annotation; keep the target, framework, and unselected CDRs fixed.", accepts=["backbone", "sequence", "prediction", "candidates"], output="sequence", workflow="sequence.abmpnn", fields=[
+        field("sequences", "Sequences per design", 1, minimum=1, maximum=10000, section="basic"),
+        field("redesign_cdr1", "Redesign CDR1", True, kind="boolean", section="basic"),
+        field("redesign_cdr2", "Redesign CDR2", True, kind="boolean", section="basic"),
+        field("redesign_cdr3", "Redesign CDR3", True, kind="boolean", section="basic"),
+        field("sampling_temp", "Sampling temperature", 0.1, minimum=0.000001, maximum=1.0),
+        field("omit_aas", "Amino acids to omit", "C", kind="text"),
+        field("seed", "Random seed (0 = random)", 0, minimum=0, maximum=4294967295),
+    ], color="#a88845", formats=("pdb", "cif")),
     "rf3": _spec("rf3", "RosettaFold3", "Structure prediction", "Refold designed target–binder complexes with Foundry RF3.", accepts=["sequence", "prediction", "molecule_task"], output="prediction", workflow="refolding.rf3", fields=[MSA, TEMPLATE], color="#477e9b", formats=("cif",)),
-    "boltz2": _spec("boltz2", "Boltz-2", "Structure prediction", "Refold target–binder complexes with an optional target template; target MSA is prepared automatically.", accepts=["sequence", "prediction", "molecule_task"], output="prediction", workflow="refolding.boltz2_complex", fields=[TEMPLATE], color="#477e9b", formats=("cif",)),
+    "boltz2": _spec("boltz2", "Boltz-2", "Structure prediction", "Refold target–binder complexes with the target MSA enabled and an optional target template.", accepts=["sequence", "prediction", "molecule_task"], output="prediction", workflow="refolding.optimized_prediction", fields=[
+        field("samples", "Samples per candidate", 1, minimum=1, maximum=5),
+        field("num_recycles", "Recycles", 3, minimum=1, maximum=100),
+        field("sampling_steps", "Diffusion steps", 200, minimum=1, maximum=1000),
+        field("seed_count", "Number of seeds", 1, minimum=1, maximum=16),
+        TEMPLATE,
+    ], color="#477e9b", formats=("cif",)),
     "af3": _spec("af3", "AlphaFold3", "Structure prediction", "Refold target–binder candidates with MN Cofolding's AlphaFold3-family JAX runner. Select the official AF3 weights or another supported AF3-family parameter set.", accepts=["sequence", "prediction", "molecule_task"], output="prediction", workflow="refolding.optimized_prediction", fields=[
         field("model", "AF3-family parameter set", "alphafold3", kind="select", options=["alphafold3", "openfold3", "openbind0", "boltz2", "protenix2", "rosettafold3", "intellifold2", "opendde"], section="basic"),
         field("optimization_mode", "Optimization mode", "off", kind="select", options=["off", "exact", "fast", "big"], section="basic"),
@@ -229,6 +262,8 @@ for _kind in ("ligandmpnn", "foundry_mpnn"):
     _specification["inputs"][0]["multiple"] = True
 NODE_CATALOG["foundry_mpnn"]["hidden"] = True
 NODE_CATALOG["foundry_mpnn"]["fields"].append(field("number_of_batches", "Number of batches", 1, minimum=1, maximum=1000))
+for _kind in ("sabr", "abmpnn"):
+    NODE_CATALOG[_kind]["inputs"][0]["multiple"] = True
 
 # Existing pipeline kinds retain their original workflow contract for saved
 # versions. The four tool tiles and generator kinds have dedicated contracts.
@@ -460,6 +495,10 @@ for _engine, _metadata in inverse_folding_input.ENGINES.items():
         fields=inverse_folding_input.canvas_fields(_engine), color="#a88845")
 
 TEMPLATE_REFERENCES={
+    'abmpnn_cdr_redesign':('https://app.tamarind.bio/tools/abmpnn','Select saved project designs, annotate antibody CDRs with SAbR, redesign selected loops with AbMPNN, then independently refold the redesigned sequences with Boltz-2 before sequence analysis and Results.'),
+    'rfd4_protein_binder':('https://huggingface.co/spaces/nvidia/rfd4-proteina-zerogpu','RFD4-Proteina co-designs sequence and structure together. This starter sends the generated complex to Boltz-2, then calculates ipSAE and Rosetta interface metrics. Use a protein target structure; edit the RFD4 task options for exact condition controls.'),
+    'rfd4_small_molecule':('https://github.com/RosettaCommons/RFD4-Proteina/blob/main/docs/examples/python_api_tutorial.ipynb','Small-molecule pocket design based on RFD4’s annotated-CIF Python tutorial. The RFD4 node accepts either guided ligand controls or an annotated CIF/native condition specification. The connected Boltz-2 step independently predicts the generated protein–ligand complex.'),
+    'rfd4_enzyme':('https://github.com/RosettaCommons/RFD4-Proteina/blob/main/docs/examples/python_api_tutorial.ipynb','Enzyme motif scaffolding based on the annotated-CIF tutorial. Specify motif residues, exact active-site atoms and ligand interaction roles in RFD4 task options; Boltz-2 provides an independent structure-prediction step.'),
     'pxdesign':('https://github.com/bytedance/PXDesign#-quick-start','Binder Design Context feeds supported target-site annotations into PXDesign, followed by ProteinMPNN and independent AF2 Initial Guess and Protenix evaluation branches.'),
     'rfdiffusion':('https://github.com/RosettaCommons/RFdiffusion#sequence-design-for-binders','Binder Design Context supplies supported target-site annotations, then ProteinMPNN designs sequences followed by target-templated AF2 Initial Guess. The authors also permit ProteinMPNN without FastRelax; this template uses that option.'),
     'genie3':('https://github.com/aqlaboratory/genie3#application-3-binder-design','Binder Design Context supplies supported target-site annotations. One ProteinMPNN sequence per backbone is followed by AF2 target-template evaluation with five models and twenty recycles. Studio uses its AF2 Initial Guess adapter; the authors use ColabFold template mode.'),
@@ -495,6 +534,34 @@ def _cofold_model_kinds(task_type: str) -> list[str]:
 
 
 def new_graph(template="foundry") -> dict[str, Any]:
+    if template == "abmpnn_cdr_redesign":
+        kinds = ["project_design_source", "sabr", "abmpnn", "boltz2", "sequence_qc", "results"]
+        positions = [(60, 190), (370, 190), (680, 190), (990, 190), (1300, 80), (1610, 190)]
+        nodes = []
+        for index, (kind, position) in enumerate(zip(kinds, positions)):
+            spec = NODE_CATALOG[kind]
+            params = {f["name"]: copy.deepcopy(f["default"]) for f in spec["fields"]}
+            if kind == "project_design_source":
+                params.update(source_run_dir="", selected_candidate_ids=[])
+            nodes.append({
+                "id": f"{kind}-{index}", "type": "studio",
+                "position": {"x": position[0], "y": position[1]},
+                "data": {"kind": kind, "label": spec["label"], "params": params},
+            })
+        edges = [
+            {"id": "edge-sabr", "source": nodes[0]["id"], "sourceHandle": "out", "target": nodes[1]["id"], "targetHandle": "in"},
+            {"id": "edge-abmpnn", "source": nodes[1]["id"], "sourceHandle": "out", "target": nodes[2]["id"], "targetHandle": "in"},
+            {"id": "edge-refold", "source": nodes[2]["id"], "sourceHandle": "out", "target": nodes[3]["id"], "targetHandle": "in"},
+            {"id": "edge-qc", "source": nodes[3]["id"], "sourceHandle": "out", "target": nodes[4]["id"], "targetHandle": "in"},
+            {"id": "edge-results", "source": nodes[4]["id"], "sourceHandle": "out", "target": nodes[5]["id"], "targetHandle": "in"},
+        ]
+        return clean_graph({
+            "schema_version": SCHEMA, "id": uuid.uuid4().hex,
+            "name": "Antibody CDR redesign · SAbR → AbMPNN → sequence analysis",
+            "nodes": nodes, "edges": edges,
+            "viewport": {"x": 0, "y": 0, "zoom": 0.72},
+            "template_id": template,
+        })
     if template in COFOLDING_TASK_TEMPLATES:
         task_type, task_label, task_description = COFOLDING_TASK_TEMPLATES[template]
         model_kinds = _cofold_model_kinds(task_type)
@@ -539,6 +606,97 @@ def new_graph(template="foundry") -> dict[str, Any]:
             'template_id': template,
         }
         return clean_graph(graph)
+    if template in {"rfd4_protein_binder", "rfd4_small_molecule", "rfd4_enzyme"}:
+        task, label, description = {
+            "rfd4_protein_binder": (
+                "protein_binder", "RFD4 Protein Binder",
+                "Co-design a protein binder, then run Boltz-2, ipSAE and Rosetta interface analysis.",
+            ),
+            "rfd4_small_molecule": (
+                "small_molecule_binder", "RFD4 Small-Molecule Pocket Design",
+                "Design a protein around a ligand in an mmCIF complex, then independently predict the protein–ligand complex with Boltz-2. Atom restraints are prefilled for the tutorial’s 5ENI/5QA example; edit them for another structure.",
+            ),
+            "rfd4_enzyme": (
+                "enzyme", "RFD4 Enzyme Motif Scaffolding",
+                "Scaffold the tutorial’s 5ENI/5QA active-site motif around its ligand, then independently predict the resulting complex with Boltz-2. Update residue and atom names if using another structure.",
+            ),
+        }[template]
+        kinds = ["target"]
+        if task == "protein_binder":
+            kinds.append("binder_context")
+        kinds.extend(["rfd4", "boltz2"])
+        if task == "protein_binder":
+            kinds.extend(["ipsae", "rosetta_metrics"])
+        kinds.append("results")
+
+        nodes = []
+        for index, kind in enumerate(kinds):
+            spec = NODE_CATALOG[kind]
+            params = {f["name"]: copy.deepcopy(f["default"]) for f in spec["fields"]}
+            if kind == "rfd4":
+                params.update(task=task, input_mode="guided", num_designs=8)
+                if task == "small_molecule_binder":
+                    params.update(length_min=100, length_max=155)
+                    params["options_json"] = json.dumps({
+                        "ligand_pose": "generated",
+                        "ligand_atoms_to_hold": "5QA:CL,5QA:CL1",
+                        "ligand_interactions": [
+                            {"interaction": "Hydrogen-bond donor", "ligand_atoms": "5QA:N"},
+                            {"interaction": "Hydrogen-bond acceptor", "ligand_atoms": "5QA:O1,5QA:O"},
+                        ],
+                    }, indent=2)
+                elif task == "enzyme":
+                    params.update(length_min=150, length_max=200)
+                    params["options_json"] = json.dumps({
+                        "motif_residues": "A41,A36,A87",
+                        "motif_atoms": "all",
+                        "unindex_motif": True,
+                        "ligand_pose": "generated",
+                        "active_site_atoms": "A36:CG1 A87:OG1",
+                        "ligand_atoms_to_hold": "5QA:CL,5QA:CL1",
+                        "ligand_hbond_donors": "5QA:N",
+                        "ligand_hbond_acceptors": "5QA:O1,5QA:O",
+                    }, indent=2)
+                else:
+                    params["options_json"] = "{}"
+            if kind == "boltz2":
+                params["write_full_pae"] = True
+            nodes.append({
+                "id": f"{kind}-{index}",
+                "type": "studio",
+                "position": {"x": 0, "y": 0},
+                "data": {"kind": kind, "label": spec["label"], "params": params},
+            })
+
+        node_by_kind = {node["data"]["kind"]: node for node in nodes}
+        if task == "protein_binder":
+            for kind, x in (("target", 40), ("binder_context", 340), ("rfd4", 700),
+                            ("boltz2", 1030), ("ipsae", 1360), ("rosetta_metrics", 1690), ("results", 2020)):
+                node_by_kind[kind]["position"] = {"x": x, "y": 180}
+            node_by_kind["binder_context"]["data"].update(
+                label="Binder Design Context",
+                description="Set target chains and optional hotspots. RFD4 receives the selected structure and hotspot annotations.",
+            )
+        else:
+            positions = [(40, 180), (390, 180), (740, 180), (1090, 180)]
+            for node, position in zip(nodes, positions):
+                node["position"] = {"x": position[0], "y": position[1]}
+
+        pairs = list(zip(nodes, nodes[1:]))
+        edges = [
+            {"id": f"edge-rfd4-{index}", "source": source["id"], "sourceHandle": "out",
+             "target": destination["id"], "targetHandle": "in"}
+            for index, (source, destination) in enumerate(pairs)
+        ]
+        return clean_graph({
+            "schema_version": SCHEMA,
+            "id": uuid.uuid4().hex,
+            "name": label + " · RFD4 → independent prediction" + (" + interface analysis" if task == "protein_binder" else ""),
+            "nodes": nodes,
+            "edges": edges,
+            "viewport": {"x": 0, "y": 0, "zoom": 0.5 if task == "protein_binder" else 0.7},
+            "template_id": template,
+        })
     if template == "all_generators_boltz2":
         generator_kinds = ["rfd3", "rfdiffusion", "genie3", "pxdesign", "protpardelle", "bindcraft2_generator", "boltzgen_generator", "complexa_generator", "esm_binder"]
         kinds = ["target", "binder_context", *generator_kinds, "ligandmpnn", "boltz2", "ipsae", "rosetta_metrics", "results"]
@@ -838,7 +996,7 @@ def clean_graph(graph: dict) -> dict:
             raise ValueError("Node settings must be an object.")
         if kind=='protpardelle' and 'sequences' in params:
             kind='protpardelle_pipeline'
-        allowed = {f["name"] for f in NODE_CATALOG[kind]["fields"]} | ({"selected_candidate_ids"} if kind in {"design_source","generation_source","backbone_source"} else set())
+        allowed = {f["name"] for f in NODE_CATALOG[kind]["fields"]} | ({"selected_candidate_ids"} if kind in {"design_source","generation_source","backbone_source","project_design_source"} else set())
         # Migrate generation-only kinds from the previous small canvas forms.
         if kind=='rfdiffusion':params.pop('rfdiffusion_guidance_preset',None)
         if kind=='pxdesign':
@@ -1025,8 +1183,17 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
             raise ValueError("Select molecules in Database and choose Use in pipeline.")
         if require_inputs and kind == "generation_source" and not node["data"]["params"].get("source_run_dir"):
             raise ValueError("Select a completed generator job from this project.")
+        if require_inputs and kind == "project_design_source":
+            if not node["data"]["params"].get("source_run_dir"):
+                raise ValueError("Select a completed design job from this project.")
+            if not node["data"]["params"].get("selected_candidate_ids"):
+                raise ValueError("Select one or more design candidates from that job.")
         if require_inputs and kind=='backbone_source' and not node['data']['params'].get('source_run_dir'):
             raise ValueError('Select a completed generator job from this project.')
+        if require_inputs and kind in {"sabr", "abmpnn"} and not incoming[node_id]:
+            raise ValueError(f"Connect antibody designs to {NODE_CATALOG[kind]['label']}.")
+        if require_inputs and kind == "abmpnn" and not any(node["data"]["params"].get(key) for key in ("redesign_cdr1", "redesign_cdr2", "redesign_cdr3")):
+            raise ValueError("Select at least one CDR region for AbMPNN redesign.")
         if require_inputs and kind in generator_input.ENGINES and not incoming[node_id]:
             p=node['data']['params']
             if p.get('task') not in {'unconditional','symmetry','custom','fold'} and not p.get('target_pdb'):
@@ -1092,7 +1259,12 @@ def list_versions(owner_id: str, project_id: str, pipeline_id: str) -> list[dict
     return sorted(versions, key=lambda d: d["saved_at"], reverse=True)
 
 
+NODE_CATALOG["rfd4"]["inputs"][0]["optional"] = True
+NODE_CATALOG["rfd4_fold"]["inputs"][0]["optional"] = True
+
 WORKFLOW_ROLES = {
+    "design.rfd4_proteina": "Design engine",
+    "refolding.rfd4_proteina": "Structure prediction engine",
     **{workflow: "Sequence design engine" for workflow in inverse_folding_input.WORKFLOWS.values()},
     **{workflow:'Design engine' for workflow in generator_input.WORKFLOWS.values()},
     "design.rfdiffusion3": "Design engine",

@@ -223,13 +223,14 @@ def _parse_structure(path: Path) -> object:
 
     text = _read_structure_text(path)
     if _structure_path_is_cif(path):
-        parser = MMCIFParser(QUIET=True)
-        try:
-            return parser.get_structure("candidate", StringIO(text))
-        except KeyError as exc:
-            if str(exc).strip("'\"") != "_atom_site.occupancy":
-                raise
-            return parser.get_structure("candidate", StringIO(_mmcif_text_with_default_occupancy(text)))
+        class _OptionalAtomSiteFieldsMMCIFParser(MMCIFParser):
+            def _build_structure(self, structure_id):
+                atom_count = len(self._mmcif_dict.get("_atom_site.id", []))
+                self._mmcif_dict.setdefault("_atom_site.occupancy", ["1.0"] * atom_count)
+                self._mmcif_dict.setdefault("_atom_site.B_iso_or_equiv", ["nan"] * atom_count)
+                return super()._build_structure(structure_id)
+
+        return _OptionalAtomSiteFieldsMMCIFParser(QUIET=True).get_structure("candidate", StringIO(text))
     return PDBParser(QUIET=True).get_structure("candidate", StringIO(text))
 
 

@@ -47,6 +47,30 @@ def test_inline_inputs_survive_job_and_worker_serialization(monkeypatch, tmp_pat
     assert portable_paths.is_operational_path_key("design_yaml_file")
 
 
+@pytest.mark.parametrize("secondary_structure", ["(((....)))", ".........."])
+def test_rna_secondary_structure_round_trips_as_inline_worker_input(monkeypatch, tmp_path, secondary_structure):
+    runs_root = tmp_path / "runs"
+    run_dir = runs_root / "design" / "rna-test"
+    target = run_dir / "target.cif"
+    target.parent.mkdir(parents=True)
+    target.write_text("data_target\n#\n")
+    monkeypatch.setattr(jobs, "runs_root", lambda: runs_root)
+    monkeypatch.setattr(portable_paths, "runs_root", lambda: runs_root)
+
+    request_path = run_dir / "worker_request.json"
+    payload = {"options": {
+        "rna_secondary_structure": secondary_structure,
+        "target_structure": target,
+    }}
+    jobs.write_json(request_path, {"kwargs": workflow_queue._invocation_value(payload)})
+    restored = workflow_queue._restore_invocation_value(jobs.read_json(request_path)["kwargs"])
+
+    assert restored["options"]["rna_secondary_structure"] == secondary_structure
+    assert restored["options"]["target_structure"] == target
+    assert portable_paths.is_operational_path_key("target_structure")
+    assert not portable_paths.is_operational_path_key("rna_secondary_structure")
+
+
 def test_non_admin_path_guard_distinguishes_inline_yaml_and_real_paths(monkeypatch, tmp_path):
     user = {"id": "test-user", "role": "user"}
     monkeypatch.setattr(api, "user_input_root", lambda _user_id: tmp_path / "uploads")

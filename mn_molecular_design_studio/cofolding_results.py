@@ -336,7 +336,9 @@ def compound_identity(candidate: dict, input_labels: dict[str, str] | None = Non
 
 def complex_group_key(candidate: dict) -> str:
     raw = candidate.get('raw_metadata') if isinstance(candidate.get('raw_metadata'), dict) else {}
-    return str(raw.get('batch_item_id') or raw.get('source_compound_id') or raw.get('input_name') or '__single_complex__')
+    complex_key = str(raw.get('batch_item_id') or raw.get('source_compound_id') or raw.get('input_name') or '__single_complex__')
+    source_run_id = str(raw.get('legacy_run_id') or '').strip()
+    return f"{source_run_id}::{complex_key}" if source_run_id else complex_key
 
 
 def best_candidates_by_complex(candidates: list[dict]) -> list[dict]:

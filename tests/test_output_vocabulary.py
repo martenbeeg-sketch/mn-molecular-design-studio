@@ -90,6 +90,41 @@ def test_rf_boltzgen_and_bindcraft_validation_tm_scores_share_family_not_method(
     assert len({row["provenance"]["confidence.validation.complex.iptm"]["method"] for row in result}) == 3
 
 
+def test_rfd4_oracle_aliases_preserve_native_scale_and_require_rfd4_generation():
+    native = {"oracle.overall_plddt": 83.5, "oracle.overall_pae": 3.4178,
+              "oracle.overall_ptm": 45.0, "oracle.plddt_coi": 83.5,
+              "oracle.pae_coi": 3.4178, "oracle.ptm_coi": 45.0,
+              "binder_ca_radius_of_gyration": 12.5}
+    candidate = {"source_tool": "rfd4_proteina", "stage": "generation.backbone_sequence",
+                 "metrics": native}
+    result = candidate_output(candidate)
+    assert result["metrics"]["confidence.generator.complex.plddt"] == 83.5
+    assert result["metrics"]["confidence.generator.complex.pae"] == 3.4178
+    assert result["metrics"]["confidence.generator.complex.ptm"] == .45
+    assert result["metrics"]["confidence.generator.chain_of_interest.plddt"] == 83.5
+    assert result["metrics"]["confidence.generator.chain_of_interest.pae"] == 3.4178
+    assert result["metrics"]["confidence.generator.chain_of_interest.ptm"] == .45
+    assert result["metrics"]["geometry.binder.ca_rg"] == 12.5
+    assert result["provenance"]["confidence.generator.complex.ptm"]["aliases"][0] == {
+        "source_field": "oracle.overall_ptm", "raw_value": 45.0, "value": .45,
+        "conversion": "percent_to_fraction", "method": "RFD4 AF3 oracle"}
+    assert native["oracle.overall_ptm"] == 45.0
+    for out_of_scope in (candidate_output({**candidate, "source_tool": "other"}),
+                         candidate_output({**candidate, "stage": "complex_refolding"})):
+        assert not any(key.startswith("confidence.generator.") for key in out_of_scope["metrics"])
+
+
+def test_database_projection_keeps_shared_geometry_guard_from_candidate_context():
+    native = {"binder_radius_of_gyration": 13.6}
+    candidate = {"source_tool": "rfd4_proteina", "stage": "generation.backbone_sequence",
+                 "metrics": {**native, "binder_geometry_status": "ok"}}
+    observation_context = {"candidate": {"source_tool": "rfd4_proteina",
+                                          "stage": "generation.backbone_sequence",
+                                          "binder_geometry_status": "ok"}}
+    assert candidate_output(candidate)["metrics"]["geometry.binder.heavy_atom_rg"] == 13.6
+    assert normalize_metrics(native, "rfd4_proteina", observation_context)["metrics"]["geometry.binder.heavy_atom_rg"] == 13.6
+
+
 def test_legacy_ambiguous_radius_is_not_renamed_without_shared_method_marker():
     assert normalize_metrics({"binder_radius_of_gyration": 12}, "rfdiffusion_classic")["metrics"] == {}
 

@@ -42,13 +42,117 @@ def test_shared_results_can_page_beyond_first_hundred_jobs(isolated, monkeypatch
     monkeypatch.setattr(workspace, "load_organization", lambda: {"projects": [{"id": "p", "name": "Project"}]})
     at = AppTest.from_string('from mn_molecular_design_studio.cluster.ui import render_runs\nrender_runs({"id":"scientist"}, "token", lambda **kw: {"items":[], "total":0})').run()
     assert not at.exception
-    view_links = [block.value for block in at.markdown if "job_ref=" in block.value]
-    assert len(view_links) == 50
-    assert any('href="?job_ref=cluster%3Ajob-120"' in link for link in view_links)
+    assert len(at.dataframe) == 1
+    table = at.dataframe[0].value
+    assert len(table) == 50
+    assert "?job_ref=cluster%3Ajob-120" in set(table["Open"])
+    assert list(table.columns).index("Open") == list(table.columns).index("Job") + 1
     at.number_input[0].set_value(3).run()
     assert not at.exception
-    view_links = [block.value for block in at.markdown if "job_ref=" in block.value]
-    assert len(view_links) == 21
+    assert len(at.dataframe) == 1
+    assert len(at.dataframe[0].value) == 21
+
+
+def test_pipeline_results_use_one_table_and_load_only_requested_steps(isolated, monkeypatch):
+    rows = []
+    for index in range(6):
+        root = {
+            "cluster_job_id": f"pipeline-{index}", "run_id": f"run-{index}", "node_id": "remote",
+            "node_name": "4032", "project_id": "p", "campaign_name": f"Pipeline {index}",
+            "tool": "visual_pipeline", "status": "completed", "created_at": f"{index:05d}",
+        }
+        rows.append(root)
+        rows.extend({
+            **root, "cluster_job_id": f"child-{index}-{step}", "run_id": f"step-{index}-{step}",
+            "campaign_id": root["run_id"], "tool": "boltz2", "campaign_step": f"Step {step}",
+        } for step in range(3))
+    rows.append({
+        "cluster_job_id": "standalone", "campaign_name": "Standalone", "node_id": "remote",
+        "project_id": "p", "tool": "sequence_qc", "status": "completed", "created_at": "99999",
+    })
+    catalog_calls = []
+    elapsed_calls = []
+
+    def catalog(*args, **kwargs):
+        catalog_calls.append(True)
+        return {"items": rows, "total": len(rows)}, False
+
+    monkeypatch.setattr(ui, "catalog", catalog)
+    monkeypatch.setattr(ui, "_test_elapsed", lambda row: elapsed_calls.append(row["cluster_job_id"]) or "1s", raising=False)
+    from mn_molecular_design_studio import workspace
+    monkeypatch.setattr(workspace, "load_organization", lambda: {"projects": [{"id": "p", "name": "Project"}]})
+    at = AppTest.from_string(
+        'from mn_molecular_design_studio.cluster import ui\n'
+        'ui.render_runs({"id":"scientist"}, "token", lambda **kw: {"items":[], "total":0}, elapsed_label=ui._test_elapsed)'
+    ).run()
+    assert not at.exception
+    assert len(at.dataframe) == 1
+    assert not at.expander
+    table = at.dataframe[0].value
+    assert len(table) == 7
+    assert table.loc["pipeline-2", "Steps"] == "3/3 finished"
+    assert table["Steps"].isna().loc["standalone"]
+    assert not any(reference.startswith("child-") for reference in elapsed_calls)
+
+    elapsed_calls.clear()
+    at.session_state["cluster-results-pipeline-details-request"] = "pipeline-2"
+    at.run()
+    assert not at.exception
+    assert len(at.dataframe) == 2
+    assert list(at.dataframe[1].value["Step"]) == ["Step 0", "Step 1", "Step 2"]
+    assert {reference for reference in elapsed_calls if reference.startswith("child-")} == {
+        "child-2-0", "child-2-1", "child-2-2",
+    }
+    assert len(catalog_calls) == 1
+
+
+def test_results_table_selection_selects_and_clears_the_whole_pipeline(monkeypatch):
+    parent = {"cluster_job_id": "parent"}
+    child = {"cluster_job_id": "child"}
+    standalone = {"cluster_job_id": "standalone"}
+    state = {
+        "table": {"edited_rows": {0: {"Select": True}, 1: {"Select": True}}},
+        "cluster-results-pending-remove-and-purge": [standalone],
+    }
+    monkeypatch.setattr(ui.st, "session_state", state)
+    ui._update_results_table_selection("table", [[parent, child], [standalone]])
+    assert set(state["cluster-results-selected"]) == {"parent", "child", "standalone"}
+    assert "cluster-results-pending-remove-and-purge" not in state
+    state["table"] = {"edited_rows": {0: {"Select": False}}}
+    ui._update_results_table_selection("table", [[parent, child], [standalone]])
+    assert set(state["cluster-results-selected"]) == {"standalone"}
+
+
+def test_pipeline_step_button_uses_the_clicked_row(monkeypatch):
+    state = {"steps-click": {"row": 1, "label": "3/3 finished"}}
+    monkeypatch.setattr(ui.st, "session_state", state)
+    ui._request_results_pipeline_steps("steps-click", [None, "pipeline-2"])
+    assert state["cluster-results-pipeline-details-request"] == "pipeline-2"
+
+
+def test_selected_pipeline_includes_new_and_hidden_steps_and_blocks_active_purge(isolated, monkeypatch):
+    parent = {
+        "cluster_job_id": "parent", "run_id": "pipeline-run", "tool": "visual_pipeline",
+        "node_id": "remote", "project_id": "p", "status": "completed",
+    }
+    child = {
+        **parent, "cluster_job_id": "child", "run_id": "child-run", "tool": "boltz2",
+        "campaign_id": parent["run_id"], "status": "running", "hidden": True,
+    }
+    monkeypatch.setattr(ui, "catalog", lambda *a, **kw: ({"items": [parent, child], "total": 2}, False))
+    from mn_molecular_design_studio import workspace
+    monkeypatch.setattr(workspace, "load_organization", lambda: {"projects": [{"id": "p", "name": "Project"}]})
+    at = AppTest.from_string(
+        'from mn_molecular_design_studio.cluster.ui import render_runs\n'
+        'render_runs({"id":"scientist"}, "token", lambda **kw: {"items":[], "total":0})'
+    ).run()
+    at.session_state["cluster-results-selected"] = {"parent": parent}
+    at.session_state["cluster-results-pending-remove-and-purge"] = [parent]
+    at.run()
+    assert not at.exception
+    assert set(at.session_state["cluster-results-selected"]) == {"parent", "child"}
+    assert next(button for button in at.button if button.label == "Remove and purge selected").disabled
+    assert not any(button.label == "Confirm removal and purge" for button in at.button)
 
 
 def test_remote_candidate_results_include_sequence_and_scores():

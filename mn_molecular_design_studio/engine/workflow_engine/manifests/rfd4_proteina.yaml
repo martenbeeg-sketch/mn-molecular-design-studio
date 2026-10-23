@@ -7,8 +7,8 @@ inputs:
   target_structure: {type: structure, required: false}
   input_files: {type: structure_list, required: false}
 params:
-  task: {type: enum, values: [protein_binder, nanobody, antibody, tcr, motif_scaffolding, enzyme, small_molecule_binder, dna_binder, rna_design, existing_structure, custom_conditions, unconditional], default: protein_binder}
-  input_mode: {type: enum, values: [guided_binder, annotated_cif, condition_spec, unconditional], default: guided_binder}
+  task: {type: enum, values: [protein_binder, nanobody, antibody, tcr, motif_scaffolding, enzyme, small_molecule_binder, dna_binder, rna_design, existing_structure, custom_conditions, score_structures, unconditional], default: protein_binder}
+  input_mode: {type: enum, values: [guided, guided_binder, annotated_cif, condition_spec, unconditional], default: guided}
   num_designs: {type: int, default: 8}
   batch_size: {type: int, default: 1}
   nsteps: {type: int, default: 60}

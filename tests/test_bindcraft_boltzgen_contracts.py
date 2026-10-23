@@ -150,6 +150,35 @@ def test_boltzgen_stages_small_molecule_smiles_before_container_execution(monkey
     assert "--steps design inverse_folding folding design_folding affinity analysis filtering" in command[-1]
 
 
+def test_boltzgen_nanobody_stages_optional_target_hotspots_as_binding_guidance(monkeypatch, tmp_path: Path):
+    target_pdb = tmp_path / "target.pdb"
+    target_pdb.write_text(
+        "ATOM      1  CA  ALA X  41      10.000  11.000  12.000  1.00 20.00           C\n"
+        "ATOM      2  CA  GLY X  42      13.000  14.000  15.000  1.00 20.00           C\n"
+        "END\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(jobs, "runs_root", lambda: tmp_path / "runs")
+    monkeypatch.setattr(design, "load_manifest", lambda _name: {"image": "boltzgen-test:unit"})
+    monkeypatch.setattr(design, "_run_shell_steps", lambda *_args: 1)
+
+    run_dir = design.run_boltzgen(
+        task="nanobody",
+        target_pdb=target_pdb,
+        target_chains=["X"],
+        hotspots="X42",
+        scaffold_name="7eow",
+        num_designs=1,
+        budget=1,
+        run_vanilla_pipeline=False,
+    )
+
+    input_yaml = run_dir / "artifacts" / "raw" / "boltzgen" / "input" / "target_binder.yaml"
+    payload = yaml.safe_load(input_yaml.read_text(encoding="utf-8"))
+    target_file = payload["entities"][0]["file"]
+    assert target_file["binding_types"] == [{"chain": {"id": "X", "binding": 2}}]
+
+
 def test_boltzgen_requires_hotspots_when_site_adherence_filter_is_enabled():
     with pytest.raises(ValueError, match="Select at least one binding-site residue"):
         design.run_boltzgen(

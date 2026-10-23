@@ -33,7 +33,8 @@ GENERATOR_WORKFLOWS = {
     "design.rfd4_proteina": "rfd4_proteina",
     "design.genie3_generate": "genie3", "design.protpardelle_generate": "protpardelle",
     "design.proteina_complexa": "proteina_complexa", "design.proteina_complexa_generate": "proteina_complexa",
-    "design.rfantibody": "rfantibody", "design.rfpeptides": "rfpeptides",
+    "design.rfantibody": "rfantibody", "design.rfantibody_mimosa": "rfantibody",
+    "design.boltzgen_mimosa": "boltzgen", "design.rfpeptides": "rfpeptides",
     "design.esmfold2_binder": "esmfold2_binder",
 }
 FASTA_METRICS = {"score", "global_score", "seq_recovery", "seq_rec", "overall_confidence", "ligand_confidence"}
@@ -92,6 +93,12 @@ MEASURES = [
     Measure("geometry.binder.ca_rg", "Binder Cα radius of gyration", "Å", "binder", "Studio Cα atoms", ("binder_ca_radius_of_gyration",)),
     Measure("geometry.binder.ca_end_to_end", "Binder Cα end-to-end distance", "Å", "binder", "Studio first/last Cα", ("binder_ca_end_to_end_distance", "binder_end_to_end_distance")),
     Measure("geometry.target.alignment_rmsd", "Retained target alignment RMSD", "Å", "target", "Studio matched Cα superposition", ("generation_target_alignment_rmsd",), "lower"),
+    Measure("mimosa.generated_motif_rmsd", "Generated motif RMSD", "Å", "guided generated motif", "MIMOSA target-aligned Cα fit", ("generated_motif_rmsd_angstrom",), "lower", engines=("boltzgen", "rfantibody"), stages=("generation.backbone_sequence", "generation.backbone")),
+    Measure("mimosa.refolded_motif_rmsd", "Refolded motif RMSD", "Å", "refolded motif", "MIMOSA target-aligned Cα fit", ("refolded_motif_rmsd_angstrom",), "lower", engines=("boltzgen", "rfantibody"), stages=("complex_refolding",)),
+    Measure("mimosa.generated_potential", "Generated motif potential", "Å²", "guided generated motif", "MIMOSA half-sum squared Cα displacement", ("generated_motif_potential_half_sum_angstrom2",), "lower", minimum=0, engines=("boltzgen", "rfantibody"), stages=("generation.backbone_sequence", "generation.backbone")),
+    Measure("mimosa.fixed_motif_residues", "Fixed motif residue count", "residues", "generated motif", "MIMOSA strict <2 Å identity fixing", ("fixed_motif_residue_count",), minimum=0, engines=("boltzgen", "rfantibody"), stages=("generation.backbone_sequence", "generation.backbone")),
+    Measure("mimosa.backbone_integrity", "Backbone integrity status", "status", "generated binder backbone", "Consecutive polymer C–N distance, target 1.329±0.5 Å", ("backbone_integrity_status",), value_type="text", engines=("boltzgen", "rfantibody"), stages=("generation.backbone_sequence", "generation.backbone")),
+    Measure("mimosa.backbone_bad_bond_count", "Backbone bad C–N bond count", "bonds", "generated binder backbone", "Consecutive polymer C–N distance, target 1.329±0.5 Å", ("backbone_bad_bond_count",), minimum=0, engines=("boltzgen", "rfantibody"), stages=("generation.backbone_sequence", "generation.backbone")),
 ]
 for component in ("helix", "sheet", "coil", "structured"):
     MEASURES.append(Measure(f"secondary_structure.binder.dssp.{component}_fraction", f"Binder {component} fraction (DSSP)", "fraction", "binder", "Studio pydssp C3", (f"binder_{component}_fraction",), maximum=1))
@@ -117,6 +124,25 @@ for role, stages in (("generator", ("generation.backbone_sequence",)),
     ):
         MEASURES.append(Measure(f"confidence.{role}.{key}", f"{role.title()} {label}", "0–100", scope, "BindCraft2 AF2", (alias,), "higher", maximum=100, engines=("bindcraft2",), transform="fraction_to_percent", stages=stages))
     MEASURES.append(Measure(f"confidence.{role}.interface.mean_pae", f"{role.title()} binder–target mean PAE", "Å", "binder–target symmetric mean", "BindCraft2 AF2", ("i_pAE",), "lower", engines=("bindcraft2",), transform="times_31", stages=stages))
+# RFD4's oracle flattens AF3 confidence outputs after scaling pLDDT/pTM by
+# 100; PAE remains in Å. These aliases are scoped to RFD4's generator stage,
+# since trajectory confidence is not an independent validation run.
+for scope, suffix, aliases in (
+    ("complex", "", ("oracle.overall_plddt", "oracle.overall_pae", "oracle.overall_ptm")),
+    ("chain of interest", ".chain_of_interest", ("oracle.plddt_coi", "oracle.pae_coi", "oracle.ptm_coi")),
+):
+    for quantity, unit, direction, transform, maximum, alias in zip(
+        ("plddt", "pae", "ptm"), ("0–100", "Å", "0–1"),
+        ("higher", "lower", "higher"), ("identity", "identity", "percent_to_fraction"),
+        (100, None, 1), aliases,
+    ):
+        MEASURES.append(Measure(
+            f"confidence.generator.{scope.replace(' ', '_')}.{quantity}",
+            f"Generator {scope} {quantity}", unit, scope,
+            "RFD4 AF3 oracle", (alias,), direction, maximum=maximum,
+            engines=("rfd4_proteina",), transform=transform,
+            stages=("generation.backbone_sequence",),
+        ))
 for model in sorted(MPNN_ENGINES):
     for key, label, aliases, unit, direction, transform, maximum in (
         ("redesigned_nll", "redesigned-residue NLL", ("score",), "nats/residue", "lower", "identity", None),
@@ -208,11 +234,17 @@ def normalize_metrics(metrics, tool="", context=None):
             continue
         if measure.stages and candidate.get("stage") not in measure.stages:
             continue
-        if any(values.get(key) != expected for key, expected in measure.requires):
+        if any(values.get(key, candidate.get(key)) != expected for key, expected in measure.requires):
             continue
         for alias in measure.aliases:
             value = values.get(alias)
             if value is None:
+                continue
+            if measure.value_type == "text":
+                if not isinstance(value, str) or not value:
+                    issues.append({"field": alias, "reason": "not a non-empty string"})
+                    continue
+                matches.setdefault(measure.key, []).append({"source_field": alias, "raw_value": value, "value": value, "conversion": "identity", "method": measure.method})
                 continue
             if measure.transform == "bool_to_indicator" and isinstance(value, bool):
                 value = float(value)
@@ -233,6 +265,8 @@ def normalize_metrics(metrics, tool="", context=None):
                 number = -math.log(number)
             elif measure.transform == "fraction_to_percent":
                 number *= 100
+            elif measure.transform == "percent_to_fraction":
+                number /= 100
             elif measure.transform == "times_31":
                 number *= 31
             if not math.isfinite(number):
