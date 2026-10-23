@@ -300,11 +300,18 @@ def _dispatch_docking_shard(*, request: dict, worker: dict, campaign: Path,
                         "rm", "-rf", "--", remote_dir], check=False, capture_output=True, text=True, timeout=10)
 
 
-def _read_worker_scores(result: dict, rows_by_engine_id: dict) -> list[dict]:
+def _read_worker_scores(result: dict, rows_by_engine_id: dict) -> tuple[list[dict], list[dict]]:
     path = Path(result.get("score_path") or (Path(result["run_dir"]) / "artifacts/docking_scores.csv"))
     if not path.is_file():
         raise ValueError(f"Docking child job {result.get('job_code') or path.parent.parent.name} produced no score table.")
-    parsed = []
+    parsed, failures, seen = [], [], set()
+    worker_fields = {
+        "worker_node_id": result["node_id"], "worker_node_name": result["node_name"],
+        "worker_host": result.get("host", ""), "worker_run_dir": result["worker_run_dir"],
+        "worker_job_code": result.get("job_code", ""),
+        "worker_cpu_cores": result.get("cpu_cores"),
+        "worker_gpu_device": result.get("gpu_device", "none"),
+    }
     with path.open(newline="", encoding="utf-8", errors="replace") as handle:
         sample = handle.read(4096)
         handle.seek(0)
@@ -314,21 +321,24 @@ def _read_worker_scores(result: dict, rows_by_engine_id: dict) -> list[dict]:
             source = rows_by_engine_id.get(engine_id)
             if source is None:
                 continue
+            seen.add(engine_id)
             value = raw.get("best_score_kcal_mol") or raw.get("vina_score") or raw.get("score")
             try:
                 score = float(value)
             except (TypeError, ValueError):
                 score = math.nan
             if str(raw.get("status") or "").lower() != "completed" or not math.isfinite(score):
+                failures.append({**source, **worker_fields,
+                                 "error": str(raw.get("error") or "Docking did not return a valid score.")})
                 continue
             parsed.append({**source, "score": score,
                            "pose_path": str(raw.get("pose_path") or f"artifacts/poses/{engine_id}_out.pdbqt"),
-                           "worker_node_id": result["node_id"], "worker_node_name": result["node_name"],
-                           "worker_host": result.get("host", ""), "worker_run_dir": result["worker_run_dir"],
-                           "worker_job_code": result.get("job_code", ""),
-                           "worker_cpu_cores": result.get("cpu_cores"),
-                           "worker_gpu_device": result.get("gpu_device", "none")})
-    return parsed
+                           **worker_fields})
+    for engine_id, source in rows_by_engine_id.items():
+        if engine_id not in seen:
+            failures.append({**source, **worker_fields,
+                             "error": "Docking worker did not return a score-table row."})
+    return parsed, failures
 
 
 def _score_database(path: Path) -> sqlite3.Connection:
@@ -343,6 +353,12 @@ def _score_database(path: Path) -> sqlite3.Connection:
         pose_path TEXT, worker_node_id TEXT, worker_node_name TEXT, worker_host TEXT,
         worker_run_dir TEXT, worker_job_code TEXT,
         PRIMARY KEY(library_id, compound_key))""")
+    db.execute("""CREATE TABLE IF NOT EXISTS failed_compounds (
+        library_id TEXT NOT NULL, compound_key INTEGER NOT NULL, compound_id TEXT NOT NULL,
+        compound_name TEXT NOT NULL, smiles TEXT NOT NULL, first_failed_round INTEGER NOT NULL,
+        last_failed_round INTEGER NOT NULL, error TEXT NOT NULL, worker_node_id TEXT,
+        worker_node_name TEXT, worker_host TEXT, worker_run_dir TEXT, worker_job_code TEXT,
+        PRIMARY KEY(library_id, compound_key))""")
     db.execute("CREATE INDEX IF NOT EXISTS compounds_score ON compounds(best_score)")
     db.commit()
     return db
@@ -355,6 +371,8 @@ def _persist_round_scores(db: sqlite3.Connection, rows: list[dict], *, round_num
         existing = db.execute("SELECT best_score,first_round,best_round FROM compounds WHERE library_id=? AND compound_key=?",
                               (row["library_id"], int(row["compound_key"]))).fetchone()
         if existing is None:
+            db.execute("DELETE FROM failed_compounds WHERE library_id=? AND compound_key=?",
+                       (row["library_id"], int(row["compound_key"])))
             db.execute("""INSERT INTO compounds VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                        (row["library_id"], int(row["compound_key"]), str(row["compound_id"]),
                         str(row.get("compound_name") or row["compound_id"]),
@@ -365,12 +383,35 @@ def _persist_round_scores(db: sqlite3.Connection, rows: list[dict], *, round_num
         else:
             better = float(row["score"]) < existing[0] if ordering == "lower" else float(row["score"]) > existing[0]
             if better:
+                db.execute("DELETE FROM failed_compounds WHERE library_id=? AND compound_key=?",
+                           (row["library_id"], int(row["compound_key"])))
                 db.execute("""UPDATE compounds SET best_score=?,best_round=?,pose_path=?,worker_node_id=?,
                     worker_node_name=?,worker_host=?,worker_run_dir=?,worker_job_code=?
                     WHERE library_id=? AND compound_key=?""",
                     (float(row["score"]), int(round_number), row.get("pose_path"), row.get("worker_node_id"),
                      row.get("worker_node_name"), row.get("worker_host"), row.get("worker_run_dir"), row.get("worker_job_code"),
                      row["library_id"], int(row["compound_key"])))
+    db.commit()
+
+
+def _persist_round_failures(db: sqlite3.Connection, rows: list[dict], *, round_number: int) -> None:
+    for row in rows:
+        library_id, compound_key = str(row["library_id"]), int(row["compound_key"])
+        if db.execute("SELECT 1 FROM compounds WHERE library_id=? AND compound_key=?",
+                      (library_id, compound_key)).fetchone():
+            continue
+        db.execute("""INSERT INTO failed_compounds VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(library_id,compound_key) DO UPDATE SET
+            last_failed_round=excluded.last_failed_round,error=excluded.error,
+            worker_node_id=excluded.worker_node_id,worker_node_name=excluded.worker_node_name,
+            worker_host=excluded.worker_host,worker_run_dir=excluded.worker_run_dir,
+            worker_job_code=excluded.worker_job_code""",
+            (library_id, compound_key, str(row["compound_id"]),
+             str(row.get("compound_name") or row["compound_id"]),
+             str(row.get("source_smiles") or row.get("smiles") or ""),
+             int(round_number), int(round_number), str(row.get("error") or "Docking failed."),
+             row.get("worker_node_id"), row.get("worker_node_name"), row.get("worker_host"),
+             row.get("worker_run_dir"), row.get("worker_job_code")))
     db.commit()
 
 
@@ -397,7 +438,10 @@ def _top_vector(scores: list[dict], top_n: int, previous: list[dict] | None,
 
 
 def _count_library_compounds(db: sqlite3.Connection, library_id: str) -> int:
-    return int(db.execute("SELECT COUNT(*) FROM compounds WHERE library_id=?", (str(library_id),)).fetchone()[0])
+    return int(db.execute("""SELECT COUNT(*) FROM (
+        SELECT compound_key FROM compounds WHERE library_id=?
+        UNION SELECT compound_key FROM failed_compounds WHERE library_id=?)""",
+        (str(library_id), str(library_id))).fetchone()[0])
 
 
 def _save_score_table(path: Path, scores: list[dict]) -> None:
@@ -413,6 +457,19 @@ def _save_score_table(path: Path, scores: list[dict]) -> None:
     ])
     records = [{**row, "rank": rank} for rank, row in enumerate(scores, start=1)]
     pq.write_table(pa.Table.from_pylist(records, schema=schema), path, compression="zstd")
+
+
+def _save_failed_compound_table(path: Path, failures: list[dict]) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    schema = pa.schema([
+        ("library_id", pa.string()), ("compound_key", pa.uint64()), ("compound_id", pa.string()),
+        ("compound_name", pa.string()), ("smiles", pa.string()),
+        ("first_failed_round", pa.uint32()), ("last_failed_round", pa.uint32()),
+        ("error", pa.string()), ("worker_node_id", pa.string()), ("worker_node_name", pa.string()),
+        ("worker_host", pa.string()), ("worker_job_code", pa.string()),
+    ])
+    pq.write_table(pa.Table.from_pylist(failures, schema=schema), path, compression="zstd")
 
 
 def _collect_best_poses(campaign: Path, scores: list[dict], count: int, *, ssh_user: str) -> list[str]:
@@ -664,19 +721,24 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                 phase(nodes["active_docking"]["id"], f"Docking round {round_number} · {len(selection_rows):,} compounds",
                       round_number=round_number, compound_count=len(selection_rows), worker_nodes=worker_states)
 
-            all_results = _dock_round(
+            all_results, failed_results = _dock_round(
                 campaign=campaign, round_number=round_number, rows=selection_rows, workers=workers,
                 docking=docking, target=target, owner_id=owner_id, project_id=project_id,
                 ssh_user=str(docking.get("ssh_user") or "compute"), work_directory=round_folder,
                 cancel_check=cancelled, worker_progress=worker_progress,
             )
-            if len(all_results) != len(selection_rows):
-                raise RuntimeError(f"Round {round_number} returned {len(all_results):,} successful scores for {len(selection_rows):,} compounds. An incomplete round cannot count toward convergence.")
-            worker_summary = _summarize_round_workers(all_results)
+            accounted_count = len(all_results) + len(failed_results)
+            if accounted_count != len(selection_rows):
+                raise RuntimeError(f"Round {round_number} accounted for {accounted_count:,} of {len(selection_rows):,} attempted compounds.")
+            if not all_results:
+                raise RuntimeError(f"Round {round_number} produced no usable docking scores from {len(selection_rows):,} attempts.")
+            worker_summary = _summarize_round_workers(all_results, failed_results)
             phase(nodes["active_docking"]["id"], f"Docking round {round_number} complete",
-                  status="completed", round_number=round_number, compound_count=len(selection_rows), scored_count=len(all_results),
+                  status="completed", round_number=round_number, compound_count=len(selection_rows),
+                  scored_count=len(all_results), failed_count=len(failed_results),
                   worker_nodes=[{**item, "status": "completed"} for item in worker_summary])
             _persist_round_scores(score_db, all_results, round_number=round_number, score_direction=direction)
+            _persist_round_failures(score_db, failed_results, round_number=round_number)
             ranked = _ranked_rows(score_db, direction)
             current_top, stable_now, max_delta, same_order = _top_vector(ranked, top_n, previous_top, tolerance)
             state["docking_runs"].extend(worker_summary)
@@ -685,7 +747,9 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
             else:
                 state["stable_rounds"] = 0
             history_item = {
-                "round": round_number, "docked_count": len(selection_rows), "successful_count": len(all_results),
+                "round": round_number, "attempted_count": len(selection_rows),
+                "docked_count": len(all_results), "successful_count": len(all_results),
+                "failed_count": len(failed_results),
                 "unique_tested_count": len(ranked), "best_score": ranked[0]["best_score"] if ranked else None,
                 "binder_percent": settings.percentile(round_number), "top_n": top_n,
                 "top_n_stable": stable_now, "stable_round_count": state["stable_rounds"],
@@ -790,6 +854,10 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
         table_path = data_root / "docking_scores.parquet"
         _save_score_table(table_path, [{**row, "score": row["best_score"], "score_field": score_field,
                                        "score_units": score_units} for row in ranked])
+        failures = [dict(zip([column[1] for column in score_db.execute("PRAGMA table_info(failed_compounds)").fetchall()], row))
+                    for row in score_db.execute("SELECT * FROM failed_compounds ORDER BY library_id,compound_key")]
+        failed_path = data_root / "failed_compounds.parquet"
+        _save_failed_compound_table(failed_path, failures)
         _cleanup_docking_artifacts(state.get("docking_runs") or [], ssh_user=ssh_user)
         for selection in rounds_dir.glob("round-*-selection.parquet"):
             selection.unlink(missing_ok=True)
@@ -819,9 +887,11 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
         # compact final score table and model checkpoint are the durable outputs.
         (data_root / "scores.sqlite3").unlink(missing_ok=True)
         outputs = {"docking_scores": "artifacts/active_learning/docking_scores.parquet",
+                   "failed_compounds": "artifacts/active_learning/failed_compounds.parquet",
                    "round_history": "artifacts/active_learning/round_history.json",
                    "retained_poses": "artifacts/active_learning/retained_poses"}
         downstream = {"docking_scores": "artifacts/active_learning/docking_scores.parquet",
+                      "failed_compounds": "artifacts/active_learning/failed_compounds.parquet",
                       "round_history": "artifacts/active_learning/round_history.json"}
         model_path = data_root / "model.pt"
         if model_path.is_file():
@@ -830,6 +900,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
         finish_job(campaign, True, {
             "outputs": outputs,
             "metrics": {"round_count": len(state["rounds"]), "unique_docked_compounds": len(ranked),
+                        "failed_compounds": len(failures),
                         "best_compound_id": ranked[0]["compound_id"] if ranked else "",
                         "best_score": ranked[0]["best_score"] if ranked else None,
                         "stop_reason": state.get("stop_reason"), "score_field": score_field,
@@ -858,7 +929,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
 
 def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers: list[dict],
                 docking: dict, target: dict, owner_id: str, project_id: str,
-                ssh_user: str, work_directory: Path, cancel_check, worker_progress=None) -> list[dict]:
+                ssh_user: str, work_directory: Path, cancel_check, worker_progress=None) -> tuple[list[dict], list[dict]]:
     import numpy as np
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -917,11 +988,12 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
             batches.append((mapping, request))
         request_info.append((worker, batches))
 
-    results = []
+    results, failures = [], []
     errors = []
     status_by_worker = {worker["node_id"]: {"node_id": worker["node_id"], "name": worker["node_name"],
         "cpu_cores": worker["cpu_cores"], "gpu_device": worker["gpu_device"], "status": "queued",
-        "batch_count": len(batches), "completed_batches": 0, "scored_count": 0}
+        "batch_count": len(batches), "completed_batches": 0, "scored_count": 0,
+        "failed_count": 0}
         for worker, batches in request_info}
 
     def publish_progress():
@@ -929,7 +1001,7 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
             worker_progress([dict(item) for item in status_by_worker.values()])
 
     def run_worker_batches(worker, batches):
-        worker_rows = []
+        worker_rows, worker_failures = [], []
         child_runs = []
         for batch_index, (mapping, request) in enumerate(batches, start=1):
             if cancel_check():
@@ -940,15 +1012,17 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
                 campaign=campaign, ssh_user=ssh_user, cancel_check=cancel_check)
             if job_result.get("status") != "completed":
                 raise RuntimeError(f"Docking batch {batch_index}/{len(batches)} finished as {job_result.get('status')}.")
-            score_rows = _read_worker_scores(job_result, mapping)
+            score_rows, failed_rows = _read_worker_scores(job_result, mapping)
             worker_rows.extend(score_rows)
+            worker_failures.extend(failed_rows)
             child_runs.append({"job_code": job_result.get("job_code"),
                                "run_dir": job_result.get("worker_run_dir") or job_result.get("run_dir"),
                                "host": job_result.get("host", "")})
             status_by_worker[worker["node_id"]].update(completed_batches=batch_index,
-                scored_count=len(worker_rows), job_code=job_result.get("job_code"))
+                scored_count=len(worker_rows), failed_count=len(worker_failures),
+                job_code=job_result.get("job_code"))
             publish_progress()
-        return worker_rows, child_runs
+        return worker_rows, worker_failures, child_runs
 
     with ThreadPoolExecutor(max_workers=max(1, len(request_info))) as pool:
         futures = {pool.submit(run_worker_batches, worker, batches): worker
@@ -956,12 +1030,14 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
         for future in as_completed(futures):
             worker = futures[future]
             try:
-                score_rows, child_runs = future.result()
+                score_rows, failed_rows, child_runs = future.result()
                 status_by_worker[worker["node_id"]].update(
                     status="completed", child_runs=child_runs,
                     scored_count=len(score_rows),
+                    failed_count=len(failed_rows),
                 )
                 results.extend(score_rows)
+                failures.extend(failed_rows)
                 publish_progress()
             except Exception as exc:
                 errors.append(f"{worker['node_name']}: {exc}")
@@ -969,7 +1045,7 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
                 publish_progress()
     if errors:
         raise RuntimeError("The docking round did not finish on every computer: " + "; ".join(errors))
-    return results
+    return results, failures
 
 
 def _write_selection_table(path: Path, rows: list[dict], library_id: str, *, reason: str) -> None:
@@ -999,20 +1075,20 @@ def _read_selection_table(path: Path) -> list[dict]:
     return pq.read_table(path).to_pylist()
 
 
-def _summarize_round_workers(rows: list[dict]) -> list[dict]:
+def _summarize_round_workers(rows: list[dict], failures: list[dict] | None = None) -> list[dict]:
     grouped = {}
-    for row in rows:
+    for row, failed in [(row, False) for row in rows] + [(row, True) for row in (failures or [])]:
         item = grouped.setdefault(row["worker_node_id"], {"node_id": row["worker_node_id"],
             "name": row["worker_node_name"], "job_code": row.get("worker_job_code"),
             "host": row.get("worker_host"), "run_dir": row.get("worker_run_dir"),
             "run_dirs": [], "job_codes": [], "cpu_cores": row.get("worker_cpu_cores"),
-            "gpu_device": row.get("worker_gpu_device"), "scored_count": 0})
+            "gpu_device": row.get("worker_gpu_device"), "scored_count": 0, "failed_count": 0})
         run_dir, job_code = row.get("worker_run_dir"), row.get("worker_job_code")
         if run_dir and run_dir not in item["run_dirs"]:
             item["run_dirs"].append(run_dir)
         if job_code and job_code not in item["job_codes"]:
             item["job_codes"].append(job_code)
-        item["scored_count"] += 1
+        item["failed_count" if failed else "scored_count"] += 1
     return list(grouped.values())
 
 
@@ -1172,7 +1248,10 @@ def run_active_learning_model_step(campaign_dir: str, feature_manifest: str,
         if feature_manifest_payload.get("library_id") != screening_library_id:
             raise ValueError("The prediction fingerprint manifest belongs to another screening library.")
         already = sqlite3.connect(f"file:{Path(scores_database).resolve()}?mode=ro", uri=True)
-        docked = {int(row[0]) for row in already.execute("SELECT compound_key FROM compounds WHERE library_id=?", (screening_library_id,))}
+        docked = {int(row[0]) for row in already.execute(
+            "SELECT compound_key FROM compounds WHERE library_id=? UNION "
+            "SELECT compound_key FROM failed_compounds WHERE library_id=?",
+            (screening_library_id, screening_library_id))}
         already.close()
         top_count = max(0, int(predicted_count))
         top_heap: list[tuple[float, int, dict]] = []
