@@ -278,6 +278,9 @@ def validate_request(parameters: dict, *, require_files: bool = True) -> dict:
             "The installed RFantibody ProteinMPNN interface does not support global or per-residue amino-acid bias yet."
         )
     use_abmpnn = bool(parameters.get("use_abmpnn", False))
+    generation_only = bool(parameters.get("generation_only", False))
+    if generation_only:
+        use_abmpnn = False
     abmpnn_checkpoint = None
     if use_abmpnn:
         from mn_molecular_design_studio.mpnn_input import checkpoint
@@ -335,6 +338,7 @@ def validate_request(parameters: dict, *, require_files: bool = True) -> dict:
         "bias_aas": bias_aas,
         "bias_by_res_json": bias_by_res_json,
         "use_abmpnn": use_abmpnn,
+        "generation_only": generation_only,
         "abmpnn_checkpoint": abmpnn_checkpoint,
         "mimosa_enabled": mimosa_enabled,
         "mimosa_condition": mimosa_condition,

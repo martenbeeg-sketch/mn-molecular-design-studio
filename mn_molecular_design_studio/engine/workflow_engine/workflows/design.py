@@ -880,6 +880,50 @@ def _mimosa_backbone_integrity(structure_path: Path, binder_chains: list[str]) -
             "backbone_bad_bonds": bad}
 
 
+def _validate_boltzgen_nanobody_cdr_insertions(scaffold_yaml: Path, overrides: dict[str, int] | None) -> dict[str, int]:
+    """Validate selected fixed CDR insertion lengths without editing the scaffold."""
+    if not overrides:
+        return {}
+    order = ("CDR1", "CDR2", "CDR3")
+    unknown = sorted(set(overrides) - set(order))
+    if unknown:
+        raise ValueError("Nanobody CDR insertion overrides must use CDR1, CDR2, or CDR3.")
+    text = scaffold_yaml.read_text()
+    matches = list(re.finditer(r"(?m)^\s*num_residues:\s*(\d+)\.\.(\d+)\s*$", text))
+    if len(matches) != 3:
+        raise ValueError(f"Expected three ordered CDR insertion ranges in {scaffold_yaml.name}; found {len(matches)}.")
+    resolved: dict[str, int] = {}
+    for region, match in zip(order, matches):
+        if region not in overrides:
+            continue
+        raw_length = overrides[region]
+        if isinstance(raw_length, bool) or not isinstance(raw_length, int):
+            raise ValueError(f"{region} insertion length must be a positive integer.")
+        maximum = int(match.group(2))
+        if not 1 <= raw_length <= maximum:
+            raise ValueError(f"{region} insertion length must be between 1 and {maximum} for {scaffold_yaml.stem}.")
+        resolved[region] = raw_length
+    return resolved
+
+
+def _apply_boltzgen_nanobody_cdr_insertions(scaffold_yaml: Path, overrides: dict[str, int] | None) -> dict[str, int]:
+    """Replace selected bundled VHH insertion ranges with fixed lengths."""
+    resolved = _validate_boltzgen_nanobody_cdr_insertions(scaffold_yaml, overrides)
+    if not resolved:
+        return {}
+    text = scaffold_yaml.read_text()
+    matches = list(re.finditer(r"(?m)^\s*num_residues:\s*(\d+)\.\.(\d+)\s*$", text))
+    edits = [
+        (matches[index].start(1), matches[index].end(2), str(resolved[region]))
+        for index, region in enumerate(("CDR1", "CDR2", "CDR3"))
+        if region in resolved
+    ]
+    for start, end, value in reversed(edits):
+        text = text[:start] + value + text[end:]
+    scaffold_yaml.write_text(text)
+    return resolved
+
+
 def _float_or_none(value: object) -> float | None:
     if value in {None, ""}:
         return None
@@ -3572,6 +3616,7 @@ def run_boltzgen(
     gpu_device: object = "0",
     task: str = "protein",
     scaffold_name: str = "7eow",
+    nanobody_cdr_insertions: dict[str, int] | None = None,
     ligand_type: str = "ccd",
     ligand_value: str = "TSA",
     peptide_sequence: str = "12..20",
@@ -3596,6 +3641,12 @@ def run_boltzgen(
     supported_tasks = {"protein", "nanobody", "small_molecule", "peptide", "cyclotide", "redesign", "yaml"}
     if task not in supported_tasks:
         raise ValueError(f"Unsupported BoltzGen task: {task}")
+    if nanobody_cdr_insertions and task != "nanobody":
+        raise ValueError("Nanobody CDR insertion overrides are available only for the nanobody task.")
+    # Exposing run_vanilla_pipeline=False is the public generation-only route
+    # for both native and MIMOSA workflows. Keep the internal tile marker in
+    # sync so job metadata and normalized candidate provenance describe it.
+    generator_only_tile = bool(generator_only_tile or not run_vanilla_pipeline)
     if generator_only_tile:
         run_vanilla_pipeline = False
         # This setting is consumed only by BoltzGen's inverse-folding stage.
@@ -3614,6 +3665,9 @@ def run_boltzgen(
         raise ValueError("Enter a CCD code or SMILES string for the BoltzGen ligand.")
     if task == "nanobody" and scaffold_name not in {"7eow", "7xl0", "8coh", "8z8v"}:
         raise ValueError("Choose one of BoltzGen's bundled nanobody scaffolds.")
+    if nanobody_cdr_insertions:
+        source_scaffold = Path(__file__).parent / "../assets" / "boltzgen_nanobody_scaffolds" / f"{scaffold_name}.yaml"
+        _validate_boltzgen_nanobody_cdr_insertions(source_scaffold, nanobody_cdr_insertions)
     if task == "redesign" and not redesign_residues:
         raise ValueError("Select at least one residue to redesign.")
     if task == "yaml" and not design_yaml.strip():
@@ -3629,8 +3683,6 @@ def run_boltzgen(
     if mimosa_enabled:
         if task != "nanobody":
             raise ValueError("BoltzGen MIMOSA currently supports its nanobody VHH scaffold workflow.")
-        if generator_only_tile:
-            raise ValueError("MIMOSA needs BoltzGen's inverse-folding stage; use the full pipeline.")
         if mimosa_complex is None or not Path(mimosa_complex).is_file():
             raise ValueError("MIMOSA requires a cognate binder–target complex PDB or mmCIF.")
         if Path(mimosa_complex).suffix.lower() not in {".pdb", ".ent", ".cif", ".mmcif"}:
@@ -3709,6 +3761,7 @@ def run_boltzgen(
         "generator_only_tile": bool(generator_only_tile),
         "gpu_device": normalize_gpu_device(gpu_device),
         "scaffold_name": scaffold_name,
+        "nanobody_cdr_insertions": nanobody_cdr_insertions or {},
         "ligand_type": ligand_type,
         "ligand_value": ligand_value,
         "peptide_sequence": peptide_sequence,
@@ -3878,6 +3931,13 @@ def run_boltzgen(
             if not source.exists():
                 raise ValueError(f"Bundled BoltzGen scaffold file is missing: {source.name}")
             shutil.copy2(source, input_dir / source.name)
+        params["resolved_nanobody_cdr_insertions"] = _apply_boltzgen_nanobody_cdr_insertions(
+            input_dir / f"{scaffold_name}.yaml", nanobody_cdr_insertions
+        )
+        write_json(
+            job.run_dir / "input.json",
+            {"inputs": {"target_pdb": str(target_pdb) if target_pdb else "", "target_chains": target_chains}, "params": params},
+        )
         yaml_text = "entities:\n  - file:\n      path: " + target_artifact.name + "\n      include:\n"
         for chain_id in target_chains:
             yaml_text += f"        - chain:\n            id: {json.dumps(chain_id)}\n"

@@ -369,7 +369,7 @@ def _collect_generation_candidates(
             metrics = _mimosa_generation_metrics(metadata)
             if metadata and metadata.get("backbone_integrity_status") == "rejected":
                 metrics["result_kind"] = "structural_rejection"
-            elif metadata:
+            else:
                 metrics["result_kind"] = "generated"
             diagnostics = metadata.get("sampler_diagnostics") if isinstance(metadata.get("sampler_diagnostics"), dict) else {}
             candidate_id = f"rfdiffusion_{re.sub(r'[^A-Za-z0-9_.-]+', '_', tag)}"
@@ -514,6 +514,7 @@ def run_rfantibody_design(
     number_of_designs: int = 1,
     number_of_sequences: int = 1,
     use_abmpnn: bool = False,
+    generation_only: bool = False,
     calculate_epitope_distance: bool = True,
     mpnn_temperature: float = 0.1,
     bias_aas: str = "",
@@ -550,11 +551,11 @@ def run_rfantibody_design(
     if normalized["target_pdb"] is None:
         raise ValueError("Load a target PDB or mmCIF structure first.")
     weights_dir = reference_root() / "rfantibody"
-    required_weights = (
-        "RFdiffusion_Ab.pt",
-        "ProteinMPNN_v48_noise_0.2.pt",
-        "RF2_ab.pt",
-    )
+    required_weights = ["RFdiffusion_Ab.pt"]
+    if not normalized["generation_only"]:
+        required_weights.append("RF2_ab.pt")
+        if not normalized["use_abmpnn"]:
+            required_weights.append("ProteinMPNN_v48_noise_0.2.pt")
     missing_weights = [name for name in required_weights if not (weights_dir / name).is_file()]
     if missing_weights:
         raise ValueError(
@@ -584,16 +585,24 @@ def run_rfantibody_design(
         "cpu_cores": normalized["cpu_cores"],
         "rf2_seed": seed,
         "diffusion_deterministic": bool(normalized["diffusion_deterministic"]),
+        "use_abmpnn": bool(normalized["use_abmpnn"]),
         "diffusion_seed": 0 if normalized["diffusion_deterministic"] else None,
         "engine_version": inputs.CODE_VERSION,
         "image": image,
+        "generation_only": bool(normalized["generation_only"]),
     })
     inputs_payload = {
         "target_pdb": str(normalized["target_pdb"]),
         "framework_pdb": str(normalized["framework_pdb"]) if normalized["framework_pdb"] else None,
         "mimosa_complex": str(normalized["mimosa_complex"]) if normalized["mimosa_complex"] else None,
     }
-    job = create_job("design", "rfantibody_design", "rfantibody", inputs_payload, parameters)
+    job = create_job(
+        "design",
+        "design_generation" if normalized["generation_only"] else "rfantibody_design",
+        "rfantibody",
+        inputs_payload,
+        parameters,
+    )
     update_status(job.run_dir, "preparing", campaign_name=job_name, current_phase="Preparing RFantibody target and framework")
     root = job.run_dir / "artifacts" / "raw" / "rfantibody"
     inputs_dir = root / "inputs"
@@ -716,18 +725,21 @@ def run_rfantibody_design(
             diffusion.append("--no-trajectory")
         steps.extend(["echo '[RFantibody] Stage 1/3 · RFdiffusion'; " + shlex.join(diffusion)])
         integrity_report_container = "/work/artifacts/raw/rfantibody/stages/mimosa_integrity_results.json"
-        mpnn = _proteinmpnn_command(
-            input_quiver=diff_qv_container,
-            output_quiver=mpnn_qv_container,
-            loops=",".join(normalized["regions"]),
-            sequences_per_structure=normalized["number_of_sequences"],
-            temperature=normalized["mpnn_temperature"],
-            augment_eps=normalized["augment_eps"],
-            num_connections=normalized["num_connections"],
-            omit_aas=normalized["omit_aas"],
-            checkpoint=mpnn_checkpoint_in_container,
-        )
-        if normalized["mimosa_enabled"]:
+        if normalized["generation_only"]:
+            steps.append("echo '[RFantibody] Generation-only run; skipping internal sequence design and RF2 predictions'")
+        else:
+            mpnn = _proteinmpnn_command(
+                input_quiver=diff_qv_container,
+                output_quiver=mpnn_qv_container,
+                loops=",".join(normalized["regions"]),
+                sequences_per_structure=normalized["number_of_sequences"],
+                temperature=normalized["mpnn_temperature"],
+                augment_eps=normalized["augment_eps"],
+                num_connections=normalized["num_connections"],
+                omit_aas=normalized["omit_aas"],
+                checkpoint=mpnn_checkpoint_in_container,
+            )
+        if not normalized["generation_only"] and normalized["mimosa_enabled"]:
             all_rejected = (
                 "python -c " + shlex.quote(
                     "import json,sys; d=json.load(open(" + repr(integrity_report_container) + ")); "
@@ -738,33 +750,46 @@ def run_rfantibody_design(
                 f"if {all_rejected}; then echo '[RFantibody] All generated backbones failed the MIMOSA peptide-bond integrity check; skipping inverse folding and refolding'; "
                 f"else echo '[RFantibody] Stage 2/3 · ProteinMPNN'; {shlex.join(mpnn)}; fi"
             )
-        else:
+        elif not normalized["generation_only"]:
             steps.append("echo '[RFantibody] Stage 2/3 · ProteinMPNN'; " + shlex.join(mpnn))
-        for repeat in range(1, normalized["rf2_repeats"] + 1):
-            model_output = f"/work/artifacts/raw/rfantibody/rf2_models/model_{repeat:02d}"
-            rf2 = [
-                "rf2", "--input-quiver", mpnn_qv_container, "--output-dir", model_output,
-                "--num-recycles", str(normalized["num_recycles"]), "--hotspot-show-prop", str(normalized["hotspot_show_prop"]),
-                "--seed", str(seed + repeat - 1), "--no-cautious",
-            ]
-            rf2_command = shlex.join(rf2)
-            if normalized["mimosa_enabled"]:
-                steps.append(
-                    f"if {all_rejected}; then echo '[RFantibody] Skipping RF2 for structurally rejected designs'; "
-                    f"else echo '[RFantibody] Stage 3/3 · RF2 prediction {repeat}/{normalized['rf2_repeats']}'; {rf2_command}; fi"
-                )
-            else:
-                steps.append(f"echo '[RFantibody] Stage 3/3 · RF2 prediction {repeat}/{normalized['rf2_repeats']}'; " + rf2_command)
+        if not normalized["generation_only"]:
+            for repeat in range(1, normalized["rf2_repeats"] + 1):
+                model_output = f"/work/artifacts/raw/rfantibody/rf2_models/model_{repeat:02d}"
+                rf2 = [
+                    "rf2", "--input-quiver", mpnn_qv_container, "--output-dir", model_output,
+                    "--num-recycles", str(normalized["num_recycles"]), "--hotspot-show-prop", str(normalized["hotspot_show_prop"]),
+                    "--seed", str(seed + repeat - 1), "--no-cautious",
+                ]
+                rf2_command = shlex.join(rf2)
+                if normalized["mimosa_enabled"]:
+                    steps.append(
+                        f"if {all_rejected}; then echo '[RFantibody] Skipping RF2 for structurally rejected designs'; "
+                        f"else echo '[RFantibody] Stage 3/3 · RF2 prediction {repeat}/{normalized['rf2_repeats']}'; {rf2_command}; fi"
+                    )
+                else:
+                    steps.append(f"echo '[RFantibody] Stage 3/3 · RF2 prediction {repeat}/{normalized['rf2_repeats']}'; " + rf2_command)
         script = "\n".join(steps)
         write_json(job.run_dir / "command.json", {"mode": "docker", "image": image, "command": command + [script]})
-        update_status(job.run_dir, "running", current_phase="RFdiffusion → ProteinMPNN → RF2")
+        update_status(
+            job.run_dir,
+            "running",
+            current_phase="RFdiffusion backbone generation only"
+            if normalized["generation_only"]
+            else "RFdiffusion → ProteinMPNN → RF2",
+        )
         with (job.run_dir / "stdout.log").open("a") as stdout, (job.run_dir / "stderr.log").open("a") as stderr:
             process = subprocess.run(command + [script], stdout=stdout, stderr=stderr, cwd=job.run_dir, check=False)
-        update_status(job.run_dir, "running", current_phase="Collecting RFantibody designs and RF2 scores")
+        update_status(
+            job.run_dir,
+            "running",
+            current_phase="Collecting generated RFantibody backbones"
+            if normalized["generation_only"]
+            else "Collecting RFantibody designs and RF2 scores",
+        )
         generation_candidates = _collect_generation_candidates(
             job.run_dir, target_path, mapping["target_chains"], mapping["hotspots"]
         )
-        candidates = _collect_candidates(
+        candidates = [] if normalized["generation_only"] else _collect_candidates(
             job.run_dir, target_path, mapping["target_chains"], mapping["hotspots"],
             calculate_epitope_distance=calculate_epitope_distance,
             generation_candidates=generation_candidates,
@@ -801,6 +826,8 @@ def run_rfantibody_design(
                         "result_status": "completed_with_structural_rejection" if scientific_rejection else "completed",
                         "requested_designs": normalized["number_of_designs"], "sequences_per_structure": normalized["number_of_sequences"],
                         "rf2_repeats": normalized["rf2_repeats"], "engine_version": inputs.CODE_VERSION,
+                        "generation_only": bool(normalized["generation_only"]),
+                        "rf2_predictions_completed": 0 if normalized["generation_only"] else normalized["rf2_repeats"],
                         "selected_target_chain_map": mapping["chain_map"], "selected_hotspots": mapping["hotspots"]},
             "downstream_artifacts": {"candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl",
                                      "campaign_result": "artifacts/normalized_candidates/campaign_result.json",
