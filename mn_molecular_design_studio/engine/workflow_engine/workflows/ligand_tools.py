@@ -1406,7 +1406,7 @@ def _run_docking(
     scrub_step = (
         "if scrub.py \"artifacts/ligands/${compound_id}_source.sdf\" "
         "-o \"artifacts/ligands/${compound_id}.sdf\" "
-        f"--ph {scrub_ph:.2f}"
+        f"--cpu 1 --ph {scrub_ph:.2f}"
         + (" --skip_tautomer" if scrub_skip_tautomer else "")
         + " >>\"artifacts/logs/${compound_id}.prepare.log\" 2>&1 "
         + "&& [[ -s \"artifacts/ligands/${compound_id}.sdf\" ]]; then :; else "
@@ -1918,7 +1918,7 @@ def run_ligand_unidock_pro(
     if use_scrub:
         preparation_helper.extend([
             "if scrub.py \"$source_sdf\" -o \"$ligand_sdf\" "
-            f"--ph {scrub_ph:.2f}"
+            f"--cpu 1 --ph {scrub_ph:.2f}"
             + (" --skip_tautomer" if scrub_skip_tautomer else "")
             + " >>\"$log\" 2>&1 && [[ -s \"$ligand_sdf\" ]]; then :; else",
             "  cp \"$source_sdf\" \"$ligand_sdf\";",

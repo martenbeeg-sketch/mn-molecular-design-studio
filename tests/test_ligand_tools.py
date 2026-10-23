@@ -789,7 +789,7 @@ def test_vina_job_stages_exact_compound_subset_with_typed_pipeline_contract(tmp_
         assert '> "artifacts/logs/${compound_id}.vina.log" 2>&1' in docker_script
         assert 'artifacts/logs/${compound_id}.vina.log' in docker_script
         assert 'scrub.py "artifacts/ligands/${compound_id}_source.sdf"' in docker_script
-        assert "--ph 7.40 --skip_tautomer" in docker_script
+        assert "--cpu 1 --ph 7.40 --skip_tautomer" in docker_script
         assert 'mk_prepare_ligand.py -i "artifacts/ligands/${compound_id}.sdf"' in docker_script
         shell_syntax = ligand_tools.subprocess.run(
             ["bash", "-n", "-c", docker_script], capture_output=True, text=True, check=False,
@@ -1002,7 +1002,7 @@ def test_unidock_pro_tile_batches_compounds_on_gpu_and_emits_typed_poses(tmp_pat
     assert "--search_mode detail" in script
     assert "xargs -0 -r -n 2 -P 2 bash artifacts/input/prepare_one_ligand.sh" in script
     assert "Prepared %s of %s compounds using %s CPU workers" in script
-    assert "--ph 7.40 --skip_tautomer" in preparation_script
+    assert "--cpu 1 --ph 7.40 --skip_tautomer" in preparation_script
     assert 'scrub.py "$source_sdf"' in preparation_script
     assert (run_dir / "artifacts" / "input" / "compounds.nul").read_bytes() == b"ethanol\0CCO\0ethylamine\0CCN\0"
     assert '\\"$compound_id\\"' not in script
