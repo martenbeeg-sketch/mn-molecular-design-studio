@@ -172,3 +172,23 @@ def test_source_picker_accepts_libraries_with_only_the_needed_preparation(tmp_pa
     assert [row[0]["id"] for row in choices] == ["screen", "seed"]
     assert choices[0][1] and not choices[0][2]
     assert choices[1][2] and not choices[1][1]
+
+
+def test_first_database_receptor_selection_prefills_saved_ligand_centered_box(monkeypatch):
+    from mn_molecular_design_studio import pipeline_graph_ui
+
+    box = {
+        "center": {"x": 27.121873292170918, "y": 37.707897689855635, "z": 32.25059854627194},
+        "size": {"x": 30, "y": 20, "z": 20},
+        "units": "angstrom",
+    }
+    option = ("Database · THRα 4LNW", "/database/receptor.pdb", "THRα 4LNW", box)
+    monkeypatch.setattr(pipeline_graph_ui, "_active_target_options", lambda: [option])
+    monkeypatch.setattr(pipeline_graph_ui.st, "selectbox", lambda *_args, **_kwargs: option[1])
+    monkeypatch.setattr(pipeline_graph_ui.st, "caption", lambda *_args, **_kwargs: None)
+
+    selected = pipeline_graph_ui._render_active_target({}, "test-target")
+
+    assert selected["target_pdb"] == option[1]
+    assert [selected[f"center_{axis}"] for axis in "xyz"] == [box["center"][axis] for axis in "xyz"]
+    assert [selected[f"size_{axis}"] for axis in "xyz"] == [30, 20, 20]

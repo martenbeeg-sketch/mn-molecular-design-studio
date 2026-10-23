@@ -172,6 +172,7 @@ def _active_target_options():
 def _render_active_target(params, key):
     options = _active_target_options()
     current = str(params.get("target_pdb") or "")
+    previous_target = current
     if current and Path(current).is_file() and current not in {item[1] for item in options}:
         options.insert(0, (params.get("target_name") or Path(current).stem, current, params.get("target_name") or Path(current).stem, None))
     if not options:
@@ -185,7 +186,7 @@ def _render_active_target(params, key):
     item = next(option for option in options if option[1] == selected)
     st.caption("Using a structure already imported into Studio. No upload or duplicate receptor entry is created.")
     result = {"target_pdb": selected, "target_name": item[2]}
-    if selected != current and len(item) >= 4 and isinstance(item[3], dict):
+    if selected != previous_target and len(item) >= 4 and isinstance(item[3], dict):
         box = item[3]
         center = box.get("center") or box.get("center_angstrom") or {}
         size = box.get("size") or box.get("size_angstrom") or {}
