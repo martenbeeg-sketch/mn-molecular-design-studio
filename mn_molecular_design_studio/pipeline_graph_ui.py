@@ -72,6 +72,45 @@ def _active_library_options():
     return result
 
 
+def _external_library_label(record, features=()):
+    """Name a source by its registered database file, not by one sample run."""
+    sources = record.get("sources") or []
+    source_names = list(dict.fromkeys(
+        Path(str(source.get("path") or "")).name
+        for source in sources if source.get("path")
+    ))
+    name = ", ".join(source_names) if source_names else str(record.get("name") or record.get("id") or "External library")
+    prepared_rows = max((int(item.get("rows") or 0) for item in features), default=0)
+    if prepared_rows:
+        name += f" · {prepared_rows:,} compounds prepared"
+    return name
+
+
+def _centroid_preparation_label(item):
+    """Summarize a centroid output using its source population and method."""
+    manifest = {}
+    try:
+        manifest = json.loads(Path(str(item.get("path") or "")).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        pass
+
+    input_rows = int(manifest.get("input_rows") or item.get("input_rows") or 0)
+    centroid_rows = int(manifest.get("row_count") or item.get("rows") or 0)
+    algorithm = manifest.get("algorithm")
+    methods = {
+        "exact_greedy_molecular_weight_order": "exact greedy",
+        "random_balanced_sampled_best_first": "chunked OpenVS-style, sampled",
+        "random_balanced_hierarchical_best_first": "chunked OpenVS-style, hierarchical",
+    }
+    method = methods.get(algorithm, str(algorithm or "centroid selection").replace("_", " "))
+    threshold = manifest.get("similarity_threshold")
+    threshold_label = f" · Tanimoto {float(threshold):.2f}" if threshold is not None else ""
+    created_at = str(manifest.get("created_at") or item.get("created_at") or "")
+    date_label = f" · {created_at[:10]}" if created_at else ""
+    return (f"{input_rows:,} input → {centroid_rows:,} centroids · {method}"
+            f"{threshold_label}{date_label}")
+
+
 def _render_active_library(params, key):
     libraries = [row for row in _active_library_options() if row[1]]
     if not libraries:
@@ -80,10 +119,9 @@ def _render_active_library(params, key):
     ids = [record["id"] for record, _features, _centroids in libraries]
     current_id = params.get("library_id")
     selected_id = current_id if current_id in ids else ids[0]
-    selected_id = st.selectbox("Registered external library", ids,
+    selected_id = st.selectbox("Source compound database", ids,
         index=ids.index(selected_id),
-        format_func=lambda value: next(
-            f"{record.get('name') or value} · {max((int(p.get('rows') or 0) for p in features), default=0):,} compounds"
+        format_func=lambda value: next(_external_library_label(record, features)
             for record, features, _centroids in libraries if record["id"] == value),
         key=key + "-library")
     record, features, _centroids = next(row for row in libraries if row[0]["id"] == selected_id)
@@ -105,19 +143,25 @@ def _render_active_centroids(params, key):
         return None
     ids = [record["id"] for record, _features, _centroids in libraries]
     selected_id = params.get("library_id") if params.get("library_id") in ids else ids[0]
-    selected_id = st.selectbox("Centroid source library", ids, index=ids.index(selected_id),
-        format_func=lambda value: next(record.get("name") or value for record, _features, _centroids in libraries if record["id"] == value),
+    selected_id = st.selectbox("Source compound database", ids, index=ids.index(selected_id),
+        format_func=lambda value: next(_external_library_label(record, features)
+            for record, features, _centroids in libraries if record["id"] == value),
         key=key + "-centroid-library")
-    _record, _features, centroids = next(row for row in libraries if row[0]["id"] == selected_id)
+    record, _features, centroids = next(row for row in libraries if row[0]["id"] == selected_id)
     centroid_paths = [str(item["path"]) for item in centroids]
-    centroid_labels = {str(item["path"]): f"{int(item.get('rows') or 0):,} centroids · {Path(item['path']).parent.name}" for item in centroids}
+    centroid_labels = {str(item["path"]): _centroid_preparation_label(item) for item in centroids}
     current_centroid = params.get("centroid_manifest")
     if current_centroid not in centroid_paths:
         current_centroid = centroid_paths[-1]
-    centroid_path = st.selectbox("Centroid set for the random seed", centroid_paths,
+    source_names = [Path(str(source.get("path"))).name for source in record.get("sources") or [] if source.get("path")]
+    if source_names:
+        st.caption(f"Centroid preparations registered for {', '.join(dict.fromkeys(source_names))}. Select the prepared centroid set to use as the random docking seed.")
+    else:
+        st.caption("Centroid preparations registered for this source database. Select the set to use as the random docking seed.")
+    centroid_path = st.selectbox("Centroid preparation", centroid_paths,
         index=centroid_paths.index(current_centroid), format_func=lambda value: centroid_labels[value],
         key=key + "-centroids")
-    st.caption("This centroid source can differ from the compound library used for prediction. Both must use compatible fingerprint settings.")
+    st.caption("This centroid source can differ from the compound database used for prediction. Both must use compatible fingerprint settings.")
     return {"library_id": selected_id, "centroid_manifest": centroid_path}
 
 

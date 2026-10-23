@@ -174,6 +174,66 @@ def test_source_picker_accepts_libraries_with_only_the_needed_preparation(tmp_pa
     assert choices[1][2] and not choices[1][1]
 
 
+def test_centroid_picker_exposes_all_preparations_under_the_source_database(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import molecular_database, pipeline_graph_ui
+
+    source = tmp_path / "SpiroSpace_2025_client.csv"
+    feature_path = tmp_path / "fingerprints" / "manifest.json"
+    feature_path.parent.mkdir()
+    feature_path.touch()
+    centroid_specs = [
+        (10_000, 781, "exact_greedy_molecular_weight_order", "2026-10-23T16:40:22+00:00"),
+        (10_000, 509, "random_balanced_sampled_best_first", "2026-10-23T17:49:22+00:00"),
+        (100_000, 6_357, "random_balanced_sampled_best_first", "2026-10-23T17:59:23+00:00"),
+        (1_000_000, 177_430, "random_balanced_sampled_best_first", "2026-10-23T18:22:55+00:00"),
+    ]
+    centroid_items = []
+    for index, (inputs, centers, algorithm, created_at) in enumerate(centroid_specs):
+        path = tmp_path / f"centroids-{index}" / "manifest.json"
+        path.parent.mkdir()
+        path.write_text(json.dumps({
+            "schema_version": "studio.library-centroids.v2",
+            "input_rows": inputs,
+            "row_count": centers,
+            "algorithm": algorithm,
+            "similarity_threshold": 0.6,
+            "created_at": created_at,
+        }))
+        centroid_items.append({
+            "schema_version": "studio.library-centroids.v2",
+            "path": str(path),
+            "rows": centers,
+        })
+    record = {
+        "id": "spirospace",
+        "name": "SpiroSpace 2025 client · first 10,000 rows",
+        "sources": [{"path": str(source)}],
+        "preparations": [
+            {"schema_version": "studio.library-fingerprints.v2", "path": str(feature_path), "rows": 1_000_000},
+            *centroid_items,
+        ],
+    }
+
+    class FakeDatabase:
+        def external_library_records(self):
+            return [record]
+
+    monkeypatch.setattr(molecular_database, "MolecularDatabase", FakeDatabase)
+    libraries = pipeline_graph_ui._active_library_options()
+    assert len(libraries) == 1
+    selected_record, features, centroids = libraries[0]
+    assert selected_record["id"] == "spirospace"
+    assert len(centroids) == 4
+    assert pipeline_graph_ui._external_library_label(selected_record, features) == (
+        "SpiroSpace_2025_client.csv · 1,000,000 compounds prepared"
+    )
+    labels = [pipeline_graph_ui._centroid_preparation_label(item) for item in centroids]
+    assert "10,000 input → 781 centroids · exact greedy · Tanimoto 0.60 · 2026-10-23" in labels
+    assert "10,000 input → 509 centroids · chunked OpenVS-style, sampled · Tanimoto 0.60 · 2026-10-23" in labels
+    assert "100,000 input → 6,357 centroids · chunked OpenVS-style, sampled · Tanimoto 0.60 · 2026-10-23" in labels
+    assert "1,000,000 input → 177,430 centroids · chunked OpenVS-style, sampled · Tanimoto 0.60 · 2026-10-23" in labels
+
+
 def test_first_database_receptor_selection_prefills_saved_ligand_centered_box(monkeypatch):
     from mn_molecular_design_studio import pipeline_graph_ui
 
