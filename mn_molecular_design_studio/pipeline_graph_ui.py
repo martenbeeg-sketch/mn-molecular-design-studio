@@ -136,10 +136,36 @@ def _active_target_options():
             options.append((label, str(path), item.get("name") or label))
     campaign = Path("/mnt/data/RESULTS/unidockpro/20251024_THRa_Large_screen_CD/mn_docking_data/THR_medchem_agonist/targets/thra/4lnw_T3_A_501_protein_mut_protein_refined.pdb")
     if campaign.is_file():
-        options.append(("THRα campaign · 4LNW refined docking receptor", str(campaign), "THRα · 4LNW refined campaign receptor"))
+        options.append(("THRα campaign · 4LNW refined docking receptor", str(campaign), "THRα · 4LNW refined campaign receptor", None))
+    user = st.session_state.get("_molecular_database_user")
+    if user:
+        from mn_molecular_design_studio.molecular_database import MolecularDatabase
+        database = MolecularDatabase()
+        records = database.list_molecules(
+            user, scope="mine", collection="library", molecule_type="protein", limit=100_000
+        )["items"]
+        for record in records:
+            protein_components = [row for row in record.get("components", []) if row.get("type") == "protein"]
+            if not protein_components:
+                continue
+            component = protein_components[0]
+            structure = next((row for row in record.get("structures", [])
+                              if row.get("format") in {"pdb", "ent", "cif", "mmcif"}
+                              and Path(str(row.get("path") or "")).is_file()), None)
+            if structure is None:
+                continue
+            path = str(Path(structure["path"]).expanduser().resolve())
+            metadata = record.get("metadata") or {}
+            box = metadata.get("docking_box")
+            label = f"Database · {record.get('name') or record['id']} · chain {component.get('chain') or '?'}"
+            options.append((label, path, record.get("name") or label, box if isinstance(box, dict) else None))
     unique = {}
     for row in options:
-        unique.setdefault(row[1], row)
+        # Preserve docking-box metadata when the same structure appears in the
+        # MN-Ligand registry and the reusable molecular database.
+        previous = unique.get(row[1])
+        if previous is None or (len(previous) < 4 and len(row) >= 4 and row[3]):
+            unique[row[1]] = row
     return list(unique.values())
 
 
@@ -147,7 +173,7 @@ def _render_active_target(params, key):
     options = _active_target_options()
     current = str(params.get("target_pdb") or "")
     if current and Path(current).is_file() and current not in {item[1] for item in options}:
-        options.insert(0, (params.get("target_name") or Path(current).stem, current, params.get("target_name") or Path(current).stem))
+        options.insert(0, (params.get("target_name") or Path(current).stem, current, params.get("target_name") or Path(current).stem, None))
     if not options:
         st.info("No saved receptors were found. Import a receptor structure into Studio first.")
         return None
@@ -158,7 +184,22 @@ def _render_active_target(params, key):
         format_func=lambda value: next(item[0] for item in options if item[1] == value), key=key + "-target")
     item = next(option for option in options if option[1] == selected)
     st.caption("Using a structure already imported into Studio. No upload or duplicate receptor entry is created.")
-    return {"target_pdb": selected, "target_name": item[2]}
+    result = {"target_pdb": selected, "target_name": item[2]}
+    if selected != current and len(item) >= 4 and isinstance(item[3], dict):
+        box = item[3]
+        center = box.get("center") or box.get("center_angstrom") or {}
+        size = box.get("size") or box.get("size_angstrom") or {}
+        if isinstance(center, (list, tuple)) and len(center) == 3:
+            center = dict(zip(("x", "y", "z"), center))
+        if isinstance(size, (list, tuple)) and len(size) == 3:
+            size = dict(zip(("x", "y", "z"), size))
+        if isinstance(center, dict) and isinstance(size, dict):
+            for axis in "xyz":
+                if center.get(axis) is not None:
+                    result[f"center_{axis}"] = float(center[axis])
+                if size.get(axis) is not None:
+                    result[f"size_{axis}"] = float(size[axis])
+    return result
 
 
 def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, graph=None):
