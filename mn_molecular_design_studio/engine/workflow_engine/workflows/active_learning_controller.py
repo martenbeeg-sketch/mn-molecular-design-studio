@@ -170,6 +170,22 @@ def _docking_params(params: dict, target: dict, batch_file: Path, *, round_numbe
     }
 
 
+def _remote_request_rewrite_command(python: str, request_path: str, remote_dir: str,
+                                    alignment_path: str = "") -> str:
+    """Build the remote request rewrite with the worker's configured Python."""
+    script = (
+        "import json,sys; p=sys.argv[1]; d=json.load(open(p)); "
+        "d['parameters']['target_pdb']=sys.argv[2]; "
+        "d['parameters']['compound_set_file']=sys.argv[3]; "
+        "(d['parameters'].__setitem__('alignment_ligand_sdf',sys.argv[4]) "
+        "if len(sys.argv)>4 and sys.argv[4] else None); json.dump(d,open(p,'w'))"
+    )
+    return shlex.join([
+        str(python), "-c", script, request_path,
+        remote_dir + "/receptor.pdb", remote_dir + "/compounds.json", alignment_path,
+    ])
+
+
 def _wait_local_job(run_dir: Path, *, cancel_check) -> dict:
     cancellation_sent = False
     while True:
@@ -238,12 +254,10 @@ def _dispatch_docking_shard(*, request: dict, worker: dict, campaign: Path,
                            check=True, capture_output=True, text=True, timeout=None)
         # The shard parameters point to the local staged files. Rewrite those
         # two paths in the remote request after transfer.
-        rewrite_request = shlex.join([
-            "python", "-c",
-            "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['parameters']['target_pdb']=sys.argv[2]; d['parameters']['compound_set_file']=sys.argv[3]; (d['parameters'].__setitem__('alignment_ligand_sdf',sys.argv[4]) if len(sys.argv)>4 and sys.argv[4] else None); json.dump(d,open(p,'w'))",
-            remote_request, remote_dir + "/receptor.pdb", remote_dir + "/compounds.json",
+        rewrite_request = _remote_request_rewrite_command(
+            python, remote_request, remote_dir,
             remote_dir + "/alignment_ligand.sdf" if alignment_path else "",
-        ])
+        )
         subprocess.run(
             ["ssh", "-T", "-o", "BatchMode=yes", destination,
              "bash -lc " + shlex.quote(rewrite_request)],

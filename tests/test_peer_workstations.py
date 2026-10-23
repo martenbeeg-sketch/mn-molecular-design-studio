@@ -125,6 +125,25 @@ def test_login_project_creation_and_local_submission_work_without_any_peer(peers
         assert workspace.validate_project_id(project['id'])==project['id']
 
 
+def test_explicit_local_pipeline_runs_on_peer_with_its_local_inputs(peers, monkeypatch):
+    _nodes, on = peers
+    with on(1):
+        monkeypatch.setattr(Agent, 'storage_online', lambda self: True)
+        request = {
+            'graph': {'template_id': 'unidock_active_learning'},
+            'execution': {'placement': 'local', 'idempotency_key': 'local-active-pipeline'},
+        }
+
+        # The parent controller must execute where its library and receptor
+        # live. Its active-docking node performs the separate worker fan-out.
+        result = service.submit_from_api(
+            request, {'id': 'user', 'role': 'admin'}, request_dir=config.home(),
+            token='', authorize_path=lambda _path: None, kind='pipeline',
+        )
+
+    assert result is None
+
+
 def test_two_peers_exchange_projects_and_accounts_while_primary_is_offline(peers,monkeypatch):
     nodes,on=peers
     user,project=account(on)

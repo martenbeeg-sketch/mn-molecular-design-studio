@@ -544,7 +544,11 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     if last_job.get("run_dir"):
         last_path = Path(last_job["run_dir"])
         execution = _matching_execution(graph, read_json(last_path/"graph_snapshot.json"), read_json(last_path/"graph_execution.json"))
-    value = _component()(graph=graph, catalog=NODE_CATALOG, active_study_layout=ACTIVE_LEARNING_LAYOUT, active_execution_ready=False, reset_token=st.session_state[prefix+"-reset"], input_contexts=contexts, execution=execution, settings_update=st.session_state.get(prefix+"-settings-update"), key=prefix+"-canvas", default=None)
+    value = _component()(graph=graph, catalog=NODE_CATALOG, active_study_layout=ACTIVE_LEARNING_LAYOUT,
+                         active_execution_ready=graph.get("template_id") == "unidock_active_learning",
+                         reset_token=st.session_state[prefix+"-reset"], input_contexts=contexts,
+                         execution=execution, settings_update=st.session_state.get(prefix+"-settings-update"),
+                         key=prefix+"-canvas", default=None)
     if value:
         signature = json.dumps(value, sort_keys=True)
         if signature != st.session_state.get(prefix+"-last-value"):

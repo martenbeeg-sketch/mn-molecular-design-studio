@@ -17,11 +17,15 @@ def run(request_path: Path) -> dict:
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json
     from mn_molecular_design_studio.engine.workflow_engine.core.workflow_queue import enqueue_workflow_call
     from mn_molecular_design_studio.engine.workflow_engine.workflows.ligand_tools import run_ligand_unidock_pro
-    from mn_molecular_design_studio.workspace import mark_studio_job
+    from mn_molecular_design_studio.workspace import ensure_studio_workspace, mark_studio_job
 
     request = json.loads(Path(request_path).read_text(encoding="utf-8"))
     if request.get("schema_version") != "studio.active-learning-docking-shard.v1":
         raise ValueError("Unsupported active-learning docking shard request.")
+    # Remote launchers run in a clean SSH shell, outside the long-lived Studio
+    # API process that normally sets these paths. Apply the machine's saved
+    # workspace settings before create_job() chooses the run directory.
+    ensure_studio_workspace()
     params = dict(request.get("parameters") or {})
     run_dir = enqueue_workflow_call(
         run_ligand_unidock_pro,
@@ -52,6 +56,16 @@ def run(request_path: Path) -> dict:
             cancellation_sent = True
         metadata = read_json(run_dir / "metadata.json")
         status = str(metadata.get("status") or "queued")
+        scheduler_status = str(metadata.get("scheduler_status") or "").casefold()
+        scheduler_error = str(metadata.get("scheduler_error") or "").strip()
+        if scheduler_status == "failed" and status not in {"completed", "failed", "cancelled"}:
+            return {
+                "status": "failed",
+                "run_dir": str(run_dir),
+                "job_code": str(metadata.get("job_code") or ""),
+                "error": scheduler_error or "The machine scheduler rejected the docking job.",
+                "score_file": "artifacts/docking_scores.csv",
+            }
         if status in {"completed", "failed", "cancelled"}:
             result = read_json(run_dir / "result.json")
             return {

@@ -1048,6 +1048,11 @@ def migrate_template_graph(graph: dict[str, Any]) -> dict[str, Any]:
         docking_params = next(node for node in migrated["nodes"]
                               if node["data"]["kind"] == "active_docking")["data"]["params"]
         template_version = int(graph.get("template_version") or 1)
+        # Older active-learning drafts stored one CPU count directly on the
+        # docking node. Worker resources now belong to each selected computer;
+        # retaining the old field makes strict graph validation reject an
+        # otherwise runnable saved draft.
+        docking_params.pop("cpu_cores", None)
         if template_version < 5 and docking_params.get("batch_size") == 10_000:
             # Before v5 this was the fixed batch size for every round.
             docking_params["batch_size"] = 0

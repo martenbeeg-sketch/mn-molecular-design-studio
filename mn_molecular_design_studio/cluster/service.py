@@ -91,7 +91,13 @@ def submit_from_api(payload, user, *, request_dir, token, authorize_path, kind="
         return None
     source = payload.get("source_job")
     has_cluster_source = bool(isinstance(source, str) and source.startswith("cluster:")) or bool(bundles.referenced_nodes(payload))
-    if placement == "local" and not has_cluster_source and not config.is_peer():
+    # A graph pipeline owns a controller run on the submitting workstation;
+    # its own nodes can still fan work out to selected cluster workers. In
+    # peer mode the controller must therefore resolve its local library and
+    # receptor inputs before any child docking batches are dispatched. Sending
+    # the parent graph through the coordinator would reject those local paths
+    # (or stage bulk library files that are intentionally data-local).
+    if placement == "local" and not has_cluster_source and (not config.is_peer() or kind == "pipeline"):
         from .agent import Agent
         if not Agent().storage_online():
             raise transport.ClusterUnavailable("This workstation's Results storage is unavailable. Restore its disk or select another workstation.")

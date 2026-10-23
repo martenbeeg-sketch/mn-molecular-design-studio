@@ -83,6 +83,22 @@ def test_old_fixed_round_size_default_migrates_to_later_round_cap():
     assert migrated_docking["batch_size"] == 0
 
 
+def test_legacy_docking_cpu_setting_migrates_to_per_worker_resources():
+    study = graph.new_graph("unidock_active_learning")
+    study["template_version"] = 4
+    docking = next(node for node in study["nodes"] if node["data"]["kind"] == "active_docking")
+    docking["data"]["params"].update(cpu_cores=8, worker_nodes=[{"node_id": "worker", "cpu_cores": 6}])
+
+    migrated = graph.migrate_template_graph(study)
+    migrated_docking = next(node["data"]["params"] for node in migrated["nodes"]
+                            if node["data"]["kind"] == "active_docking")
+
+    assert "cpu_cores" not in migrated_docking
+    assert migrated_docking["worker_nodes"] == [{"node_id": "worker", "cpu_cores": 6}]
+    assert migrated_docking["worker_batch_size"] == 2_000
+    graph.validate_graph(migrated)
+
+
 def test_v5_default_batch_cap_migrates_to_no_cap():
     study = graph.new_graph("unidock_active_learning")
     study["template_version"] = 5
@@ -154,6 +170,53 @@ def test_docking_assignments_split_into_supported_launch_sizes():
     assert MAX_COMPOUNDS_PER_LAUNCH == 150_000
     assert [len(batch) for batch in batches] == [5_000, 5_000, 2_001]
     assert [row["compound_id"] for batch in batches for row in batch] == [str(index) for index in range(12_001)]
+
+
+def test_remote_docking_request_rewrite_uses_worker_conda_python():
+    import shlex
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.active_learning_controller import _remote_request_rewrite_command
+
+    command = _remote_request_rewrite_command(
+        "/home/compute/envs/studio/bin/python3.11", "/tmp/job/request.json", "/tmp/job",
+        "/tmp/job/alignment_ligand.sdf",
+    )
+
+    assert shlex.split(command)[0] == "/home/compute/envs/studio/bin/python3.11"
+    assert "target_pdb" in command
+    assert "/tmp/job/alignment_ligand.sdf" in command
+
+
+def test_remote_docking_launcher_initializes_workspace_and_surfaces_scheduler_failure(monkeypatch, tmp_path):
+    from mn_molecular_design_studio.cluster import active_learning_worker
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs, workflow_queue
+    from mn_molecular_design_studio import workspace
+
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps({
+        "schema_version": "studio.active-learning-docking-shard.v1",
+        "parameters": {"cpu_cores": 1, "gpu_device": "0"},
+        "round_number": 1,
+        "parent_run_dir": str(tmp_path),
+        "owner_id": "owner",
+        "project_id": "project",
+        "node_id": "worker-id",
+        "node_name": "worker-name",
+    }))
+    child_run = tmp_path / "child-run"
+    child_run.mkdir()
+    metadata = {"status": "queued", "scheduler_status": "failed", "scheduler_error": "run folder is outside Results"}
+    calls = []
+    monkeypatch.setattr(workspace, "ensure_studio_workspace", lambda: calls.append("workspace"))
+    monkeypatch.setattr(workflow_queue, "enqueue_workflow_call", lambda *args, **kwargs: calls.append("enqueue") or child_run)
+    monkeypatch.setattr(workspace, "mark_studio_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(jobs, "read_json", lambda path: metadata)
+    monkeypatch.setattr(jobs, "write_json", lambda *args, **kwargs: None)
+
+    result = active_learning_worker.run(request_path)
+
+    assert calls == ["workspace", "enqueue"]
+    assert result["status"] == "failed"
+    assert result["error"] == "run folder is outside Results"
 
 
 def test_initial_seed_picker_limit_comes_from_centroid_manifest(tmp_path):

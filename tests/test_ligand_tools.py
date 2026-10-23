@@ -964,7 +964,7 @@ def test_unidock_pro_tile_batches_compounds_on_gpu_and_emits_typed_poses(tmp_pat
     ligand_compounds.write_compound_set(
         compound_set,
         name="Uni-Dock set",
-        compounds=[{"compound_id": "ethanol", "smiles": "CCO"}],
+        compounds=[{"compound_id": "ethanol", "smiles": "CCO"}, {"compound_id": "ethylamine", "smiles": "CCN"}],
         owner_id="owner",
         project_id="project",
         created_at="now",
@@ -984,21 +984,30 @@ def test_unidock_pro_tile_batches_compounds_on_gpu_and_emits_typed_poses(tmp_pat
     monkeypatch.setattr(ligand_tools, "run_docker_job", fake_docker)
     run_dir = ligand_tools.run_ligand_unidock_pro(
         target, compound_set, center_x=-2.0, center_y=1.0, center_z=3.0,
-        search_mode="detail", gpu_device="1",
+        search_mode="detail", gpu_device="1", cpu_cores=4,
     )
 
     script = captured["args"][-1]
     shell_syntax = ligand_tools.subprocess.run(["bash", "-n", "-c", script], capture_output=True, text=True, check=False)
+    preparation_script = (run_dir / "artifacts" / "input" / "prepare_one_ligand.sh").read_text()
+    preparation_syntax = ligand_tools.subprocess.run(
+        ["bash", "-n", str(run_dir / "artifacts" / "input" / "prepare_one_ligand.sh")],
+        capture_output=True, text=True, check=False,
+    )
     contract = json.loads((run_dir / "artifact_contract.json").read_text())
     result = jobs.read_json(run_dir / "result.json")
     assert captured["manifest"]["tool"] == "unidock_pro"
     assert captured["gpu_device"] == "1"
     assert "--ligand_index artifacts/input/ligand_index.txt" in script
     assert "--search_mode detail" in script
-    assert "--ph 7.40 --skip_tautomer" in script
-    assert 'scrub.py "artifacts/ligands/${compound_id}_source.sdf"' in script
+    assert "xargs -0 -r -n 2 -P 2 bash artifacts/input/prepare_one_ligand.sh" in script
+    assert "Prepared %s of %s compounds using %s CPU workers" in script
+    assert "--ph 7.40 --skip_tautomer" in preparation_script
+    assert 'scrub.py "$source_sdf"' in preparation_script
+    assert (run_dir / "artifacts" / "input" / "compounds.nul").read_bytes() == b"ethanol\0CCO\0ethylamine\0CCN\0"
     assert '\\"$compound_id\\"' not in script
     assert shell_syntax.returncode == 0, shell_syntax.stderr
+    assert preparation_syntax.returncode == 0, preparation_syntax.stderr
     assert contract["workflow"] == "ligand.docking.unidock_pro"
     assert contract["outputs"][1]["type"] == "ligand_pose_collection/v1"
     assert result["metrics"]["best_score_kcal_mol"] == pytest.approx(-7.1)

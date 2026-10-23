@@ -1893,6 +1893,47 @@ def run_ligand_unidock_pro(
         writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
         writer.writerow(["compound_id", "smiles"])
         writer.writerows((item["compound_id"], item["smiles"]) for item in staged_compounds)
+    (input_dir / "compounds.nul").write_bytes(
+        b"\0".join(
+            value.encode("utf-8")
+            for item in staged_compounds
+            for value in (str(item["compound_id"]), str(item["smiles"]))
+        ) + b"\0"
+    )
+    preparation_workers = max(1, min(cpu_cores, len(staged_compounds)))
+    preparation_helper = [
+        "#!/usr/bin/env bash",
+        "set -uo pipefail",
+        "compound_id=\"$1\"",
+        "smiles=\"$2\"",
+        "log=\"artifacts/logs/${compound_id}.prepare.log\"",
+        "source_sdf=\"artifacts/ligands/${compound_id}_source.sdf\"",
+        "ligand_sdf=\"artifacts/ligands/${compound_id}.sdf\"",
+        "ligand_pdbqt=\"artifacts/ligands/${compound_id}.pdbqt\"",
+        "export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1",
+        "if ! python artifacts/input/smiles_to_3d.py --smiles \"$smiles\" --name \"$compound_id\" --output \"$source_sdf\" >\"$log\" 2>&1; then",
+        "  echo 'RDKit 3D preparation failed.' >>\"$log\"; exit 0;",
+        "fi",
+    ]
+    if use_scrub:
+        preparation_helper.extend([
+            "if scrub.py \"$source_sdf\" -o \"$ligand_sdf\" "
+            f"--ph {scrub_ph:.2f}"
+            + (" --skip_tautomer" if scrub_skip_tautomer else "")
+            + " >>\"$log\" 2>&1 && [[ -s \"$ligand_sdf\" ]]; then :; else",
+            "  cp \"$source_sdf\" \"$ligand_sdf\";",
+            "  echo 'Scrub failed; using the RDKit SDF for Meeko preparation.' >>\"$log\";",
+            "fi",
+        ])
+    else:
+        preparation_helper.append('cp "$source_sdf" "$ligand_sdf"')
+    preparation_helper.extend([
+        "if ! mk_prepare_ligand.py -i \"$ligand_sdf\" -o \"$ligand_pdbqt\" >>\"$log\" 2>&1; then",
+        "  echo 'Meeko ligand preparation failed.' >>\"$log\"; exit 0;",
+        "fi",
+        "rm -f \"$log\"",
+    ])
+    (input_dir / "prepare_one_ligand.sh").write_text("\n".join(preparation_helper) + "\n", encoding="utf-8")
     config_path = input_dir / "docking.conf"
     config_path.write_text("".join(
         f"{key} = {value:.3f}\n"
@@ -1901,33 +1942,23 @@ def run_ligand_unidock_pro(
             (center_x, center_y, center_z, size_x, size_y, size_z),
         )
     ), encoding="utf-8")
-    scrub_step = (
-        "if scrub.py \"artifacts/ligands/${compound_id}_source.sdf\" "
-        "-o \"artifacts/ligands/${compound_id}.sdf\" "
-        f"--ph {scrub_ph:.2f}"
-        + (" --skip_tautomer" if scrub_skip_tautomer else "")
-        + " >> artifacts/logs/preparation.log 2>&1 "
-        + "&& [[ -s \"artifacts/ligands/${compound_id}.sdf\" ]]; then :; else "
-        + "cp \"artifacts/ligands/${compound_id}_source.sdf\" \"artifacts/ligands/${compound_id}.sdf\"; "
-        + "echo 'Scrub failed; using the RDKit SDF for Meeko preparation.' >> artifacts/logs/preparation.log; fi; "
-        if use_scrub else
-        "cp \"artifacts/ligands/${compound_id}_source.sdf\" \"artifacts/ligands/${compound_id}.sdf\"; "
-    )
     script = (
         "set -euo pipefail; cd /work; "
         "mkdir -p artifacts/prepared artifacts/ligands artifacts/poses artifacts/logs; "
         "if ! mk_prepare_receptor.py --read_pdb artifacts/input/receptor.pdb -o artifacts/prepared/receptor -p; then "
         "awk 'substr($0,77,2) !~ /^[[:space:]]*H[[:space:]]*$/' artifacts/input/receptor.pdb > artifacts/input/receptor-noh.pdb; "
         "mk_prepare_receptor.py -i artifacts/input/receptor-noh.pdb -o artifacts/prepared/receptor -p; fi; "
+        f"xargs -0 -r -n 2 -P {preparation_workers} bash artifacts/input/prepare_one_ligand.sh "
+        "< artifacts/input/compounds.nul; "
         ": > artifacts/input/ligand_index.txt; "
-        "tail -n +2 artifacts/input/compounds.tsv | while IFS=$'\\t' read -r compound_id smiles; do "
-        "[[ -n \"$compound_id\" && -n \"$smiles\" ]] || continue; "
-        "if ! python artifacts/input/smiles_to_3d.py --smiles \"$smiles\" --name \"$compound_id\" "
-        "--output \"artifacts/ligands/${compound_id}_source.sdf\" >> artifacts/logs/preparation.log 2>&1; then continue; fi; "
-        + scrub_step
-        + "if ! mk_prepare_ligand.py -i \"artifacts/ligands/${compound_id}.sdf\" "
-        "-o \"artifacts/ligands/${compound_id}.pdbqt\" >> artifacts/logs/preparation.log 2>&1; then continue; fi; "
-        "printf '%s\\n' \"artifacts/ligands/${compound_id}.pdbqt\" >> artifacts/input/ligand_index.txt; done; "
+        "while IFS=$'\\t' read -r compound_id smiles; do "
+        "[[ -n \"$compound_id\" ]] || continue; "
+        "if [[ -s \"artifacts/ligands/${compound_id}.pdbqt\" ]]; then "
+        "printf '%s\\n' \"artifacts/ligands/${compound_id}.pdbqt\" >> artifacts/input/ligand_index.txt; fi; "
+        "done < <(tail -n +2 artifacts/input/compounds.tsv); "
+        f"prepared_ligands=$(wc -l < artifacts/input/ligand_index.txt); "
+        f"printf 'Prepared %s of %s compounds using %s CPU workers\\n' \"$prepared_ligands\" {len(staged_compounds)} {preparation_workers} "
+        "> artifacts/logs/preparation.log; "
         "dock_status=0; if [[ -s artifacts/input/ligand_index.txt ]]; then "
         f"udp --receptor artifacts/prepared/receptor.pdbqt --ligand_index artifacts/input/ligand_index.txt "
         f"--config artifacts/input/docking.conf --dir artifacts/poses --search_mode {search_mode} "
