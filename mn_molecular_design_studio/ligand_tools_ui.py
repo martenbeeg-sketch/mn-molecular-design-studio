@@ -685,7 +685,11 @@ def render_setup(
             else:
                 exhaustiveness = int(search_cols[0].number_input("Exhaustiveness", min_value=1, max_value=1024, value=8, step=1, key=f"ligand-{tool_key}-exhaustiveness"))
             num_modes = 9 if is_autodock_gpu else int(search_cols[1].number_input("Poses per compound", min_value=1, max_value=100, value=9, step=1, key=f"ligand-{tool_key}-modes"))
-            compound_limit = int(search_cols[1 if is_autodock_gpu else 2].number_input("Compound limit (0 = all selected)", min_value=0, max_value=5000, value=0, step=10, key=f"ligand-{tool_key}-limit"))
+            compound_limit = int(search_cols[1 if is_autodock_gpu else 2].number_input(
+                "Compound limit (0 = all selected)", min_value=0,
+                max_value=ligand_tools.MAX_COMPOUNDS_PER_LAUNCH if is_unidock else 5000,
+                value=0, step=100 if is_unidock else 10, key=f"ligand-{tool_key}-limit",
+            ))
             cpu_label = "CPU cores / Vina compound workers" if is_vina else "CPU cores"
             cpu_help = (
                 "This is the total CPU allocation. Vina docks up to this many compounds concurrently, using one CPU thread per compound."

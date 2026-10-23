@@ -6,19 +6,22 @@ const format=value=>Number(value).toLocaleString('en-US');
 export function studyInfo(kind, params, nodes){
   const settings=key=>nodes.find(n=>n.data.kind===key)?.data.params||{};
   const docking=settings('active_docking'), decision=settings('active_decision');
-  const batch=docking.batch_size||10000, selection=settings('active_select');
-  const best=Math.round(batch*(selection.predicted_fraction_percent??80)/100);
+  const seed=settings('active_seed'), selection=settings('active_select');
+  const initialBatch=seed.sample_size||10000, batchLimit=Number(docking.batch_size??0);
+  const requestedNext=Math.max(1,Math.floor(initialBatch*(selection.next_round_seed_fraction_percent??50)/100+0.5));
+  const nextBatch=batchLimit>0?Math.min(requestedNext,batchLimit):requestedNext;
+  const best=Math.floor(nextBatch*(selection.predicted_fraction_percent??80)/100+0.5);
   const info={
     active_seed:{eyebrow:'START · FIRST ROUND ONLY',summary:`Random ${format(params.sample_size||10000)} compounds`,detail:'Sample from the centroid library'},
     active_library:{eyebrow:'FULL SCREENING LIBRARY',summary:'SMILES + IDs + 1024-bit fingerprints',detail:'Used for prediction and random exploration'},
     active_target:{eyebrow:'DOCKING INPUT',summary:params.target_pdb?(params.target_name||'Imported receptor and docking box'):'Choose an imported receptor'},
-    active_docking:{eyebrow:'01 · DOCK',summary:params.engine||'UniDock Pro',detail:`${format(batch)} compounds per round · ${docking.worker_nodes?.length?`${docking.worker_nodes.length} computers`:'choose computers'}`},
+    active_docking:{eyebrow:'01 · DOCK',summary:params.engine||'UniDock Pro',detail:`${format(initialBatch)} initial · ${format(nextBatch)} per next round${batchLimit>0?' max':''} · batches of ${format(docking.worker_batch_size||2000)} per computer · ${docking.worker_nodes?.length?`${docking.worker_nodes.length} computers`:'choose computers'}`},
     active_accumulate:{eyebrow:'02 · ACCUMULATE & RANK',summary:'All rounds · best score per source and ID',detail:`Reorder all scores; compare cumulative top ${format(decision.top_n||100)}`},
     active_decision:{eyebrow:'03 · DECISION',summary:`Compare top ${format(params.top_n||100)} scores at each rank`,detail:`Tolerance ${params.score_tolerance??0.05} ${docking.score_units||'score units'} · ${params.stable_rounds||3} stable rounds`},
     active_binder_rule:{eyebrow:'RELABEL EVERY ROUND',summary:`Best ${params.binder_percent_start??10}% → ${params.binder_percent_target??0.01}%`,detail:`Log schedule · ${params.tightening_rounds||10} rounds`},
     active_train:{eyebrow:'04 · LEARN',summary:`1024 bits → 3 × ${format(params.hidden_nodes||3000)} dense nodes`,detail:'Train on accumulated docking results'},
     active_predict:{eyebrow:'05 · PREDICT',summary:'Predict binder probability',detail:'Across the full compound library'},
-    active_select:{eyebrow:'06 · SELECT',summary:`${format(best)} best + ${format(batch-best)} random`,detail:'Both from the same library · exclude already docked IDs'},
+    active_select:{eyebrow:'06 · SELECT',summary:`${format(best)} best + ${format(nextBatch-best)} random`,detail:`${selection.next_round_seed_fraction_percent??50}% of initial centroid sample · exclude docked IDs`},
     active_results:{eyebrow:'FINISH',summary:'Ranked hits · models · iteration history',detail:'Collect the retained poses and final tables'},
   };
   return info[kind]||{};

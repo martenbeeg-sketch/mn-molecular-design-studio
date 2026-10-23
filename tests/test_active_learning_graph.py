@@ -44,6 +44,8 @@ def test_legacy_study_migration_keeps_selected_inputs_settings_and_ids():
         if node["data"]["kind"] == "active_binder_rule":
             node["data"]["params"]["binder_percent_target"] = 0.02
             node["data"]["label"] = "Custom binder schedule"
+        if node["data"]["kind"] == "active_docking":
+            node["data"]["params"]["batch_size"] = 25_000
     before = copy.deepcopy(study)
     migrated = graph.migrate_template_graph(study)
     assert study == before
@@ -67,6 +69,34 @@ def test_canvas_round_trip_preserves_template_version_and_recovers_feedback_flag
     graph.validate_graph(cleaned)
 
 
+def test_old_fixed_round_size_default_migrates_to_later_round_cap():
+    study = graph.new_graph("unidock_active_learning")
+    study["template_version"] = 4
+    docking = next(node for node in study["nodes"] if node["data"]["kind"] == "active_docking")
+    docking["data"]["params"]["batch_size"] = 10_000
+
+    migrated = graph.migrate_template_graph(study)
+
+    assert migrated["template_version"] == 7
+    migrated_docking = next(node["data"]["params"] for node in migrated["nodes"]
+                            if node["data"]["kind"] == "active_docking")
+    assert migrated_docking["batch_size"] == 0
+
+
+def test_v5_default_batch_cap_migrates_to_no_cap():
+    study = graph.new_graph("unidock_active_learning")
+    study["template_version"] = 5
+    docking = next(node for node in study["nodes"] if node["data"]["kind"] == "active_docking")
+    docking["data"]["params"]["batch_size"] = 1_000_000
+
+    migrated = graph.migrate_template_graph(study)
+    migrated_docking = next(node["data"]["params"] for node in migrated["nodes"]
+                            if node["data"]["kind"] == "active_docking")
+
+    assert migrated["template_version"] == 7
+    assert migrated_docking["batch_size"] == 0
+
+
 def test_decision_cannot_bypass_training_prediction_and_selection():
     study = graph.new_graph("unidock_active_learning")
     decision = next(n["id"] for n in study["nodes"] if n["data"]["kind"] == "active_decision")
@@ -83,6 +113,56 @@ def test_binder_percentage_changes_logarithmically_each_round_then_holds_final_v
     assert all(a > b for a, b in zip(percentages, percentages[1:]))
     assert settings.percentile(11) == 0.01
     assert not settings.iteration_limit_reached(1000000)
+
+
+def test_next_docking_round_uses_half_of_the_actual_centroid_seed_sample():
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.active_learning_controller import _next_round_selection_counts
+
+    study = graph.new_graph("unidock_active_learning")
+    selection = next(node["data"]["params"] for node in study["nodes"]
+                     if node["data"]["kind"] == "active_select")
+    docking = next(node["data"]["params"] for node in study["nodes"]
+                   if node["data"]["kind"] == "active_docking")
+    assert selection["next_round_seed_fraction_percent"] == 50
+    assert selection["predicted_fraction_percent"] == 80
+    assert docking["batch_size"] == 0
+    assert docking["worker_batch_size"] == 2_000
+    assert _next_round_selection_counts(
+        initial_seed_count=10_000, remaining_compounds=100_000, max_batch_size=10_000,
+    ) == {"total": 5_000, "predicted": 4_000, "random": 1_000, "target_total": 5_000}
+    assert _next_round_selection_counts(
+        initial_seed_count=1_000_000, remaining_compounds=1_000_000, max_batch_size=1_000_000,
+    ) == {"total": 500_000, "predicted": 400_000, "random": 100_000, "target_total": 500_000}
+    assert _next_round_selection_counts(
+        initial_seed_count=10_000_000, remaining_compounds=10_000_000, max_batch_size=0,
+    ) == {"total": 5_000_000, "predicted": 4_000_000, "random": 1_000_000, "target_total": 5_000_000}
+    assert _next_round_selection_counts(
+        initial_seed_count=10_000, remaining_compounds=100_000, max_batch_size=2_500,
+    ) == {"total": 2_500, "predicted": 2_000, "random": 500, "target_total": 5_000}
+    assert _next_round_selection_counts(
+        initial_seed_count=10_000, remaining_compounds=2_000, max_batch_size=10_000,
+    ) == {"total": 2_000, "predicted": 1_600, "random": 400, "target_total": 5_000}
+
+
+def test_docking_assignments_split_into_supported_launch_sizes():
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.active_learning_controller import _compound_batches
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.ligand_tools import MAX_COMPOUNDS_PER_LAUNCH
+
+    rows = [{"compound_id": str(index)} for index in range(12_001)]
+    batches = _compound_batches(rows, 5_000)
+
+    assert MAX_COMPOUNDS_PER_LAUNCH == 150_000
+    assert [len(batch) for batch in batches] == [5_000, 5_000, 2_001]
+    assert [row["compound_id"] for batch in batches for row in batch] == [str(index) for index in range(12_001)]
+
+
+def test_initial_seed_picker_limit_comes_from_centroid_manifest(tmp_path):
+    from mn_molecular_design_studio.pipeline_node_ui import _centroid_manifest_row_count
+
+    manifest = tmp_path / "centroids.json"
+    manifest.write_text(json.dumps({"row_count": 1_500_000}))
+
+    assert _centroid_manifest_row_count(manifest) == 1_500_000
 
 
 def _source_manifests(tmp_path):

@@ -983,6 +983,11 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
     is_gnina = workflow_id == "ligand.docking.gnina"
     is_unidock = workflow_id == "ligand.docking.unidock_pro"
     is_rosetta = workflow_id == "ligand.docking.rosetta_ligand"
+    compound_limit_max = 5000
+    if is_unidock:
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.ligand_tools import MAX_COMPOUNDS_PER_LAUNCH
+
+        compound_limit_max = MAX_COMPOUNDS_PER_LAUNCH
     rosetta_readiness = None
     if is_rosetta:
         from mn_molecular_design_studio.engine.workflow_engine.workflows import ligand_tools
@@ -1304,7 +1309,8 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
                             key=f"ligand-{tool_key}-num-modes",
                             help="Maximum binding modes to return. This does not increase search effort, and the engine may return fewer.",
                         ))
-                        limit = int(cols[2].number_input("Compound limit (0 = all selected)", value=0, min_value=0, max_value=5000, key=f"ligand-{tool_key}-compound-limit"))
+                        limit = int(cols[2].number_input("Compound limit (0 = all selected)", value=0, min_value=0,
+                                                         max_value=compound_limit_max, key=f"ligand-{tool_key}-compound-limit"))
                         cores = int(cols[3].number_input("CPU cores", value=4, min_value=1, max_value=256, key=f"ligand-{tool_key}-cpu-cores"))
                         gpu_device = st.text_input("GPU device", value="0", key=f"ligand-{tool_key}-gpu", help="Use a device ID such as 0.") if (is_gnina or is_unidock) else "none"
                     seed = int(st.number_input("Random seed", value=42, min_value=1, max_value=2_147_483_646, key=f"ligand-{tool_key}-seed"))

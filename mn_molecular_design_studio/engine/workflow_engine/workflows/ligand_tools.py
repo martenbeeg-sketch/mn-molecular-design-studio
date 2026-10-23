@@ -35,7 +35,8 @@ from mn_molecular_design_studio.engine.workflow_engine.runtime import reference_
 from mn_molecular_design_studio import ligand_compounds
 
 
-_MAX_COMPOUNDS_PER_LAUNCH = 5_000
+MAX_COMPOUNDS_PER_LAUNCH = 150_000
+_MAX_COMPOUNDS_PER_LAUNCH = MAX_COMPOUNDS_PER_LAUNCH
 _LDDM_CHECKPOINT = "generation/lddm/lddm_CDBB.ckpt"
 _POCKETXMOL_CHECKPOINT = "generation/pocketxmol/data/trained_models/pxm_use/checkpoints/pocketxmol.ckpt"
 _POCKETXMOL_CONFIG = "generation/pocketxmol/data/trained_models/pxm_use/train_config/train.yml"

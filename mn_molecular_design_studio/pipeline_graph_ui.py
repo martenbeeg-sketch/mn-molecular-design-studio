@@ -161,6 +161,14 @@ def _render_active_centroids(params, key):
     centroid_path = st.selectbox("Centroid preparation", centroid_paths,
         index=centroid_paths.index(current_centroid), format_func=lambda value: centroid_labels[value],
         key=key + "-centroids")
+    # The initial sample-size widget is rendered after this input. Clear its
+    # cached value when the user switches centroid sets so a value larger than
+    # the newly selected set cannot remain in Streamlit's widget state.
+    sample_widget_key = key + "-sample_size"
+    selected_manifest_key = key + "-selected-centroid-manifest"
+    if st.session_state.get(selected_manifest_key) != centroid_path:
+        st.session_state.pop(sample_widget_key, None)
+        st.session_state[selected_manifest_key] = centroid_path
     st.caption("This centroid source can differ from the compound database used for prediction. Both must use compatible fingerprint settings.")
     return {"library_id": selected_id, "centroid_manifest": centroid_path}
 

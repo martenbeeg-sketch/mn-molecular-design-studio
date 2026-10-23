@@ -358,6 +358,7 @@ def _centroid_seed_inputs(library_id: str, centroid_manifest: Path, *, sample_si
 
 def validate_library_seed_dock_request(parameters, *, require_files=True):
     import math
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.ligand_tools import MAX_COMPOUNDS_PER_LAUNCH
 
     library_id = parameters.get("library_id")
     centroid_manifest = parameters.get("centroid_manifest")
@@ -365,8 +366,8 @@ def validate_library_seed_dock_request(parameters, *, require_files=True):
         raise ValueError("Select a registered external library.")
     if not centroid_manifest:
         raise ValueError("Select a completed centroid set for this library.")
-    if type(parameters.get("sample_size")) is not int or not 1 <= parameters["sample_size"] <= 5000:
-        raise ValueError("Choose between 1 and 5,000 centroid compounds for one Uni-Dock Pro launch.")
+    if type(parameters.get("sample_size")) is not int or not 1 <= parameters["sample_size"] <= MAX_COMPOUNDS_PER_LAUNCH:
+        raise ValueError(f"Choose between 1 and {MAX_COMPOUNDS_PER_LAUNCH:,} centroid compounds for one Uni-Dock Pro launch.")
     if type(parameters.get("sampling_seed", 0)) is not int or parameters.get("sampling_seed", 0) < 0:
         raise ValueError("The sampling seed must be a nonnegative integer.")
     if type(parameters.get("seed", 42)) is not int or not 1 <= parameters.get("seed", 42) <= 2_147_483_646:

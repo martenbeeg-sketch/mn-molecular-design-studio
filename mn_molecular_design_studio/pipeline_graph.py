@@ -167,20 +167,22 @@ NODE_CATALOG.update({
     "active_seed": _spec("active_seed", "Random centroid seed", "Active learning", "Choose a registered centroid dataset and dock a reproducible random sample for the first training round. This source can differ from the full screening library; fingerprint settings must be compatible.", output=_ACTIVE_STATE, color="#3985a7", fields=[
         field("library_id", "Centroid source library ID", "", kind="text", section="basic"),
         field("centroid_manifest", "Centroid manifest", "", kind="text", section="basic"),
-        field("sample_size", "Initial compounds", 10000, minimum=1, maximum=1000000, section="basic"),
+        field("sample_size", "Initial compounds", 10000, minimum=1, section="basic"),
         field("sampling_seed", "Sampling seed", 42, minimum=0, maximum=2147483647, section="basic"),
     ]),
-    "active_docking": _spec("active_docking", "Docking", "Active learning", "Dock each selected round with the chosen engine, splitting the round across selected Studio computers. UniDock Pro in normal mode is the initial configuration.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#427f68", fields=[
+    "active_docking": _spec("active_docking", "Docking", "Active learning", "Dock each selected round with the chosen engine, splitting the round across selected Studio computers. The initial centroid sample sets the first round size; the selection node sets later round sizes.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#427f68", fields=[
         field("engine", "Docking engine", "UniDock Pro", kind="select", options=["UniDock Pro"], section="basic",
               help="The active-learning controller currently connects UniDock Pro. Other engines need their score and output adapters before they can run in this loop."),
         field("score_field", "Score field", "vina_score", kind="text", section="basic"),
         field("score_units", "Score units", "kcal/mol", kind="text", section="basic", help="Declare the units for the selected scoring function, or use unitless."),
         field("score_direction", "Score ranking", "Lower is better", kind="select", options=["Lower is better", "Higher is better"], section="basic"),
-        field("batch_size", "Compounds per round", 10000, minimum=1, maximum=1000000, section="basic",
-              help="The round is divided evenly across computers. UniDock Pro allows up to 100,000 compounds in one scheduled worker run."),
+        field("batch_size", "Maximum compounds in later rounds (0 = no cap)", 0, minimum=0, section="basic",
+              help="Optional cap for active-selection batches after the first round. By default, later rounds use the configured percentage of the initial centroid sample. Large rounds are split into UniDock Pro-sized launches on each selected computer."),
+        field("worker_batch_size", "Compounds per computer launch", 2000, minimum=1, maximum=150000, section="basic",
+              help="Each selected computer docks batches of this size in its scheduled UniDock Pro jobs. Preparation and docking run on that computer. Increase this based on available GPU memory and measured throughput; the Studio adapter supports up to 150,000 compounds per launch."),
         field("search_mode", "UniDock Pro search", "balance", kind="select", options=["fast", "balance", "detail"], section="basic"),
         field("num_modes", "Docking poses retained per compound during scoring", 1, minimum=1, maximum=20, section="basic"),
-        field("worker_nodes", "Compute computers", [], kind="json", section="basic", help="Select the organizer and any available compute computers. One scheduled docking worker runs on each selected computer."),
+        field("worker_nodes", "Compute computers", [], kind="json", section="basic", help="Select the organizer and available compute computers. Their UniDock Pro batches run in parallel through each computer's Studio scheduler."),
         field("ssh_user", "SSH user", "compute", kind="text", section="basic"),
     ]),
     "active_accumulate": _spec("active_accumulate", "Accumulate docking results", "Active learning", "Merge every completed docking round, keep the best configured score per source library and stable compound ID, and sort the cumulative table using the docking node's ranking direction. Source namespaces preserve distinct compounds when two libraries reuse an ID. Snapshot the top ranks for comparison with the previous cumulative ranking. Keep poses only for the best-ranked compounds.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#668d75", fields=[
@@ -200,7 +202,8 @@ NODE_CATALOG.update({
     "active_predict": _spec("active_predict", "Predict compound library", "Active learning", "Stream through the registered fingerprint shards and write only compound ID plus model probability; do not copy the whole library into Studio's molecule database.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#8268a2", fields=[
         field("prediction_batch_size", "Prediction batch size", 10000, minimum=1, maximum=100000, section="basic"),
     ]),
-    "active_select": _spec("active_select", "Select predicted hits and random compounds", "Active learning", "Select high-probability undocked compounds plus a uniform random exploration sample from the remaining external library.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#8268a2", fields=[
+    "active_select": _spec("active_select", "Select predicted hits and random compounds", "Active learning", "Select high-probability undocked compounds plus a uniform random exploration sample from the remaining external library. The combined next-round batch is a percentage of the actual initial centroid sample.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#8268a2", fields=[
+        field("next_round_seed_fraction_percent", "Next-round batch (% of initial centroid sample)", 50.0, minimum=1, maximum=100, section="basic"),
         field("predicted_fraction_percent", "Next round from top predictions (%)", 80.0, minimum=0, maximum=100, section="basic"),
     ]),
     "active_decision": _spec("active_decision", "Stopping decision", "Active learning", "After accumulating and reordering all docking rounds, compare the top N cumulative scores with the previous round's cumulative top N. Compare the score at each rank using the score units declared by the docking node. Stop after the selected number of stable comparisons, when the library is exhausted, or at the optional iteration limit.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#bd8d42", fields=[
@@ -606,7 +609,7 @@ def _cofold_model_kinds(task_type: str) -> list[str]:
     ]
 
 
-ACTIVE_LEARNING_TEMPLATE_VERSION = 4
+ACTIVE_LEARNING_TEMPLATE_VERSION = 7
 ACTIVE_LEARNING_LAYOUT = {
     "active_seed": {"x": 80, "y": 40, "width": 320, "height": 150},
     "active_library": {"x": 760, "y": 40, "width": 320, "height": 150},
@@ -1040,6 +1043,16 @@ def migrate_template_graph(graph: dict[str, Any]) -> dict[str, Any]:
         if not seed["data"]["params"].get("centroid_manifest") and library.get("centroid_manifest"):
             seed["data"]["params"]["centroid_manifest"] = library["centroid_manifest"]
             seed["data"]["params"]["library_id"] = library.get("library_id", "")
+        docking_params = next(node for node in migrated["nodes"]
+                              if node["data"]["kind"] == "active_docking")["data"]["params"]
+        template_version = int(graph.get("template_version") or 1)
+        if template_version < 5 and docking_params.get("batch_size") == 10_000:
+            # Before v5 this was the fixed batch size for every round.
+            docking_params["batch_size"] = 0
+        elif template_version < 6 and docking_params.get("batch_size") == 1_000_000:
+            # v5 introduced a default cap. Keep user-selected smaller caps,
+            # but remove the old default so rounds follow the centroid sample.
+            docking_params["batch_size"] = 0
         ids = {}
         for reference in canonical["nodes"]:
             node = next(n for n in migrated["nodes"] if n["data"]["kind"] == reference["data"]["kind"])

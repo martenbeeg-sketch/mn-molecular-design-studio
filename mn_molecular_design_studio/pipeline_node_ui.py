@@ -209,6 +209,18 @@ def _render_field(field, values, key):
     return st.text_input(label, value=str(value), **kwargs)
 
 
+def _centroid_manifest_row_count(path):
+    """Return the available centroid rows for the active-learning seed input."""
+    if not path:
+        return None
+    try:
+        manifest = json.loads(Path(str(path)).read_text(encoding="utf-8"))
+        count = int(manifest.get("row_count"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    return count if count >= 0 else None
+
+
 def render_node_form(node, graph, *, key, render_input, owner_id):
     kind = node["data"]["kind"]
     spec = NODE_CATALOG[kind]
@@ -292,6 +304,20 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                     values.update(contexts[node["id"]])
             for field_spec in spec["fields"]:
                 if field_spec["name"] in {"sample_size", "sampling_seed"}:
+                    if field_spec["name"] == "sample_size":
+                        centroid_count = _centroid_manifest_row_count(values.get("centroid_manifest"))
+                        if centroid_count is not None:
+                            if centroid_count < 1:
+                                st.error("The selected centroid dataset contains no compounds.")
+                                ready = False
+                                continue
+                            maximum = min(int(field_spec.get("max", centroid_count)), centroid_count)
+                            current = int(values.get("sample_size") or field_spec["default"])
+                            values["sample_size"] = min(max(current, int(field_spec["min"])), maximum)
+                            st.caption(f"Selected centroid set: {centroid_count:,} compounds. The initial docking sample cannot exceed this count.")
+                            bounded_field = {**field_spec, "max": maximum}
+                            values[field_spec["name"]] = _render_field(bounded_field, values, key)
+                            continue
                     values[field_spec["name"]] = _render_field(field_spec, values, key)
         elif kind == "active_target":
             with st.container(border=True):
@@ -314,7 +340,7 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                 profile = ("total_score", "REU") if values["engine"] == "RosettaLigand" else ("binding_energy", "kcal/mol") if values["engine"] == "AutoDock-GPU" else ("vina_score", "kcal/mol")
                 values.update(score_field=profile[0], score_units=profile[1], score_direction="Lower is better")
             gpu_engine = values["engine"] in {"UniDock Pro", "GNINA", "AutoDock-GPU"}
-            st.caption("One docking worker is scheduled per selected computer. Each round is divided across them; the organizer gathers scores and retained poses when the round completes.")
+            st.caption("Selected computers process their UniDock Pro batches in parallel. Each computer uses its Studio scheduler; the organizer gathers scores and retained poses when the round completes.")
             machines = []
             try:
                 from mn_molecular_design_studio.cluster.store import Store

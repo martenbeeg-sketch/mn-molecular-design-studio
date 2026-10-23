@@ -31,6 +31,35 @@ def _node_by_kind(graph: dict) -> dict[str, dict]:
     return {str(node["data"]["kind"]): node for node in graph["nodes"]}
 
 
+def _next_round_selection_counts(*, initial_seed_count: int, remaining_compounds: int,
+                                 max_batch_size: int, seed_fraction_percent: float = 50.0,
+                                 predicted_fraction_percent: float = 80.0) -> dict[str, int]:
+    """Size a later docking batch relative to the actual initial centroid sample."""
+    if initial_seed_count < 1:
+        raise ValueError("The initial centroid sample must contain at least one compound.")
+    if not 1 <= float(seed_fraction_percent) <= 100:
+        raise ValueError("The next-round fraction of the initial centroid sample must be between 1 and 100 percent.")
+    if not 0 <= float(predicted_fraction_percent) <= 100:
+        raise ValueError("The predicted-compound fraction must be between 0 and 100 percent.")
+    if max_batch_size < 0:
+        raise ValueError("The maximum docking batch size cannot be negative.")
+
+    target_count = max(1, int(math.floor(initial_seed_count * float(seed_fraction_percent) / 100.0 + 0.5)))
+    total = min(target_count, max(0, int(remaining_compounds)))
+    if max_batch_size:
+        total = min(total, int(max_batch_size))
+    predicted = int(math.floor(total * float(predicted_fraction_percent) / 100.0 + 0.5))
+    return {"total": total, "predicted": predicted, "random": total - predicted,
+            "target_total": target_count}
+
+
+def _compound_batches(rows: list[dict], batch_size: int) -> list[list[dict]]:
+    """Split one computer's assignments into launches accepted by the docking adapter."""
+    if batch_size < 1:
+        raise ValueError("A docking launch must contain at least one compound.")
+    return [rows[start:start + batch_size] for start in range(0, len(rows), batch_size)]
+
+
 def _write_graph_state(path: Path, state: dict, *, node: str | None = None,
                        status: str | None = None, **values) -> None:
     if node is not None:
@@ -393,21 +422,23 @@ def _cleanup_docking_artifacts(worker_runs: list[dict], *, ssh_user: str) -> Non
     """Keep scores and job records, and prune bulky per-ligand work after pose retention."""
     from mn_molecular_design_studio.cluster.distributed_library import _HOST
     for item in worker_runs:
-        run_dir = str(item.get("run_dir") or "")
-        if not run_dir:
-            continue
         host = str(item.get("host") or "")
-        bulky = [f"{run_dir}/artifacts/{name}" for name in ("poses", "ligands", "prepared")]
-        if host:
-            if not _HOST.fullmatch(host):
+        run_dirs = item.get("run_dirs") or [item.get("run_dir")]
+        for run_dir in run_dirs:
+            run_dir = str(run_dir or "")
+            if not run_dir:
                 continue
-            cleanup = shlex.join(["rm", "-rf", "--", *bulky])
-            subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-                            f"{ssh_user}@{host}", "bash -lc " + shlex.quote(cleanup)],
-                           check=False, capture_output=True, text=True, timeout=30)
-        else:
-            for path in bulky:
-                shutil.rmtree(path, ignore_errors=True)
+            bulky = [f"{run_dir}/artifacts/{name}" for name in ("poses", "ligands", "prepared")]
+            if host:
+                if not _HOST.fullmatch(host):
+                    continue
+                cleanup = shlex.join(["rm", "-rf", "--", *bulky])
+                subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                                f"{ssh_user}@{host}", "bash -lc " + shlex.quote(cleanup)],
+                               check=False, capture_output=True, text=True, timeout=30)
+            else:
+                for path in bulky:
+                    shutil.rmtree(path, ignore_errors=True)
 
 
 def _queue_model_step(*, campaign: Path, feature_manifest: Path, database: Path,
@@ -515,7 +546,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
         tightening_rounds=int(params["active_binder_rule"].get("tightening_rounds", 10)),
         max_iterations=int(params["active_decision"].get("max_iterations", 0)),
     )
-    batch_size = int(docking.get("batch_size") or 10_000)
+    batch_size = int(docking.get("batch_size") or 0)
     top_n = int(params["active_decision"].get("top_n") or 100)
     stable_limit = int(params["active_decision"].get("stable_rounds") or 3)
     tolerance = float(params["active_decision"].get("score_tolerance") or 0.0)
@@ -524,6 +555,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
     direction = str(docking.get("score_direction") or "Lower is better")
     retain_poses = int(params["active_accumulate"].get("retained_pose_count") or 0)
     selection_node = params["active_select"]
+    seed_fraction_percent = float(selection_node.get("next_round_seed_fraction_percent", 50.0))
     predicted_fraction = float(selection_node.get("predicted_fraction_percent", 80.0)) / 100.0
     training_settings = params["active_train"]
     prediction_settings = params["active_predict"]
@@ -534,6 +566,8 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
     state = read_json(state_path) or {"schema_version": "studio.active-learning-state.v1", "rounds": [],
                                       "docking_runs": [], "stable_rounds": 0, "previous_top_scores": None}
     state.setdefault("docking_runs", [])
+    state.setdefault("initial_seed_count", len(features["seed_sample"]))
+    initial_seed_count = int(state["initial_seed_count"])
     score_db = _score_database(data_root / "scores.sqlite3")
     graph_state_path = campaign / "graph_execution.json"
     graph_state = read_json(graph_state_path) or {"graph_id": graph["id"], "template_id": graph["template_id"], "nodes": {}}
@@ -566,6 +600,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
             sample_seed = int(seed_node.get("sampling_seed") or 0)
             phase(nodes["active_seed"]["id"], "Sampling the centroid source")
             seed_rows = features["seed_sample"]
+            state["initial_seed_count"] = initial_seed_count = len(seed_rows)
             selection = rounds_dir / "round-0001-selection.parquet"
             _write_selection_table(selection, seed_rows, str(seed_node["library_id"]), reason="centroid_seed")
             state["pending_round"] = {"number": 1, "selection_path": str(selection), "selection_kind": "centroid_seed"}
@@ -663,13 +698,20 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
             phase(nodes["active_train"]["id"], f"Training the OpenVS-style model after round {round_number}",
                   round_number=round_number, status="running")
             next_round = round_number + 1
-            remaining = min(batch_size, max(0, screening_count - tested_screening_count))
+            selection_counts = _next_round_selection_counts(
+                initial_seed_count=initial_seed_count,
+                remaining_compounds=screening_count - tested_screening_count,
+                max_batch_size=batch_size,
+                seed_fraction_percent=seed_fraction_percent,
+                predicted_fraction_percent=predicted_fraction * 100.0,
+            )
+            remaining = selection_counts["total"]
             if remaining <= 0:
                 state["stop_reason"] = "screening_library_exhausted"
                 checkpoint()
                 break
-            predicted_count = int(round(remaining * predicted_fraction))
-            random_count = remaining - predicted_count
+            predicted_count = selection_counts["predicted"]
+            random_count = selection_counts["random"]
             model_run, next_selection = _queue_model_step(
                 campaign=campaign, feature_manifest=features["feature_manifest_path"],
                 database=data_root / "scores.sqlite3", settings={**training_settings, **prediction_settings},
@@ -704,7 +746,9 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
             checkpoint()
             phase(nodes["active_select"]["id"], f"Selected {len(selected_rows):,} compounds for round {next_round}",
                   status="completed", round_number=next_round, predicted_count=predicted_count,
-                  random_count=random_count, model_job_code=read_json(model_run / "metadata.json").get("job_code"),
+                  random_count=random_count, target_batch_count=selection_counts["target_total"],
+                  initial_seed_count=initial_seed_count, seed_fraction_percent=seed_fraction_percent,
+                  model_job_code=read_json(model_run / "metadata.json").get("job_code"),
                   worker_nodes=[model_worker])
 
         ranked = _ranked_rows(score_db, direction)
@@ -791,84 +835,102 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
     import pyarrow as pa
     import pyarrow.parquet as pq
     from mn_molecular_design_studio import ligand_compounds
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.ligand_tools import MAX_COMPOUNDS_PER_LAUNCH
 
     if not rows:
         return []
-    per_worker = math.ceil(len(rows) / len(workers))
-    if per_worker > 100_000:
-        raise ValueError(
-            f"This UniDock Pro adapter accepts at most 100,000 compounds per scheduled worker. "
-            f"This round would assign up to {per_worker:,} to one computer; lower the round size or select more computers."
-        )
+    if not workers:
+        raise ValueError("Select at least one computer for docking.")
+    launch_batch_size = int(docking.get("worker_batch_size") or 2_000)
+    if not 1 <= launch_batch_size <= MAX_COMPOUNDS_PER_LAUNCH:
+        raise ValueError(f"Each computer's UniDock Pro batch must be between 1 and {MAX_COMPOUNDS_PER_LAUNCH:,} compounds.")
     random = np.random.default_rng(int(docking.get("sampling_seed") or 42) + round_number)
     assignments = [[] for _ in workers]
     indexes = random.permutation(len(rows))
     for rank, row_index in enumerate(indexes):
         assignments[rank % len(workers)].append(rows[int(row_index)])
     request_info = []
+    marker = read_json(campaign / "molecular_design_studio.json")
+    schema = pa.schema([("engine_id", pa.string()), ("library_id", pa.string()), ("compound_key", pa.uint64()),
+                        ("compound_id", pa.string()), ("compound_name", pa.string()), ("smiles", pa.string()),
+                        ("fingerprint", pa.binary(_PACKED_FINGERPRINT_BYTES)), ("selection_reason", pa.string()),
+                        ("predicted_probability", pa.float64())])
     for worker_index, (worker, selected) in enumerate(zip(workers, assignments)):
         if not selected:
             continue
-        node_directory = work_directory / f"worker-{worker_index:02d}"
-        node_directory.mkdir(parents=True, exist_ok=True)
-        compounds, mapping = [], {}
-        for index, row in enumerate(selected, start=1):
-            engine_id = f"L{index:07d}"
-            mapping[engine_id] = row
-            compounds.append({"compound_id": engine_id, "compound_name": str(row.get("compound_name") or row["compound_id"]),
-                              "smiles": str(row["source_smiles"] if "source_smiles" in row else row["smiles"])})
-        compound_file = node_directory / "compounds.json"
-        marker = read_json(campaign / "molecular_design_studio.json")
-        ligand_compounds.write_compound_set(compound_file, name=f"Active-learning round {round_number} · {worker['node_name']}",
-                                             compounds=compounds, owner_id=str(marker.get("studio_owner_id") or ""),
-                                             project_id=str(marker.get("project_id") or ""), created_at=utc_now())
-        rows_file = node_directory / "selection.parquet"
-        schema = pa.schema([("engine_id", pa.string()), ("library_id", pa.string()), ("compound_key", pa.uint64()),
-                            ("compound_id", pa.string()), ("compound_name", pa.string()), ("smiles", pa.string()),
-                            ("fingerprint", pa.binary(_PACKED_FINGERPRINT_BYTES)), ("selection_reason", pa.string()),
-                            ("predicted_probability", pa.float64())])
-        table_rows = []
-        for engine_id, row in mapping.items():
-            table_rows.append({"engine_id": engine_id, "library_id": row["library_id"], "compound_key": int(row["compound_key"]),
-                               "compound_id": str(row["compound_id"]), "compound_name": str(row.get("compound_name") or row["compound_id"]),
-                               "smiles": str(row.get("source_smiles") or row.get("smiles") or ""),
-                               "fingerprint": bytes(row["fingerprint"]), "selection_reason": str(row.get("selection_reason") or "centroid_seed"),
-                               "predicted_probability": row.get("predicted_probability")})
-        pq.write_table(pa.Table.from_pylist(table_rows, schema=schema), rows_file, compression="zstd")
-        parameters = _docking_params(docking, target, compound_file, round_number=round_number,
-                                     worker=worker, limit=len(selected))
-        request_info.append((worker, selected, mapping, {
-            "schema_version": _DOCKING_WORKER_SCHEMA, "round_number": round_number,
-            "local_work_dir": str(node_directory),
-            "parameters": parameters, "owner_id": owner_id, "project_id": project_id,
-        }))
+        batches = []
+        for batch_index, batch_rows in enumerate(_compound_batches(selected, launch_batch_size), start=1):
+            node_directory = work_directory / f"worker-{worker_index:02d}" / f"batch-{batch_index:04d}"
+            node_directory.mkdir(parents=True, exist_ok=True)
+            compounds, mapping = [], {}
+            for index, row in enumerate(batch_rows, start=1):
+                engine_id = f"L{index:07d}"
+                mapping[engine_id] = row
+                compounds.append({"compound_id": engine_id, "compound_name": str(row.get("compound_name") or row["compound_id"]),
+                                  "smiles": str(row["source_smiles"] if "source_smiles" in row else row["smiles"])})
+            compound_file = node_directory / "compounds.json"
+            ligand_compounds.write_compound_set(compound_file,
+                name=f"Active-learning round {round_number} · {worker['node_name']} · batch {batch_index}",
+                compounds=compounds, owner_id=str(marker.get("studio_owner_id") or ""),
+                project_id=str(marker.get("project_id") or ""), created_at=utc_now())
+            rows_file = node_directory / "selection.parquet"
+            table_rows = [{"engine_id": engine_id, "library_id": row["library_id"], "compound_key": int(row["compound_key"]),
+                           "compound_id": str(row["compound_id"]), "compound_name": str(row.get("compound_name") or row["compound_id"]),
+                           "smiles": str(row.get("source_smiles") or row.get("smiles") or ""),
+                           "fingerprint": bytes(row["fingerprint"]), "selection_reason": str(row.get("selection_reason") or "centroid_seed"),
+                           "predicted_probability": row.get("predicted_probability")}
+                          for engine_id, row in mapping.items()]
+            pq.write_table(pa.Table.from_pylist(table_rows, schema=schema), rows_file, compression="zstd")
+            parameters = _docking_params(docking, target, compound_file, round_number=round_number,
+                                         worker=worker, limit=len(batch_rows))
+            request = {"schema_version": _DOCKING_WORKER_SCHEMA, "round_number": round_number,
+                       "local_work_dir": str(node_directory), "parameters": parameters,
+                       "owner_id": owner_id, "project_id": project_id}
+            batches.append((mapping, request))
+        request_info.append((worker, batches))
 
     results = []
     errors = []
     status_by_worker = {worker["node_id"]: {"node_id": worker["node_id"], "name": worker["node_name"],
-        "cpu_cores": worker["cpu_cores"], "gpu_device": worker["gpu_device"], "status": "queued"}
-        for worker, _selected, _mapping, _request in request_info}
+        "cpu_cores": worker["cpu_cores"], "gpu_device": worker["gpu_device"], "status": "queued",
+        "batch_count": len(batches), "completed_batches": 0, "scored_count": 0}
+        for worker, batches in request_info}
 
     def publish_progress():
         if worker_progress:
             worker_progress([dict(item) for item in status_by_worker.values()])
 
+    def run_worker_batches(worker, batches):
+        worker_rows = []
+        child_runs = []
+        for batch_index, (mapping, request) in enumerate(batches, start=1):
+            if cancel_check():
+                raise RuntimeError("Active-learning campaign was cancelled before this docking batch.")
+            status_by_worker[worker["node_id"]].update(status="running", current_batch=batch_index)
+            publish_progress()
+            job_result = _dispatch_docking_shard(request=request, worker=worker,
+                campaign=campaign, ssh_user=ssh_user, cancel_check=cancel_check)
+            if job_result.get("status") != "completed":
+                raise RuntimeError(f"Docking batch {batch_index}/{len(batches)} finished as {job_result.get('status')}.")
+            score_rows = _read_worker_scores(job_result, mapping)
+            worker_rows.extend(score_rows)
+            child_runs.append({"job_code": job_result.get("job_code"),
+                               "run_dir": job_result.get("worker_run_dir") or job_result.get("run_dir"),
+                               "host": job_result.get("host", "")})
+            status_by_worker[worker["node_id"]].update(completed_batches=batch_index,
+                scored_count=len(worker_rows), job_code=job_result.get("job_code"))
+            publish_progress()
+        return worker_rows, child_runs
+
     with ThreadPoolExecutor(max_workers=max(1, len(request_info))) as pool:
-        futures = {pool.submit(_dispatch_docking_shard, request=request, worker=worker,
-                               campaign=campaign, ssh_user=ssh_user, cancel_check=cancel_check):
-                   (worker, mapping) for worker, _selected, mapping, request in request_info}
+        futures = {pool.submit(run_worker_batches, worker, batches): worker
+                   for worker, batches in request_info}
         for future in as_completed(futures):
-            worker, mapping = futures[future]
+            worker = futures[future]
             try:
-                job_result = future.result()
-                if job_result.get("status") != "completed":
-                    raise RuntimeError(f"Docking on {worker['node_name']} finished as {job_result.get('status')}.")
-                score_rows = _read_worker_scores(job_result, mapping)
-                job_result["scored_count"] = len(score_rows)
-                job_result["worker_summary"] = True
+                score_rows, child_runs = future.result()
                 status_by_worker[worker["node_id"]].update(
-                    status="completed", job_code=job_result.get("job_code"),
-                    run_dir=job_result.get("worker_run_dir"), host=job_result.get("host", ""),
+                    status="completed", child_runs=child_runs,
                     scored_count=len(score_rows),
                 )
                 results.extend(score_rows)
@@ -915,7 +977,13 @@ def _summarize_round_workers(rows: list[dict]) -> list[dict]:
         item = grouped.setdefault(row["worker_node_id"], {"node_id": row["worker_node_id"],
             "name": row["worker_node_name"], "job_code": row.get("worker_job_code"),
             "host": row.get("worker_host"), "run_dir": row.get("worker_run_dir"),
-            "cpu_cores": row.get("worker_cpu_cores"), "gpu_device": row.get("worker_gpu_device"), "scored_count": 0})
+            "run_dirs": [], "job_codes": [], "cpu_cores": row.get("worker_cpu_cores"),
+            "gpu_device": row.get("worker_gpu_device"), "scored_count": 0})
+        run_dir, job_code = row.get("worker_run_dir"), row.get("worker_job_code")
+        if run_dir and run_dir not in item["run_dirs"]:
+            item["run_dirs"].append(run_dir)
+        if job_code and job_code not in item["job_codes"]:
+            item["job_codes"].append(job_code)
         item["scored_count"] += 1
     return list(grouped.values())
 
