@@ -4,9 +4,11 @@ from mn_molecular_design_studio.engine.workflow_engine.workflows.active_learning
     _count_library_compounds,
     _persist_round_failures,
     _persist_round_scores,
+    _read_selection_table,
     _read_worker_scores,
     _score_database,
     _summarize_round_workers,
+    _write_selection_table,
 )
 
 
@@ -68,3 +70,19 @@ def test_failure_rows_are_counted_but_never_used_as_docking_labels(tmp_path):
     assert db.execute("SELECT COUNT(*) FROM failed_compounds").fetchone()[0] == 0
     assert db.execute("SELECT COUNT(*) FROM compounds").fetchone()[0] == 2
     db.close()
+
+
+def test_selection_table_preserves_predicted_and_random_reasons(tmp_path):
+    rows = [
+        {**_compound(1, "predicted-1"), "selection_reason": "predicted_hit",
+         "predicted_probability": 0.99},
+        {**_compound(2, "random-1"), "selection_reason": "random_exploration",
+         "predicted_probability": None},
+    ]
+    selection_path = tmp_path / "selected.parquet"
+
+    _write_selection_table(selection_path, rows, "screening-library", reason="model_selected")
+
+    saved_rows = _read_selection_table(selection_path)
+    assert [row["selection_reason"] for row in saved_rows] == ["predicted_hit", "random_exploration"]
+    assert [row["predicted_probability"] for row in saved_rows] == [0.99, None]

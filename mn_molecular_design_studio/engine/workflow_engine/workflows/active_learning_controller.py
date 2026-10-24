@@ -689,6 +689,8 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
             selection = rounds_dir / "round-0001-selection.parquet"
             _write_selection_table(selection, seed_rows, str(seed_node["library_id"]), reason="centroid_seed")
             state["pending_round"] = {"number": 1, "selection_path": str(selection), "selection_kind": "centroid_seed"}
+            phase(nodes["active_seed"]["id"], f"Selected {len(seed_rows):,} centroid seed compounds",
+                  status="completed", selection_count=len(seed_rows))
             checkpoint()
 
         previous_top = state.get("previous_top_scores")
@@ -1063,7 +1065,8 @@ def _write_selection_table(path: Path, rows: list[dict], library_id: str, *, rea
                              "compound_id": str(row["compound_id"]),
                              "compound_name": str(row.get("compound_name") or row["compound_id"]),
                              "source_smiles": smiles, "smiles": smiles,
-                             "fingerprint": bytes(row["fingerprint"]), "selection_reason": reason,
+                             "fingerprint": bytes(row["fingerprint"]),
+                             "selection_reason": str(row.get("selection_reason") or reason),
                              "predicted_probability": row.get("predicted_probability")})
     pq.write_table(pa.Table.from_pylist(materialized, schema=schema), path, compression="zstd")
 
