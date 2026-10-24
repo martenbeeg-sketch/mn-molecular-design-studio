@@ -116,6 +116,56 @@ def _sample_candidates(files, budget, seed, destination):
     return sum(quotas), selected_population, quotas
 
 
+def _shuffle_resources(requested_threads):
+    """Choose a bounded DuckDB memory budget and matching sort parallelism.
+
+    The randomization query is external-sort capable, but too many concurrent
+    sort threads can exhaust a small per-job DuckDB memory cap before spilling.
+    Use available host/cgroup memory, cap the sort at 64 GiB, and scale its
+    thread count to the selected memory budget.
+    """
+    import os
+
+    available = None
+    try:
+        with open("/proc/meminfo", encoding="ascii") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    available = int(line.split()[1]) * 1024
+                    break
+    except (OSError, ValueError):
+        pass
+    if available is None:
+        try:
+            available = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_AVPHYS_PAGES")
+        except (AttributeError, OSError, ValueError):
+            available = 8 * 1024**3
+
+    # Respect cgroup v2 or v1 limits when Studio runs inside a container.
+    for limit_path, current_path in (
+        ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),
+        ("/sys/fs/cgroup/memory/memory.limit_in_bytes",
+         "/sys/fs/cgroup/memory/memory.usage_in_bytes"),
+    ):
+        try:
+            raw_limit = Path(limit_path).read_text(encoding="ascii").strip()
+            if raw_limit == "max":
+                continue
+            limit = int(raw_limit)
+            if 0 < limit < 1 << 60:
+                current = int(Path(current_path).read_text(encoding="ascii").strip())
+                available = min(available, max(0, limit - current))
+        except (OSError, ValueError):
+            continue
+
+    minimum = 512 * 1024**2
+    if available < minimum:
+        raise MemoryError("At least 512 MiB of available memory is required to randomize this library.")
+    memory_bytes = min(64 * 1024**3, int(available * 0.70))
+    threads = min(requested_threads, max(1, memory_bytes // (1024**3)))
+    return max(1, int(threads)), memory_bytes
+
+
 def _shuffle_chunks(files, sizes, directory, *, seed, cpu_cores, fingerprint_bytes, progress):
     """An external sort makes globally randomized, exactly balanced chunks.
 
@@ -140,8 +190,10 @@ def _shuffle_chunks(files, sizes, directory, *, seed, cpu_cores, fingerprint_byt
     chunks = []
     seen = offset = index = 0
     try:
-        connection.execute("SET threads = ?", [cpu_cores])
-        connection.execute("SET memory_limit = '2GB'")
+        sort_threads, memory_bytes = _shuffle_resources(cpu_cores)
+        connection.execute("SET threads = ?", [sort_threads])
+        connection.execute("SET memory_limit = ?", [f"{memory_bytes / 1024**3:.2f}GB"])
+        connection.execute("SET preserve_insertion_order = false")
         connection.execute("SET temp_directory = ?", [str(directory / "sort-spill")])
         progress(0, 0, "Randomizing compounds on temporary disk")
         reader = connection.execute(
