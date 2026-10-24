@@ -147,7 +147,16 @@ class Replica:
             raise ValueError("Invalid synchronization cursor.")
         with self.db() as db:
             rows = db.execute("SELECT * FROM records WHERE seq>? ORDER BY seq LIMIT ?", (since, limit)).fetchall()
-        records = [dict(key=r['key'], kind=r['kind'], author=r['author'], counter=r['counter'], value=json.loads(r['value'])) for r in rows]
+        records = []
+        for row in rows:
+            value = json.loads(row['value'])
+            # Older replicas may still have a pre-compaction job record. Strip
+            # its full request payload on export too, so it cannot block the
+            # peer that first receives it or get re-gossiped to other peers.
+            if row['kind'] == 'job' and isinstance(value, dict):
+                value.pop('request_summary', None)
+            records.append(dict(key=row['key'], kind=row['kind'], author=row['author'],
+                                counter=row['counter'], value=value))
         return {'epoch': self.epoch, 'records': records, 'cursor': rows[-1]['seq'] if rows else since, 'more': len(rows) == limit}
 
     def receive(self, records):

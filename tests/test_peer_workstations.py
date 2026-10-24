@@ -247,6 +247,15 @@ def test_job_replication_omits_large_local_request_payload(peers):
         with Store().connect() as db:
             local=json.loads(db.execute('SELECT payload FROM jobs WHERE local_ref=?',('validation/large-input',)).fetchone()[0])
         assert local['request_summary']==request_summary
+        # A legacy replica may already contain a large value from before the
+        # compact capture path was deployed; gossip must sanitize it as well.
+        with Replica().db() as db:
+            Replica()._write(db,'job:legacy-large','job',{
+                'cluster_job_id':'legacy-large','request_summary':request_summary,
+            },author=nodes[0]['id'])
+        legacy=next(r for r in Replica().export()['records'] if r['key']=='job:legacy-large')
+        assert 'request_summary' not in legacy['value']
+        assert len(json.dumps(legacy,separators=(',',':'))) < 2*1024*1024
     transfer(on,0,1)
     with on(1):
         with Store().connect() as db:
