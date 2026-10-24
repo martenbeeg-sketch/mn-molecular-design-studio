@@ -123,6 +123,12 @@ class Replica:
         current = {}
         for row in rows:
             value = json.loads(row['payload'])
+            # This field contains the complete submitted workflow payload. It
+            # can include large inline structures and is neither needed for
+            # the shared job table nor appropriate to copy to every peer.
+            # Keep it in the owning workstation's job catalog, but replicate
+            # only the compact job metadata and artifact inventory.
+            value.pop('request_summary', None)
             if not row['local_ref']:
                 value['submission_origin'] = own
             current['job:' + row['id']] = value

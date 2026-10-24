@@ -232,6 +232,28 @@ def test_owner_execution_state_outranks_old_origin_placeholders(peers):
             assert db.execute('SELECT count(*) FROM conflicts').fetchone()[0]==1
 
 
+def test_job_replication_omits_large_local_request_payload(peers):
+    nodes,on=peers
+    with on(0):
+        request_summary={'inline_structure':'X'*(3*1024*1024)}
+        Store().heartbeat(nodes[0]['id'],copy.deepcopy(SNAPSHOT),[{
+            'task_group':'validation','run_id':'large-input','owner_id':'','project_id':'',
+            'status':'completed','request_summary':request_summary,
+        }])
+        Replica().capture_jobs()
+        exported=next(r for r in Replica().export()['records'] if r['kind']=='job')
+        assert 'request_summary' not in exported['value']
+        assert len(json.dumps(exported,separators=(',',':'))) < 2*1024*1024
+        with Store().connect() as db:
+            local=json.loads(db.execute('SELECT payload FROM jobs WHERE local_ref=?',('validation/large-input',)).fetchone()[0])
+        assert local['request_summary']==request_summary
+    transfer(on,0,1)
+    with on(1):
+        with Store().connect() as db:
+            imported=json.loads(db.execute('SELECT payload FROM jobs WHERE local_ref=?',('validation/large-input',)).fetchone()[0])
+        assert 'request_summary' not in imported
+
+
 def test_agent_starts_when_every_other_machine_and_local_api_are_unavailable(peers,monkeypatch):
     _,on=peers
     def offline(*a,**k):
