@@ -990,8 +990,13 @@ def test_unidock_pro_tile_batches_compounds_on_gpu_and_emits_typed_poses(tmp_pat
     script = captured["args"][-1]
     shell_syntax = ligand_tools.subprocess.run(["bash", "-n", "-c", script], capture_output=True, text=True, check=False)
     preparation_script = (run_dir / "artifacts" / "input" / "prepare_one_ligand.sh").read_text()
+    batch_preparation_script = (run_dir / "artifacts" / "input" / "prepare_batch.sh").read_text()
     preparation_syntax = ligand_tools.subprocess.run(
         ["bash", "-n", str(run_dir / "artifacts" / "input" / "prepare_one_ligand.sh")],
+        capture_output=True, text=True, check=False,
+    )
+    batch_preparation_syntax = ligand_tools.subprocess.run(
+        ["bash", "-n", str(run_dir / "artifacts" / "input" / "prepare_batch.sh")],
         capture_output=True, text=True, check=False,
     )
     contract = json.loads((run_dir / "artifact_contract.json").read_text())
@@ -1002,16 +1007,26 @@ def test_unidock_pro_tile_batches_compounds_on_gpu_and_emits_typed_poses(tmp_pat
     assert "--ligand_index artifacts/input/ligand_index.txt" in script
     assert "--search_mode detail" in script
     assert "xargs -0 -r -n 2 -P 2 bash artifacts/input/prepare_one_ligand.sh" in script
+    assert "find artifacts/input/preparation_batches -type f -name '*.smi' -print0" in script
+    assert "xargs -0 -r -n 1 -P 2 bash artifacts/input/prepare_batch.sh" in script
+    assert 'scrub.py "$batch_smi" -o "$batch_sdf" --cpu 1 --ph 7.40 --skip_tautomer' in batch_preparation_script
+    assert 'mk_prepare_ligand.py -i "$batch_sdf" --multimol_outdir artifacts/ligands' in batch_preparation_script
     assert "Prepared %s of %s compounds using %s CPU workers" in script
     assert "--cpu 1 --ph 7.40 --skip_tautomer" in preparation_script
     assert 'scrub.py "$source_sdf"' in preparation_script
     assert (run_dir / "artifacts" / "input" / "compounds.nul").read_bytes() == b"ethanol\0CCO\0ethylamine\0CCN\0"
+    assert (run_dir / "artifacts" / "input" / "preparation_batches" / "batch_00001.smi").read_text() == "CCO ethanol\n"
+    assert (run_dir / "artifacts" / "input" / "preparation_batches" / "batch_00002.smi").read_text() == "CCN ethylamine\n"
     assert '\\"$compound_id\\"' not in script
     assert shell_syntax.returncode == 0, shell_syntax.stderr
     assert preparation_syntax.returncode == 0, preparation_syntax.stderr
+    assert batch_preparation_syntax.returncode == 0, batch_preparation_syntax.stderr
     assert contract["workflow"] == "ligand.docking.unidock_pro"
     assert contract["outputs"][1]["type"] == "ligand_pose_collection/v1"
     assert result["metrics"]["best_score_kcal_mol"] == pytest.approx(-7.1)
+    assert result["metrics"]["preparation_cpu_workers"] == 2
+    assert result["metrics"]["preparation_batch_size"] == 1
+    assert result["metrics"]["preparation_batch_count"] == 2
 
 
 def test_rosettaligand_tile_uses_bundled_runner_and_preserves_reu_labels(tmp_path, monkeypatch):

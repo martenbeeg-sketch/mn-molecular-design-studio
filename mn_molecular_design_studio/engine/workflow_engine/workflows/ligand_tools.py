@@ -37,6 +37,7 @@ from mn_molecular_design_studio import ligand_compounds
 
 MAX_COMPOUNDS_PER_LAUNCH = 150_000
 _MAX_COMPOUNDS_PER_LAUNCH = MAX_COMPOUNDS_PER_LAUNCH
+_UNIDOCK_PREPARATION_BATCH_MAX = 10_000
 _LDDM_CHECKPOINT = "generation/lddm/lddm_CDBB.ckpt"
 _POCKETXMOL_CHECKPOINT = "generation/pocketxmol/data/trained_models/pxm_use/checkpoints/pocketxmol.ckpt"
 _POCKETXMOL_CONFIG = "generation/pocketxmol/data/trained_models/pxm_use/train_config/train.yml"
@@ -1840,6 +1841,12 @@ def run_ligand_unidock_pro(
     center_x, center_y, center_z = aligned_center
     size_x, size_y, size_z = aligned_size
     payload, compounds = _validated_compound_set(compound_set_file, compound_limit)
+    preparation_workers = max(1, min(cpu_cores, len(compounds)))
+    preparation_batch_size = (
+        max(1, min(_UNIDOCK_PREPARATION_BATCH_MAX, math.ceil(len(compounds) / preparation_workers)))
+        if use_scrub else 1
+    )
+    preparation_batch_count = math.ceil(len(compounds) / preparation_batch_size)
     params = {
         "engine": "unidock_pro", "search_mode": search_mode,
         "center": [float(center_x), float(center_y), float(center_z)],
@@ -1856,6 +1863,9 @@ def run_ligand_unidock_pro(
         "use_scrub": use_scrub,
         "scrub_ph": scrub_ph,
         "scrub_skip_tautomer": scrub_skip_tautomer,
+        "preparation_cpu_workers": preparation_workers,
+        "preparation_batch_size": preparation_batch_size,
+        "preparation_batch_count": preparation_batch_count,
     }
     job = create_job(
         "ligand-docking", "ligand_docking", "unidock_pro",
@@ -1900,7 +1910,14 @@ def run_ligand_unidock_pro(
             for value in (str(item["compound_id"]), str(item["smiles"]))
         ) + b"\0"
     )
-    preparation_workers = max(1, min(cpu_cores, len(staged_compounds)))
+    if use_scrub:
+        preparation_batches = input_dir / "preparation_batches"
+        preparation_batches.mkdir(parents=True, exist_ok=True)
+        for batch_number, start in enumerate(range(0, len(staged_compounds), preparation_batch_size), start=1):
+            batch_path = preparation_batches / f"batch_{batch_number:05d}.smi"
+            with batch_path.open("w", encoding="utf-8", newline="") as handle:
+                for item in staged_compounds[start:start + preparation_batch_size]:
+                    handle.write(f"{item['smiles']} {item['compound_id']}\n")
     preparation_helper = [
         "#!/usr/bin/env bash",
         "set -uo pipefail",
@@ -1934,6 +1951,28 @@ def run_ligand_unidock_pro(
         "rm -f \"$log\"",
     ])
     (input_dir / "prepare_one_ligand.sh").write_text("\n".join(preparation_helper) + "\n", encoding="utf-8")
+    if use_scrub:
+        batch_helper = [
+            "#!/usr/bin/env bash",
+            "set -uo pipefail",
+            'batch_smi="$1"',
+            'batch_stem="$(basename "$batch_smi" .smi)"',
+            'batch_sdf="artifacts/input/preparation_batches/${batch_stem}.sdf"',
+            'log="artifacts/logs/${batch_stem}.prepare.log"',
+            "if ! scrub.py \"$batch_smi\" -o \"$batch_sdf\" "
+            f"--cpu 1 --ph {scrub_ph:.2f}"
+            + (" --skip_tautomer" if scrub_skip_tautomer else "")
+            + ' >"$log" 2>&1; then',
+            '  echo "Scrub failed for ${batch_stem}; missing compounds will retry individually." >>"$log"; exit 0;',
+            "fi",
+            'if mk_prepare_ligand.py -i "$batch_sdf" --multimol_outdir artifacts/ligands >>"$log" 2>&1; then',
+            '  rm -f "$batch_smi" "$batch_sdf" "$log";',
+            "else",
+            '  echo "Meeko reported a batch error; missing compounds will retry individually." >>"$log";',
+            "fi",
+        ]
+        (input_dir / "prepare_batch.sh").write_text("\n".join(batch_helper) + "\n", encoding="utf-8")
+    preparation_method = "Scrub/Meeko batches" if use_scrub else "RDKit/Meeko per compound"
     config_path = input_dir / "docking.conf"
     config_path.write_text("".join(
         f"{key} = {value:.3f}\n"
@@ -1942,14 +1981,34 @@ def run_ligand_unidock_pro(
             (center_x, center_y, center_z, size_x, size_y, size_z),
         )
     ), encoding="utf-8")
+    if use_scrub:
+        preparation_command = (
+            f"find artifacts/input/preparation_batches -type f -name '*.smi' -print0 | "
+            f"xargs -0 -r -n 1 -P {preparation_workers} bash artifacts/input/prepare_batch.sh; "
+            ": > artifacts/input/preparation_fallback.nul; "
+            "while IFS=$'\\t' read -r compound_id smiles; do "
+            "[[ -n \"$compound_id\" ]] || continue; "
+            "if [[ ! -s \"artifacts/ligands/${compound_id}.pdbqt\" ]]; then "
+            "printf '%s\\0%s\\0' \"$compound_id\" \"$smiles\" >> artifacts/input/preparation_fallback.nul; fi; "
+            "done < <(tail -n +2 artifacts/input/compounds.tsv); "
+            f"xargs -0 -r -n 2 -P {preparation_workers} bash artifacts/input/prepare_one_ligand.sh "
+            "< artifacts/input/preparation_fallback.nul; "
+            "rm -f artifacts/input/preparation_fallback.nul; "
+            "rm -rf artifacts/input/preparation_batches; "
+        )
+    else:
+        preparation_command = (
+            f"xargs -0 -r -n 2 -P {preparation_workers} bash artifacts/input/prepare_one_ligand.sh "
+            "< artifacts/input/compounds.nul; "
+        )
     script = (
         "set -euo pipefail; cd /work; "
         "mkdir -p artifacts/prepared artifacts/ligands artifacts/poses artifacts/logs; "
         "if ! mk_prepare_receptor.py --read_pdb artifacts/input/receptor.pdb -o artifacts/prepared/receptor -p; then "
         "awk 'substr($0,77,2) !~ /^[[:space:]]*H[[:space:]]*$/' artifacts/input/receptor.pdb > artifacts/input/receptor-noh.pdb; "
         "mk_prepare_receptor.py -i artifacts/input/receptor-noh.pdb -o artifacts/prepared/receptor -p; fi; "
-        f"xargs -0 -r -n 2 -P {preparation_workers} bash artifacts/input/prepare_one_ligand.sh "
-        "< artifacts/input/compounds.nul; "
+        + preparation_command
+        + f"printf 'Preparation method: {preparation_method}; batch size %s; batch count %s\\n' {preparation_batch_size} {preparation_batch_count} > artifacts/logs/preparation.log; "
         ": > artifacts/input/ligand_index.txt; "
         "while IFS=$'\\t' read -r compound_id smiles; do "
         "[[ -n \"$compound_id\" ]] || continue; "
@@ -1958,7 +2017,7 @@ def run_ligand_unidock_pro(
         "done < <(tail -n +2 artifacts/input/compounds.tsv); "
         f"prepared_ligands=$(wc -l < artifacts/input/ligand_index.txt); "
         f"printf 'Prepared %s of %s compounds using %s CPU workers\\n' \"$prepared_ligands\" {len(staged_compounds)} {preparation_workers} "
-        "> artifacts/logs/preparation.log; "
+        ">> artifacts/logs/preparation.log; "
         "dock_status=0; if [[ -s artifacts/input/ligand_index.txt ]]; then "
         f"udp --receptor artifacts/prepared/receptor.pdbqt --ligand_index artifacts/input/ligand_index.txt "
         f"--config artifacts/input/docking.conf --dir artifacts/poses --search_mode {search_mode} "
@@ -2003,7 +2062,9 @@ def run_ligand_unidock_pro(
             "failed_count": len(rows) - len(successful), "primary_ranking_metric": "best_score_kcal_mol",
             "primary_ranking_direction": "lower", "best_compound_id": best["compound_id"] if best else "",
             "best_score_kcal_mol": best.get("best_score_kcal_mol") if best else None,
-            "return_code": return_code,
+            "return_code": return_code, "preparation_cpu_workers": preparation_workers,
+            "preparation_batch_size": preparation_batch_size,
+            "preparation_batch_count": preparation_batch_count,
         },
         "downstream_artifacts": {"docking_scores": "artifacts/docking_scores.csv", "docking_poses": "artifacts/poses"},
     })
