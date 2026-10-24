@@ -179,6 +179,9 @@ def _render_field(field, values, key):
     if field["type"] == "select":
         options = field["options"]
         labels = {"protein_mpnn":"ProteinMPNN", "ligand_mpnn":"LigandMPNN", "soluble_mpnn":"SolubleMPNN",
+                  "molscrub_0_1_0":"MolScrub 0.1.0 defaults · fastest benchmark",
+                  "molscrub_0_3_0_defaults":"MolScrub 0.3.0 defaults · 3 conformers, 400 FF iterations",
+                  "molscrub_0_3_0_matched":"MolScrub 0.3.0 matched · 1 conformer, 200 FF iterations",
                   "smiles":"SMILES", "ccd":"CCD component code",
                   "single_sequence":"Single sequence (no MSA)", "reference_then_colabfold":"Reference MSA; ColabFold if missing",
                   "protein_protein":"Protein / protein", "protein_ligand":"Protein / ligand",

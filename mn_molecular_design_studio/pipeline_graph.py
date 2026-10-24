@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from mn_molecular_design_studio.runtime import app_home
+from mn_molecular_design_studio.docking_preparation_protocols import (
+    DEFAULT_SCRUB_PROTOCOL, SCRUB_PROTOCOLS,
+)
 
 SCHEMA = "molecular-design-studio.graph.v1"
 
@@ -175,6 +178,11 @@ NODE_CATALOG.update({
     "active_docking": _spec("active_docking", "Docking", "Active learning", "Dock each selected round with the chosen engine, splitting the round across selected Studio computers. The initial centroid sample sets the first round size; the selection node sets later round sizes.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#427f68", fields=[
         field("engine", "Docking engine", "UniDock Pro", kind="select", options=["UniDock Pro"], section="basic",
               help="The active-learning controller currently connects UniDock Pro. Other engines need their score and output adapters before they can run in this loop."),
+        field("scrub_protocol", "Ligand-preparation protocol", DEFAULT_SCRUB_PROTOCOL, kind="select",
+              options=list(SCRUB_PROTOCOLS), section="basic",
+              help="Preparation path: SMILES → RDKit 3D starting structure → MolScrub pH-dependent acid/base preparation and ETKDG conformer/minimization → Meeko PDBQT → Uni-Dock Pro. Acid/base preparation stays enabled; pH defaults to 7.4 and tautomers are skipped. In the same 10,000-molecule preparation benchmark (docking excluded), 0.1.0 took 94.8 s (104.5 PDBQT/s), 0.3.0 defaults took 317.8 s (31.2/s), and 0.3.0 matched settings took 201.8 s (49.1/s). All used MMFF94s; the modes differ in version, conformer count, and force-field iterations."),
+        field("scrub_ph", "Ligand preparation pH", 7.4, minimum=0.0, maximum=14.0, section="basic"),
+        field("scrub_skip_tautomer", "Skip tautomer enumeration", True, kind="boolean", section="basic"),
         field("score_field", "Score field", "vina_score", kind="text", section="basic"),
         field("score_units", "Score units", "kcal/mol", kind="text", section="basic", help="Declare the units for the selected scoring function, or use unitless."),
         field("score_direction", "Score ranking", "Lower is better", kind="select", options=["Lower is better", "Higher is better"], section="basic"),

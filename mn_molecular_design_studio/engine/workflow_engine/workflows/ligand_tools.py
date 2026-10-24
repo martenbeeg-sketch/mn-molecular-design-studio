@@ -33,6 +33,9 @@ from mn_molecular_design_studio.engine.workflow_engine.core.jobs import (
 from mn_molecular_design_studio.engine.workflow_engine.core.manifests import load_manifest
 from mn_molecular_design_studio.engine.workflow_engine.runtime import reference_root
 from mn_molecular_design_studio import ligand_compounds
+from mn_molecular_design_studio.docking_preparation_protocols import (
+    DEFAULT_SCRUB_PROTOCOL, normalize_scrub_protocol, scrub_invocation,
+)
 
 
 MAX_COMPOUNDS_PER_LAUNCH = 150_000
@@ -796,6 +799,7 @@ def validate_ligand_tool_request(workflow_id: str, parameters: dict[str, Any], *
         use_scrub = parameters.get("use_scrub", True)
         skip_tautomer = parameters.get("scrub_skip_tautomer", True)
         scrub_ph = float(parameters.get("scrub_ph", 7.4))
+        normalize_scrub_protocol(parameters.get("scrub_protocol", DEFAULT_SCRUB_PROTOCOL))
         if type(use_scrub) is not bool or type(skip_tautomer) is not bool:
             raise ValueError("Scrub and tautomer-enumeration settings must be booleans.")
         if not math.isfinite(scrub_ph) or not 0 <= scrub_ph <= 14:
@@ -1260,6 +1264,7 @@ def _run_docking(
     use_scrub: bool = True,
     scrub_ph: float = 7.4,
     scrub_skip_tautomer: bool = True,
+    scrub_protocol: str = DEFAULT_SCRUB_PROTOCOL,
 ) -> Path:
     if engine not in {"vina", "gnina"}:
         raise ValueError(f"Unsupported small-molecule docking engine: {engine}.")
@@ -1280,6 +1285,10 @@ def _run_docking(
     scrub_ph = float(scrub_ph)
     if not math.isfinite(scrub_ph) or not 0 <= scrub_ph <= 14:
         raise ValueError("Scrub pH must be between 0 and 14.")
+    scrub_protocol = normalize_scrub_protocol(scrub_protocol)
+    scrub_route = scrub_invocation(
+        scrub_protocol, ph=scrub_ph, skip_tautomers=scrub_skip_tautomer,
+    )
     original_center = [float(center_x), float(center_y), float(center_z)]
     original_box_size = [float(size_x), float(size_y), float(size_z)]
     alignment_ligand_sdf = Path(alignment_ligand_sdf) if alignment_ligand_sdf else None
@@ -1325,6 +1334,10 @@ def _run_docking(
         "use_scrub": use_scrub,
         "scrub_ph": scrub_ph,
         "scrub_skip_tautomer": scrub_skip_tautomer,
+        "scrub_protocol": scrub_protocol,
+        "scrub_version": scrub_route["version"],
+        "scrub_conformers": scrub_route["conformers"],
+        "scrub_ff_iterations": scrub_route["ff_iterations"],
     }
     if job_name is not None:
         normalized_job_name = str(job_name).strip()[:120]
@@ -1404,11 +1417,12 @@ def _run_docking(
         )
         failure_message = "GNINA returned an error"
         selected_gpu = gpu_device
+    scrub_cli = (
+        f"{shlex.quote(scrub_route['executable'])} \"artifacts/ligands/${{compound_id}}_source.sdf\" "
+        f"-o \"artifacts/ligands/${{compound_id}}.sdf\" {shlex.join(scrub_route['arguments'])}"
+    )
     scrub_step = (
-        "if scrub.py \"artifacts/ligands/${compound_id}_source.sdf\" "
-        "-o \"artifacts/ligands/${compound_id}.sdf\" "
-        f"--cpu 1 --ph {scrub_ph:.2f}"
-        + (" --skip_tautomer" if scrub_skip_tautomer else "")
+        f"if {scrub_cli}"
         + " >>\"artifacts/logs/${compound_id}.prepare.log\" 2>&1 "
         + "&& [[ -s \"artifacts/ligands/${compound_id}.sdf\" ]]; then :; else "
         + "cp \"artifacts/ligands/${compound_id}_source.sdf\" \"artifacts/ligands/${compound_id}.sdf\"; "
@@ -1554,6 +1568,7 @@ def run_ligand_autodock_gpu(
     use_scrub: bool = True,
     scrub_ph: float = 7.4,
     scrub_skip_tautomer: bool = True,
+    scrub_protocol: str = DEFAULT_SCRUB_PROTOCOL,
 ) -> Path:
     """Dock a Database compound set with AutoDock-GPU and AutoGrid maps."""
     validate_target_pdb(target_pdb)
@@ -1574,6 +1589,8 @@ def run_ligand_autodock_gpu(
     scrub_ph = float(scrub_ph)
     if not math.isfinite(scrub_ph) or not 0 <= scrub_ph <= 14:
         raise ValueError("Scrub pH must be between 0 and 14.")
+    scrub_protocol = normalize_scrub_protocol(scrub_protocol)
+    scrub_route = scrub_invocation(scrub_protocol, ph=scrub_ph, skip_tautomers=scrub_skip_tautomer)
     if not str(gpu_device).strip() or str(gpu_device).strip().lower() in {"none", "cpu", "off"}:
         raise ValueError("AutoDock-GPU requires a CUDA GPU device.")
     original_center, original_box_size = list(center), list(box_size)
@@ -1608,6 +1625,10 @@ def run_ligand_autodock_gpu(
         "use_scrub": use_scrub,
         "scrub_ph": scrub_ph,
         "scrub_skip_tautomer": scrub_skip_tautomer,
+        "scrub_protocol": scrub_protocol,
+        "scrub_version": scrub_route["version"],
+        "scrub_conformers": scrub_route["conformers"],
+        "scrub_ff_iterations": scrub_route["ff_iterations"],
     }
     job = create_job(
         "ligand-docking", "ligand_docking", "autodock_gpu",
@@ -1652,6 +1673,9 @@ def run_ligand_autodock_gpu(
         "use_scrub": use_scrub,
         "scrub_ph": scrub_ph,
         "scrub_skip_tautomer": scrub_skip_tautomer,
+        "scrub_protocol": scrub_protocol,
+        "scrub_executable": scrub_route["executable"],
+        "scrub_arguments": scrub_route["arguments"],
     })
     (input_root / "smiles_to_3d.py").write_text(_RDKIT_3D_SCRIPT, encoding="utf-8")
     shutil.copy2(Path(__file__).with_name("autodock_gpu_runner.py"), input_root / "autodock_gpu_runner.py")
@@ -1720,6 +1744,7 @@ def run_ligand_vina(
     use_scrub: bool = True,
     scrub_ph: float = 7.4,
     scrub_skip_tautomer: bool = True,
+    scrub_protocol: str = DEFAULT_SCRUB_PROTOCOL,
 ) -> Path:
     """Dock a Studio Database compound set with AutoDock Vina."""
     return _run_docking(
@@ -1735,6 +1760,7 @@ def run_ligand_vina(
         use_scrub=use_scrub,
         scrub_ph=scrub_ph,
         scrub_skip_tautomer=scrub_skip_tautomer,
+        scrub_protocol=scrub_protocol,
     )
 
 
@@ -1761,6 +1787,7 @@ def run_ligand_gnina(
     use_scrub: bool = True,
     scrub_ph: float = 7.4,
     scrub_skip_tautomer: bool = True,
+    scrub_protocol: str = DEFAULT_SCRUB_PROTOCOL,
 ) -> Path:
     """Run GNINA docking and CNN rescoring on a Studio Database compound set."""
     return _run_docking(
@@ -1778,6 +1805,7 @@ def run_ligand_gnina(
         use_scrub=use_scrub,
         scrub_ph=scrub_ph,
         scrub_skip_tautomer=scrub_skip_tautomer,
+        scrub_protocol=scrub_protocol,
     )
 
 
@@ -1803,6 +1831,7 @@ def run_ligand_unidock_pro(
     use_scrub: bool = True,
     scrub_ph: float = 7.4,
     scrub_skip_tautomer: bool = True,
+    scrub_protocol: str = DEFAULT_SCRUB_PROTOCOL,
 ) -> Path:
     """Run the classic Uni-Dock Pro receptor-docking mode on a compound set."""
     search_mode = str(search_mode).strip().lower()
@@ -1826,6 +1855,8 @@ def run_ligand_unidock_pro(
     scrub_ph = float(scrub_ph)
     if not math.isfinite(scrub_ph) or not 0 <= scrub_ph <= 14:
         raise ValueError("Scrub pH must be between 0 and 14.")
+    scrub_protocol = normalize_scrub_protocol(scrub_protocol)
+    scrub_route = scrub_invocation(scrub_protocol, ph=scrub_ph, skip_tautomers=scrub_skip_tautomer)
 
     original_center = [float(center_x), float(center_y), float(center_z)]
     original_box_size = [float(size_x), float(size_y), float(size_z)]
@@ -1863,6 +1894,10 @@ def run_ligand_unidock_pro(
         "use_scrub": use_scrub,
         "scrub_ph": scrub_ph,
         "scrub_skip_tautomer": scrub_skip_tautomer,
+        "scrub_protocol": scrub_protocol,
+        "scrub_version": scrub_route["version"],
+        "scrub_conformers": scrub_route["conformers"],
+        "scrub_ff_iterations": scrub_route["ff_iterations"],
         "preparation_cpu_workers": preparation_workers,
         "preparation_batch_size": preparation_batch_size,
         "preparation_batch_count": preparation_batch_count,
@@ -1933,11 +1968,12 @@ def run_ligand_unidock_pro(
         "fi",
     ]
     if use_scrub:
+        scrub_command = (
+            f"{shlex.quote(scrub_route['executable'])} \"$source_sdf\" -o \"$ligand_sdf\" "
+            f"{shlex.join(scrub_route['arguments'])}"
+        )
         preparation_helper.extend([
-            "if scrub.py \"$source_sdf\" -o \"$ligand_sdf\" "
-            f"--cpu 1 --ph {scrub_ph:.2f}"
-            + (" --skip_tautomer" if scrub_skip_tautomer else "")
-            + " >>\"$log\" 2>&1 && [[ -s \"$ligand_sdf\" ]]; then :; else",
+            f"if {scrub_command} >>\"$log\" 2>&1 && [[ -s \"$ligand_sdf\" ]]; then :; else",
             "  cp \"$source_sdf\" \"$ligand_sdf\";",
             "  echo 'Scrub failed; using the RDKit SDF for Meeko preparation.' >>\"$log\";",
             "fi",
@@ -1952,6 +1988,10 @@ def run_ligand_unidock_pro(
     ])
     (input_dir / "prepare_one_ligand.sh").write_text("\n".join(preparation_helper) + "\n", encoding="utf-8")
     if use_scrub:
+        batch_scrub_command = (
+            f"{shlex.quote(scrub_route['executable'])} \"$batch_smi\" -o \"$batch_sdf\" "
+            f"{shlex.join(scrub_route['arguments'])}"
+        )
         batch_helper = [
             "#!/usr/bin/env bash",
             "set -uo pipefail",
@@ -1959,10 +1999,7 @@ def run_ligand_unidock_pro(
             'batch_stem="$(basename "$batch_smi" .smi)"',
             'batch_sdf="artifacts/input/preparation_batches/${batch_stem}.sdf"',
             'log="artifacts/logs/${batch_stem}.prepare.log"',
-            "if ! scrub.py \"$batch_smi\" -o \"$batch_sdf\" "
-            f"--cpu 1 --ph {scrub_ph:.2f}"
-            + (" --skip_tautomer" if scrub_skip_tautomer else "")
-            + ' >"$log" 2>&1; then',
+            f"if ! {batch_scrub_command} >\"$log\" 2>&1; then",
             '  echo "Scrub failed for ${batch_stem}; missing compounds will retry individually." >>"$log"; exit 0;',
             "fi",
             'if mk_prepare_ligand.py -i "$batch_sdf" --multimol_outdir artifacts/ligands >>"$log" 2>&1; then',
@@ -1972,7 +2009,11 @@ def run_ligand_unidock_pro(
             "fi",
         ]
         (input_dir / "prepare_batch.sh").write_text("\n".join(batch_helper) + "\n", encoding="utf-8")
-    preparation_method = "Scrub/Meeko batches" if use_scrub else "RDKit/Meeko per compound"
+    preparation_method = (
+        f"MolScrub {scrub_route['version']} ({scrub_route['conformers']} conformer(s), "
+        f"{scrub_route['ff_iterations']} MMFF94s iterations)/Meeko batches"
+        if use_scrub else "RDKit/Meeko per compound"
+    )
     config_path = input_dir / "docking.conf"
     config_path.write_text("".join(
         f"{key} = {value:.3f}\n"

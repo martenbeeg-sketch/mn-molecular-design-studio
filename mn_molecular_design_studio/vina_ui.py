@@ -13,6 +13,9 @@ from urllib.request import Request, urlopen
 import streamlit as st
 
 from mn_molecular_design_studio import docking_preparations, vina_inputs
+from mn_molecular_design_studio.docking_preparation_protocols import (
+    DEFAULT_SCRUB_PROTOCOL, SCRUB_PROTOCOLS,
+)
 from mn_molecular_design_studio.auth import user_input_root
 from mn_molecular_design_studio.hotspot_sequence import render_hotspot_sequence
 from mn_molecular_design_studio.target_editor import TargetSource, _target_storage_path
@@ -1208,6 +1211,23 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
         if is_rosetta:
             st.caption("RosettaLigand anchors the search at the displayed box center. Its protocol-specific search padding is set below.")
         compounds = _render_ligand_input(owner_id, project_id, compound_sets)
+        scrub_protocol = DEFAULT_SCRUB_PROTOCOL
+        if not is_rosetta:
+            st.markdown("**Ligand preparation protocol**")
+            scrub_protocol = st.selectbox(
+                "MolScrub route",
+                list(SCRUB_PROTOCOLS),
+                index=list(SCRUB_PROTOCOLS).index(DEFAULT_SCRUB_PROTOCOL),
+                format_func=lambda value: SCRUB_PROTOCOLS[value]["label"],
+                key=f"ligand-{tool_key}-scrub-protocol",
+                help="Choose one of the three measured routes. MolScrub 0.1.0 is the default because it was fastest in the 10,000-compound comparison.",
+            )
+            st.caption(
+                "SMILES → RDKit 3D starting structure → MolScrub applies pH-dependent acid/base preparation "
+                "and the selected conformer/minimization settings → Meeko converts the result to PDBQT → docking. "
+                "Tautomers are skipped by default; Scrub failures fall back to the RDKit SDF and are recorded."
+            )
+            st.caption(SCRUB_PROTOCOLS[scrub_protocol]["benchmark"])
         with st.container(key="vina-optional"):
             with st.expander("View Optional Settings"):
                 alignment_upload = None
@@ -1249,28 +1269,26 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
                     }
                 else:
                     st.markdown("**Ligand preparation**")
-                    prep_cols = st.columns(3)
-                    use_scrub = prep_cols[0].checkbox(
-                        "Use Scrub",
-                        value=True,
-                        key=f"ligand-{tool_key}-use-scrub",
-                        help="Normalize ligand protonation and chemistry with Scrub before Meeko prepares the ligand for docking.",
-                    )
-                    scrub_ph = float(prep_cols[1].number_input(
+                    prep_cols = st.columns(2)
+                    scrub_ph = float(prep_cols[0].number_input(
                         "Scrub pH",
                         min_value=0.0,
                         max_value=14.0,
                         value=7.4,
                         step=0.1,
-                        disabled=not use_scrub,
                         key=f"ligand-{tool_key}-scrub-ph",
                     ))
-                    scrub_skip_tautomer = prep_cols[2].checkbox(
+                    scrub_skip_tautomer = prep_cols[1].checkbox(
                         "Skip tautomer enumeration",
                         value=True,
-                        disabled=not use_scrub,
                         key=f"ligand-{tool_key}-skip-tautomer",
-                        help="When cleared, Scrub may generate tautomer states before docking.",
+                        help="When selected, Scrub keeps acid/base preparation enabled but does not enumerate tautomers. This was the setting used in the route benchmark.",
+                    )
+                    scrub_settings = SCRUB_PROTOCOLS[scrub_protocol]
+                    st.caption(
+                        f"Common settings: pH {scrub_ph:g}, acid/base preparation enabled, tautomer enumeration "
+                        f"{'skipped' if scrub_skip_tautomer else 'enabled'}, MMFF94s; "
+                        f"{scrub_settings['conformers']} conformer(s), up to {scrub_settings['ff_iterations']} force-field iterations."
                     )
                     st.markdown("**Search settings**")
                     cols = st.columns(4)
@@ -1349,7 +1367,8 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
                         "compound_limit": limit, "cpu_cores": cores,
                         "seed": seed, "gpu_device": gpu_device,
                         "align_longest_axis_to_x": align,
-                        "use_scrub": use_scrub,
+                        "use_scrub": True,
+                        "scrub_protocol": scrub_protocol,
                         "scrub_ph": scrub_ph,
                         "scrub_skip_tautomer": scrub_skip_tautomer,
                         "job_name": job_name,

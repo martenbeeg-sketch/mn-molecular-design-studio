@@ -162,6 +162,9 @@ def _docking_params(params: dict, target: dict, batch_file: Path, *, round_numbe
         "cpu_cores": int(worker["cpu_cores"]),
         "gpu_device": str(worker["gpu_device"]),
         "job_name": f"Active learning round {round_number:03d} · {worker['node_name']}",
+        "scrub_protocol": str(params.get("scrub_protocol") or "molscrub_0_1_0"),
+        "scrub_ph": float(params.get("scrub_ph", 7.4)),
+        "scrub_skip_tautomer": bool(params.get("scrub_skip_tautomer", True)),
         "align_longest_axis_to_x": alignment_enabled,
         "alignment_ligand_sdf": alignment_ligand if alignment_enabled else None,
         # The dimensions configured in the receptor node describe the aligned

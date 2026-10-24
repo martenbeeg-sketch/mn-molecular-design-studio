@@ -94,12 +94,20 @@ def run_tile(root: Path = Path("/work")) -> dict:
                 cwd=root,
             )
             if config.get("use_scrub", True):
+                scrub_arguments = config.get("scrub_arguments")
+                if scrub_arguments is None:
+                    scrub_arguments = [
+                        "--ph", f"{float(config.get('scrub_ph', 7.4)):.2f}",
+                        "--cpu", "1", "--ff", "mmff94s", "--max_ff_iter", "200",
+                        "--numconfs", "1",
+                    ]
+                    if config.get("scrub_skip_tautomer", True):
+                        scrub_arguments.append("--skip_tautomers")
                 scrub_command = [
-                    "scrub.py", str(source_sdf), "-o", str(sdf),
-                    "--ph", f"{float(config.get('scrub_ph', 7.4)):.2f}",
+                    str(config.get("scrub_executable") or "scrub.py"),
+                    str(source_sdf), "-o", str(sdf),
+                    *list(scrub_arguments),
                 ]
-                if config.get("scrub_skip_tautomer", True):
-                    scrub_command.append("--skip_tautomer")
                 scrub_log = log_root / f"{compound_id}.scrub.log"
                 try:
                     _run(scrub_command, scrub_log, cwd=root)
