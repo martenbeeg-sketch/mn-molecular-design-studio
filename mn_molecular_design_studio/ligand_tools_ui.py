@@ -680,7 +680,12 @@ def render_setup(
             search_cols = st.columns(3)
             unidock_mode = "classic"
             if is_unidock:
-                search_mode = search_cols[0].selectbox("Search effort", ["fast", "balance", "detail"], index=1, key=f"ligand-{tool_key}-search-mode")
+                search_mode = search_cols[0].selectbox(
+                    "Search effort", ["fast", "balance", "detail"], index=1,
+                    format_func=lambda value: {"fast": "Fast", "balance": "Balanced", "detail": "Detailed"}[value],
+                    key=f"ligand-{tool_key}-search-mode",
+                    help="Search effort is independent of docking mode. Balanced is the default for this study.",
+                )
                 unidock_mode = st.selectbox(
                     "UniDock Pro docking mode", ["classic", "ligand_based", "hybrid"],
                     index=0, format_func=lambda value: {

@@ -183,6 +183,7 @@ def _render_field(field, values, key):
                   "molscrub_0_3_0_defaults":"MolScrub 0.3.0 defaults · 3 conformers, 400 FF iterations",
                   "molscrub_0_3_0_matched":"MolScrub 0.3.0 matched · 1 conformer, 200 FF iterations",
                   "classic":"Structure-based (classic)", "ligand_based":"Ligand-based", "hybrid":"Hybrid (receptor + reference ligand)",
+                  "fast":"Fast", "balance":"Balanced", "detail":"Detailed",
                   "smiles":"SMILES", "ccd":"CCD component code",
                   "single_sequence":"Single sequence (no MSA)", "reference_then_colabfold":"Reference MSA; ColabFold if missing",
                   "protein_protein":"Protein / protein", "protein_ligand":"Protein / ligand",

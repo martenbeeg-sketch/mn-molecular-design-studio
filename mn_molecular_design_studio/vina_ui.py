@@ -1311,7 +1311,12 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
                             help="Use a device ID such as 0.",
                         )
                     elif is_unidock:
-                        search_mode = cols[0].selectbox("Search effort", ["fast", "balance", "detail"], index=1, key="ligand-unidock-pro-search-mode")
+                        search_mode = cols[0].selectbox(
+                            "Search effort", ["fast", "balance", "detail"], index=1,
+                            format_func=lambda value: {"fast": "Fast", "balance": "Balanced", "detail": "Detailed"}[value],
+                            key="ligand-unidock-pro-search-mode",
+                            help="Search effort is independent of docking mode. Balanced is the default for this study.",
+                        )
                     else:
                         exhaustiveness = int(cols[0].number_input(
                             "Exhaustiveness", value=32 if is_vina else 8, min_value=1, max_value=1024,
