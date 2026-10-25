@@ -383,7 +383,7 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                 profile = ("total_score", "REU") if values["engine"] == "RosettaLigand" else ("binding_energy", "kcal/mol") if values["engine"] == "AutoDock-GPU" else ("vina_score", "kcal/mol")
                 values.update(score_field=profile[0], score_units=profile[1], score_direction="Lower is better")
             gpu_engine = values["engine"] in {"UniDock Pro", "GNINA", "AutoDock-GPU"}
-            st.caption("Selected computers process their UniDock Pro batches in parallel. Each computer uses its Studio scheduler; the organizer gathers scores and retained poses when the round completes.")
+            st.caption("Each selected GPU processes one batch at a time through its Studio scheduler. The computer's CPU budget is shared between its GPUs. Idle GPUs can take pending batches. Failed compounds are recorded once without rescue attempts; the organizer collects scores and retained poses before round cleanup.")
             machines = []
             try:
                 machines = _available_docking_machines(gpu_engine)
@@ -417,24 +417,27 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                         continue
                     cpu_default = min(cpu_available, max(1, int(old.get("cpu_cores") or cpu_available)))
                     selected_cpus = st.number_input(
-                        f"CPU worker slots · {machine['name']}", min_value=1, max_value=cpu_available,
+                        f"Total CPU worker slots · {machine['name']}", min_value=1, max_value=cpu_available,
                         value=cpu_default, step=1, key=key + "-docking-cpus-" + machine_id,
                     )
-                    selected_gpu = "none"
+                    selected_gpus = []
                     if gpu_engine:
-                        gpu_value = str(old.get("gpu_device") or gpu_ids[0])
-                        if gpu_value not in gpu_ids:
-                            gpu_value = gpu_ids[0]
-                        selected_gpu = st.selectbox(f"GPU · {machine['name']}", gpu_ids, index=gpu_ids.index(gpu_value),
-                            key=key + "-docking-gpu-" + machine_id,
+                        gpu_values = [str(value) for value in (old.get("gpu_devices") or [old.get("gpu_device") or gpu_ids[0]])]
+                        selected_gpus = st.multiselect(f"GPUs · {machine['name']}", gpu_ids,
+                            default=[value for value in gpu_values if value in gpu_ids],
+                            key=key + "-docking-gpus-" + machine_id,
                             format_func=lambda value: f"GPU {value}")
+                        if not selected_gpus or len(selected_gpus) > int(selected_cpus):
+                            ready = False
+                            st.warning("Select at least one GPU and allocate at least one CPU slot per GPU.")
                     batch_share = int(st.number_input(
-                        f"Batch share · {machine['name']}", min_value=1, max_value=100,
+                        f"Batch share per GPU · {machine['name']}", min_value=1, max_value=100,
                         value=min(100, max(1, int(old.get("batch_share") or 1))), step=1,
                         key=key + "-docking-share-" + machine_id,
-                        help="Relative share of the docking compounds assigned to this computer. Use equal shares for a speed test; increase a faster computer's share for the full campaign.",
+                        help="Relative initial share per GPU. Faster GPUs can take batches still pending on other workers, so the final allocation adjusts during the round.",
                     ))
-                    worker_specs.append({"node_id": machine_id, "gpu_device": selected_gpu,
+                    worker_specs.append({"node_id": machine_id, "gpu_devices": selected_gpus,
+                                         "gpu_device": selected_gpus[0] if selected_gpus else "none",
                                          "cpu_cores": int(selected_cpus), "name": machine["name"],
                                          "local": machine["local"], "batch_share": batch_share})
                 values["worker_nodes"] = worker_specs

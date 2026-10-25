@@ -973,7 +973,7 @@ def test_unidock_pro_tile_batches_compounds_on_gpu_and_emits_typed_poses(tmp_pat
     monkeypatch.setattr(ligand_tools, "load_manifest", lambda name: {"image": "mn-docking-suite:test", "tool": name, "gpu": True})
     captured = {}
 
-    def fake_docker(run_dir, manifest, args, *, gpu_device, use_host_user=False):
+    def fake_docker(run_dir, manifest, args, *, gpu_device, use_host_user=False, extra_mounts=None, environment=None):
         captured.update(manifest=manifest, args=args, gpu_device=gpu_device, use_host_user=use_host_user)
         (run_dir / "artifacts" / "docking_scores.csv").write_text(
             "compound_id\tstatus\tbest_score_kcal_mol\tcnn_score\tcnn_affinity\tpose_path\terror\n"
@@ -990,13 +990,10 @@ def test_unidock_pro_tile_batches_compounds_on_gpu_and_emits_typed_poses(tmp_pat
     script = captured["args"][-1]
     shell_syntax = ligand_tools.subprocess.run(["bash", "-n", "-c", script], capture_output=True, text=True, check=False)
     preparation_script = (run_dir / "artifacts" / "input" / "prepare_one_ligand.sh").read_text()
-    batch_preparation_script = (run_dir / "artifacts" / "input" / "prepare_batch.sh").read_text()
+    batch_preparation_script = (run_dir / "artifacts" / "input" / "prepare_batch.py").read_text()
+    prep_config = json.loads((run_dir / "artifacts/input/preparation_config.json").read_text())
     preparation_syntax = ligand_tools.subprocess.run(
         ["bash", "-n", str(run_dir / "artifacts" / "input" / "prepare_one_ligand.sh")],
-        capture_output=True, text=True, check=False,
-    )
-    batch_preparation_syntax = ligand_tools.subprocess.run(
-        ["bash", "-n", str(run_dir / "artifacts" / "input" / "prepare_batch.sh")],
         capture_output=True, text=True, check=False,
     )
     contract = json.loads((run_dir / "artifact_contract.json").read_text())
@@ -1008,27 +1005,22 @@ def test_unidock_pro_tile_batches_compounds_on_gpu_and_emits_typed_poses(tmp_pat
     assert "--search_mode detail" in script
     assert "Required MolScrub 0.1.0 is not installed in this docking image." in script
     assert "/opt/molscrub/venvs/0.1.0/bin/python" in script
-    assert "xargs -0 -r -n 2 -P 2 bash artifacts/input/prepare_one_ligand.sh" in script
-    assert "find artifacts/input/preparation_batches -type f -name '*.smi' -print0" in script
-    assert "xargs -0 -r -n 1 -P 2 bash artifacts/input/prepare_batch.sh" in script
-    assert 'scrub.py "$batch_smi" -o "$batch_sdf" --ph 7.40 --cpu 1 --ff mmff94s --max_ff_iter 200 --numconfs 1 --skip_tautomers' in batch_preparation_script
-    assert 'mk_prepare_ligand.py -i "$batch_sdf" --multimol_outdir artifacts/ligands' in batch_preparation_script
-    assert "Prepared %s of %s compounds using %s CPU workers" in script
-    assert "--ph 7.40 --cpu 1 --ff mmff94s --max_ff_iter 200 --numconfs 1 --skip_tautomers" in preparation_script
-    assert 'scrub.py "$source_sdf"' in preparation_script
-    assert (run_dir / "artifacts" / "input" / "compounds.nul").read_bytes() == b"ethanol\0CCO\0ethylamine\0CCN\0"
-    assert (run_dir / "artifacts" / "input" / "preparation_batches" / "batch_00001.smi").read_text() == "CCO ethanol\n"
-    assert (run_dir / "artifacts" / "input" / "preparation_batches" / "batch_00002.smi").read_text() == "CCN ethylamine\n"
+    assert "python artifacts/input/prepare_batch.py" in script
+    assert "preparation_fallback" not in script
+    assert "retry" not in preparation_script.lower()
+    assert prep_config["route"]["arguments"] == ['--ph', '7.40', '--cpu', '2', '--ff', 'mmff94s', '--max_ff_iter', '200', '--numconfs', '1', '--skip_tautomers']
+    assert prep_config["workers"] == 2
+    assert "ThreadPoolExecutor(max_workers=workers)" in batch_preparation_script
+    assert (run_dir / "artifacts/input/library.smi").read_text() == "CCO ethanol\nCCN ethylamine\n"
     assert '\\"$compound_id\\"' not in script
     assert shell_syntax.returncode == 0, shell_syntax.stderr
     assert preparation_syntax.returncode == 0, preparation_syntax.stderr
-    assert batch_preparation_syntax.returncode == 0, batch_preparation_syntax.stderr
     assert contract["workflow"] == "ligand.docking.unidock_pro"
     assert contract["outputs"][1]["type"] == "ligand_pose_collection/v1"
     assert result["metrics"]["best_score_kcal_mol"] == pytest.approx(-7.1)
     assert result["metrics"]["preparation_cpu_workers"] == 2
-    assert result["metrics"]["preparation_batch_size"] == 1
-    assert result["metrics"]["preparation_batch_count"] == 2
+    assert result["metrics"]["preparation_batch_size"] == 2
+    assert result["metrics"]["preparation_batch_count"] == 1
 
 
 def test_unidock_pro_hybrid_prepares_and_transforms_reference_ligand(tmp_path, monkeypatch):
@@ -1056,7 +1048,7 @@ def test_unidock_pro_hybrid_prepares_and_transforms_reference_ligand(tmp_path, m
     monkeypatch.setattr(ligand_tools, "load_manifest", lambda name: {"image": "mn-docking-suite:test", "tool": name, "gpu": True})
     captured = {}
 
-    def fake_docker(run_dir, manifest, args, *, gpu_device, use_host_user=False):
+    def fake_docker(run_dir, manifest, args, *, gpu_device, use_host_user=False, extra_mounts=None, environment=None):
         captured.update(args=args)
         (run_dir / "artifacts" / "docking_scores.csv").write_text(
             "compound_id\tstatus\tbest_score_kcal_mol\tcnn_score\tcnn_affinity\tpose_path\terror\n"

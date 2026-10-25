@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -1868,6 +1869,8 @@ def run_ligand_unidock_pro(
     scrub_ph: float = 7.4,
     scrub_skip_tautomer: bool = True,
     scrub_protocol: str = DEFAULT_SCRUB_PROTOCOL,
+    cleanup_preparation: bool = True,
+    retained_pose_count: int = 0,
 ) -> Path:
     """Run a Uni-Dock Pro structure-, ligand-, or hybrid-docking mode."""
     mode = str(mode).strip().lower().replace(" ", "_").replace("-", "_")
@@ -1884,6 +1887,8 @@ def run_ligand_unidock_pro(
         raise ValueError("Uni-Dock Pro seed must be a positive 32-bit integer.")
     if not str(gpu_device).strip() or str(gpu_device).strip().lower() in {"none", "cpu", "off"}:
         raise ValueError("Uni-Dock Pro requires a CUDA GPU device.")
+    if type(cleanup_preparation) is not bool or type(retained_pose_count) is not int or retained_pose_count < 0:
+        raise ValueError("Cleanup must be boolean and retained pose count nonnegative (0 = all batch poses).")
     validate_target_pdb(target_pdb)
     reference_ligand_sdf = Path(reference_ligand_sdf) if reference_ligand_sdf else None
     alignment_ligand_sdf = Path(alignment_ligand_sdf) if alignment_ligand_sdf else None
@@ -1925,13 +1930,14 @@ def run_ligand_unidock_pro(
     size_x, size_y, size_z = aligned_size
     payload, compounds = _validated_compound_set(compound_set_file, compound_limit)
     preparation_workers = max(1, min(cpu_cores, len(compounds)))
-    preparation_batch_size = (
-        max(1, min(_UNIDOCK_PREPARATION_BATCH_MAX, math.ceil(len(compounds) / preparation_workers)))
-        if use_scrub else 1
-    )
-    preparation_batch_count = math.ceil(len(compounds) / preparation_batch_size)
+    preparation_batch_size = len(compounds) if use_scrub else 1
+    preparation_batch_count = 1 if use_scrub else len(compounds)
+    scrub_route = scrub_invocation(scrub_protocol, ph=scrub_ph,
+                                    skip_tautomers=scrub_skip_tautomer, cpu=preparation_workers)
     params = {
         "engine": "unidock_pro", "mode": mode, "search_mode": search_mode,
+        "failure_policy": "skip", "retry_failed": False, "cleanup_preparation": cleanup_preparation,
+        "retained_pose_count": retained_pose_count, "working_storage": "temporary scratch",
         "center": [float(center_x), float(center_y), float(center_z)],
         "box_size": [float(size_x), float(size_y), float(size_z)],
         "original_center": original_center,
@@ -2007,70 +2013,20 @@ def run_ligand_unidock_pro(
             for value in (str(item["compound_id"]), str(item["smiles"]))
         ) + b"\0"
     )
-    if use_scrub:
-        preparation_batches = input_dir / "preparation_batches"
-        preparation_batches.mkdir(parents=True, exist_ok=True)
-        for batch_number, start in enumerate(range(0, len(staged_compounds), preparation_batch_size), start=1):
-            batch_path = preparation_batches / f"batch_{batch_number:05d}.smi"
-            with batch_path.open("w", encoding="utf-8", newline="") as handle:
-                for item in staged_compounds[start:start + preparation_batch_size]:
-                    handle.write(f"{item['smiles']} {item['compound_id']}\n")
-    preparation_helper = [
-        "#!/usr/bin/env bash",
-        "set -uo pipefail",
-        "compound_id=\"$1\"",
-        "smiles=\"$2\"",
-        "log=\"artifacts/logs/${compound_id}.prepare.log\"",
-        "source_sdf=\"artifacts/ligands/${compound_id}_source.sdf\"",
-        "ligand_sdf=\"artifacts/ligands/${compound_id}.sdf\"",
-        "ligand_pdbqt=\"artifacts/ligands/${compound_id}.pdbqt\"",
-        "export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1",
-        "if ! python artifacts/input/smiles_to_3d.py --smiles \"$smiles\" --name \"$compound_id\" --output \"$source_sdf\" >\"$log\" 2>&1; then",
-        "  echo 'RDKit 3D preparation failed.' >>\"$log\"; exit 0;",
-        "fi",
-    ]
-    if use_scrub:
-        scrub_command = (
-            f"{shlex.quote(scrub_route['executable'])} \"$source_sdf\" -o \"$ligand_sdf\" "
-            f"{shlex.join(scrub_route['arguments'])}"
-        )
-        preparation_helper.extend([
-            f"if {scrub_command} >>\"$log\" 2>&1 && [[ -s \"$ligand_sdf\" ]]; then :; else",
-            "  cp \"$source_sdf\" \"$ligand_sdf\";",
-            "  echo 'Scrub failed; using the RDKit SDF for Meeko preparation.' >>\"$log\";",
-            "fi",
-        ])
-    else:
-        preparation_helper.append('cp "$source_sdf" "$ligand_sdf"')
-    preparation_helper.extend([
-        "if ! mk_prepare_ligand.py -i \"$ligand_sdf\" -o \"$ligand_pdbqt\" >>\"$log\" 2>&1; then",
-        "  echo 'Meeko ligand preparation failed.' >>\"$log\"; exit 0;",
-        "fi",
-        "rm -f \"$log\"",
-    ])
-    (input_dir / "prepare_one_ligand.sh").write_text("\n".join(preparation_helper) + "\n", encoding="utf-8")
-    if use_scrub:
-        batch_scrub_command = (
-            f"{shlex.quote(scrub_route['executable'])} \"$batch_smi\" -o \"$batch_sdf\" "
-            f"{shlex.join(scrub_route['arguments'])}"
-        )
-        batch_helper = [
-            "#!/usr/bin/env bash",
-            "set -uo pipefail",
-            'batch_smi="$1"',
-            'batch_stem="$(basename "$batch_smi" .smi)"',
-            'batch_sdf="artifacts/input/preparation_batches/${batch_stem}.sdf"',
-            'log="artifacts/logs/${batch_stem}.prepare.log"',
-            f"if ! {batch_scrub_command} >\"$log\" 2>&1; then",
-            '  echo "Scrub failed for ${batch_stem}; missing compounds will retry individually." >>"$log"; exit 0;',
-            "fi",
-            'if mk_prepare_ligand.py -i "$batch_sdf" --multimol_outdir artifacts/ligands >>"$log" 2>&1; then',
-            '  rm -f "$batch_smi" "$batch_sdf" "$log";',
-            "else",
-            '  echo "Meeko reported a batch error; missing compounds will retry individually." >>"$log";',
-            "fi",
-        ]
-        (input_dir / "prepare_batch.sh").write_text("\n".join(batch_helper) + "\n", encoding="utf-8")
+    from mn_molecular_design_studio.docking_batch_preparation import PREPARATION_RUNNER, SCORE_RUNNER
+    (input_dir / "prepare_batch.py").write_text(PREPARATION_RUNNER, encoding="utf-8")
+    (input_dir / "collect_scores.py").write_text(SCORE_RUNNER, encoding="utf-8")
+    write_json(input_dir / "preparation_config.json", {"route": scrub_route, "workers": preparation_workers})
+    (input_dir / "library.smi").write_text(
+        "".join(f"{item['smiles']} {item['compound_id']}\n" for item in staged_compounds), encoding="utf-8")
+    # The optional RDKit route also makes one attempt per molecule, with no rescue.
+    (input_dir / "prepare_one_ligand.sh").write_text("\n".join([
+        "#!/usr/bin/env bash", "set -uo pipefail", 'compound_id="$1"', 'smiles="$2"',
+        'log="artifacts/logs/${compound_id}.prepare.log"',
+        'ligand_sdf="artifacts/ligands/${compound_id}.sdf"',
+        'python artifacts/input/smiles_to_3d.py --smiles "$smiles" --name "$compound_id" --output "$ligand_sdf" >"$log" 2>&1 || exit 0',
+        'mk_prepare_ligand.py -i "$ligand_sdf" -o "artifacts/ligands/${compound_id}.pdbqt" >>"$log" 2>&1 || exit 0',
+    ]) + "\n", encoding="utf-8")
     preparation_method = (
         f"MolScrub {scrub_route['version']} ({scrub_route['conformers']} conformer(s), "
         f"{scrub_route['ff_iterations']} MMFF94s iterations)/Meeko batches"
@@ -2085,20 +2041,7 @@ def run_ligand_unidock_pro(
         )
     ), encoding="utf-8")
     if use_scrub:
-        preparation_command = (
-            f"find artifacts/input/preparation_batches -type f -name '*.smi' -print0 | "
-            f"xargs -0 -r -n 1 -P {preparation_workers} bash artifacts/input/prepare_batch.sh; "
-            ": > artifacts/input/preparation_fallback.nul; "
-            "while IFS=$'\\t' read -r compound_id smiles; do "
-            "[[ -n \"$compound_id\" ]] || continue; "
-            "if [[ ! -s \"artifacts/ligands/${compound_id}.pdbqt\" ]]; then "
-            "printf '%s\\0%s\\0' \"$compound_id\" \"$smiles\" >> artifacts/input/preparation_fallback.nul; fi; "
-            "done < <(tail -n +2 artifacts/input/compounds.tsv); "
-            f"xargs -0 -r -n 2 -P {preparation_workers} bash artifacts/input/prepare_one_ligand.sh "
-            "< artifacts/input/preparation_fallback.nul; "
-            "rm -f artifacts/input/preparation_fallback.nul; "
-            "rm -rf artifacts/input/preparation_batches; "
-        )
+        preparation_command = "python artifacts/input/prepare_batch.py; "
     else:
         preparation_command = (
             f"xargs -0 -r -n 2 -P {preparation_workers} bash artifacts/input/prepare_one_ligand.sh "
@@ -2137,7 +2080,7 @@ def run_ligand_unidock_pro(
         )
         reference_argument = "--reference_ligand artifacts/prepared/reference_ligand.pdbqt "
     script = (
-        "set -euo pipefail; cd /work; "
+        "set -euo pipefail; cd /scratch; "
         "mkdir -p artifacts/prepared artifacts/ligands artifacts/poses artifacts/logs; "
         + scrub_preflight
         + receptor_preparation + reference_preparation
@@ -2156,23 +2099,51 @@ def run_ligand_unidock_pro(
         f"udp {receptor_argument}{reference_argument}--ligand_index artifacts/input/ligand_index.txt "
         f"--config artifacts/input/docking.conf --dir artifacts/poses --search_mode {search_mode} "
         f"--num_modes {num_modes} --seed {seed} || dock_status=$?; fi; "
-        "printf 'compound_id\\tstatus\\tbest_score_kcal_mol\\tcnn_score\\tcnn_affinity\\tpose_path\\terror\\n' > artifacts/docking_scores.csv; "
-        "tail -n +2 artifacts/input/compounds.tsv | while IFS=$'\\t' read -r compound_id smiles; do "
-        "[[ -n \"$compound_id\" ]] || continue; pose=\"artifacts/poses/${compound_id}_out.pdbqt\"; "
-        "if [[ -s \"$pose\" ]]; then "
-        "score=$(awk '/^REMARK VINA RESULT:/ {print $4; exit} /^REMARK minimizedAffinity / {print $3; exit}' \"$pose\"); "
-        "if [[ -n \"$score\" ]]; then printf '%s\\tcompleted\\t%s\\t\\t\\t%s\\t\\n' \"$compound_id\" \"$score\" \"$pose\" >> artifacts/docking_scores.csv; "
-        "else printf '%s\\tfailed\\t\\t\\t\\t\\tPose file has no readable docking score\\n' \"$compound_id\" >> artifacts/docking_scores.csv; fi; "
-        "else printf '%s\\tfailed\\t\\t\\t\\t\\tNo pose returned (dock exit %s)\\n' \"$compound_id\" \"$dock_status\" >> artifacts/docking_scores.csv; fi; done; "
-        "exit 0"
+        'python artifacts/input/collect_scores.py "$dock_status"; '
+        'exit "$dock_status"'
     )
-    return_code = run_docker_job(
-        job.run_dir,
-        load_manifest("unidock_pro"),
-        ["bash", "-lc", script],
-        gpu_device=str(gpu_device).strip(),
-        use_host_user=True,
-    )
+    # All high-file-count intermediates live on scratch; only compact outputs and
+    # the best requested batch poses are copied to the permanent results disk.
+    with tempfile.TemporaryDirectory(prefix="mn-unidock-", dir=os.environ.get("MN_DOCKING_SCRATCH_ROOT", "/tmp")) as folder:
+        scratch = Path(folder)
+        scratch_artifacts = scratch / "artifacts"
+        shutil.copytree(input_dir, scratch_artifacts / "input")
+        try:
+            return_code = run_docker_job(
+                job.run_dir, load_manifest("unidock_pro"), ["bash", "-lc", script],
+                gpu_device=str(gpu_device).strip(), use_host_user=True,
+                extra_mounts=[(scratch, "/scratch", False)],
+                environment={name: "1" for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")},
+            )
+        finally:
+            for name in ("docking_scores.csv", "preparation_summary.json"):
+                source = scratch_artifacts / name
+                if source.is_file():
+                    shutil.copy2(source, artifacts / name)
+            logs = scratch_artifacts / "logs"
+            if logs.is_dir():
+                shutil.copytree(logs, artifacts / "logs", dirs_exist_ok=True)
+            poses = scratch_artifacts / "poses"
+            if poses.is_dir():
+                keep = None
+                scores_file = scratch_artifacts / "docking_scores.csv"
+                if retained_pose_count and scores_file.is_file():
+                    with scores_file.open() as handle:
+                        scored = [r for r in csv.DictReader(handle, delimiter="\t") if r.get("status") == "completed"]
+                    scored.sort(key=lambda r: float(r["best_score_kcal_mol"]))
+                    # Include boundary ties: the campaign uses source IDs as a
+                    # secondary sort key, which differs from batch engine IDs.
+                    cutoff = float(scored[min(retained_pose_count, len(scored)) - 1]["best_score_kcal_mol"]) if scored else -math.inf
+                    keep = {Path(r["pose_path"]).name for r in scored if float(r["best_score_kcal_mol"]) <= cutoff}
+                (artifacts / "poses").mkdir(exist_ok=True)
+                for pose in poses.glob("*.pdbqt"):
+                    if keep is None or pose.name in keep:
+                        shutil.copy2(pose, artifacts / "poses" / pose.name)
+            if not cleanup_preparation:
+                for name in ("prepared", "ligands"):
+                    source = scratch_artifacts / name
+                    if source.is_dir():
+                        shutil.copytree(source, artifacts / name, dirs_exist_ok=True)
     score_path = artifacts / "docking_scores.csv"
     rows: list[dict[str, Any]] = []
     if score_path.is_file():
@@ -2199,6 +2170,9 @@ def run_ligand_unidock_pro(
             "return_code": return_code, "preparation_cpu_workers": preparation_workers,
             "preparation_batch_size": preparation_batch_size,
             "preparation_batch_count": preparation_batch_count,
+            "retry_count": 0, "failure_policy": "skip",
+            "cleanup_preparation": cleanup_preparation,
+            "preparation": read_json(artifacts / "preparation_summary.json"),
         },
         "downstream_artifacts": {"docking_scores": "artifacts/docking_scores.csv", "docking_poses": "artifacts/poses"},
     })

@@ -1285,6 +1285,12 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
                         help="When selected, Scrub keeps acid/base preparation enabled but does not enumerate tautomers. This was the setting used in the route benchmark.",
                     )
                     scrub_settings = SCRUB_PROTOCOLS[scrub_protocol]
+                    if is_unidock:
+                        cleanup_preparation = st.checkbox("Remove preparation intermediates after docking", value=True,
+                            key="ligand-unidock-cleanup-preparation")
+                        retained_pose_count = int(st.number_input("Best poses retained (0 = all)", min_value=0,
+                            value=0, step=100, key="ligand-unidock-retained-poses"))
+                        st.caption("MolScrub processes the full batch with the allocated CPU workers, followed by parallel Meeko chunks. Failed molecules are recorded without rescue attempts. Temporary scratch is removed after scores and retained poses are saved.")
                     st.caption(
                         f"Common settings: pH {scrub_ph:g}, acid/base preparation enabled, tautomer enumeration "
                         f"{'skipped' if scrub_skip_tautomer else 'enabled'}, MMFF94s; "
@@ -1400,6 +1406,8 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
                     if is_gnina:
                         parameters["cnn_scoring"] = cnn_scoring
                         parameters["compound_workers"] = compound_workers
+                    if is_unidock:
+                        parameters.update(cleanup_preparation=cleanup_preparation, retained_pose_count=retained_pose_count)
         with st.container(key="vina-example"):
             st.button("Load example inputs", on_click=_load_example,
                 kwargs={"owner_id": owner_id, "project_id": str(project_id or ""), "job_name_key": job_name_key, "example_job_name": example_names[tool_key]},

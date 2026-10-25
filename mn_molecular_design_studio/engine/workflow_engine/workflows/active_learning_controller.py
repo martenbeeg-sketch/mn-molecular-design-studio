@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import heapq
+import hashlib
 import json
 import math
 import os
@@ -12,6 +13,8 @@ import signal
 import sqlite3
 import subprocess
 import threading
+import tarfile
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -80,6 +83,14 @@ def _weighted_worker_assignments(rows: list[dict], workers: list[dict], indexes)
     return assignments
 
 
+def _weighted_batch_assignments(rows, workers, indexes, batch_size):
+    """Allocate whole launches so weights never create extra undersized batches."""
+    randomized = [rows[int(index)] for index in indexes]
+    batches = _compound_batches(randomized, batch_size)
+    groups = _weighted_worker_assignments(batches, workers, range(len(batches)))
+    return [[row for batch in group for row in batch] for group in groups]
+
+
 def _write_graph_state(path: Path, state: dict, *, node: str | None = None,
                        status: str | None = None, **values) -> None:
     if node is not None:
@@ -130,6 +141,7 @@ def _selected_worker_specs(node: dict) -> list[dict]:
     if not distributed_library._SSH_USER.fullmatch(ssh_user):
         raise ValueError("The SSH user must be a valid account name such as compute.")
     specs = distributed_library._node_specs(raw_specs, ssh_user=ssh_user)
+    lanes = []
     for spec, configured in zip(specs, raw_specs):
         available_cpu = int(spec.get("available_cpu") or 0)
         if spec["local"] and spec["cpu_cores"] > available_cpu:
@@ -137,25 +149,33 @@ def _selected_worker_specs(node: dict) -> list[dict]:
                 f"The organizer has {available_cpu:,} CPU slots free after reserving the campaign coordinator, "
                 f"but its docking worker requests {spec['cpu_cores']:,}. Lower the organizer's worker count or wait for other jobs to finish."
             )
-        gpu_id = str(configured.get("gpu_device") or "none")
-        if gpu_id.lower() in {"none", "cpu", "off"}:
+        gpu_ids = [str(value) for value in (configured.get("gpu_devices") or [configured.get("gpu_device") or "none"])]
+        if len(set(gpu_ids)) != len(gpu_ids):
+            raise ValueError(f"Select each GPU only once on {spec['name']}.")
+        if any(value.lower() in {"none", "cpu", "off"} for value in gpu_ids):
             raise ValueError(f"UniDock Pro requires a selected GPU on {spec['name']}.")
         gpu_records = spec.get("free_gpus") or []
         free = {str(item.get("gpu_id")) for item in (gpu_records or [])}
-        if gpu_id not in free:
-            raise ValueError(f"GPU {gpu_id} on {spec['name']} is no longer available.")
+        if any(value not in free for value in gpu_ids):
+            raise ValueError(f"A selected GPU on {spec['name']} is no longer available.")
+        if spec["cpu_cores"] < len(gpu_ids):
+            raise ValueError("Allocate at least one CPU slot per selected GPU.")
         batch_share = int(configured.get("batch_share") or 1)
         if not 1 <= batch_share <= 100:
             raise ValueError(f"The batch share for {spec['name']} must be between 1 and 100.")
-        spec.update(gpu_device=gpu_id, node_name=spec["name"], local=spec["node_id"] == cluster_config.identity(),
+        spec.update(node_name=spec["name"], local=spec["node_id"] == cluster_config.identity(),
                     batch_share=batch_share)
         if not spec["local"]:
             from mn_molecular_design_studio.cluster.distributed_library import _remote_environment
             remote_python, _repo, _state, _slots = _remote_environment(spec, str(node.get("ssh_user") or "compute"))
             spec["remote_python"] = remote_python
+        for index, gpu_id in enumerate(gpu_ids):
+            lanes.append({**spec, "gpu_device": gpu_id,
+                          "lane_id": f"{spec['node_id']}:gpu:{gpu_id}",
+                          "cpu_cores": spec["cpu_cores"] // len(gpu_ids) + (index < spec["cpu_cores"] % len(gpu_ids))})
     if not any(spec["local"] for spec in specs):
         raise ValueError("Include the organizer computer; it owns the screening fingerprint files and campaign results.")
-    return specs
+    return lanes
 
 
 def _docking_params(params: dict, target: dict, batch_file: Path, *, round_number: int,
@@ -197,6 +217,8 @@ def _docking_params(params: dict, target: dict, batch_file: Path, *, round_numbe
         "scrub_protocol": str(params.get("scrub_protocol") or "molscrub_0_1_0"),
         "scrub_ph": float(params.get("scrub_ph", 7.4)),
         "scrub_skip_tautomer": bool(params.get("scrub_skip_tautomer", True)),
+        "cleanup_preparation": bool(params.get("cleanup_preparation", True)),
+        "retained_pose_count": int(params.get("batch_retained_pose_count") or 0),
         "align_longest_axis_to_x": alignment_enabled,
         "alignment_ligand_sdf": alignment_ligand if alignment_enabled else None,
         # The dimensions configured in the receptor node describe the aligned
@@ -518,33 +540,74 @@ def _save_failed_compound_table(path: Path, failures: list[dict]) -> None:
 
 
 def _collect_best_poses(campaign: Path, scores: list[dict], count: int, *, ssh_user: str) -> list[str]:
+    """Retain cumulative winners before deleting worker files, reusing earlier winners.
+
+    Remote poses are streamed in one tar transfer per worker run and checked
+    against source SHA256 values. A manifest is published only after all copies
+    succeed. Previous retained files survive a failed transfer.
+    """
     selected = [row for row in scores[:count] if row.get("pose_path") and row.get("worker_run_dir")]
     destination = campaign / "artifacts" / "active_learning" / "retained_poses"
     destination.mkdir(parents=True, exist_ok=True)
-    manifest = []
-    for index, row in enumerate(selected, start=1):
-        filename = f"{index:05d}_{row['library_id'][-8:]}_{row['compound_key']}.pdbqt"
-        local_path = destination / filename
-        remote = row.get("worker_host")
-        relative = str(row["pose_path"])
-        remote_path = str((Path(row["worker_run_dir"]) / relative).resolve())
-        if remote:
-            from mn_molecular_design_studio.cluster.distributed_library import _HOST
-            if not _HOST.fullmatch(str(remote)):
-                raise ValueError("A docking worker returned an invalid workstation host name.")
-            command = ["scp", "-q", f"{ssh_user}@{remote}:{shlex.quote(remote_path)}", str(local_path)]
-            subprocess.run(command, check=True, capture_output=True, text=True, timeout=None)
-        else:
-            source = Path(row["worker_run_dir"]) / relative
-            if not source.is_file():
-                continue
-            shutil.copy2(source, local_path)
+    manifest_path = destination.parent / "retained_poses.json"
+    previous = {(item["library_id"], int(item["compound_key"])): item
+                for item in read_json(manifest_path).get("poses", [])}
+    manifest, groups = [], {}
+    for row in selected:
+        key = (row["library_id"], int(row["compound_key"]))
+        identity = hashlib.sha256(f"{key[0]}:{key[1]}".encode()).hexdigest()[:24]
+        local_path = destination / f"{identity}.pdbqt"
+        old = previous.get(key)
+        reusable = old and old.get("worker_job_code") == row.get("worker_job_code") and local_path.is_file()
+        if not reusable:
+            host = str(row.get("worker_host") or "")
+            source = Path(row["worker_run_dir"]) / str(row["pose_path"])
+            if host:
+                groups.setdefault((host, str(source.parent)), []).append((source.name, local_path))
+            else:
+                if not source.is_file():
+                    raise RuntimeError(f"A selected best pose is missing: {source}")
+                shutil.copy2(source, local_path.with_suffix(".pending"))
+                local_path.with_suffix(".pending").replace(local_path)
         manifest.append({"path": str(local_path.relative_to(campaign)),
                          "library_id": row["library_id"], "compound_key": row["compound_key"],
                          "compound_id": row["compound_id"], "score": row["best_score"],
                          "worker_node_id": row.get("worker_node_id"), "worker_job_code": row.get("worker_job_code")})
-    manifest_path = campaign / "artifacts" / "active_learning" / "retained_poses.json"
+    for (host, source_directory), files in groups.items():
+        from mn_molecular_design_studio.cluster.distributed_library import _HOST
+        if not _HOST.fullmatch(host):
+            raise ValueError("A docking worker returned an invalid host name.")
+        names = [name for name, _path in files]
+        if any(Path(name).name != name for name in names):
+            raise ValueError("A docking worker returned an invalid pose filename.")
+        ssh = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", f"{ssh_user}@{host}"]
+        checksums = subprocess.run(ssh + [shlex.join(["sha256sum", "--", *[source_directory + "/" + name for name in names]])],
+                                   check=True, capture_output=True, text=True)
+        expected = {Path(line.split(None, 1)[1].strip()).name: line.split()[0]
+                    for line in checksums.stdout.splitlines()}
+        wanted = dict(files)
+        with tempfile.TemporaryFile() as archive:
+            subprocess.run(ssh + [shlex.join(["tar", "-C", source_directory, "-cf", "-", "--", *names])],
+                           stdout=archive, stderr=subprocess.PIPE, check=True)
+            archive.seek(0)
+            with tarfile.open(fileobj=archive, mode="r|") as stream:
+                for member in stream:
+                    if member.name not in wanted or not member.isfile():
+                        raise RuntimeError("Unexpected file in the retained-pose transfer.")
+                    output = wanted[member.name]
+                    pending = output.with_suffix(".pending")
+                    with stream.extractfile(member) as source, pending.open("wb") as handle:
+                        shutil.copyfileobj(source, handle)
+                    if hashlib.sha256(pending.read_bytes()).hexdigest() != expected.get(member.name):
+                        raise RuntimeError("Retained-pose checksum mismatch; worker output was preserved.")
+                    pending.replace(output)
+        if any(not path.is_file() for _name, path in files):
+            raise RuntimeError("The retained-pose transfer is incomplete; worker output was preserved.")
     write_json(manifest_path, {"retained_count": len(manifest), "poses": manifest})
+    keep = {Path(item["path"]).name for item in manifest}
+    for path in destination.glob("*.pdbqt"):
+        if path.name not in keep:
+            path.unlink()
     return [str(item["path"]) for item in manifest]
 
 
@@ -684,6 +747,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
     score_units = str(docking.get("score_units") or "kcal/mol")
     direction = str(docking.get("score_direction") or "Lower is better")
     retain_poses = int(params["active_accumulate"].get("retained_pose_count") or 0)
+    ssh_user = str(docking.get("ssh_user") or "compute")
     selection_node = params["active_select"]
     seed_fraction_percent = float(selection_node.get("next_round_seed_fraction_percent", 50.0))
     predicted_fraction = float(selection_node.get("predicted_fraction_percent", 80.0)) / 100.0
@@ -769,6 +833,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                 phase(nodes["active_docking"]["id"], f"Docking round {round_number} · {len(selection_rows):,} compounds",
                       round_number=round_number, compound_count=len(selection_rows), worker_nodes=worker_states)
 
+            docking["batch_retained_pose_count"] = max(1, int(params["active_accumulate"].get("retained_pose_count") or 0))
             all_results, failed_results = _dock_round(
                 campaign=campaign, round_number=round_number, rows=selection_rows, workers=workers,
                 docking=docking, target=target, owner_id=owner_id, project_id=project_id,
@@ -811,6 +876,14 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
             previous_top = current_top
             write_json(round_folder / "round.json", history_item)
             checkpoint()
+            # Keep cumulative winners every round before deleting worker files.
+            # The manifest reuses earlier winners whose source files are gone.
+            _collect_best_poses(campaign, ranked, retain_poses, ssh_user=ssh_user)
+            _save_score_table(data_root / "docking_scores.parquet", [
+                {**row, "score": row["best_score"], "score_field": score_field, "score_units": score_units}
+                for row in ranked])
+            if docking.get("cleanup_after_round", True):
+                _cleanup_docking_artifacts(worker_summary, ssh_user=ssh_user)
             phase(nodes["active_accumulate"]["id"], f"Accumulated and ranked {len(ranked):,} unique compounds",
                   status="completed", round_number=round_number, unique_compound_count=len(ranked), score_units=score_units)
             phase(nodes["active_decision"]["id"], "Comparing cumulative top-ranked scores",
@@ -993,7 +1066,7 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
         raise ValueError(f"Each computer's UniDock Pro batch must be between 1 and {MAX_COMPOUNDS_PER_LAUNCH:,} compounds.")
     random = np.random.default_rng(int(docking.get("sampling_seed") or 42) + round_number)
     indexes = random.permutation(len(rows))
-    assignments = _weighted_worker_assignments(rows, workers, indexes)
+    assignments = _weighted_batch_assignments(rows, workers, indexes, launch_batch_size)
     request_info = []
     marker = read_json(campaign / "molecular_design_studio.json")
     schema = pa.schema([("engine_id", pa.string()), ("library_id", pa.string()), ("compound_key", pa.uint64()),
@@ -1034,9 +1107,13 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
             batches.append((mapping, request))
         request_info.append((worker, batches, len(selected)))
 
+    lane_key = lambda worker: worker.get("lane_id") or worker["node_id"]
+    progress_lock = threading.RLock()
+    from collections import deque
+    pending_by_lane = {lane_key(worker): deque(batches) for worker, batches, _count in request_info}
     results, failures = [], []
     errors = []
-    status_by_worker = {worker["node_id"]: {"node_id": worker["node_id"], "name": worker["node_name"],
+    status_by_worker = {lane_key(worker): {"node_id": worker["node_id"], "name": worker["node_name"],
         "cpu_cores": worker["cpu_cores"], "gpu_device": worker["gpu_device"], "status": "queued",
         "batch_share": worker.get("batch_share") or 1,
         "assigned_compound_count": assigned_count,
@@ -1046,15 +1123,35 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
 
     def publish_progress():
         if worker_progress:
-            worker_progress([dict(item) for item in status_by_worker.values()])
+            with progress_lock:
+                worker_progress([dict(item) for item in status_by_worker.values()])
 
     def run_worker_batches(worker, batches):
         worker_rows, worker_failures = [], []
         child_runs = []
-        for batch_index, (mapping, request) in enumerate(batches, start=1):
+        key = lane_key(worker)
+        batch_index = 0
+        while True:
+            with progress_lock:
+                queue = pending_by_lane[key]
+                if not queue:
+                    donor = max(pending_by_lane, key=lambda value: len(pending_by_lane[value]))
+                    queue = pending_by_lane[donor]
+                    if not queue:
+                        break
+                    mapping, request = queue.popleft()
+                    status_by_worker[donor]["batch_count"] -= 1
+                    status_by_worker[donor]["assigned_compound_count"] -= len(mapping)
+                    status_by_worker[key]["batch_count"] += 1
+                    status_by_worker[key]["assigned_compound_count"] += len(mapping)
+                else:
+                    mapping, request = queue.popleft()
+                batch_index += 1
+            request["parameters"].update(cpu_cores=int(worker["cpu_cores"]), gpu_device=str(worker["gpu_device"]),
+                job_name=f"Active learning round {round_number:03d} · {worker['node_name']} · GPU {worker['gpu_device']}")
             if cancel_check():
                 raise RuntimeError("Active-learning campaign was cancelled before this docking batch.")
-            status_by_worker[worker["node_id"]].update(status="running", current_batch=batch_index)
+            status_by_worker[lane_key(worker)].update(status="running", current_batch=batch_index)
             publish_progress()
             job_result = _dispatch_docking_shard(request=request, worker=worker,
                 campaign=campaign, ssh_user=ssh_user, cancel_check=cancel_check)
@@ -1066,7 +1163,7 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
             child_runs.append({"job_code": job_result.get("job_code"),
                                "run_dir": job_result.get("worker_run_dir") or job_result.get("run_dir"),
                                "host": job_result.get("host", "")})
-            status_by_worker[worker["node_id"]].update(completed_batches=batch_index,
+            status_by_worker[lane_key(worker)].update(completed_batches=batch_index,
                 scored_count=len(worker_rows), failed_count=len(worker_failures),
                 job_code=job_result.get("job_code"))
             publish_progress()
@@ -1079,7 +1176,7 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
             worker = futures[future]
             try:
                 score_rows, failed_rows, child_runs = future.result()
-                status_by_worker[worker["node_id"]].update(
+                status_by_worker[lane_key(worker)].update(
                     status="completed", child_runs=child_runs,
                     scored_count=len(score_rows),
                     failed_count=len(failed_rows),
@@ -1089,7 +1186,7 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
                 publish_progress()
             except Exception as exc:
                 errors.append(f"{worker['node_name']}: {exc}")
-                status_by_worker[worker["node_id"]].update(status="failed", error=str(exc))
+                status_by_worker[lane_key(worker)].update(status="failed", error=str(exc))
                 publish_progress()
     if errors:
         raise RuntimeError("The docking round did not finish on every computer: " + "; ".join(errors))
@@ -1127,7 +1224,8 @@ def _read_selection_table(path: Path) -> list[dict]:
 def _summarize_round_workers(rows: list[dict], failures: list[dict] | None = None) -> list[dict]:
     grouped = {}
     for row, failed in [(row, False) for row in rows] + [(row, True) for row in (failures or [])]:
-        item = grouped.setdefault(row["worker_node_id"], {"node_id": row["worker_node_id"],
+        lane = (row["worker_node_id"], str(row.get("worker_gpu_device") or ""))
+        item = grouped.setdefault(lane, {"node_id": row["worker_node_id"],
             "name": row["worker_node_name"], "job_code": row.get("worker_job_code"),
             "host": row.get("worker_host"), "run_dir": row.get("worker_run_dir"),
             "run_dirs": [], "job_codes": [], "cpu_cores": row.get("worker_cpu_cores"),
