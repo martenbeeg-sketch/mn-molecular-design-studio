@@ -2104,6 +2104,21 @@ def run_ligand_unidock_pro(
             f"xargs -0 -r -n 2 -P {preparation_workers} bash artifacts/input/prepare_one_ligand.sh "
             "< artifacts/input/compounds.nul; "
         )
+    scrub_preflight = ""
+    if use_scrub:
+        scrub_version = str(scrub_route["version"])
+        scrub_python = shlex.quote(str(scrub_route["python_executable"]))
+        scrub_executable = shlex.quote(str(scrub_route["executable"]))
+        scrub_version_check = shlex.quote(
+            "from importlib.metadata import version; "
+            f'assert version("molscrub") == "{scrub_version}"'
+        )
+        scrub_preflight = (
+            f"if [[ ! -x {scrub_executable} ]] || "
+            f"! {scrub_python} -c {scrub_version_check}; then "
+            f"echo 'Required MolScrub {scrub_version} is not installed in this docking image.' >&2; "
+            "exit 2; fi; "
+        )
     receptor_preparation = ""
     receptor_argument = ""
     if mode in {"classic", "hybrid"}:
@@ -2124,6 +2139,7 @@ def run_ligand_unidock_pro(
     script = (
         "set -euo pipefail; cd /work; "
         "mkdir -p artifacts/prepared artifacts/ligands artifacts/poses artifacts/logs; "
+        + scrub_preflight
         + receptor_preparation + reference_preparation
         + preparation_command
         + f"printf 'Preparation method: {preparation_method}; batch size %s; batch count %s\\n' {preparation_batch_size} {preparation_batch_count} > artifacts/logs/preparation.log; "

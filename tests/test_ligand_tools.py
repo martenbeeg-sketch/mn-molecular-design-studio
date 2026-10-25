@@ -1006,6 +1006,8 @@ def test_unidock_pro_tile_batches_compounds_on_gpu_and_emits_typed_poses(tmp_pat
     assert captured["use_host_user"] is True
     assert "--ligand_index artifacts/input/ligand_index.txt" in script
     assert "--search_mode detail" in script
+    assert "Required MolScrub 0.1.0 is not installed in this docking image." in script
+    assert "/opt/molscrub/venvs/0.1.0/bin/python" in script
     assert "xargs -0 -r -n 2 -P 2 bash artifacts/input/prepare_one_ligand.sh" in script
     assert "find artifacts/input/preparation_batches -type f -name '*.smi' -print0" in script
     assert "xargs -0 -r -n 1 -P 2 bash artifacts/input/prepare_batch.sh" in script
