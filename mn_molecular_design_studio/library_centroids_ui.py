@@ -68,7 +68,19 @@ def render_setup(schema, *, user, project_selector, submit):
                           key="library-centroid-method")
     st.caption("Fingerprints stay unchanged: feature Morgan, radius 2, 1024 bits, chirality enabled. Each chunk uses OpenVS-style best-first selection, ordered by molecular weight, with exact Tanimoto comparisons and no pairwise matrix.")
     row_count = int(selected_manifest.get("rows") or 0)
-    chunk_size, chunk_count, candidate_count, merge_rounds, seed = 300_000, 0, 300_000, 3, 42
+    source_sample_size = 0
+    if method != "exact":
+        source_sample_size = int(st.number_input(
+            "Random input sample for a pilot (0 = use the full library)",
+            min_value=0, max_value=max(0, row_count), value=0, step=1_000_000,
+            key="library-centroid-source-sample-size",
+            help="Select a deterministic random subset from the prepared fingerprints. The centroid manifest records both the sample size and full source-library size.",
+        ))
+    active_row_count = source_sample_size or row_count
+    if source_sample_size:
+        st.info(f"Pilot input: {source_sample_size:,} randomly selected compounds from {row_count:,} prepared compounds.")
+    chunk_size, chunk_count, candidate_count, merge_rounds, seed = 300_000, 0, 300_000, 0, 42
+    target_reduction_factor, plateau_reduction_percent, plateau_consecutive_rounds = 10, 1.0, 3
     worker_nodes, source_cpus = [], 1
     ssh_user = "compute"
     workers_ready = True
@@ -79,14 +91,14 @@ def render_setup(schema, *, user, project_selector, submit):
             chunk_size = int(st.number_input("Target compounds per chunk", min_value=1, value=300_000,
                                             step=10_000, key="library-centroid-chunk-size"))
         else:
-            default_count = max(1, (row_count + 299_999) // 300_000)
+            default_count = max(1, (active_row_count + 299_999) // 300_000)
             chunk_count = int(st.number_input("Number of random chunks", min_value=1,
-                                             max_value=max(1, row_count), value=default_count,
+                                             max_value=max(1, active_row_count), value=default_count,
                                              key="library-centroid-chunk-count"))
-            chunk_size = max(1, (row_count + chunk_count - 1) // chunk_count)
-        if row_count:
-            sizes = balanced_chunk_sizes(row_count, chunk_size, chunk_count)
-            st.caption(f"{row_count:,} compounds → {len(sizes):,} random chunks of {min(sizes):,}–{max(sizes):,} compounds. Chunk sizes differ by at most one compound.")
+            chunk_size = max(1, (active_row_count + chunk_count - 1) // chunk_count)
+        if active_row_count:
+            sizes = balanced_chunk_sizes(active_row_count, chunk_size, chunk_count)
+            st.caption(f"{active_row_count:,} compounds → {len(sizes):,} random chunks of {min(sizes):,}–{max(sizes):,} compounds. Chunk sizes differ by at most one compound.")
         if method == "sampled":
             candidate_count = int(st.number_input(
                 "Maximum representatives in the final comparison", min_value=1, value=300_000,
@@ -96,10 +108,26 @@ def render_setup(schema, *, user, project_selector, submit):
             st.info("This method samples local representatives before the final clustering. It produces a diverse subset; it does not guarantee a representative within the threshold for every original compound. Final cluster sizes count the sampled candidates.")
         else:
             merge_rounds = int(st.number_input(
-                "Maximum additional merge rounds (0 = until stable)", min_value=0, value=3,
+                "Maximum additional merge rounds (0 = stopping criteria or stable)", min_value=0, value=0,
                 key="library-centroid-merge-rounds",
             ))
-            st.info("Every local representative continues into the next round. Cluster sizes retain the original compound populations, but the similarity threshold applies at each merge step. Merging does not guarantee the same threshold between the final representative and every original compound.")
+            stop_columns = st.columns(3)
+            target_reduction_factor = int(stop_columns[0].number_input(
+                "Stop at reduction factor (0 disables)", min_value=0, max_value=1000, value=10,
+                key="library-centroid-stop-factor",
+                help="10 stops when the representative count is at most one tenth of the input count.",
+            ))
+            plateau_reduction_percent = float(stop_columns[1].number_input(
+                "Plateau threshold (%) (0 disables)", min_value=0.0, max_value=100.0, value=1.0,
+                step=0.1, key="library-centroid-plateau-percent",
+                help="A round is considered stalled when it reduces representatives by less than this percentage.",
+            ))
+            plateau_consecutive_rounds = int(stop_columns[2].number_input(
+                "Consecutive plateau rounds", min_value=1, max_value=100, value=3,
+                key="library-centroid-plateau-rounds",
+                help="Require this many consecutive low-reduction rounds before stopping on the plateau rule.",
+            ))
+            st.info("Stop when either the reduction factor is reached or the plateau threshold holds for the configured consecutive rounds. Every local representative continues into the next round until then. Cluster sizes retain original compound populations, but the similarity threshold applies at each merge step; merging does not guarantee the same threshold between the final representative and every original compound.")
         seed = int(st.number_input("Random seed", min_value=0, max_value=2**53 - 1, value=42,
                                    key="library-centroid-seed"))
         nodes = _worker_choices()
@@ -110,27 +138,44 @@ def render_setup(schema, *, user, project_selector, submit):
             format_func=lambda node_id: next(node["name"] for node in nodes if node["node_id"] == node_id)
                 + (" · source / coordinator" if node_id == selected_node else ""),
             key="library-centroid-workers-" + selected_node,
-            help="One Studio job coordinates all workers. Each computer reserves its CPU slots with its scheduler. Include the source workstation.",
+            help="One Studio job coordinates all workers. Enabled computers remain selectable if their peer heartbeat is stale; the job checks each scheduler and CPU allocation live before starting. Include the source workstation.",
         )
         workers_ready = source_available and selected_node in chosen
         if not workers_ready:
-            st.warning("Include the source workstation among the workers; it must be online and accepting jobs.")
+            st.warning("Include the source workstation among the workers.")
         selected_nodes = [node for node in nodes if node["node_id"] in chosen]
         if selected_nodes:
-            st.markdown("**CPU slots per computer**")
+            st.markdown("**CPU slots and chunk share per computer**")
             columns = st.columns(min(3, len(selected_nodes)))
             for index, node in enumerate(selected_nodes):
                 limit = node["cpu_available"]
+                default_cpus = min(limit, 32) if node["node_id"] == selected_node else limit
                 count = int(columns[index % len(columns)].number_input(
-                    node["name"], min_value=1, max_value=limit, value=limit,
-                    help=f"Default: all {limit} CPU slots currently available from this computer's scheduler.",
-                    key="library-centroid-cpus-v1-" + node["node_id"],
+                    node["name"], min_value=1, max_value=limit, value=default_cpus,
+                    help=(f"Default: {default_cpus} slots. The organizer uses its tested 32-slot setting; remote computers default to all {limit} slots currently available from their schedulers."),
+                    key="library-centroid-cpus-v3-" + node["node_id"],
                 ))
-                worker_nodes.append({"node_id": node["node_id"], "cpu_cores": count})
+                max_parallel_default = 1 if node["node_id"] == selected_node else count
+                max_parallel = int(columns[index % len(columns)].number_input(
+                    f"Concurrent chunks · {node['name']}", min_value=1, max_value=count,
+                    value=min(count, max_parallel_default),
+                    help=("Organizer default is one chunk at a time: the measured large-round throughput was better than running many 2-core chunk tasks concurrently. "
+                          "Remote defaults use all selected CPU slots, distributing them across simultaneous chunks."),
+                    key="library-centroid-max-parallel-v1-" + node["node_id"],
+                ))
+                chunk_weight = int(columns[index % len(columns)].number_input(
+                    f"Chunk share · {node['name']}", min_value=1, max_value=1000,
+                    value=1 if node["node_id"] == selected_node else 4,
+                    help="Relative number of chunks assigned to this computer. Defaults reflect the measured first-round aggregate throughput (organizer 1, each remote about 4); adjust after benchmarking.",
+                    key="library-centroid-chunk-weight-v2-" + node["node_id"],
+                ))
+                worker_nodes.append({"node_id": node["node_id"], "cpu_cores": count,
+                                     "chunk_weight": chunk_weight,
+                                     "max_parallel_chunks": max_parallel})
                 if node["node_id"] == selected_node:
                     source_cpus = count
         ssh_user = st.text_input("SSH account on worker computers", value="compute", key="library-centroid-ssh")
-        st.caption("Independent chunks run concurrently across computers and CPU processes. When fewer chunks are available, CPU threads work within each chunk. Completed outputs return to the coordinator after all workers in the round finish. Temporary chunks are removed; the final Parquet table and manifest are retained.")
+        st.caption("Independent chunks run across computers. CPU slots are divided across the configured concurrent chunks; chunk shares set each computer's relative amount of work. Defaults use the measured throughput of these three computers. The selected schedulers and free CPU slots are checked live. Completed outputs return to the coordinator after all workers in the round finish. Temporary chunks are removed; the final Parquet table and manifest are retained.")
     else:
         st.caption("This reference method runs on one CPU and uses a disk-backed index. Large diverse libraries can take substantial time.")
     output_directory = st.text_input(
@@ -156,14 +201,19 @@ def render_setup(schema, *, user, project_selector, submit):
             "similarity_threshold": float(threshold),
             "clustering_method": method, "cpu_cores": source_cpus,
             "chunk_size": chunk_size, "chunk_count": chunk_count,
+            "source_sample_size": source_sample_size,
             "final_candidate_count": candidate_count, "max_merge_rounds": merge_rounds,
+            "target_reduction_factor": target_reduction_factor,
+            "plateau_reduction_percent": plateau_reduction_percent,
+            "plateau_consecutive_rounds": plateau_consecutive_rounds,
             "random_seed": seed, "worker_nodes": worker_nodes, "ssh_user": ssh_user.strip(),
         }
         try:
             submit(schema, "library.centroids", parameters, project_id,
                    {"_execution": {"placement": placement, "idempotency_key": secrets.token_urlsafe(24),
                                    **({"organizer_output_directory": organizer_output.strip()} if remote_target else {})}},
-                   "Library centroid creation")
+                   (f"Library centroid pilot · {source_sample_size:,} input compounds"
+                    if source_sample_size else "Library centroid creation"))
         except (OSError, ValueError) as exc:
             st.error(str(exc))
 

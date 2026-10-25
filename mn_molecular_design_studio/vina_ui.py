@@ -1331,6 +1331,17 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
                                                          max_value=compound_limit_max, key=f"ligand-{tool_key}-compound-limit"))
                         cores = int(cols[3].number_input("CPU cores", value=4, min_value=1, max_value=256, key=f"ligand-{tool_key}-cpu-cores"))
                         gpu_device = st.text_input("GPU device", value="0", key=f"ligand-{tool_key}-gpu", help="Use a device ID such as 0.") if (is_gnina or is_unidock) else "none"
+                    unidock_mode = "classic"
+                    if is_unidock:
+                        unidock_mode = st.selectbox(
+                            "UniDock Pro docking mode", ["classic", "ligand_based", "hybrid"],
+                            index=0, format_func=lambda value: {
+                                "classic": "Structure-based (classic)",
+                                "ligand_based": "Ligand-based",
+                                "hybrid": "Hybrid (receptor + reference ligand)",
+                            }[value], key="ligand-unidock-pro-mode",
+                            help="Docking mode controls which target information UniDock Pro uses. Search effort is a separate setting.",
+                        )
                     seed = int(st.number_input("Random seed", value=42, min_value=1, max_value=2_147_483_646, key=f"ligand-{tool_key}-seed"))
                     cnn_scoring = "rescore"
                     if is_gnina:
@@ -1352,17 +1363,25 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
                             help="Run independent compounds concurrently on the assigned GPU. CPU threads are divided across workers; use 1 if GPU memory is tight.",
                         ))
                     align = st.checkbox("Align a reference ligand's longest axis with global X", key=f"ligand-{tool_key}-align-axis-x")
-                    alignment_upload = st.file_uploader("Coordinate-bearing alignment ligand (SDF)", type=["sdf"], key=f"ligand-{tool_key}-alignment-ligand") if align else None
+                    needs_reference_ligand = is_unidock and unidock_mode in {"hybrid", "ligand_based"}
+                    alignment_label = ("Reference ligand SDF for UniDock Pro docking and coordinate alignment *"
+                                       if needs_reference_ligand and align else
+                                       "Reference ligand SDF for UniDock Pro docking *"
+                                       if needs_reference_ligand else "Coordinate-bearing alignment ligand (SDF) *" if align else "")
+                    alignment_upload = st.file_uploader(
+                        alignment_label, type=["sdf"], key=f"ligand-{tool_key}-alignment-ligand",
+                        help="Hybrid uses both the receptor and this ligand. Ligand-based mode uses the ligand as its reference. If axis alignment is enabled, the same rigid transform is applied to the reference ligand.",
+                    ) if align or needs_reference_ligand else None
                     if is_gnina:
                         st.caption("CNN scoring changes both runtime and result ranking. GNINA can process independent compounds concurrently in one job; each worker shares the assigned GPU and receives a portion of the CPU allocation.")
                     if is_unidock:
-                        st.caption("Uni-Dock Pro requires a CUDA GPU. Search effort controls the speed and sampling depth.")
+                        st.caption("Uni-Dock Pro requires a CUDA GPU. Structure-based (classic) uses the receptor, ligand-based uses the reference ligand, and Hybrid uses both. Search effort (fast, balance, detail) is independent.")
                     if is_autodock_gpu:
                         st.caption("AutoDock-GPU uses AutoGrid maps and AutoDock4 scoring. The selected GPU runs compounds one at a time; LGA runs control per-compound search effort.")
                     st.caption("Alignment rotates the receptor, box, and returned poses together. Scores and poses remain available to downstream pipelines.")
                     parameters = {
                         **center, **size,
-                        **({"nrun": nrun} if is_autodock_gpu else {"search_mode": search_mode} if is_unidock else {"exhaustiveness": exhaustiveness}),
+                        **({"nrun": nrun} if is_autodock_gpu else {"search_mode": search_mode, "mode": unidock_mode} if is_unidock else {"exhaustiveness": exhaustiveness}),
                         **({} if is_autodock_gpu else {"num_modes": modes}),
                         "compound_limit": limit, "cpu_cores": cores,
                         "seed": seed, "gpu_device": gpu_device,
@@ -1394,7 +1413,8 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
         with st.container(key="vina-submit"):
             rosetta_ready = not is_rosetta or rosetta_readiness["ready"]
             reference_required = is_rosetta and reference_mode == "reference_guided"
-            run = st.button("Submit", type="primary", disabled=(not project_id or not target_path or not coordinates or not compounds or not pocket_ready or not rosetta_ready or (reference_required and reference_upload is None) or (not is_rosetta and align and alignment_upload is None)), key=f"ligand-{tool_key}-run", use_container_width=True)
+            unidock_reference_required = is_unidock and unidock_mode in {"hybrid", "ligand_based"}
+            run = st.button("Submit", type="primary", disabled=(not project_id or not target_path or not coordinates or not compounds or not pocket_ready or not rosetta_ready or (reference_required and reference_upload is None) or (not is_rosetta and align and alignment_upload is None) or (unidock_reference_required and alignment_upload is None)), key=f"ligand-{tool_key}-run", use_container_width=True)
             st.caption(f"Submit 1 job · {min(compounds['compound_count'], limit) if compounds else 0} ligand(s)")
         if run:
             try:
@@ -1406,7 +1426,10 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
                     from mn_molecular_design_studio.engine.workflow_engine.workflows import ligand_tools
                     path = _save_reference_ligand_upload(owner_id, alignment_upload.name, alignment_upload.getvalue())
                     ligand_tools._sdf_heavy_atom_coordinates(path)
-                    parameters["alignment_ligand_sdf"] = str(path)
+                    if align:
+                        parameters["alignment_ligand_sdf"] = str(path)
+                    if unidock_reference_required:
+                        parameters["reference_ligand_sdf"] = str(path)
                 submit(schema, workflow_id, parameters, str(project_id), {}, title)
             except (ValueError, OSError) as exc:
                 st.error(f"Could not start {page_title}: {exc}")

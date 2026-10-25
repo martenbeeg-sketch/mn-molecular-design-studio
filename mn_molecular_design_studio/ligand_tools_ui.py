@@ -678,8 +678,18 @@ def render_setup(
         }
         with st.expander("Search settings", expanded=False):
             search_cols = st.columns(3)
+            unidock_mode = "classic"
             if is_unidock:
                 search_mode = search_cols[0].selectbox("Search effort", ["fast", "balance", "detail"], index=1, key=f"ligand-{tool_key}-search-mode")
+                unidock_mode = st.selectbox(
+                    "UniDock Pro docking mode", ["classic", "ligand_based", "hybrid"],
+                    index=0, format_func=lambda value: {
+                        "classic": "Structure-based (classic)",
+                        "ligand_based": "Ligand-based",
+                        "hybrid": "Hybrid (receptor + reference ligand)",
+                    }[value], key=f"ligand-{tool_key}-mode",
+                    help="Docking mode determines whether UniDock Pro uses the receptor, reference ligand, or both. It is independent of Search effort.",
+                )
             elif is_autodock_gpu:
                 nrun = int(search_cols[0].number_input("LGA runs per compound", min_value=1, max_value=500, value=20, step=1, key=f"ligand-{tool_key}-nrun"))
             else:
@@ -729,6 +739,7 @@ def render_setup(
                     help="When cleared, Scrub may generate tautomer states before docking.",
                 )
         align_longest_axis_to_x = False
+        alignment_ligand_upload = None
         if not is_rosetta:
             st.subheader("Docking coordinate frame")
             align_longest_axis_to_x = st.checkbox(
@@ -737,17 +748,21 @@ def render_setup(
                 key=f"ligand-{tool_key}-align-axis-x",
                 help="Rotate the receptor and docking box together around the uploaded ligand's centroid.",
             )
-            if align_longest_axis_to_x:
+            unidock_reference_required = is_unidock and unidock_mode in {"hybrid", "ligand_based"}
+            if align_longest_axis_to_x or unidock_reference_required:
                 alignment_ligand_upload = st.file_uploader(
+                    "Reference ligand SDF for UniDock Pro docking and alignment *" if unidock_reference_required and align_longest_axis_to_x else
+                    "Reference ligand SDF for UniDock Pro docking *" if unidock_reference_required else
                     "Coordinate-bearing alignment ligand (SDF) *",
                     type=["sdf"],
                     key=f"ligand-{tool_key}-alignment-ligand",
-                    help="This ligand defines the axis only; it is not docked unless it is also included in the Database compound set.",
+                    help="Hybrid uses both receptor and reference ligand. Ligand-based mode uses the ligand as a placement reference. If axis alignment is enabled, the same transform is applied to this ligand.",
                 )
-                st.caption("Docking poses and the staged receptor will share the rotated coordinate frame. The transform is saved with the results.")
+                if align_longest_axis_to_x:
+                    st.caption("Docking poses, the receptor, and the selected reference ligand share the rotated coordinate frame. The transform is saved with the results.")
         parameters = {
             **center, **sizes,
-            **({"search_mode": search_mode} if is_unidock else {"nrun": nrun} if is_autodock_gpu else {"exhaustiveness": exhaustiveness}),
+            **({"search_mode": search_mode, "mode": unidock_mode} if is_unidock else {"nrun": nrun} if is_autodock_gpu else {"exhaustiveness": exhaustiveness}),
             **({} if is_autodock_gpu else {"num_modes": num_modes}),
             "compound_limit": compound_limit, "cpu_cores": cpu_cores,
             "seed": 42, "gpu_device": gpu_device,
@@ -900,6 +915,7 @@ def render_setup(
         or (is_rosetta and ligand_tools.rosettaligand_runner_readiness()["ready"] is False)
         or (is_rosetta and parameters.get("reference_mode") == "reference_guided" and not uploaded_reference)
         or (is_docking and not is_rosetta and parameters.get("align_longest_axis_to_x") and not alignment_ligand_upload)
+        or (is_unidock and parameters.get("mode") in {"hybrid", "ligand_based"} and not alignment_ligand_upload)
         or (is_nesso and not ligand_tools.nesso_readiness()["ready"])
     )
     if st.button("Run tool", type="primary", disabled=disabled, key=f"ligand-tool-run-{workflow_id}"):
@@ -912,14 +928,17 @@ def render_setup(
             else:
                 target_path = _save_target_upload(owner_id, uploaded.name, uploaded.getvalue())
                 parameters.update({"target_pdb": str(target_path)})
-            if is_docking and not is_rosetta and parameters.get("align_longest_axis_to_x") and alignment_ligand_upload:
+            if is_docking and not is_rosetta and alignment_ligand_upload and (parameters.get("align_longest_axis_to_x") or is_unidock):
                 alignment_path = _save_reference_ligand_upload(
                     owner_id,
                     alignment_ligand_upload.name,
                     alignment_ligand_upload.getvalue(),
                 )
                 ligand_tools._sdf_heavy_atom_coordinates(alignment_path)
-                parameters["alignment_ligand_sdf"] = str(alignment_path)
+                if parameters.get("align_longest_axis_to_x"):
+                    parameters["alignment_ligand_sdf"] = str(alignment_path)
+                if is_unidock and parameters.get("mode") in {"hybrid", "ligand_based"}:
+                    parameters["reference_ligand_sdf"] = str(alignment_path)
             if uses_compound_set:
                 parameters["compound_set_file"] = str(selected_set["path"])
             if is_generation and uploaded_pocket:

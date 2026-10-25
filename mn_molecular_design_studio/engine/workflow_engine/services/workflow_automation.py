@@ -134,7 +134,7 @@ _SPECS = (
     _spec("ligand.docking.vina", "ligand_tools", "run_ligand_vina", "ligand-docking", "vina", "ligand_docking", "Dock a Database compound set against a target pocket with AutoDock Vina."),
     _spec("ligand.docking.autodock_gpu", "ligand_tools", "run_ligand_autodock_gpu", "ligand-docking", "autodock_gpu", "ligand_docking", "Dock a Database compound set with AutoDock-GPU and AutoGrid affinity maps."),
     _spec("ligand.docking.gnina", "ligand_tools", "run_ligand_gnina", "ligand-docking", "gnina", "ligand_docking", "Dock a Database compound set with GNINA and CNN pose rescoring."),
-    _spec("ligand.docking.unidock_pro", "ligand_tools", "run_ligand_unidock_pro", "ligand-docking", "unidock_pro", "ligand_docking", "GPU-accelerated classic receptor docking with Uni-Dock Pro."),
+    _spec("ligand.docking.unidock_pro", "ligand_tools", "run_ligand_unidock_pro", "ligand-docking", "unidock_pro", "ligand_docking", "GPU-accelerated structure-based, ligand-based, or hybrid docking with Uni-Dock Pro."),
     _spec("ligand.docking.rosetta_ligand", "ligand_tools", "run_ligand_rosetta_ligand", "ligand-docking", "rosetta_ligand", "ligand_docking", "RosettaLigand docking with VSH, VSX, or convergence protocols."),
     _spec("ligand.affinity.nesso", "ligand_tools", "run_ligand_nesso", "ligand-affinity", "nesso_affinity", "ligand_affinity", "Predict protein–ligand affinity with Nesso-1; this tile returns affinity scores and does not generate a complex structure."),
     _spec("ligand.generation.lddm", "ligand_tools", "run_ligand_lddm", "ligand-generation", "lddm_generation", "ligand_generation", "Generate pocket-conditioned ligands with the LDDM CD+BB checkpoint."),

@@ -182,6 +182,7 @@ def _render_field(field, values, key):
                   "molscrub_0_1_0":"MolScrub 0.1.0 defaults · fastest benchmark",
                   "molscrub_0_3_0_defaults":"MolScrub 0.3.0 defaults · 3 conformers, 400 FF iterations",
                   "molscrub_0_3_0_matched":"MolScrub 0.3.0 matched · 1 conformer, 200 FF iterations",
+                  "classic":"Structure-based (classic)", "ligand_based":"Ligand-based", "hybrid":"Hybrid (receptor + reference ligand)",
                   "smiles":"SMILES", "ccd":"CCD component code",
                   "single_sequence":"Single sequence (no MSA)", "reference_then_colabfold":"Reference MSA; ColabFold if missing",
                   "protein_protein":"Protein / protein", "protein_ligand":"Protein / ligand",
@@ -332,6 +333,10 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
             values["align_longest_axis_to_x"] = _render_field(align_field, values, key)
             alignment_field = next(field for field in spec["fields"] if field["name"] == "alignment_ligand_sdf")
             values["alignment_ligand_sdf"] = _render_field(alignment_field, values, key)
+            reference_field = next(field for field in spec["fields"] if field["name"] == "reference_ligand_sdf")
+            if not values.get("reference_ligand_sdf"):
+                values["reference_ligand_sdf"] = values.get("alignment_ligand_sdf") or ""
+            values["reference_ligand_sdf"] = _render_field(reference_field, values, key)
             st.markdown("**Docking box**")
             columns = st.columns(3)
             for index, name in enumerate(("center_x", "center_y", "center_z", "size_x", "size_y", "size_z")):
@@ -404,12 +409,18 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                         selected_gpu = st.selectbox(f"GPU · {machine['name']}", gpu_ids, index=gpu_ids.index(gpu_value),
                             key=key + "-docking-gpu-" + machine_id,
                             format_func=lambda value: f"GPU {value}")
+                    batch_share = int(st.number_input(
+                        f"Batch share · {machine['name']}", min_value=1, max_value=100,
+                        value=min(100, max(1, int(old.get("batch_share") or 1))), step=1,
+                        key=key + "-docking-share-" + machine_id,
+                        help="Relative share of the docking compounds assigned to this computer. Use equal shares for a speed test; increase a faster computer's share for the full campaign.",
+                    ))
                     worker_specs.append({"node_id": machine_id, "gpu_device": selected_gpu,
                                          "cpu_cores": int(selected_cpus), "name": machine["name"],
-                                         "local": machine["local"]})
+                                         "local": machine["local"], "batch_share": batch_share})
                 values["worker_nodes"] = worker_specs
                 fields = [field for field in spec["fields"] if field["name"] not in {"worker_nodes", "engine"}
-                          and (field["name"] != "search_mode" or values["engine"] == "UniDock Pro")]
+                          and (field["name"] not in {"search_mode", "docking_mode"} or values["engine"] == "UniDock Pro")]
                 with st.container(border=True):
                     st.markdown("**Docking and batch settings**")
                     columns = st.columns(2)

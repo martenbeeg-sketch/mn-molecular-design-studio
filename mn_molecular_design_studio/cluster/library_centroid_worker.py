@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--run-id", default="")
     parser.add_argument("--tasks", required=True, type=int)
     parser.add_argument("--threshold", required=True, type=float)
+    parser.add_argument("--max-parallel-chunks", type=int, default=0)
     args = parser.parse_args()
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=False)
@@ -71,7 +72,10 @@ def main():
             heart.start()
         _backend()._native_library()  # Build once before child processes start.
         print("MDS_LIBRARY_READY", flush=True)
-        parallel = max(1, min(args.workers, args.tasks))
+        parallel_limit = args.max_parallel_chunks or args.workers
+        if parallel_limit < 1 or parallel_limit > args.workers:
+            raise ValueError("Maximum parallel chunks must be between 1 and the CPU worker count.")
+        parallel = max(1, min(args.workers, args.tasks, parallel_limit))
         cores_per_chunk = max(1, args.workers // parallel)
         pool = ProcessPoolExecutor(max_workers=parallel, mp_context=get_context("spawn"))
         pending = deque()

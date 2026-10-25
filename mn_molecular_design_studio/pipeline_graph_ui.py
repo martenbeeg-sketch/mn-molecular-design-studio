@@ -265,6 +265,7 @@ def _render_active_target(params, key):
             result["align_longest_axis_to_x"] = bool(box["align_longest_axis_to_x"])
         if "alignment_ligand_sdf" in box:
             result["alignment_ligand_sdf"] = str(box["alignment_ligand_sdf"])
+            result["reference_ligand_sdf"] = str(box["alignment_ligand_sdf"])
     return result
 
 

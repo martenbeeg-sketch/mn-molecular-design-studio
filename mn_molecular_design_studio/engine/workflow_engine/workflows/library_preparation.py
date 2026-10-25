@@ -53,7 +53,7 @@ def validate_library_request(parameters, *, require_files=True):
     if require_files:
         from mn_molecular_design_studio.cluster.distributed_library import _node_specs
         try:
-            selected_nodes = _node_specs(worker_nodes)
+            selected_nodes = _node_specs(worker_nodes, ssh_user=ssh_user)
         except (KeyError, TypeError, ValueError, OSError) as exc:
             raise ValueError(str(exc)) from exc
         local_workers = next(row["cpu_cores"] for row in selected_nodes if row["local"])
@@ -146,7 +146,7 @@ def run_library_preparation(source_files: list[Path], library_name: str, output_
         from mn_molecular_design_studio.cluster.distributed_library import _node_specs
         worker_plan = [{"node_id": item["node_id"], "name": item["name"],
                         "cpu_worker_count": item["cpu_cores"], "status": "starting"}
-                       for item in _node_specs(selected_workers)]
+                       for item in _node_specs(selected_workers, ssh_user=ssh_user)]
         update_status(job.run_dir, "running", current_phase="Starting distributed fingerprint workers",
                       worker_plan=worker_plan)
         sample_name = (f"random-sample-{max_records}-seed-{sample_seed}.parquet"
@@ -200,12 +200,26 @@ def validate_library_centroid_request(parameters, *, require_files=True):
     method = parameters.get("clustering_method", "sampled")
     if method not in {"sampled", "hierarchical", "exact"}:
         raise ValueError("Choose sampled, hierarchical, or exact centroid clustering.")
+    source_sample_size = parameters.get("source_sample_size", 0)
+    if type(source_sample_size) is not int or source_sample_size < 0:
+        raise ValueError("Source sample size must be zero (use the full library) or a positive integer.")
     for name, default, minimum in (("cpu_cores", 1, 1), ("chunk_size", 300_000, 1),
                                     ("chunk_count", 0, 0), ("final_candidate_count", 300_000, 1),
-                                    ("max_merge_rounds", 3, 0), ("random_seed", 42, 0)):
+                                    ("max_merge_rounds", 0, 0), ("random_seed", 42, 0),
+                                    ("target_reduction_factor", 10, 0),
+                                    ("plateau_consecutive_rounds", 3, 1)):
         value = parameters.get(name, default)
         if type(value) is not int or value < minimum:
             raise ValueError(f"{name.replace('_', ' ')} must be a whole number of {minimum} or greater.")
+    target_reduction_factor = parameters.get("target_reduction_factor", 10)
+    if target_reduction_factor == 1:
+        raise ValueError("Target reduction factor must be zero (disabled) or at least 2.")
+    plateau_reduction_percent = parameters.get("plateau_reduction_percent", 1.0)
+    if (isinstance(plateau_reduction_percent, bool)
+            or not isinstance(plateau_reduction_percent, (int, float))
+            or not math.isfinite(plateau_reduction_percent)
+            or not 0 <= plateau_reduction_percent <= 100):
+        raise ValueError("Plateau reduction threshold must be between 0 and 100 percent.")
     if parameters.get("cpu_cores", 1) > 256 or parameters.get("random_seed", 42) >= 2**63:
         raise ValueError("Use at most 256 CPU slots per computer and a random seed below 2^63.")
     ssh_user = str(parameters.get("ssh_user", "compute"))
@@ -226,17 +240,21 @@ def validate_library_centroid_request(parameters, *, require_files=True):
         )
         if not registered:
             raise ValueError("Register the completed fingerprint manifest in this library's Database record first.")
+        if source_sample_size > manifest["row_count"]:
+            raise ValueError("Source sample size cannot exceed the prepared library size.")
+        if source_sample_size and method == "exact":
+            raise ValueError("Random input samples are available with chunked clustering methods.")
         if method != "exact":
             from mn_molecular_design_studio.cluster import config
             from mn_molecular_design_studio.cluster.distributed_library import _node_specs
             from mn_molecular_design_studio.centroid_chunks import balanced_chunk_sizes
-            balanced_chunk_sizes(manifest["row_count"], parameters.get("chunk_size", 300_000),
+            balanced_chunk_sizes(source_sample_size or manifest["row_count"], parameters.get("chunk_size", 300_000),
                                  parameters.get("chunk_count", 0))
             nodes = parameters.get("worker_nodes") or [{"node_id": config.identity(),
                                                        "cpu_cores": parameters.get("cpu_cores", 1)}]
             if not isinstance(nodes, list):
                 raise ValueError("Choose worker computers for chunk clustering.")
-            specs = _node_specs(nodes)
+            specs = _node_specs(nodes, ssh_user=ssh_user)
             if next(s["cpu_cores"] for s in specs if s["local"]) != parameters.get("cpu_cores", 1):
                 raise ValueError("CPU workers on the source workstation must match its scheduled CPU allocation.")
 
@@ -245,14 +263,21 @@ def run_library_centroid_preparation(library_id: str, feature_manifest: Path, ou
                                      similarity_threshold: float = 0.6, clustering_method: str = "sampled",
                                      cpu_cores: int = 1, chunk_size: int = 300_000, chunk_count: int = 0,
                                      final_candidate_count: int = 300_000, random_seed: int = 42,
-                                     max_merge_rounds: int = 3, worker_nodes: list[dict] | None = None,
-                                     ssh_user: str = "compute") -> Path:
+                                     max_merge_rounds: int = 0, worker_nodes: list[dict] | None = None,
+                                     ssh_user: str = "compute", source_sample_size: int = 0,
+                                     target_reduction_factor: int = 10,
+                                     plateau_reduction_percent: float = 1.0,
+                                     plateau_consecutive_rounds: int = 3) -> Path:
     parameters = dict(library_id=library_id, feature_manifest=str(feature_manifest),
                       output_directory=output_directory, similarity_threshold=similarity_threshold,
                       clustering_method=clustering_method, cpu_cores=cpu_cores, chunk_size=chunk_size,
                       chunk_count=chunk_count, final_candidate_count=final_candidate_count,
                       random_seed=random_seed, max_merge_rounds=max_merge_rounds,
-                      worker_nodes=worker_nodes or [], ssh_user=ssh_user)
+                      target_reduction_factor=target_reduction_factor,
+                      plateau_reduction_percent=plateau_reduction_percent,
+                      plateau_consecutive_rounds=plateau_consecutive_rounds,
+                      worker_nodes=worker_nodes or [], ssh_user=ssh_user,
+                      source_sample_size=source_sample_size)
     validate_library_centroid_request(parameters)
     feature_manifest = Path(feature_manifest).expanduser().resolve(strict=True)
     base = Path(output_directory).expanduser().resolve()
@@ -282,12 +307,18 @@ def run_library_centroid_preparation(library_id: str, feature_manifest: Path, ou
             selected_workers = worker_nodes or [{"node_id": config.identity(), "cpu_cores": cpu_cores}]
             update_status(job.run_dir, "running", worker_plan=[
                 {"node_id": item["node_id"], "name": item["name"], "cpu_worker_count": item["cpu_cores"],
-                 "status": "starting", "task_kind": "centroids"} for item in _node_specs(selected_workers)])
+                 "chunk_weight": item.get("chunk_weight", item["cpu_cores"]),
+                 "max_parallel_chunks": item.get("max_parallel_chunks", item["cpu_cores"]),
+                 "status": "starting", "task_kind": "centroids"} for item in _node_specs(selected_workers, ssh_user=ssh_user)])
             centroid_manifest = prepare_chunked_centroids(
                 feature_manifest, base / "centroids", similarity_threshold=similarity_threshold,
                 worker_nodes=selected_workers, chunk_size=chunk_size, chunk_count=chunk_count,
                 max_merge_rounds=max_merge_rounds, random_seed=random_seed, ssh_user=ssh_user,
                 method=clustering_method, final_candidate_count=final_candidate_count,
+                target_reduction_factor=target_reduction_factor,
+                plateau_reduction_percent=plateau_reduction_percent,
+                plateau_consecutive_rounds=plateau_consecutive_rounds,
+                source_sample_size=source_sample_size,
                 progress_callback=progress,
             )
         LibraryCatalog().attach_preparation(library_id, centroid_manifest)
@@ -296,6 +327,8 @@ def run_library_centroid_preparation(library_id: str, feature_manifest: Path, ou
                                                      "centroid_manifest": str(centroid_manifest),
                                                      "feature_manifest": str(feature_manifest)},
                                        "metrics": {"input_compound_count": manifest["input_rows"],
+                                                   "source_library_compound_count": manifest.get("source_library_rows", manifest["input_rows"]),
+                                                   "source_sample_size": manifest.get("source_sample_size"),
                                                    "centroid_count": manifest["row_count"],
                                                    "exact_similarity_evaluations": manifest["exact_similarity_evaluations"],
                                                    "algorithm": manifest["algorithm"],

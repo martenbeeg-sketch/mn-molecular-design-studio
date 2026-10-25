@@ -51,6 +51,43 @@ def test_balanced_sizes_and_cluster_count_proportional_quotas():
         chunks.balanced_chunk_sizes(5, chunk_count=6)
 
 
+def test_hierarchical_stop_criteria_target_and_consecutive_plateau():
+    streak, reason = chunks._merge_stop_decision(
+        1_020_099, 947_370, 10_000_000,
+        target_reduction_factor=10, plateau_reduction_percent=1.0,
+        plateau_consecutive_rounds=3, plateau_streak=0,
+    )
+    assert reason == "target_reduction_factor_reached"
+    assert streak == 0
+
+    streak, reason = chunks._merge_stop_decision(
+        906_692, 904_474, 10_000_000,
+        target_reduction_factor=0, plateau_reduction_percent=1.0,
+        plateau_consecutive_rounds=3, plateau_streak=0,
+    )
+    assert reason is None
+    assert streak == 1
+
+    streak, reason = chunks._merge_stop_decision(
+        904_474, 849_892, 10_000_000,
+        target_reduction_factor=0, plateau_reduction_percent=1.0,
+        plateau_consecutive_rounds=3, plateau_streak=1,
+    )
+    assert reason is None
+    assert streak == 0
+
+    for input_rows, output_rows, prior_streak in [(772_329, 764_902, 0),
+                                                  (764_902, 764_357, 1),
+                                                  (764_357, 760_890, 2)]:
+        streak, reason = chunks._merge_stop_decision(
+            input_rows, output_rows, 10_000_000,
+            target_reduction_factor=0, plateau_reduction_percent=1.0,
+            plateau_consecutive_rounds=3, plateau_streak=prior_streak,
+        )
+    assert reason == "plateau_reduction_below_threshold"
+    assert streak == 3
+
+
 def test_shuffle_is_balanced_complete_and_reproducible(library, tmp_path):
     _, source = library
     outputs = []
@@ -64,6 +101,57 @@ def test_shuffle_is_balanced_complete_and_reproducible(library, tmp_path):
         assert not (tmp_path / name / "sort-spill").exists()
     assert outputs[0] == outputs[1]
     assert outputs[0] != outputs[2]
+
+
+def test_shuffle_can_select_a_reproducible_random_subset(library, tmp_path):
+    _, source = library
+    first = chunks._shuffle_chunks([source], [12, 11], tmp_path / "sample-a",
+                                   seed=42, cpu_cores=2, fingerprint_bytes=128,
+                                   progress=lambda *args: None, sample_rows=23)
+    repeated = chunks._shuffle_chunks([source], [12, 11], tmp_path / "sample-b",
+                                      seed=42, cpu_cores=2, fingerprint_bytes=128,
+                                      progress=lambda *args: None, sample_rows=23)
+    first_keys = [key for path in first for key in pq.read_table(path)["compound_key"].to_pylist()]
+    repeated_keys = [key for path in repeated for key in pq.read_table(path)["compound_key"].to_pylist()]
+    assert len(first_keys) == 23
+    assert len(set(first_keys)) == 23
+    assert sorted(first_keys) == sorted(repeated_keys)
+
+
+def test_hierarchical_centroids_keep_sample_scope_and_full_population(library, tmp_path, monkeypatch):
+    from mn_molecular_design_studio.cluster import distributed_library
+
+    manifest, _ = library
+    specs = [{"node_id": "local", "name": "local", "local": True, "cpu_cores": 2}]
+    monkeypatch.setattr(distributed_library, "_node_specs", lambda nodes, **kwargs: specs)
+
+    def local_round(inputs, specs, directory, threshold, ssh_user, progress):
+        directory.mkdir(parents=True)
+        outputs, metrics = [], []
+        for index, path in enumerate(inputs):
+            output = directory / f"chunk-{index:08d}.parquet"
+            metrics.append(cluster_chunk_file(path, output, threshold, 2))
+            outputs.append(output)
+        summaries = [{"node_id": "local", "name": "local", "cpu_worker_count": 2,
+                      "input_rows": sum(item["input_rows"] for item in metrics),
+                      "row_count": sum(item["row_count"] for item in metrics),
+                      "chunk_count": len(inputs), "status": "completed"}]
+        return outputs, summaries, metrics
+
+    monkeypatch.setattr(chunks, "_run_round", local_round)
+    output = tmp_path / "sample-output"
+    result_path = chunks.prepare_chunked_centroids(
+        manifest, output, worker_nodes=[{}], chunk_size=10, method="hierarchical",
+        max_merge_rounds=0, source_sample_size=23,
+        target_reduction_factor=0, plateau_reduction_percent=0,
+    )
+    result = json.loads(result_path.read_text())
+    table = pq.read_table(output / "centroids.parquet")
+    assert result["source_library_rows"] == 50
+    assert result["source_sample_size"] == 23
+    assert result["source_sample_method"] == "seeded_hash_order_prefix"
+    assert result["input_rows"] == 23
+    assert sum(table["cluster_size"].to_pylist()) == 23
 
 
 def test_cpu_fingerprints_keep_openvs_features_and_chirality(library):
@@ -87,7 +175,7 @@ def test_chunk_workflow_retains_correct_counts_and_removes_temporaries(library, 
 
     manifest, _ = library
     specs = [{"node_id": "local", "name": "local", "local": True, "cpu_cores": 2}]
-    monkeypatch.setattr(distributed_library, "_node_specs", lambda nodes: specs)
+    monkeypatch.setattr(distributed_library, "_node_specs", lambda nodes, **kwargs: specs)
 
     def local_round(inputs, specs, directory, threshold, ssh_user, progress):
         directory.mkdir(parents=True)
@@ -107,6 +195,7 @@ def test_chunk_workflow_retains_correct_counts_and_removes_temporaries(library, 
     result_path = chunks.prepare_chunked_centroids(
         manifest, output, worker_nodes=[{}], chunk_size=17,
         final_candidate_count=8, method=method, max_merge_rounds=0,
+        target_reduction_factor=0, plateau_reduction_percent=0,
     )
     result = json.loads(result_path.read_text())
     table = pq.read_table(output / "centroids.parquet")
@@ -129,7 +218,7 @@ def test_failure_never_publishes_completed_manifest(library, tmp_path, monkeypat
     from mn_molecular_design_studio.cluster import distributed_library
 
     manifest, _ = library
-    monkeypatch.setattr(distributed_library, "_node_specs", lambda nodes: [
+    monkeypatch.setattr(distributed_library, "_node_specs", lambda nodes, **kwargs: [
         {"node_id": "local", "name": "local", "local": True, "cpu_cores": 1}])
 
     def fail(*args, **kwargs):
@@ -144,7 +233,8 @@ def test_failure_never_publishes_completed_manifest(library, tmp_path, monkeypat
     assert (output / "failure.json").exists()
 
 
-def test_internal_worker_processes_multiple_chunks(library, tmp_path):
+@pytest.mark.parametrize("parallel_limit,expected_parallel", [(0, 2), (1, 1)])
+def test_internal_worker_respects_parallel_chunk_limit(library, tmp_path, parallel_limit, expected_parallel):
     from mn_molecular_design_studio.cluster.distributed_library import _Worker
     import mn_molecular_design_studio
 
@@ -153,18 +243,21 @@ def test_internal_worker_processes_multiple_chunks(library, tmp_path):
     inputs = chunks._shuffle_chunks([source], [17, 17, 16], tmp_path / "inputs",
                                     seed=42, cpu_cores=2, fingerprint_bytes=128,
                                     progress=lambda *args: None)
+    worker_args = ["--tasks", "3", "--threshold", "0.6"]
+    if parallel_limit:
+        worker_args.extend(["--max-parallel-chunks", str(parallel_limit)])
     worker = _Worker({"node_id": "unit-test", "name": "unit-test", "local": True, "cpu_cores": 2},
                      worker_script=root / "cluster/library_centroid_worker.py",
                      library_module=root / "external_libraries.py", temp_root=tmp_path / "workers",
-                     ssh_user="compute", worker_args=["--tasks", "3", "--threshold", "0.6"])
+                     ssh_user="compute", worker_args=worker_args)
     try:
         for index, path in enumerate(inputs):
             worker.send([{"chunk": index, "input": str(path)}])
         worker.close_input()
         worker.wait()
         manifest = json.loads((worker.fetch() / "worker-manifest.json").read_text())
-        assert manifest["parallel_chunks"] == 2
-        assert manifest["cores_per_chunk"] == 1
+        assert manifest["parallel_chunks"] == expected_parallel
+        assert manifest["cores_per_chunk"] == 2 // expected_parallel
         assert sum(item["input_rows"] for item in manifest["chunks"]) == 50
         assert sum(item["population"] for item in manifest["chunks"]) == 50
         assert len({item["path"] for item in manifest["chunks"]}) == 3

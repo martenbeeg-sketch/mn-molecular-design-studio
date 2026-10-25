@@ -23,7 +23,52 @@ _HOST = re.compile(r"[A-Za-z0-9_.-]{1,120}\Z")
 _SSH_USER = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,31}\Z")
 
 
-def _node_specs(worker_nodes):
+def _live_local_resources():
+    """Read local scheduler and storage state without relying on peer heartbeats."""
+    from .agent import Agent
+    from mn_molecular_design_studio.cluster.capabilities import resources
+
+    scheduler_online, snapshot = resources()
+    settings = config.load()
+    accepting = bool(settings.get("accept_jobs") and Agent().storage_online())
+    return bool(scheduler_online), accepting, snapshot
+
+
+def _live_remote_resources(host, ssh_user):
+    """Verify a remote CPU worker through its own Studio and scheduler runtimes."""
+    spec = {"host": host, "name": host}
+    python, _repository, _scheduler_state, _scheduler_cpu_slots = _remote_environment(spec, ssh_user)
+    probe = (
+        "import json; from mn_molecular_design_studio.cluster import config; "
+        "from mn_molecular_design_studio.cluster.agent import Agent; "
+        "from mn_molecular_design_studio.cluster.capabilities import resources; "
+        "online, snapshot = resources(); settings = config.load(); "
+        "accepting = bool(settings.get('accept_jobs') and Agent().storage_online()); "
+        "print('MDS_RESOURCE_JSON=' + json.dumps({'scheduler_online':bool(online),"
+        "'accept_jobs':accepting,'resources':snapshot},separators=(',',':')))"
+    )
+    remote_command = "bash -lc " + shlex.quote(shlex.join([python, "-c", probe]))
+    result = subprocess.run(
+        ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+         f"{ssh_user}@{host}", remote_command],
+        capture_output=True, text=True, timeout=20, check=False,
+    )
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"Could not check the live scheduler on {host}: {detail[-800:] or 'SSH probe failed'}")
+    marker = next((line[len("MDS_RESOURCE_JSON="):]
+                   for line in reversed(result.stdout.splitlines())
+                   if line.startswith("MDS_RESOURCE_JSON=")), None)
+    if marker is None:
+        raise RuntimeError(f"The live scheduler check on {host} returned no resource snapshot.")
+    try:
+        payload = json.loads(marker)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"The live scheduler check on {host} returned invalid resource data.") from exc
+    return bool(payload.get("scheduler_online")), bool(payload.get("accept_jobs")), payload.get("resources") or {}
+
+
+def _node_specs(worker_nodes, *, ssh_user="compute"):
     from .store import Store
 
     nodes = Store().nodes()
@@ -36,26 +81,40 @@ def _node_specs(worker_nodes):
             raise ValueError("Choose each worker computer only once.")
         seen.add(node_id)
         node = by_id.get(node_id)
-        snapshot = (node or {}).get("snapshot") or {}
-        if (not node or node.get("availability") != "online"
-                or not snapshot.get("accept_jobs") or not snapshot.get("scheduler_online")):
-            raise ValueError("Every selected worker computer must be online and accepting jobs.")
+        if not node or node.get("disabled"):
+            raise ValueError("Every selected worker computer must be registered and enabled.")
         count = raw.get("cpu_cores")
+        chunk_weight = raw.get("chunk_weight", count)
+        max_parallel_chunks = raw.get("max_parallel_chunks", count)
         local = node_id == config.identity()
-        resources = snapshot.get("resources") or {}
+        if local:
+            scheduler_online, accepting, resources = _live_local_resources()
+        else:
+            host = config.display_name(node["name"])
+            if not _HOST.fullmatch(host):
+                raise ValueError(f"Workstation {node['name']} does not have a safe SSH host name.")
+            scheduler_online, accepting, resources = _live_remote_resources(host, ssh_user)
+        if not scheduler_online or not accepting:
+            raise ValueError(f"The live scheduler on {node['name']} is unavailable or not accepting jobs.")
         available = int(resources.get("cpu_free") or 0)
         limit = int(resources.get("cpu_total") or available or 0)
         # The parent Studio job already owns the organizer's CPU allocation
         # while it runs. Remote worker groups obtain their own scheduler lease.
         allowed = min(256, limit, limit if local else available)
         if type(count) is not int or count < 1 or count > allowed:
-            raise ValueError(f"Worker count for {node['name']} must fit its currently available CPU slots.")
+            raise ValueError(
+                f"Worker count for {node['name']} must fit its live CPU allocation "
+                f"({allowed} slot{'s' if allowed != 1 else ''} available)."
+            )
+        if type(chunk_weight) is not int or chunk_weight < 1 or chunk_weight > 1000:
+            raise ValueError(f"Chunk weight for {node['name']} must be a whole number from 1 to 1,000.")
+        if type(max_parallel_chunks) is not int or max_parallel_chunks < 1 or max_parallel_chunks > count:
+            raise ValueError(f"Concurrent chunk limit for {node['name']} must be between 1 and its CPU slot count ({count}).")
         host = config.display_name(node["name"])
-        if not local and not _HOST.fullmatch(host):
-            raise ValueError(f"Workstation {node['name']} does not have a safe SSH host name.")
         specs.append({"node_id": node_id, "name": config.display_name(node["name"]),
                       "host": host, "cpu_cores": count, "local": local,
-                      "available_cpu": available})
+                      "available_cpu": available, "chunk_weight": chunk_weight,
+                      "max_parallel_chunks": max_parallel_chunks})
     if not specs:
         raise ValueError("Select at least one worker computer.")
     if not any(row["local"] for row in specs):
@@ -400,7 +459,7 @@ def prepare_distributed_fingerprints(record, output_directory, worker_nodes, *, 
         raise ValueError("A random sample requires a positive sample size.")
     if not _SSH_USER.fullmatch(ssh_user):
         raise ValueError("Use a valid SSH account name for the compute workstations.")
-    specs = _node_specs(worker_nodes)
+    specs = _node_specs(worker_nodes, ssh_user=ssh_user)
     check_sources(record)
     output = Path(output_directory).expanduser().resolve()
     if output.exists() and (not output.is_dir() or any(output.iterdir())):

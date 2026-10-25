@@ -352,6 +352,31 @@ def transform_pdb_data(pdb_data: str, transform: dict[str, Any]) -> str:
     return "\n".join(output) + "\n"
 
 
+def transform_sdf_coordinates(source: Path, destination: Path, transform: dict[str, Any]) -> None:
+    """Write an SDF with the same rigid-body transform used for its receptor."""
+    from rdkit import Chem
+
+    supplier = Chem.SDMolSupplier(str(source), removeHs=False)
+    writer = Chem.SDWriter(str(destination))
+    written = 0
+    try:
+        for molecule in supplier:
+            if molecule is None or molecule.GetNumConformers() == 0:
+                continue
+            for conformer in molecule.GetConformers():
+                coordinates = np.asarray(conformer.GetPositions(), dtype=float)
+                transformed = _apply_coordinate_transform(coordinates, transform)
+                for atom_index, coordinate in enumerate(transformed):
+                    conformer.SetAtomPosition(atom_index, tuple(float(value) for value in coordinate))
+            writer.write(molecule)
+            written += 1
+    finally:
+        writer.close()
+    if written == 0:
+        destination.unlink(missing_ok=True)
+        raise ValueError(f"Reference ligand SDF contains no valid coordinate-bearing molecules: {source}")
+
+
 def transform_axis_aligned_box(
     center: tuple[float, float, float],
     size: tuple[float, float, float],
@@ -785,6 +810,15 @@ def validate_ligand_tool_request(workflow_id: str, parameters: dict[str, Any], *
         if workflow_id == "ligand.docking.unidock_pro":
             if str(parameters.get("search_mode", "balance")).strip().lower() not in {"fast", "balance", "detail"}:
                 raise ValueError("Uni-Dock Pro search mode must be fast, balance, or detail.")
+            mode = str(parameters.get("mode", "classic")).strip().lower().replace("-", "_").replace(" ", "_")
+            if mode in {"structure_based", "structure_based_classic"}:
+                mode = "classic"
+            if mode not in {"classic", "hybrid", "ligand_based"}:
+                raise ValueError("Uni-Dock Pro mode must be structure-based (classic), ligand-based, or hybrid.")
+            if mode in {"hybrid", "ligand_based"} and not parameters.get("reference_ligand_sdf"):
+                raise ValueError(f"Uni-Dock Pro {mode.replace('_', '-')} mode requires a reference ligand SDF.")
+            if require_files and mode in {"hybrid", "ligand_based"}:
+                validate_ligand_sdf(Path(parameters["reference_ligand_sdf"]))
             if str(parameters.get("gpu_device", "0")).strip().lower() in {"", "none", "cpu", "off"}:
                 raise ValueError("Uni-Dock Pro requires a CUDA GPU device.")
         elif workflow_id == "ligand.docking.autodock_gpu":
@@ -1818,6 +1852,7 @@ def run_ligand_unidock_pro(
     size_x: float = 20.0,
     size_y: float = 20.0,
     size_z: float = 20.0,
+    mode: str = "classic",
     search_mode: str = "balance",
     num_modes: int = 9,
     seed: int = 42,
@@ -1826,6 +1861,7 @@ def run_ligand_unidock_pro(
     gpu_device: str = "0",
     align_longest_axis_to_x: bool = False,
     alignment_ligand_sdf: Path | None = None,
+    reference_ligand_sdf: Path | None = None,
     preserve_box_size_after_alignment: bool = False,
     job_name: str = "unidock-pro",
     use_scrub: bool = True,
@@ -1833,7 +1869,12 @@ def run_ligand_unidock_pro(
     scrub_skip_tautomer: bool = True,
     scrub_protocol: str = DEFAULT_SCRUB_PROTOCOL,
 ) -> Path:
-    """Run the classic Uni-Dock Pro receptor-docking mode on a compound set."""
+    """Run a Uni-Dock Pro structure-, ligand-, or hybrid-docking mode."""
+    mode = str(mode).strip().lower().replace(" ", "_").replace("-", "_")
+    if mode in {"structure_based", "structure_based_classic"}:
+        mode = "classic"
+    if mode not in {"classic", "hybrid", "ligand_based"}:
+        raise ValueError("Uni-Dock Pro mode must be structure-based (classic), ligand-based, or hybrid.")
     search_mode = str(search_mode).strip().lower()
     if search_mode not in {"fast", "balance", "detail"}:
         raise ValueError("Uni-Dock Pro search mode must be fast, balance, or detail.")
@@ -1844,6 +1885,18 @@ def run_ligand_unidock_pro(
     if not str(gpu_device).strip() or str(gpu_device).strip().lower() in {"none", "cpu", "off"}:
         raise ValueError("Uni-Dock Pro requires a CUDA GPU device.")
     validate_target_pdb(target_pdb)
+    reference_ligand_sdf = Path(reference_ligand_sdf) if reference_ligand_sdf else None
+    alignment_ligand_sdf = Path(alignment_ligand_sdf) if alignment_ligand_sdf else None
+    if reference_ligand_sdf is None and mode in {"hybrid", "ligand_based"}:
+        # A single saved reference ligand can define both the docking mode and
+        # the coordinate alignment frame when the user selects both options.
+        reference_ligand_sdf = alignment_ligand_sdf
+    if mode in {"hybrid", "ligand_based"}:
+        if reference_ligand_sdf is None or not reference_ligand_sdf.is_file():
+            raise ValueError(f"Uni-Dock Pro {mode.replace('_', '-')} mode requires a coordinate-bearing reference ligand SDF.")
+        _sdf_heavy_atom_coordinates(reference_ligand_sdf)
+    if align_longest_axis_to_x and alignment_ligand_sdf is None:
+        alignment_ligand_sdf = reference_ligand_sdf
     if any(not math.isfinite(value) for value in (center_x, center_y, center_z)):
         raise ValueError("Docking box center coordinates must be finite numbers.")
     if any(not math.isfinite(value) or not 1 <= value <= 60 for value in (size_x, size_y, size_z)):
@@ -1860,7 +1913,6 @@ def run_ligand_unidock_pro(
 
     original_center = [float(center_x), float(center_y), float(center_z)]
     original_box_size = [float(size_x), float(size_y), float(size_z)]
-    alignment_ligand_sdf = Path(alignment_ligand_sdf) if alignment_ligand_sdf else None
     target_data, aligned_center, aligned_size, coordinate_transform = _docking_axis_alignment(
         target_pdb,
         tuple(original_center),
@@ -1879,7 +1931,7 @@ def run_ligand_unidock_pro(
     )
     preparation_batch_count = math.ceil(len(compounds) / preparation_batch_size)
     params = {
-        "engine": "unidock_pro", "search_mode": search_mode,
+        "engine": "unidock_pro", "mode": mode, "search_mode": search_mode,
         "center": [float(center_x), float(center_y), float(center_z)],
         "box_size": [float(size_x), float(size_y), float(size_z)],
         "original_center": original_center,
@@ -1907,6 +1959,7 @@ def run_ligand_unidock_pro(
         {
             "target_pdb": str(target_pdb), "compound_set_file": str(compound_set_file),
             **({"alignment_ligand_sdf": str(alignment_ligand_sdf)} if coordinate_transform and alignment_ligand_sdf else {}),
+            **({"reference_ligand_sdf": str(reference_ligand_sdf)} if reference_ligand_sdf else {}),
         }, params,
     )
     contract_outputs = [
@@ -1921,8 +1974,10 @@ def run_ligand_unidock_pro(
         outputs=contract_outputs,
         extra_inputs=(
             [{"name": "axis_alignment_ligand", "type": "ligand_coordinates/sdf/v1", "path": "artifacts/input/alignment_ligand.sdf"}]
-            if coordinate_transform
-            else []
+            if coordinate_transform else []
+        ) + (
+            [{"name": "reference_ligand", "type": "ligand_coordinates/sdf/v1", "path": "artifacts/input/reference_ligand.sdf"}]
+            if mode in {"hybrid", "ligand_based"} else []
         ),
     )
     artifacts = job.run_dir / "artifacts"
@@ -1932,6 +1987,13 @@ def run_ligand_unidock_pro(
     if coordinate_transform and alignment_ligand_sdf is not None:
         shutil.copy2(alignment_ligand_sdf, input_dir / "alignment_ligand.sdf")
         write_json(input_dir / "alignment_transform.json", coordinate_transform)
+    staged_reference_ligand = None
+    if mode in {"hybrid", "ligand_based"} and reference_ligand_sdf is not None:
+        staged_reference_ligand = input_dir / "reference_ligand.sdf"
+        if coordinate_transform:
+            transform_sdf_coordinates(reference_ligand_sdf, staged_reference_ligand, coordinate_transform)
+        else:
+            shutil.copy2(reference_ligand_sdf, staged_reference_ligand)
     staged_compounds = _write_compound_inputs(job.run_dir, payload, compounds)
     (input_dir / "smiles_to_3d.py").write_text(_RDKIT_3D_SCRIPT, encoding="utf-8")
     with (input_dir / "compounds.tsv").open("w", newline="", encoding="utf-8") as handle:
@@ -2042,12 +2104,27 @@ def run_ligand_unidock_pro(
             f"xargs -0 -r -n 2 -P {preparation_workers} bash artifacts/input/prepare_one_ligand.sh "
             "< artifacts/input/compounds.nul; "
         )
+    receptor_preparation = ""
+    receptor_argument = ""
+    if mode in {"classic", "hybrid"}:
+        receptor_preparation = (
+            "if ! mk_prepare_receptor.py --read_pdb artifacts/input/receptor.pdb -o artifacts/prepared/receptor -p; then "
+            "awk 'substr($0,77,2) !~ /^[[:space:]]*H[[:space:]]*$/' artifacts/input/receptor.pdb > artifacts/input/receptor-noh.pdb; "
+            "mk_prepare_receptor.py -i artifacts/input/receptor-noh.pdb -o artifacts/prepared/receptor -p; fi; "
+        )
+        receptor_argument = "--receptor artifacts/prepared/receptor.pdbqt "
+    reference_preparation = ""
+    reference_argument = ""
+    if mode in {"hybrid", "ligand_based"}:
+        reference_preparation = (
+            "mk_prepare_ligand.py -i artifacts/input/reference_ligand.sdf "
+            "-o artifacts/prepared/reference_ligand.pdbqt; "
+        )
+        reference_argument = "--reference_ligand artifacts/prepared/reference_ligand.pdbqt "
     script = (
         "set -euo pipefail; cd /work; "
         "mkdir -p artifacts/prepared artifacts/ligands artifacts/poses artifacts/logs; "
-        "if ! mk_prepare_receptor.py --read_pdb artifacts/input/receptor.pdb -o artifacts/prepared/receptor -p; then "
-        "awk 'substr($0,77,2) !~ /^[[:space:]]*H[[:space:]]*$/' artifacts/input/receptor.pdb > artifacts/input/receptor-noh.pdb; "
-        "mk_prepare_receptor.py -i artifacts/input/receptor-noh.pdb -o artifacts/prepared/receptor -p; fi; "
+        + receptor_preparation + reference_preparation
         + preparation_command
         + f"printf 'Preparation method: {preparation_method}; batch size %s; batch count %s\\n' {preparation_batch_size} {preparation_batch_count} > artifacts/logs/preparation.log; "
         ": > artifacts/input/ligand_index.txt; "
@@ -2060,7 +2137,7 @@ def run_ligand_unidock_pro(
         f"printf 'Prepared %s of %s compounds using %s CPU workers\\n' \"$prepared_ligands\" {len(staged_compounds)} {preparation_workers} "
         ">> artifacts/logs/preparation.log; "
         "dock_status=0; if [[ -s artifacts/input/ligand_index.txt ]]; then "
-        f"udp --receptor artifacts/prepared/receptor.pdbqt --ligand_index artifacts/input/ligand_index.txt "
+        f"udp {receptor_argument}{reference_argument}--ligand_index artifacts/input/ligand_index.txt "
         f"--config artifacts/input/docking.conf --dir artifacts/poses --search_mode {search_mode} "
         f"--num_modes {num_modes} --seed {seed} || dock_status=$?; fi; "
         "printf 'compound_id\\tstatus\\tbest_score_kcal_mol\\tcnn_score\\tcnn_affinity\\tpose_path\\terror\\n' > artifacts/docking_scores.csv; "
@@ -2098,7 +2175,7 @@ def run_ligand_unidock_pro(
     finish_job(job.run_dir, return_code == 0 and bool(successful), {
         "outputs": {"scores": "artifacts/docking_scores.csv", "pose_directory": "artifacts/poses"},
         "metrics": {
-            "engine": "Uni-Dock Pro", "search_mode": search_mode,
+            "engine": "Uni-Dock Pro", "mode": mode, "search_mode": search_mode,
             "compound_count": len(compounds), "scored_count": len(successful),
             "failed_count": len(rows) - len(successful), "primary_ranking_metric": "best_score_kcal_mol",
             "primary_ranking_direction": "lower", "best_compound_id": best["compound_id"] if best else "",

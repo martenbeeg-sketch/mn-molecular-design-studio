@@ -184,6 +184,22 @@ def test_remote_docking_request_rewrite_uses_worker_conda_python():
     assert shlex.split(command)[0] == "/home/compute/envs/studio/bin/python3.11"
     assert "target_pdb" in command
     assert "/tmp/job/alignment_ligand.sdf" in command
+    assert "reference_ligand_sdf" in command
+
+
+def test_active_learning_worker_batch_shares_allocate_exact_randomized_counts():
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.active_learning_controller import _weighted_worker_assignments
+
+    rows = [{"compound_id": str(index)} for index in range(30_000)]
+    workers = [{"batch_share": 1}, {"batch_share": 1}, {"batch_share": 1}]
+    assignments = _weighted_worker_assignments(rows, workers, range(len(rows)))
+    assert [len(item) for item in assignments] == [10_000, 10_000, 10_000]
+    assert [row["compound_id"] for item in assignments for row in item] == [str(index) for index in range(30_000)]
+
+    weighted = _weighted_worker_assignments(
+        rows[:20_000], [{"batch_share": 1}, {"batch_share": 3}, {"batch_share": 3}], range(20_000),
+    )
+    assert [len(item) for item in weighted] == [2_857, 8_572, 8_571]
 
 
 def test_remote_docking_launcher_initializes_workspace_and_surfaces_scheduler_failure(monkeypatch, tmp_path):
@@ -422,3 +438,6 @@ def test_active_learning_unidock_parameters_include_reference_ligand_alignment(t
     assert request["alignment_ligand_sdf"] == str(ligand)
     assert request["preserve_box_size_after_alignment"] is True
     assert [request[f"size_{axis}"] for axis in "xyz"] == [30, 20, 20]
+    assert request["mode"] == "hybrid"
+    assert request["search_mode"] == "balance"
+    assert request["reference_ligand_sdf"] == str(ligand)

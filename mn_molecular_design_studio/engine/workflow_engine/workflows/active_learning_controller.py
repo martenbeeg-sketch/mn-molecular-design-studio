@@ -60,6 +60,26 @@ def _compound_batches(rows: list[dict], batch_size: int) -> list[list[dict]]:
     return [rows[start:start + batch_size] for start in range(0, len(rows), batch_size)]
 
 
+def _weighted_worker_assignments(rows: list[dict], workers: list[dict], indexes) -> list[list[dict]]:
+    """Split randomized rows by relative computer shares without dropping rows."""
+    if not workers:
+        return []
+    weights = [int(worker.get("batch_share") or 1) for worker in workers]
+    if any(weight < 1 or weight > 100 for weight in weights):
+        raise ValueError("Worker batch shares must be between 1 and 100.")
+    total_weight = sum(weights)
+    counts = [len(rows) * weight // total_weight for weight in weights]
+    remainders = [len(rows) * weight % total_weight for weight in weights]
+    leftovers = len(rows) - sum(counts)
+    for worker_index in sorted(range(len(workers)), key=lambda index: (-remainders[index], index))[:leftovers]:
+        counts[worker_index] += 1
+    assignments, offset = [], 0
+    for count in counts:
+        assignments.append([rows[int(index)] for index in indexes[offset:offset + count]])
+        offset += count
+    return assignments
+
+
 def _write_graph_state(path: Path, state: dict, *, node: str | None = None,
                        status: str | None = None, **values) -> None:
     if node is not None:
@@ -107,10 +127,10 @@ def _selected_worker_specs(node: dict) -> list[dict]:
     raw_specs = node.get("worker_nodes")
     if not isinstance(raw_specs, list) or not raw_specs:
         raise ValueError("Select at least one online computer in the Docking step.")
-    specs = distributed_library._node_specs(raw_specs)
     ssh_user = str(node.get("ssh_user") or "compute")
     if not distributed_library._SSH_USER.fullmatch(ssh_user):
         raise ValueError("The SSH user must be a valid account name such as compute.")
+    specs = distributed_library._node_specs(raw_specs, ssh_user=ssh_user)
     by_id = {item["id"]: item for item in Store().nodes()}
     for spec, configured in zip(specs, raw_specs):
         machine = by_id[spec["node_id"]]
@@ -128,7 +148,11 @@ def _selected_worker_specs(node: dict) -> list[dict]:
         free = {str(item.get("gpu_id")) for item in (gpu_records or [])}
         if gpu_id not in free:
             raise ValueError(f"GPU {gpu_id} on {spec['name']} is no longer available.")
-        spec.update(gpu_device=gpu_id, node_name=spec["name"], local=spec["node_id"] == cluster_config.identity())
+        batch_share = int(configured.get("batch_share") or 1)
+        if not 1 <= batch_share <= 100:
+            raise ValueError(f"The batch share for {spec['name']} must be between 1 and 100.")
+        spec.update(gpu_device=gpu_id, node_name=spec["name"], local=spec["node_id"] == cluster_config.identity(),
+                    batch_share=batch_share)
         if not spec["local"]:
             from mn_molecular_design_studio.cluster.distributed_library import _remote_environment
             remote_python, _repo, _state, _slots = _remote_environment(spec, str(node.get("ssh_user") or "compute"))
@@ -146,13 +170,25 @@ def _docking_params(params: dict, target: dict, batch_file: Path, *, round_numbe
         raise ValueError("UniDock Pro exposes the primary score as best_score_kcal_mol (vina_score alias).")
     if str(params.get("score_direction") or "Lower is better") != "Lower is better":
         raise ValueError("UniDock Pro Vina scores rank lower values first.")
+    raw_mode = str(params.get("docking_mode") or "hybrid").strip().lower().replace("-", "_")
+    mode = {"structure_based": "classic", "structure_based_classic": "classic",
+            "classic": "classic", "ligand_based": "ligand_based", "hybrid": "hybrid"}.get(raw_mode)
+    if mode is None:
+        raise ValueError("Choose UniDock Pro structure-based (classic), ligand-based, or hybrid docking mode.")
     alignment_enabled = bool(target.get("align_longest_axis_to_x", False))
     alignment_ligand = str(target.get("alignment_ligand_sdf") or "")
+    reference_ligand = str(target.get("reference_ligand_sdf") or alignment_ligand or "")
+    if mode in {"hybrid", "ligand_based"} and (not reference_ligand or not Path(reference_ligand).is_file()):
+        raise ValueError(f"UniDock Pro {mode.replace('_', '-')} mode requires a reference ligand SDF from the selected target.")
+    if alignment_enabled and (not alignment_ligand or not Path(alignment_ligand).is_file()):
+        alignment_ligand = reference_ligand
     if alignment_enabled and (not alignment_ligand or not Path(alignment_ligand).is_file()):
         raise ValueError("The selected receptor requests axis alignment, but its reference ligand SDF is missing.")
     return {
         "target_pdb": str(target["target_pdb"]),
         "compound_set_file": str(batch_file),
+        "mode": mode,
+        "reference_ligand_sdf": reference_ligand if mode in {"hybrid", "ligand_based"} else None,
         "center_x": float(target["center_x"]), "center_y": float(target["center_y"]), "center_z": float(target["center_z"]),
         "size_x": float(target["size_x"]), "size_y": float(target["size_y"]), "size_z": float(target["size_z"]),
         "search_mode": str(params.get("search_mode") or "balance"),
@@ -174,18 +210,20 @@ def _docking_params(params: dict, target: dict, batch_file: Path, *, round_numbe
 
 
 def _remote_request_rewrite_command(python: str, request_path: str, remote_dir: str,
-                                    alignment_path: str = "") -> str:
+                                    alignment_path: str = "", reference_path: str = "") -> str:
     """Build the remote request rewrite with the worker's configured Python."""
     script = (
         "import json,sys; p=sys.argv[1]; d=json.load(open(p)); "
         "d['parameters']['target_pdb']=sys.argv[2]; "
         "d['parameters']['compound_set_file']=sys.argv[3]; "
         "(d['parameters'].__setitem__('alignment_ligand_sdf',sys.argv[4]) "
-        "if len(sys.argv)>4 and sys.argv[4] else None); json.dump(d,open(p,'w'))"
+        "if len(sys.argv)>4 and sys.argv[4] else None); "
+        "(d['parameters'].__setitem__('reference_ligand_sdf',sys.argv[5]) "
+        "if len(sys.argv)>5 and sys.argv[5] else None); json.dump(d,open(p,'w'))"
     )
     return shlex.join([
         str(python), "-c", script, request_path,
-        remote_dir + "/receptor.pdb", remote_dir + "/compounds.json", alignment_path,
+        remote_dir + "/receptor.pdb", remote_dir + "/compounds.json", alignment_path, reference_path,
     ])
 
 
@@ -224,7 +262,8 @@ def _dispatch_docking_shard(*, request: dict, worker: dict, campaign: Path,
         write_json(run_dir / "metadata.json", metadata)
         result = _wait_local_job(run_dir, cancel_check=cancel_check)
         result.update(node_id=worker["node_id"], node_name=worker["node_name"], host="", worker_run_dir=str(run_dir),
-                      cpu_cores=int(worker["cpu_cores"]), gpu_device=str(worker["gpu_device"]))
+                      cpu_cores=int(worker["cpu_cores"]), gpu_device=str(worker["gpu_device"]),
+                      batch_share=int(worker.get("batch_share") or 1))
         return result
 
     host = str(worker["host"])
@@ -255,11 +294,16 @@ def _dispatch_docking_shard(*, request: dict, worker: dict, campaign: Path,
         if alignment_path:
             subprocess.run(["scp", "-q", str(Path(alignment_path)), f"{destination}:{remote_dir}/alignment_ligand.sdf"],
                            check=True, capture_output=True, text=True, timeout=None)
+        reference_path = request["parameters"].get("reference_ligand_sdf")
+        if reference_path:
+            subprocess.run(["scp", "-q", str(Path(reference_path)), f"{destination}:{remote_dir}/reference_ligand.sdf"],
+                           check=True, capture_output=True, text=True, timeout=None)
         # The shard parameters point to the local staged files. Rewrite those
         # two paths in the remote request after transfer.
         rewrite_request = _remote_request_rewrite_command(
             python, remote_request, remote_dir,
             remote_dir + "/alignment_ligand.sdf" if alignment_path else "",
+            remote_dir + "/reference_ligand.sdf" if reference_path else "",
         )
         subprocess.run(
             ["ssh", "-T", "-o", "BatchMode=yes", destination,
@@ -295,7 +339,8 @@ def _dispatch_docking_shard(*, request: dict, worker: dict, campaign: Path,
                        check=True, capture_output=True, text=True, timeout=None)
         result.update(node_id=worker["node_id"], node_name=worker["node_name"], host=host,
                       worker_run_dir=remote_run, score_path=str(local_scores), remote_staging_dir=remote_dir,
-                      cpu_cores=int(worker["cpu_cores"]), gpu_device=str(worker["gpu_device"]))
+                      cpu_cores=int(worker["cpu_cores"]), gpu_device=str(worker["gpu_device"]),
+                      batch_share=int(worker.get("batch_share") or 1))
         return result
     finally:
         local_request.unlink(missing_ok=True)
@@ -313,6 +358,7 @@ def _read_worker_scores(result: dict, rows_by_engine_id: dict) -> tuple[list[dic
         "worker_host": result.get("host", ""), "worker_run_dir": result["worker_run_dir"],
         "worker_job_code": result.get("job_code", ""),
         "worker_cpu_cores": result.get("cpu_cores"),
+        "worker_batch_share": result.get("batch_share") or 1,
         "worker_gpu_device": result.get("gpu_device", "none"),
     }
     with path.open(newline="", encoding="utf-8", errors="replace") as handle:
@@ -716,7 +762,8 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
             round_folder = rounds_dir / f"round-{round_number:04d}"
             round_folder.mkdir(parents=True, exist_ok=True)
             worker_states = [{"node_id": w["node_id"], "name": w["node_name"], "cpu_cores": w["cpu_cores"],
-                              "gpu_device": w["gpu_device"], "status": "queued"} for w in workers]
+                              "gpu_device": w["gpu_device"], "batch_share": w.get("batch_share") or 1,
+                              "status": "queued"} for w in workers]
             phase(nodes["active_docking"]["id"], f"Docking round {round_number} · {len(selection_rows):,} compounds",
                   round_number=round_number, compound_count=len(selection_rows), worker_nodes=worker_states)
 
@@ -949,10 +996,8 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
     if not 1 <= launch_batch_size <= MAX_COMPOUNDS_PER_LAUNCH:
         raise ValueError(f"Each computer's UniDock Pro batch must be between 1 and {MAX_COMPOUNDS_PER_LAUNCH:,} compounds.")
     random = np.random.default_rng(int(docking.get("sampling_seed") or 42) + round_number)
-    assignments = [[] for _ in workers]
     indexes = random.permutation(len(rows))
-    for rank, row_index in enumerate(indexes):
-        assignments[rank % len(workers)].append(rows[int(row_index)])
+    assignments = _weighted_worker_assignments(rows, workers, indexes)
     request_info = []
     marker = read_json(campaign / "molecular_design_studio.json")
     schema = pa.schema([("engine_id", pa.string()), ("library_id", pa.string()), ("compound_key", pa.uint64()),
@@ -991,15 +1036,17 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
                        "local_work_dir": str(node_directory), "parameters": parameters,
                        "owner_id": owner_id, "project_id": project_id}
             batches.append((mapping, request))
-        request_info.append((worker, batches))
+        request_info.append((worker, batches, len(selected)))
 
     results, failures = [], []
     errors = []
     status_by_worker = {worker["node_id"]: {"node_id": worker["node_id"], "name": worker["node_name"],
         "cpu_cores": worker["cpu_cores"], "gpu_device": worker["gpu_device"], "status": "queued",
+        "batch_share": worker.get("batch_share") or 1,
+        "assigned_compound_count": assigned_count,
         "batch_count": len(batches), "completed_batches": 0, "scored_count": 0,
         "failed_count": 0}
-        for worker, batches in request_info}
+        for worker, batches, assigned_count in request_info}
 
     def publish_progress():
         if worker_progress:
@@ -1031,7 +1078,7 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
 
     with ThreadPoolExecutor(max_workers=max(1, len(request_info))) as pool:
         futures = {pool.submit(run_worker_batches, worker, batches): worker
-                   for worker, batches in request_info}
+                   for worker, batches, _assigned_count in request_info}
         for future in as_completed(futures):
             worker = futures[future]
             try:
@@ -1088,7 +1135,9 @@ def _summarize_round_workers(rows: list[dict], failures: list[dict] | None = Non
             "name": row["worker_node_name"], "job_code": row.get("worker_job_code"),
             "host": row.get("worker_host"), "run_dir": row.get("worker_run_dir"),
             "run_dirs": [], "job_codes": [], "cpu_cores": row.get("worker_cpu_cores"),
-            "gpu_device": row.get("worker_gpu_device"), "scored_count": 0, "failed_count": 0})
+            "gpu_device": row.get("worker_gpu_device"),
+            "batch_share": row.get("worker_batch_share") or 1,
+            "scored_count": 0, "failed_count": 0})
         run_dir, job_code = row.get("worker_run_dir"), row.get("worker_job_code")
         if run_dir and run_dir not in item["run_dirs"]:
             item["run_dirs"].append(run_dir)

@@ -27,8 +27,8 @@ render_setup(None, user={"role": "admin"}, project_selector=lambda key: "project
     assert not app.exception
     app.selectbox(key="library-centroid-method").select(method).run()
     if method != "exact":
-        assert app.number_input(key="library-centroid-cpus-v1-source").value == 4
-        assert app.number_input(key="library-centroid-cpus-v1-remote").value == 3
+        assert app.number_input(key="library-centroid-cpus-v3-source").value == 4
+        assert app.number_input(key="library-centroid-cpus-v3-remote").value == 3
         app.radio(key="library-centroid-sizing").set_value("Number of chunks").run()
         app.number_input(key="library-centroid-chunk-count").set_value(324).run()
     app.text_input(key="library-centroid-output").set_value("/external/new-run").run()
@@ -39,8 +39,10 @@ render_setup(None, user={"role": "admin"}, project_selector=lambda key: "project
     parameters = args[2]
     assert parameters["clustering_method"] == method
     if method != "exact":
-        assert parameters["worker_nodes"] == [{"node_id": "source", "cpu_cores": 4},
-                                               {"node_id": "remote", "cpu_cores": 3}]
+        assert parameters["worker_nodes"] == [
+            {"node_id": "source", "cpu_cores": 4, "chunk_weight": 1, "max_parallel_chunks": 1},
+            {"node_id": "remote", "cpu_cores": 3, "chunk_weight": 4, "max_parallel_chunks": 3},
+        ]
         assert parameters["chunk_count"] == 324
         assert parameters["cpu_cores"] == 4
         assert parameters["final_candidate_count"] == 300_000

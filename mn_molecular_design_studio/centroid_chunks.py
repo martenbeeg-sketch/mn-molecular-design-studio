@@ -27,7 +27,8 @@ def balanced_chunk_sizes(rows, target_size=300_000, chunk_count=0):
 
 
 def _worker_cycle(specs):
-    weights = [spec["cpu_cores"] for spec in specs]
+    """Build a repeatable chunk assignment using measured relative machine weights."""
+    weights = [spec.get("chunk_weight", spec["cpu_cores"]) for spec in specs]
     scores = [0] * len(weights)
     result = []
     for _ in range(sum(weights)):
@@ -79,6 +80,26 @@ def representative_quotas(counts, budget, seed=42):
             quotas[index] = 1
             donors = sorted(active, key=lambda item: (-quotas[item], tie_rank[item]))
     return quotas
+
+
+def _merge_stop_decision(input_rows, representative_rows, source_rows, *,
+                         target_reduction_factor, plateau_reduction_percent,
+                         plateau_consecutive_rounds, plateau_streak):
+    """Return the next plateau streak and an optional hierarchical stop reason."""
+    if representative_rows == input_rows:
+        return plateau_streak, "no_reduction_in_round"
+
+    reduction_percent = 100.0 * (input_rows - representative_rows) / input_rows
+    if plateau_reduction_percent > 0 and reduction_percent < plateau_reduction_percent:
+        plateau_streak += 1
+    else:
+        plateau_streak = 0
+
+    if target_reduction_factor and representative_rows * target_reduction_factor <= source_rows:
+        return plateau_streak, "target_reduction_factor_reached"
+    if plateau_reduction_percent > 0 and plateau_streak >= plateau_consecutive_rounds:
+        return plateau_streak, "plateau_reduction_below_threshold"
+    return plateau_streak, None
 
 
 def _sample_candidates(files, budget, seed, destination):
@@ -166,7 +187,8 @@ def _shuffle_resources(requested_threads):
     return max(1, int(threads)), memory_bytes
 
 
-def _shuffle_chunks(files, sizes, directory, *, seed, cpu_cores, fingerprint_bytes, progress):
+def _shuffle_chunks(files, sizes, directory, *, seed, cpu_cores, fingerprint_bytes, progress,
+                    sample_rows=None):
     """An external sort makes globally randomized, exactly balanced chunks.
 
     DuckDB spills the shuffle to this job's temporary disk instead of storing
@@ -196,11 +218,15 @@ def _shuffle_chunks(files, sizes, directory, *, seed, cpu_cores, fingerprint_byt
         connection.execute("SET preserve_insertion_order = false")
         connection.execute("SET temp_directory = ?", [str(directory / "sort-spill")])
         progress(0, 0, "Randomizing compounds on temporary disk")
-        reader = connection.execute(
+        query = (
             f"SELECT compound_key,compound_id,compound_name,source_smiles,fingerprint,{mass},{population} "
-            "FROM read_parquet(?) ORDER BY hash(compound_key, ?), compound_key",
-            [[str(path) for path in files], seed],
-        ).fetch_record_batch(8192)
+            "FROM read_parquet(?) ORDER BY hash(compound_key, ?), compound_key"
+        )
+        parameters = [[str(path) for path in files], seed]
+        if sample_rows is not None:
+            query += " LIMIT ?"
+            parameters.append(sample_rows)
+        reader = connection.execute(query, parameters).fetch_record_batch(8192)
         for batch in reader:
             table = pa.Table.from_batches([batch]).cast(schema)
             position = 0
@@ -249,7 +275,8 @@ def _run_round(chunks, specs, directory, threshold, ssh_user, progress):
             workers[index] = _Worker(
                 spec, worker_script=root / "cluster/library_centroid_worker.py",
                 library_module=root / "external_libraries.py", temp_root=directory, ssh_user=ssh_user,
-                worker_args=["--tasks", str(tasks[index]), "--threshold", str(threshold)],
+                worker_args=["--tasks", str(tasks[index]), "--threshold", str(threshold),
+                             "--max-parallel-chunks", str(spec.get("max_parallel_chunks", spec["cpu_cores"]))],
                 extra_files=[(root / "centroid_cpu.py", "centroid_cpu.py"),
                              (root / "native/centroid_index.cpp", "native/centroid_index.cpp")],
             )
@@ -296,6 +323,8 @@ def _run_round(chunks, specs, directory, threshold, ssh_user, progress):
             summaries.append({"node_id": worker.spec["node_id"], "name": worker.spec["name"],
                               "task_kind": "centroids",
                               "cpu_worker_count": worker.spec["cpu_cores"], "status": "completed",
+                              "chunk_weight": worker.spec.get("chunk_weight", worker.spec["cpu_cores"]),
+                              "max_parallel_chunks": worker.spec.get("max_parallel_chunks", worker.spec["cpu_cores"]),
                               "input_rows": input_rows, "row_count": row_count, "population": population,
                               "chunk_count": len(manifest["chunks"]),
                               "parallel_chunks": manifest["parallel_chunks"],
@@ -316,16 +345,23 @@ def _run_round(chunks, specs, directory, threshold, ssh_user, progress):
 
 
 def prepare_chunked_centroids(feature_manifest, output, *, worker_nodes, similarity_threshold=0.6,
-                              chunk_size=300_000, chunk_count=0, max_merge_rounds=3,
+                              chunk_size=300_000, chunk_count=0, max_merge_rounds=0,
                               random_seed=42, ssh_user="compute", progress_callback=None,
-                              method="sampled", final_candidate_count=300_000):
+                              method="sampled", final_candidate_count=300_000,
+                              source_sample_size=0, target_reduction_factor=10,
+                              plateau_reduction_percent=1.0, plateau_consecutive_rounds=3):
     import duckdb
     import pyarrow.parquet as pq
     from mn_molecular_design_studio.cluster.distributed_library import _node_specs
 
     started = time.monotonic()
     source_path, source = read_feature_manifest(feature_manifest)
-    n = source["row_count"]
+    source_rows = source["row_count"]
+    if type(source_sample_size) is not int or source_sample_size < 0:
+        raise ValueError("The source sample size must be zero (use the full library) or a positive integer.")
+    if source_sample_size > source_rows:
+        raise ValueError("The source sample size cannot exceed the prepared library size.")
+    n = source_sample_size or source_rows
     balanced_chunk_sizes(n, chunk_size, chunk_count)
     if method not in {"sampled", "hierarchical"}:
         raise ValueError("Choose sampled final clustering or hierarchical representative merging.")
@@ -335,9 +371,18 @@ def prepare_chunked_centroids(feature_manifest, output, *, worker_nodes, similar
         raise ValueError("Tanimoto similarity must be in (0, 1].")
     if type(max_merge_rounds) is not int or max_merge_rounds < 0:
         raise ValueError("Merge rounds must be zero (until stable) or a positive integer.")
+    if type(target_reduction_factor) is not int or target_reduction_factor < 0 or target_reduction_factor == 1:
+        raise ValueError("Target reduction factor must be zero (disabled) or a whole number of at least 2.")
+    if (isinstance(plateau_reduction_percent, bool)
+            or not isinstance(plateau_reduction_percent, (int, float))
+            or not math.isfinite(plateau_reduction_percent)
+            or not 0 <= plateau_reduction_percent <= 100):
+        raise ValueError("Plateau reduction threshold must be between 0 and 100 percent.")
+    if type(plateau_consecutive_rounds) is not int or plateau_consecutive_rounds < 1:
+        raise ValueError("Plateau rounds must be a positive whole number.")
     if type(random_seed) is not int or not 0 <= random_seed < 2**63:
         raise ValueError("Use a nonnegative random seed below 2^63.")
-    specs = _node_specs(worker_nodes)
+    specs = _node_specs(worker_nodes, ssh_user=ssh_user)
     original_files = []
     for shard in source["shards"]:
         path = (source_path.parent / shard["path"]).resolve(strict=True)
@@ -362,9 +407,10 @@ def prepare_chunked_centroids(feature_manifest, output, *, worker_nodes, similar
     comparisons = 0
     previous_round = None
     writer = None
-    selected_population = source["row_count"]
+    selected_population = n
     candidate_count = None
     quotas = None
+    plateau_streak = 0
     try:
         round_index = 0
         while True:
@@ -374,18 +420,20 @@ def prepare_chunked_centroids(feature_manifest, output, *, worker_nodes, similar
             chunks = _shuffle_chunks(files, sizes, round_dir / "inputs", seed=(random_seed + round_index) % 2**63,
                                      cpu_cores=next(s["cpu_cores"] for s in specs if s["local"]),
                                      fingerprint_bytes=source["fingerprint_spec"]["bits"] // 8,
-                                     progress=progress)
+                                     progress=progress,
+                                     sample_rows=n if round_index == 0 and n < source_rows else None)
             outputs, summaries, metrics = _run_round(chunks, specs, round_dir / "workers",
                                                      similarity_threshold, ssh_user, progress)
             reduced = sum(item["row_count"] for item in metrics)
             if sum(item["input_rows"] for item in metrics) != n:
                 raise ValueError("Chunk workers did not process every input representative.")
-            if sum(item["population"] for item in metrics) != source["row_count"]:
+            if sum(item["population"] for item in metrics) != (source_sample_size or source_rows):
                 raise ValueError("Centroid merging lost original compound populations.")
             round_checks = sum(item["exact_similarity_evaluations"] for item in metrics)
             comparisons += round_checks
             rounds.append({"round": round_index, "input_rows": n, "representatives": reduced,
                            "chunk_count": len(chunks), "chunk_rows_min": min(sizes), "chunk_rows_max": max(sizes),
+                           "reduction_percent": 100.0 * (n - reduced) / n,
                            "exact_similarity_evaluations": round_checks, "workers": summaries})
             for item in summaries:
                 aggregate = workers.setdefault(item["node_id"], {**item, "input_rows": 0, "row_count": 0, "chunk_count": 0})
@@ -424,8 +472,15 @@ def prepare_chunked_centroids(feature_manifest, output, *, worker_nodes, similar
             if len(chunks) == 1:
                 stop_reason = "one_final_chunk"
                 break
-            if reduced == n:
-                stop_reason = "no_reduction_in_round"
+            plateau_streak, criterion_stop = _merge_stop_decision(
+                n, reduced, source_sample_size or source_rows,
+                target_reduction_factor=target_reduction_factor,
+                plateau_reduction_percent=plateau_reduction_percent,
+                plateau_consecutive_rounds=plateau_consecutive_rounds,
+                plateau_streak=plateau_streak,
+            )
+            if criterion_stop:
+                stop_reason = criterion_stop
                 break
             if max_merge_rounds and round_index >= max_merge_rounds:
                 stop_reason = "merge_round_limit"
@@ -443,7 +498,7 @@ def prepare_chunked_centroids(feature_manifest, output, *, worker_nodes, similar
                 population += sum(batch.column(batch.schema.get_field_index("cluster_size")).to_pylist())
         writer.close()
         writer = None
-        expected_population = candidate_count if method == "sampled" else source["row_count"]
+        expected_population = candidate_count if method == "sampled" else (source_sample_size or source_rows)
         if final_rows != rounds[-1]["representatives"] or population != expected_population:
             raise ValueError("The final centroid table failed its population or row-count check.")
         manifest = {
@@ -457,7 +512,10 @@ def prepare_chunked_centroids(feature_manifest, output, *, worker_nodes, similar
             "similarity_threshold": similarity_threshold, "similarity_scope": "each_chunk_at_each_merge_round",
             "approximate": True if method == "sampled" else len(rounds) > 1 or rounds[0]["chunk_count"] > 1,
             "representative_order": ["molecular_weight_ascending_within_chunk", "source_compound_key_ascending"],
-            "input_rows": source["row_count"], "row_count": final_rows, "population": population,
+            "input_rows": source_sample_size or source_rows, "source_library_rows": source_rows,
+            "source_sample_size": source_sample_size or None,
+            "source_sample_method": "seeded_hash_order_prefix" if source_sample_size else None,
+            "row_count": final_rows, "population": population,
             "cluster_size_scope": "sampled_chunk_representatives" if method == "sampled" else "original_source_compounds",
             "final_candidate_budget": final_candidate_count if method == "sampled" else None,
             "candidate_count": candidate_count, "chunk_representative_quotas": quotas,
@@ -469,6 +527,13 @@ def prepare_chunked_centroids(feature_manifest, output, *, worker_nodes, similar
             "randomization": "DuckDB hash(compound_key, seed + round) external sort",
             "duckdb_version": duckdb.__version__, "target_chunk_size": chunk_size,
             "requested_chunk_count": chunk_count, "max_merge_rounds": max_merge_rounds,
+            "stopping_criteria": ({
+                "semantics": "stop_when_any_enabled_criterion_is_met",
+                "target_reduction_factor": target_reduction_factor or None,
+                "plateau_reduction_percent": plateau_reduction_percent or None,
+                "plateau_consecutive_rounds": plateau_consecutive_rounds if plateau_reduction_percent else None,
+                "final_reduction_factor": (source_sample_size or source_rows) / final_rows,
+            } if method == "hierarchical" else None),
             "rounds": rounds, "stop_reason": stop_reason, "limits": None,
             "elapsed_seconds": time.monotonic() - started,
             "retention": "final_centroids_and_manifest_only; temporary_chunks_removed",
@@ -477,7 +542,7 @@ def prepare_chunked_centroids(feature_manifest, output, *, worker_nodes, similar
         }
         atomic_json(output / "manifest.json", manifest)
         if progress_callback:
-            progress_callback(source["row_count"], final_rows, "Centroid library completed")
+            progress_callback(source_sample_size or source_rows, final_rows, "Centroid library completed")
         return output / "manifest.json"
     except BaseException as exc:
         atomic_json(output / "failure.json", {"status": "failed", "error": str(exc), "rounds": rounds})

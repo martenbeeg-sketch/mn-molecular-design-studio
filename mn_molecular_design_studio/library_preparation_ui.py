@@ -22,23 +22,24 @@ def _worker_choices():
         try:
             for node in Store().nodes():
                 snapshot = node.get("snapshot") or {}
-                if (node.get("availability") != "online" or not snapshot.get("accept_jobs")
-                        or not snapshot.get("scheduler_online")):
+                if node.get("disabled"):
                     continue
                 resources = snapshot.get("resources") or {}
                 total = int(resources.get("cpu_total") or 1)
                 free = int(resources.get("cpu_free") or 0)
                 node_id = str(node["id"])
                 local = node_id == organizer_id
-                # Fingerprint workers are an independent process pool, so use
-                # the scheduler's live free-slot count on every machine. The
-                # general ligand runtime cap does not govern this worker.
-                available = min(256, total, free)
-                if available < 1:
-                    continue
+                # Peer snapshots can expire while metadata sync is running.
+                # Keep registered enabled nodes selectable; the tile's submit
+                # validator checks their live scheduler and free slots over SSH.
+                # The organizer's selected CPU allocation also becomes the
+                # local chunk worker's allocation, so expose its full pool;
+                # remote workers can only lease slots currently free there.
+                available = min(256, max(1, total if local else (free or total)))
                 name = cluster_config.display_name(node.get("name"))
                 by_id[node_id] = {"node_id": node_id, "name": name, "local": local,
-                                  "cpu_available": available, "cpu_total": total}
+                                  "cpu_available": available, "cpu_total": total,
+                                  "availability": node.get("availability", "unknown")}
         except (OSError, ValueError, KeyError):
             pass
     if organizer_id not in by_id:
