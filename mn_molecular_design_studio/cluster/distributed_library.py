@@ -114,7 +114,8 @@ def _node_specs(worker_nodes, *, ssh_user="compute"):
         specs.append({"node_id": node_id, "name": config.display_name(node["name"]),
                       "host": host, "cpu_cores": count, "local": local,
                       "available_cpu": available, "chunk_weight": chunk_weight,
-                      "max_parallel_chunks": max_parallel_chunks})
+                      "max_parallel_chunks": max_parallel_chunks,
+                      "free_gpus": resources.get("free_gpus") or resources.get("gpus") or []})
     if not specs:
         raise ValueError("Select at least one worker computer.")
     if not any(row["local"] for row in specs):

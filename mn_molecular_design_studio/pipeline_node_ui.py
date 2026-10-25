@@ -225,6 +225,36 @@ def _centroid_manifest_row_count(path):
     return count if count >= 0 else None
 
 
+def _available_docking_machines(gpu_engine):
+    """Show enabled registered machines with a recent usable resource snapshot.
+
+    A stale peer heartbeat is not proof that a remote computer is down. The
+    active-learning controller rechecks its scheduler and free GPUs over SSH
+    when the node is applied, before it can be run.
+    """
+    from mn_molecular_design_studio.cluster.store import Store
+    from mn_molecular_design_studio.cluster import config as cluster_config
+    from mn_molecular_design_studio.cluster.config import display_name
+
+    machines = []
+    for row in Store().nodes():
+        if row.get("disabled"):
+            continue
+        snapshot = row.get("snapshot") or {}
+        resources = snapshot.get("resources") or {}
+        if not snapshot.get("accept_jobs") or not snapshot.get("scheduler_online"):
+            continue
+        gpu_list = resources.get("free_gpus") if "free_gpus" in resources else resources.get("gpus", [])
+        gpu_list = gpu_list or []
+        if gpu_engine and not gpu_list:
+            continue
+        machines.append({"id": row["id"], "name": display_name(row["name"]), "gpus": gpu_list,
+                         "cpu_free": int(resources.get("cpu_free") or 0),
+                         "local": row["id"] == cluster_config.identity(),
+                         "heartbeat_stale": row.get("availability") != "online"})
+    return machines
+
+
 def render_node_form(node, graph, *, key, render_input, owner_id):
     kind = node["data"]["kind"]
     spec = NODE_CATALOG[kind]
@@ -355,28 +385,16 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
             st.caption("Selected computers process their UniDock Pro batches in parallel. Each computer uses its Studio scheduler; the organizer gathers scores and retained poses when the round completes.")
             machines = []
             try:
-                from mn_molecular_design_studio.cluster.store import Store
-                from mn_molecular_design_studio.cluster import config as cluster_config
-                from mn_molecular_design_studio.cluster.config import display_name
-                for row in Store().nodes():
-                    snapshot = row.get("snapshot") or {}
-                    resources = snapshot.get("resources") or {}
-                    if row.get("availability") != "online" or not snapshot.get("accept_jobs") or not snapshot.get("scheduler_online"):
-                        continue
-                    gpu_list = resources.get("free_gpus") if "free_gpus" in resources else resources.get("gpus", [])
-                    gpu_list = gpu_list or []
-                    if gpu_engine and not gpu_list:
-                        continue
-                    machines.append({"id": row["id"], "name": display_name(row["name"]), "gpus": gpu_list,
-                                     "cpu_free": int(resources.get("cpu_free") or 0),
-                                     "local": row["id"] == cluster_config.identity()})
+                machines = _available_docking_machines(gpu_engine)
             except (OSError, ValueError, KeyError, TypeError):
                 machines = []
             if not machines:
-                st.warning("No compatible online Studio computer is available for this docking engine.")
+                st.warning("No registered Studio computer with compatible resources is available for this docking engine.")
                 ready = False
             else:
-                labels = {machine["id"]: f"{machine['name']} · {str(len(machine['gpus'])) + ' GPU(s)' if gpu_engine else 'CPU'}" for machine in machines}
+                labels = {machine["id"]: f"{machine['name']} · {str(len(machine['gpus'])) + ' GPU(s)' if gpu_engine else 'CPU'}"
+                          + (" · stale heartbeat; rechecked on Apply" if machine["heartbeat_stale"] else "")
+                          for machine in machines}
                 available_ids = list(labels)
                 current_workers = values.get("worker_nodes") if isinstance(values.get("worker_nodes"), list) else []
                 current_ids = [str(item.get("node_id")) for item in current_workers if isinstance(item, dict)]

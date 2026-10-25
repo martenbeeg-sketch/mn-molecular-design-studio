@@ -122,7 +122,6 @@ def _library_sources(params: dict, seed_params: dict):
 def _selected_worker_specs(node: dict) -> list[dict]:
     from mn_molecular_design_studio.cluster import config as cluster_config
     from mn_molecular_design_studio.cluster import distributed_library
-    from mn_molecular_design_studio.cluster.store import Store
 
     raw_specs = node.get("worker_nodes")
     if not isinstance(raw_specs, list) or not raw_specs:
@@ -131,11 +130,8 @@ def _selected_worker_specs(node: dict) -> list[dict]:
     if not distributed_library._SSH_USER.fullmatch(ssh_user):
         raise ValueError("The SSH user must be a valid account name such as compute.")
     specs = distributed_library._node_specs(raw_specs, ssh_user=ssh_user)
-    by_id = {item["id"]: item for item in Store().nodes()}
     for spec, configured in zip(specs, raw_specs):
-        machine = by_id[spec["node_id"]]
-        resources = (machine.get("snapshot") or {}).get("resources") or {}
-        available_cpu = int(resources.get("cpu_free") or 0)
+        available_cpu = int(spec.get("available_cpu") or 0)
         if spec["local"] and spec["cpu_cores"] > available_cpu:
             raise ValueError(
                 f"The organizer has {available_cpu:,} CPU slots free after reserving the campaign coordinator, "
@@ -144,7 +140,7 @@ def _selected_worker_specs(node: dict) -> list[dict]:
         gpu_id = str(configured.get("gpu_device") or "none")
         if gpu_id.lower() in {"none", "cpu", "off"}:
             raise ValueError(f"UniDock Pro requires a selected GPU on {spec['name']}.")
-        gpu_records = resources.get("free_gpus") if "free_gpus" in resources else resources.get("gpus", [])
+        gpu_records = spec.get("free_gpus") or []
         free = {str(item.get("gpu_id")) for item in (gpu_records or [])}
         if gpu_id not in free:
             raise ValueError(f"GPU {gpu_id} on {spec['name']} is no longer available.")

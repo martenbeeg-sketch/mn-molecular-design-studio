@@ -314,6 +314,58 @@ def test_active_learning_graph_queues_the_round_controller(monkeypatch, tmp_path
     assert calls[0][1]["task_group"] == "campaign"
 
 
+def test_docking_picker_keeps_stale_registered_computers_for_live_check(monkeypatch):
+    from mn_molecular_design_studio import pipeline_node_ui
+    from mn_molecular_design_studio.cluster import config as cluster_config
+    from mn_molecular_design_studio.cluster.store import Store
+
+    rows = [
+        {"id": "organizer", "name": "pc002975", "disabled": 0, "availability": "offline",
+         "snapshot": {"accept_jobs": True, "scheduler_online": True, "resources": {
+             "cpu_free": 63, "free_gpus": [{"gpu_id": 0}, {"gpu_id": 1}]}}},
+        {"id": "remote", "name": "4032", "disabled": 0, "availability": "unreachable",
+         "snapshot": {"accept_jobs": True, "scheduler_online": True, "resources": {
+             "cpu_free": 23, "free_gpus": [{"gpu_id": 0}]}}},
+        {"id": "disabled", "name": "disabled", "disabled": 1, "availability": "online",
+         "snapshot": {"accept_jobs": True, "scheduler_online": True, "resources": {
+             "cpu_free": 23, "free_gpus": [{"gpu_id": 0}]}}},
+    ]
+    monkeypatch.setattr(Store, "nodes", lambda _self: rows)
+    monkeypatch.setattr(cluster_config, "identity", lambda: "organizer")
+
+    machines = pipeline_node_ui._available_docking_machines(gpu_engine=True)
+
+    assert [machine["id"] for machine in machines] == ["organizer", "remote"]
+    assert all(machine["heartbeat_stale"] for machine in machines)
+
+
+def test_active_docking_uses_live_worker_gpu_resources_after_stale_heartbeat(monkeypatch):
+    from mn_molecular_design_studio.cluster import config as cluster_config, distributed_library
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import active_learning_controller
+
+    monkeypatch.setattr(cluster_config, "identity", lambda: "organizer")
+    monkeypatch.setattr(distributed_library, "_node_specs", lambda _nodes, **_kwargs: [
+        {"node_id": "organizer", "name": "pc002975", "local": True, "cpu_cores": 32,
+         "available_cpu": 63, "free_gpus": [{"gpu_id": 0}, {"gpu_id": 1}]},
+        {"node_id": "remote", "name": "pc004032", "local": False, "host": "pc004032",
+         "cpu_cores": 23, "available_cpu": 23, "free_gpus": [{"gpu_id": 0}]},
+    ])
+    monkeypatch.setattr(distributed_library, "_remote_environment",
+                        lambda *_args, **_kwargs: ("/env/bin/python", "/repo", "/state", 23))
+
+    workers = active_learning_controller._selected_worker_specs({
+        "ssh_user": "compute",
+        "worker_nodes": [
+            {"node_id": "organizer", "gpu_device": "1", "cpu_cores": 32, "batch_share": 1},
+            {"node_id": "remote", "gpu_device": "0", "cpu_cores": 23, "batch_share": 1},
+        ],
+    })
+
+    assert [worker["batch_share"] for worker in workers] == [1, 1]
+    assert [worker["gpu_device"] for worker in workers] == ["1", "0"]
+    assert workers[1]["remote_python"] == "/env/bin/python"
+
+
 def test_source_picker_accepts_libraries_with_only_the_needed_preparation(tmp_path, monkeypatch):
     from mn_molecular_design_studio import molecular_database, pipeline_graph_ui
     feature, centroid = tmp_path / "fp.json", tmp_path / "centroids.json"
