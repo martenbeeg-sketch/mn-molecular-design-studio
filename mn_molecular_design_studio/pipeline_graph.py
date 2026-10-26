@@ -43,6 +43,27 @@ MSA = field("use_target_msa", "Use cached target MSA; fetch if missing", True, k
 TEMPLATE = field("use_target_template", "Use target structure as template", True, kind="boolean")
 
 NODE_CATALOG = {
+    "peptide_trap": _spec("peptide_trap", "Peptide Trap", "Design engine", "Retarget published β-strand clefts by sequence matching, threading and Rosetta interface redesign.", output="sequence", workflow="design.peptide_trap", fields=[
+        field("target_sequence", "Target sequence / FASTA", "", kind="text", section="basic"),
+        field("scaffold_ids", "Scaffold templates", ["C37", "C104.1"], kind="json", section="basic"),
+        field("max_registers", "Maximum matching placements", 20, minimum=1, maximum=1000),
+        field("designs_per_register", "Designs per placement", 1, minimum=1, maximum=100),
+        field("design_repeats", "Rosetta design repeats", 2, minimum=1, maximum=5),
+        field("relax_repeats", "Rosetta relaxation repeats", 2, minimum=1, maximum=5),
+        field("max_backbone_rmsd", "Maximum template backbone RMSD (Å)", 2.0, minimum=0.1, maximum=10.),
+        field("cpu_cores", "CPU cores", 4, minimum=1, maximum=256), SEED], formats=("pdb",)),
+    "kejia_idr": _spec("kejia_idr", "Kejia IDR threading", "Design engine", "Thread a target sequence onto binder–peptide templates and refine peptide flexibility; connect ProteinMPNN and AlphaFold2 downstream.", workflow="design.kejia_idr", fields=[
+        field("target_sequence", "Target fragment / single-record FASTA", "", kind="text", section="basic"),
+        field("template_library", "Template source", "upload", kind="select", options=["upload", "walle", "walle2", "mini", "strand"], section="basic"),
+        field("template_structure", "Uploaded template path", "", kind="text", section="basic"),
+        field("binder_chain", "Binder chain", "A", kind="text"), field("peptide_chain", "Peptide chain", "B", kind="text"),
+        field("max_templates", "Maximum library templates", 10, minimum=1, maximum=1000),
+        field("flex_docking_repeats", "Flexible docking repeats per register", 3, minimum=1, maximum=100),
+        field("min_seq_identity", "Minimum sequence identity", 0.0, minimum=0., maximum=1.),
+        field("min_blosum", "Minimum BLOSUM score", -10.0, minimum=-100., maximum=100.),
+        field("max_farep", "Maximum repulsive-energy increase", 10.0, minimum=0., maximum=10000.),
+        field("keep_bidentates", "Retain template bidentate contacts", False, kind="boolean"),
+        field("cpu_cores", "CPU cores", 4, minimum=1, maximum=256), SEED], formats=("pdb",)),
     "cofold_input": _spec("cofold_input", "Cofolding Inputs", "Cofolding input", "Enter a protein target and any partner molecules for the selected prediction task.", output="molecule_task", color="#758f84", fields=[
         field("task_type", "Prediction task", "protein_protein", kind="select", options=["protein", "protein_protein", "protein_ligand", "protein_dna", "protein_rna", "protein_macrocyclic"], section="basic"),
         field("target_protein_sequences", "Target protein sequence(s)", "", kind="text", section="basic", help="Enter one sequence per target chain. Separate chains with a colon or new line."),
@@ -594,6 +615,8 @@ for _engine, _metadata in inverse_folding_input.ENGINES.items():
         fields=inverse_folding_input.canvas_fields(_engine), color="#a88845")
 
 TEMPLATE_REFERENCES={
+    'peptide_trap': ('https://doi.org/10.1038/s41589-024-01578-5', 'Published peptide-trap scaffolds → burial-pattern matching and threading → Rosetta interface redesign → AlphaFold2 Initial Guess → Rosetta interface analysis. Uses the authors’ archived models and an adaptation of their deposited FastDesign/FastRelax protocol. C37 and the complete C104.1 model are available initially. Initial scaffold generation, hairpin retargeting and the paper’s complete selection procedure are not reproduced.'),
+    'kejia_idr': ('https://github.com/drhicks/Kejia_peptide_binders', 'Kejia template threading and flexible peptide docking → ProteinMPNN → AlphaFold2 multimer with a whole-complex initial guess. This starter uses five sequences per backbone and five AF2 models. Native Kejia threading is reused; downstream Studio implementations replace the upstream cluster scripts. Iterative redesign, clustering and the modified diffusion refinement branch are not included automatically.'),
     'unidock_active_learning':('https://github.com/Novartis/OpenVS','Active-learning study template inspired by OpenVS: an independent centroid sample, configurable docking engine, cumulative score ranking, changing binder percentage, a 1024-bit/3000-node classifier, prediction across the compound library, and selection of predicted hits plus random exploration.'),
     'abmpnn_cdr_redesign':('https://app.tamarind.bio/tools/abmpnn','Select saved project designs, annotate antibody CDRs with SAbR, redesign selected loops with AbMPNN, then independently refold the redesigned sequences with Boltz-2 before sequence analysis and Results.'),
     'rfd4_protein_binder':('https://huggingface.co/spaces/nvidia/rfd4-proteina-zerogpu','RFD4-Proteina co-designs sequence and structure together. This starter sends the generated complex to Boltz-2, then calculates ipSAE and Rosetta interface metrics. Use a protein target structure; edit the RFD4 task options for exact condition controls.'),
@@ -972,7 +995,11 @@ def new_graph(template="foundry") -> dict[str, Any]:
     elif template == "esmfold2_binder":
         kinds = ["target", "esm_binder", "ligandmpnn", "rf3", "results"]
     engine=template.removesuffix('_generated')
-    if engine == "rfdiffusion_beta_pairing":
+    if engine == "peptide_trap":
+        kinds = ["generation_source" if template.endswith("_generated") else "peptide_trap", "af2", "rosetta_metrics", "results"]
+    elif engine == "kejia_idr":
+        kinds = ["backbone_source" if template.endswith("_generated") else "kejia_idr", "ligandmpnn", "af2", "results"]
+    elif engine == "rfdiffusion_beta_pairing":
         kinds = ["backbone_source" if template.endswith("_generated") else engine, "ligandmpnn", "af2", "results"]
     elif engine in generator_input.ENGINES:
         kinds=['backbone_source' if template.endswith('_generated') else engine,'ligandmpnn','esmfold' if engine=='protpardelle' else 'af2','results']
@@ -989,7 +1016,7 @@ def new_graph(template="foundry") -> dict[str, Any]:
     if template == "esmfold2_binder":
         for node, x in zip(nodes, (50, 360, 670, 980, 1290)):
             node["position"] = {"x": x, "y": 180}
-    elif engine == "rfdiffusion_beta_pairing":
+    elif engine in {"peptide_trap", "kejia_idr", "rfdiffusion_beta_pairing"}:
         for node, x in zip(nodes, (50, 370, 690, 1010)):
             node["position"] = {"x": x, "y": 180}
     elif 'binder_context' in kinds and engine != 'pxdesign':
@@ -1029,6 +1056,18 @@ def new_graph(template="foundry") -> dict[str, Any]:
                 a['position']={'x':50,'y':170};b['position']={'x':380,'y':170};c['position']={'x':710,'y':50};d['position']={'x':710,'y':300};r['position']={'x':1040,'y':170}
                 pairs=[(a,b),(b,c),(b,d),(c,r),(d,r)]
             edges=[{'id':f'edge-{i}','source':source['id'],'sourceHandle':'out','target':dest['id'],'targetHandle':'in'} for i,(source,dest) in enumerate(pairs)]
+    if engine == "peptide_trap":
+        next(node for node in nodes if node["data"]["kind"] == "af2")["data"]["params"].update(
+            model_count=1, num_recycles=3, multimer=True, use_binder_template=False,
+            use_interface_template=False, msa_source="single_sequence")
+    if engine == "kejia_idr":
+        for node in nodes:
+            if node["data"]["kind"] == "ligandmpnn":
+                node["data"]["params"].update(sequences=5, sampling_temp=0.1, omit_aas="CX")
+            elif node["data"]["kind"] == "af2":
+                node["data"]["params"].update(model_count=5, num_recycles=3, multimer=True,
+                    use_binder_template=False, use_interface_template=False,
+                    msa_source="single_sequence")
     if engine == "rfdiffusion_beta_pairing":
         sequence = next(n for n in nodes if n["data"]["kind"] == "ligandmpnn")
         sequence["data"]["params"]["sequences"] = 10
@@ -1043,6 +1082,10 @@ def new_graph(template="foundry") -> dict[str, Any]:
                 msa_source="single_sequence",
             )
     result={"schema_version": SCHEMA, "id": uuid.uuid4().hex, "name": {"foundry": "Foundry binder design", "bindcraft2": "BindCraft2 design", "boltzgen": "BoltzGen design", "complexa":"Proteina-Complexa custom pipeline", "complexa_generated":"Continue generated designs", "esmfold2_binder":"ESMFold2 Binder Design → ProteinMPNN → RosettaFold3", "rfdiffusion_beta_pairing":"RFdiffusion β-pairing → ProteinMPNN → AF2 Initial Guess", "rfdiffusion_beta_pairing_generated":"Continue β-pairing backbones → ProteinMPNN → AF2 Initial Guess"}.get(template, generator_input.ENGINES[engine]['title']+' · author-inspired pipeline' if engine in generator_input.ENGINES else "Untitled pipeline"), "nodes": nodes, "edges": edges, "viewport": {"x": 0, "y": 0, "zoom": 0.75}}
+    if engine == "kejia_idr":
+        result["name"] = "Kejia IDR → ProteinMPNN → AlphaFold2 Initial Guess"
+    elif engine == "peptide_trap":
+        result["name"] = "Peptide Trap → AlphaFold2 → interface analysis"
     if template in TEMPLATE_REFERENCES:result['template_id']=template
     return result
 
@@ -1355,6 +1398,12 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
         if require_inputs and kind == "target":
             if not node["data"]["params"].get("target_pdb"):
                 raise ValueError("Load a target structure before running the pipeline.")
+        if require_inputs and kind == "kejia_idr":
+            from mn_molecular_design_studio.kejia_idr_input import prepare_request
+            prepare_request(node["data"]["params"])
+        if require_inputs and kind == "peptide_trap":
+            from mn_molecular_design_studio.peptide_trap_input import prepare_request
+            prepare_request(node["data"]["params"])
         if require_inputs and kind == "active_library":
             seed = next((n for n in nodes.values() if n["data"]["kind"] == "active_seed"), None)
             if seed is not None:

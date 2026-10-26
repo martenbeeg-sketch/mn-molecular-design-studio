@@ -12,6 +12,8 @@ def generated_candidates(run_dir, *, stage=None):
     params=read_json(run_dir/'input.json').get('params',{})
     from mn_molecular_design_studio.generator_input import TOOLS
     supported={
+        'kejia_idr',
+        'peptide_trap',
         'proteina_complexa_generator',
         'bindcraft2_generator',
         'boltzgen_generator',
@@ -21,6 +23,8 @@ def generated_candidates(run_dir, *, stage=None):
         params.get('generator_only')
         or params.get('generator_only_tile')
         or params.get('trajectory_only')
+        # Earlier Kejia jobs predate the shared generator flag.
+        or metadata.get('tool') == 'kejia_idr'
     )
     if (metadata.get('status') not in {'completed','succeeded'}
             or read_json(run_dir/'result.json').get('success') is not True
@@ -29,7 +33,8 @@ def generated_candidates(run_dir, *, stage=None):
         return []
     return [c for c in read_candidates(run_dir)
             if c.get('stage') in ({stage} if stage else {'generation.backbone_sequence','generation.backbone'})
-            and c.get('metrics',{}).get('result_kind')=='generated']
+            and (c.get('metrics',{}).get('result_kind')=='generated'
+                 or metadata.get('tool')=='kejia_idr' and c.get('metrics',{}).get('result_kind')=='generation_only')]
 
 
 def has_ligand_target(candidate):

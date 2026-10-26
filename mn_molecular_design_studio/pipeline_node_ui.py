@@ -174,6 +174,10 @@ def _render_field(field, values, key):
     value = values.get(name, field["default"])
     label = {"num_designs":"Number of designs", "timesteps":"Diffusion timesteps", "seed":"Random seed (0 = random)"}.get(name, field["label"])
     kwargs = {"key": key+"-"+name, "help":field.get("help")}
+    if name == "scaffold_ids" and field["type"] == "json":
+        from mn_molecular_design_studio.peptide_trap_input import SCAFFOLDS
+        return st.multiselect(label, list(SCAFFOLDS), default=list(value or []),
+                              format_func=lambda item: SCAFFOLDS[item]["label"], **kwargs)
     if field["type"] == "boolean":
         return st.checkbox(label, value=bool(value), **kwargs)
     if field["type"] == "select":
@@ -208,7 +212,7 @@ def _render_field(field, values, key):
                                min_value=convert(field["min"]) if "min" in field else None,
                                max_value=convert(field["max"]) if "max" in field else None,
                                disabled=name=="cfg_scale" and not values.get("classifier_free_guidance"), **kwargs)
-    if name in {"target_protein_sequences", "partner_protein_sequences", "dna_sequences", "rna_sequences", "ligand_smiles", "options_json", "condition_spec"}:
+    if name in {"target_sequence", "target_protein_sequences", "partner_protein_sequences", "dna_sequences", "rna_sequences", "ligand_smiles", "options_json", "condition_spec"}:
         height = 170 if name == "options_json" else 220 if name == "condition_spec" else 110 if "sequence" in name else 85
         return st.text_area(label, value=str(value), height=height, **kwargs)
     return st.text_input(label, value=str(value), **kwargs)

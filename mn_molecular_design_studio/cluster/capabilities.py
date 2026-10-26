@@ -138,6 +138,14 @@ def requirements(payload, *, references=(), installed_images=None):
                 needed_refs.add("openfold3/of3-ob-2025-06-30-174k.pt")
             cpu_only = False
             minimum_gpus = max(minimum_gpus, int(profile.get("gpu_count", {}).get(p.get("optimization_mode", "off"), 1)))
+        elif workflow == "design.peptide_trap":
+            from mn_molecular_design_studio.peptide_trap_input import SCAFFOLDS
+            prefix = "peptide-traps/sahtoe-10391229/"
+            needed_refs.update({prefix + "source_manifest.json", prefix + "source/design_after_seqthread.xml"})
+            needed_refs.update(prefix + "source/pdb_models/" + SCAFFOLDS[key]["file"] for key in p.get("scaffold_ids") or SCAFFOLDS)
+        elif workflow == "design.kejia_idr":
+            if p.get("template_library", "upload") != "upload":
+                needed_refs.add("kejia-idr/source/templates/" + p["template_library"])
         elif workflow == "sequence.mpnn":
             from mn_molecular_design_studio.mpnn_input import checkpoint
             needed_images.add("mn-foundry:cu128" if p.get("backend") == "foundry" else "mn-ligandmpnn:latest")

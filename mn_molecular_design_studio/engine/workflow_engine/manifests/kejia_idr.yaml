@@ -1,0 +1,5 @@
+tool: kejia_idr
+group: design
+image: mn-kejia-idr:7f65c18
+gpu: false
+description: Native Kejia template threading and flexible peptide docking, emitting PDB candidates for Studio ProteinMPNN and AlphaFold2 pipelines.

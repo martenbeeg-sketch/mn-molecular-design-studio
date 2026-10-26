@@ -162,6 +162,8 @@ _SPECS = (
     _spec("detection.surface_analysis", "detection", "run_surface_analysis", "detection", "surface_analysis", "surface_analysis", "Run PeSTo, ScanNet, Surf2Spot, and MaSIF-seed together on one target."),
     _spec("design.rfdiffusion_classic", "design", "run_rfdiffusion_classic", "design", "rfdiffusion_classic", "design_campaign", "Run the RFdiffusion classic design workflow."),
     _spec("design.rfdiffusion_beta_pairing", "rfdiffusion_beta_pairing", "run_rfdiffusion_beta_pairing", "design", "rfdiffusion_beta_pairing", "design_generation", "Generate RFdiffusion binder backbones with explicit target–binder β-strand SS/adjacency interface conditioning."),
+    _spec("design.kejia_idr", "kejia_idr", "run_kejia_idr_threading", "design", "kejia_idr", "kejia_idr_threading", "Thread an IDR sequence fragment onto Kejia structural templates and flexibly dock the peptide. Connect ProteinMPNN and AlphaFold2 as downstream pipeline steps."),
+    _spec("design.peptide_trap", "peptide_trap", "run_peptide_trap_design", "design", "peptide_trap", "peptide_trap_design", "Retarget published β-strand peptide traps with burial-pattern matching and Rosetta interface redesign. Connect independent prediction and interface analysis downstream."),
     _spec("design.bindcraft", "design", "run_bindcraft", "design", "bindcraft", "design_campaign", "Run the BindCraft 1.x vanilla workflow."),
     _spec("design.bindcraft2", "bindcraft2", "enqueue_bindcraft2_design", "design", "bindcraft2", "bindcraft2_design", "Run a native BindCraft 2 design job.", "direct"),
     _spec("design.bindcraft2_generator", "bindcraft2", "enqueue_bindcraft2_design", "design", "bindcraft2_generator", "bindcraft2_generator", "Run BindCraft2 gradient design and emit only trajectories that pass the pre-ProteinMPNN handoff gate.", "direct"),
@@ -853,6 +855,21 @@ def _validate_workflow_inputs(spec: WorkflowSpec, parameters: dict[str, Any]) ->
         from mn_molecular_design_studio.rfpeptides_input import validate_request
         try:
             validate_request(parameters, require_files=not _schema_only_paths.get())
+        except (TypeError, ValueError, OSError) as exc:
+            raise AutomationError(str(exc)) from exc
+    if spec.workflow_id == "design.peptide_trap":
+        from mn_molecular_design_studio import peptide_trap_input
+        try:
+            params = dict(parameters)
+            if params.get("scaffold_ids") is None:
+                params["scaffold_ids"] = list(peptide_trap_input.SCAFFOLDS)
+            peptide_trap_input.prepare_request(params, require_files=not _schema_only_paths.get())
+        except (TypeError, ValueError, OSError) as exc:
+            raise AutomationError(str(exc)) from exc
+    if spec.workflow_id == "design.kejia_idr":
+        from mn_molecular_design_studio import kejia_idr_input
+        try:
+            kejia_idr_input.prepare_request(parameters, require_files=not _schema_only_paths.get())
         except (TypeError, ValueError, OSError) as exc:
             raise AutomationError(str(exc)) from exc
     if spec.workflow_id == "design.rfdiffusion_beta_pairing":

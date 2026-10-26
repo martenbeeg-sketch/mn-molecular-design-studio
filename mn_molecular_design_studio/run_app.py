@@ -136,6 +136,8 @@ WORKFLOW_TITLES = {
     "Pxdesign Generate": "PXDesign",
     "Rfdiffusion Generate": "RFdiffusion",
     "Rfdiffusion Beta Pairing": "RFdiffusion β-pairing",
+    "Kejia Idr": "Kejia IDR Binder",
+    "Peptide Trap": "Peptide Trap",
     "Genie3 Generate": "Genie3",
     "Protpardelle Generate": "Protpardelle-1C",
     "Proteina Complexa": "Proteina-Complexa",
@@ -207,6 +209,8 @@ TOOL_CATALOG_WORKFLOW_IDS = {
     "detection.surface_analysis",
     "design.rfdiffusion_generate",
     "design.rfdiffusion_beta_pairing",
+    "design.kejia_idr",
+    "design.peptide_trap",
     "design.bindcraft2",
     "design.bindcraft2_generator",
     "design.rfdiffusion3",
@@ -296,6 +300,8 @@ TOOL_WORKFLOW_CODE_VERSIONS = {
     "design.pxdesign_generate": ("PXDesign f788441", False),
     "design.rfdiffusion_generate": ("RFdiffusion · version not pinned", False),
     "design.rfdiffusion_beta_pairing": ("mn-rfdiffusion:latest · published SS/adjacency conditioning", False),
+    "design.kejia_idr": ("Kejia 7f65c18 · native template threading", False),
+    "design.peptide_trap": ("Sahtoe 2024 · published trap scaffolds", False),
     "design.genie3_generate": ("Genie3 d77ae5a", False),
     "design.protpardelle_generate": ("Protpardelle-1C ee37840", False),
     "detection.scannet": ("ScanNet a61623c", False),
@@ -845,6 +851,8 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
         "campaign": ["Existing Results"],
     }
     input_types_by_workflow = {
+        "design.kejia_idr": ["FASTA / Sequence", "Structure (PDB)", "Structure (mmCIF)"],
+        "design.peptide_trap": ["FASTA / Sequence", "Template Library"],
         "ligand.complex.prepare": ["Protein–Ligand Complex (PDB)"],
         "sequence.mpnn": ["Structure (PDB)", "Structure (mmCIF)", "Existing Results"],
         "sequence.abmpnn": ["Antibody Structure (PDB/mmCIF)", "Existing Antibody Designs"],
@@ -911,7 +919,7 @@ def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:
             if workflow in {"design.bindcraft2", "design.bindcraft2_generator"}
             else ["Protein", "DNA", "RNA", "Ligand"]
             if workflow in {"refolding.af3_jax_cofolding", "design.rfdiffusion3"}
-            else ["Protein", "Peptide"] if workflow == "design.rfpeptides"
+            else ["Protein", "Peptide"] if workflow in {"design.rfpeptides", "design.kejia_idr", "design.peptide_trap"}
             else ["Protein", "Ligand"] if workflow in {"design.proteina_complexa", "design.proteina_complexa_generate"}
             else ["Protein"]
             if workflow == "refolding.esmfold2_cofolding"
@@ -3999,7 +4007,7 @@ def _submit_cofolding_job(schema: dict, workflow_id: str, parameters: dict, proj
         "parameters": parameters, "project_id": project_id,
         "priority": 1000 if settings.get("prioritize") else 0,
     }
-    if workflow_id in {"library.prepare", "library.centroids"}:
+    if workflow_id in {"library.prepare", "library.centroids", "design.kejia_idr", "design.peptide_trap"}:
         # These are CPU workflows. Pin their scheduler request explicitly so
         # a default GPU allocation cannot be inferred from a generic request.
         payload["resources"] = {"gpu_device": "none"}
@@ -4150,6 +4158,19 @@ def _render_workflow_setup() -> None:
                 key="optimized-prediction-engine-fallback",
             )
         _render_optimized_prediction_setup(str(engine_id))
+        return
+
+    if workflow_id == "design.peptide_trap":
+        from mn_molecular_design_studio import peptide_trap_ui
+        importlib.reload(peptide_trap_ui)
+        peptide_trap_ui.render_setup(workflow_schema(workflow_id), owner_id=str(CURRENT_USER["id"]),
+                                    project_selector=_render_project_selector, submit=_submit_cofolding_job)
+        return
+    if workflow_id in {"prototype.kejia_idr", "design.kejia_idr"}:
+        from mn_molecular_design_studio import kejia_idr_ui
+        importlib.reload(kejia_idr_ui)
+        kejia_idr_ui.render_setup(workflow_schema("design.kejia_idr"), owner_id=str(CURRENT_USER["id"]),
+                                  project_selector=_render_project_selector, submit=_submit_cofolding_job)
         return
 
     schema = workflow_schema(workflow_id)
@@ -7799,6 +7820,8 @@ def _render_job_details() -> None:
     is_rfdiffusion3 = analysis_tool == "rfdiffusion3"
     is_rfd4_proteina = analysis_tool == "rfd4_proteina" or "rfd4_proteina" in workflow_identity
     is_beta_pairing = analysis_tool == "rfdiffusion_beta_pairing" or "rfdiffusion_beta_pairing" in workflow_identity
+    is_kejia_idr = analysis_tool == "kejia_idr" or "design.kejia_idr" in workflow_identity
+    is_peptide_trap = analysis_tool == "peptide_trap" or "design.peptide_trap" in workflow_identity
     is_rfantibody = analysis_tool == "rfantibody" or "rfantibody" in workflow_identity
     is_rfpeptides = analysis_tool == "rfpeptides" or "rfpeptides" in workflow_identity
     has_dedicated_prediction_results = is_rfantibody or is_rfpeptides or is_rfdiffusion3 or is_rfd4_proteina or is_af3_jax_cofolding or is_esmfold2_cofolding or is_optimized_prediction or is_design_validation
@@ -7936,6 +7959,12 @@ def _render_job_details() -> None:
         elif is_rfd4_proteina:
             from mn_molecular_design_studio import rfd4_proteina_ui
             rfd4_proteina_ui.render_results(run_id, run_dir, result_candidates, input_params, result)
+        elif is_peptide_trap:
+            from mn_molecular_design_studio import peptide_trap_ui
+            peptide_trap_ui.render_results(run_id, run_dir, result_candidates, input_params, result)
+        elif is_kejia_idr:
+            from mn_molecular_design_studio import kejia_idr_ui
+            kejia_idr_ui.render_results(run_id, run_dir, result_candidates, input_params, result)
         elif is_beta_pairing:
             from mn_molecular_design_studio import rfdiffusion_beta_pairing_ui
             rfdiffusion_beta_pairing_ui.render_results(run_id, run_dir, result_candidates, input_params, result)
@@ -7951,7 +7980,7 @@ def _render_job_details() -> None:
 
         structure_artifacts = (
             []
-            if has_dedicated_prediction_results or has_dedicated_surface_results or is_generator_tool or is_beta_pairing or str(job.get("tool")) in {"proteina_complexa", "proteina_complexa_generator"}
+            if has_dedicated_prediction_results or has_dedicated_surface_results or is_generator_tool or is_beta_pairing or is_kejia_idr or is_peptide_trap or str(job.get("tool")) in {"proteina_complexa", "proteina_complexa_generator"}
             else [
                 (item, path)
                 for item, path in artifact_paths

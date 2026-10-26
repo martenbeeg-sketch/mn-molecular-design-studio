@@ -1,0 +1,5 @@
+tool: peptide_trap
+group: design
+image: mn-peptide-trap:sahtoe-10391229
+gpu: false
+description: Retarget published peptide-trap scaffolds using burial-pattern matching, sequence threading and Rosetta interface FastDesign/FastRelax.

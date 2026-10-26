@@ -477,6 +477,13 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
     """Only allowlisted adapters can turn graph data into a workflow call."""
     workflow = NODE_CATALOG[kind]["workflow"]
     p = copy.deepcopy(params)
+    if kind == "peptide_trap":
+        p["job_name"] = name
+        return {"schema_version": 1, "workflow": workflow, "parameters": p}
+    if kind == "kejia_idr":
+        p["template_structure"] = str(_path(p["template_structure"])) if p.get("template_structure") else None
+        p["job_name"] = name
+        return {"schema_version": 1, "workflow": workflow, "parameters": p}
     if kind == "boltz2":
         # Study validation always uses the target MSA; binder chains remain
         # single-sequence through _optimized_prediction_tasks.
@@ -757,7 +764,9 @@ def _submit(request: dict, parent: Path, node: dict, *, owner_id: str, project_i
     from mn_molecular_design_studio.quality_tools import WORKFLOWS as quality_workflows
     workflow = str(request.get("workflow", ""))
     cpu_analysis = workflow.startswith("analysis.") and not quality_workflows.get(workflow, {}).get("gpu", False)
-    request["resources"] = {"gpu_device": "none" if cpu_analysis else gpu_device, "cpu_cores": 4}
+    request["resources"] = {"gpu_device": "none" if cpu_analysis or workflow in {"design.kejia_idr", "design.peptide_trap"} else gpu_device, "cpu_cores": 4}
+    if workflow in {"design.kejia_idr", "design.peptide_trap"}:
+        request["resources"]["cpu_cores"] = int(request["parameters"].get("cpu_cores", 4))
     path = parent / "requests" / f"{node['id']}.json"
     # Workflow submission resolves relative paths against the request file's
     # parent directory. `write_json` stores managed paths relative to the
@@ -1042,6 +1051,22 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     key_params['input_adapter_digest']=file_digest(Path(generator_input.__file__))
                     for key in ('target_pdb','scaffold_pdb','scaffold_ss_file','scaffold_adj_file','target_ss_file','target_adj_file'):
                         if params.get(key):key_params[key+'_digest']=file_digest(_path(params[key]))
+                elif kind == "peptide_trap":
+                    from mn_molecular_design_studio import peptide_trap_input
+                    from mn_molecular_design_studio.engine.workflow_engine.workflows import peptide_trap
+                    prepared = peptide_trap_input.prepare_request(params)
+                    key_params["input_adapter_digest"] = file_digest(Path(peptide_trap_input.__file__))
+                    key_params["workflow_adapter_digest"] = file_digest(Path(peptide_trap.__file__))
+                    key_params["template_digests"] = [file_digest(peptide_trap_input.template_path(key)) for key in prepared["scaffold_ids"]]
+                    key_params["native_protocol_digest"] = file_digest(peptide_trap_input.library_root() / "source/design_after_seqthread.xml")
+                    key_params["container_adapter_digest"] = file_digest(Path(__file__).parents[1] / "tools/peptide_trap_runtime.py")
+                elif kind == "kejia_idr":
+                    from mn_molecular_design_studio import kejia_idr_input
+                    key_params["input_adapter_digest"] = file_digest(Path(kejia_idr_input.__file__))
+                    key_params["source_revision"] = kejia_idr_input.SOURCE_REVISION
+                    prepared = kejia_idr_input.prepare_request(params)
+                    key_params["template_digests"] = [file_digest(Path(row["path"])) for row in prepared["templates"]]
+                    key_params["container_adapter_digest"] = file_digest(Path(__file__).parents[1] / "tools/kejia_idr_threading.py")
                 elif kind == "rfdiffusion_beta_pairing":
                     from mn_molecular_design_studio import rfdiffusion_beta_pairing_input
                     key_params["input_adapter_digest"] = file_digest(Path(rfdiffusion_beta_pairing_input.__file__))

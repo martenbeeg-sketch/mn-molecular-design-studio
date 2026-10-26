@@ -488,6 +488,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         _activate_graph(prefix, migrated_graph)
     templates = {"Active-learning docking": "unidock_active_learning",
                  "Foundry · RFD3 → MPNN → RF3": "foundry",
+                 "Kejia IDR · Template threading → ProteinMPNN → AF2": "kejia_idr",
+                 "Peptide Trap · Rosetta interface design → AF2 → analysis": "peptide_trap",
                  "Antibody CDRs · Existing designs → SAbR → AbMPNN → sequence analysis": "abmpnn_cdr_redesign",
                  "PXDesign · MPNN → AF2 + Protenix":"pxdesign","RFdiffusion · MPNN → AF2":"rfdiffusion",
                  "Genie3 · MPNN → AF2 template":"genie3","Protpardelle-1C · MPNN → ESMFold":"protpardelle",
