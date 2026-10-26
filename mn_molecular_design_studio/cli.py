@@ -52,6 +52,20 @@ def create_admin(
     typer.echo(f"Admin account created for {user['username']}. You can now sign in to Molecular Design Studio.")
 
 
+@app.command("mcp")
+def mcp_server(
+    transport: str = typer.Option("stdio", help="stdio or streamable-http."),
+    host: str = typer.Option("127.0.0.1", help="HTTP listen address."),
+    port: int = typer.Option(8767, min=1, max=65535, help="HTTP MCP port."),
+) -> None:
+    """Start the optional MCP adapter, using the existing Studio REST API."""
+    try:
+        from mn_molecular_design_studio.mcp_server import run
+        run(transport, host, port)
+    except ImportError as exc:
+        raise typer.BadParameter("Install the Studio mcp extra in this environment first.") from exc
+
+
 @app.command("reset-admin-password")
 def reset_admin(
     username: str = typer.Option(..., prompt=True, help="Existing admin username or email address."),

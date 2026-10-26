@@ -13,6 +13,7 @@ dependencies = [
   "duckdb>=1.4,<2",
   "fastapi",
   "gemmi",
+  "httpx>=0.27,<1",
   "matplotlib",
   "numpy>=1.26.4,<3",
   "openpyxl",
@@ -30,6 +31,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mcp = [
+  "mcp>=2.3,<3",
+]
 secondary-structure = [
   "pydssp==0.9.1",
 ]
@@ -38,6 +42,7 @@ scheduler = [
 ]
 test = [
   "httpx>=0.27",
+  "jsonschema>=4.20",
   "pytest>=8",
 ]
 

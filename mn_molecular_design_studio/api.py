@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from pathlib import Path
-from typing import Any, Callable
+from typing import Annotated, Any, Callable
 
 from mn_molecular_design_studio.workspace import ensure_studio_workspace, mark_studio_job, validate_project_id
 
 ensure_studio_workspace()
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Query, status
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
@@ -60,6 +61,13 @@ app = FastAPI(
     version="0.1.0",
     description="Local API for discovering, validating, and submitting molecular design workflows.",
 )
+_cors_origins = [value.strip() for value in os.environ.get("STUDIO_API_CORS_ORIGINS", "").split(",") if value.strip()]
+if _cors_origins:
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(CORSMiddleware, allow_origins=_cors_origins,
+                       allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+                       allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "Range"],
+                       expose_headers=["Content-Disposition", "Content-Length", "Content-Range", "Accept-Ranges"])
 _bearer = HTTPBearer(auto_error=False)
 
 
@@ -355,7 +363,11 @@ def _guard_source_job(payload: dict[str, Any], user: dict[str, Any], *, project_
 
 
 def _request_payload_and_project(payload: dict[str, Any], user: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    request_payload = dict(payload)
+    from mn_molecular_design_studio.api_files import resolve_references
+    try:
+        request_payload = resolve_references(dict(payload), user)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(404, "Input file not found or inaccessible.") from exc
     try:
         project_id = validate_project_id(request_payload.pop("project_id", None))
     except ValueError as exc:
@@ -405,7 +417,8 @@ def login(payload: LoginRequest) -> dict[str, Any]:
 @app.get("/api/v1/auth/me")
 def who_am_i(user: dict[str, Any] = Depends(_session_user)) -> dict[str, Any]:
     return {**{key: user[key] for key in ("id", "username", "display_name", "role", "must_change_password")},
-            "project_ids": accessible_project_ids(user), "session_expires_at": user.get("session_expires_at")}
+            "project_ids": accessible_project_ids(user), "session_expires_at": user.get("session_expires_at"),
+            "development_mode": is_development_mode()}
 
 
 @app.post("/api/v1/auth/logout")
@@ -485,17 +498,37 @@ def submit_workflow(
     base_dir: str | None = Query(default=None, description="Directory used to resolve relative input paths."),
     user: dict[str, Any] = Depends(_current_user),
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> dict[str, Any]:
     request_payload, project_id = _request_payload_and_project(payload, user)
     request_dir = _request_directory(user, base_dir)
     _validate_user_path_values(request_payload, user, request_dir)
-    remote = _cluster_submission(request_payload, project_id, user, request_dir, credentials)
-    if remote is not None:
-        return remote
-    _guard_source_job(request_payload, user, project_id=project_id)
-    result = _with_request_file(request_payload, submit_workflow_request, base_dir=str(request_dir))
-    return mark_studio_job(result, project_id=project_id, owner_id=str(user["id"]))
+    def perform():
+        remote = _cluster_submission(request_payload, project_id, user, request_dir, credentials)
+        if remote is not None:
+            return remote
+        _guard_source_job(request_payload, user, project_id=project_id)
+        result = _with_request_file(request_payload, submit_workflow_request, base_dir=str(request_dir))
+        return mark_studio_job(result, project_id=project_id, owner_id=str(user["id"]))
+    return _submit_once(request_payload, project_id, user, "workflow", idempotency_key, perform)
 
+
+
+def _submit_once(payload, project_id, user, kind, header_key, operation):
+    from mn_molecular_design_studio.api_idempotency import Conflict, submit_once
+    execution = payload.get("execution") or {}
+    if not isinstance(execution, dict):
+        raise HTTPException(422, "execution must be an object.")
+    execution_key = execution.get("idempotency_key")
+    if header_key and execution_key and header_key != execution_key:
+        raise HTTPException(422, "Header and execution idempotency keys must match.")
+    try:
+        return submit_once(user, kind, header_key or execution_key,
+                           {"project_id": project_id, **payload}, operation)
+    except Conflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 def _cluster_submission(payload, project_id, user, request_dir, credentials, *, kind="workflow", validate_only=False):
     from mn_molecular_design_studio.cluster.service import submit_from_api
@@ -524,12 +557,15 @@ def submit_campaign(
     payload: dict[str, Any] = Body(...),
     base_dir: str | None = Query(default=None, description="Directory used to resolve relative input paths."),
     user: dict[str, Any] = Depends(_current_user),
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> dict[str, Any]:
     request_payload, project_id = _request_payload_and_project(payload, user)
     request_dir = _request_directory(user, base_dir)
     _validate_user_path_values(request_payload, user, request_dir)
-    result = _with_request_file(request_payload, submit_design_campaign_request, base_dir=str(request_dir))
-    return mark_studio_job(result, project_id=project_id, owner_id=str(user["id"]))
+    def perform():
+        result = _with_request_file(request_payload, submit_design_campaign_request, base_dir=str(request_dir))
+        return mark_studio_job(result, project_id=project_id, owner_id=str(user["id"]))
+    return _submit_once(request_payload, project_id, user, "campaign", idempotency_key, perform)
 
 
 def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
@@ -649,28 +685,32 @@ def validate_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any] 
 
 @app.post("/api/v1/pipelines/run", status_code=202)
 def run_visual_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any] = Depends(_current_user),
-                        credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)):
+                        credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+                        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None):
     from mn_molecular_design_studio.pipeline_graph import save_definition
     from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import enqueue_graph_pipeline
     from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import job_reference
     request, selected_project = _request_payload_and_project(payload, user)
     request_dir = _request_directory(user, None)
     _validate_user_path_values(request.get("graph"), user, request_dir)
-    remote = _cluster_submission(request, selected_project, user, request_dir, credentials, kind="pipeline")
-    if remote is not None:
-        return remote
-    payload = dict(request, project_id=selected_project)
-    graph, project_id, request = _pipeline_payload(payload, user, runnable=True)
-    reuse = request.get("reuse_completed", True)
-    if type(reuse) is not bool:
-        raise HTTPException(status_code=422, detail="reuse_completed must be true or false.")
-    device = str(request.get("gpu_device") or "all")
-    if device not in {"all", "0", "1"}:
-        raise HTTPException(status_code=422, detail="Choose automatic GPU assignment, GPU 0, or GPU 1.")
-    version = _call(save_definition, graph, str(user["id"]), project_id, version=True)
-    run_dir = _call(enqueue_graph_pipeline, graph, pipeline_name=graph["name"], owner_id=str(user["id"]), project_id=project_id, reuse_completed=reuse, gpu_device=device)
-    result = {"job": job_reference(run_dir), "revision": version["revision"]}
-    return mark_studio_job(result, project_id=project_id, owner_id=str(user["id"]))
+    def perform():
+        local_request = dict(request)
+        remote = _cluster_submission(local_request, selected_project, user, request_dir, credentials, kind="pipeline")
+        if remote is not None:
+            return remote
+        payload = dict(local_request, project_id=selected_project)
+        graph, project_id, run_request = _pipeline_payload(payload, user, runnable=True)
+        reuse = run_request.get("reuse_completed", True)
+        if type(reuse) is not bool:
+            raise HTTPException(status_code=422, detail="reuse_completed must be true or false.")
+        device = str(run_request.get("gpu_device") or "all")
+        if device not in {"all", "0", "1"}:
+            raise HTTPException(status_code=422, detail="Choose automatic GPU assignment, GPU 0, or GPU 1.")
+        version = _call(save_definition, graph, str(user["id"]), project_id, version=True)
+        run_dir = _call(enqueue_graph_pipeline, graph, pipeline_name=graph["name"], owner_id=str(user["id"]), project_id=project_id, reuse_completed=reuse, gpu_device=device)
+        result = {"job": job_reference(run_dir), "revision": version["revision"]}
+        return mark_studio_job(result, project_id=project_id, owner_id=str(user["id"]))
+    return _submit_once(request, selected_project, user, "pipeline", idempotency_key, perform)
 
 
 @app.post("/api/v1/pipelines/adopt-completed")
@@ -886,3 +926,91 @@ from mn_molecular_design_studio.molecular_database_api import install as _instal
 _install_molecular_database_routes(app, _current_user)
 from mn_molecular_design_studio.molecular_database_peer import install_routes as _install_molecular_peer_routes
 _install_molecular_peer_routes(app)
+
+from mn_molecular_design_studio.integration_api import install as _install_integration_routes
+_install_integration_routes(app, _current_user, _admin_user,
+    validate_paths=lambda value, user: _validate_user_path_values(value, user, _request_directory(user, None)))
+
+from mn_molecular_design_studio.admin_api import install as _install_admin_routes
+_install_admin_routes(app, _current_user, _admin_user)
+
+
+@app.get("/api/v1/pipelines/{pipeline_id}/versions")
+def pipeline_versions(pipeline_id: str, project_id: str, user=Depends(_current_user)):
+    from mn_molecular_design_studio.pipeline_graph import list_versions
+    _, project = _request_payload_and_project({"project_id": project_id}, user)
+    return {"items": _call(list_versions, user["id"], project, pipeline_id)}
+
+
+@app.get("/api/v1/pipelines/{pipeline_id}/versions/{revision}")
+def pipeline_version(pipeline_id: str, revision: str, project_id: str, user=Depends(_current_user)):
+    versions = pipeline_versions(pipeline_id, project_id, user)["items"]
+    version = next((v for v in versions if v["revision"] == revision), None)
+    if version is None:
+        raise HTTPException(404, "Pipeline revision not found.")
+    return version
+
+
+@app.get("/api/v1/capabilities")
+def capabilities(user=Depends(_current_user)):
+    """Public operation discovery; internal node credentials are never client tools."""
+    operations = []
+    for path, methods in app.openapi()["paths"].items():
+        for method, operation in methods.items():
+            if method not in {"get", "post", "put", "patch", "delete"}:
+                continue
+            admin_only = path.startswith("/api/v1/admin/") or (path == "/api/v1/cluster/nodes" and method == "post") or (path == "/api/v1/cluster/nodes/{node_id}" and method == "patch")
+            if not _public_operation(path, method, user):
+                continue
+            operations.append({"method": method.upper(), "path": path,
+                               "summary": operation.get("summary", ""), "admin_only": admin_only})
+    return {"api_version": "v1", "development_mode": is_development_mode(),
+            "file_reference_prefix": "studio-file:///", "operations": operations,
+            "external_screening_page_limit": 1000, "final_database_import_limit": 1000}
+
+
+def _public_operation(path, method, user):
+    if "/cluster/node/" in path:
+        return False
+    admin = (path.startswith("/api/v1/admin/") or path == "/api/v1/cluster/nodes" and method == "post"
+             or path == "/api/v1/cluster/nodes/{node_id}" and method == "patch")
+    return not admin or user.get("role") == "admin"
+
+
+@app.get("/api/v1/operations/schema")
+def operation_schema(path: str, method: str = "GET", user=Depends(_current_user)):
+    """Discover the complete public operation contract and referenced JSON Schemas."""
+    schema = app.openapi()
+    operation = schema["paths"].get(path, {}).get(method.lower()) if method.lower() in {"get", "post", "put", "patch", "delete"} else None
+    if not operation or not _public_operation(path, method.lower(), user):
+        raise HTTPException(404, "Operation not found or inaccessible.")
+    definitions = {}
+
+    def collect(value):
+        if isinstance(value, list):
+            for child in value:
+                collect(child)
+        elif isinstance(value, dict):
+            reference = value.get("$ref", "")
+            if reference.startswith("#/components/schemas/"):
+                name = reference.rsplit("/", 1)[-1]
+                if name not in definitions:
+                    definitions[name] = schema["components"]["schemas"][name]
+                    collect(definitions[name])
+            for child in value.values():
+                collect(child)
+    collect(operation)
+    return {"path": path, "method": method.upper(), "operation": operation,
+            "components": {"schemas": definitions}}
+
+
+@app.get("/api/v1/jobs/{reference}/artifact")
+def download_job_artifact(reference: str, path: str, user=Depends(_current_user)):
+    """Stream an authorized run-relative artifact, including files over 512 MiB."""
+    from fastapi.responses import FileResponse
+    row = _resolve_api_job(reference, user)
+    root = Path(row["run_dir"]).resolve()
+    selected = (root / path).resolve()
+    if Path(path).is_absolute() or not selected.is_relative_to(root) or not selected.is_file():
+        raise HTTPException(404, "Artifact not found or inaccessible.")
+    return FileResponse(selected, filename=selected.name)

@@ -1,5 +1,8 @@
 # MN Molecular Design Studio
 
+For authenticated REST access, external library/results queries, file exports
+and the optional MCP adapter, see [REST and MCP integration](docs/api-and-mcp.md).
+
 Molecular Design Studio is a separate project with its own code, workspace,
 job catalog, Results folder, database, and organization data. Workflow modules
 needed by Studio are kept inside this repository; the previous app is a

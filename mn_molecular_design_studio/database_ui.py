@@ -358,42 +358,7 @@ def render_import_dialog(user, projects):
             st.error(str(exc))
 
 
-def cropped_record(record, chains):
-    import io
-    from Bio.PDB import PDBIO, PDBParser, MMCIFParser, Select
-    components = [row for row in record["components"] if row["chain"] in chains]
-    if not components:
-        raise ValueError("Select at least one chain.")
-    files = []
-    if record.get("files"):
-        source = record["files"][0]
-        data = source.get("content") or Path(source["path"]).read_bytes()
-        filename = source.get("name") or source["path"]
-        parser = MMCIFParser(QUIET=True) if str(filename).endswith((".cif", ".mmcif")) else PDBParser(QUIET=True)
-        structure = parser.get_structure("crop", io.StringIO(data.decode()))
-        protein_chains = {row["chain"] for row in components if row["type"] != "small_molecule"}
-        ligands = {row.get("residue_key") for row in components if row["type"] == "small_molecule"}
-        class Selection(Select):
-            def accept_model(self, model):
-                return model.id == 0
-            def accept_residue(self, residue):
-                chain = residue.parent.id.strip() or "_"
-                locator = f"{chain}:{residue.id[1]}{residue.id[2].strip()}"
-                return int((chain in protein_chains and not residue.id[0].strip()) or locator in ligands)
-        writer, buffer = PDBIO(), io.StringIO()
-        writer.set_structure(structure)
-        try:
-            writer.save(buffer, Selection())
-        except ValueError:
-            from Bio.PDB import MMCIFIO
-            writer = MMCIFIO()
-            writer.set_structure(structure)
-            buffer = io.StringIO()
-            writer.save(buffer, Selection())
-            files.append({"name": "cropped.cif", "content": buffer.getvalue().encode(), "label": "Cropped structure", "dimensions": 3})
-        else:
-            files.append({"name": "cropped.pdb", "content": buffer.getvalue().encode(), "label": "Cropped structure", "dimensions": 3})
-    return {"name": record["name"] + " · " + "+".join(chains), "components": components, "metadata": record.get("metadata") or {}, "files": files}
+from mn_molecular_design_studio.molecular_preparation import cropped_record
 
 
 def _table_row(record):

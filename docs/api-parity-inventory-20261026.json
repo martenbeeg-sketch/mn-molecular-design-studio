@@ -1,0 +1,2181 @@
+{
+  "audit_date": "2026-10-26",
+  "source_commit": "db6fb798c04ae9b5ac86cec6ccc2e063fc8e3d94",
+  "paths": 72,
+  "operations": 76,
+  "machine_operations": 14,
+  "workflows": 113,
+  "ui_distinct_workflows": 75,
+  "ui_workflows_missing_from_api": [],
+  "api_workflows_without_standalone_ui_id": [
+    "benchmark.collection",
+    "benchmark.dataset",
+    "benchmark.design_capacity",
+    "benchmark.esmfold2",
+    "benchmark.matrix_workspace",
+    "benchmark.practical_capacity",
+    "benchmark.precomputed_metrics",
+    "benchmark.refold_candidates",
+    "benchmark.refolding_capacity",
+    "campaign.validation_sequence",
+    "design.bindcraft",
+    "design.esmfold2_screening",
+    "design.genie3",
+    "design.protpardelle_1c",
+    "design.pxdesign",
+    "design.rfdiffusion3_foundry",
+    "design.rfdiffusion_classic",
+    "import.bindcraft",
+    "import.table",
+    "library.seed_dock",
+    "refolding.af2_design_validation",
+    "refolding.af2_initial_guess_input",
+    "refolding.boltz2_complex",
+    "refolding.boltz2_monomer",
+    "refolding.complex",
+    "refolding.esmfold2_cofolding",
+    "refolding.esmfold2_complex",
+    "refolding.esmfold2_monomer",
+    "refolding.esmfold_monomer",
+    "refolding.monomer",
+    "sequence.foundry_mpnn",
+    "sequence.ligandmpnn",
+    "sequence.pipeline",
+    "target.crop",
+    "target.mask",
+    "target.prepare",
+    "target.refolding_candidates",
+    "target.refolding_evaluation"
+  ],
+  "schema_checks": [
+    {
+      "workflow": "library.prepare",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 13
+    },
+    {
+      "workflow": "library.centroids",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 17
+    },
+    {
+      "workflow": "library.seed_dock",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 16
+    },
+    {
+      "workflow": "ligand.complex.prepare",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 9
+    },
+    {
+      "workflow": "ligand.docking.vina",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 22
+    },
+    {
+      "workflow": "ligand.docking.autodock_gpu",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 20
+    },
+    {
+      "workflow": "ligand.docking.gnina",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 24
+    },
+    {
+      "workflow": "ligand.docking.unidock_pro",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 27
+    },
+    {
+      "workflow": "ligand.docking.rosetta_ligand",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 18
+    },
+    {
+      "workflow": "ligand.affinity.nesso",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 6
+    },
+    {
+      "workflow": "ligand.generation.lddm",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 10
+    },
+    {
+      "workflow": "ligand.generation.pocketxmol",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 10
+    },
+    {
+      "workflow": "ligand.generation.omtra",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 11
+    },
+    {
+      "workflow": "ligand.generation.flowr_root",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 10
+    },
+    {
+      "workflow": "ligand.generation.conditar",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 10
+    },
+    {
+      "workflow": "ligand.generation.paopt",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 10
+    },
+    {
+      "workflow": "ligand.generation.drugrpg",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 10
+    },
+    {
+      "workflow": "ligand.generation.pfm",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 10
+    },
+    {
+      "workflow": "ligand.generation.pocketflow",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 10
+    },
+    {
+      "workflow": "ligand.generation.pgmg",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 10
+    },
+    {
+      "workflow": "ligand.md.gromacs",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 17
+    },
+    {
+      "workflow": "ligand.md.openmm",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 17
+    },
+    {
+      "workflow": "ligand.md.analysis",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 15
+    },
+    {
+      "workflow": "target.prepare",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 9
+    },
+    {
+      "workflow": "target.crop",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 9
+    },
+    {
+      "workflow": "target.mask",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 6
+    },
+    {
+      "workflow": "target.refolding_candidates",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 4
+    },
+    {
+      "workflow": "target.refolding_evaluation",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution",
+        "options_schema"
+      ],
+      "parameter_count": 3
+    },
+    {
+      "workflow": "detection.scannet",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 5
+    },
+    {
+      "workflow": "detection.pesto",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 4
+    },
+    {
+      "workflow": "detection.surf2spot",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 2
+    },
+    {
+      "workflow": "detection.masif_seed",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 3
+    },
+    {
+      "workflow": "detection.surface_analysis",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 7
+    },
+    {
+      "workflow": "design.rfdiffusion_classic",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 50
+    },
+    {
+      "workflow": "design.rfdiffusion_beta_pairing",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 12
+    },
+    {
+      "workflow": "design.bindcraft",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 14
+    },
+    {
+      "workflow": "design.bindcraft2",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 40
+    },
+    {
+      "workflow": "design.bindcraft2_generator",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 40
+    },
+    {
+      "workflow": "design.rfdiffusion3",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 28
+    },
+    {
+      "workflow": "design.rfd4_proteina",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 21
+    },
+    {
+      "workflow": "refolding.rfd4_proteina",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 13
+    },
+    {
+      "workflow": "design.rfantibody",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 44
+    },
+    {
+      "workflow": "design.rfantibody_mimosa",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 44
+    },
+    {
+      "workflow": "design.rfpeptides",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 9
+    },
+    {
+      "workflow": "design.rfdiffusion3_foundry",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 17
+    },
+    {
+      "workflow": "design.boltzgen",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 38
+    },
+    {
+      "workflow": "design.boltzgen_mimosa",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 38
+    },
+    {
+      "workflow": "design.boltzgen_generator",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 37
+    },
+    {
+      "workflow": "design.pxdesign",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 15
+    },
+    {
+      "workflow": "design.genie3",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 20
+    },
+    {
+      "workflow": "design.esmfold2_binder",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 17
+    },
+    {
+      "workflow": "design.esmfold2_screening",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 13
+    },
+    {
+      "workflow": "design.protpardelle_1c",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 16
+    },
+    {
+      "workflow": "design.proteina_complexa",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 20
+    },
+    {
+      "workflow": "design.proteina_complexa_generate",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 17
+    },
+    {
+      "workflow": "design.pxdesign_generate",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 13
+    },
+    {
+      "workflow": "design.rfdiffusion_generate",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 40
+    },
+    {
+      "workflow": "design.genie3_generate",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 17
+    },
+    {
+      "workflow": "design.protpardelle_generate",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 21
+    },
+    {
+      "workflow": "sequence.mpnn",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 34
+    },
+    {
+      "workflow": "sequence.abmpnn",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 16
+    },
+    {
+      "workflow": "analysis.sabr",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 11
+    },
+    {
+      "workflow": "sequence.esm_if1",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 14
+    },
+    {
+      "workflow": "sequence.caliby",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 23
+    },
+    {
+      "workflow": "sequence.boltzgen_inverse",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 14
+    },
+    {
+      "workflow": "sequence.ligandmpnn",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 13
+    },
+    {
+      "workflow": "sequence.foundry_mpnn",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 8
+    },
+    {
+      "workflow": "sequence.pipeline",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 5
+    },
+    {
+      "workflow": "refolding.monomer",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 5
+    },
+    {
+      "workflow": "refolding.esmfold2_monomer",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 8
+    },
+    {
+      "workflow": "refolding.esmfold2_cofolding",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 11
+    },
+    {
+      "workflow": "refolding.af3_jax_cofolding",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 19
+    },
+    {
+      "workflow": "refolding.optimized_prediction",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 28
+    },
+    {
+      "workflow": "simulation.bioemu2",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 16
+    },
+    {
+      "workflow": "refolding.esmfold_monomer",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 5
+    },
+    {
+      "workflow": "refolding.boltz2_monomer",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 4
+    },
+    {
+      "workflow": "refolding.complex",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 14
+    },
+    {
+      "workflow": "refolding.esmfold2_complex",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 10
+    },
+    {
+      "workflow": "refolding.af2_initial_guess",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 14
+    },
+    {
+      "workflow": "refolding.af2_initial_guess_input",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 18
+    },
+    {
+      "workflow": "refolding.af2_design_validation",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 9
+    },
+    {
+      "workflow": "refolding.boltz2_complex",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 10
+    },
+    {
+      "workflow": "refolding.openfold3",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 12
+    },
+    {
+      "workflow": "refolding.rf3",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 12
+    },
+    {
+      "workflow": "refolding.protenix",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 9
+    },
+    {
+      "workflow": "refolding.protenix_cli",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 19
+    },
+    {
+      "workflow": "refolding.boltzgen_fold",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 7
+    },
+    {
+      "workflow": "analysis.ipsae",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 5
+    },
+    {
+      "workflow": "analysis.rosetta",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 3
+    },
+    {
+      "workflow": "import.bindcraft",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 8
+    },
+    {
+      "workflow": "import.table",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 16
+    },
+    {
+      "workflow": "benchmark.dataset",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 100
+    },
+    {
+      "workflow": "benchmark.refold_candidates",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution",
+        "options_schema"
+      ],
+      "parameter_count": 6
+    },
+    {
+      "workflow": "benchmark.precomputed_metrics",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 6
+    },
+    {
+      "workflow": "benchmark.esmfold2",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 12
+    },
+    {
+      "workflow": "campaign.validation_sequence",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 5
+    },
+    {
+      "workflow": "benchmark.refolding_capacity",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 17
+    },
+    {
+      "workflow": "benchmark.design_capacity",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 10
+    },
+    {
+      "workflow": "benchmark.practical_capacity",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 4
+    },
+    {
+      "workflow": "benchmark.collection",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 4
+    },
+    {
+      "workflow": "benchmark.matrix_workspace",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 2
+    },
+    {
+      "workflow": "analysis.sequence_qc",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 4
+    },
+    {
+      "workflow": "analysis.proteinsol",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 3
+    },
+    {
+      "workflow": "analysis.biotite_interface",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 4
+    },
+    {
+      "workflow": "analysis.sequence_clustering",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 4
+    },
+    {
+      "workflow": "analysis.interface_clustering",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 5
+    },
+    {
+      "workflow": "analysis.foldseek",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 5
+    },
+    {
+      "workflow": "analysis.pep_patch",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 4
+    },
+    {
+      "workflow": "analysis.esm1v_score",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 4
+    },
+    {
+      "workflow": "analysis.esmif_score",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 4
+    },
+    {
+      "workflow": "analysis.plip",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 3
+    },
+    {
+      "workflow": "analysis.pandamap",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 3
+    },
+    {
+      "workflow": "analysis.posebusters",
+      "ok": true,
+      "schema_keys": [
+        "schema_version",
+        "workflow",
+        "category",
+        "description",
+        "parameters",
+        "request_fields",
+        "collection_execution"
+      ],
+      "parameter_count": 3
+    }
+  ],
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/api/v1/health",
+      "operation_id": "health_api_v1_health_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/login",
+      "operation_id": "login_api_v1_auth_login_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/auth/me",
+      "operation_id": "who_am_i_api_v1_auth_me_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/logout",
+      "operation_id": "logout_api_v1_auth_logout_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/password",
+      "operation_id": "update_password_api_v1_auth_password_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/workflows",
+      "operation_id": "get_workflows_api_v1_workflows_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workflows",
+      "operation_id": "submit_workflow_api_v1_workflows_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/workflows/{workflow_id}/schema",
+      "operation_id": "get_workflow_schema_api_v1_workflows__workflow_id__schema_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workflows/validate",
+      "operation_id": "validate_workflow_api_v1_workflows_validate_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workflows/placement-options",
+      "operation_id": "workflow_placement_options_api_v1_workflows_placement_options_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/campaigns/validate",
+      "operation_id": "validate_campaign_api_v1_campaigns_validate_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/campaigns",
+      "operation_id": "submit_campaign_api_v1_campaigns_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/pipelines/catalog",
+      "operation_id": "pipeline_node_catalog_api_v1_pipelines_catalog_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/pipelines/save",
+      "operation_id": "save_pipeline_api_v1_pipelines_save_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/pipelines",
+      "operation_id": "list_saved_pipelines_api_v1_pipelines_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/pipelines/validate",
+      "operation_id": "validate_pipeline_api_v1_pipelines_validate_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/pipelines/run",
+      "operation_id": "run_visual_pipeline_api_v1_pipelines_run_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/pipelines/adopt-completed",
+      "operation_id": "adopt_completed_pipeline_groups_api_v1_pipelines_adopt_completed_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/pipelines/adoptions/{run_id}/undo",
+      "operation_id": "undo_completed_pipeline_adoption_api_v1_pipelines_adoptions__run_id__undo_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/jobs",
+      "operation_id": "get_jobs_api_v1_jobs_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/jobs/facets",
+      "operation_id": "get_job_facets_api_v1_jobs_facets_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/jobs/{reference}",
+      "operation_id": "get_job_api_v1_jobs__reference__get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/jobs/{reference}/results",
+      "operation_id": "get_job_results_api_v1_jobs__reference__results_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/jobs/{reference}/artifacts",
+      "operation_id": "get_job_artifacts_api_v1_jobs__reference__artifacts_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/jobs/{reference}/cancel",
+      "operation_id": "stop_job_api_v1_jobs__reference__cancel_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/cluster/nodes",
+      "operation_id": "nodes_api_v1_cluster_nodes_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/cluster/nodes",
+      "operation_id": "enroll_api_v1_cluster_nodes_post",
+      "audience": "admin",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/cluster/placement-options",
+      "operation_id": "placement_options_api_v1_cluster_placement_options_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/cluster/nodes/{node_id}",
+      "operation_id": "node_settings_api_v1_cluster_nodes__node_id__patch",
+      "audience": "admin",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/cluster/organization",
+      "operation_id": "organization_api_v1_cluster_organization_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/cluster/projects",
+      "operation_id": "create_project_api_v1_cluster_projects_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/cluster/jobs",
+      "operation_id": "jobs_api_v1_cluster_jobs_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/cluster/jobs/{job_id}",
+      "operation_id": "job_api_v1_cluster_jobs__job_id__get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/cluster/jobs/{job_id}/actions",
+      "operation_id": "action_api_v1_cluster_jobs__job_id__actions_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/cluster/jobs/{job_id}/purge",
+      "operation_id": "purge_job_api_v1_cluster_jobs__job_id__purge_delete",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/cluster/commands/{command_id}",
+      "operation_id": "operation_api_v1_cluster_commands__command_id__get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/cluster/commands/{command_id}/file",
+      "operation_id": "operation_file_api_v1_cluster_commands__command_id__file_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/cluster/submissions",
+      "operation_id": "submit_api_v1_cluster_submissions_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/cluster/blobs",
+      "operation_id": "user_blob_api_v1_cluster_blobs_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/cluster/node/blobs",
+      "operation_id": "node_blob_api_v1_cluster_node_blobs_post",
+      "audience": "machine",
+      "openapi_bearer_security": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/cluster/node/blobs/{digest}",
+      "operation_id": "node_download_api_v1_cluster_node_blobs__digest__get",
+      "audience": "machine",
+      "openapi_bearer_security": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/cluster/node/peer/hello",
+      "operation_id": "peer_hello_api_v1_cluster_node_peer_hello_post",
+      "audience": "machine",
+      "openapi_bearer_security": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/cluster/node/peer/records",
+      "operation_id": "peer_records_api_v1_cluster_node_peer_records_get",
+      "audience": "machine",
+      "openapi_bearer_security": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/cluster/node/peer/records",
+      "operation_id": "receive_records_api_v1_cluster_node_peer_records_post",
+      "audience": "machine",
+      "openapi_bearer_security": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/cluster/node/heartbeat",
+      "operation_id": "heartbeat_api_v1_cluster_node_heartbeat_post",
+      "audience": "machine",
+      "openapi_bearer_security": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/cluster/node/library-transfers/{job_id}/start",
+      "operation_id": "library_transfer_start_api_v1_cluster_node_library_transfers__job_id__start_post",
+      "audience": "machine",
+      "openapi_bearer_security": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/cluster/node/library-transfers/{job_id}",
+      "operation_id": "library_transfer_status_api_v1_cluster_node_library_transfers__job_id__get",
+      "audience": "machine",
+      "openapi_bearer_security": false
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/cluster/node/library-transfers/{job_id}/files/{file_name}",
+      "operation_id": "library_transfer_chunk_api_v1_cluster_node_library_transfers__job_id__files__file_name__put",
+      "audience": "machine",
+      "openapi_bearer_security": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/cluster/node/library-transfers/{job_id}/complete",
+      "operation_id": "library_transfer_complete_api_v1_cluster_node_library_transfers__job_id__complete_post",
+      "audience": "machine",
+      "openapi_bearer_security": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/cluster/node/claim",
+      "operation_id": "claim_api_v1_cluster_node_claim_post",
+      "audience": "machine",
+      "openapi_bearer_security": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/cluster/node/commands/{command_id}/finish",
+      "operation_id": "finish_api_v1_cluster_node_commands__command_id__finish_post",
+      "audience": "machine",
+      "openapi_bearer_security": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/molecules/groups",
+      "operation_id": "groups_api_v1_molecules_groups_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/molecules/groups",
+      "operation_id": "create_group_api_v1_molecules_groups_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/molecules/output-vocabulary",
+      "operation_id": "output_vocabulary_api_v1_molecules_output_vocabulary_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/molecules/metrics",
+      "operation_id": "metrics_api_v1_molecules_metrics_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/molecules/groups/{group_id}",
+      "operation_id": "group_api_v1_molecules_groups__group_id__get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/molecules/groups/{group_id}/members",
+      "operation_id": "add_members_api_v1_molecules_groups__group_id__members_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/molecules/imports",
+      "operation_id": "import_molecules_api_v1_molecules_imports_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/molecules/selections",
+      "operation_id": "freeze_compounds_api_v1_molecules_selections_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/molecules/evaluations/options",
+      "operation_id": "evaluation_options_api_v1_molecules_evaluations_options_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/molecules/evaluations/search",
+      "operation_id": "evaluation_search_api_v1_molecules_evaluations_search_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/molecules/comparisons",
+      "operation_id": "save_comparison_api_v1_molecules_comparisons_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/molecules/comparisons/preview",
+      "operation_id": "compare_evaluations_api_v1_molecules_comparisons_preview_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/molecules/selections/proteins",
+      "operation_id": "freeze_proteins_api_v1_molecules_selections_proteins_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/molecules/groups/{group_id}/schema",
+      "operation_id": "update_schema_api_v1_molecules_groups__group_id__schema_patch",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/molecules/refresh",
+      "operation_id": "refresh_api_v1_molecules_refresh_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/molecules/jobs/{task_group}/{run_id}",
+      "operation_id": "run_molecules_api_v1_molecules_jobs__task_group___run_id__get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/molecules/jobs/{task_group}/{run_id}/selections",
+      "operation_id": "save_run_molecules_api_v1_molecules_jobs__task_group___run_id__selections_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/molecules/structures/{structure_id}/file",
+      "operation_id": "structure_file_api_v1_molecules_structures__structure_id__file_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/molecules/structures/{structure_id}/materialize",
+      "operation_id": "materialize_api_v1_molecules_structures__structure_id__materialize_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/molecules",
+      "operation_id": "molecules_api_v1_molecules_get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/molecules/search",
+      "operation_id": "search_api_v1_molecules_search_post",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/molecules/{molecule_id}",
+      "operation_id": "molecule_api_v1_molecules__molecule_id__get",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/molecules/groups/{group_id}/molecules/{molecule_id}",
+      "operation_id": "annotate_api_v1_molecules_groups__group_id__molecules__molecule_id__patch",
+      "audience": "user-or-public",
+      "openapi_bearer_security": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/cluster/node/molecules/structures/{structure_id}",
+      "operation_id": "file_api_v1_cluster_node_molecules_structures__structure_id__post",
+      "audience": "machine",
+      "openapi_bearer_security": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/cluster/node/molecules/structures/{structure_id}/portable",
+      "operation_id": "mark_portable_api_v1_cluster_node_molecules_structures__structure_id__portable_post",
+      "audience": "machine",
+      "openapi_bearer_security": false
+    }
+  ],
+  "pipeline_node_types": 83,
+  "focused_pytest": {
+    "passed": 63,
+    "deselected": 189,
+    "seconds": 3.66
+  },
+  "live_campaign_check": {
+    "round_count": 8,
+    "preview_rows": 100,
+    "scored_compound_count": 1590790
+  }
+}

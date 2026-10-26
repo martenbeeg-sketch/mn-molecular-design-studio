@@ -29,9 +29,14 @@ class ImportRequest(BaseModel):
     text: str = ""
     filename: str = "molecules.csv"
     content_base64: str = ""
+    file_id: str | None = None
     sequence_type: str = "protein"
     chain_columns: dict[str, dict] = Field(default_factory=dict)
     name_column: str = ""
+    id_column: str = ""
+    sheet_name: str = ""
+    review_small_molecules: bool = False
+    include_ligands: bool = True
     records: list[dict] = Field(default_factory=list)
     identifier_source: str = "PDB"
 
@@ -110,17 +115,37 @@ def install(app, current_user):
     @router.post("/imports", status_code=201)
     def import_molecules(payload: ImportRequest, user=Depends(current_user)):
         def operation():
+            from mn_molecular_design_studio import api_files
             if len(payload.content_base64) > imports.MAX_BYTES * 4 // 3 + 8:
                 raise ValueError("The import exceeds 100 MB.")
+            if payload.file_id and payload.content_base64:
+                raise ValueError("Supply either file_id or content_base64.")
             data = base64.b64decode(payload.content_base64, validate=True) if payload.content_base64 else b""
+            filename = payload.filename
+            if payload.file_id:
+                descriptor = api_files.describe(user, payload.file_id)
+                if descriptor["size_bytes"] > imports.MAX_BYTES:
+                    raise ValueError("Use external library preparation for files over 100 MB.")
+                data = api_files.resolve(user, payload.file_id).read_bytes()
+                filename = descriptor["name"]
+            audit = None
             if payload.method in {"fasta", "sequences"}:
                 records = imports.parse_sequences(payload.text or data.decode("utf-8-sig"), kind=payload.sequence_type)
             elif payload.method == "smiles":
                 records = imports.parse_smiles(payload.text or data.decode("utf-8-sig"))
             elif payload.method == "table":
-                records = imports.parse_table(data, payload.filename, chain_columns=payload.chain_columns, name_column=payload.name_column)
+                if payload.review_small_molecules:
+                    mapped = payload.chain_columns
+                    if len(mapped) != 1 or next(iter(mapped.values())).get("type") != "small_molecule":
+                        raise ValueError("Reviewed tables require one mapped small-molecule SMILES column.")
+                    audit = imports.analyze_small_molecule_table(data, filename, smiles_column=next(iter(mapped)),
+                        name_column=payload.name_column, id_column=payload.id_column, sheet_name=payload.sheet_name)
+                    records = audit.pop("records")
+                else:
+                    records = imports.parse_table(data, filename, chain_columns=payload.chain_columns,
+                        name_column=payload.name_column, id_column=payload.id_column, sheet_name=payload.sheet_name)
             elif payload.method in {"sdf", "structure"}:
-                records = imports.parse_structure(data, payload.filename)
+                records = imports.parse_structure(data, filename, include_ligands=payload.include_ligands)
             elif payload.method == "zip":
                 records = imports.parse_archive(data)
             elif payload.method == "identifier":
@@ -130,7 +155,8 @@ def install(app, current_user):
                 records = [{"name": row.get("name"), "components": row["components"], "metadata": row.get("metadata") or {}} for row in payload.records]
             else:
                 raise ValueError("Supported methods: table, fasta, sequences, smiles, sdf, structure, zip, identifier, records.")
-            return MolecularDatabase().import_records(user, records, name=payload.name, project_id=payload.project_id, group_id=payload.group_id)
+            return MolecularDatabase().import_records(user, records, name=payload.name, project_id=payload.project_id,
+                group_id=payload.group_id, import_audit=audit, source_content=data if audit else None)
         return call(operation)
 
     @router.post("/selections")

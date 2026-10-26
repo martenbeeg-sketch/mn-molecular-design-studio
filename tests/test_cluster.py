@@ -680,11 +680,12 @@ def test_synchronized_results_page_has_status_filter_and_row_selection(monkeypat
 
     monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
     requests = []
-    monkeypatch.setattr(ui, "catalog", lambda user, token, **kwargs: ({"items": [{
+    row = {
         "cluster_job_id": "job-1", "node_id": "node-1", "node_name": "pc002975",
         "task_group": "vina", "run_id": "run-1", "owner_id": "owner",
         "project_id": "", "status": "completed", "availability": "online",
-    }], "total": 1}, False))
+    }
+    monkeypatch.setattr(ui, "catalog", lambda user, token, **kwargs: ({"items": [row], "total": 1}, False))
     def request(path, token, payload=None, method="GET", **kwargs):
         requests.append((path, method, payload))
         return {"status": "purged", "database": {"removed_sources": 0, "removed_members": 0}}
@@ -696,16 +697,22 @@ def test_synchronized_results_page_has_status_filter_and_row_selection(monkeypat
     monkeypatch.setattr(workspace, "load_organization", lambda: {"projects": []})
     user = {"id": "owner", "role": "user", "project_ids": []}
     script = f'''\
-from mn_molecular_design_studio.cluster.ui import _render_runs_content
+import streamlit as st
+from mn_molecular_design_studio.cluster.ui import _render_runs_content, _update_results_table_selection
+if st.session_state.pop("test-table-row-edit", False):
+    _update_results_table_selection("test-table-editor", [[{row!r}]])
 _render_runs_content({user!r}, "token", lambda **kwargs: {{"items": [], "total": 0}})
 '''
     app = AppTest.from_string(script, default_timeout=10).run()
 
     assert not app.exception
     assert app.multiselect(key="cluster-results-status-filter").options == ["Completed"]
-    checkbox_key = next(widget.key for widget in app.checkbox if widget.key.startswith("cluster-results-select-"))
-
-    app.checkbox(key=checkbox_key).check().run()
+    assert "Select" in app.dataframe[0].value.columns
+    # AppTest cannot directly edit data_editor cells. Exercise the widget's
+    # real on_change callback with the same edited_rows event it receives.
+    app.session_state["test-table-editor"] = {"edited_rows": {0: {"Select": True}}}
+    app.session_state["test-table-row-edit"] = True
+    app.run()
     assert not app.exception
     assert app.button(key="cluster-results-remove-and-purge-request")
     assert not any(button.key in {"cluster-results-hide-selected", "cluster-results-database-removal-request"}
@@ -717,7 +724,8 @@ _render_runs_content({user!r}, "token", lambda **kwargs: {{"items": [], "total":
     app.button(key="cluster-results-remove-and-purge-confirm").click().run()
     assert not app.exception
     assert ("/jobs/job-1/purge", "DELETE", None) in requests
-    assert app.checkbox(key=checkbox_key).value is False
+    assert app.session_state["cluster-results-selected"] == {}
+    assert not app.dataframe[0].value["Select"].any()
 
 
 def test_remote_job_marker_does_not_write_to_local_files(cluster, tmp_path):
