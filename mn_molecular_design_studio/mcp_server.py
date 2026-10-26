@@ -73,6 +73,44 @@ def create_server(client=None):
         return await call(ctx, "GET", f"/api/v1/workflows/{segment(workflow_id)}/schema")
 
     @server.tool(annotations=read)
+    async def workflow_setup(workflow_id: str, ctx: Context) -> dict[str, Any]:
+        """Get form fields, pipeline node definitions and available preparation helpers/examples for any workflow."""
+        return await call(ctx, "GET", f"/api/v1/workflows/{segment(workflow_id)}/setup")
+
+    @server.tool(annotations=read)
+    async def workflow_templates(workflow_id: str, ctx: Context, library: str = "", offset: int = 0, limit: int = 100) -> dict[str, Any]:
+        """Browse installed Kejia IDR or Peptide Trap templates without submitting a calculation."""
+        return await call(ctx, "GET", f"/api/v1/workflows/{segment(workflow_id)}/templates",
+                          query={"library": library, "offset": offset, "limit": limit})
+
+    @server.tool(annotations=write)
+    async def stage_workflow_template(workflow_id: str, template_id: str, ctx: Context, library: str = "") -> dict[str, Any]:
+        """Copy an installed design template to private input storage and return usable workflow parameters."""
+        return await call(ctx, "POST", f"/api/v1/workflows/{segment(workflow_id)}/templates/{segment(template_id)}/stage",
+                          query={"library": library})
+
+    @server.tool(annotations=read)
+    async def preview_workflow(workflow_id: str, parameters: dict, ctx: Context, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+        """Preview normalized Kejia inputs or matching peptide-trap sequence windows; no docking or design starts."""
+        return await call(ctx, "POST", f"/api/v1/workflows/{segment(workflow_id)}/preview",
+                          body={"parameters": parameters, "offset": offset, "limit": limit})
+
+    @server.tool(annotations=write)
+    async def stage_workflow_example(workflow_id: str, example_id: str, ctx: Context) -> dict[str, Any]:
+        """Stage an available workflow example as private file handles and parameters; does not run it."""
+        return await call(ctx, "POST", f"/api/v1/workflows/{segment(workflow_id)}/examples/{segment(example_id)}", body={})
+
+    @server.tool(annotations=read)
+    async def preview_structure(file_id: str, ctx: Context) -> dict[str, Any]:
+        """Inspect an uploaded structure's chains, residues and ligands, plus the quick PDB receptor checks."""
+        return await call(ctx, "POST", "/api/v1/structures/preview", body={"file_id": file_id})
+
+    @server.tool(annotations=read)
+    async def list_workstations(ctx: Context) -> dict[str, Any]:
+        """Inspect all configured workstations, their CPU/GPU resources and availability."""
+        return await call(ctx, "GET", "/api/v1/workstations")
+
+    @server.tool(annotations=read)
     async def validate_workflow(request: dict, ctx: Context) -> dict[str, Any]:
         """Validate a full workflow request, including project_id, without submitting it."""
         return await call(ctx, "POST", "/api/v1/workflows/validate", body=request)
@@ -99,20 +137,30 @@ def create_server(client=None):
         params = {"limit": limit, "offset": offset}
         if project_id:
             params["project_id"] = project_id
-        return await call(ctx, "GET", "/api/v1/cluster/jobs" if distributed else "/api/v1/jobs", query=params)
+        params["distributed"] = distributed
+        return await call(ctx, "GET", "/api/v1/executions", query=params)
 
     @server.tool(annotations=read)
     async def get_job(reference: str, ctx: Context) -> dict[str, Any]:
         """Inspect a job; use cluster:<job-id> for a distributed job, otherwise its local run ID."""
-        path = "/api/v1/cluster/jobs/" + segment(reference[8:]) if reference.startswith("cluster:") else "/api/v1/jobs/" + segment(reference)
-        return await call(ctx, "GET", path)
+        return await call(ctx, "GET", "/api/v1/executions/" + segment(reference))
 
     @server.tool(annotations=read)
     async def job_results(reference: str, ctx: Context) -> dict[str, Any]:
         """Read local results or request remote inspection, returning a command ID to poll."""
-        if reference.startswith("cluster:"):
-            return await call(ctx, "POST", "/api/v1/cluster/jobs/" + segment(reference[8:]) + "/actions", body={"action": "inspect"})
-        return await call(ctx, "GET", "/api/v1/jobs/" + segment(reference) + "/results")
+        return await call(ctx, "POST" if reference.startswith("cluster:") else "GET",
+                          "/api/v1/executions/" + segment(reference) + "/results")
+
+    @server.tool(annotations=read)
+    async def job_actions(reference: str, ctx: Context) -> dict[str, Any]:
+        """Discover available job actions and their parameter schemas, including restricted compatibility retry."""
+        return await call(ctx, "GET", "/api/v1/executions/" + segment(reference) + "/actions")
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    async def control_job(reference: str, action: str, ctx: Context, parameters: dict | None = None) -> dict[str, Any]:
+        """Perform an action discovered through job_actions under the current user's job permissions."""
+        return await call(ctx, "POST", "/api/v1/executions/" + segment(reference) + "/actions",
+                          body={"action": action, "parameters": parameters or {}})
 
     @server.tool(annotations=read)
     async def command_status(command_id: str, ctx: Context) -> dict[str, Any]:
@@ -122,9 +170,7 @@ def create_server(client=None):
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True))
     async def cancel_job(reference: str, ctx: Context) -> dict[str, Any]:
         """Cancel an accessible active job; cluster IDs use the cluster: prefix."""
-        if reference.startswith("cluster:"):
-            return await call(ctx, "POST", "/api/v1/cluster/jobs/" + segment(reference[8:]) + "/actions", body={"action": "cancel"})
-        return await call(ctx, "POST", "/api/v1/jobs/" + segment(reference) + "/cancel", body={})
+        return await call(ctx, "POST", "/api/v1/executions/" + segment(reference) + "/actions", body={"action": "cancel"})
 
     @server.tool(annotations=read)
     async def list_libraries(ctx: Context, project_id: str | None = None) -> dict[str, Any]:
@@ -170,6 +216,47 @@ def create_server(client=None):
         """Stage a small SMILES, FASTA, PDB, SDF or parameter file and return its private workflow input reference."""
         return await call(ctx, "POST", "/api/v1/files", query={"filename": filename},
                           headers={"Content-Type": "text/plain"}, content_bytes=text.encode())
+
+    @server.tool(annotations=read)
+    async def pipeline_templates(ctx: Context) -> dict[str, Any]:
+        """List the same editable starter pipelines offered by the Studio canvas."""
+        return await call(ctx, "GET", "/api/v1/pipelines/templates")
+
+    @server.tool(annotations=read)
+    async def create_pipeline_draft(template: str, project_id: str, ctx: Context, parameters: dict | None = None,
+                                    source_job: str | None = None, selected_candidate_ids: list[str] | None = None) -> dict[str, Any]:
+        """Create an editable starter graph or continue completed Kejia/Peptide Trap candidates; does not save or run it."""
+        return await call(ctx, "POST", "/api/v1/pipelines/drafts", body={"template": template, "project_id": project_id,
+                          "parameters": parameters or {}, "source_job": source_job,
+                          "selected_candidate_ids": selected_candidate_ids or []})
+
+    @server.tool(annotations=read)
+    async def molecule_viewer(molecule_id: str, ctx: Context, structure_id: str | None = None) -> dict[str, Any]:
+        """Get structure-view layers, including the separate saved target and bound ligand when available."""
+        return await call(ctx, "GET", f"/api/v1/molecules/{segment(molecule_id)}/viewer",
+                          query={"structure_id": structure_id} if structure_id else {})
+
+    @server.tool(annotations=read)
+    async def candidate_viewer(reference: str, candidate_id: str, ctx: Context) -> dict[str, Any]:
+        """Get an authorized complex structure URL and binder/target chains for a local job candidate."""
+        return await call(ctx, "GET", f"/api/v1/jobs/{segment(reference)}/candidates/{segment(candidate_id)}/viewer")
+
+    @server.tool(annotations=read)
+    async def result_presentation(reference: str, ctx: Context, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+        """Page through local result candidates and discover metric fields for plots or reports."""
+        return await call(ctx, "GET", f"/api/v1/jobs/{segment(reference)}/presentation", query={"offset": offset, "limit": limit})
+
+    @server.tool(annotations=write)
+    async def save_visualization(request: dict, ctx: Context) -> dict[str, Any]:
+        """Save a private structure-view description with representation, coloring, background and camera settings."""
+        return await call(ctx, "POST", "/api/v1/visualizations", body=request)
+
+    @server.tool(annotations=write)
+    async def export_result_report(reference: str, ctx: Context, format: str = "HTML", metric: str = "mean_score",
+                                    top_counts: list[int] | None = None, limit: int = 1000) -> dict[str, Any]:
+        """Export convergence curves (top 100/1,000/10,000 together) or candidate metrics as HTML, SVG or CSV."""
+        return await call(ctx, "POST", f"/api/v1/jobs/{segment(reference)}/reports", body={"format": format,
+                          "metric": metric, "top_counts": top_counts or [100, 1000, 10000], "limit": limit})
 
     @server.tool(annotations=read)
     async def validate_pipeline(request: dict, ctx: Context) -> dict[str, Any]:

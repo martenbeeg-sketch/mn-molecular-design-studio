@@ -430,6 +430,21 @@ def workflow_schema(workflow_id: str) -> dict[str, Any]:
         schema["options_schema"] = options_schema
     from mn_molecular_design_studio.workflow_json_schema import parameters_schema
     schema["parameters_json_schema"] = parameters_schema(schema["parameters"])
+    if workflow_id in {"design.kejia_idr", "design.peptide_trap"}:
+        from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
+        node = NODE_CATALOG[workflow_id.split(".", 1)[1]]
+        properties = schema["parameters_json_schema"]["properties"]
+        for field in node["fields"]:
+            if field["name"] in properties:
+                item = properties[field["name"]]
+                item["title"] = field["label"]
+                for source, target in (("min", "minimum"), ("max", "maximum"), ("options", "enum")):
+                    if source in field:
+                        item[target] = field[source]
+        if workflow_id == "design.peptide_trap":
+            from mn_molecular_design_studio.peptide_trap_input import SCAFFOLDS
+            properties["scaffold_ids"] = {"anyOf": [{"type": "null"}, {"type": "array", "minItems": 1,
+                "maxItems": len(SCAFFOLDS), "uniqueItems": True, "items": {"enum": list(SCAFFOLDS)}}], "default": None}
     if "options_schema" in schema:
         schema["options_json_schema"] = parameters_schema(schema["options_schema"])
     return schema

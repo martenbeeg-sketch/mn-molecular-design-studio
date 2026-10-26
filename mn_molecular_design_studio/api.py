@@ -136,6 +136,11 @@ def _require_api_job_access(user: dict[str, Any], row: dict[str, Any]) -> None:
 
 
 def _resolve_api_job(reference: str, user: dict[str, Any], *, include_hidden: bool = False) -> dict[str, Any]:
+    if reference.startswith("local:"):
+        parts = reference.split(":")
+        if len(parts) != 3 or not all(parts[1:]):
+            raise HTTPException(404, "Job not found.")
+        reference = "/".join(parts[1:])
     try:
         row = resolve_job(reference, include_hidden=include_hidden)
     except AutomationError as exc:
@@ -933,6 +938,19 @@ _install_integration_routes(app, _current_user, _admin_user,
 
 from mn_molecular_design_studio.admin_api import install as _install_admin_routes
 _install_admin_routes(app, _current_user, _admin_user)
+
+from mn_molecular_design_studio.workflow_setup_api import install as _install_setup_routes
+_install_setup_routes(app, _current_user,
+    validate_paths=lambda value, user: _validate_user_path_values(value, user, _request_directory(user, None)),
+    resolve_job=lambda ref, user: _resolve_api_job(ref, user, include_hidden=True))
+
+from mn_molecular_design_studio.job_control_api import install as _install_job_control_routes
+_install_job_control_routes(app, _current_user,
+    resolve_job=lambda ref, user: _resolve_api_job(ref, user, include_hidden=True), call=_call)
+
+from mn_molecular_design_studio.presentation_api import install as _install_presentation_routes
+_install_presentation_routes(app, _current_user,
+    resolve_job=lambda ref, user: _resolve_api_job(ref, user, include_hidden=True), call=_call)
 
 
 @app.get("/api/v1/pipelines/{pipeline_id}/versions")

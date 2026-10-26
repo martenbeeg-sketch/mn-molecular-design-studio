@@ -108,6 +108,13 @@ def install(app, current_user):
     def group(group_id: str, user=Depends(current_user)):
         return call(MolecularDatabase().group, group_id, user)
 
+    @router.put("/groups/{group_id}/schema")
+    def group_schema(group_id: str, payload: dict = Body(...), user=Depends(current_user)):
+        """Update collection metadata fields with the same owner checks and record validation as the UI."""
+        database = MolecularDatabase()
+        call(database.set_schema, user, group_id, payload)
+        return call(database.group, group_id, user)
+
     @router.post("/groups/{group_id}/members")
     def add_members(group_id: str, payload: SelectionRequest, user=Depends(current_user)):
         return {"added_count": call(MolecularDatabase().add_to_group, user, group_id, payload.molecule_ids)}

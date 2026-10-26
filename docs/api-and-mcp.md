@@ -181,7 +181,7 @@ frontend is a separate client still to be built on these contracts. Existing
 Streamlit actions continue to use shared Python services and saved form state.
 Public OAuth/SSO, per-user resource quotas and event streams are not introduced.
 
-## Verification on 2026-10-26
+## Initial integration verification on 2026-10-26
 
 - 330 affected API, access-control, pipeline, molecular database, import, docking
   handoff, replication and convergence tests passed.
@@ -194,3 +194,82 @@ Public OAuth/SSO, per-user resource quotas and event streams are not introduced.
 - HTTP MCP tests used production instructor/student accounts and verified that
   user identities stay separate. No scientific jobs were launched by these
   integration checks.
+
+## Additional client coverage
+
+Kejia IDR and Peptide Trap use the same discovery, validation, placement,
+scheduled submission, results and cancellation contracts as other workflows:
+`design.kejia_idr` and `design.peptide_trap`. Their schemas include the canvas
+parameter ranges and allowed scaffold/template choices. The design stages use
+CPU resources; their downstream prediction nodes use the existing GPU scheduler.
+
+The following preparation and interaction contracts are also available, with
+the signed-in user's existing permissions:
+
+| Function | REST operation | Named MCP operation |
+| --- | --- | --- |
+| Scientific form fields and helper discovery | `GET /workflows/{id}/setup` | `workflow_setup` |
+| Installed Kejia/trap templates (paginated) | `GET /workflows/{id}/templates` | `workflow_templates` |
+| Template coordinates | `GET /workflows/{id}/templates/{template}/file?library=...` | `studio_api_request` |
+| Private copy of a template, with usable parameters | `POST /workflows/{id}/templates/{template}/stage?library=...` | `stage_workflow_template` |
+| Normalize Kejia inputs / preview trap matching windows | `POST /workflows/{id}/preview` | `preview_workflow` |
+| Stage the Tamarind or C37 example without running it | `POST /workflows/{id}/examples/{example}` | `stage_workflow_example` |
+| Structure chain/residue/ligand inventory and quick PDB checks | `POST /structures/preview` | `preview_structure` |
+| Canvas starter catalogue | `GET /pipelines/templates` | `pipeline_templates` |
+| Editable starter or Kejia/trap continuation graph | `POST /pipelines/drafts` | `create_pipeline_draft` |
+| Standalone or shared workstation resources | `GET /workstations` | `list_workstations` |
+| Common local/distributed job listing and inspection | `GET /executions`, `/executions/{ref}` | `list_jobs`, `get_job` |
+| Available job controls and parameter schemas | `GET /executions/{ref}/actions` | `job_actions` |
+| Apply a discovered job control | `POST /executions/{ref}/actions` | `control_job`, `cancel_job` |
+| Read saved results / request remote inspection | `GET` or `POST /executions/{ref}/results` | `job_results` |
+| Candidate metric fields and bounded tables | `GET /jobs/{ref}/presentation` | `result_presentation` |
+| Candidate complex viewer layers and chain roles | `GET /jobs/{ref}/candidates/{id}/viewer` | `candidate_viewer` |
+| Molecular viewer layers, including separate bound target and ligand | `GET /molecules/{id}/viewer` | `molecule_viewer` |
+| Save representation, coloring, background and camera settings | `POST /visualizations` | `save_visualization` |
+| HTML report, SVG figure or CSV table | `POST /jobs/{ref}/reports` | `export_result_report` |
+| Collection metadata schema editing | `PUT /molecules/groups/{id}/schema` | `studio_api_request` |
+| Local workstation connection/placement settings | `GET`, `PATCH /admin/workstation` | `studio_api_request` (admin) |
+| Replication conflict inspection | `GET /admin/replication/conflicts` | `studio_api_request` (admin) |
+
+Job listing returns an unambiguous `reference`: `local:<task-group>:<run-id>` or
+`cluster:<job-id>`. A plain local run ID is also supported. Local execution
+includes pause/resume when the run has a resumable worker request. Distributed
+actions retain the workstation agent's existing support; `retry` specifically
+means retrying a failed compatibility acceptance, not rerunning a calculation.
+Action discovery is a preview; the backend rechecks current state/resources.
+Permanent deletion remains the explicit existing cluster purge operation.
+
+For remote results, `GET` reads the most recent inspection or explains how to
+request one. `POST` queues a new inspection and returns its command/poll URL.
+Legacy connected workers forward distributed execution controls to their
+coordinator using the caller's identity. Standalone installations fall back to
+local jobs and local resource discovery.
+
+For example, prepare a Peptide Trap request through
+`stage_workflow_example("design.peptide_trap", "c37")`, inspect its matching
+windows with `preview_workflow`, then validate/submit the returned parameters
+through the normal workflow API. Use `create_pipeline_draft("peptide_trap",
+project_id, parameters=...)` to create the editable full pipeline instead.
+For a continuation, pass `source_job` and optional `selected_candidate_ids`.
+Draft creation neither saves nor starts a pipeline. Save/validate/run the returned
+graph with the existing pipeline operations.
+
+Reports use saved convergence summaries (top 100, 1,000 and 10,000 together by
+default) or a bounded candidate metric selection. They retain recorded score
+units and do not scan/import the complete external compound table. Report/view
+files are private file handles. View descriptions supply authenticated structure
+URLs and styling for a client renderer; they do not manipulate an open browser's
+camera or reproduce every Streamlit chart/widget. Reports and candidate views
+are requested from the workstation holding the run; distributed inspection and
+artifact commands remain available for remote runs.
+
+Workstation settings never return enrollment tokens or passwords. Connection
+changes report that API/agent restart is required. Editing peer addresses does
+not enroll a new trusted peer or generate credentials.
+
+The MCP adapter now defines 41 named tools. Other public operations continue to
+be discoverable through `studio_operations` / `studio_operation_schema` and
+callable through `studio_api_request`. These extensions do not build the student
+frontend, register an LLM client, add OAuth/SSO or add per-user quotas. The initial
+pytest results above predate these extensions; pytest has not been rerun for this
+change.

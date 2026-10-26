@@ -59,7 +59,7 @@ class StudioClient:
                 media_type = response.headers.get("content-type", "application/octet-stream")
                 is_json = "application/json" in media_type or "+json" in media_type
                 if response.is_success and not is_json and not content:
-                    return {"download_url": self.base_url + path, "path": path,
+                    return {"download_url": str(response.request.url), "path": path,
                             "requires_authentication": True, "media_type": media_type,
                             "size_bytes": response.headers.get("content-length"),
                             "filename": response.headers.get("content-disposition"),

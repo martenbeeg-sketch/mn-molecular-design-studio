@@ -486,26 +486,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     migrated_graph = migrate_template_graph(current_graph)
     if migrated_graph is not current_graph:
         _activate_graph(prefix, migrated_graph)
-    templates = {"Active-learning docking": "unidock_active_learning",
-                 "Foundry · RFD3 → MPNN → RF3": "foundry",
-                 "Kejia IDR · Template threading → ProteinMPNN → AF2": "kejia_idr",
-                 "Peptide Trap · Rosetta interface design → AF2 → analysis": "peptide_trap",
-                 "Antibody CDRs · Existing designs → SAbR → AbMPNN → sequence analysis": "abmpnn_cdr_redesign",
-                 "PXDesign · MPNN → AF2 + Protenix":"pxdesign","RFdiffusion · MPNN → AF2":"rfdiffusion",
-                 "Genie3 · MPNN → AF2 template":"genie3","Protpardelle-1C · MPNN → ESMFold":"protpardelle",
-                 "ESMFold2 Binder Design → ProteinMPNN → RF3":"esmfold2_binder",
-                 "Miniprotein binders · all generators → ProteinMPNN → Boltz-2 + analysis":"all_generators_boltz2",
-                 "VHH binders · BindCraft2 + BoltzGen + ESMFold2 → ProteinMPNN → Boltz-2":"vhh_design",
-                 "RFD4 Protein Binder → Boltz-2 → interface analysis":"rfd4_protein_binder",
-                 "RFD4 Small-Molecule Pocket Design → Boltz-2":"rfd4_small_molecule",
-                 "RFD4 Enzyme Motif Scaffolding → Boltz-2":"rfd4_enzyme",
-                 "Cofolding · Protein monomer":"cofold_protein",
-                 "Cofolding · Protein / protein":"cofold_protein_protein",
-                 "Cofolding · Protein / ligand":"cofold_protein_ligand",
-                 "Cofolding · Protein / DNA":"cofold_protein_dna",
-                 "Cofolding · Protein / RNA":"cofold_protein_rna",
-                 "Cofolding · Protein / macrocyclic peptide":"cofold_protein_macrocyclic",
-                 "Blank canvas": "blank"}
+    from mn_molecular_design_studio.pipeline_graph import STARTER_TEMPLATES
+    templates = STARTER_TEMPLATES
     template_widget_key = prefix + "-template"
     if st.session_state.get(template_widget_key) in {"UniDock Pro · THRα active learning", "UniDock Pro · active learning"}:
         st.session_state[template_widget_key] = "Active-learning docking"

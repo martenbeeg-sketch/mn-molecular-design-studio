@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from typing import Literal
 
 
 class Contract(BaseModel):
@@ -33,6 +34,21 @@ class Settings(Contract):
     reference_directory: str | None = None
     api_base_url: str | None = None
     catalog_highlight_days: int | None = Field(default=None, ge=1, le=365, strict=True)
+
+
+class Peer(Contract):
+    id: str
+    url: str
+
+
+class WorkstationSettings(Contract):
+    mode: Literal["disabled", "peer", "coordinator", "worker"] | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    coordinator_url: str | None = None
+    default_placement: Literal["local", "auto"] | None = None
+    accept_jobs: bool | None = Field(default=None, strict=True)
+    heartbeat_seconds: int | None = Field(default=None, ge=5, le=300, strict=True)
+    peers: list[Peer] | None = Field(default=None, max_length=100)
 
 
 def install(app, current_user, admin_user):
@@ -125,5 +141,41 @@ def install(app, current_user, admin_user):
         if any(value is None for value in updates.values()):
             raise HTTPException(422, "Settings cannot be null.")
         return call(workspace.save_settings, {**workspace.load_settings(), **updates})
+
+    def public_workstation():
+        settings = config.load()
+        values = {key: settings[key] for key in WorkstationSettings.model_fields}
+        values["peers"] = [{"id": peer["id"], "url": peer["url"]} for peer in settings["peers"]]
+        return {"node_id": config.identity(), **values,
+                "credential_configured": bool(settings.get("node_token"))}
+
+    @router.get("/workstation")
+    def workstation_settings(user=Depends(admin_user)):
+        """Local connection and placement settings; credentials are never returned."""
+        return public_workstation()
+
+    @router.patch("/workstation")
+    def save_workstation_settings(payload: WorkstationSettings, user=Depends(admin_user)):
+        updates = payload.model_dump(exclude_unset=True)
+        if any(value is None for value in updates.values()):
+            raise HTTPException(422, "Settings cannot be null.")
+        previous = config.load()
+        mode = updates.get("mode", previous["mode"])
+        if mode in {"peer", "worker"} and previous["mode"] not in {"peer", "worker"} and not previous.get("node_token"):
+            raise HTTPException(409, "Enroll this workstation and configure its trusted credentials before enabling peer/worker mode.")
+        if mode == "coordinator" and not previous.get("node_token"):
+            from mn_molecular_design_studio.cluster.store import Store
+            enrollment = call(Store().enroll, updates.get("name", previous["name"]), config.identity())
+            updates["node_token"] = enrollment["node_token"]
+        call(config.save, updates)
+        return {**public_workstation(), "restart_required": True,
+                "message": "Restart the API and workstation agent after changing connection settings."}
+
+    @router.get("/replication/conflicts")
+    def replication_conflicts(user=Depends(admin_user)):
+        from mn_molecular_design_studio.cluster.replication import Replica
+        with Replica().db() as database:
+            rows = database.execute("SELECT key,error FROM conflicts ORDER BY key").fetchall()
+        return {"items": [dict(row) for row in rows]}
 
     app.include_router(router)
