@@ -102,6 +102,8 @@ def _initialize(connection: sqlite3.Connection) -> None:
             campaign_name TEXT NOT NULL DEFAULT '',
             campaign_id TEXT NOT NULL DEFAULT '',
             pipeline_name TEXT NOT NULL DEFAULT '',
+            pipeline_parent_node_id TEXT NOT NULL DEFAULT '',
+            pipeline_iteration INTEGER NOT NULL DEFAULT 0,
             campaign_step TEXT NOT NULL DEFAULT '',
             campaign_step_index TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT '',
@@ -148,10 +150,13 @@ def _initialize(connection: sqlite3.Connection) -> None:
     if "pipeline_name" not in existing_columns:
         connection.execute("ALTER TABLE jobs ADD COLUMN pipeline_name TEXT NOT NULL DEFAULT ''")
         added_columns = True
-    for column in ("queue_wait_started_at", "worker_started_at", "completed_at"):
+    for column in ("queue_wait_started_at", "worker_started_at", "completed_at", "pipeline_parent_node_id"):
         if column not in existing_columns:
             connection.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
             added_columns = True
+    if "pipeline_iteration" not in existing_columns:
+        connection.execute("ALTER TABLE jobs ADD COLUMN pipeline_iteration INTEGER NOT NULL DEFAULT 0")
+        added_columns = True
     if added_columns:
         # Existing records must be re-read once so newly indexed metadata can
         # be derived from durable run metadata without requiring job changes.
@@ -232,13 +237,13 @@ def _job_payload(run_dir: Path) -> dict[str, Any]:
             f"{cpu} CPU core{'s' if cpu != 1 else ''} · {gpu}" if cpu else f"coordination · {gpu}"
         )
     marker = _read_json(run_dir / "molecular_design_studio.json")
-    pipeline_parent = str(metadata.get("pipeline_parent_run_dir") or "").strip()
+    pipeline_parent = str(metadata.get("pipeline_parent_run_dir") or metadata.get("active_learning_parent_run") or "").strip()
     is_visual_pipeline = (
         str(metadata.get("tool") or inputs.get("tool") or "") == "visual_pipeline"
         or str(metadata.get("job_type") or inputs.get("job_type") or "") == "visual_pipeline"
     )
     pipeline_name = (
-        str(metadata.get("campaign_name") or params.get("pipeline_name") or "").strip()
+        str(metadata.get("pipeline_name") or params.get("pipeline_name") or metadata.get("campaign_name") or "").strip()
         if pipeline_parent or is_visual_pipeline
         else ""
     )
@@ -264,7 +269,9 @@ def _job_payload(run_dir: Path) -> dict[str, Any]:
         "warning": str(metadata.get("warning") or ""),
         "warning_level": str(metadata.get("warning_level") or ("degraded" if metadata.get("warning") else "")),
         "campaign_name": job_name(metadata, params),
-        "campaign_id": str(metadata.get("campaign_id") or ""),
+        "campaign_id": str(metadata.get("campaign_id") or (Path(pipeline_parent.rstrip("/")).name if pipeline_parent else "")),
+        "pipeline_parent_node_id": str(metadata.get("pipeline_parent_node_id") or ""),
+        "pipeline_iteration": int(metadata.get("pipeline_iteration") or metadata.get("active_learning_round") or 0),
         "pipeline_name": pipeline_name,
         "campaign_step": str(metadata.get("campaign_step") or ""),
         "campaign_step_index": str(metadata.get("campaign_step_index") or ""),
@@ -321,7 +328,7 @@ def _upsert(root: Path, run_dir: Path, *, refresh_artifacts: bool) -> None:
         root_id, row["task_group"], row["run_id"], relative, row["job_code"], row["job_type"], row["tool"],
         row["status"], row["queue_resource"], row["resource_allocation"], row["scheduler_wait_reason"],
         row["current_phase"], row["current_engine"], row["warning"], row["warning_level"], row["campaign_name"],
-        row["campaign_id"], row["pipeline_name"], row["campaign_step"], row["campaign_step_index"], row["created_at"], row["updated_at"],
+        row["campaign_id"], row["pipeline_name"], row["pipeline_parent_node_id"], row["pipeline_iteration"], row["campaign_step"], row["campaign_step_index"], row["created_at"], row["updated_at"],
         row["queue_wait_started_at"], row["worker_started_at"], row["completed_at"],
         int(row["success"]) if isinstance(row["success"], bool) else None, int(row["hidden"]), int(row["capacity_parent"]),
         row["owner_id"], row["project_id"], row["metadata_mtime_ns"], row["input_mtime_ns"], row["result_mtime_ns"], _now(),
@@ -329,7 +336,7 @@ def _upsert(root: Path, run_dir: Path, *, refresh_artifacts: bool) -> None:
     columns = (
         "run_relative_path", "job_code", "job_type", "tool", "status", "queue_resource", "resource_allocation",
         "scheduler_wait_reason", "current_phase", "current_engine", "warning", "warning_level", "campaign_name",
-        "campaign_id", "pipeline_name", "campaign_step", "campaign_step_index", "created_at", "updated_at",
+        "campaign_id", "pipeline_name", "pipeline_parent_node_id", "pipeline_iteration", "campaign_step", "campaign_step_index", "created_at", "updated_at",
         "queue_wait_started_at", "worker_started_at", "completed_at", "success", "hidden",
         "capacity_parent", "owner_id", "project_id", "metadata_mtime_ns", "input_mtime_ns", "result_mtime_ns", "indexed_at",
     )
@@ -341,7 +348,7 @@ def _upsert(root: Path, run_dir: Path, *, refresh_artifacts: bool) -> None:
         connection.execute(
             "INSERT INTO jobs (storage_root_id, task_group, run_id, run_relative_path, job_code, job_type, tool, status, "
             "queue_resource, resource_allocation, scheduler_wait_reason, current_phase, current_engine, warning, warning_level, "
-            "campaign_name, campaign_id, pipeline_name, campaign_step, campaign_step_index, created_at, updated_at, "
+            "campaign_name, campaign_id, pipeline_name, pipeline_parent_node_id, pipeline_iteration, campaign_step, campaign_step_index, created_at, updated_at, "
             "queue_wait_started_at, worker_started_at, completed_at, success, hidden, "
             "capacity_parent, owner_id, project_id, metadata_mtime_ns, input_mtime_ns, result_mtime_ns, indexed_at) "
             "VALUES (" + ",".join("?" for _ in values) + ") "

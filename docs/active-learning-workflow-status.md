@@ -25,6 +25,35 @@ unrelated job relations survive. Publish replica tombstones before resuming sync
 
 ## Current implementation
 
+### Campaign results update — 2026-10-26
+
+My results groups scheduled work across computers under its pipeline, using the
+organizer's persistent node ID and parent run ID. Active-learning campaigns show
+one row per iteration in the Steps dialog; opening an iteration reveals its
+individual docking batches and model jobs. Counts reflect jobs created so far,
+so the final iteration count does not have to be known at submission.
+
+The **Final results** action opens the combined external ranking and convergence
+plots. These show the best docking score, mean scores for the top 100, 1,000 and
+10,000, and the largest rank-wise score change for those groups. A dashed line
+shows the configured tolerance. The comparison table distinguishes score changes
+from changes in compound order. Plotting additional groups does not change the
+campaign's configured stopping criterion.
+
+New runs save compact summaries after every round and one previous top-score
+vector for comparison. Existing completed runs can reconstruct these summaries
+from their external table only after checking that no score changed after its
+first round, cumulative counts match, and saved top vectors match. The resulting
+small `score_convergence.json` sidecar avoids scanning the compound table on
+every page visit. No additional compounds enter the molecular Database.
+
+The completed E91DA SpiroSpace campaign has 8 iterations, 160 docking batch jobs
+and 7 model jobs across three computers. It stopped with three stable top-100
+comparisons at iterations 6–8. The top-1,000 mean improved through iteration 7;
+the top-10,000 mean still improved slightly in iteration 8.
+
+### Controller design
+
 The active-learning canvas now submits a scheduled campaign job through Studio's normal workflow queue. The controller runs the editable graph as a round-based workflow and writes node/worker progress to `graph_execution.json` for the pipeline dialog.
 
 - The centroid library and full screening library are independent registered sources. A random, reproducible centroid sample carries its ID, name, SMILES, 1024-bit fingerprint and source-library ID into the first docking round. Fingerprint settings must match.
@@ -37,7 +66,7 @@ The active-learning canvas now submits a scheduled campaign job through Studio's
 
 The OpenVS-style network uses PyTorch with three 3,000-node hidden layers. Studio environments use PyTorch 2.14.1 with CUDA 13.0 so the organizer can reuse its selected GPU for training and inference after each docking round. RDKit fingerprinting remains CPU-based. UniDock Pro continues using the GPUs selected for docking.
 
-## Verification
+## Initial verification (historical)
 
 The focused active-learning, pipeline, library-preparation, scheduler, and workstation test set passed: 94 passed, with one existing Starlette/httpx deprecation warning. The CUDA PyTorch install and a small CUDA operation still need verification on the three Studio machines. No multi-computer docking smoke run has been launched yet.
 
@@ -50,7 +79,7 @@ The prepared library in `Spirochem library test random 1m seed 42` contains:
 
 These are manifests for externally stored files; the full compound table is not imported into Studio's molecule database.
 
-## Before the first smoke run
+## Initial smoke plan (historical; completed)
 
 No docking campaign has been launched from this controller yet. The first smoke run should use a small initial sample and a low maximum iteration count. Confirm the receptor and docking box, which computers are available and their UniDock Pro GPU IDs, and the sample/iteration limits. The draft defaults retain the requested 10,000 compounds per docking round and the configured three-computer selection.
 

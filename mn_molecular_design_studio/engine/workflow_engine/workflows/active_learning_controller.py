@@ -21,6 +21,7 @@ from pathlib import Path
 
 from mn_molecular_design_studio.active_learning_settings import ActiveLearningSettings
 from mn_molecular_design_studio.collection_policy import collection_scope, set_run_policy
+from mn_molecular_design_studio.pipeline_jobs import link_pipeline_child
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import (
     create_job, finish_job, read_json, update_status, utc_now, write_json,
 )
@@ -266,6 +267,11 @@ def _dispatch_docking_shard(*, request: dict, worker: dict, campaign: Path,
     from mn_molecular_design_studio.engine.workflow_engine.core.workflow_queue import enqueue_workflow_call
     from mn_molecular_design_studio.engine.workflow_engine.workflows.ligand_tools import run_ligand_unidock_pro
     from mn_molecular_design_studio.workspace import mark_studio_job
+    from mn_molecular_design_studio.cluster import config as cluster_config
+    parent_node_id = cluster_config.identity()
+    pipeline_name = str(read_json(campaign / "metadata.json").get("campaign_name") or
+                        read_json(campaign / "input.json").get("params", {}).get("pipeline_name") or "Active learning")
+    step = f"Iteration {int(request['round_number'])} · Docking · GPU {worker['gpu_device']} · batch {int(request.get('batch_index') or 1)}"
 
     if worker["local"]:
         parameters = {**request["parameters"], "import_to_database": False}
@@ -274,6 +280,9 @@ def _dispatch_docking_shard(*, request: dict, worker: dict, campaign: Path,
             job_type="ligand_docking", kwargs=parameters,
             cpu_cores=int(parameters["cpu_cores"]), gpu_device=str(parameters["gpu_device"]),
         )
+        link_pipeline_child(run_dir, parent_run_dir=campaign, parent_node_id=parent_node_id,
+                            pipeline_name=pipeline_name, step=step,
+                            step_index=request.get("batch_index", ""), round_number=request["round_number"])
         mark_studio_job({"job": {"run_dir": str(run_dir)}}, owner_id=request["owner_id"], project_id=request["project_id"])
         metadata = read_json(run_dir / "metadata.json")
         metadata.update(active_learning_parent_run=str(campaign), active_learning_round=int(request["round_number"]),
@@ -296,7 +305,9 @@ def _dispatch_docking_shard(*, request: dict, worker: dict, campaign: Path,
     local_request.write_text(json.dumps({
         "schema_version": _DOCKING_WORKER_SCHEMA,
         "parameters": {**request["parameters"], "import_to_database": False}, "round_number": request["round_number"],
-        "parent_run_dir": str(campaign), "owner_id": request["owner_id"], "project_id": request["project_id"],
+        "parent_run_dir": str(campaign), "parent_node_id": parent_node_id,
+        "pipeline_name": pipeline_name, "pipeline_step": step, "batch_index": request.get("batch_index", 1),
+        "owner_id": request["owner_id"], "project_id": request["project_id"],
         "node_id": worker["node_id"], "node_name": worker["node_name"],
     }, indent=2) + "\n", encoding="utf-8")
     worker_script = Path(__file__).resolve().parents[3] / "cluster" / "active_learning_worker.py"
@@ -683,6 +694,10 @@ def _queue_model_step(*, campaign: Path, feature_manifest: Path, database: Path,
         )
     from mn_molecular_design_studio.workspace import mark_studio_job
     marker = read_json(campaign / "molecular_design_studio.json")
+    from mn_molecular_design_studio.cluster import config as cluster_config
+    link_pipeline_child(run_dir, parent_run_dir=campaign, parent_node_id=cluster_config.identity(),
+                        pipeline_name=str(read_json(campaign / "metadata.json").get("campaign_name") or "Active learning"),
+                        step=f"Iteration {round_number} · Train neural network and predict", round_number=round_number)
     mark_studio_job({"job": {"run_dir": str(run_dir)}}, owner_id=str(marker.get("studio_owner_id") or ""),
                     project_id=str(marker.get("project_id") or ""))
     if progress:
@@ -858,6 +873,12 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
             _persist_round_failures(score_db, failed_results, round_number=round_number)
             ranked = _ranked_rows(score_db, direction)
             current_top, stable_now, max_delta, same_order = _top_vector(ranked, top_n, previous_top, tolerance)
+            from mn_molecular_design_studio.screening_convergence import DEFAULT_TOP_COUNTS, summarize_rankings
+            plot_sizes = sorted({*DEFAULT_TOP_COUNTS, top_n})
+            plot_vector = _top_vector(ranked, max(plot_sizes), None, tolerance)[0]
+            score_summaries = summarize_rankings(plot_vector, state.get("previous_convergence_scores"),
+                sizes=plot_sizes, tolerance=tolerance,
+                previous_summaries=(state["rounds"][-1].get("score_summaries") or []) if state["rounds"] else [])
             state["docking_runs"].extend(worker_summary)
             if round_number > 1 and stable_now:
                 state["stable_rounds"] = int(state.get("stable_rounds") or 0) + 1
@@ -871,11 +892,12 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                 "binder_percent": settings.percentile(round_number), "top_n": top_n,
                 "top_n_stable": stable_now, "stable_round_count": state["stable_rounds"],
                 "maximum_rank_score_change": max_delta, "same_top_order": same_order,
-                "top_scores": current_top, "workers": worker_summary,
+                "top_scores": current_top, "score_summaries": score_summaries, "workers": worker_summary,
                 "selection_kind": pending.get("selection_kind"), "completed_at": utc_now(),
             }
             state["rounds"].append(history_item)
             state["previous_top_scores"] = current_top
+            state["previous_convergence_scores"] = plot_vector
             state["pending_round"] = None
             previous_top = current_top
             write_json(round_folder / "round.json", history_item)
@@ -1167,6 +1189,7 @@ def _dock_round(*, campaign: Path, round_number: int, rows: list[dict], workers:
                 else:
                     mapping, request = queue.popleft()
                 batch_index += 1
+            request["batch_index"] = batch_index
             request["parameters"].update(cpu_cores=int(worker["cpu_cores"]), gpu_device=str(worker["gpu_device"]),
                 job_name=f"Active learning round {round_number:03d} · {worker['node_name']} · GPU {worker['gpu_device']}")
             if cancel_check():

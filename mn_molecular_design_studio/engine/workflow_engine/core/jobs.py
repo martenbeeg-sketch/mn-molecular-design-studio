@@ -851,13 +851,13 @@ def collect_jobs(task_group: str | None = None, *, include_hidden: bool = False)
             input_payload = read_json(run_dir / "input.json")
             input_params = input_payload.get("params") if isinstance(input_payload.get("params"), dict) else {}
             tool = job_tool(metadata.get("tool") or input_payload.get("tool", ""), input_params)
-            pipeline_parent = str(metadata.get("pipeline_parent_run_dir") or "").strip()
+            pipeline_parent = str(metadata.get("pipeline_parent_run_dir") or metadata.get("active_learning_parent_run") or "").strip()
             is_visual_pipeline = (
                 str(metadata.get("tool") or input_payload.get("tool") or "") == "visual_pipeline"
                 or str(metadata.get("job_type") or input_payload.get("job_type") or "") == "visual_pipeline"
             )
             pipeline_name = (
-                str(metadata.get("campaign_name") or input_params.get("pipeline_name") or "").strip()
+                str(metadata.get("pipeline_name") or input_params.get("pipeline_name") or metadata.get("campaign_name") or "").strip()
                 if pipeline_parent or is_visual_pipeline
                 else ""
             )
@@ -902,7 +902,9 @@ def collect_jobs(task_group: str | None = None, *, include_hidden: bool = False)
                     "warning": warning,
                     "warning_level": metadata.get("warning_level", "degraded" if warning else ""),
                     "campaign_name": job_name(metadata, input_params),
-                    "campaign_id": metadata.get("campaign_id", ""),
+                    "campaign_id": metadata.get("campaign_id") or (Path(pipeline_parent.rstrip("/")).name if pipeline_parent else ""),
+                    "pipeline_parent_node_id": str(metadata.get("pipeline_parent_node_id") or ""),
+                    "pipeline_iteration": int(metadata.get("pipeline_iteration") or metadata.get("active_learning_round") or 0),
                     "pipeline_name": pipeline_name,
                     "campaign_step": metadata.get("campaign_step", ""),
                     "campaign_step_index": metadata.get("campaign_step_index", ""),

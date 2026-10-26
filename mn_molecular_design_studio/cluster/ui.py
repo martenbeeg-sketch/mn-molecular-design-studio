@@ -194,12 +194,22 @@ def _visual_pipeline_groups(rows):
         parent_id = str(row.get("campaign_id") or "").strip()
         if not parent_id:
             continue
-        root = roots.get((str(row.get("node_id") or ""), parent_id))
+        parent_node = str(row.get("pipeline_parent_node_id") or row.get("node_id") or "")
+        root = roots.get((parent_node, parent_id))
+        if not root and not row.get("pipeline_parent_node_id") and row.get("pipeline_iteration"):
+            # Legacy active-learning children used a parent path without its
+            # workstation. Accept only a unique parent in the same access scope.
+            candidates = [candidate for (_, run_id), candidate in roots.items() if run_id == parent_id
+                          and str(candidate.get("project_id") or "") == str(row.get("project_id") or "")
+                          and str(candidate.get("owner_id") or "") == str(row.get("owner_id") or "")]
+            root = candidates[0] if len(candidates) == 1 else None
         if not root:
             continue
         row_project = str(row.get("project_id") or "")
         root_project = str(root.get("project_id") or "")
         if row_project and root_project and row_project != root_project:
+            continue
+        if row.get("owner_id") and root.get("owner_id") and row["owner_id"] != root["owner_id"]:
             continue
         root_ref = _results_job_reference(root)
         row_ref = _results_job_reference(row)
@@ -214,6 +224,45 @@ def _visual_pipeline_groups(rows):
             key=lambda row: (str(row.get("created_at") or ""), str(row.get("job_code") or "")),
         )
     return groups, row_to_group
+
+
+def _pipeline_iterations(children):
+    grouped = {}
+    for child in children:
+        try:
+            iteration = int(child.get("pipeline_iteration") or 0)
+        except (TypeError, ValueError):
+            iteration = 0
+        grouped.setdefault(iteration, []).append(child)
+    return dict(sorted(grouped.items())) if any(number > 0 for number in grouped) else {}
+
+
+def _pipeline_iteration_status(root, number, children, highest):
+    statuses = {str(child.get("status") or "unknown").casefold() for child in children}
+    if statuses & {"failed"}:
+        return "Failed"
+    if statuses & {"running", "starting", "preparing"}:
+        return "Running"
+    if not statuses.issubset(_RESULTS_TERMINAL_STATUSES):
+        return "Queued"
+    if str(root.get("status") or "").casefold() not in _RESULTS_TERMINAL_STATUSES and number == highest:
+        return "In progress"
+    if statuses & {"cancelled", "canceled"}:
+        return "Cancelled"
+    return "Completed"
+
+
+def _pipeline_step_count_label(root, children):
+    iterations = _pipeline_iterations(children)
+    if iterations:
+        if str(root.get("status") or "").casefold() not in _RESULTS_TERMINAL_STATUSES:
+            return f"Iteration {max(iterations)}"
+        return f"{len([number for number in iterations if number > 0])} iterations"
+    if not children:
+        return "No jobs created yet" if str(root.get("status") or "").casefold() not in _RESULTS_TERMINAL_STATUSES else "No linked jobs"
+    finished = sum(str(child.get("status") or "unknown").casefold() in _RESULTS_TERMINAL_STATUSES for child in children)
+    qualifier = " finished" if str(root.get("status") or "").casefold() in _RESULTS_TERMINAL_STATUSES else " created jobs finished"
+    return f"{finished}/{len(children)}{qualifier}"
 
 
 def _pipeline_step_label(row, pipeline_name):
@@ -247,6 +296,20 @@ def _request_results_pipeline_steps(click_key, entry_refs):
     index = int(click["row"])
     if 0 <= index < len(entry_refs) and entry_refs[index]:
         st.session_state["cluster-results-pipeline-details-request"] = entry_refs[index]
+        st.session_state.pop("cluster-results-pipeline-iteration-request", None)
+
+
+def _request_pipeline_iteration_view(click_key, reference, numbers):
+    click = st.session_state.get(click_key)
+    if click and 0 <= int(click["row"]) < len(numbers):
+        st.session_state["cluster-results-pipeline-details-request"] = reference
+        st.session_state["cluster-results-pipeline-iteration-request"] = numbers[int(click["row"])]
+
+
+def _request_results_pipeline_results(click_key, entry_refs):
+    click = st.session_state.get(click_key)
+    if click and 0 <= int(click["row"]) < len(entry_refs) and entry_refs[int(click["row"])]:
+        _navigate_to_job_details(entry_refs[int(click["row"])], final_results=True)
 
 
 def _request_results_job_view(click_key, entry_refs):
@@ -303,20 +366,23 @@ def _library_worker_details(row, members):
     }
 
 
-def _navigate_to_job_details(reference):
+def _navigate_to_job_details(reference, *, final_results=False):
+    st.session_state["pipeline-final-results-reference"] = reference if final_results else None
     st.session_state["selected-job-reference"] = reference
     st.session_state["page"] = "Job details"
     st.rerun(scope="app")
 
 
 def _job_details_reference(row):
+    if row.get("node_id") == config.identity() and row.get("local_reference"):
+        return str(row["local_reference"])
     if row.get("cluster_job_id"):
         return "cluster:" + str(row["cluster_job_id"])
     return _results_job_reference(row)
 
 
 @st.dialog("Pipeline steps", width="large")
-def _render_results_pipeline_steps(members, elapsed_label=None, user=None, token=None, submit=None):
+def _render_results_pipeline_steps(members, elapsed_label=None, user=None, token=None, submit=None, iteration=None):
     root, *children = members
     pipeline_name = config.display_text(root.get("pipeline_name") or root.get("campaign_name") or "Pipeline run")
     st.markdown(f"**{pipeline_name}**")
@@ -332,9 +398,41 @@ def _render_results_pipeline_steps(members, elapsed_label=None, user=None, token
         on_click=_navigate_to_job_details,
         args=(_job_details_reference(root),),
     )
+    if st.button("Final results" if str(root.get("status") or "").casefold() in {"completed", "succeeded"} else "Results so far",
+                 key="cluster-pipeline-final-results", type="primary"):
+        _navigate_to_job_details(_job_details_reference(root), final_results=True)
     if not children:
-        st.info("No tool-call jobs have been created for this pipeline yet.")
+        st.info("No linked tool-call jobs are available for this pipeline.")
         return
+    metrics = root.get("metrics") if isinstance(root.get("metrics"), dict) else {}
+    if metrics.get("round_count"):
+        docking = sum(str(child.get("tool") or "") == "unidock_pro" for child in children)
+        models = sum(str(child.get("tool") or "") == "active_learning_model" for child in children)
+        st.caption(f"{int(metrics['round_count'])} rounds · {docking} docking batches · {models} neural-network jobs · "
+                   f"{len({child.get('node_id') for child in children if child.get('node_id')})} computers")
+    if str(root.get("status") or "").casefold() not in _RESULTS_TERMINAL_STATUSES:
+        st.caption("Counts include jobs created so far. A looping pipeline adds jobs until its stopping criteria or iteration limit are reached.")
+    iterations = _pipeline_iterations(children)
+    if iterations:
+        numbers = list(iterations)
+        iteration_rows = []
+        for number, jobs in iterations.items():
+            iteration_rows.append({"Iteration": f"Iteration {number}" if number else "Other jobs",
+                "Status": _pipeline_iteration_status(root, number, jobs, max(numbers)),
+                "Batches created": sum(str(child.get("tool")) == "unidock_pro" for child in jobs),
+                "Neural-network jobs": sum(str(child.get("tool")) == "active_learning_model" for child in jobs),
+                "Computers": len({child.get("node_id") for child in jobs if child.get("node_id")}),
+                "Inspect": "View jobs"})
+        key = "pipeline-iteration-inspect"
+        st.dataframe(pd.DataFrame(iteration_rows).style.map(lambda _: "color: #2f6fba; font-weight: 600;", subset=["Inspect"]),
+            hide_index=True, width="stretch", column_config={"Inspect": st.column_config.ButtonColumn(
+                "Inspect", type="tertiary", key=key, on_click=_request_pipeline_iteration_view,
+                args=(key, _results_job_reference(root), numbers))})
+        st.caption("Each row represents one active-learning iteration. Open an iteration to inspect its individual batch and neural-network jobs.")
+        if iteration not in iterations:
+            return
+        st.subheader(f"Iteration {iteration} · job details" if iteration else "Other job details")
+        children = iterations[iteration]
     child_refs = []
     step_rows = []
     for child in children:
@@ -1240,7 +1338,7 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
         "Group pipeline steps",
         value=True,
         key="cluster-results-group-pipelines",
-        help="Show each pipeline once. Its checkbox selects all its jobs; the Steps button opens its tool-call jobs.",
+        help="Show each pipeline once, including jobs on other computers. Counts include jobs created so far; looping workflows add jobs until they stop. The Steps button opens their tool-call jobs.",
     )
     search_col, machine_col, status_col, sort_col = st.columns([0.38, 0.21, 0.21, 0.20])
     query = search_col.text_input("Search jobs", placeholder="Name, engine, or run ID", key="cluster-results-query").casefold()
@@ -1420,6 +1518,7 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
         entry_members = []
         entry_pipeline_refs = []
         entry_view_refs = []
+        entry_result_refs = []
         for entry_index, entry in enumerate(page_entries):
             is_pipeline = entry["kind"] == "pipeline"
             row = entry["root"] if is_pipeline else entry["row"]
@@ -1428,6 +1527,7 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
             entry_members.append(members)
             entry_pipeline_refs.append(ref if is_pipeline else None)
             entry_view_refs.append(_job_details_reference(row))
+            entry_result_refs.append(_job_details_reference(row) if is_pipeline else None)
             worker_details = entry_worker_details[entry_index]
             availability = "Last known" if stale and row.get("node_id") != config.identity() else str(row.get("availability", "pending")).title()
             if row.get("last_seen_at"):
@@ -1438,15 +1538,14 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
                 "Job": config.display_text(row.get("campaign_name") or row.get("tool") or "Job"),
                 "View": "View",
             }
+            if group_pipeline_runs:
+                table_row["Results"] = ("Final results" if str(row.get("status") or "").casefold() in {"completed", "succeeded"}
+                                        else "Results so far") if is_pipeline else None
             if show_computers:
                 table_row["Computers"] = f"{len(worker_details['workers'])} computers" if worker_details else None
             if group_pipeline_runs:
                 children = members[1:] if is_pipeline else []
-                finished_steps = sum(
-                    str(child.get("status") or "unknown").casefold() in _RESULTS_TERMINAL_STATUSES
-                    for child in children
-                )
-                table_row["Steps"] = f"{finished_steps}/{len(children)} finished" if is_pipeline else None
+                table_row["Steps"] = _pipeline_step_count_label(row, children) if is_pipeline else None
             table_row.update({
                 "Project": project_names.get(row.get("project_id"), "Project"),
                 "Tool": display_tool_label(row),
@@ -1501,24 +1600,28 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
                 args=(worker_click_key, entry_worker_details),
             )
         if group_pipeline_runs:
+            results_key = table_key + "-results"
+            column_config["Results"] = st.column_config.ButtonColumn("Results", width=120, type="tertiary",
+                help="Open the combined campaign results across all iterations and batches.", key=results_key,
+                on_click=_request_results_pipeline_results, args=(results_key, entry_result_refs))
             click_key = table_key + "-steps"
             column_config["Steps"] = st.column_config.ButtonColumn(
                 "Steps", width=120, type="tertiary",
-                help="Open all tool-call jobs for this pipeline, including steps outside the current filters.",
+                help="Open pipeline iterations, then drill into their batch and neural-network jobs. Includes jobs on every computer.",
                 key=click_key,
                 on_click=_request_results_pipeline_steps,
                 args=(click_key, entry_pipeline_refs),
             )
         styled_table = table.style.map(
             lambda _: "color: #2f6fba; font-weight: 600;",
-            subset=[column for column in ("View", "Computers", "Steps") if column in table.columns],
+            subset=[column for column in ("View", "Results", "Computers", "Steps") if column in table.columns],
         )
         st.data_editor(
             styled_table,
             key=table_key,
             hide_index=True,
             num_rows="fixed",
-            disabled=[column for column in table.columns if column not in {"Select", "Steps", "View", "Computers"}],
+            disabled=[column for column in table.columns if column not in {"Select", "Steps", "View", "Results", "Computers"}],
             column_config=column_config,
             on_change=_update_results_table_selection,
             args=(table_key, entry_members),
@@ -1530,6 +1633,7 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
     if details_reference in pipeline_groups:
         _render_results_pipeline_steps(
             pipeline_groups[details_reference], elapsed_label, user, token, submit,
+            iteration=st.session_state.pop("cluster-results-pipeline-iteration-request", None),
         )
     worker_details_request = st.session_state.pop("cluster-results-library-workers-request", None)
     if worker_details_request:
@@ -1677,6 +1781,10 @@ def render_job(reference, user, token, submit):
             st.info("The coordinator and this job's cached record are unavailable.")
             return
         row = dict(row, availability="last known")
+    if (st.session_state.get("pipeline-final-results-reference") == reference and _is_visual_pipeline_row(row)
+            and "unique_docked_compounds" in (row.get("metrics") or {})):
+        _render_remote_pipeline_results(jid, row, token)
+        return
     st.title(config.display_text(row.get("campaign_name") or row.get("tool") or "Job"))
     st.caption(f"Tool: {display_tool_label(row)} · Pipeline: {config.display_text(str(row.get('pipeline_name') or '').strip() or '—')}")
     st.caption(f"Files stored on {config.display_name(row.get('node_name') or 'Not assigned')} · {row.get('location') or 'Waiting for placement'}")
@@ -1966,3 +2074,41 @@ def render_job(reference, user, token, submit):
                                                      "project_id": row["project_id"], "source_job": "cluster:" + jid,
                                                      "execution": {"placement": "auto", "idempotency_key": str(uuid.uuid4())}})
                 st.success("Queued with data locality preserved · " + result["job"].get("job_code", "submitted"))
+
+
+def _render_remote_pipeline_results(jid, row, token):
+    from mn_molecular_design_studio.screening_results_ui import render_summary
+    st.caption("Results are stored on " + config.display_name(row.get("node_name") or "the organizer"))
+    key = "cluster-screening-inspect-" + jid
+    if st.button("Refresh combined results", key=key + "-refresh"):
+        st.session_state.pop(key, None)
+        st.session_state.pop(key + "-response", None)
+    cached = st.session_state.get(key + "-response")
+    if cached is not None:
+        render_summary(cached.get("screening_results"), (cached.get("result") or {}).get("metrics") or row.get("metrics") or {},
+                       name=row.get("campaign_name") or "Pipeline", status=row.get("status") or "unknown")
+        return
+    if not st.session_state.get(key):
+        try:
+            response = _request("/jobs/" + jid + "/actions", token, {"action": "inspect"}, method="POST")
+            st.session_state[key] = response["command_id"]
+        except (ValueError, transport.ClusterUnavailable) as exc:
+            st.warning(str(exc))
+            return
+    @st.fragment(run_every=2)
+    def completed_inspection():
+        try:
+            operation = _request("/commands/" + st.session_state[key], token)
+        except (ValueError, transport.ClusterUnavailable) as exc:
+            st.info(str(exc))
+            return
+        if operation.get("status") == "failed":
+            st.error(operation.get("error") or "Could not retrieve the campaign results.")
+            return
+        if operation.get("status") != "completed":
+            st.info("Loading the combined campaign results from its organizer…")
+            return
+        results = (operation.get("response") or {}).get("results") or {}
+        st.session_state[key + "-response"] = results
+        st.rerun(scope="app")
+    completed_inspection()

@@ -202,6 +202,11 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
     decision_id = nodes["active_decision"]["id"]
     assert state["stop_reason"] == history["stop_reason"] == expected_stop
     assert history["rounds"][-1]["stop_reason"] == expected_stop
+    for row in history["rounds"]:
+        summaries = {group["top_n"]: group for group in row["score_summaries"]}
+        assert {100, 1000, 10000}.issubset(summaries)
+        assert summaries[2]["stable_round_count"] == row["stable_round_count"]
+        assert summaries[2]["maximum_rank_score_change"] == row["maximum_rank_score_change"]
     assert graph_state["nodes"][decision_id]["status"] == "completed"
     assert graph_state["nodes"][decision_id]["stop_reason"] == expected_stop
     assert completed

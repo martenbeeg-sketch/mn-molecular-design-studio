@@ -45,8 +45,9 @@ def test_shared_results_can_page_beyond_first_hundred_jobs(isolated, monkeypatch
     assert len(at.dataframe) == 1
     table = at.dataframe[0].value
     assert len(table) == 50
-    assert "?job_ref=cluster%3Ajob-120" in set(table["Open"])
-    assert list(table.columns).index("Open") == list(table.columns).index("Job") + 1
+    assert "job-120" in table.index
+    assert set(table["View"]) == {"View"}
+    assert list(table.columns).index("View") == list(table.columns).index("Job") + 1
     at.number_input[0].set_value(3).run()
     assert not at.exception
     assert len(at.dataframe) == 1

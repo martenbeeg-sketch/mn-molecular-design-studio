@@ -770,6 +770,8 @@ def _submit(request: dict, parent: Path, node: dict, *, owner_id: str, project_i
     mark_studio_job(result, owner_id=owner_id, project_id=project_id)
     child = _path(result["job"]["run_dir"])
     metadata = read_json(child / "metadata.json")
+    from mn_molecular_design_studio.cluster import config as cluster_config
+    metadata["pipeline_parent_node_id"] = cluster_config.identity()
     metadata.update(pipeline_parent_run_dir=str(parent), campaign_id=parent.name, campaign_name=read_json(parent / "input.json").get("params", {}).get("pipeline_name", "Pipeline"), graph_node_id=node["id"])
     write_json(child / "metadata.json", metadata)
     return child

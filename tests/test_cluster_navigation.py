@@ -34,7 +34,10 @@ def test_shared_results_view_uses_same_tab_job_route(monkeypatch, tmp_path):
     ).run()
 
     assert not app.exception
-    view_links = [block.value for block in app.markdown if "job_ref=" in block.value]
-    assert len(view_links) == 1
-    assert 'href="?job_ref=cluster%3Ajob-123"' in view_links[0]
-    assert 'target="_self"' in view_links[0]
+    table = app.dataframe[0].value
+    assert table.loc["job-123", "View"] == "View"
+    calls = []
+    monkeypatch.setattr(ui.st, "session_state", {"clicked": {"row": 0}})
+    monkeypatch.setattr(ui, "_navigate_to_job_details", lambda ref: calls.append(ref))
+    ui._request_results_job_view("clicked", [ui._job_details_reference(rows[0])])
+    assert calls == ["cluster:job-123"]

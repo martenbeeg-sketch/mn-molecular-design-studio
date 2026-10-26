@@ -36,6 +36,12 @@ def run(request_path: Path) -> dict:
         cpu_cores=int(params["cpu_cores"]),
         gpu_device=str(params["gpu_device"]),
     )
+    from mn_molecular_design_studio.pipeline_jobs import link_pipeline_child
+    if request.get("parent_node_id"):
+        link_pipeline_child(run_dir, parent_run_dir=request["parent_run_dir"], parent_node_id=request["parent_node_id"],
+                            pipeline_name=request.get("pipeline_name") or "Active learning",
+                            step=request.get("pipeline_step") or f"Iteration {request['round_number']} · Docking",
+                            step_index=request.get("batch_index", ""), round_number=request["round_number"])
     mark_studio_job({"job": {"run_dir": str(run_dir)}},
                     owner_id=str(request["owner_id"]), project_id=str(request["project_id"]))
     metadata = read_json(run_dir / "metadata.json")

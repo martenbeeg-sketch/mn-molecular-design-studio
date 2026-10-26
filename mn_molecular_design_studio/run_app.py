@@ -7594,7 +7594,6 @@ def _render_job_details() -> None:
 
     try:
         details = _inspect_current_user_job(reference)
-        result_payload = job_results(reference, include_candidates=True)
     except (AutomationError, OSError, ValueError) as exc:
         st.error(f"Could not open this job: {exc}")
         return
@@ -7605,6 +7604,18 @@ def _render_job_details() -> None:
     result = details.get("result") or {}
     run_id = str(job.get("run_id") or "job")
     run_dir = Path(job["run_dir"]).expanduser().resolve()
+    if (st.session_state.get("pipeline-final-results-reference") == reference
+            and str(job.get("tool")) == "visual_pipeline"
+            and (metadata.get("active_learning") or (input_payload.get("params") or {}).get("active_learning"))):
+        from mn_molecular_design_studio.screening_results_ui import render_local_results
+        render_local_results(run_dir, CURRENT_USER, result, name=str(job.get("campaign_name") or "Pipeline"),
+                             status=str(job.get("status") or "unknown"))
+        return
+    try:
+        result_payload = job_results(reference, include_candidates=True)
+    except (AutomationError, OSError, ValueError) as exc:
+        st.error(f"Could not open this job: {exc}")
+        return
     surface_titles = {"pesto": "PeSTo", "scannet": "ScanNet", "masif_seed": "MaSIF-seed", "surf2spot": "Surf2Spot", "surface_analysis": "Protein Surface Analysis"}
     raw_title = str(job.get("tool") or job.get("job_type") or run_id)
     title = str(job.get("campaign_name") or surface_titles.get(raw_title.casefold()) or raw_title)

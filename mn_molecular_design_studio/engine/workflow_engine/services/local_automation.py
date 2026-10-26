@@ -347,6 +347,9 @@ def job_results(
     }
     if include_candidates:
         response["candidates"] = read_candidates(run_dir)
+    if (run_dir / "artifacts/active_learning/docking_scores.parquet").is_file():
+        from mn_molecular_design_studio.bulk_screening_results import screening_results_payload
+        response["screening_results"] = screening_results_payload(run_dir, preview_limit=100)
     return response
 
 

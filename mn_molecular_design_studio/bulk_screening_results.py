@@ -39,6 +39,12 @@ def _head(path, limit):
 def external_results(run_dir, user, *, preview_limit=100):
     from mn_molecular_design_studio.molecular_database_results import _authorized_run
     selected = _authorized_run(run_dir, user)[0]
+    return screening_results_payload(selected, preview_limit=preview_limit)
+
+
+def screening_results_payload(run_dir, *, preview_limit=100):
+    """Bounded trusted job-inspection payload; public callers authorize first."""
+    selected = Path(run_dir).resolve()
     path = selected / RESULT_DIRECTORY / "docking_scores.parquet"
     if not path.is_file():
         return None
@@ -46,7 +52,20 @@ def external_results(run_dir, user, *, preview_limit=100):
     manifest_path = selected / RESULT_DIRECTORY / "external_results.json"
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
     manifest = read_json(manifest_path) if manifest_path.is_file() else {}
+    history = read_json(selected / RESULT_DIRECTORY / "round_history.json")
+    convergence = read_json(selected / RESULT_DIRECTORY / "score_convergence.json")
+    summaries = {row["round"]: row["score_summaries"] for row in convergence.get("rounds", [])}
+    rounds = [{**row, "score_summaries": row.get("score_summaries") or summaries.get(row.get("round"), [])}
+              for row in history.get("rounds", [])]
+    graph = read_json(selected / "graph_snapshot.json")
+    decision = next((node.get("data", {}).get("params", {}) for node in graph.get("nodes", [])
+                     if node.get("data", {}).get("kind") == "active_decision"), {})
     return {"compound_count": count, "rows": rows, "scores_path": str(path),
+            "rounds": rounds, "stop_reason": history.get("stop_reason"),
+            "score_field": history.get("score_field"), "score_units": history.get("score_units"),
+            "score_direction": history.get("score_direction"),
+            "stopping_criteria": {key: decision[key] for key in
+                                  ("top_n", "score_tolerance", "stable_rounds", "max_iterations") if key in decision},
             "manifest_path": str(manifest_path), "selection": manifest.get("database_selection", {}),
             "files": manifest.get("files", {})}
 
