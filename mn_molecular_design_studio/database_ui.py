@@ -503,30 +503,14 @@ def render_details(database, user, record):
                     policy = structure_context.get("database_structure_policy")
                     if record["type"] == "small_molecule" and policy in {"best_docking_pose", "best_prediction"}:
                         from mn_molecular_design_studio.docking_results import pose_visualizations
+                        from mn_molecular_design_studio.bound_docking import receptor_file
                         receptor_text = None
                         receptor_name = ""
-                        target = structure_context.get("target_path")
-                        if target and Path(target).is_file():
-                            receptor_path = Path(target)
+                        receptor_path = receptor_file(database, user, structure)
+                        if receptor_path:
                             receptor_text = receptor_path.read_text(errors="replace")
                             receptor_name = receptor_path.name
-                        elif structure_context.get("target_molecule_id"):
-                            targets = database.list_molecules(
-                                user, molecule_ids=[structure_context["target_molecule_id"]], limit=1
-                            ).get("items") or []
-                            if targets:
-                                target_structures = sorted(
-                                    targets[0].get("structures") or [],
-                                    key=lambda item: item.get("format") not in {"pdb", "ent"},
-                                )
-                                for target_structure in target_structures:
-                                    try:
-                                        receptor_path = database.structure_file(user, target_structure["id"])
-                                    except (OSError, ValueError, PermissionError):
-                                        continue
-                                    receptor_text = receptor_path.read_text(errors="replace")
-                                    receptor_name = receptor_path.name
-                                    break
+                            st.caption("Compound and target are separate Database molecules, displayed together in their docking coordinates.")
                         representations = pose_visualizations(
                             path.read_text(errors="replace"), path.name,
                             receptor_text=receptor_text, receptor_name=receptor_name,
@@ -538,7 +522,29 @@ def render_details(database, user, record):
                         # multiple PDBQT poses cannot pile up in the viewer.
                         representations = [StructureVisualization(pdb=_structure_text(path, structure_context), color="chain-id", representation_type="ball-and-stick" if record["type"] == "small_molecule" else "cartoon")]
                     molstar_custom_component(representations, key="database-molstar-" + structure["id"], height=310, show_controls=False, show_structure_tools=False)
-            except (OSError, ValueError) as exc:
+                from mn_molecular_design_studio.bound_docking import is_bound_pose
+                if is_bound_pose(structure):
+                    from mn_molecular_design_studio.workspace import load_organization
+                    bundle_key = "database-bound-export-" + structure["id"]
+                    if st.button("Prepare bound complex for export", key=bundle_key + "-prepare"):
+                        from mn_molecular_design_studio.bound_docking import prepare_bound_inputs
+                        st.session_state[bundle_key] = prepare_bound_inputs(database, user, record["id"], structure_id=structure["id"])
+                    if bundle_key in st.session_state:
+                        prepared = st.session_state[bundle_key]
+                        st.download_button("Download complex PDB", Path(prepared["complex_pdb"]).read_bytes(),
+                            file_name=record["name"][:70] + "-complex.pdb", key=bundle_key + "-pdb")
+                        st.download_button("Download matching ligand SDF", Path(prepared["ligand_sdf"]).read_bytes(),
+                            file_name=record["name"][:70] + "-ligand.sdf", key=bundle_key + "-sdf")
+                    with st.popover("Use this bound pose in MD", use_container_width=True):
+                        engine = st.selectbox("MD engine", ["OpenMM", "GROMACS"], key="database-bound-md-engine")
+                        project = _projects(load_organization().get("projects", []), "database-bound-md-project",
+                                            default=database.group(structure["group_id"], user)["project_id"], optional=True)
+                        if st.button("Open MD inputs", type="primary", disabled=not project, key="database-bound-md-open"):
+                            from mn_molecular_design_studio.database_selections import open_bound_pose_in_md
+                            open_bound_pose_in_md(database, user, record["id"], "ligand.md." + engine.lower(), project,
+                                                  structure_id=structure["id"])
+                            st.rerun()
+            except (OSError, ValueError, PermissionError) as exc:
                 st.caption(str(exc))
         elif source_workstation:
             st.info(f"No structure file is attached to this synced Database record. Its source is {source_workstation}; the structure must be indexed on that workstation before it can be opened here.")
@@ -1104,6 +1110,9 @@ def render_use_selection(database, user, projects, ids, project_id=""):
         options["Boltz-2"] = "boltz2"
     if len(records) == 1:
         detail = database.list_molecules(user, molecule_ids=ids, collection="all")["items"][0]
+        from mn_molecular_design_studio.bound_docking import is_bound_pose
+        if any(is_bound_pose(structure) for structure in detail["structures"]):
+            options.update({"OpenMM · bound pose": "ligand.md.openmm", "GROMACS · bound pose": "ligand.md.gromacs"})
         if any(row["type"] == "protein" for row in records[0]["components"]) and detail["structures"]:
             options.update({name + " · receptor": workflow + ":receptor" for name, workflow in [("AutoDock Vina", "ligand.docking.vina"), ("GNINA", "ligand.docking.gnina"), ("Uni-Dock Pro", "ligand.docking.unidock_pro"), ("RosettaLigand", "ligand.docking.rosetta_ligand")]})
     if not options:

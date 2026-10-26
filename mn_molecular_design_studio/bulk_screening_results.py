@@ -125,18 +125,35 @@ def publish_final_selection(run_dir, user, limit, *, database=None):
                                         "external_path": str(pose), "dimensions": 3}]
             records.append((row, rank, score, record))
         database = database or MolecularDatabase()
+        from mn_molecular_design_studio.bound_docking import screening_receptor, register_receptor
+        receptor = screening_receptor(run_dir, target) if any(record["files"] for _, _, _, record in records) else None
+        target_context = register_receptor(database, user, receptor, project_id=project,
+            name=str(target.get("target_name") or "Docking receptor")) if receptor else {}
         group_id = database.create_group(user, f"{graph.get('name') or run_dir.name} · Final shortlist",
             project_id=project, import_method="tool_output", origin=origin,
             group_id=_id("screening-final-", str(run_dir)))
         with database.connection() as connection:
             for row, rank, score, record in records:
                 source_key = f"{socket.gethostname()}/campaign/{run_dir.name}:final:{row.get('library_id')}:{row.get('compound_key', rank)}"
-                molecule_id = database._put(connection, group_id, record, source_key=source_key,
+                files = record["files"]
+                molecule_id = database._put(connection, group_id, {**record, "files": []}, source_key=source_key,
                     origin={**origin, "compound_id": row["compound_id"], "final_rank": rank}, stamp=stamp,
                     preserve_existing=True)
+                representation = None
+                for item in files:
+                    path = database._store_file(item["name"], item["content"])
+                    structure_context = {**origin, "compound_id": row["compound_id"], "final_rank": rank,
+                        **{key: value for key, value in item.items() if key not in {"name", "content", "label"}},
+                        **target_context, "database_structure_policy": "best_docking_pose"}
+                    existing = connection.execute("SELECT id FROM molecule_structures WHERE molecule_id=? AND group_id=? AND path=? "
+                        "AND json_extract(context,'$.run_id')=? AND json_extract(context,'$.compound_id')=?",
+                        (molecule_id, group_id, str(path), run_dir.name, row["compound_id"])).fetchone()
+                    representation = existing[0] if existing else _id("structure-", _json([molecule_id, group_id, str(path), structure_context]))
+                    connection.execute("INSERT INTO molecule_structures VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET context=excluded.context", (
+                        representation, molecule_id, group_id, str(path), item["label"], path.suffix.lstrip("."), _json(structure_context), stamp))
                 context = {**origin, "compound_id": row["compound_id"], "units": units,
                            "primary_ranking_metric": field, "ranking_direction": direction,
-                           "target_path": target.get("target_pdb"), "settings": docking,
+                           **target_context, "representation_id": representation, "settings": docking,
                            "best_round": row.get("best_round"), "first_round": row.get("first_round")}
                 observation_id = _id("score-", source_key)
                 connection.execute("INSERT INTO molecule_observations VALUES (?,?,?,?,?,?,?,?) "
@@ -147,7 +164,8 @@ def publish_final_selection(run_dir, user, limit, *, database=None):
     selection = {"requested_limit": limit, "imported_count": imported, "group_id": group_id,
                  "maximum_import": MAX_FINAL_IMPORT, "ranking": "final cumulative docking scores"}
     files = {name: str(path) for name in ("docking_scores.parquet", "failed_compounds.parquet", "round_history.json",
-             "retained_poses.json", "model.pt") if (path := data / name).is_file()}
+             "score_convergence.json", "receptor.pdb", "retained_poses.json", "additional_pose_archives.json", "model.pt")
+             if (path := data / name).is_file()}
     manifest = {"schema_version": "studio.external-screening-results.v1", "compound_count": count,
                 "database_collection_policy": "manual", "database_selection": selection, "files": files,
                 "screening_library_id": history.get("screening_library_id"),

@@ -14,6 +14,19 @@ node independently sets a Database shortlist of 0–1,000 final compounds; 0
 disables import. Physical pose retention is a separate setting. Results pages
 preview external data without importing it and offer bounded final promotion.
 
+Retained docking poses now link the compound to a separate protein record and
+one portable receptor snapshot in the actual docking coordinate frame (including
+axis alignment). The viewer composes these structures; compound identities stay
+single-compound records. The final shortlist retains its 1,000-member cap. The
+same receptor-linking policy applies to ordinary docking-result ingestion.
+
+Database details offer **Use this bound pose in MD** and **Prepare bound complex
+for export**. MD inputs stage a complex PDB and matching ligand SDF on demand,
+without creating a combined Database molecule or launching a simulation. The
+OpenMM/GROMACS setup remains editable before submission. PDBQT conversion uses
+the preparation's SMILES atom map, retaining docking protonation/tautomer state
+and heavy-atom coordinates; incomplete or ambiguous mappings are rejected.
+
 Standalone docking tiles expose **Automatically import compounds and results into
 Database**, enabled for ordinary small jobs. Turn it off for bulk screens.
 Restrictions survive job completion, refresh and forced reindexing.

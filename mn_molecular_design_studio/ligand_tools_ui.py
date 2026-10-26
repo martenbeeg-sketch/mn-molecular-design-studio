@@ -563,11 +563,18 @@ def render_setup(
         selected_set = next((item for item in compound_sets if str(item["group_id"]) == selected_group), None)
     elif uses_compound_set:
         st.info("Import a compound set from CSV, TSV, SMI, or SDF in Database before starting this tile.")
+    pending_md = st.session_state.get("database-pending-md-selection") or {}
+    database_md = pending_md if is_md and pending_md.get("workflow") == workflow_id else None
+    if database_md:
+        st.info(f"Database bound pose: {database_md['name']}. The saved target and docked ligand coordinates are prefilled.")
+        if st.button("Use uploaded MD inputs instead", key=f"database-md-clear-{workflow_id}"):
+            st.session_state.pop("database-pending-md-selection", None)
+            st.rerun()
     uploaded = st.file_uploader(
         "Protein–ligand complex (PDB) *" if is_md else "Target protein structure (PDB) *",
         type=["pdb", "ent"],
         key=f"ligand-tool-target-{workflow_id}",
-    )
+    ) if not database_md else None
     if uploaded is not None and (is_autodock_gpu or is_nesso):
         try:
             checked_target = _save_target_upload(owner_id, uploaded.name, uploaded.getvalue())
@@ -582,14 +589,17 @@ def render_setup(
     bound_ligands: list[dict[str, Any]] = []
     saved_complex: Path | None = None
     selected_ligand_key = ""
-    if is_md and uploaded:
+    if is_md and (uploaded or database_md):
         try:
-            saved_complex = _save_target_upload(owner_id, uploaded.name, uploaded.getvalue())
+            saved_complex = Path(database_md["complex_pdb"]) if database_md else _save_target_upload(owner_id, uploaded.name, uploaded.getvalue())
             bound_ligands = ligand_tools.bound_ligand_choices(saved_complex)
             if bound_ligands:
+                keys = [str(item["key"]) for item in bound_ligands]
+                preferred = database_md.get("ligand_key") if database_md else None
                 selected_ligand_key = st.selectbox(
                     "Bound ligand residue *",
-                    [str(item["key"]) for item in bound_ligands],
+                    keys,
+                    index=keys.index(preferred) if preferred in keys else 0,
                     format_func=lambda key: next(
                         f"{item['resname']} · chain {item['chain']} · residue {item['resseq']} · {item['heavy_atom_count']} heavy atoms"
                         for item in bound_ligands if item["key"] == key
@@ -604,7 +614,7 @@ def render_setup(
         "Matching bound-ligand coordinates (SDF) *",
         type=["sdf"],
         key=f"ligand-tool-md-ligand-{workflow_id}",
-    ) if is_md else None
+    ) if is_md and not database_md else None
     uploaded_pocket = st.file_uploader(
         "Pocket-only structure (PDB) *" if needs_pocket else "Pocket-only structure (PDB, optional)",
         type=["pdb", "ent"],
@@ -909,12 +919,12 @@ def render_setup(
             parameters["engine_settings"] = engine_settings
     disabled = (
         not project_id
-        or not uploaded
+        or not (uploaded or database_md)
         or (uses_compound_set and not selected_set)
         or (needs_pocket and not uploaded_pocket)
         or (needs_reference and not uploaded_reference)
         or (is_pgmg and not uploaded_pharmacophore)
-        or (is_md and (not uploaded_md_ligand or not selected_ligand_key))
+        or (is_md and (not (uploaded_md_ligand or database_md) or not selected_ligand_key))
         or (is_gromacs and ligand_tools.gromacs_md_runner_readiness()["ready"] is False)
         or (is_openmm and ligand_tools.openmm_md_runner_readiness()["ready"] is False)
         or (is_rosetta and ligand_tools.rosettaligand_runner_readiness()["ready"] is False)
@@ -928,7 +938,7 @@ def render_setup(
             if is_md:
                 target_path = saved_complex or _save_target_upload(owner_id, uploaded.name, uploaded.getvalue())
                 parameters.update({"complex_pdb": str(target_path)})
-                ligand_path = _save_reference_ligand_upload(owner_id, uploaded_md_ligand.name, uploaded_md_ligand.getvalue())
+                ligand_path = Path(database_md["ligand_sdf"]) if database_md else _save_reference_ligand_upload(owner_id, uploaded_md_ligand.name, uploaded_md_ligand.getvalue())
                 parameters.update({"ligand_sdf": str(ligand_path)})
             else:
                 target_path = _save_target_upload(owner_id, uploaded.name, uploaded.getvalue())

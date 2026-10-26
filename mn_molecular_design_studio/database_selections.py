@@ -125,6 +125,11 @@ def open_in_tool(database, user, ids, workflow, project_id):
     import streamlit as st
     from mn_molecular_design_studio.auth import require_project_access
     require_project_access(user, project_id)
+    if workflow in {"ligand.md.openmm", "ligand.md.gromacs"}:
+        if len(ids) != 1:
+            raise ValueError("Select one bound docking pose for MD.")
+        open_bound_pose_in_md(database, user, ids[0], workflow, project_id)
+        return
     rows = database.molecules_by_ids(user, ids)
     if workflow == "pipeline":
         open_in_pipeline(database, user, ids, project_id)
@@ -195,4 +200,19 @@ def open_in_tool(database, user, ids, workflow, project_id):
         st.session_state.pop("selected_workflow_engine", None)
         st.session_state.setdefault("project-pending-selection", {})[f"ligand-tool-{workflow}-project-id"] = project_id
     st.session_state.pop("selected_workflow_group", None)
+    st.session_state["page"] = "Workflow setup"
+
+
+def open_bound_pose_in_md(database, user, molecule_id, workflow, project_id, *, structure_id=None):
+    import streamlit as st
+    from mn_molecular_design_studio.auth import require_project_access
+    from mn_molecular_design_studio.bound_docking import prepare_bound_inputs
+    if workflow not in {"ligand.md.openmm", "ligand.md.gromacs"}:
+        raise ValueError("Choose OpenMM or GROMACS for bound-pose MD.")
+    require_project_access(user, project_id)
+    prepared = prepare_bound_inputs(database, user, molecule_id, structure_id=structure_id)
+    st.session_state["database-pending-md-selection"] = {**prepared, "workflow": workflow, "project_id": project_id}
+    st.session_state.setdefault("project-pending-selection", {})[f"ligand-tool-{workflow}-project-id"] = project_id
+    st.session_state["selected_workflow"] = workflow
+    st.session_state.pop("selected_workflow_engine", None)
     st.session_state["page"] = "Workflow setup"

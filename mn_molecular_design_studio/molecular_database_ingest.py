@@ -989,6 +989,13 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                "settings": params, "units": (result.get("metrics") or {}).get("score_units"),
                "primary_ranking_metric": (result.get("metrics") or {}).get("primary_ranking_metric"),
                "ranking_direction": (result.get("metrics") or {}).get("ranking_direction")}
+    if target_path and (run_dir / "artifacts/docking_scores.csv").is_file():
+        from mn_molecular_design_studio.bound_docking import register_receptor
+        try:
+            context.update(register_receptor(database, user, target_path, project_id=project,
+                name=str((target_record or {}).get("name") or "Docking receptor")))
+        except (ValueError, OSError) as exc:
+            log.info("Could not retain docking receptor snapshot for %s: %s", run_dir, exc)
     target_context_by_attempt = {}
     if is_legacy_aggregate:
         replicate_root = run_dir / "artifacts" / "replicates"

@@ -213,7 +213,7 @@ def capture(replica, *, database=None, node_id=None):
                 for row in connection.execute("SELECT * FROM molecule_structures WHERE group_id=? AND molecule_id=?", (group["id"], member["molecule_id"])):
                     context = json.loads(row["context"])
                     target_path = context.pop("target_path", None)
-                    if target_path:
+                    if target_path and not context.get("target_structure_id"):
                         target = connection.execute("SELECT id FROM molecule_structures WHERE path=? LIMIT 1", (target_path,)).fetchone()
                         if target:
                             context["target_structure_id"] = target[0]
