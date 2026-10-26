@@ -81,6 +81,7 @@ class MolecularDatabase:
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS molecular_structure_lookup ON molecule_structures(molecule_id,group_id);
+            CREATE INDEX IF NOT EXISTS molecular_structure_path ON molecule_structures(path);
             CREATE TABLE IF NOT EXISTS molecule_observations (
                 id TEXT PRIMARY KEY, molecule_id TEXT NOT NULL REFERENCES molecules(id),
                 group_id TEXT NOT NULL REFERENCES molecule_groups(id), namespace TEXT NOT NULL,

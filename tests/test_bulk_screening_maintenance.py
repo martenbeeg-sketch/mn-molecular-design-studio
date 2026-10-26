@@ -8,6 +8,13 @@ from mn_molecular_design_studio.molecular_database import MolecularDatabase
 USER = {"id": "a" * 32, "role": "admin"}
 
 
+def test_replication_target_path_lookup_uses_an_index(tmp_path):
+    db = MolecularDatabase(tmp_path / "db")
+    with db.connection() as c:
+        plan = c.execute("EXPLAIN QUERY PLAN SELECT id FROM molecule_structures WHERE path=? LIMIT 1", ("receptor.pdb",)).fetchall()
+    assert any("molecular_structure_path" in row[3] for row in plan)
+
+
 def test_bulk_cleanup_removes_orphan_tool_inputs_preserves_curated_and_other_runs(tmp_path):
     db = MolecularDatabase(tmp_path / "database")
     group = db.create_group(USER, "Tool inputs", import_method="tool_inputs",
