@@ -26,7 +26,7 @@ def run(request_path: Path) -> dict:
     # API process that normally sets these paths. Apply the machine's saved
     # workspace settings before create_job() chooses the run directory.
     ensure_studio_workspace()
-    params = dict(request.get("parameters") or {})
+    params = {**(request.get("parameters") or {}), "import_to_database": False}
     run_dir = enqueue_workflow_call(
         run_ligand_unidock_pro,
         task_group="ligand-docking",

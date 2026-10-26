@@ -179,6 +179,9 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
     monkeypatch.setattr(controller, "_cleanup_docking_artifacts", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(controller, "_save_score_table", lambda path, _rows: Path(path).write_text("fixture"))
     monkeypatch.setattr(controller, "_save_failed_compound_table", lambda path, _rows: Path(path).write_text("fixture"))
+    from mn_molecular_design_studio import bulk_screening_results
+    monkeypatch.setattr(bulk_screening_results, "publish_final_selection",
+                        lambda *args, **kwargs: {"imported_count": 0, "requested_limit": 0, "group_id": None})
 
     from mn_molecular_design_studio import workspace
     from mn_molecular_design_studio.engine.workflow_engine.workflows import ligand_tools

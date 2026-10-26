@@ -375,6 +375,7 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                 with columns[index % 3]:
                     values[name] = _render_field(field_spec, values, key)
         elif kind == "active_docking":
+            st.info("Intermediate compounds and scores stay in external job files. Database import is disabled for every active-learning batch on every computer. Set the optional final shortlist in Final results.")
             _render_connection_card(node, graph)
             engine_field = next(field for field in spec["fields"] if field["name"] == "engine")
             previous_engine = values.get("engine", "UniDock Pro")

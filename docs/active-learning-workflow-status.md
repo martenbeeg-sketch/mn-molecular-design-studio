@@ -1,5 +1,28 @@
 # Active-learning docking workflow
 
+## Bulk results and Database import
+
+Campaign, docking-batch and model jobs persist a manual Database collection policy
+before dispatch, including SSH workers. Intermediate compound inputs, scores and
+poses are never automatically indexed as molecular records. Job progress,
+original library references and output locations remain in Studio's catalog.
+
+The full ranking stays in `artifacts/active_learning/docking_scores.parquet`
+(original ID, name, SMILES, score, rank, rounds and worker provenance). Failures,
+round history, models and retained poses also stay external. The Final results
+node independently sets a Database shortlist of 0–1,000 final compounds; 0
+disables import. Physical pose retention is a separate setting. Results pages
+preview external data without importing it and offer bounded final promotion.
+
+Standalone docking tiles expose **Automatically import compounds and results into
+Database**, enabled for ordinary small jobs. Turn it off for bulk screens.
+Restrictions survive job completion, refresh and forced reindexing.
+
+`bulk_screening_maintenance.remove_automatic_bulk_records` removes accidental
+past imports using explicit job references. Back up the Database and archive extra
+portable poses first; this adapter never deletes files. Curated selections and
+unrelated job relations survive. Publish replica tombstones before resuming sync.
+
 ## Current implementation
 
 The active-learning canvas now submits a scheduled campaign job through Studio's normal workflow queue. The controller runs the editable graph as a round-based workflow and writes node/worker progress to `graph_execution.json` for the pipeline dialog.

@@ -11,11 +11,27 @@ import json
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
+from functools import wraps
+import inspect
 
 _MODES = {"automatic": 0, "manual": 1, "none": 2}
 _CURRENT = ContextVar("studio_database_collection_policy", default=None)
 POLICY_KEY = "database_collection_policy"
 PARENT_KEY = "database_collection_parent"
+
+
+def controlled_import(function):
+    """Apply a docking tile's import choice to synchronous/direct execution too."""
+    signature = inspect.signature(function)
+
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        enabled = signature.bind_partial(*args, **kwargs).arguments.get("import_to_database", True)
+        if type(enabled) is not bool:
+            raise ValueError("Import into Database must be true or false.")
+        with collection_scope("automatic" if enabled else "manual"):
+            return function(*args, **kwargs)
+    return wrapped
 
 
 def validate_policy(mode):

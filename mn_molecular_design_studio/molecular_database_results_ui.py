@@ -170,6 +170,9 @@ def _project_picker(projects: list[dict], run_key: str, default_project: str = "
 def render_run_database_actions(run_dir, user: dict, projects: list[dict]) -> None:
     """Render selective promotion and database navigation for a local run."""
     run_path = Path(run_dir).expanduser().resolve()
+    if (run_path / "artifacts/active_learning/docking_scores.parquet").is_file():
+        _render_external_screening_results(run_path, user)
+        return
     try:
         from mn_molecular_design_studio.molecular_database_results import list_run_molecules, save_run_selection
 
@@ -349,3 +352,45 @@ def render_run_database_actions(run_dir, user: dict, projects: list[dict]) -> No
         st.session_state["molecular-preselect-molecule"] = selected_ids[0] if selected_ids else ids[0]
         st.session_state["page"] = "Database"
         st.rerun()
+
+
+def _render_external_screening_results(run_path, user):
+    """Preview external bulk tables without ingesting their molecular records."""
+    from mn_molecular_design_studio.bulk_screening_results import external_results, import_final_results
+    try:
+        result = external_results(run_path, user)
+    except (PermissionError, FileNotFoundError):
+        return
+    if result is None:
+        return
+    key = "external-screening-" + hashlib.sha1(str(run_path).encode()).hexdigest()[:12]
+    with st.expander("External screening results and final Database shortlist", expanded=True):
+        selection = result["selection"]
+        st.caption(f"{result['compound_count']:,} scored compounds remain in external Parquet files. "
+                   f"{selection.get('imported_count', 0):,} final compounds imported into Database.")
+        st.code(result["scores_path"], language=None)
+        for name, path in result["files"].items():
+            if name != "docking_scores.parquet":
+                st.caption(f"{name}: {path}")
+        columns = ("compound_id", "name", "smiles", "score", "best_score", "first_round", "best_round", "pose_path")
+        st.dataframe([{k: v for k, v in row.items() if k in columns} for row in result["rows"]],
+                     hide_index=True, use_container_width=True)
+        st.caption("Preview: first 100 compounds in the final ranking. The complete table retains all scored compounds for later investigation.")
+        if selection.get("group_id") and st.button("Open final shortlist in Database", key=key + "-open"):
+            st.session_state["molecular-preselect-group"] = selection["group_id"]
+            st.session_state["molecular-preselect-collection"] = "library"
+            st.session_state["molecular-hide-smoke-test-groups"] = False
+            st.session_state["page"] = "Database"
+            st.rerun()
+        if selection.get("error"):
+            st.warning("The optional final Database import failed: " + str(selection["error"]))
+        count = int(st.number_input("Final top-ranked compounds to import (0 = none)", min_value=0,
+                                   max_value=1000, value=1000, step=100, key=key + "-count"))
+        st.caption("Only the completed final ranking is eligible. Repeating an import reuses the same shortlist and preserves annotations.")
+        if st.button("Import final shortlist into Database", key=key + "-import", disabled=count == 0):
+            try:
+                imported = import_final_results(run_path, user, count)
+                st.success(f"Final shortlist: {imported['imported_count']:,} compounds in Database. Full results remain external.")
+                st.rerun()
+            except (ValueError, OSError, PermissionError) as exc:
+                st.error(str(exc))

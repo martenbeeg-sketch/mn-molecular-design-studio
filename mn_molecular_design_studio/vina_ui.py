@@ -1408,6 +1408,12 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
                         parameters["compound_workers"] = compound_workers
                     if is_unidock:
                         parameters.update(cleanup_preparation=cleanup_preparation, retained_pose_count=retained_pose_count)
+                import_to_database = st.checkbox(
+                    "Automatically import compounds and results into Database", value=True,
+                    key=f"ligand-{tool_key}-import-to-database",
+                    help="Turn off for large screens. Inputs, scores and poses remain in this job's external files; only the job and file locations are registered in Studio.",
+                )
+                parameters["import_to_database"] = import_to_database
         with st.container(key="vina-example"):
             st.button("Load example inputs", on_click=_load_example,
                 kwargs={"owner_id": owner_id, "project_id": str(project_id or ""), "job_name_key": job_name_key, "example_job_name": example_names[tool_key]},

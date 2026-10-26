@@ -1035,7 +1035,10 @@ def submit_workflow_request(request_file: str | Path) -> dict[str, Any]:
     parameters, function, cpu_cores, resource_gpu = _prepare_selection(spec, payload, request_path)
 
     from mn_molecular_design_studio.collection_policy import collection_scope
-    with submission_priority(priority), collection_scope("manual" if workflow_id in {"library.prepare", "library.centroids", "library.seed_dock"} else "automatic"):
+    items = parameters if isinstance(parameters, list) else [parameters]
+    external_only = workflow_id in {"library.prepare", "library.centroids", "library.seed_dock"} or any(
+        item.get("import_to_database") is False for item in items)
+    with submission_priority(priority), collection_scope("manual" if external_only else "automatic"):
         if isinstance(parameters, list):
             from mn_molecular_design_studio.engine.workflow_engine.workflows.input_batch import run_input_batch
             run_dir = enqueue_workflow_call(

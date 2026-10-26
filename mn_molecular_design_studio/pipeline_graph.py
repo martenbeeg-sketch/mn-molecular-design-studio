@@ -206,7 +206,7 @@ NODE_CATALOG.update({
         field("ssh_user", "SSH user", "compute", kind="text", section="basic"),
     ]),
     "active_accumulate": _spec("active_accumulate", "Accumulate docking results", "Active learning", "Merge every completed docking round, keep the best configured score per source library and stable compound ID, and sort the cumulative table using the docking node's ranking direction. Source namespaces preserve distinct compounds when two libraries reuse an ID. Snapshot the top ranks for comparison with the previous cumulative ranking. Keep poses only for the best-ranked compounds.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#668d75", fields=[
-        field("retained_pose_count", "Best poses kept for Database", 1000, minimum=0, maximum=1000000, section="basic"),
+        field("retained_pose_count", "Best pose files retained externally", 1000, minimum=0, maximum=1000000, section="basic", help="Physical pose files kept in the campaign folder. This does not import compounds into Database; set that separately in Final results."),
     ]),
     "active_binder_rule": _spec("active_binder_rule", "Binder labeling rule", "Active learning", "Recalculate binder labels on the cumulative docked dataset before each training round. Change the binder percentage logarithmically from the starting percentage to the final percentage across the selected rounds; keep the final percentage afterwards. Label the best-scoring percentage using the ranking direction declared by the docking node.", accepts=[_ACTIVE_STATE], output=_ACTIVE_STATE, color="#668d75", fields=[
         field("binder_percent_start", "Starting binder percentage", 10.0, minimum=0.001, maximum=100, section="basic"),
@@ -232,7 +232,11 @@ NODE_CATALOG.update({
         field("stable_rounds", "Stable rounds before stopping", 3, minimum=1, maximum=100, section="basic"),
         field("max_iterations", "Maximum iterations (0 = unlimited)", 0, minimum=0, maximum=100000, section="basic"),
     ]),
-    "active_results": _spec("active_results", "Active learning results", "Results", "Scores, selected compounds, model checkpoints, iteration history and retained poses are collected in this run and linked to their original compound IDs in the Studio Database.", output=None, accepts=[_ACTIVE_STATE], color="#427f68", formats=()),
+    "active_results": _spec("active_results", "Active learning results", "Results", "All compound scores, IDs, SMILES, round history, models and retained poses stay in external campaign files. Intermediate rounds never import compound records into Database. Optionally import a bounded selection from the final cumulative ranking after the loop stops.", output=None, accepts=[_ACTIVE_STATE], color="#427f68", formats=(), fields=[
+        field("final_database_import_limit", "Final compounds imported into Database (0 = none)", 1000,
+              minimum=0, maximum=1000, section="basic",
+              help="Import only this many top-ranked final compounds, with scores, original IDs and available retained poses. All other results remain linked as external Parquet files, never as individual Database rows."),
+    ]),
 })
 NODE_CATALOG["active_docking"]["inputs"][0]["multiple"] = True
 NODE_CATALOG["active_predict"]["inputs"][0]["multiple"] = True

@@ -92,6 +92,8 @@ class MolecularDatabase:
                 source_key TEXT PRIMARY KEY, molecule_id TEXT NOT NULL REFERENCES molecules(id),
                 group_id TEXT NOT NULL REFERENCES molecule_groups(id), provenance TEXT NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS molecular_source_lookup ON molecule_sources(molecule_id,group_id);
+            CREATE INDEX IF NOT EXISTS molecular_observation_lookup ON molecule_observations(molecule_id,group_id);
             CREATE TABLE IF NOT EXISTS molecular_ingestions (
                 source_key TEXT PRIMARY KEY, signature TEXT NOT NULL, updated_at TEXT NOT NULL
             );
@@ -127,6 +129,7 @@ class MolecularDatabase:
                 PRIMARY KEY(batch_id,row_number)
             );
             CREATE INDEX IF NOT EXISTS molecular_import_rows_status ON molecule_import_rows(batch_id,status,row_number);
+            CREATE INDEX IF NOT EXISTS molecular_import_rows_molecule ON molecule_import_rows(molecule_id);
             CREATE TABLE IF NOT EXISTS external_library_records (
                 id TEXT PRIMARY KEY, record_json TEXT NOT NULL,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL

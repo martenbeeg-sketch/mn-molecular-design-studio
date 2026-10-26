@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from mn_molecular_design_studio.active_learning_settings import ActiveLearningSettings
+from mn_molecular_design_studio.collection_policy import collection_scope, set_run_policy
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import (
     create_job, finish_job, read_json, update_status, utc_now, write_json,
 )
@@ -267,7 +268,7 @@ def _dispatch_docking_shard(*, request: dict, worker: dict, campaign: Path,
     from mn_molecular_design_studio.workspace import mark_studio_job
 
     if worker["local"]:
-        parameters = {key: value for key, value in request["parameters"].items()}
+        parameters = {**request["parameters"], "import_to_database": False}
         run_dir = enqueue_workflow_call(
             run_ligand_unidock_pro, task_group="ligand-docking", tool="unidock_pro",
             job_type="ligand_docking", kwargs=parameters,
@@ -294,7 +295,7 @@ def _dispatch_docking_shard(*, request: dict, worker: dict, campaign: Path,
     local_request = local_dir / f"{worker['node_id']}.request.json"
     local_request.write_text(json.dumps({
         "schema_version": _DOCKING_WORKER_SCHEMA,
-        "parameters": request["parameters"], "round_number": request["round_number"],
+        "parameters": {**request["parameters"], "import_to_database": False}, "round_number": request["round_number"],
         "parent_run_dir": str(campaign), "owner_id": request["owner_id"], "project_id": request["project_id"],
         "node_id": worker["node_id"], "node_name": worker["node_name"],
     }, indent=2) + "\n", encoding="utf-8")
@@ -675,10 +676,11 @@ def _queue_model_step(*, campaign: Path, feature_manifest: Path, database: Path,
         "screening_library_id": str(screening_library_id), "selection_seed": int(selection_seed),
         "cpu_cores": cpu_cores, "gpu_device": gpu_device,
     }
-    run_dir = enqueue_workflow_call(
-        run_active_learning_model_step, task_group="campaign", tool="active_learning_model",
-        job_type="active_learning_model", kwargs=kwargs, cpu_cores=cpu_cores, gpu_device=gpu_device,
-    )
+    with collection_scope("manual"):
+        run_dir = enqueue_workflow_call(
+            run_active_learning_model_step, task_group="campaign", tool="active_learning_model",
+            job_type="active_learning_model", kwargs=kwargs, cpu_cores=cpu_cores, gpu_device=gpu_device,
+        )
     from mn_molecular_design_studio.workspace import mark_studio_job
     marker = read_json(campaign / "molecular_design_studio.json")
     mark_studio_job({"job": {"run_dir": str(run_dir)}}, owner_id=str(marker.get("studio_owner_id") or ""),
@@ -712,10 +714,12 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
     from mn_molecular_design_studio.engine.workflow_engine.workflows.ligand_tools import validate_target_pdb
     from mn_molecular_design_studio.workspace import mark_studio_job
 
-    job = create_job("campaign", "visual_pipeline", "visual_pipeline", {},
-                     {"pipeline_name": pipeline_name, "graph": graph, "reuse_completed": False,
-                      "template_id": graph["template_id"], "active_learning": True})
+    with collection_scope("manual"):
+        job = create_job("campaign", "visual_pipeline", "visual_pipeline", {},
+                         {"pipeline_name": pipeline_name, "graph": graph, "reuse_completed": False,
+                          "template_id": graph["template_id"], "active_learning": True})
     campaign = job.run_dir
+    set_run_policy(campaign, "manual")
     mark_studio_job({"job": {"run_dir": str(campaign)}}, owner_id=owner_id, project_id=project_id)
     graph_path = campaign / "graph_snapshot.json"
     if graph_path.exists() and read_json(graph_path) != graph:
@@ -994,6 +998,19 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                                   "centroid_library_id": seed_node["library_id"],
                                   "centroid_manifest": str(features["centroid_manifest"]),
                                   "retained_poses": pose_paths})
+        from mn_molecular_design_studio.bulk_screening_results import publish_final_selection
+        import_limit = int(params["active_results"].get("final_database_import_limit", 1000))
+        try:
+            selection = publish_final_selection(campaign, {"id": owner_id, "role": "admin"}, import_limit)
+        except Exception as exc:
+            # Scientific outputs remain usable if the optional shortlist import fails.
+            selection = publish_final_selection(campaign, {"id": owner_id, "role": "admin"}, 0)
+            manifest_path = data_root / "external_results.json"
+            external_manifest = read_json(manifest_path)
+            selection.update(requested_limit=import_limit, error=f"{type(exc).__name__}: {exc}")
+            external_manifest["database_selection"] = selection
+            write_json(manifest_path, external_manifest)
+        state["database_selection"] = selection
         state["status"] = "completed"
         checkpoint()
         for kind in ("active_binder_rule", "active_train", "active_predict", "active_select"):
@@ -1007,7 +1024,8 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
         # The packed fingerprints are needed during model fitting, but the
         # compact final score table and model checkpoint are the durable outputs.
         (data_root / "scores.sqlite3").unlink(missing_ok=True)
-        outputs = {"docking_scores": "artifacts/active_learning/docking_scores.parquet",
+        outputs = {"external_results": "artifacts/active_learning/external_results.json",
+                   "docking_scores": "artifacts/active_learning/docking_scores.parquet",
                    "failed_compounds": "artifacts/active_learning/failed_compounds.parquet",
                    "round_history": "artifacts/active_learning/round_history.json",
                    "retained_poses": "artifacts/active_learning/retained_poses"}
@@ -1022,6 +1040,8 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
             "outputs": outputs,
             "metrics": {"round_count": len(state["rounds"]), "unique_docked_compounds": len(ranked),
                         "failed_compounds": len(failures),
+                        "database_imported_compounds": selection["imported_count"],
+                        "database_import_error": selection.get("error"),
                         "best_compound_id": ranked[0]["compound_id"] if ranked else "",
                         "best_score": ranked[0]["best_score"] if ranked else None,
                         "stop_reason": state.get("stop_reason"), "score_field": score_field,

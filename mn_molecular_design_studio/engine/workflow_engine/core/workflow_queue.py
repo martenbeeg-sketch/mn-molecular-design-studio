@@ -142,13 +142,16 @@ def enqueue_workflow_call(
     params["cpu_cores"] = int(requested_cores)
     params["gpu_device"] = normalized_gpu
     input_payload = {key: value for key, value in call_kwargs.items() if key in _INPUT_KEYS}
-    job = create_job(
-        task_group,
-        job_type,
-        tool,
-        {key: _json_value(value) for key, value in input_payload.items()},
-        params,
-    )
+    from mn_molecular_design_studio.collection_policy import collection_scope
+    import_to_database = call_kwargs.get("import_to_database", True)
+    if type(import_to_database) is not bool:
+        raise ValueError("Import into Database must be true or false.")
+    # Restrict at creation, before a worker or a UI refresh can collect the job.
+    with collection_scope("automatic" if import_to_database else "manual"):
+        job = create_job(
+            task_group, job_type, tool,
+            {key: _json_value(value) for key, value in input_payload.items()}, params,
+        )
     metadata = read_json(job.run_dir / "metadata.json")
     metadata["resource_request"] = {"cpu_cores": int(requested_cores)}
     write_json(job.run_dir / "metadata.json", metadata)
