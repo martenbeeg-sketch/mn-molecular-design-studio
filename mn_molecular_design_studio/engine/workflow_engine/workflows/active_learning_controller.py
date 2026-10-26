@@ -1301,12 +1301,14 @@ def run_active_learning_model_step(campaign_dir: str, feature_manifest: str,
     import torch
     from mn_molecular_design_studio.external_libraries import iter_feature_batches, read_feature_manifest
 
-    job = create_job("campaign", "active_learning_model", "active_learning_model",
-                     {"feature_manifest": feature_manifest, "scores_database": scores_database},
-                     {"round_number": round_number, "binder_percent": binder_percent, "hidden_nodes": hidden_nodes,
-                      "dropout": dropout, "epochs": epochs, "training_batch_size": training_batch_size,
-                      "prediction_batch_size": prediction_batch_size, "cpu_cores": cpu_cores, "gpu_device": gpu_device})
+    with collection_scope("manual"):
+        job = create_job("campaign", "active_learning_model", "active_learning_model",
+                         {"feature_manifest": feature_manifest, "scores_database": scores_database},
+                         {"round_number": round_number, "binder_percent": binder_percent, "hidden_nodes": hidden_nodes,
+                          "dropout": dropout, "epochs": epochs, "training_batch_size": training_batch_size,
+                          "prediction_batch_size": prediction_batch_size, "cpu_cores": cpu_cores, "gpu_device": gpu_device})
     work_dir = job.run_dir
+    set_run_policy(work_dir, "manual")
     try:
         update_status(work_dir, "running", current_phase="Preparing cumulative OpenVS training data")
         score_db = sqlite3.connect(f"file:{Path(scores_database).resolve()}?mode=ro", uri=True)

@@ -64,6 +64,7 @@ class Replica:
                     key TEXT PRIMARY KEY, kind TEXT NOT NULL, author TEXT NOT NULL,
                     counter INTEGER NOT NULL, value TEXT NOT NULL, seq INTEGER NOT NULL);
                 CREATE INDEX IF NOT EXISTS records_sequence ON records(seq);
+                CREATE INDEX IF NOT EXISTS records_counter ON records(counter);
                 CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS conflicts (key TEXT PRIMARY KEY, record TEXT NOT NULL, error TEXT NOT NULL);
             """)
