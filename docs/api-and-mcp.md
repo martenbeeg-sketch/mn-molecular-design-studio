@@ -270,6 +270,8 @@ not enroll a new trusted peer or generate credentials.
 The MCP adapter now defines 41 named tools. Other public operations continue to
 be discoverable through `studio_operations` / `studio_operation_schema` and
 callable through `studio_api_request`. These extensions do not build the student
-frontend, register an LLM client, add OAuth/SSO or add per-user quotas. The initial
-pytest results above predate these extensions; pytest has not been rerun for this
-change.
+frontend, register an LLM client, add OAuth/SSO or add per-user quotas.
+
+The subsequent full pytest run, including 25 new API/MCP cases, finished with
+**1,334 passed, 15 skipped, zero failures/errors** in 107.88 seconds. See the
+[full verification report](api-mcp-pytest-20261026.md) for scope, fixes and skips.

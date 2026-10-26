@@ -186,13 +186,18 @@ def test_rf3_receives_redesigned_sequence_and_exact_ligand_graph(ligand_candidat
     assert text.count('HETATM') == 2 and 'CONECT   10   11   11' in text
 
 
-def test_ligand_prediction_adapters_accept_only_supported_chemistry(ligand_candidate, monkeypatch):
+@pytest.mark.parametrize("with_run_dir", [False, True])
+def test_ligand_prediction_adapters_accept_only_supported_chemistry(ligand_candidate, monkeypatch, tmp_path, with_run_dir):
     source = {'target': {'pipeline_task': 'ligand_binder'}}
+    if with_run_dir:
+        source['run_dir'] = str(tmp_path)
     monkeypatch.setattr(runner, '_absolute_candidates', lambda _: [ligand_candidate])
     params = {f['name']: f['default'] for f in graph.NODE_CATALOG['boltz2']['fields']}
     request = runner.node_request('boltz2', params, source, 'ligand-test')
     assert request['parameters']['tasks'][0]['ligand_ccd_codes'] == 'IAI'
     assert request['parameters']['tasks'][0]['binder_sequence'] == 'G'
+    assert request['parameters']['target_use_msa'] is False
+    assert request['parameters']['engine_options']['use_msa'] is False
     automation._validate_workflow_inputs(automation.WORKFLOWS[request['workflow']], request['parameters'])
     ligand_candidate['raw_metadata']['ligand_original_code'] = 'L:1'
     with pytest.raises(ValueError, match='custom ligand fragment'):

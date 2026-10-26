@@ -161,9 +161,21 @@ def test_job_creation_persists_collection_scope(tmp_path, monkeypatch):
     assert policy_for_run(job.run_dir) == "manual"
 
 
-def test_complete_workflow_keeps_bulk_products_external(library, tmp_path):
+def test_complete_workflow_keeps_bulk_products_external(library, tmp_path, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.workflows.library_preparation import run_library_preparation
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+    from mn_molecular_design_studio.cluster import distributed_library
+    # Exercise the real fingerprint products without needing a live scheduler
+    # or starting a second scientific worker process in this contract test.
+    monkeypatch.setattr(distributed_library, "_node_specs", lambda workers, **kwargs: [
+        {**worker, "name": "test-local", "local": True} for worker in workers])
+    def prepare_locally(record, output, workers, **kwargs):
+        # The distributed writer accepts the empty directory staged by the
+        # workflow; the serial writer creates that directory itself.
+        output.rmdir()
+        return prepare_fingerprints(record, output), None, None
+
+    monkeypatch.setattr(distributed_library, "prepare_distributed_fingerprints", prepare_locally)
     _, record = library
     path = run_library_preparation([Path(record["sources"][0]["path"])], "From tile", str(tmp_path / "prepared"), id_column="vendor", smiles_column="structure")
     assert read_json(path / "result.json")["success"]
@@ -174,6 +186,21 @@ def test_complete_workflow_keeps_bulk_products_external(library, tmp_path):
     assert (tmp_path / "prepared/fingerprints/manifest.json").is_file()
     with LibraryCatalog().database.connection() as connection:
         assert connection.execute("SELECT COUNT(*) FROM molecules").fetchone()[0] == 0
+
+
+def test_standalone_fingerprint_worker_uses_local_scheduler_without_enrollment(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.cluster import config, distributed_library
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
+    config.save({"mode": "disabled", "name": "standalone"})
+    monkeypatch.setattr(distributed_library, "_live_local_resources", lambda: (
+        True, True, {"cpu_free": 6, "cpu_total": 8}))
+    workers = distributed_library._node_specs([{"node_id": config.identity(), "cpu_cores": 4}])
+    assert len(workers) == 1 and workers[0]["local"] and workers[0]["cpu_cores"] == 4
+    with pytest.raises(ValueError, match="registered"):
+        distributed_library._node_specs([{"node_id": "unregistered-remote", "cpu_cores": 4}])
+    monkeypatch.setattr(distributed_library, "_live_local_resources", lambda: (False, True, {}))
+    with pytest.raises(ValueError, match="scheduler"):
+        distributed_library._node_specs([{"node_id": config.identity(), "cpu_cores": 4}])
 
 
 def test_tile_queues_studio_workflow(library, tmp_path):

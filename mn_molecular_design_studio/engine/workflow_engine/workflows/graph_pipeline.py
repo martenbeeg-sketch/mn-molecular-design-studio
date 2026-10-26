@@ -311,13 +311,29 @@ def _optimized_prediction_tasks(engine: str, source: dict, params: dict) -> list
             sequence_file=task_input.get("sequence_file"),
         )
 
-    run_dir = _path(source["run_dir"])
     rows = _absolute_candidates(source)
     if not rows:
         raise ValueError(f"{profile['label']} needs at least one connected candidate complex.")
     from mn_molecular_design_studio.batching import MAX_PREDICTION_ITEMS
     if len(rows) > MAX_PREDICTION_ITEMS:
         raise ValueError(f"{profile['label']} accepts up to {MAX_PREDICTION_ITEMS} candidate complexes per pipeline step; reduce the upstream selection.")
+    if engine == "boltz2" and source.get("target", {}).get("pipeline_task") in {"ligand_binder", "motif_ligand"}:
+        tasks = []
+        for candidate in rows:
+            code = (candidate.get("raw_metadata") or {}).get("ligand_original_code", "")
+            if not re.fullmatch(r"[A-Z0-9]{1,5}", code):
+                raise ValueError("Boltz-2 needs a CCD or SMILES ligand definition. This motif uses a custom ligand fragment; connect RosettaFold3 to preserve its input atom graph.")
+            if not candidate.get("binder_sequence"):
+                raise ValueError("The generated design has no binder sequence.")
+            task = {"name": candidate["candidate_id"], "binder_sequence": candidate["binder_sequence"],
+                    "ligand_ccd_codes": code, "compound_id": code, "compound_name": code,
+                    "molecule_chain_options": [{"id": "A", "use_msa": False}],
+                    "source_candidate_id": candidate["candidate_id"]}
+            if source.get("run_dir"):
+                task["source_run_dir"] = str(_path(source["run_dir"]))
+            tasks.append(task)
+        return tasks
+    run_dir = _path(source["run_dir"])
     tasks = []
     chain_ids = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
     for candidate in rows:
@@ -430,6 +446,9 @@ def _optimized_prediction_request(engine: str, params: dict, source: dict, name:
     msa_setting = "target_use_msa" if "target_use_msa" in params else "use_target_msa"
     if "use_msa" in option_keys:
         engine_options["use_msa"] = bool(params.get(msa_setting, True))
+    ligand_only = engine == "boltz2" and source.get("target", {}).get("pipeline_task") in {"ligand_binder", "motif_ligand"}
+    if ligand_only:
+        engine_options["use_msa"] = False
     if engine == "alphafold3":
         engine_options["model"] = params.get("model", "alphafold3")
     terms_accepted = bool(params.get("accept_alphafold3_terms", False))
@@ -447,7 +466,7 @@ def _optimized_prediction_request(engine: str, params: dict, source: dict, name:
             "tasks": _optimized_prediction_tasks(engine, source, params),
             "engine_options": engine_options,
             "use_target_template": bool(params.get("use_target_template", profile.get("requires_target_template", False))),
-            "target_use_msa": bool(params.get(msa_setting, True)),
+            "target_use_msa": False if ligand_only else bool(params.get(msa_setting, True)),
             "accept_alphafold3_terms": terms_accepted,
         },
     }
@@ -477,6 +496,8 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
     """Only allowlisted adapters can turn graph data into a workflow call."""
     workflow = NODE_CATALOG[kind]["workflow"]
     p = copy.deepcopy(params)
+    if kind == "af2" and source.get("target", {}).get("pipeline_task") in {"ligand_binder", "motif_ligand"}:
+        raise ValueError("AlphaFold2 does not predict ligand complexes. Use RosettaFold3, or ESMFold for the binder alone.")
     if kind == "peptide_trap":
         p["job_name"] = name
         return {"schema_version": 1, "workflow": workflow, "parameters": p}
@@ -694,25 +715,6 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
             "target_use_msa": bool(p.get("target_use_msa", True)),
         }
     else:
-        ligand_context=source.get('target',{}).get('pipeline_task') in {'ligand_binder','motif_ligand'}
-        if ligand_context and kind=='af2':
-            raise ValueError('AlphaFold2 does not predict ligand complexes. Use RosettaFold3, or ESMFold for the binder alone.')
-        if ligand_context and kind=='boltz2':
-            tasks=[]
-            for candidate in _absolute_candidates(source):
-                code=(candidate.get('raw_metadata') or {}).get('ligand_original_code','')
-                if not re.fullmatch(r'[A-Z0-9]{1,5}',code):
-                    raise ValueError('Boltz-2 needs a CCD or SMILES ligand definition. This motif uses a custom ligand fragment; connect RosettaFold3 to preserve its input atom graph.')
-                if not candidate.get('binder_sequence'):raise ValueError('The generated design has no binder sequence.')
-                tasks.append({
-                    'name': candidate['candidate_id'], 'binder_sequence': candidate['binder_sequence'],
-                    'ligand_ccd_codes': code, 'compound_id': code, 'compound_name': code,
-                    'molecule_chain_options': [{'id': 'A', 'use_msa': False}],
-                })
-            return {'schema_version':1,'workflow':'refolding.optimized_prediction','parameters':{
-                'engine':'boltz2','job_name':name,'tasks':tasks,'samples':int(p['diffusion_samples']),
-                'num_recycles':int(p['recycling_steps']),
-                'engine_options':{'sampling_steps':int(p['sampling_steps']),'use_msa_server':False}}}
         p.update(source_run_dir=source["run_dir"], candidates_jsonl=source["candidates_jsonl"])
         if kind == "abmpnn":
             from mn_molecular_design_studio import mpnn_input

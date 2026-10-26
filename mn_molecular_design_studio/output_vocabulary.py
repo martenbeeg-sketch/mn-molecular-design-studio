@@ -36,6 +36,7 @@ GENERATOR_WORKFLOWS = {
     "design.rfantibody": "rfantibody", "design.rfantibody_mimosa": "rfantibody",
     "design.boltzgen_mimosa": "boltzgen", "design.rfpeptides": "rfpeptides",
     "design.esmfold2_binder": "esmfold2_binder",
+    "design.kejia_idr": "kejia_idr", "design.peptide_trap": "peptide_trap",
 }
 FASTA_METRICS = {"score", "global_score", "seq_recovery", "seq_rec", "overall_confidence", "ligand_confidence"}
 _HEADER_NUMBER = re.compile(r"(?:^|[,\s])([A-Za-z_]+)\s*=\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)(?=,|\s|$)")

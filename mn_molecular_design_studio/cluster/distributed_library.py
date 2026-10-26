@@ -73,6 +73,12 @@ def _node_specs(worker_nodes, *, ssh_user="compute"):
 
     nodes = Store().nodes()
     by_id = {row["id"]: row for row in nodes}
+    local_id = config.identity()
+    settings = config.load()
+    if settings["mode"] == "disabled" and local_id not in by_id:
+        # Standalone fingerprint jobs use the local scheduler without requiring
+        # enrollment in workstation sharing. Remote workers still need enrollment.
+        by_id[local_id] = {"id": local_id, "name": settings["name"], "disabled": False}
     specs = []
     seen = set()
     for raw in worker_nodes:

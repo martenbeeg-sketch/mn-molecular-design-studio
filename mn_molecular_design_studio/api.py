@@ -123,7 +123,7 @@ def _admin_user(user: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]
     return user
 
 
-def _require_api_job_access(user: dict[str, Any], row: dict[str, Any]) -> None:
+def _require_api_job_access(user: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
     from mn_molecular_design_studio.job_catalog import get_job_access_record
 
     record = get_job_access_record(str(row.get("task_group") or ""), str(row.get("run_id") or ""))
@@ -133,6 +133,7 @@ def _require_api_job_access(user: dict[str, Any], row: dict[str, Any]) -> None:
         # Return the same public response for an unknown and an inaccessible
         # job so references cannot be used to enumerate other users' runs.
         raise HTTPException(status_code=404, detail="Job not found.") from exc
+    return record or {}
 
 
 def _resolve_api_job(reference: str, user: dict[str, Any], *, include_hidden: bool = False) -> dict[str, Any]:
@@ -149,8 +150,10 @@ def _resolve_api_job(reference: str, user: dict[str, Any], *, include_hidden: bo
                 raise HTTPException(status_code=409, detail="Job reference is ambiguous. Use a full run ID from your accessible jobs.") from exc
             raise HTTPException(status_code=404, detail="Job not found.") from exc
         raise _http_error(exc) from exc
-    _require_api_job_access(user, row)
-    return row
+    identity = _require_api_job_access(user, row)
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+    metadata = read_json(Path(row["run_dir"]) / "metadata.json")
+    return {**row, **identity, "hidden": bool(metadata.get("hidden"))}
 
 
 def _http_error(exc: Exception) -> HTTPException:

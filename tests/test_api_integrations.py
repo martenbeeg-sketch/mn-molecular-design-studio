@@ -19,6 +19,7 @@ def api_data(tmp_path, monkeypatch):
         "MN_MOLECULAR_DESIGN_STUDIO_HOME": tmp_path / "studio",
         "MN_MOLECULAR_DESIGN_STUDIO_APP_HOME": tmp_path / "studio",
         "MN_MOLECULAR_DESIGN_STUDIO_RESULTS_PARENT": tmp_path / "results",
+        "MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR": tmp_path / "results/runs",
         "MN_MOLECULAR_DESIGN_STUDIO_REFERENCE_DIR": tmp_path / "references",
         "MDS_CLUSTER_HOME": tmp_path / "cluster",
         "MN_MOLECULAR_DESIGN_STUDIO_AUTH_MODE": "production",
@@ -26,6 +27,8 @@ def api_data(tmp_path, monkeypatch):
         monkeypatch.setenv(name, str(value))
     from mn_molecular_design_studio import auth, api, workspace, molecular_database_api
     from mn_molecular_design_studio.cluster import config
+    workspace.save_settings({"results_directory": str(tmp_path / "results/runs"),
+                             "reference_directory": str(tmp_path / "references")})
     workspace.ensure_studio_workspace()
     config.save({"mode": "disabled"})
     monkeypatch.setattr(molecular_database_api, "sync_workspace", lambda *a, **k: [])
