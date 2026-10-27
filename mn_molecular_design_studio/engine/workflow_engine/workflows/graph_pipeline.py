@@ -1011,7 +1011,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         outputs[node_id] = output
         node_states.setdefault(node_id, {}).update(status=status, output=output, fingerprint=key, candidate_count=output.get("candidate_count", 0), completed_at=utc_now())
         analyses = [*(output.get("analysis_runs") or []), *([output["analysis_run"]] if output.get("analysis_run") else [])]
-        if (output.get("candidates_jsonl") or output.get("analysis_run", {}).get("success")) and all(a.get("success") for a in analyses) and status not in {"cached", "partial", "failed"}:
+        if (output.get("candidates_jsonl") or output.get("analysis_run", {}).get("success")) and all(a.get("success") for a in analyses) and status not in {"cached", "partial", "failed"} and not output.get('partial_pool') and not output.get('candidate_execution', {}).get('missing_batches'):
             write_json(cache_root / f"{key}.json", {"output": output})
         persist()
     try:
@@ -1031,13 +1031,44 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                 settings = candidate_execution.policy(node["data"].get("execution", graph.get("candidate_execution")))
                 if current.get("status") in {"failed", "blocked"}:
                     continue
-                if any(
-                    node_states.get(p, {}).get("status") in {"failed", "blocked"} and (p not in outputs or node_states.get(p, {}).get("batches"))
-                    for p in parents
-                ):
+                if (settings['mode'] == 'sharded' and settings['incremental_cpu'] and len(parents) == 1
+                        and candidate_execution.incremental_cpu_kind(node['data']['kind'])
+                        and node_states.get(parents[0], {}).get('batches')):
+                    upstream_state = node_states[parents[0]]
+                    ready_batch = next((b for b in upstream_state['batches'] if b['status'] in {'completed', 'partial'}), None)
+                    if ready_batch:
+                        import sys
+                        streaming_rows = json.loads(Path(ready_batch['rows_path']).read_text())
+                        streaming_source = _local_source(parent, node_id + '_stream_probe', streaming_rows)
+                        target = outputs.get(parents[0], {}).get('target') or next(
+                            (outputs[a].get('target') for a in ancestors_of(parents[0]) if a in outputs and outputs[a].get('target')), {})
+                        try:
+                            streamed = candidate_execution.tick_incremental(parent, node, current, upstream_state,
+                                {**streaming_source, 'target': target}, settings,
+                                graph=sys.modules[__name__], owner_id=owner_id, project_id=project_id, persist=persist)
+                            if streamed:
+                                output, stream_key, stream_status = streamed
+                                complete(node_id, output, stream_key, stream_status)
+                                progressed = True
+                        except Exception as exc:
+                            candidate_execution.cancel(parent, {'nodes': {node_id: current}})
+                            current.update(status='failed', error=str(exc)); persist(); progressed = True
+                    if ready_batch or upstream_state.get('status') not in {'failed', 'blocked', 'cancelled'}:
+                        continue
+                failed_parents = [p for p in parents if node_states.get(p, {}).get("status") in {"failed", "blocked"}
+                                  and (p not in outputs or node_states.get(p, {}).get("batches"))]
+                partial_fan_in = bool(failed_parents and settings['failure_policy'] == 'partial')
+                if failed_parents and not partial_fan_in:
                     current.update(status="blocked", error="An upstream step failed."); persist(); progressed=True; continue
-                if not all(p in outputs for p in parents):
+                if not all(p in outputs or partial_fan_in and p in failed_parents for p in parents):
                     continue
+                if partial_fan_in:
+                    current['missing_branches'] = failed_parents
+                    current['partial'] = True
+                    parents = [p for p in parents if p in outputs and p not in failed_parents]
+                    if not parents:
+                        current.update(status='blocked', error='No successful upstream branches are available.')
+                        persist(); progressed = True; continue
                 try:
                     kind, params = node["data"]["kind"], node["data"]["params"]
                     upstream = [outputs[p] for p in parents]
@@ -1155,6 +1186,11 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         current["execution_specification"] = key_params
                     key = fingerprint(kind, key_params, [o["fingerprint"] for o in upstream])
                     if settings['mode'] == 'sharded' and candidate_execution.supports(kind, source):
+                        cached = read_json(cache_root / f'{key}.json').get('output') if reuse_completed and not current.get('batches') else None
+                        if cached and _cache_valid(cached):
+                            complete(node_id, cached, key, 'cached')
+                            progressed = True
+                            continue
                         if current.get('batches') and current.get('fingerprint') != key:
                             raise ValueError('Candidate inputs changed during execution. Submit a new pipeline.')
                         import sys
@@ -1301,7 +1337,17 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             rows = selected_candidates(outcomes)
                             if outcomes and all(row["raw_metadata"]["selection"]["status"] == "not_evaluated" for row in outcomes):
                                 rows = outcomes[:params["limit"]] if params.get("limit") else outcomes
+                        missing = sorted(set(current.get('missing_branches', [])) | {
+                            missing for upstream_output in upstream for missing in upstream_output.get('partial_pool', {}).get('missing_branches', [])})
+                        partial_batches = [upstream_output['candidate_execution'] for upstream_output in upstream
+                                           if upstream_output.get('candidate_execution', {}).get('missing_batches')]
+                        if missing or partial_batches:
+                            for row in rows:
+                                row.setdefault('raw_metadata', {})['partial_pool'] = dict(missing_branches=missing, candidate_batches=partial_batches)
                         output = _local_source(parent, node_id, rows, source.get("target"), analysis_runs if kind == "results" else [], final_evidence=kind == "results")
+                        if missing or partial_batches:
+                            output['partial_pool'] = dict(missing_branches=missing, candidate_batches=partial_batches)
+                            current['partial'] = True
                         if kind == "filter":
                             output["review_candidates_jsonl"] = str(parent / "artifacts/pipeline_nodes" / node_id / "artifacts/selection/all_candidates.jsonl")
                         complete(node_id, output, key);progressed=True;continue
@@ -1351,6 +1397,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     current.update(status="queued", job_run_dir=str(child), job_code=metadata.get("job_code"), fingerprint=key, started_at=utc_now())
                     persist();progressed=True
                 except Exception as exc:
+                    if current.get('batches'):
+                        candidate_execution.cancel(parent, {'nodes': {node_id: current}})
                     current.update(status="failed", error=str(exc));persist();progressed=True
             unresolved = [n for n in nodes if n not in outputs and node_states.get(n, {}).get("status") not in {"failed", "blocked"}]
             if not unresolved:
@@ -1396,10 +1444,11 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         comparison = graph.get("task_configuration", {}).get("comparison") is True
         successful_results = [node_id for node_id in outputs if nodes[node_id]["data"]["kind"] == "results"
                               and node_states.get(node_id, {}).get("status") in {"completed", "cached"}
-                              and not any(node_states.get(a, {}).get("status") in {"failed", "blocked"}
-                                          for a in ancestors_of(node_id))]
-        success = not failures or comparison and bool(successful_results)
-        comparison_status = "partial" if failures and success else "failed" if failures else "completed"
+                              and (node_states[node_id].get('partial') or not any(node_states.get(a, {}).get("status") in {"failed", "blocked"}
+                                          for a in ancestors_of(node_id)))]
+        explicit_partial_results = [n for n in successful_results if node_states[n].get('partial')]
+        success = not failures or bool(comparison or explicit_partial_results) and bool(successful_results)
+        comparison_status = "partial" if (failures or any(n.get('partial') for n in node_states.values())) and success else "failed" if failures else "completed"
         state["status"] = "completed" if success else "failed"
         state["comparison_status"] = comparison_status
         persist()

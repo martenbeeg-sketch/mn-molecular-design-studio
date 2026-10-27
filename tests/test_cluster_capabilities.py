@@ -109,3 +109,16 @@ def test_rfantibody_full_pipeline_retains_required_sequence_and_refold_weights()
         "rfantibody/ProteinMPNN_v48_noise_0.2.pt",
         "rfantibody/RF2_ab.pt",
     }.issubset(needs["references"])
+
+
+def test_reference_fingerprints_detect_changed_model_contents(tmp_path, monkeypatch):
+    monkeypatch.setenv('MN_MOLECULAR_DESIGN_STUDIO_REFERENCE_DIR', str(tmp_path))
+    path = tmp_path / 'model.ckpt'; path.write_bytes(b'weights-v1')
+    before = capabilities.reference_fingerprints(['model.ckpt'])
+    path.write_bytes(b'weights-v2')
+    after = capabilities.reference_fingerprints(['model.ckpt'])
+    assert before != after
+    from mn_molecular_design_studio.cluster.store import Store
+    node = {'availability': 'online', 'snapshot': {'accept_jobs': True, 'scheduler_online': True, 'reference_hashes': before}}
+    assert Store.compatible(node, {'reference_hashes': before})
+    assert not Store.compatible(node, {'reference_hashes': after})

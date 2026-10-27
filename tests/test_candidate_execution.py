@@ -122,3 +122,86 @@ def test_scheduler_preserves_auto_and_admits_single_gpu(tmp_path):
     assert scheduler._gpu_candidates(request, ['0', '1']) == (['0', '1'], False)
     assert central_scheduler._central_resource_request(path)['gpu_count'] == 1
     assert central_scheduler._central_resource_request(path)['min_vram_gb'] == 12
+
+
+def test_missing_candidate_outputs_are_partial_and_progress_is_real(tmp_path):
+    shard = batches(tmp_path)[0]
+    shard['attempts'] = [{}]
+    output = gp._local_source(tmp_path, 'out', [dict(candidate_id='prediction', parents=['c0'])])
+    result = ce.collect(shard, output, read_rows=gp._absolute_candidates)
+    assert shard['status'] == 'partial'
+    assert shard['completed_units'] == 1
+    assert shard['missing_candidate_ids'] == ['c1']
+    assert ce.progress([shard])['completed_units'] == 1
+
+
+def test_cancellation_stops_queued_and_running_batches(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    stopped = []
+    monkeypatch.setattr(jobs, 'stop_job', lambda path, **kwargs: stopped.append(path))
+    state = {'nodes': {'p': {'batches': [
+        dict(status='queued', job_run_dir=str(tmp_path / 'q')),
+        dict(status='running', job_run_dir=str(tmp_path / 'r')),
+        dict(status='completed', job_run_dir=str(tmp_path / 'c'))]}}}
+    ce.cancel(tmp_path, state)
+    assert stopped == [tmp_path / 'q', tmp_path / 'r']
+    assert [b['status'] for b in state['nodes']['p']['batches']] == ['cancelled', 'cancelled', 'completed']
+
+
+def test_disconnected_worker_is_quarantined_without_duplicate_execution(tmp_path, monkeypatch):
+    import time
+    from mn_molecular_design_studio.cluster import candidate_batches as peers
+    batch = batches(tmp_path)[0]
+    batch.update(cluster_job_id='remote', status='running', attempts=[{}], disconnected_since=time.time() - 120)
+    current = {'batches': [batch], 'fingerprint': 'a' * 64}
+    cancelled = []
+    monkeypatch.setattr(peers, 'poll', lambda *a, **k: ('disconnected', None, {'node_id': 'offline-worker'}))
+    monkeypatch.setattr(peers, 'cancel', lambda *a, **k: cancelled.append('remote'))
+    monkeypatch.setattr(peers, 'submit', lambda *a, **k: pytest.fail('Must not duplicate a job whose worker may still be alive'))
+    node = dict(id='predict', data=dict(kind='boltz2', label='Prediction'))
+    result = ce.tick(tmp_path, node, current, {}, {}, 'a' * 64,
+        ce.policy(dict(mode='sharded', placement='auto', stall_timeout_seconds=60)), graph=gp,
+        owner_id='user', project_id='project', gpu_device='all', persist=lambda: None)
+    assert result[1] == 'failed'
+    assert batch['status'] == 'lost' and batch['quarantined'] is True
+    assert len(batch['attempts']) == 1 and cancelled == ['remote']
+
+
+def test_incremental_cpu_analysis_advances_completed_batches_before_prediction_finishes(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import cache_provenance
+    monkeypatch.setattr(cache_provenance, 'execution_identity', lambda *a, **k: {'version': 'tested'})
+    assert ce.incremental_cpu_kind('sequence_qc')
+    assert ce.incremental_cpu_kind('ipsae')
+    assert not ce.incremental_cpu_kind('boltz2')
+    calls = []
+    def tick(parent, node, state, source, *args, **kwargs):
+        calls.append(node['id'])
+        assert kwargs['gpu_device'] == 'none'
+        return source, 'completed'
+    monkeypatch.setattr(ce, 'tick', tick)
+    upstream = {'status': 'running', 'batches': []}
+    for i in range(2):
+        path = tmp_path / f'rows{i}.json'
+        path.write_text(json.dumps([dict(candidate_id=f'prediction{i}', parents=[f'input{i}'])]))
+        upstream['batches'].append(dict(batch_id=f'b{i}', status='completed' if i == 0 else 'running',
+                                       rows_path=str(path), manifest_sha256=str(i)))
+    source = gp._local_source(tmp_path, 'probe', [dict(candidate_id='prediction0')])
+    node = dict(id='qc', data=dict(kind='sequence_qc', label='QC', params={}))
+    current = {}
+    args = dict(graph=gp, owner_id='user', project_id='project', persist=lambda: None)
+    settings = ce.policy(dict(mode='sharded', incremental_cpu=True))
+    assert ce.tick_incremental(tmp_path, node, current, upstream, source, settings, **args) is None
+    assert calls == ['qc_b0']  # CPU work advanced while the second GPU batch is still running.
+    upstream['batches'][1]['status'] = 'completed'; upstream['status'] = 'completed'
+    output, key, status = ce.tick_incremental(tmp_path, node, current, upstream, source, settings, **args)
+    assert status == 'completed'
+    assert calls == ['qc_b0', 'qc_b1']
+    assert [r['candidate_id'] for r in gp._absolute_candidates(output)] == ['prediction0', 'prediction1']
+
+
+def test_saved_graphs_retain_native_semantics_and_explicit_execution_policy():
+    graph = new_graph('blank')
+    assert 'candidate_execution' not in clean_graph(graph)
+    settings = dict(mode='sharded', failure_policy='partial', placement='local', batch_size=2, incremental_cpu=True)
+    graph['candidate_execution'] = settings
+    assert clean_graph(graph)['candidate_execution'] == ce.policy(settings)

@@ -83,6 +83,8 @@ def resources():
     try:
         raw = _client(timeout=3).resources()
         reservations = raw.get("reservations", [])
+        details = gpu_details()
+        raw["gpus"] = [{**g, **details.get(str(g["gpu_id"]), {})} for g in raw.get("gpus", [])]
         busy = {str(i) for r in reservations for i in r.get("gpu_devices", [])}
         return True, {"cpu_free": max(0, raw.get("cpu_pool_capacity", 0) - sum(int(r.get("cpu_threads", 0)) for r in reservations)),
                       "cpu_total": raw.get("cpu_pool_capacity", 0), "ram_available_gb": max(0, raw.get("ram_available_gb", 0) - sum(float(r.get("ram_gb", 0)) for r in reservations)),
@@ -250,7 +252,42 @@ def requirements(payload, *, references=(), installed_images=None):
         raise ValueError(f"This engine mode requires at least {minimum_gpus} GPU devices.")
     gpu_count = len(gpu_ids) or (0 if cpu_only or device in {"cpu", "none"} else max(1, minimum_gpus))
     return {"images": {image: installed.get(image, "") for image in sorted(needed_images)}, "references": sorted(needed_refs),
-            "code_revision": code_revision(), "gpu_count": gpu_count, "gpu_ids": gpu_ids,
+            "code_revision": code_revision(), "reference_hashes": reference_fingerprints(needed_refs), "gpu_count": gpu_count, "gpu_ids": gpu_ids,
             "all_gpus": not cpu_only and device == "all",
             "min_vram_gb": max(8, float(requested.get("min_vram_gb", 0))) if gpu_count else 0, "cpu_threads": requested.get("cpu_cores") or max((item.get("cpu_cores") or item.get("cpu_threads") or 4 for _, item in workflows), default=4),
             "ram_gb": float(requested.get("ram_gb", 0)), "scratch_gb": float(requested.get("scratch_gb", 1))}
+
+
+def gpu_details():
+    """Device identity/telemetry; absence never invents a GPU architecture."""
+    import csv
+    try:
+        result = subprocess.run(['nvidia-smi', '--query-gpu=index,name,uuid,driver_version,compute_cap,memory.total,memory.free,utilization.gpu',
+                                 '--format=csv,noheader,nounits'], capture_output=True, text=True, check=True, timeout=3)
+        return {str(row[0]).strip(): dict(name=row[1].strip(), uuid=row[2].strip(), driver_version=row[3].strip(),
+                    compute_capability=row[4].strip(), total_vram_gb=float(row[5])/1024,
+                    free_vram_gb=float(row[6])/1024, utilization_percent=float(row[7]))
+                for row in csv.reader(result.stdout.splitlines()) if len(row) == 8}
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+
+
+_REFERENCE_DIGEST_CACHE = {}
+
+
+def reference_fingerprints(probes):
+    """Hash explicitly required files once per stat identity, never walk databases."""
+    from mn_molecular_design_studio.cache_provenance import file_digest
+    from mn_molecular_design_studio.runtime import reference_root
+    root = reference_root().resolve()
+    result = {}
+    for relative in probes:
+        path = (root / str(relative)).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            continue
+        info = path.stat()
+        identity = (str(path), info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        if identity not in _REFERENCE_DIGEST_CACHE:
+            _REFERENCE_DIGEST_CACHE[identity] = file_digest(path)
+        result[str(relative)] = _REFERENCE_DIGEST_CACHE[identity]
+    return result

@@ -338,6 +338,9 @@ class Store:
                 return False
         if any(not snapshot.get("references", {}).get(p) for p in needs.get("references", [])):
             return False
+        if any(snapshot.get('reference_hashes', {}).get(path) != checksum
+               for path, checksum in needs.get('reference_hashes', {}).items()):
+            return False
         return True
 
     @staticmethod

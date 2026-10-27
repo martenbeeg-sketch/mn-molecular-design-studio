@@ -21,7 +21,7 @@ COLLECTION_KINDS = {
     'protenix', 'ipsae', 'rosetta_metrics',
 }
 GENERATION_KINDS = {'rfdiffusion', 'rfd3', 'genie3', 'pxdesign', 'rfd4'}
-TERMINAL = {'completed', 'failed', 'cancelled', 'lost'}
+TERMINAL = {'completed', 'partial', 'failed', 'cancelled', 'lost'}
 
 
 def policy(value=None):
@@ -30,12 +30,14 @@ def policy(value=None):
         raise ValueError('Candidate execution must be an object.')
     defaults = dict(mode='native', placement='local', batch_size=4, max_in_flight=2,
                     retries=1, failure_policy='all', min_vram_gb=8., ram_gb=0.,
-                    cpu_cores=4, stall_timeout_seconds=1800)
+                    cpu_cores=4, stall_timeout_seconds=1800, incremental_cpu=False)
     if set(value) - defaults.keys():
         raise ValueError('Unsupported candidate execution settings: ' + ', '.join(sorted(set(value) - defaults.keys())))
     result = defaults | value
     if result['mode'] not in {'native', 'sharded'} or result['failure_policy'] not in {'all', 'partial'}:
         raise ValueError('Choose native/sharded execution and all/partial failure policy.')
+    if type(result['incremental_cpu']) is not bool:
+        raise ValueError('incremental_cpu must be true or false.')
     import uuid
     if result['placement'] not in {'auto', 'local'}:
         uuid.UUID(str(result['placement']))
@@ -153,11 +155,13 @@ def collect(batch, output, *, read_rows):
             pipeline=manifest['pipeline'], node=manifest['node'],
             effective_request=manifest['request'], attempts=copy.deepcopy(batch['attempts']),
             worker=attempt.get('worker'), allocation=attempt.get('allocation'),
-            software=attempt.get('software'), output_hashes=referenced_files(row))
+            software=attempt.get('software'), hardware=attempt.get('hardware'), output_hashes=referenced_files(row))
     batch['output_hashes'] = referenced_files(rows)
-    batch['completed_units'] = batch['unit_count']
+    accounted = {p for row in rows for p in row.get('parents', [])} | {row['candidate_id'] for row in rows}
+    batch['missing_candidate_ids'] = sorted(inputs - accounted)
+    batch['completed_units'] = len(inputs & accounted) if inputs else batch['unit_count'] if rows else 0
     batch['candidate_count'] = len(rows)
-    batch['status'] = 'completed'
+    batch['status'] = 'partial' if batch['missing_candidate_ids'] else 'completed'
     batch['completed_at'] = utc_now()
     return rows
 
@@ -166,7 +170,7 @@ def aggregate(batches):
     """Stable input-batch ordering, refusing rather than dropping duplicate results."""
     rows, seen = [], set()
     for batch in sorted(batches, key=lambda b: b['offset']):
-        if batch['status'] != 'completed':
+        if batch['status'] not in {'completed', 'partial'}:
             continue
         if not output_valid(batch):
             raise ValueError('Completed candidate artifacts failed their checksum verification.')
@@ -180,7 +184,7 @@ def aggregate(batches):
 
 def progress(batches):
     return dict(total_units=sum(b['unit_count'] for b in batches),
-                completed_units=sum(b.get('completed_units', 0) for b in batches if b['status'] == 'completed'),
+                completed_units=sum(b.get('completed_units', 0) for b in batches if b['status'] in {'completed', 'partial'}),
                 completed_batches=sum(b['status'] == 'completed' for b in batches),
                 failed_batches=sum(b['status'] in {'failed', 'lost'} for b in batches),
                 retry_count=sum(max(0, len(b['attempts']) - 1) for b in batches))
@@ -198,12 +202,23 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
         persist()
     batches = current['batches']
     for batch in batches:
-        if batch['status'] == 'completed':
+        if batch['status'] in {'completed', 'partial'} or batch.get('quarantined'):
             continue
         if batch.get('cluster_job_id'):
             from mn_molecular_design_studio.cluster import candidate_batches
             status, output, remote_job = candidate_batches.poll(batch, owner_id=owner_id, project_id=project_id)
             batch['status'] = status
+            if status == 'disconnected':
+                batch.setdefault('disconnected_since', time.time())
+                if time.time() - batch['disconnected_since'] >= settings['stall_timeout_seconds']:
+                    # A disconnected job may still be computing. Queue cancellation
+                    # and quarantine its identity; never sample it again elsewhere
+                    # until the original execution can be reconciled.
+                    candidate_batches.cancel(batch, owner_id=owner_id, project_id=project_id)
+                    batch.update(status='lost', quarantined=True,
+                        error='Worker disconnected beyond the recovery window; cancellation queued. No duplicate attempt was launched.')
+            else:
+                batch.pop('disconnected_since', None)
             attempt = batch['attempts'][-1]
             attempt.update(status=status, worker=remote_job.get('node_id'),
                            allocation=remote_job.get('metadata', {}).get('resource_allocation'))
@@ -225,6 +240,22 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
             child = Path(batch['job_run_dir'])
             metadata = read_json(child / 'metadata.json')
             status = metadata.get('status') or 'lost'
+            pid = metadata.get('worker_pid')
+            if status == 'running' and pid:
+                from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import _pid_alive
+                if not _pid_alive(pid):
+                    status = 'lost'
+            elif status == 'running' and metadata.get('scheduler_job_id'):
+                from mn_molecular_design_studio.engine.workflow_engine.core.central_scheduler import _client
+                try:
+                    scheduled = _client().get_job(metadata['scheduler_job_id'])
+                    if scheduled.get('status') in {'failed', 'lost', 'cancelled'}:
+                        status = 'lost'
+                except Exception:
+                    # Losing contact with the scheduler does not prove that the
+                    # worker stopped. Retain its identity and keep other work moving.
+                    batch['wait_reason'] = 'Scheduler unavailable; awaiting worker reconciliation.'
+
             if metadata.get('scheduler_status') in {'failed', 'lost'} and status not in TERMINAL:
                 status = 'lost'
             attempt = batch['attempts'][-1]
@@ -237,7 +268,10 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                 if result.get('success') is not True:
                     status = batch['status'] = 'failed'
                 else:
-                    attempt['software'] = read_json(child / 'input.json').get('params', {})
+                    from mn_molecular_design_studio.cluster.capabilities import gpu_details
+                    attempt['hardware'] = gpu_details()
+                    attempt['worker_id'] = metadata.get('scheduler_worker_id') or f'{socket.gethostname()}:{metadata.get("worker_pid", "")}'
+                    attempt['software'] = current.get('execution_specification', {}).get('runtime_identity') or read_json(child / 'input.json').get('params', {})
                     output = graph._child_output(child, source.get('target', {}))
                     rows = collect(batch, output, read_rows=graph._absolute_candidates)
                     path = Path(batch['manifest']).with_suffix('.results.json')
@@ -301,7 +335,7 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                 with submission_tags(candidate_submission_key=submission_key,
                                      pipeline_parent_run_dir=str(parent), graph_node_id=node['id'],
                                      candidate_batch_id=batch['batch_id'], input_manifest_sha256=manifest['sha256']):
-                    child = graph._submit(request, parent, {'id': f'{node["id"]}_{batch["batch_id"]}_a{attempt_index}'},
+                    child = graph._submit(request, parent, {**node, 'id': f'{node["id"]}_{batch["batch_id"]}_a{attempt_index}'},
                                           owner_id=owner_id, project_id=project_id, gpu_device=selected_gpu)
             batch['attempts'].append(dict(index=attempt_index, run_dir=str(child), status='queued',
                                           started_at=utc_now(), submission_key=submission_key,
@@ -309,7 +343,7 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
             batch.update(status='queued', job_run_dir=str(child))
             persist()
     current['candidate_progress'] = progress(batches)
-    current['candidate_count'] = sum(b.get('candidate_count', 0) for b in batches if b['status'] == 'completed')
+    current['candidate_count'] = sum(b.get('candidate_count', 0) for b in batches if b['status'] in {'completed', 'partial'})
     persist()
     if any(b['status'] not in TERMINAL for b in batches):
         return None
@@ -328,6 +362,8 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
 def cancel(parent, state):
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import stop_job
     for node in state.get('nodes', {}).values():
+        for group in node.get('incremental_groups', {}).values():
+            cancel(parent, {'nodes': {'group': group['state']}})
         for batch in node.get('batches', []):
             if batch.get('cluster_job_id') and batch['status'] not in TERMINAL:
                 from mn_molecular_design_studio.cluster import candidate_batches
@@ -337,3 +373,71 @@ def cancel(parent, state):
             if batch.get('job_run_dir') and batch['status'] not in TERMINAL:
                 stop_job(Path(batch['job_run_dir']), reason='Parent pipeline was cancelled')
                 batch['status'] = 'cancelled'
+
+
+def incremental_cpu_kind(kind):
+    from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
+    from mn_molecular_design_studio.quality_tools import WORKFLOWS
+    workflow = NODE_CATALOG[kind].get('workflow') or ''
+    return (workflow.startswith('analysis.') and not WORKFLOWS.get(workflow, {}).get('gpu', False)
+            and NODE_CATALOG[kind]['outputs'][0]['type'] != 'analysis')
+
+
+def tick_incremental(parent, node, current, upstream_state, upstream_output, settings, *, graph, owner_id, project_id, persist):
+    """Overlap allowlisted CPU analyses with completed upstream GPU batches.
+
+    Complete-pool selection/Results and multi-parent nodes retain their barriers.
+    Groups share the same controller loop and scheduler; no executor is added.
+    """
+    groups = current.setdefault('incremental_groups', {})
+    kind, params = node['data']['kind'], node['data']['params']
+    from mn_molecular_design_studio.cache_provenance import execution_identity
+    if 'incremental_runtime' not in current:
+        request = graph.node_request(kind, params, upstream_output, 'incremental-analysis')
+        current['incremental_runtime'] = execution_identity(kind, request['parameters'], request['workflow'])
+    for batch in upstream_state.get('batches', []):
+        if batch['status'] not in {'completed', 'partial'}:
+            continue
+        if batch['batch_id'] not in groups:
+            rows = json.loads(Path(batch['rows_path']).read_text())
+            source = graph._local_source(parent, f'{node["id"]}_{batch["batch_id"]}_stream', rows, upstream_output.get('target'))
+            groups[batch['batch_id']] = dict(source=source, state={}, upstream_manifest=batch['manifest_sha256'])
+            persist()
+    for batch_id, group in groups.items():
+        if group.get('output'):
+            if not all(output_valid(b) for b in group['state'].get('batches', []) if b['status'] in {'completed', 'partial'}):
+                raise ValueError('Incremental analysis artifacts failed checksum verification.')
+            continue
+        active = sum(b['status'] not in TERMINAL | {'pending', 'retrying'}
+                     for g in groups.values() for b in g['state'].get('batches', []))
+        state = group['state']
+        has_active = any(b['status'] not in TERMINAL | {'pending', 'retrying'} for b in state.get('batches', []))
+        if active >= settings['max_in_flight'] and not has_active:
+            continue
+        local_node = copy.deepcopy(node); local_node['id'] = f'{node["id"]}_{batch_id}'
+        key = digest([kind, params, group['upstream_manifest'], current['incremental_runtime']])
+        result = tick(parent, local_node, state, group['source'], params, key,
+            settings | {'max_in_flight': 1, 'placement': 'local'}, graph=graph,
+            owner_id=owner_id, project_id=project_id, gpu_device='none', persist=persist)
+        if result:
+            group['output'], group['status'] = result
+            persist()
+    current['status'] = 'running'
+    current['candidate_progress'] = progress([b for g in groups.values() for b in g['state'].get('batches', [])])
+    upstream_terminal = upstream_state.get('status') in {'completed', 'cached', 'partial', 'failed'}
+    if not upstream_terminal or any(not g.get('output') for g in groups.values()):
+        return None
+    if upstream_state.get('status') == 'failed' and settings['failure_policy'] != 'partial':
+        current.update(status='blocked', error='The complete upstream candidate collection is required.')
+        persist()
+        return None
+    rows = [row for batch_id, g in sorted(groups.items()) for row in graph._absolute_candidates(g['output'])]
+    output = graph._local_source(parent, node['id'] + '_incremental', rows, upstream_output.get('target'))
+    failed = [k for k, g in groups.items() if g['status'] != 'completed']
+    if upstream_state.get('partial') or upstream_state.get('status') == 'failed':
+        current['partial'] = True
+        failed.extend('upstream:' + b['batch_id'] for b in upstream_state.get('batches', []) if b['status'] != 'completed')
+    output['candidate_execution'] = dict(policy=settings, missing_batches=failed, incremental_cpu=True,
+                                        progress=current['candidate_progress'])
+    key = digest([kind, params, current['incremental_runtime'], [g['upstream_manifest'] for k, g in sorted(groups.items())]])
+    return output, key, ('partial' if rows and settings['failure_policy'] == 'partial' else 'failed') if failed else 'completed'

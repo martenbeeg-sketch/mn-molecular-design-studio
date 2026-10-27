@@ -576,6 +576,12 @@ class WorkerScheduler:
         metadata.pop("scheduler_wait_reason", None)
         metadata["updated_at"] = metadata["worker_started_at"]
         write_json(run_dir / "metadata.json", metadata)
+        # An automatic request is concretized only after resource admission.
+        # Use the same selector rewrite as the central scheduler bridge.
+        from .central_scheduler_worker import _patch_gpu_selectors
+        for name in ('worker_request.json', 'input.json'):
+            payload = read_json(run_dir / name)
+            write_json(run_dir / name, _patch_gpu_selectors(payload, request.gpu_device or 'none'))
         try:
             proc = subprocess.Popen(
                 command,
