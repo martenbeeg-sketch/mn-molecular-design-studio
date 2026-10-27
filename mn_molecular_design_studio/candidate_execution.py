@@ -288,6 +288,7 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
         if batch.get('job_run_dir'):
             child = Path(batch['job_run_dir'])
             metadata = read_json(child / 'metadata.json')
+            batch['wait_reason'] = metadata.get('scheduler_wait_reason') or ''
             status = metadata.get('status') or 'lost'
             pid = metadata.get('worker_pid')
             if status == 'running' and pid:

@@ -511,7 +511,50 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     name_col, reuse_col, gpu_col = st.columns([1.6, 1.25, .75], vertical_alignment="bottom")
     graph["name"] = name_col.text_input("Pipeline name", key=prefix+"-name")
     reuse = reuse_col.checkbox("Reuse unchanged completed steps", value=True, key=prefix+"-reuse", help="New runs can reuse successful steps in this project. Layout changes do not invalidate them.")
-    gpu = gpu_col.selectbox("GPU assignment", ["Automatic", "GPU 0", "GPU 1"], key=prefix+"-gpu")
+    from mn_molecular_design_studio import candidate_execution
+    from mn_molecular_design_studio.cluster import config as cluster_config
+    from mn_molecular_design_studio.cluster.capabilities import gpu_details
+    settings = candidate_execution.policy(graph.get('candidate_execution'))
+    nodes = []
+    if cluster_config.load()['mode'] in {'peer', 'coordinator'}:
+        from mn_molecular_design_studio.cluster.store import Store
+        nodes = Store().nodes()
+    devices = gpu_details()
+    selected_node = next((n for n in nodes if n['id'] == settings['placement']), None)
+    if selected_node:
+        devices = {str(g['gpu_id']): g for g in selected_node['snapshot'].get('resources', {}).get('gpus', [])}
+    gpu_values = {'Automatic': 'all', **{f"GPU {i} · {g.get('name', 'detected GPU')}": str(i) for i, g in devices.items()}}
+    gpu = gpu_col.selectbox('GPU assignment', list(gpu_values), key=prefix+'-gpu')
+    with st.expander('Candidate execution', expanded=settings['mode'] == 'sharded'):
+        enabled = st.checkbox('Distribute independent candidate batches', value=settings['mode'] == 'sharded', key=prefix+'-shards')
+        if enabled:
+            destinations = {'local': 'This workstation', 'auto': 'Automatic · eligible trusted workstations',
+                            **{n['id']: cluster_config.display_name(n['name']) + ' · ' + n['availability'] for n in nodes}}
+            placement = st.selectbox('Batch destination', list(destinations), format_func=destinations.get,
+                index=list(destinations).index(settings['placement']) if settings['placement'] in destinations else 0, key=prefix+'-batch-placement')
+            batch_size = st.number_input('Candidates per native batch', min_value=1, max_value=10000, value=settings['batch_size'], key=prefix+'-batch-size')
+            in_flight = st.number_input('Maximum batches in flight', min_value=1, max_value=32, value=settings['max_in_flight'], key=prefix+'-batch-limit')
+            cpu_cores = st.number_input('CPU threads per batch', min_value=1, max_value=256, value=settings['cpu_cores'], key=prefix+'-batch-cpu')
+            ram = st.number_input('RAM per batch (GiB)', min_value=0., value=float(settings['ram_gb']), key=prefix+'-batch-ram')
+            vram = st.number_input('Minimum free VRAM per GPU (GiB)', min_value=0., value=float(settings['min_vram_gb']), key=prefix+'-batch-vram')
+            retries = st.number_input('Retries per failed batch', min_value=0, max_value=5, value=settings['retries'], key=prefix+'-batch-retries')
+            incremental = st.checkbox('Analyze completed batches while prediction continues (CPU)', value=settings['incremental_cpu'], key=prefix+'-batch-incremental')
+            partial = st.checkbox('Allow explicit partial candidate pools and missing branches', value=settings['failure_policy'] == 'partial', key=prefix+'-batch-partial')
+            settings.update(mode='sharded', placement=placement, batch_size=int(batch_size), max_in_flight=int(in_flight),
+                            min_vram_gb=vram, ram_gb=ram, cpu_cores=int(cpu_cores), retries=int(retries), incremental_cpu=incremental, failure_policy='partial' if partial else 'all')
+            st.caption('Supported collection adapters and independent generation jobs use the existing scheduler. Batch destination applies to supported sharded nodes. Other nodes use the controller workstation. A single trajectory stays on one worker.')
+        else:
+            settings['mode'] = 'native'
+        graph['candidate_execution'] = candidate_execution.policy(settings)
+        if nodes:
+            st.dataframe([{'Workstation': cluster_config.display_name(n['name']), 'Status': n['availability'],
+                'Free GPUs': len(n['snapshot'].get('resources', {}).get('free_gpus', [])),
+                'Running allocations': n['snapshot'].get('resources', {}).get('reservations', 0),
+                'Free CPU threads': n['snapshot'].get('resources', {}).get('cpu_free', 0)} for n in nodes], hide_index=True)
+        if devices:
+            st.dataframe([{'GPU': i, 'Model': g.get('name', ''), 'Free VRAM GiB': g.get('free_vram_gb'),
+                           'Compute capability': g.get('compute_capability'), 'Utilization %': g.get('utilization_percent')}
+                          for i, g in devices.items()], hide_index=True)
     with st.expander("Saved pipelines & versions", expanded=False):
         if definitions:
             saved = st.selectbox("Saved draft", definitions, format_func=lambda d:f"{d['graph']['name']} · {d['versions']} saved versions", key=prefix+"-saved")
@@ -541,6 +584,11 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
             st.session_state[prefix+"-last-value"] = signature
             try:
                 component_graph = copy.deepcopy(value["graph"])
+                component_graph["candidate_execution"] = copy.deepcopy(graph["candidate_execution"])
+                for component_node in component_graph.get("nodes", []):
+                    previous_node = next((n for n in graph["nodes"] if n["id"] == component_node["id"]), {})
+                    if previous_node.get("data", {}).get("execution"):
+                        component_node["data"]["execution"] = copy.deepcopy(previous_node["data"]["execution"])
                 if graph.get("template_id") and not component_graph.get("template_id"):
                     component_graph["template_id"] = graph["template_id"]
                 if graph.get("task_configuration"):
@@ -568,7 +616,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                         result=submit_api("/api/v1/pipelines/save", {"project_id":project_id,"graph":graph,"version":True})
                         st.success(f"Version {result['revision'][:10]} saved. Existing versions and runs are preserved.")
                     elif action["type"] == "run":
-                        result=submit_api("/api/v1/pipelines/run", {"project_id":project_id,"graph":graph,"reuse_completed":reuse,"gpu_device":{"Automatic":"all","GPU 0":"0","GPU 1":"1"}[gpu]})
+                        result=submit_api("/api/v1/pipelines/run", {"project_id":project_id,"graph":graph,"reuse_completed":reuse,"gpu_device":gpu_values[gpu], **({"execution": {"placement": "local"}} if settings["mode"] == "sharded" else {})})
                         st.session_state[prefix+"-last-job"] = result["job"]
                         st.session_state["last_submitted_job"] = result["job"]
                         st.success(f"Pipeline queued · {result['job'].get('job_code') or result['job']['run_id']}")
@@ -599,5 +647,19 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 execution=read_json(run_dir/"graph_execution.json")
                 if execution.get("comparison_status") == "partial":
                     st.warning("Comparison partially completed: successful branches are available in Results. Failed branches and their errors are listed below.")
+                batch_rows = []
+                for node_id, step in execution.get('nodes', {}).items():
+                    for batch in step.get('batches', []):
+                        attempt = (batch.get('attempts') or [{}])[-1]
+                        batch_rows.append({'Step': node_id, 'Batch': batch['batch_id'], 'Status': batch['status'],
+                            'Worker': attempt.get('worker', batch.get('worker', '')),
+                            'GPU': str((attempt.get('allocation') or {}).get('gpu_device', '')),
+                            'Completed inputs': batch.get('completed_units', 0), 'Total inputs': batch['unit_count'],
+                            'Retries': max(0, len(batch.get('attempts', []))-1), 'Detail': batch.get('error') or batch.get('wait_reason', '')})
+                if batch_rows:
+                    completed = sum(b['Completed inputs'] for b in batch_rows)
+                    total = sum(b['Total inputs'] for b in batch_rows)
+                    st.progress(completed / total if total else 0, text=f'{completed}/{total} candidate-stage inputs completed')
+                    st.dataframe(batch_rows, hide_index=True, use_container_width=True)
                 if execution.get("nodes"):
                     st.dataframe([{"Step": next((n["data"]["label"] for n in snapshot.get("nodes", []) if n["id"]==nid),nid), "Status": state.get("status"), "Job":state.get("job_code", ""), "Candidates":state.get("candidate_count"), "Detail":state.get("error", "")} for nid,state in execution["nodes"].items()], hide_index=True, use_container_width=True)

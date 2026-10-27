@@ -166,6 +166,7 @@ def poll(batch, *, owner_id, project_id):
     store = Store()
     job = store.job(batch['cluster_job_id'], user)
     batch['worker'] = job.get('node_id')
+    batch['wait_reason'] = job.get('wait_reason') or ''
     status = job.get('status', 'queued')
     if status in {'failed', 'cancelled', 'lost'}:
         return status, None, job
