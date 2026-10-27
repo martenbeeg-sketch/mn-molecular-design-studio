@@ -76,3 +76,10 @@ MDS_GPU_TESTS=1 MDS_TEST_GPU=0 python -m pytest tests/test_scientific_gpu.py tes
 ```
 
 An opt-in preparation-only check is separately available through `MDS_RFD4_DOCKER_TESTS=1`; it is not counted as GPU inference. No preparation-only test was substituted for any inference result above.
+
+## AF2 conditioning and Boltz-2 configuration — Phase 3
+
+See [implemented modes, parameter migration and execution results](af2-boltz-configuration.md)
+and the [retained GPU evidence](af2-boltz-configuration-2026-10-27.json). AF2 now exposes
+conditioned self-consistency and target-only evaluation. Boltz sample/recycle controls
+map to native execution; the installed engine's mandatory full PAE output is explicit.
