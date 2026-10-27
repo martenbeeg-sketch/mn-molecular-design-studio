@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from antibody_constraints import verify_masked_sequence
 from esm.models.esmc import EsmcForMaskedLM
 
 
@@ -167,6 +168,7 @@ def main() -> None:
             if original_cdr_indices is not None:
                 tutorial._cdr_indices = original_cdr_indices
         binder_sequence = sequences[0].split("|")[-1]
+        framework_check = verify_masked_sequence(binder_sequence, binder_prompt) if binder_prompt else None
         fasta_lines.extend([f">esmfold2_design_{design_index:05d}", binder_sequence])
 
         for step, losses in sorted(trajectory.items()):
@@ -204,6 +206,8 @@ def main() -> None:
                 "design_index": design_index,
                 "seed": seed,
                 "binder_sequence": binder_sequence,
+                "sampled_binder_prompt": binder_prompt,
+                "framework_validation": framework_check,
                 "binder_length": len(binder_sequence),
                 "binder_type": config.get("binder_type", "miniprotein"),
                 "binder_framework": config.get("binder_framework"),

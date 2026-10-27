@@ -739,6 +739,9 @@ def run_esmfold2_native_binder_design(
         (Path(__file__).resolve().parents[3] / "esmfold2_binder_runner.py").read_text()
     )
 
+    from mn_molecular_design_studio import antibody_constraints
+    (config_dir / "antibody_constraints.py").write_text(Path(antibody_constraints.__file__).read_text())
+
     command = [
         "docker",
         "run",
@@ -780,6 +783,22 @@ def run_esmfold2_native_binder_design(
             complex_path = None
             if complex_value:
                 complex_path = output_dir / Path(str(complex_value)).name
+            if binder_type == "vhh":
+                try:
+                    prompt = design.get("sampled_binder_prompt")
+                    if not prompt:
+                        raise ValueError("VHH generator did not retain its sampled framework/CDR prompt.")
+                    framework_check = antibody_constraints.verify_masked_sequence(design.get("binder_sequence") or "", prompt)
+                    if not complex_path or not complex_path.exists():
+                        raise ValueError("VHH generator did not return a matching complex structure.")
+                    from mn_molecular_design_studio.scientific_contracts import verify_prediction_structure
+                    verify_prediction_structure(complex_path, {"proteins": [
+                        {"id": "A", "sequence": target_sequence},
+                        {"id": "B", "sequence": design["binder_sequence"]},
+                    ]})
+                except ValueError as exc:
+                    finish_job(job.run_dir, False, {"error": str(exc)})
+                    raise
             candidates.append(
                 {
                     "candidate_id": f"esmfold2_design_{design_index:05d}",
@@ -812,6 +831,8 @@ def run_esmfold2_native_binder_design(
                         "target_sequence": target_sequence,
                         "binder_type": binder_type,
                         "binder_framework": binder_framework if binder_type in {"scfv", "vhh"} else None,
+                        "framework_validation": framework_check if binder_type == "vhh" else None,
+                        "sampled_binder_prompt": design.get("sampled_binder_prompt"),
                         "output_target_chain": "A",
                         "output_binder_chain": "B",
                         "critics": critics,

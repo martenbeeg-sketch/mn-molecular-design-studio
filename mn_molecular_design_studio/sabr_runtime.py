@@ -147,10 +147,12 @@ def cdr_fixed_residues(
         for residue in chain.get_list():
             if residue.resname in sabr_constants.AA_3TO1:
                 label = residue_label(chain_id, residue)
-                if label not in chosen:
+                if label not in chosen or residue.resname == "CYS":
                     fixed.append(label)
         if not chosen:
             raise ValueError(f"SAbR found no selected CDR residues in chain {chain_id!r}.")
+    selected_by_region = {region: [label for label in labels if label not in set(fixed)]
+                          for region, labels in selected_by_region.items()}
     return list(dict.fromkeys(fixed)), selected_by_region
 
 
@@ -183,10 +185,12 @@ def fixed_residues_from_annotation(
         for residue in model[chain_id].get_list():
             if residue.resname in sabr_constants.AA_3TO1:
                 label = residue_label(chain_id, residue)
-                if label not in selected_labels:
+                if label not in selected_labels or residue.resname == "CYS":
                     fixed.append(label)
     if not selected_labels:
         raise ValueError("The SAbR annotation contains no residues in the selected CDRs.")
+    selected = {region: [label for label in labels if label not in set(fixed)]
+                for region, labels in selected.items()}
     return list(dict.fromkeys(fixed)), selected
 
 

@@ -678,6 +678,26 @@ def _normalize_ligandmpnn_candidates(
                         input_pdb,
                         design_chains,
                     )
+                fixed_validation = None
+                if params.get("model_type") == "ab_mpnn" and input_pdb:
+                    from mn_molecular_design_studio import design_validation as dv
+                    from mn_molecular_design_studio.antibody_constraints import verify_fixed_sequence
+                    if not backbone_path.exists():
+                        raise ValueError("AbMPNN returned a sequence without a matching output structure.")
+                    fasta_sequence = _designed_sequence_from_multichain_fasta(str(seq_row.get("sequence") or ""), input_pdb, design_chains)
+                    if fasta_sequence != binder_sequence:
+                        raise ValueError("AbMPNN FASTA sequence differs from its output structure.")
+                    chains = dv.protein_chains(dv.read_structure(input_pdb))
+                    if backbone_path.exists():
+                        output_chains = dv.protein_chains(dv.read_structure(backbone_path))
+                        for chain in target_chains:
+                            if chain not in output_chains or dv.sequence(output_chains[chain]) != dv.sequence(chains[chain]):
+                                raise ValueError("AbMPNN changed a fixed target-chain sequence.")
+                    residues = [(chain, residue) for chain in design_chains for residue in chains[chain]]
+                    labels = [f"{chain}{residue.id[1]}{residue.id[2].strip()}" for chain, residue in residues]
+                    original = "".join(dv.sequence(chains[chain]) for chain in design_chains)
+                    fixed_validation = verify_fixed_sequence(binder_sequence, labels, original,
+                        params.get("fixed_residues_by_candidate", {}).get(source_id, []))
                 mimosa_fixed_validation = _verify_mimosa_fixed_identity_sequence(
                     source, binder_sequence, design_chains, input_pdb, role_metadata
                 )
@@ -687,6 +707,7 @@ def _normalize_ligandmpnn_candidates(
                     "source_candidate": source,
                     "fasta": _rel_path(run_dir, fasta_path),
                     "fasta_header": seq_row.get("header"),
+                    "fixed_sequence_validation": fixed_validation,
                     "sequence_index": sequence_index,
                     "ligandmpnn_design_index": design_index,
                     "fixed_residues": params.get("fixed_residues_by_candidate", {}).get(source_id, []),

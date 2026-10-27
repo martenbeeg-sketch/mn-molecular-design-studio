@@ -628,7 +628,7 @@ TEMPLATE_REFERENCES={
     'protpardelle':('https://github.com/ProteinDesignLab/protpardelle-1c#sampling','Structure generation, eight ProteinMPNN sequences per backbone, then ESMFold self-consistency evaluation. The starter task is unconditional generation; switch to a conditioned task in the generator form.'),
     'esmfold2_binder':('https://github.com/Biohub/esm/tree/main/cookbook/tutorials','ESMFold2 Binder Design performs gradient-guided sequence optimization with its built-in ESMFold2 and ESMC scoring. Its candidate output can be sent through ProteinMPNN and then any compatible independent structure predictor; edit or replace these downstream starter steps on the canvas.'),
     'all_generators_boltz2':('https://github.com/RosettaCommons/RFdiffusion','Miniprotein binder workflow: branch from one Miniprotein Design Context into each available generator, use compact 60–100 residue designs where that engine exposes a binder-length range, then redesign with ProteinMPNN, refold with Boltz-2, and calculate ipSAE and Rosetta interface metrics. Each generator receives only annotations it supports.'),
-    'vhh_design':('https://github.com/Biohub/esm/tree/main/cookbook/tutorials','VHH-focused workflow using only engines with an explicit VHH or nanobody mode: BindCraft2 VHH scaffold with CDR edit regions, BoltzGen nanobody task, and ESMFold2 Binder Design in VHH mode with a selectable framework. Their outputs converge at ProteinMPNN, then Boltz-2 and interface analysis. Hotspot and coldspot annotations are passed only to compatible generator paths.'),
+    'vhh_design':('https://github.com/Biohub/esm/tree/main/cookbook/tutorials','VHH-focused workflow using only engines with an explicit VHH or nanobody mode: BindCraft2 VHH scaffold with CDR edit regions, BoltzGen nanobody task, and ESMFold2 Binder Design in VHH mode with a selectable framework. Their original sequences pass directly to Boltz-2 and interface analysis. Use the SAbR/AbMPNN CDR-redesign workflow when explicit redesign is needed. Hotspot and coldspot annotations are passed only to compatible generator paths.'),
     'cofold_protein':('https://github.com/google-deepmind/alphafold3','Compare the registered cofolding models that accept protein sequence inputs. ESMFold2 and other sequence-only engines are included for exploratory multimers; engines that require a target structure become runnable when one is provided.'),
     'cofold_protein_protein':('https://github.com/google-deepmind/alphafold3','Compare the registered protein–protein cofolding models. Enter target and partner sequences; add a target PDB path for AlphaFold2 Initial Guess and BoltzGen Fold, which require a structure template.'),
     'cofold_protein_ligand':('https://github.com/google-deepmind/alphafold3','Compare protein–ligand models that accept CCD codes or SMILES. Chai-1 accepts SMILES ligands; engines without ligand support are omitted.'),
@@ -935,7 +935,7 @@ def new_graph(template="foundry") -> dict[str, Any]:
         return clean_graph(result)
     if template == "vhh_design":
         generator_kinds = ["bindcraft2_generator", "boltzgen_generator", "esm_binder"]
-        kinds = ["target", "binder_context", *generator_kinds, "ligandmpnn", "boltz2", "ipsae", "rosetta_metrics", "results"]
+        kinds = ["target", "binder_context", *generator_kinds, "sabr", "boltz2", "ipsae", "rosetta_metrics", "results"]
         nodes = []
         for index, kind in enumerate(kinds):
             spec = NODE_CATALOG[kind]
@@ -947,8 +947,6 @@ def new_graph(template="foundry") -> dict[str, Any]:
                 params.update(num_designs=1, task="nanobody", binder_length="100-130")
             elif kind == "esm_binder":
                 params.update(num_designs=1, binder_type="vhh", binder_framework="auto")
-            elif kind == "ligandmpnn":
-                params["sequences"] = 1
             elif kind == "boltz2":
                 params["write_full_pae"] = True
             nodes.append({
@@ -975,15 +973,15 @@ def new_graph(template="foundry") -> dict[str, Any]:
         edges = [{"id": "edge-target-context", "source": target["id"], "sourceHandle": "out", "target": context["id"], "targetHandle": "in"}]
         for index, node in enumerate(nodes[2:len(generator_kinds) + 2]):
             edges.append({"id": f"edge-vhh-input-{index}", "source": context["id"], "sourceHandle": "out", "target": node["id"], "targetHandle": "in"})
-            edges.append({"id": f"edge-vhh-mpnn-{index}", "source": node["id"], "sourceHandle": "out", "target": downstream[0]["id"], "targetHandle": "in"})
+            edges.append({"id": f"edge-vhh-predict-{index}", "source": node["id"], "sourceHandle": "out", "target": downstream[0]["id"], "targetHandle": "in"})
         for index, (source, dest) in enumerate(zip(downstream, downstream[1:])):
             edges.append({"id": f"edge-vhh-analysis-{index}", "source": source["id"], "sourceHandle": "out", "target": dest["id"], "targetHandle": "in"})
         return clean_graph({
             "schema_version": SCHEMA, "id": uuid.uuid4().hex,
-            "name": "VHH design · supported generators → ProteinMPNN → Boltz-2 + analysis",
+            "name": "VHH design · supported generators → Boltz-2 + analysis",
             "nodes": nodes, "edges": edges,
             "viewport": {"x": 0, "y": 0, "zoom": 0.62},
-            "template_id": template,
+            "template_id": template, "template_version": 2,
         })
     kinds = ["target", "binder_context", "rfd3", "foundry_mpnn", "rf3", "results"] if template == "foundry" else ["target", "results"]
     if template == "bindcraft2":
@@ -1091,12 +1089,25 @@ def new_graph(template="foundry") -> dict[str, Any]:
 
 
 def migrate_template_graph(graph: dict[str, Any]) -> dict[str, Any]:
-    """Upgrade old All generators drafts to the miniprotein design template.
-
-    Keep node IDs, settings, and the pipeline name, but restore the template's
-    non-overlapping columns and route every generator from Binder Design
-    Context. This is a one-time layout migration, recorded on the graph.
-    """
+    """Migrate supported starter drafts while retaining explicit user settings."""
+    if graph.get("template_id") == "vhh_design" and graph.get("template_version") in (None, 1):
+        # Repair only the unmodified, implicit generic redesign in old starter drafts.
+        # Explicitly configured redesign nodes remain the user's choice.
+        candidates = [node for node in graph.get("nodes", []) if node.get("data", {}).get("kind") == "ligandmpnn"]
+        if len(candidates) == 1:
+            node = candidates[0]
+            defaults = {item["name"]: item["default"] for item in NODE_CATALOG["ligandmpnn"]["fields"]}
+            defaults["sequences"] = 1
+            params = node["data"].get("params") or {}
+            if all(value == defaults.get(key) for key, value in params.items()):
+                migrated = copy.deepcopy(graph)
+                replacement = next(item for item in migrated["nodes"] if item["id"] == node["id"])
+                specification = NODE_CATALOG["sabr"]
+                replacement["data"] = {"kind": "sabr", "label": specification["label"],
+                    "params": {item["name"]: copy.deepcopy(item["default"]) for item in specification["fields"]}}
+                migrated["template_version"] = 2
+                return migrated
+        return graph
     if graph.get("template_id") == "unidock_active_learning":
         if graph.get("template_version") == ACTIVE_LEARNING_TEMPLATE_VERSION:
             return graph
@@ -1284,6 +1295,7 @@ def clean_graph(graph: dict) -> dict:
             "viewport": viewport,**({'template_id':graph['template_id']} if graph.get('template_id') in TEMPLATE_REFERENCES else {}),
             **({'template_version':graph['template_version']} if type(graph.get('template_version')) is int and (
                 graph.get('template_id') == 'all_generators_boltz2' and 1 <= graph['template_version'] <= 3
+                or graph.get('template_id') == 'vhh_design' and graph['template_version'] == 2
                 or graph.get('template_id') == 'unidock_active_learning' and 2 <= graph['template_version'] <= ACTIVE_LEARNING_TEMPLATE_VERSION) else {})}
 
 
@@ -1465,7 +1477,8 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
         if require_inputs and kind == "complexa_generator" and not incoming[node_id] and not node["data"]["params"].get("target_pdb"):
             raise ValueError("Load a structure in Proteina-Complexa Generator or connect a Target block.")
         length = node["data"]["params"].get("binder_length")
-        if isinstance(length, str):
+        scaffold_mode = kind in {"bindcraft2", "bindcraft2_generator"} and node["data"]["params"].get("modality") in {"VHH", "scFv", "Fab", "ARP"}
+        if isinstance(length, str) and not (length == "" and scaffold_mode):
             match = re.fullmatch(r"(\d+)(?:-(\d+))?", length)
             if not match or not 1 <= int(match[1]) <= int(match[2] or match[1]) <= 10000:
                 raise ValueError("Binder length must be a positive length or range, such as 74 or 60-100.")
@@ -1592,7 +1605,7 @@ STARTER_TEMPLATES = {"Active-learning docking": "unidock_active_learning",
                  "Genie3 · MPNN → AF2 template":"genie3","Protpardelle-1C · MPNN → ESMFold":"protpardelle",
                  "ESMFold2 Binder Design → ProteinMPNN → RF3":"esmfold2_binder",
                  "Miniprotein binders · all generators → ProteinMPNN → Boltz-2 + analysis":"all_generators_boltz2",
-                 "VHH binders · BindCraft2 + BoltzGen + ESMFold2 → ProteinMPNN → Boltz-2":"vhh_design",
+                 "VHH binders · BindCraft2 + BoltzGen + ESMFold2 → Boltz-2":"vhh_design",
                  "RFD4 Protein Binder → Boltz-2 → interface analysis":"rfd4_protein_binder",
                  "RFD4 Small-Molecule Pocket Design → Boltz-2":"rfd4_small_molecule",
                  "RFD4 Enzyme Motif Scaffolding → Boltz-2":"rfd4_enzyme",
