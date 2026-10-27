@@ -75,11 +75,9 @@ def _graph_for(name: str, steps: list[dict[str, Any]]) -> dict[str, Any]:
                 sampling_steps=int(engine_options.get("sampling_steps") or 200),
                 seed_count=int(engine_options.get("seed_count") or 1),
                 use_target_template=False,
-                # The graph node also exposes aliases used by other Boltz-2
-                # runners; set both names to the actual optimized-B2 values.
-                recycling_steps=int(p.get("num_recycles") or 3),
-                diffusion_samples=int(p.get("samples") or 1),
-                write_full_pae=bool(engine_options.get("generate_ipsae", True)),
+                write_full_pae=bool(engine_options.get("write_full_pae", True)),
+                generate_ipsae=bool(engine_options.get("generate_ipsae", True)),
+                prediction_config_version=2,
             )
             label = "Boltz-2 target-MSA refold"
             description = "Existing completed Boltz-2 run; target MSA enabled, structural templates off."

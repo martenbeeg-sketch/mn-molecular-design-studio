@@ -166,6 +166,8 @@ ENGINE_PROFILES: dict[str, dict[str, Any]] = {
              "help": "Optional experimental method conditioning."},
         ),
         "supports_msa_upload": True,
+        "fixed_settings": ("Full PAE output is always enabled by the installed Boltz-2 engine and retained for ipSAE.",),
+        "legacy_settings": ({"key": "write_full_pae", "type": "bool", "label": "Full PAE", "default": True},),
     },
     "protenix_v2": {
         "label": "Protenix V2",
@@ -409,7 +411,7 @@ for _engine, _profile in ENGINE_PROFILES.items():
         )
         _profile["fixed_settings"] = (*_profile.get("fixed_settings", ()), msa_note)
         continue
-    _profile["legacy_settings"] = tuple(dict(field) for field in _profile.get("settings", ()) if field["key"] in {"use_msa_server", "msa_mode"})
+    _profile["legacy_settings"] = (*_profile.get("legacy_settings", ()), *(dict(field) for field in _profile.get("settings", ()) if field["key"] in {"use_msa_server", "msa_mode"}))
     _fields = [dict(field) for field in _profile.get("settings", ()) if field["key"] not in {"use_msa_server", "msa_mode"}]
     _fields = [field for field in _fields if field["key"] != "use_msa"]
     if _engine != "boltzgen_fold":
@@ -1703,6 +1705,8 @@ def _batch_options(
                 "use_msa": use_msa,
                 "use_template": bool(settings.get("use_template", False)), "use_default_params": True}
     if engine == "boltz2":
+        if settings.get("write_full_pae", True) is not True:
+            raise ValueError("Full PAE is always emitted by the installed Boltz-2 engine; write_full_pae=False is unsupported.")
         options = {
             # The optimized Boltz image defaults to /models, so mount the
             # shared Boltz cache there instead of relying on its empty image
@@ -1945,6 +1949,10 @@ def _prepare_prediction(
     clean_name = re.sub(r"[^A-Za-z0-9_-]+", "_", str(job_name or "optimized-prediction")).strip("_")[:80]
     clean_name = clean_name or "optimized_prediction"
     selected_options = _validate_engine_options(profile, engine_options)
+    if str(engine) == "boltz2":
+        if selected_options.get("write_full_pae", True) is not True:
+            raise ValueError("Full PAE is always emitted by the installed Boltz-2 engine and retained for ipSAE; write_full_pae=False is unsupported.")
+        selected_options["write_full_pae"] = True
     if str(engine) == "alphafold3":
         from mn_molecular_design_studio.engine.workflow_engine.workflows.af3_jax_cofolding import MODEL_PROFILES
         model_profile = MODEL_PROFILES[selected_options.get("model", "alphafold3")]
@@ -2241,10 +2249,12 @@ def boltz2_prediction_parameters(
     tasks: list[dict[str, Any]], *, settings: dict[str, Any], job_name: str,
 ) -> dict[str, Any]:
     """Build the canonical optimized-prediction request used by the Boltz-2 tile."""
+    from mn_molecular_design_studio.prediction_configuration import boltz_settings
+    settings = boltz_settings(settings)
     mode = str(settings.get("optimization_mode") or "off")
     option_keys = (
         "sampling_steps", "max_parallel_samples", "step_scale", "output_format",
-        "seed_count", "use_potentials", "method", "use_msa", "generate_ipsae", "boltz_version",
+        "seed_count", "use_potentials", "method", "use_msa", "generate_ipsae", "boltz_version", "write_full_pae",
     )
     engine_options = {key: settings[key] for key in option_keys if key in settings}
     engine_options["max_msa_seqs"] = int(settings.get("max_msa_seqs") or 8192)
@@ -2256,8 +2266,8 @@ def boltz2_prediction_parameters(
         "optimization_mode": mode,
         "job_name": str(job_name or "boltz2-prediction"),
         "seed": int(settings.get("seed") or 0),
-        "samples": int(settings.get("samples") or 1),
-        "num_recycles": int(settings.get("num_recycles") or ENGINE_PROFILES["boltz2"]["default_recycles"]),
+        "samples": int(settings.get("samples", 1)),
+        "num_recycles": int(settings.get("num_recycles", ENGINE_PROFILES["boltz2"]["default_recycles"])),
         "cpu_cores": int(settings.get("cpu_cores") or 4),
         "gpu_device": str(settings.get("gpu_device") or ("0,1" if mode == "big" else "0")),
         "tasks": [dict(task) for task in tasks],
@@ -2565,6 +2575,11 @@ def run_optimized_prediction(
                 command.extend(["--entrypoint", "/bin/bash", "-w", "/work", str(profile["image"]), "-lc", script])
             else:
                 command.extend(["-w", "/work", str(profile["image"]), *batch_arguments])
+        from mn_molecular_design_studio.prediction_provenance import image_identity, file_identity
+        installed_engine = image_identity(profile["image"])
+        prediction_inputs = [file_identity(path) for path in (raw_root / "inputs").rglob("*") if path.is_file()]
+        checkpoint_provenance = [file_identity(boltz_cache / name) for name in ("boltz2_conf.ckpt", "boltz2_aff.ckpt", "ccd.pkl")] if profile["api_engine"] == "boltz2" else []
+        write_json(raw_root / "execution_inputs.json", {**installed_engine, "input_files": prediction_inputs, "checkpoints": checkpoint_provenance})
         write_json(job.run_dir / "command.json", {
             "mode": "docker", "command": command, "image": profile["image"],
             "api_version": "esmfold-cli/v1" if profile["api_engine"] == "esmfold" else "mn-predict/v1",
@@ -2685,7 +2700,16 @@ def run_optimized_prediction(
                         "molecule_chain_options": task["molecule_chain_options"],
                         "engine": engine, "image": profile["image"], "api_engine": profile["api_engine"],
                         "optimization_mode": selected_mode, "seed": int(seed),
+                        **installed_engine,
+                        "input_provenance": str(raw_root / "execution_inputs.json"),
+                        "checkpoint_provenance": checkpoint_provenance,
+                        "engine_version": profile.get("code_version"),
+                        "conditioning_mode": "target_template" if (task.get("structure_templates") or task.get("boltz_templates") or task.get("target_pdb_text")) else "sequence_only",
+                        "effective_settings": {"samples_per_item": int(samples), "seed": int(seed), **options} if profile["api_engine"] == "boltz2" else {},
+                        "execution_manifest": str(manifest_path) if profile["api_engine"] == "boltz2" else None,
+                        "native_execution": batch_result.get("execution", {}) if profile["api_engine"] == "boltz2" else {},
                         "prediction_protocol": {"engine": engine, "image": profile["image"], "optimization_mode": selected_mode,
+                            "samples": int(samples), "seed": int(seed),
                             "num_recycles": recycle_count, "engine_options": selected_options, "validation_mode": validation_mode,
                             "target_use_msa": bool(target_use_msa), "use_target_template": bool(use_target_template),
                             "molecule_chain_options": task["molecule_chain_options"], "restraints": task["restraints"]},

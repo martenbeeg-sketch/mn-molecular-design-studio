@@ -333,10 +333,7 @@ _OPTIONAL_FIELDS = {
     "rf3": [field("n_recycles", "Recycles", 10, minimum=1, maximum=100),
         field("num_steps", "Diffusion steps", 50, minimum=1, maximum=2000),
         field("diffusion_batch_size", "Number of samples", 5, minimum=1, maximum=100, section="basic"), SEED],
-    "boltz2": [field("recycling_steps", "Recycling steps", 10, minimum=1, maximum=100),
-        field("sampling_steps", "Sampling steps", 200, minimum=1, maximum=2000),
-        field("diffusion_samples", "Number of samples", 3, minimum=1, maximum=100, section="basic"),
-        field("write_full_pae", "Write full PAE", True, kind="boolean")],
+    "boltz2": [field("generate_ipsae", "Calculate ipSAE", True, kind="boolean")],
     "af2": [SEED, field("af2_validation_mode", "AF2 validation mode", "conditioned_self_consistency", kind="select", section="basic",
         options=["conditioned_self_consistency", "target_only"], help="Conditioned: initialize with the designed complex. Target-only: retain target template/sequence/side chains and supply binder sequence without binder coordinates. Neither mode measures experimental binding probability."),
         field("model_count", "Number of models", 1, minimum=1, maximum=5, section="basic"),
@@ -1250,11 +1247,16 @@ def clean_graph(graph: dict) -> dict:
             raise ValueError("Node settings must be an object.")
         if kind=='protpardelle' and 'sequences' in params:
             kind='protpardelle_pipeline'
+        if kind == 'boltz2':
+            from mn_molecular_design_studio.prediction_configuration import boltz_settings
+            params = boltz_settings(params, saved_graph=True)
         if kind == 'af2' and 'af2_validation_mode' not in params:
             upstream_kinds = {n.get('id'): n.get('data', {}).get('kind') for n in nodes}
             direct = any(e.get('target') == node['id'] and upstream_kinds.get(e.get('source')) == 'cofold_input' for e in edges)
             params['af2_validation_mode'] = 'target_only' if direct else 'conditioned_self_consistency'
         allowed = {f["name"] for f in NODE_CATALOG[kind]["fields"]} | ({"selected_candidate_ids"} if kind in {"design_source","generation_source","backbone_source","project_design_source"} else set())
+        if kind == 'boltz2':
+            allowed |= {'prediction_config_version', 'configuration_migration', 'write_full_pae'}
         # Migrate generation-only kinds from the previous small canvas forms.
         if kind=='rfdiffusion':params.pop('rfdiffusion_guidance_preset',None)
         if kind=='pxdesign':

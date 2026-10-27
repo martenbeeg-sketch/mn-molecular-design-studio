@@ -430,6 +430,9 @@ def _optimized_prediction_request(engine: str, params: dict, source: dict, name:
     """Build a shared prediction request for a direct molecule task or design candidates."""
     from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
 
+    if engine == "boltz2":
+        from mn_molecular_design_studio.prediction_configuration import boltz_settings
+        params = boltz_settings(params)
     profile = ENGINE_PROFILES[engine]
     option_keys = {setting["key"] for setting in profile.get("settings", ())}
     engine_options = {
@@ -437,6 +440,8 @@ def _optimized_prediction_request(engine: str, params: dict, source: dict, name:
         for setting in profile.get("settings", ())
         if setting["key"] in params and setting["key"] not in {"use_msa", "use_msa_server"}
     }
+    if engine == "boltz2":
+        engine_options["write_full_pae"] = True
     msa_setting = "target_use_msa" if "target_use_msa" in params else "use_target_msa"
     if "use_msa" in option_keys:
         engine_options["use_msa"] = bool(params.get(msa_setting, True))
@@ -1083,11 +1088,12 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     from mn_molecular_design_studio import mimosa_motif
                     key_params["checkpoint_digest"] = file_digest(mpnn_input.checkpoint("ab_mpnn"))
                     key_params["mimosa_motif_adapter_digest"] = file_digest(Path(mimosa_motif.__file__))
-                if kind == "af2":
+                if kind in {"af2", "boltz2"}:
                     from mn_molecular_design_studio import prediction_configuration
                     key_params["prediction_configuration_digest"] = file_digest(Path(prediction_configuration.__file__))
-                    from mn_molecular_design_studio.engine.workflow_engine.workflows.refolding import AF2_BINDER_EVAL
-                    key_params["native_runner_digest"] = file_digest(AF2_BINDER_EVAL)
+                    if kind == "af2":
+                        from mn_molecular_design_studio.engine.workflow_engine.workflows.refolding import AF2_BINDER_EVAL
+                        key_params["native_runner_digest"] = file_digest(AF2_BINDER_EVAL)
                 if NODE_CATALOG[kind]["workflow"]:
                     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS, _get_function
                     implementation = _get_function(WORKFLOWS[NODE_CATALOG[kind]["workflow"]])

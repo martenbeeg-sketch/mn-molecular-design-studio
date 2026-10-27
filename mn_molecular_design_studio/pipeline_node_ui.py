@@ -17,6 +17,8 @@ def node_form_defaults(kind):
     """Read engine defaults from the same schema used by standalone tool pages."""
     spec = NODE_CATALOG[kind]
     result = {f["name"]: copy.deepcopy(f["default"]) for f in spec["fields"]}
+    if kind == "boltz2":
+        result["prediction_config_version"] = 2
     if not spec["workflow"]:
         return result
     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import workflow_schema
@@ -274,7 +276,9 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
     kind = node["data"]["kind"]
     spec = NODE_CATALOG[kind]
     values = {f["name"]:copy.deepcopy(node["data"]["params"].get(f["name"],f["default"])) for f in spec["fields"]}
-    values.update({k:copy.deepcopy(v) for k,v in node["data"]["params"].items() if k=="selected_candidate_ids"})
+    values.update({k:copy.deepcopy(v) for k,v in node["data"]["params"].items() if k in {"selected_candidate_ids", "configuration_migration", "prediction_config_version"}})
+    if kind == "boltz2":
+        values["prediction_config_version"] = 2
     st.html('''<style>
       [role="dialog"]:has(.st-key-pipeline-node-form){width:min(960px,calc(100vw - 48px));max-width:960px}
       .st-key-pipeline-node-form {color:#193e30}
@@ -715,6 +719,10 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                             values[field["name"]] = _render_field(field,values,key)
             if kind == "rfd3" and values.get("low_memory_mode"):
                 st.warning("Low memory mode uses a chunked path with partially missing checkpoint weights and may reduce prediction quality.")
+            if kind == "boltz2":
+                for notice in values.get("configuration_migration", []):
+                    st.warning(notice)
+                st.caption("Samples and recycles are the effective Boltz settings. The installed engine always writes full PAE, retained for ipSAE; confidence scores are not experimental binding probabilities.")
             if kind == "af2":
                 from mn_molecular_design_studio.prediction_configuration import AF2_MODES
                 st.caption(AF2_MODES[values.get("af2_validation_mode", "conditioned_self_consistency")])

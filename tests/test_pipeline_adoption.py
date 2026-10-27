@@ -98,8 +98,10 @@ def test_adoption_creates_three_completed_display_steps_without_execution(tmp_pa
     assert all(node["status"] == "completed" for node in execution["nodes"].values())
     assert json.loads((root / "result.json").read_text())["metrics"]["completed_steps"] == 3
     boltz_params = graph["nodes"][2]["data"]["params"]
-    assert boltz_params["samples"] == boltz_params["diffusion_samples"] == 1
-    assert boltz_params["num_recycles"] == boltz_params["recycling_steps"] == 3
+    assert boltz_params["samples"] == 1
+    assert "diffusion_samples" not in boltz_params
+    assert boltz_params["num_recycles"] == 3
+    assert "recycling_steps" not in boltz_params
     assert boltz_params["sampling_steps"] == 200
     assert boltz_params["use_target_template"] is False
     assert not (root / "worker_request.json").exists()
