@@ -353,8 +353,9 @@ class Store:
         if needs.get("all_gpus"):
             gpu_count = max(gpu_count, len(available.get("gpus", [])))
         requested = set(str(v) for v in needs.get("gpu_ids", []))
+        from .gpu_runtime import compatible as runtime_compatible
         gpus = [g for g in available.get("free_gpus", []) if float(g.get("free_vram_gb", 0)) >= float(needs.get("min_vram_gb", 0))
-                and (not requested or str(g["gpu_id"]) in requested)]
+                and (not requested or str(g["gpu_id"]) in requested) and runtime_compatible(g, needs.get("gpu_runtime_profiles", {}))]
         return (len(gpus) >= gpu_count and float(available.get("cpu_free", 0)) >= float(needs.get("cpu_threads", 1))
                 and float(available.get("ram_available_gb", 0)) >= float(needs.get("ram_gb", 0))
                 and float(available.get("scratch_free_gb", 0)) >= float(needs.get("scratch_gb", 0)))
@@ -517,6 +518,8 @@ class Store:
                             wait_reason = f"{node['name']} is missing the required image: {', '.join(missing_images)}."
                         elif missing_references:
                             wait_reason = f"{node['name']} is missing required reference files: {', '.join(missing_references)}."
+                        elif any(snapshot.get('reference_hashes', {}).get(path) != checksum for path, checksum in needs.get('reference_hashes', {}).items()):
+                            wait_reason = f"{node['name']} has different checkpoint contents or has not yet reported their SHA-256 identities."
                         elif needs.get("code_revision") and snapshot.get("code_revision") != needs["code_revision"]:
                             wait_reason = f"{node['name']} is running a different Studio code revision."
                         else:

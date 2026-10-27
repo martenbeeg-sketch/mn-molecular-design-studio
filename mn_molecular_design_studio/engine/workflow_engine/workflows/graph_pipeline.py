@@ -767,6 +767,21 @@ def _submit(request: dict, parent: Path, node: dict, *, owner_id: str, project_i
         request["resources"]["min_vram_gb"] = 0
     if workflow in {"design.kejia_idr", "design.peptide_trap"}:
         request["resources"]["cpu_cores"] = int(request["parameters"].get("cpu_cores", 4))
+    if node.get('candidate_batch') and request['resources']['gpu_device'] not in {'none', 'cpu'}:
+        from mn_molecular_design_studio.cluster.gpu_runtime import profiles, request_images, compatible
+        from mn_molecular_design_studio.cluster.capabilities import gpu_details
+        runtime_profiles = profiles(request_images(request))
+        devices = gpu_details()
+        eligible = [i for i, device in devices.items() if compatible(device, runtime_profiles)]
+        selector = str(request['resources']['gpu_device'])
+        if runtime_profiles and not eligible:
+            raise ValueError('No local GPU satisfies the installed CUDA binary targets.')
+        if runtime_profiles and selector not in {'all', 'auto', 'any'} and any(i not in eligible for i in selector.removeprefix('device=').split(',')):
+            raise ValueError('The selected GPU does not satisfy the installed CUDA binary targets.')
+        if selector in {'auto', 'any'} and runtime_profiles and set(eligible) != set(devices):
+            request['resources']['gpu_device'] = eligible[int(node.get('batch_offset', 0)) % len(eligible)]
+        elif selector == 'all' and runtime_profiles and set(eligible) != set(devices):
+            raise ValueError('The requested GPU group includes an incompatible CUDA architecture.')
     path = parent / "requests" / f"{node['id']}.json"
     # Workflow submission resolves relative paths against the request file's
     # parent directory. `write_json` stores managed paths relative to the

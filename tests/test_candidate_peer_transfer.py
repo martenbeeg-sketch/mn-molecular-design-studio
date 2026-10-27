@@ -74,3 +74,13 @@ def test_output_transfer_resumes_and_rejects_corruption(tmp_path, monkeypatch):
     bundles.blob_path(checksum).write_bytes(b'corrupt')
     with pytest.raises(ValueError, match='integrity'):
         cb._artifact(*args)
+
+
+def test_cuda_targets_distinguish_4090_and_5090_without_assuming_equal_support():
+    from mn_molecular_design_studio.cluster.gpu_runtime import compatible
+    old = {'torch-image': {'cuda': '12.1', 'targets': ['sm_80', 'sm_86', 'sm_90']}}
+    assert compatible({'compute_capability': '8.9', 'driver_cuda_api': 13000}, old)
+    assert not compatible({'compute_capability': '12.0'}, old)
+    assert not compatible({}, old)
+    assert compatible({'compute_capability': '12.0'}, {'new': {'targets': ['sm_120']}})
+    assert compatible({'compute_capability': '12.0'}, {'ptx': {'targets': ['compute_90']}})

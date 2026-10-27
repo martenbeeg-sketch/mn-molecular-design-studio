@@ -65,6 +65,51 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
+def data_hashes(value):
+    """Hash data artifacts without repeatedly streaming model/reference stores.
+
+    Installed model identity belongs to the resolved execution specification and
+    native checkpoint provenance. It is not an output artifact of each candidate.
+    Scientific reference structures/MSAs still receive ordinary content checks.
+    """
+    from mn_molecular_design_studio.runtime import reference_root
+    from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+    root = reference_root().resolve()
+    seen, result = set(), {}
+    scientific = {'.pdb', '.cif', '.mmcif', '.a3m', '.fasta', '.fa', '.sdf', '.mol2', '.pdbqt'}
+    def visit(item, base=None):
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if key not in {'candidate_execution', 'checkpoint_provenance'}:
+                    visit(child, base)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child, base)
+        elif isinstance(item, (str, Path)) and item:
+            try:
+                path = resolve_stored_path(str(item), run_dir=base, must_exist=True)
+                if path is None or not path.is_file():
+                    return
+                path = path.resolve()
+                if path in seen or path.is_relative_to(root) and path.suffix.lower() not in scientific:
+                    return
+            except (OSError, ValueError):
+                return
+            seen.add(path)
+            result[str(path)] = file_digest(path)
+            try:
+                if path.suffix == '.json':
+                    visit(json.loads(path.read_text()), path.parent)
+                elif path.suffix == '.jsonl':
+                    for line in path.read_text().splitlines():
+                        if line.strip():
+                            visit(json.loads(line), path.parent)
+            except (ValueError, UnicodeError):
+                pass
+    visit(value)
+    return result
+
+
 def initialize(parent, node, source, params, key, settings, *, make_source, make_request, read_rows):
     """Freeze ordered units and complete effective requests before submitting any work."""
     rows = read_rows(source) if source.get('candidates_jsonl') else []
@@ -101,7 +146,7 @@ def initialize(parent, node, source, params, key, settings, *, make_source, make
         request = make_request(node['data']['kind'], effective, batch_source, f'{node["data"]["label"]} · {batch_id}')
         manifest = dict(schema_version=1, pipeline=str(parent), node=node['id'], batch_id=batch_id,
                         scientific_key=key, offset=offset, input_candidate_ids=ids[offset:offset + count],
-                        unit_count=count, request=request, input_hashes=referenced_files(request), policy=settings)
+                        unit_count=count, request=request, input_hashes=data_hashes(request), policy=settings)
         manifest['sha256'] = digest(manifest)
         path = directory / f'{batch_id}.json'
         if path.exists():
@@ -135,6 +180,10 @@ def collect(batch, output, *, read_rows):
     """Assign output identities once, independently of attempt/worker/native run IDs."""
     manifest = read_manifest(batch)
     rows = read_rows(output)
+    for row in rows:
+        structure = row.get('complex_pdb') or row.get('binder_pdb')
+        if structure and not Path(structure).is_file():
+            raise ValueError('Worker returned an unavailable candidate structure.')
     native_ids = [str(r.get('candidate_id') or '') for r in rows]
     if not all(native_ids) or len(set(native_ids)) != len(native_ids):
         raise ValueError('Worker returned missing or duplicated candidate identities.')
@@ -155,8 +204,8 @@ def collect(batch, output, *, read_rows):
             pipeline=manifest['pipeline'], node=manifest['node'],
             effective_request=manifest['request'], attempts=copy.deepcopy(batch['attempts']),
             worker=attempt.get('worker'), allocation=attempt.get('allocation'),
-            software=attempt.get('software'), hardware=attempt.get('hardware'), output_hashes=referenced_files(row))
-    batch['output_hashes'] = referenced_files(rows)
+            software=attempt.get('software'), hardware=attempt.get('hardware'), output_hashes=data_hashes(row))
+    batch['output_hashes'] = data_hashes(rows)
     accounted = {p for row in rows for p in row.get('parents', [])} | {row['candidate_id'] for row in rows}
     batch['missing_candidate_ids'] = sorted(inputs - accounted)
     batch['completed_units'] = len(inputs & accounted) if inputs else batch['unit_count'] if rows else 0
@@ -335,7 +384,7 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                 with submission_tags(candidate_submission_key=submission_key,
                                      pipeline_parent_run_dir=str(parent), graph_node_id=node['id'],
                                      candidate_batch_id=batch['batch_id'], input_manifest_sha256=manifest['sha256']):
-                    child = graph._submit(request, parent, {**node, 'id': f'{node["id"]}_{batch["batch_id"]}_a{attempt_index}'},
+                    child = graph._submit(request, parent, {**node, 'id': f'{node["id"]}_{batch["batch_id"]}_a{attempt_index}', 'candidate_batch': True, 'batch_offset': batch['offset']},
                                           owner_id=owner_id, project_id=project_id, gpu_device=selected_gpu)
             batch['attempts'].append(dict(index=attempt_index, run_dir=str(child), status='queued',
                                           started_at=utc_now(), submission_key=submission_key,
@@ -365,6 +414,8 @@ def cancel(parent, state):
         for group in node.get('incremental_groups', {}).values():
             cancel(parent, {'nodes': {'group': group['state']}})
         for batch in node.get('batches', []):
+            if batch['status'] in {'pending', 'retrying'}:
+                batch['status'] = 'cancelled'
             if batch.get('cluster_job_id') and batch['status'] not in TERMINAL:
                 from mn_molecular_design_studio.cluster import candidate_batches
                 marker = read_json(Path(parent) / 'molecular_design_studio.json')

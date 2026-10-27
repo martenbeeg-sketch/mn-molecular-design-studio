@@ -261,22 +261,27 @@ def requirements(payload, *, references=(), installed_images=None):
 def gpu_details():
     """Device identity/telemetry; absence never invents a GPU architecture."""
     import csv
+    import ctypes
+    driver_api = None
+    try:
+        version = ctypes.c_int()
+        if ctypes.CDLL('libcuda.so.1').cuDriverGetVersion(ctypes.byref(version)) == 0:
+            driver_api = version.value
+    except OSError:
+        pass
     try:
         result = subprocess.run(['nvidia-smi', '--query-gpu=index,name,uuid,driver_version,compute_cap,memory.total,memory.free,utilization.gpu',
                                  '--format=csv,noheader,nounits'], capture_output=True, text=True, check=True, timeout=3)
         return {str(row[0]).strip(): dict(name=row[1].strip(), uuid=row[2].strip(), driver_version=row[3].strip(),
-                    compute_capability=row[4].strip(), total_vram_gb=float(row[5])/1024,
+                    compute_capability=row[4].strip(), driver_cuda_api=driver_api, total_vram_gb=float(row[5])/1024,
                     free_vram_gb=float(row[6])/1024, utilization_percent=float(row[7]))
                 for row in csv.reader(result.stdout.splitlines()) if len(row) == 8}
     except (OSError, subprocess.SubprocessError, ValueError):
         return {}
 
 
-_REFERENCE_DIGEST_CACHE = {}
-
-
 def reference_fingerprints(probes):
-    """Hash explicitly required files once per stat identity, never walk databases."""
+    """Hash explicitly required files, without walking model/reference databases."""
     from mn_molecular_design_studio.cache_provenance import file_digest
     from mn_molecular_design_studio.runtime import reference_root
     root = reference_root().resolve()
@@ -285,9 +290,5 @@ def reference_fingerprints(probes):
         path = (root / str(relative)).resolve()
         if not path.is_relative_to(root) or not path.is_file():
             continue
-        info = path.stat()
-        identity = (str(path), info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-        if identity not in _REFERENCE_DIGEST_CACHE:
-            _REFERENCE_DIGEST_CACHE[identity] = file_digest(path)
-        result[str(relative)] = _REFERENCE_DIGEST_CACHE[identity]
+        result[str(relative)] = file_digest(path)
     return result

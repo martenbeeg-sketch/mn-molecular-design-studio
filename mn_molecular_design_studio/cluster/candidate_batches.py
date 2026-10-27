@@ -78,7 +78,10 @@ def pack_request(request, destination):
             return [transform(v, base, key) for v in value]
         if not isinstance(value, str) or not value:
             return value
-        path = resolve_stored_path(value, run_dir=base, must_exist=True)
+        try:
+            path = resolve_stored_path(value, run_dir=base, must_exist=True)
+        except (OSError, ValueError):
+            path = None
         if path is not None and path.is_file():
             path = path.resolve()
             if path.is_relative_to(reference) and path.suffix not in {'.pdb', '.cif', '.mmcif', '.a3m', '.fasta', '.fa'}:
@@ -108,6 +111,8 @@ def submit(request, manifest, submission_key, settings, *, owner_id, project_id,
     if 'prepared_envelope' not in state:
         prepared, checksum, references, size = pack_request(request, Path(manifest).with_suffix('.inputs.zip'))
         needs = capabilities.requirements(request, references=references)
+        from .gpu_runtime import profiles, request_images
+        needs['gpu_runtime_profiles'] = profiles(request_images(request))
         state['prepared_envelope'] = dict(kind='workflow', payload=prepared, bundle_id=checksum,
             project_id=project_id, requirements=needs, origin_node=config.identity(),
             placement=settings['placement'], idempotency_key=submission_key)
@@ -206,6 +211,8 @@ def poll(batch, *, owner_id, project_id):
         elif remote_root and value.startswith(remote_root + '/'):
             relative = value[len(remote_root) + 1:]
         elif value in artifacts:
+            relative = value
+        elif not value.startswith('/') and value.startswith(('artifacts/', 'outputs/')) and Path(value).suffix:
             relative = value
         if relative:
             if relative in {collection, 'metadata.json', 'input.json', 'result.json'}:
