@@ -205,3 +205,21 @@ def test_saved_graphs_retain_native_semantics_and_explicit_execution_policy():
     settings = dict(mode='sharded', failure_policy='partial', placement='local', batch_size=2, incremental_cpu=True)
     graph['candidate_execution'] = settings
     assert clean_graph(graph)['candidate_execution'] == ce.policy(settings)
+
+
+def test_controller_retry_waits_for_scheduler_retry_and_live_process_termination(monkeypatch):
+    from types import SimpleNamespace
+    from mn_molecular_design_studio.engine.workflow_engine.core import central_scheduler, scheduler
+    state = {'status': 'queued'}
+    monkeypatch.setattr(central_scheduler, '_client', lambda: SimpleNamespace(get_job=lambda job: state))
+    monkeypatch.setattr(scheduler, '_pid_alive', lambda pid: pid == 123)
+    metadata = dict(status='failed', scheduler_job_id='original', worker_pid=999)
+    assert ce.execution_status(metadata) == 'scheduler_retrying'
+    state['status'] = 'failed'
+    assert ce.execution_status(metadata) == 'failed'
+    metadata['worker_pid'] = 123
+    assert ce.execution_status(metadata) == 'terminating'
+    def unavailable():
+        raise RuntimeError('scheduler disconnected')
+    monkeypatch.setattr(central_scheduler, '_client', unavailable)
+    assert ce.execution_status(metadata) == 'reconciling'

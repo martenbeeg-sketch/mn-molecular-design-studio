@@ -239,6 +239,28 @@ def progress(batches):
                 retry_count=sum(max(0, len(b['attempts']) - 1) for b in batches))
 
 
+def execution_status(metadata):
+    """Fence controller retries against an existing scheduler's own attempts."""
+    from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import _pid_alive
+    status = metadata.get('status') or 'lost'
+    pid = metadata.get('worker_pid')
+    if status == 'running' and pid and not _pid_alive(pid):
+        status = 'lost'
+    if metadata.get('scheduler_status') in {'failed', 'lost'} and status not in TERMINAL:
+        status = 'lost'
+    if metadata.get('scheduler_job_id') and status in {'failed', 'lost'}:
+        from mn_molecular_design_studio.engine.workflow_engine.core.central_scheduler import _client
+        try:
+            scheduled = _client().get_job(metadata['scheduler_job_id'])
+        except Exception:
+            return 'reconciling'
+        if scheduled.get('status') not in {'failed', 'lost', 'cancelled', 'completed'}:
+            return 'scheduler_retrying'
+        if pid and _pid_alive(pid):
+            return 'terminating'
+    return status
+
+
 def tick(parent, node, current, source, params, key, settings, *, graph, owner_id, project_id, gpu_device, persist):
     """Advance bounded ordinary scheduler jobs; called by the graph's existing loop."""
     import socket
@@ -289,25 +311,9 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
             child = Path(batch['job_run_dir'])
             metadata = read_json(child / 'metadata.json')
             batch['wait_reason'] = metadata.get('scheduler_wait_reason') or ''
-            status = metadata.get('status') or 'lost'
-            pid = metadata.get('worker_pid')
-            if status == 'running' and pid:
-                from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import _pid_alive
-                if not _pid_alive(pid):
-                    status = 'lost'
-            elif status == 'running' and metadata.get('scheduler_job_id'):
-                from mn_molecular_design_studio.engine.workflow_engine.core.central_scheduler import _client
-                try:
-                    scheduled = _client().get_job(metadata['scheduler_job_id'])
-                    if scheduled.get('status') in {'failed', 'lost', 'cancelled'}:
-                        status = 'lost'
-                except Exception:
-                    # Losing contact with the scheduler does not prove that the
-                    # worker stopped. Retain its identity and keep other work moving.
-                    batch['wait_reason'] = 'Scheduler unavailable; awaiting worker reconciliation.'
-
-            if metadata.get('scheduler_status') in {'failed', 'lost'} and status not in TERMINAL:
-                status = 'lost'
+            status = execution_status(metadata)
+            if status in {'reconciling', 'scheduler_retrying', 'terminating'}:
+                batch['wait_reason'] = 'Reconciling the existing scheduler attempt before any controller retry.'
             attempt = batch['attempts'][-1]
             attempt.update(status=status, worker=metadata.get('execution_node_id') or socket.gethostname(),
                            allocation=metadata.get('resource_allocation'),
