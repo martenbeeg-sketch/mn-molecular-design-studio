@@ -292,7 +292,8 @@ def normalize_metrics(metrics, tool="", context=None):
         provenance[key] = {"unit": definition.unit, "scope": definition.scope, "method": entries[0]["method"],
                            "direction": definition.direction, "source_tool": tool, "aliases": entries,
                            "stage": candidate.get("stage"), "engine_version": raw.get("engine_version"),
-                           "settings": context.get("settings") or {}}
+                           "conditioning_mode": raw.get("conditioning_mode"),
+                           "settings": context.get("settings") or raw.get("prediction_protocol") or {}}
     return {"version": VERSION, "metrics": normalized, "provenance": provenance, "conflicts": conflicts, "issues": issues}
 
 
@@ -374,6 +375,8 @@ def evidence_rows(candidates):
                 provenance = common.get("provenance", {}).get(field.removeprefix(PREFIX), {}) if field.startswith(PREFIX) else {}
                 rows.append({"candidate_id": candidate.get("candidate_id"), "measurement_candidate_id": record["candidate_id"],
                              "stage": record["stage"], "source_tool": record["source_tool"], "role": record["role"],
+                             "conditioning_mode": (item.get("raw_metadata") or {}).get("conditioning_mode", ""),
+                             "effective_settings": (item.get("raw_metadata") or {}).get("effective_settings", {}),
                              "same_sequence": record["same_sequence"], "measurement_status": record["status"], "error": record["error"],
                              "field": field, "value": value, "unit": provenance.get("unit", "native"),
                              "direction": provenance.get("direction", ""), "parents": ", ".join(record["parents"]),

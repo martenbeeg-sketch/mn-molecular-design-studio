@@ -716,7 +716,8 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
             if kind == "rfd3" and values.get("low_memory_mode"):
                 st.warning("Low memory mode uses a chunked path with partially missing checkpoint weights and may reduce prediction quality.")
             if kind == "af2":
-                st.caption("Initial guess is enabled for this pipeline step.")
+                from mn_molecular_design_studio.prediction_configuration import AF2_MODES
+                st.caption(AF2_MODES[values.get("af2_validation_mode", "conditioned_self_consistency")])
             if kind == "results":
                 st.info("Collect candidate structures and metrics from the connected branches. Existing results remain available when you edit the pipeline.")
             if kind == "filter":

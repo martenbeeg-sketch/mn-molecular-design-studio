@@ -93,7 +93,8 @@ def test_beta_pairing_pipeline_templates_validate():
     kinds = [node["data"]["kind"] for node in graph["nodes"]]
     assert kinds == ["rfdiffusion_beta_pairing", "ligandmpnn", "af2", "results"]
     af2 = next(node for node in graph["nodes"] if node["data"]["kind"] == "af2")
-    assert af2["data"]["label"] == "AlphaFold2 Initial Guess"
+    assert af2["data"]["label"] == "AlphaFold2 evaluation"
+    assert af2["data"]["params"]["af2_validation_mode"] == "conditioned_self_consistency"
     assert af2["data"]["params"]["use_binder_template"] is False
 
     continuation = new_graph("rfdiffusion_beta_pairing_generated")

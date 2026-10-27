@@ -519,6 +519,10 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
     if isinstance(source.get("molecule_task"), dict):
         molecule_task = source["molecule_task"]
         if kind == "af2":
+            if p.get("use_binder_template") or p.get("use_interface_template"):
+                raise ValueError("Target-only evaluation cannot use binder or interface templates.")
+            if p.get("af2_validation_mode") == "conditioned_self_consistency":
+                raise ValueError("Conditioned self-consistency requires a designed complex. Choose target_only for a target plus binder sequence.")
             target_pdb = str(molecule_task.get("target_pdb") or "").strip()
             partner_sequence = str(molecule_task.get("partner_protein_sequences") or "").strip()
             if not target_pdb or not partner_sequence:
@@ -534,7 +538,8 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
                     "num_recycles": int(p.get("num_recycles", 3)),
                     "model_count": int(p.get("model_count", 1)),
                     "multimer": bool(p.get("multimer", True)),
-                    "msa_source": "single_sequence", "msa_max_depth": 256,
+                    "msa_source": p.get("msa_source", "single_sequence"), "msa_max_depth": int(p.get("msa_max_depth", 256)),
+                    "seed": int(p.get("seed", 0)),
                 },
             }
         direct_engines = {"af3": "alphafold3", "boltz2": "boltz2", "rf3": "rf3_foundry"}
@@ -729,7 +734,9 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
         elif kind in {"rf3", "boltz2", "af2", "protenix"}:
             p["require_monomer_success"] = False
             if kind == "af2":
-                p["use_initial_guess"] = True
+                from mn_molecular_design_studio.prediction_configuration import af2_mode
+                p["af2_validation_mode"], p["use_initial_guess"] = af2_mode(
+                    p.get("af2_validation_mode"), p.get("use_initial_guess"), legacy_initial_guess=True)
             if kind == "boltz2":
                 p.pop("use_target_msa", None)  # This adapter always uses shared target MSA preparation.
         elif kind in {"openfold3_legacy", "protenix_cli", "boltzgen_fold_batch"}:
@@ -1076,6 +1083,11 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     from mn_molecular_design_studio import mimosa_motif
                     key_params["checkpoint_digest"] = file_digest(mpnn_input.checkpoint("ab_mpnn"))
                     key_params["mimosa_motif_adapter_digest"] = file_digest(Path(mimosa_motif.__file__))
+                if kind == "af2":
+                    from mn_molecular_design_studio import prediction_configuration
+                    key_params["prediction_configuration_digest"] = file_digest(Path(prediction_configuration.__file__))
+                    from mn_molecular_design_studio.engine.workflow_engine.workflows.refolding import AF2_BINDER_EVAL
+                    key_params["native_runner_digest"] = file_digest(AF2_BINDER_EVAL)
                 if NODE_CATALOG[kind]["workflow"]:
                     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS, _get_function
                     implementation = _get_function(WORKFLOWS[NODE_CATALOG[kind]["workflow"]])

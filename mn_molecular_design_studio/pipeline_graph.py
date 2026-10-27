@@ -153,7 +153,7 @@ NODE_CATALOG = {
         field("accept_alphafold3_terms", "Accept official AlphaFold3 weight terms", False, kind="boolean",
               help="Required only when the official AlphaFold3 weights are selected. Review those terms before enabling them."),
     ], color="#477e9b", formats=("cif",)),
-    "af2": _spec("af2", "AlphaFold2 Initial Guess", "Structure prediction", "Evaluate complexes with a target template and initial guess.", accepts=["sequence", "prediction", "molecule_task"], output="prediction", workflow="refolding.af2_initial_guess", fields=[field("num_recycles", "Recycles", 3, minimum=1, maximum=30), field("model_count", "Models", 1, minimum=1, maximum=5), field("multimer", "Use multimer model", True, kind="boolean")], color="#477e9b"),
+    "af2": _spec("af2", "AlphaFold2 evaluation", "Structure prediction", "Choose conditioned pose self-consistency or a less-conditioned target-only template prediction.", accepts=["sequence", "prediction", "molecule_task"], output="prediction", workflow="refolding.af2_initial_guess", fields=[field("num_recycles", "Recycles", 3, minimum=1, maximum=30)], color="#477e9b"),
     "esmfold": _spec("esmfold", "ESMFold · binder alone", "Structure prediction", "Predict each designed binder without the target.", accepts=["sequence", "prediction"], output="prediction", workflow="refolding.esmfold_monomer", fields=[], color="#477e9b"),
     "filter": _spec("filter", "Filter candidates", "Analysis", "Apply a score threshold, require passing filters, or retain the best candidates.", accepts=["backbone", "sequence", "prediction", "candidates"], output="candidates", color="#9a7854", fields=[
         field("passing_only", "Require an explicit native filter pass", False, kind="boolean"), field("metric", "Threshold measurement", "", kind="text"), field("operator", "Comparison", ">=", kind="select", options=[">=", "<=", ">", "<"]), field("threshold", "Threshold (only used with a measurement)", 0.7), field("limit", "Shortlist per comparable protocol (0 = all)", 0, minimum=0, maximum=100000), field("higher_is_better", "Higher scores rank first", True, kind="boolean"),
@@ -337,7 +337,9 @@ _OPTIONAL_FIELDS = {
         field("sampling_steps", "Sampling steps", 200, minimum=1, maximum=2000),
         field("diffusion_samples", "Number of samples", 3, minimum=1, maximum=100, section="basic"),
         field("write_full_pae", "Write full PAE", True, kind="boolean")],
-    "af2": [field("model_count", "Number of models", 1, minimum=1, maximum=5, section="basic"),
+    "af2": [SEED, field("af2_validation_mode", "AF2 validation mode", "conditioned_self_consistency", kind="select", section="basic",
+        options=["conditioned_self_consistency", "target_only"], help="Conditioned: initialize with the designed complex. Target-only: retain target template/sequence/side chains and supply binder sequence without binder coordinates. Neither mode measures experimental binding probability."),
+        field("model_count", "Number of models", 1, minimum=1, maximum=5, section="basic"),
         field("multimer", "Use multimer model", True, kind="boolean"),
         field("use_binder_template", "Use binder template", False, kind="boolean"),
         field("use_interface_template", "Use whole-complex template", False, kind="boolean"),
@@ -1248,6 +1250,10 @@ def clean_graph(graph: dict) -> dict:
             raise ValueError("Node settings must be an object.")
         if kind=='protpardelle' and 'sequences' in params:
             kind='protpardelle_pipeline'
+        if kind == 'af2' and 'af2_validation_mode' not in params:
+            upstream_kinds = {n.get('id'): n.get('data', {}).get('kind') for n in nodes}
+            direct = any(e.get('target') == node['id'] and upstream_kinds.get(e.get('source')) == 'cofold_input' for e in edges)
+            params['af2_validation_mode'] = 'target_only' if direct else 'conditioned_self_consistency'
         allowed = {f["name"] for f in NODE_CATALOG[kind]["fields"]} | ({"selected_candidate_ids"} if kind in {"design_source","generation_source","backbone_source","project_design_source"} else set())
         # Migrate generation-only kinds from the previous small canvas forms.
         if kind=='rfdiffusion':params.pop('rfdiffusion_guidance_preset',None)

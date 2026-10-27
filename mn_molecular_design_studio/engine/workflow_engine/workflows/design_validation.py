@@ -13,6 +13,8 @@ from mn_molecular_design_studio.engine.workflow_engine.core.candidates import re
 
 def validate_af2_design_request(parameters: dict) -> None:
     from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
+    from mn_molecular_design_studio.prediction_configuration import af2_mode
+    af2_mode(parameters.get("af2_validation_mode"))
     tasks = comparison.build_tasks(parameters.get("validation_sources"), mode="complex", profile=ENGINE_PROFILES["colabfold"],
                                    target_use_msa=parameters.get("target_use_msa", True), use_target_template=False)
     if any(len(task["validation_reference"]["binder_chains"]) != 1 for task in tasks):
@@ -25,7 +27,7 @@ def validate_af2_design_request(parameters: dict) -> None:
 def run_af2_design_validation(validation_sources: list[dict], job_name: str = "af2-design-validation",
                               num_recycles: int = 3, model_count: int = 1, multimer: bool = True,
                               target_use_msa: bool = True, msa_max_depth: int = 1024,
-                              cpu_cores: int = 4, gpu_device: str = "0") -> Path:
+                              cpu_cores: int = 4, gpu_device: str = "0", af2_validation_mode: str = "target_only") -> Path:
     from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
     from mn_molecular_design_studio.engine.workflow_engine.workflows.refolding import run_af2_initial_guess_complex_refolding
     validate_af2_design_request({"validation_sources": validation_sources, "target_use_msa": target_use_msa,
@@ -60,7 +62,7 @@ def run_af2_design_validation(validation_sources: list[dict], job_name: str = "a
         return run_af2_initial_guess_complex_refolding(
             source_run_dir=root, candidates_jsonl=root / "selected.jsonl", require_monomer_success=False,
             num_recycles=num_recycles, model_count=model_count, multimer=multimer,
-            use_initial_guess=False, use_binder_template=False, use_interface_template=False,
+            af2_validation_mode=af2_validation_mode, use_binder_template=False, use_interface_template=False,
             msa_source="reference_then_colabfold" if target_use_msa else "single_sequence", msa_max_depth=msa_max_depth,
             gpu_device=gpu_device, direct_candidates=candidates,
             direct_input={"job_name": job_name, "validation_sources": validation_sources})

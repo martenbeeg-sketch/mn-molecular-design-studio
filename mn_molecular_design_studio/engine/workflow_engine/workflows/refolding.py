@@ -2638,7 +2638,9 @@ def _stage_target_template_inputs(
         if target_path is None or not target_path.exists():
             target_path = _target_pdb_for_candidate(source_run_dir, candidate)
         if target_path is None or not target_path.exists():
-            raise ValueError(f"Candidate {candidate_id} does not have a readable target PDB.")
+            target_path = _resolve_candidate_path(source_run_dir, candidate.get("complex_pdb"))
+        if target_path is None or not target_path.exists():
+            raise ValueError(f"Candidate {candidate_id} does not have a readable target structure.")
 
         available_chains = _structure_chains(target_path)
         if capacity_target_only:
@@ -2646,7 +2648,11 @@ def _stage_target_template_inputs(
             if not requested_chains:
                 requested_chains = available_chains
         else:
-            requested_chains = _candidate_chains(candidate, "target_chains", available_chains)
+            requested_chains = _candidate_chains(candidate, "target_chains", [])
+            if not requested_chains or set(requested_chains) - set(available_chains):
+                raise ValueError(f"Candidate {candidate_id} needs explicit target chains present in its template; refusing to infer binder coordinates as target.")
+            if len(_candidate_chains(candidate, "binder_chains", [])) != 1:
+                raise ValueError("AF2 complex evaluation requires exactly one binder chain.")
         declared_sequences = _declared_target_subchain_sequences(candidate, requested_chains)
         declared_chains = [chain for chain in requested_chains if chain in declared_sequences]
         declared_fragment_specs = (
@@ -4362,7 +4368,7 @@ def run_af2_initial_guess_complex_refolding(
     model_count: int = 1,
     multimer: bool = True,
     binder_multimer: bool | None = None,
-    use_initial_guess: bool = False,
+    use_initial_guess: bool | None = None,
     use_binder_template: bool = False,
     use_interface_template: bool = False,
     docker_image: str = "mn-colabdesign:latest",
@@ -4372,7 +4378,17 @@ def run_af2_initial_guess_complex_refolding(
     msa_max_depth: int = 256,
     direct_candidates: list[dict[str, Any]] | None = None,
     direct_input: dict[str, Any] | None = None,
+    af2_validation_mode: str | None = None,
+    seed: int = 0,
 ) -> Path:
+    from mn_molecular_design_studio.prediction_configuration import af2_mode, AF2_MODES
+    af2_validation_mode, use_initial_guess = af2_mode(af2_validation_mode, use_initial_guess)
+    if not 0 <= int(seed) <= 2**31 - 1:
+        raise ValueError("AF2 seed must be between 0 (random) and 2,147,483,647.")
+    if not 1 <= int(num_recycles) <= 100 or not 1 <= int(model_count) <= 5:
+        raise ValueError("AF2 requires 1–100 recycles and 1–5 models.")
+    if use_interface_template and not use_binder_template:
+        raise ValueError("An interface template requires the binder template.")
     if binder_multimer is None:
         binder_multimer = multimer
     if not use_initial_guess and (use_binder_template or use_interface_template):
@@ -4404,6 +4420,13 @@ def run_af2_initial_guess_complex_refolding(
         _is_target_refolding_input_candidate(candidate)
         for candidate in source_candidates
     )
+    if not capacity_target_only_run:
+        for source in source_candidates:
+            if len(source.get("binder_chains") or []) != 1 or not source.get("target_chains"):
+                raise ValueError("AF2 complex evaluation requires explicit target roles and exactly one binder chain.")
+    conditioning_description = (
+        "Target-only monomer template folding: fixbb with target coordinates as the initial guess; no binder or interface evaluation."
+        if capacity_target_only_run else AF2_MODES[af2_validation_mode])
     job = create_job(
         REFOLDING_GROUP,
         job_type="complex_refolding",
@@ -4425,8 +4448,11 @@ def run_af2_initial_guess_complex_refolding(
                 else
                 "legacy_whole_complex_initial_guess"
                 if use_initial_guess
-                else "target_only_initial_guess"
+                else "target_only_template_prediction"
             ),
+            "seed": seed,
+            "af2_validation_mode": af2_validation_mode,
+            "conditioning_description": conditioning_description,
             "use_initial_guess": use_initial_guess,
             "use_binder_template": use_binder_template,
             "use_interface_template": use_interface_template,
@@ -4454,6 +4480,16 @@ def run_af2_initial_guess_complex_refolding(
     from mn_molecular_design_studio import design_validation as design_comparison
     for index, source in enumerate(source_candidates):
         raw = source.get("raw_metadata") or {}
+        if not capacity_target_only_run and not raw.get("validation_reference"):
+            original = _resolve_candidate_path(source_run_dir, source.get("complex_pdb"))
+            if original and original.is_file():
+                raw["validation_reference"] = {
+                    "source_run_dir": str(source_run_dir), "candidate_id": source["candidate_id"],
+                    "reference_structure_path": str(original), "mode": "complex",
+                    "target_chains": list(source.get("target_chains") or []),
+                    "binder_chains": list(source.get("binder_chains") or []),
+                }
+                source["raw_metadata"] = raw
         if raw.get("validation_reference"):
             raw["validation_reference"] = design_comparison.stage_reference(job.run_dir, f"af2_{index}", raw["validation_reference"])
     input_dir = raw_root / "inputs"
@@ -4463,6 +4499,21 @@ def run_af2_initial_guess_complex_refolding(
         if use_initial_guess
         else _stage_target_template_inputs(source_run_dir, source_candidates, input_dir)
     )
+    for source in source_candidates:
+        if capacity_target_only_run:
+            continue
+        safe_id = _safe_id(source["candidate_id"])
+        binder_ids = _engine_chains_from_map(input_dir, safe_id, "binder")
+        staged_sequences = _pdb_sequences_by_chain(staged[safe_id])
+        expected_binder = _candidate_binder_sequence(source_run_dir, source)
+        if use_initial_guess and staged_sequences.get(binder_ids[0]) != expected_binder:
+            raise ValueError("Designed binder sequence differs from its initial-guess structure; refusing to evaluate a different sequence.")
+    if not capacity_target_only_run:
+        references = input_dir / "references"
+        references.mkdir(exist_ok=True)
+        reference_candidates = [source for source in source_candidates if source.get("complex_pdb") or source.get("binder_pdb")]
+        if reference_candidates:
+            _stage_complex_inputs(source_run_dir, reference_candidates, references)
     msa_rows_by_candidate: dict[str, dict[str, int]] = {}
     if msa_source == "reference_then_colabfold":
         msa_rows_by_candidate = _prepare_af2_msa_inputs(
@@ -4472,7 +4523,7 @@ def run_af2_initial_guess_complex_refolding(
             source_candidates,
             depth=msa_max_depth,
         )
-    if (direct_input or msa_source == "reference_then_colabfold") and not use_initial_guess and not capacity_target_only_run:
+    if not use_initial_guess and not capacity_target_only_run:
         for safe_id in staged:
             output_binder_chains = _engine_chains_from_map(input_dir, safe_id, "binder")
             if output_binder_chains:
@@ -4526,6 +4577,7 @@ def run_af2_initial_guess_complex_refolding(
         "/work/artifacts/raw/af2_initial_guess/output/af2_initial_guess",
         "--params",
         "/models",
+        "--seed", str(seed),
         "--num-recycles",
         str(num_recycles),
         "--model-count",
@@ -4549,6 +4601,16 @@ def run_af2_initial_guess_complex_refolding(
         command.append("--use-interface-template")
     if msa_source == "reference_then_colabfold":
         command.append("--use-msa")
+    from mn_molecular_design_studio.prediction_provenance import image_identity, file_identity
+    installed_engine = image_identity(docker_image)
+    input_provenance = {
+        safe_id: {"model_input": file_identity(path),
+                  "chain_map": read_json(input_dir / f"{safe_id}.chain_map.json"),
+                  "source_candidate_id": next(c["candidate_id"] for c in source_candidates if _safe_id(c["candidate_id"]) == safe_id)}
+        for safe_id, path in staged.items()
+    }
+    write_json(raw_root / "execution_inputs.json", {**installed_engine, "inputs": input_provenance,
+               "conditioning_mode": target_only_prediction_mode if capacity_target_only_run else af2_validation_mode, "runner": file_identity(AF2_BINDER_EVAL)})
     rc = _run_shell_steps(job.run_dir, [{"name": "af2-initial-guess", "command": command}])
     metrics_by_id: dict[str, dict[str, Any]] = {}
     metrics_path = output_dir / "af2_initial_guess.jsonl"
@@ -4590,6 +4652,8 @@ def run_af2_initial_guess_complex_refolding(
                 "complex_template" if use_interface_template else "target_binder_template" if use_binder_template else "target_template",
                 multimer,
             )
+            if not use_initial_guess and not capacity_target_only_run:
+                candidate_id += "_target_only"
             if predicted_pdb and predicted_pdb.exists():
                 renamed_pdb = predicted_pdb.with_name(f"{_safe_id(candidate_id)}.pdb")
                 if renamed_pdb != predicted_pdb:
@@ -4602,6 +4666,20 @@ def run_af2_initial_guess_complex_refolding(
             metrics = dict(source.get("metrics") or {})
             _update_source_monomer_rmsd(source_run_dir, source, metrics)
             metrics.update(metrics_by_id.get(safe_id, {}))
+            execution_path = output_dir / "af2_initial_guess" / f"{safe_id}.execution.json"
+            execution = read_json(execution_path) if execution_path.exists() else {}
+            measurement_state = {"status": "ok" if predicted_pdb else "missing",
+                                 "error": "" if predicted_pdb else "AF2 produced no predicted complex."}
+            if predicted_pdb and not capacity_target_only_run:
+                expected_sequences = _pdb_sequences_by_chain(staged_path)
+                expected_sequences[output_binder_chains[0]] = _candidate_binder_sequence(source_run_dir, source)
+                observed_sequences = _pdb_sequences_by_chain(predicted_pdb)
+                if observed_sequences != expected_sequences:
+                    metrics.update(validation_status="failed", validation_error="AF2 output chains/sequences differ from the staged prediction input.")
+            if not use_initial_guess and not capacity_target_only_run:
+                metrics["target_aligned_binder_rmsd"] = None
+            metrics["af2_validation_mode"] = af2_validation_mode
+            metrics["evaluation_label"] = conditioning_description
             metrics["complex_refolding_backend"] = "af2_initial_guess"
             metrics["prediction_input_mode"] = (
                 target_only_prediction_mode
@@ -4609,19 +4687,19 @@ def run_af2_initial_guess_complex_refolding(
                 else
                 "legacy_whole_complex_initial_guess"
                 if use_initial_guess
-                else "target_only_initial_guess"
+                else "target_only_template_prediction"
             )
             metrics["target_fragment_template_forced"] = bool(target_fragment_template_run)
             metrics["msa_source"] = msa_source
             metrics["msa_max_depth"] = msa_max_depth
             metrics["msa_rows_by_chain"] = msa_rows_by_candidate.get(safe_id, {})
-            metrics["initial_guess_used"] = True
+            metrics["initial_guess_used"] = bool(use_initial_guess or capacity_target_only_run)
             metrics["initial_guess_scope"] = (
                 "target_fragment_template"
                 if target_fragment_template_run
                 else "single_chain_template"
                 if capacity_target_only_run
-                else "whole_complex" if use_initial_guess else "target_only"
+                else "whole_complex" if use_initial_guess else "none"
             )
             metrics["whole_complex_initial_guess_used"] = bool(use_initial_guess)
             metrics.update(
@@ -4644,13 +4722,30 @@ def run_af2_initial_guess_complex_refolding(
                     "tool": "af2_initial_guess",
                     "binder_chains": output_binder_chains,
                     "target_chains": output_target_chains,
-                    "complex_pdb": _rel_path(job.run_dir, predicted_pdb) if predicted_pdb else _rel_path(job.run_dir, staged_path),
+                    "complex_pdb": _rel_path(job.run_dir, predicted_pdb) if predicted_pdb else None,
                     "metrics": metrics,
                     "parents": [str(source.get("candidate_id") or "")],
                     "raw_metadata": {
                         **dict(source.get("raw_metadata") or {}),
                         "batch_item_id": safe_id,
                         "engine": "af2_initial_guess",
+                        **installed_engine,
+                        "input_provenance": input_provenance[safe_id],
+                        "measurement_status": measurement_state,
+                        "effective_settings": execution,
+                        "engine_version": execution.get("colabdesign_version"),
+                        "conditioning_mode": target_only_prediction_mode if capacity_target_only_run else af2_validation_mode,
+                        "conditioning_description": conditioning_description,
+                        "prediction_protocol": {
+                            "engine": "af2_initial_guess", "conditioning_mode": target_only_prediction_mode if capacity_target_only_run else af2_validation_mode,
+                            "seed_policy": "random" if not seed else seed,
+                            "num_recycles": num_recycles, "model_count": model_count,
+                            "complex_parameter_family": "multimer_v3" if multimer else "ptm",
+                            "binder_parameter_family": "multimer_v3" if binder_multimer else "ptm",
+                            "use_binder_template": use_binder_template, "use_interface_template": use_interface_template,
+                            "msa_source": msa_source, "msa_max_depth": msa_max_depth,
+                        },
+                        "execution_manifest": _rel_path(job.run_dir, output_dir / "af2_initial_guess" / f"{safe_id}.execution.json"),
                         "source_candidate": source,
                         "input_binder_chains": source.get("binder_chains"),
                         "input_target_chains": source.get("target_chains"),
@@ -4661,16 +4756,16 @@ def run_af2_initial_guess_complex_refolding(
                             else
                             "legacy_whole_complex_initial_guess"
                             if use_initial_guess
-                            else "target_only_initial_guess"
+                            else "target_only_template_prediction"
                         ),
                         "target_fragment_template_forced": bool(target_fragment_template_run),
-                        "initial_guess_used": True,
+                        "initial_guess_used": bool(use_initial_guess or capacity_target_only_run),
                         "initial_guess_scope": (
                             "target_fragment_template"
                             if target_fragment_template_run
                             else "single_chain_template"
                             if capacity_target_only_run
-                            else "whole_complex" if use_initial_guess else "target_only"
+                            else "whole_complex" if use_initial_guess else "none"
                         ),
                         "whole_complex_initial_guess_used": bool(use_initial_guess),
                         "input_complex_role": (
@@ -4697,19 +4792,32 @@ def run_af2_initial_guess_complex_refolding(
                                                [*candidate["target_chains"], *candidate["binder_chains"]]))
             path = _resolve_candidate_path(job.run_dir, candidate.get("complex_pdb"))
             try:
+                if candidate["metrics"].get("validation_error"):
+                    raise ValueError(candidate["metrics"]["validation_error"])
                 if path is None:
                     raise ValueError("The predicted complex is unavailable for comparison.")
+                if len(reference["target_chains"]) != len(candidate["target_chains"]):
+                    raise ValueError("Pose agreement to a fragmented target requires an explicit residue map; comparison is unavailable for this target fragmentation.")
                 metrics, artifacts = design_comparison.compare_prediction(job.run_dir, f"af2_{index}", 1, path, reference)
                 candidate["metrics"].update(metrics); raw.update(artifacts)
+                candidate["metrics"]["target_aligned_binder_rmsd"] = metrics.get("binder_rmsd_target_aligned")
             except (ValueError, OSError, KeyError) as exc:
                 candidate["metrics"].update(validation_status="failed", validation_error=str(exc))
             validation_candidates.append(candidate)
+    from mn_molecular_design_studio.measurement_status import measurement_outcome
+    for candidate in candidates:
+        raw = candidate["raw_metadata"]
+        required = ["binder_plddt"] + ([] if capacity_target_only_run else ["iptm"])
+        if raw.get("validation_reference"):
+            required.append("binder_rmsd_target_aligned")
+        raw["measurement_status"] = measurement_outcome(candidate["metrics"], required,
+            candidate["metrics"].get("validation_error", "") or ("AF2 produced no predicted complex." if not candidate.get("complex_pdb") else ""))
     comparison_report = design_comparison.write_report(job.run_dir, validation_candidates) if validation_candidates else None
     normalized = write_candidates(job.run_dir, "af2_initial_guess", candidates) if candidates else []
     artifacts = _collect_refolding_artifacts(job.run_dir)
     finish_job(
         job.run_dir,
-        rc == 0 and bool(normalized) and all(c.get("metrics", {}).get("validation_status") != "failed" for c in normalized),
+        rc == 0 and bool(normalized) and all(c.get("complex_pdb") and c.get("metrics", {}).get("validation_status") != "failed" and c.get("raw_metadata", {}).get("measurement_status", {}).get("status") == "measured" for c in normalized),
         {
             "outputs": {"artifacts": artifacts, "candidates": normalized,
                         "validation_report": str(comparison_report) if comparison_report else None},
@@ -4742,6 +4850,7 @@ def run_af2_initial_guess_from_inputs(
     docker_image: str = "mn-colabdesign:latest",
     gpu_device: str = "0",
     batch_inputs: list[dict[str, Any]] | None = None,
+    seed: int = 0,
 ) -> Path:
     """Launch AF2 initial-guess prediction from one or more PDB-based inputs."""
 
@@ -4896,6 +5005,7 @@ def run_af2_initial_guess_from_inputs(
         msa_max_depth=msa_max_depth,
         direct_candidates=candidates,
         direct_input=direct_input,
+        seed=seed,
     )
 
 

@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
+import importlib.metadata
+import secrets
 import json
 import os
 import shutil
@@ -415,6 +418,7 @@ def main():
     parser.add_argument("input_dir")
     parser.add_argument("output_name")
     parser.add_argument("--params", required=True)
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--num-recycles", type=int, default=3)
     parser.add_argument("--model-count", type=int, default=1, choices=range(1, 6))
     parser.add_argument("--use-binder-template", action="store_true", default=False)
@@ -495,6 +499,14 @@ def main():
             use_initial_guess=False,
             pre_callback=_inject_af2_msa if options.use_msa else None,
         )
+    parameter_identities = {}
+    for name in set(model_names + ([] if binder_model is None else binder_model_names)):
+        path = Path(options.params, f"params_{name}.npz")
+        digest = hashlib.sha256()
+        with path.open("rb") as parameter_file:
+            for chunk in iter(lambda: parameter_file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        parameter_identities[name] = {"path": str(path), "sha256": digest.hexdigest(), "bytes": path.stat().st_size}
     paths = sorted(glob.glob(os.path.join(options.input_dir, "*.pdb")))
     total_lengths = {path: get_pdb_total_length(path) for path in paths}
     paths = sorted(paths, key=lambda path: total_lengths[path])
@@ -578,11 +590,44 @@ def main():
                 msa_rows_by_chain = _attach_af2_msa(model, msa_payload, msa_chain_order, msa_sequences)
             suffix = os.path.basename(options.output_name.rstrip("/"))
             out_base = os.path.join(options.output_name, f"{basename}_{suffix}")
+            # Captured from prepared native features, before prediction. References
+            # are read only later for post-hoc comparison and never prep_inputs.
+            effective_seed = options.seed or secrets.randbelow(2**31 - 1) + 1
+            native_batch = model._inputs["batch"]
+            target_length = model._target_len if not target_only_template_mode else len(binder_sequence)
+            binder_mask = np.asarray(native_batch["all_atom_mask"])[target_length:]
+            try:
+                colabdesign_version = importlib.metadata.version("colabdesign")
+            except importlib.metadata.PackageNotFoundError:
+                colabdesign_version = "unpackaged"
+            execution = {
+                "engine": "ColabDesign AF2", "colabdesign_version": colabdesign_version,
+                "jax_version": jax.__version__, "model_names": model_names,
+                "parameter_files": parameter_identities,
+                "target_sequences": {chain: get_design_sequence(path, chain, target_only=True) for chain in target_chain_list},
+                "use_binder_template": options.use_binder_template,
+                "use_interface_template": options.use_interface_template,
+                "binder_model_names": binder_model_names if binder_model is not None else [],
+                "num_recycles": options.num_recycles, "model_count": options.model_count,
+                "seed": effective_seed, "model_seeds": [effective_seed + i for i in range(options.model_count)],
+                "use_initial_guess": not options.target_template_only,
+                "binder_chain_argument": None if options.target_template_only else designed_chains,
+                "target_chains": target_chain_list, "binder_output_chains": designed_chain_list,
+                "binder_sequence": binder_sequence, "input_pdb": path,
+                "input_sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+                "binder_coordinate_atom_count": int(np.count_nonzero(binder_mask)),
+                "binder_template_residue_count": int(np.count_nonzero(~np.asarray(model._inputs["rm_template"])[target_length:])),
+                "target_template_residue_count": int(np.count_nonzero(~np.asarray(model._inputs["rm_template"])[:target_length])),
+                "redesign": bool(model._args.get("redesign", False)),
+                "msa_used": bool(options.use_msa), "msa_rows_by_chain": msa_rows_by_chain,
+                "target_sequence_and_sidechains_retained": True,
+            }
+            Path(options.output_name, f"{basename}.execution.json").write_text(json.dumps(execution, indent=2))
             model_rows = []
             model_outputs = []
             model.set_opt(num_recycles=options.num_recycles)
             for model_index in range(options.model_count):
-                model.predict(models=[model_index], num_recycles=options.num_recycles, verbose=False)
+                model.predict(models=[model_index], num_recycles=options.num_recycles, verbose=False, seed=effective_seed + model_index)
                 if target_only_template_mode:
                     log = model.aux["log"]
                     row = {
@@ -702,7 +747,7 @@ def main():
                     )
                 binder_model.set_opt(num_recycles=options.num_recycles)
                 for model_index in range(options.model_count):
-                    binder_model.predict(models=[model_index], num_recycles=options.num_recycles, verbose=False)
+                    binder_model.predict(models=[model_index], num_recycles=options.num_recycles, verbose=False, seed=effective_seed + model_index)
                     binder_number = model_index + 1
                     binder_pdb = f"{out_base}_binder_model{binder_number}.pdb"
                     binder_model.save_pdb(binder_pdb)

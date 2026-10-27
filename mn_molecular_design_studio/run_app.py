@@ -3569,13 +3569,17 @@ def _render_af2_initial_guess_setup(schema: dict) -> None:
         "label": "AlphaFold2 Initial Guess", "modes": ("off",), "input_kind": "af2_initial_guess",
         "default_recycles": 3, "supports_templates": True, "requires_target_template": True, "supports_msa": True,
         "supports_seed": False, "default_samples": 1,
-        "settings": ({"key": "multimer", "type": "bool", "label": "Multimer parameters", "default": True},
+        "settings": ({"key": "af2_validation_mode", "type": "select", "label": "AF2 validation mode", "default": "target_only",
+                      "choices": ("target_only", "conditioned_self_consistency"),
+                      "help": "Target-only retains target template, sequence and side chains without binder coordinates. Conditioned self-consistency initializes with the whole designed complex; pose agreement is conditioned."},
+                     {"key": "multimer", "type": "bool", "label": "Multimer parameters", "default": True},
                      {"key": "max_msa_seqs", "label": "Maximum target MSA rows", "default": 1024, "min": 1, "max": 4096}),
     }
     def submit_af2_validation(_schema, _workflow, parameters, selected_project, settings, label):
         values = {
             "validation_sources": parameters["validation_sources"], "job_name": parameters["job_name"],
             "num_recycles": parameters["num_recycles"], "model_count": parameters["samples"],
+            "af2_validation_mode": parameters["engine_options"]["af2_validation_mode"],
             "multimer": parameters["engine_options"]["multimer"], "target_use_msa": parameters["target_use_msa"],
             "msa_max_depth": parameters["engine_options"]["max_msa_seqs"],
             "cpu_cores": parameters["cpu_cores"], "gpu_device": parameters["gpu_device"],
