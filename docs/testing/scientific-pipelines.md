@@ -83,3 +83,8 @@ See [implemented modes, parameter migration and execution results](af2-boltz-con
 and the [retained GPU evidence](af2-boltz-configuration-2026-10-27.json). AF2 now exposes
 conditioned self-consistency and target-only evaluation. Boltz sample/recycle controls
 map to native execution; the installed engine's mandatory full PAE output is explicit.
+
+## Two-stage sequence design and cache correctness — Phase 4
+
+See [implemented routing, constraint checks, cache provenance and GPU results](two-stage-sequence-design.md)
+and the [retained execution evidence](two-stage-sequence-design-2026-10-27.json).

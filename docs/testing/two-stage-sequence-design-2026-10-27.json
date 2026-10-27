@@ -1,0 +1,892 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-27",
+  "timezone": "Europe/Berlin",
+  "branch": "fix/scientific-pipeline-validation",
+  "base_revision": "4c63a4f",
+  "implementation_commits": [
+    "688f9e7",
+    "be5298c"
+  ],
+  "changed_files": [
+    "docs/testing/scientific-pipelines.md",
+    "docs/testing/two-stage-sequence-design-2026-10-27.json",
+    "docs/testing/two-stage-sequence-design.md",
+    "mn_molecular_design_studio/cache_provenance.py",
+    "mn_molecular_design_studio/engine/workflow_engine/workflows/graph_pipeline.py",
+    "mn_molecular_design_studio/engine/workflow_engine/workflows/mpnn.py",
+    "mn_molecular_design_studio/engine/workflow_engine/workflows/sequence_design.py",
+    "mn_molecular_design_studio/mpnn_input.py",
+    "mn_molecular_design_studio/mpnn_ui.py",
+    "mn_molecular_design_studio/pipeline_graph.py",
+    "tests/test_cache_provenance.py",
+    "tests/test_mpnn.py",
+    "tests/test_pipeline_graph.py",
+    "tests/test_rfdiffusion3.py",
+    "tests/test_two_stage_mpnn.py",
+    "tests/test_two_stage_mpnn_gpu.py"
+  ],
+  "cpu": {
+    "full_suite": {
+      "passed": 1443,
+      "skipped": 28,
+      "failed": 0,
+      "seconds": 195.68,
+      "log": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase4/logs/cpu-verified.log"
+    },
+    "final_sequence_contracts": {
+      "passed": 16,
+      "failed": 0,
+      "seconds": 1.99,
+      "log": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase4/logs/sequence-final-verified.log"
+    },
+    "reproduction": {
+      "failed": 8,
+      "log": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase4/logs/reproduction.log"
+    }
+  },
+  "gpu": {
+    "passed": 2,
+    "failed": 0,
+    "seconds": 111.85,
+    "log": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase4/logs/gpu-verified.log",
+    "cases": [
+      {
+        "engine": "rfdiffusion",
+        "generation": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145954352924Z/test_real_two_stage_sequence_design[rfdiffusion]/runs/design/20261027-155954-47e51189",
+        "initial": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151248033441Z/test_real_two_stage_sequence_design[rfdiffusion]/runs/design/20261027-161248-6d82212a",
+        "optimization": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151248033441Z/test_real_two_stage_sequence_design[rfdiffusion]/runs/design/20261027-161255-0acd65aa",
+        "interface_definition": {
+          "atoms": "heavy",
+          "cutoff_angstrom": 4.0
+        },
+        "interface_residues": [
+          "Z33",
+          "Z34",
+          "Z35",
+          "Z36",
+          "Z37",
+          "Z41",
+          "Z44",
+          "Z45"
+        ],
+        "fixed_motif": "Z1",
+        "changed_non_interface_counts": [
+          27,
+          25
+        ],
+        "parent_sequence": "MNYTIGWSLKLNKDGTLTISPGSAEDRELLLKALGGKPELAKVGLEVFEKAKKTREEIAK",
+        "variant_sequences": [
+          "MTITLGWKLELKKDGEVILSAGSAEDLAKLLQALGGKAELAQVGLELFRKAVERLNAVAS",
+          "MKLTQGLKIELNKDGSVVISLGSDEELVLLLEALGGKEELAKVGLELAKKAEKTLQELAS"
+        ],
+        "seed": 20261027,
+        "artifact_root": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151248033441Z/test_real_two_stage_sequence_design[rfdiffusion]",
+        "runtime": {
+          "gpu_inventory": "index, name, uuid, driver_version, memory.total [MiB]\n0, NVIDIA GeForce RTX 4090, GPU-195a1966-1148-340e-5fe2-bac2d7a9821a, 595.91.07, 24564 MiB\n1, NVIDIA GeForce RTX 4090, GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21, 595.91.07, 24564 MiB\n",
+          "selected_device": "0",
+          "reference_root": "/mnt/db/reference_files",
+          "test": "tests/test_two_stage_mpnn_gpu.py::test_real_two_stage_sequence_design[rfdiffusion]"
+        },
+        "images": [
+          {
+            "Id": "sha256:8b40d74ca0193a7439fd592b283f34f701cf3d24ea1f390675a141a059bb62fe",
+            "RepoTags": [
+              "mn-rfdiffusion:latest"
+            ],
+            "Architecture": "amd64",
+            "Created": "2026-02-26T15:41:37.060682795+01:00"
+          },
+          {
+            "Id": "sha256:7f85a354ebe11a8edf2722aa3cf2247189ff74f62985d4ac9e72e8a9a40e181d",
+            "RepoTags": [
+              "mn-ligandmpnn:latest",
+              "ovo-ligandmpnn:latest"
+            ],
+            "Architecture": "amd64",
+            "Created": "2026-02-26T12:39:43.046690761+01:00"
+          }
+        ],
+        "jobs": [
+          {
+            "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145954352924Z/test_real_two_stage_sequence_design[rfdiffusion]/runs/design/20261027-155954-47e51189",
+            "tool": "rfdiffusion_generator",
+            "status": "completed",
+            "success": true,
+            "input_specification": {
+              "inputs": {
+                "target_chains": [
+                  "A"
+                ],
+                "target_pdb": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145954352924Z/test_real_two_stage_sequence_design[rfdiffusion]/target-fragment.pdb"
+              },
+              "params": {
+                "binder_length": "60",
+                "campaign_name": "",
+                "contig": "A1-40/0 60",
+                "contract": "studio_native_generator_v1",
+                "cpu_cores": 4,
+                "designed_chain": "",
+                "designed_residues": "",
+                "deterministic": false,
+                "engine_version": "RFdiffusion \u00b7 version not pinned",
+                "fixed_identity_labels": [],
+                "fixed_motif_required": false,
+                "fixed_sequence_positions": "",
+                "flank_after": 50,
+                "flank_before": 50,
+                "generator_engine": "rfdiffusion",
+                "generator_only": true,
+                "gpu_device": "0",
+                "guide_decay": "quadratic",
+                "guide_scale": 2.0,
+                "hotspots": "",
+                "length_range": [
+                  60,
+                  60
+                ],
+                "model_weights": "auto",
+                "motif_residues": "",
+                "noise_scale_ca": 1.0,
+                "noise_scale_frame": 1.0,
+                "num_designs": 1,
+                "oligomer_contacts": true,
+                "partial_steps": 20,
+                "potential": "",
+                "region_lengths": null,
+                "resolved_model": "Complex_base",
+                "sampled_c": 0,
+                "sampled_insertion": 0,
+                "sampled_n": 0,
+                "save_trajectory": false,
+                "scaffold_adj_file": null,
+                "scaffold_length_range": [
+                  100,
+                  100
+                ],
+                "scaffold_pdb": null,
+                "scaffold_preset": "library",
+                "scaffold_ss_file": null,
+                "seed": 20261027,
+                "staged_target": "runs:///design/20261027-155954-47e51189/artifacts/raw/rfdiffusion/input/target.pdb",
+                "symmetry": "C4",
+                "target_adj_file": null,
+                "target_chains": [
+                  "A"
+                ],
+                "target_pdb": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145954352924Z/test_real_two_stage_sequence_design[rfdiffusion]/target-fragment.pdb",
+                "target_ss_file": null,
+                "task": "binder",
+                "timesteps": 15,
+                "total_length": 320
+              }
+            },
+            "generator_checkpoint": {
+              "path": "/mnt/db/reference_files/rfdiffusion_models/Complex_base_ckpt.pt",
+              "sha256": "76e4e260aefee3b582bd76b77ab95d2592e64f00c51bf344968ab9239f3250bc",
+              "bytes": 483619179
+            }
+          },
+          {
+            "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151248033441Z/test_real_two_stage_sequence_design[rfdiffusion]/runs/design/20261027-161248-6d82212a",
+            "tool": "ligandmpnn",
+            "status": "completed",
+            "success": true,
+            "mpnn_settings": {
+              "auto_detect_cdrs": false,
+              "backend": "shared_ligandmpnn",
+              "bias_aa": "",
+              "bias_aa_per_residue": {},
+              "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145954352924Z/test_real_two_stage_sequence_design[rfdiffusion]/runs/design/20261027-155954-47e51189/artifacts/normalized_candidates/candidates.jsonl",
+              "cdr_regions": null,
+              "checkpoint": {
+                "bytes": 6681301,
+                "path": "reference:///protpardelle-1c/model_params/LigandMPNN/proteinmpnn_v_48_020.pt",
+                "sha256": "c9cb4a671d79604111231f8dbfc7c590e06f1197453b7a6854ac6661a642f5bd"
+              },
+              "design_chains": "",
+              "designed_residues": "",
+              "fix_interface_residues": false,
+              "fixed_residues": "",
+              "global_transmembrane_label": true,
+              "gpu_device": "0",
+              "homo_oligomer": 0,
+              "interface_cutoff": 4.0,
+              "job_name": "proteinmpnn-design",
+              "model_type": "protein_mpnn",
+              "noise_level": 0.2,
+              "num_seq_per_target": 1,
+              "number_of_packs_per_design": 1,
+              "omit_aa_per_residue": {},
+              "omit_aas": "C",
+              "optimization_enabled": false,
+              "pack_side_chains": false,
+              "require_backbone_hotspot_filter_pass": false,
+              "resolved_backend": "shared_ligandmpnn",
+              "runtime": {
+                "image": "mn-ligandmpnn:latest",
+                "image_digest": "sha256:7f85a354ebe11a8edf2722aa3cf2247189ff74f62985d4ac9e72e8a9a40e181d"
+              },
+              "sabr_chain_type": "auto",
+              "sabr_mode": "sabr",
+              "sabr_noise_level": 0.0,
+              "sampling_temp": 0.1,
+              "seed": 20261027,
+              "selected_candidate_ids": null,
+              "sequence_stage": "initial",
+              "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145954352924Z/test_real_two_stage_sequence_design[rfdiffusion]/runs/design/20261027-155954-47e51189",
+              "structure_path": null,
+              "transmembrane_buried": "",
+              "transmembrane_interface": "",
+              "use_side_chain_context": false,
+              "verify_sequences": false
+            },
+            "input_specification": {
+              "inputs": {
+                "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145954352924Z/test_real_two_stage_sequence_design[rfdiffusion]/runs/design/20261027-155954-47e51189/artifacts/normalized_candidates/candidates.jsonl",
+                "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145954352924Z/test_real_two_stage_sequence_design[rfdiffusion]/runs/design/20261027-155954-47e51189"
+              },
+              "job_type": "sequence_design",
+              "params": {
+                "auto_detect_cdrs": false,
+                "backend": "shared_ligandmpnn",
+                "bias_aa": "",
+                "bias_aa_per_residue": {},
+                "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145954352924Z/test_real_two_stage_sequence_design[rfdiffusion]/runs/design/20261027-155954-47e51189/artifacts/normalized_candidates/candidates.jsonl",
+                "cdr_regions": null,
+                "design_chains": "",
+                "designed_residues": "",
+                "fix_interface_residues": false,
+                "fixed_residues": "",
+                "global_transmembrane_label": true,
+                "gpu_device": "0",
+                "homo_oligomer": 0,
+                "interface_cutoff": 4.0,
+                "job_name": "proteinmpnn-design",
+                "model_type": "protein_mpnn",
+                "noise_level": 0.2,
+                "num_seq_per_target": 1,
+                "number_of_packs_per_design": 1,
+                "omit_aa_per_residue": {},
+                "omit_aas": "C",
+                "optimization_enabled": false,
+                "pack_side_chains": false,
+                "require_backbone_hotspot_filter_pass": false,
+                "sabr_chain_type": "auto",
+                "sabr_mode": "sabr",
+                "sabr_noise_level": 0.0,
+                "sampling_temp": 0.1,
+                "seed": 20261027,
+                "selected_candidate_ids": null,
+                "sequence_stage": "initial",
+                "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145954352924Z/test_real_two_stage_sequence_design[rfdiffusion]/runs/design/20261027-155954-47e51189",
+                "structure_path": null,
+                "transmembrane_buried": "",
+                "transmembrane_interface": "",
+                "use_side_chain_context": false,
+                "verify_sequences": false
+              },
+              "tool": "ligandmpnn"
+            }
+          },
+          {
+            "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151248033441Z/test_real_two_stage_sequence_design[rfdiffusion]/runs/design/20261027-161255-0acd65aa",
+            "tool": "ligandmpnn",
+            "status": "completed",
+            "success": true,
+            "mpnn_settings": {
+              "auto_detect_cdrs": false,
+              "backend": "shared_ligandmpnn",
+              "bias_aa": "",
+              "bias_aa_per_residue": {},
+              "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151248033441Z/test_real_two_stage_sequence_design[rfdiffusion]/optimization-input/artifacts/normalized_candidates/candidates.jsonl",
+              "cdr_regions": null,
+              "checkpoint": {
+                "bytes": 6681301,
+                "path": "reference:///protpardelle-1c/model_params/LigandMPNN/solublempnn_v_48_020.pt",
+                "sha256": "7af52d090172c230c7f0e9d21e02203f6b3a38b16db58d3c7a3960e0a9a6e31a"
+              },
+              "design_chains": "",
+              "designed_residues": "",
+              "fix_interface_residues": true,
+              "fixed_residues": "",
+              "global_transmembrane_label": true,
+              "gpu_device": "0",
+              "homo_oligomer": 0,
+              "interface_cutoff": 4.0,
+              "job_name": "proteinmpnn-design",
+              "model_type": "soluble_mpnn",
+              "noise_level": 0.2,
+              "num_seq_per_target": 2,
+              "number_of_packs_per_design": 1,
+              "omit_aa_per_residue": {},
+              "omit_aas": "C",
+              "optimization_enabled": true,
+              "pack_side_chains": false,
+              "require_backbone_hotspot_filter_pass": false,
+              "resolved_backend": "shared_ligandmpnn",
+              "runtime": {
+                "image": "mn-ligandmpnn:latest",
+                "image_digest": "sha256:7f85a354ebe11a8edf2722aa3cf2247189ff74f62985d4ac9e72e8a9a40e181d"
+              },
+              "sabr_chain_type": "auto",
+              "sabr_mode": "sabr",
+              "sabr_noise_level": 0.0,
+              "sampling_temp": 0.4,
+              "seed": 20261027,
+              "selected_candidate_ids": null,
+              "sequence_stage": "soluble_optimization",
+              "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151248033441Z/test_real_two_stage_sequence_design[rfdiffusion]/optimization-input",
+              "structure_path": null,
+              "transmembrane_buried": "",
+              "transmembrane_interface": "",
+              "use_side_chain_context": false,
+              "verify_sequences": false
+            },
+            "input_specification": {
+              "inputs": {
+                "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151248033441Z/test_real_two_stage_sequence_design[rfdiffusion]/optimization-input/artifacts/normalized_candidates/candidates.jsonl",
+                "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151248033441Z/test_real_two_stage_sequence_design[rfdiffusion]/optimization-input"
+              },
+              "job_type": "sequence_design",
+              "params": {
+                "auto_detect_cdrs": false,
+                "backend": "shared_ligandmpnn",
+                "bias_aa": "",
+                "bias_aa_per_residue": {},
+                "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151248033441Z/test_real_two_stage_sequence_design[rfdiffusion]/optimization-input/artifacts/normalized_candidates/candidates.jsonl",
+                "cdr_regions": null,
+                "design_chains": "",
+                "designed_residues": "",
+                "fix_interface_residues": true,
+                "fixed_residues": "",
+                "global_transmembrane_label": true,
+                "gpu_device": "0",
+                "homo_oligomer": 0,
+                "interface_cutoff": 4.0,
+                "job_name": "proteinmpnn-design",
+                "model_type": "soluble_mpnn",
+                "noise_level": 0.2,
+                "num_seq_per_target": 2,
+                "number_of_packs_per_design": 1,
+                "omit_aa_per_residue": {},
+                "omit_aas": "C",
+                "optimization_enabled": true,
+                "pack_side_chains": false,
+                "require_backbone_hotspot_filter_pass": false,
+                "sabr_chain_type": "auto",
+                "sabr_mode": "sabr",
+                "sabr_noise_level": 0.0,
+                "sampling_temp": 0.4,
+                "seed": 20261027,
+                "selected_candidate_ids": null,
+                "sequence_stage": "soluble_optimization",
+                "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151248033441Z/test_real_two_stage_sequence_design[rfdiffusion]/optimization-input",
+                "structure_path": null,
+                "transmembrane_buried": "",
+                "transmembrane_interface": "",
+                "use_side_chain_context": false,
+                "verify_sequences": false
+              },
+              "tool": "ligandmpnn"
+            }
+          }
+        ]
+      },
+      {
+        "engine": "rfd4",
+        "generation": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145654591911Z/test_real_two_stage_sequence_design[rfd4]/runs/design/20261027-155654-43e47419",
+        "initial": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151301280837Z/test_real_two_stage_sequence_design[rfd4]/runs/design/20261027-161301-dac7d35b",
+        "optimization": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151301280837Z/test_real_two_stage_sequence_design[rfd4]/runs/design/20261027-161301-7141fe4d",
+        "interface_definition": {
+          "atoms": "heavy",
+          "cutoff_angstrom": 4.0
+        },
+        "interface_residues": [
+          "B10",
+          "B14",
+          "B17",
+          "B18",
+          "B20",
+          "B21",
+          "B24",
+          "B25",
+          "B27",
+          "B28",
+          "B29",
+          "B31",
+          "B32",
+          "B33",
+          "B35",
+          "B36"
+        ],
+        "fixed_motif": "B1",
+        "changed_non_interface_counts": [
+          40,
+          38
+        ],
+        "parent_sequence": "TATTTLATATTTLATAISTLISDAKTSIQTLNSEVLTLTSEVNTLTSEVNTLTSEVNTLT",
+        "variant_sequences": [
+          "TEVKNKLKETAEKAEEISKLIAQAKESIQKLNSEVLAEKKEQERKIKQQLEKQMEKQKQE",
+          "TEEAQKARLTQEKANEISQLIAEAKSSIQKLNSEVLQKQEEEAALKKLLEEELQRLKALS"
+        ],
+        "seed": 20261027,
+        "artifact_root": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151301280837Z/test_real_two_stage_sequence_design[rfd4]",
+        "runtime": {
+          "gpu_inventory": "index, name, uuid, driver_version, memory.total [MiB]\n0, NVIDIA GeForce RTX 4090, GPU-195a1966-1148-340e-5fe2-bac2d7a9821a, 595.91.07, 24564 MiB\n1, NVIDIA GeForce RTX 4090, GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21, 595.91.07, 24564 MiB\n",
+          "selected_device": "0",
+          "reference_root": "/mnt/db/reference_files",
+          "test": "tests/test_two_stage_mpnn_gpu.py::test_real_two_stage_sequence_design[rfd4]"
+        },
+        "images": [
+          {
+            "Id": "sha256:3054688e91908156071238adee167ad4963cfbca05c8a4cf0e55a634ba5a2a55",
+            "RepoTags": [
+              "mn-boltz2-opt:2.2.1-cu130-batch2"
+            ],
+            "Architecture": "amd64",
+            "Created": "2026-10-16T09:15:53.994476843+02:00"
+          },
+          {
+            "Id": "sha256:7f85a354ebe11a8edf2722aa3cf2247189ff74f62985d4ac9e72e8a9a40e181d",
+            "RepoTags": [
+              "mn-ligandmpnn:latest",
+              "ovo-ligandmpnn:latest"
+            ],
+            "Architecture": "amd64",
+            "Created": "2026-02-26T12:39:43.046690761+01:00"
+          },
+          {
+            "Id": "sha256:c34efb5afca78c0341cf996c9dadc8102a7fb3760e1792697a8779803e0e44f5",
+            "RepoTags": [
+              "mn-rfd4-proteina:0.0.3-cu130"
+            ],
+            "Architecture": "amd64",
+            "Created": "2026-10-21T18:20:44.658604563+02:00"
+          }
+        ],
+        "jobs": [
+          {
+            "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145654591911Z/test_real_two_stage_sequence_design[rfd4]/runs/design/20261027-155654-43e47419",
+            "tool": "rfd4_proteina",
+            "status": "completed",
+            "success": true,
+            "input_specification": {
+              "inputs": {
+                "input_files": [
+                  "/home/user/programs/git-projects/mn-molecular-design-studio/mn_molecular_design_studio/assets/proteina_complexa/PD-L1.pdb"
+                ],
+                "target_structure": null
+              },
+              "job_type": "rfd4_proteina_design",
+              "params": {
+                "also_bind_structures": null,
+                "avoid_structures": null,
+                "batch_size": 1,
+                "compile_model": false,
+                "condition_spec": "global_args:\n  input: PD-L1.pdb\nbinder:\n  contig: \"60-60,/0,A1-40\"\n  conditions:\n    C_SEQ:\n      true:\n        - select: \"sel('A')\"\n    C_CRDGRP:\n      1:\n        - select: \"sel('A/*/*/[N,CA,C,O]')\"\n",
+                "cpu_cores": 4,
+                "gpu_device": "0",
+                "hotspots": "",
+                "input_files": [
+                  "/home/user/programs/git-projects/mn-molecular-design-studio/mn_molecular_design_studio/assets/proteina_complexa/PD-L1.pdb"
+                ],
+                "input_mode": "condition_spec",
+                "job_name": "rfd4-proteina-design",
+                "length_max": 120,
+                "length_min": 60,
+                "nsteps": 60,
+                "num_designs": 1,
+                "options": {
+                  "filter_conditions": false,
+                  "refold": false
+                },
+                "protein_sequences": "",
+                "seed": 20261027,
+                "target_chains": null,
+                "target_structure": null,
+                "task": "custom_conditions",
+                "task_group": "design"
+              },
+              "tool": "rfd4_proteina"
+            },
+            "generator_parameters": {
+              "also_bind_structures": null,
+              "avoid_structures": null,
+              "batch_size": 1,
+              "checkpoint_revision": "a06e2509c7033b010fc43614e9fd840303588502",
+              "compile_model": false,
+              "condition_spec": "global_args:\n  input: PD-L1.pdb\nbinder:\n  contig: \"60-60,/0,A1-40\"\n  conditions:\n    C_SEQ:\n      true:\n        - select: \"sel('A')\"\n    C_CRDGRP:\n      1:\n        - select: \"sel('A/*/*/[N,CA,C,O]')\"\n",
+              "cpu_cores": 4,
+              "engine_version": "RFD4-Proteina 0.0.3",
+              "gpu_device": "0",
+              "hotspots": "",
+              "image": "mn-rfd4-proteina:0.0.3-cu130",
+              "input_files": [
+                "/home/user/programs/git-projects/mn-molecular-design-studio/mn_molecular_design_studio/assets/proteina_complexa/PD-L1.pdb"
+              ],
+              "input_mode": "condition_spec",
+              "job_name": "rfd4-proteina-design",
+              "length_max": 120,
+              "length_min": 60,
+              "nsteps": 60,
+              "num_designs": 1,
+              "options": {
+                "filter_conditions": false,
+                "refold": false
+              },
+              "protein_sequences": "",
+              "seed": 20261027,
+              "target_chains": null,
+              "target_structure": null,
+              "task": "custom_conditions",
+              "task_group": "design",
+              "upstream_commit": "9d35ee4f6328fd9b17f5b84756ee5db99d6d89ac"
+            },
+            "generator_checkpoint": {
+              "path": "/mnt/db/reference_files/rfd4-proteina/huggingface/hub/models--nvidia--RFD4-Proteina/snapshots/a06e2509c7033b010fc43614e9fd840303588502/model.safetensors",
+              "sha256": "5b549dd61adb2f6c6b5cb95bda13f40f5e31556b4e6c755edc0ca6f011c68fb0",
+              "bytes": 1742660596
+            }
+          },
+          {
+            "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151301280837Z/test_real_two_stage_sequence_design[rfd4]/runs/design/20261027-161301-7141fe4d",
+            "tool": "ligandmpnn",
+            "status": "completed",
+            "success": true,
+            "mpnn_settings": {
+              "auto_detect_cdrs": false,
+              "backend": "shared_ligandmpnn",
+              "bias_aa": "",
+              "bias_aa_per_residue": {},
+              "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151301280837Z/test_real_two_stage_sequence_design[rfd4]/optimization-input/artifacts/normalized_candidates/candidates.jsonl",
+              "cdr_regions": null,
+              "checkpoint": {
+                "bytes": 6681301,
+                "path": "reference:///protpardelle-1c/model_params/LigandMPNN/solublempnn_v_48_020.pt",
+                "sha256": "7af52d090172c230c7f0e9d21e02203f6b3a38b16db58d3c7a3960e0a9a6e31a"
+              },
+              "design_chains": "",
+              "designed_residues": "",
+              "fix_interface_residues": true,
+              "fixed_residues": "",
+              "global_transmembrane_label": true,
+              "gpu_device": "0",
+              "homo_oligomer": 0,
+              "interface_cutoff": 4.0,
+              "job_name": "proteinmpnn-design",
+              "model_type": "soluble_mpnn",
+              "noise_level": 0.2,
+              "num_seq_per_target": 2,
+              "number_of_packs_per_design": 1,
+              "omit_aa_per_residue": {},
+              "omit_aas": "C",
+              "optimization_enabled": true,
+              "pack_side_chains": false,
+              "require_backbone_hotspot_filter_pass": false,
+              "resolved_backend": "shared_ligandmpnn",
+              "runtime": {
+                "image": "mn-ligandmpnn:latest",
+                "image_digest": "sha256:7f85a354ebe11a8edf2722aa3cf2247189ff74f62985d4ac9e72e8a9a40e181d"
+              },
+              "sabr_chain_type": "auto",
+              "sabr_mode": "sabr",
+              "sabr_noise_level": 0.0,
+              "sampling_temp": 0.4,
+              "seed": 20261027,
+              "selected_candidate_ids": null,
+              "sequence_stage": "soluble_optimization",
+              "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151301280837Z/test_real_two_stage_sequence_design[rfd4]/optimization-input",
+              "structure_path": null,
+              "transmembrane_buried": "",
+              "transmembrane_interface": "",
+              "use_side_chain_context": false,
+              "verify_sequences": false
+            },
+            "input_specification": {
+              "inputs": {
+                "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151301280837Z/test_real_two_stage_sequence_design[rfd4]/optimization-input/artifacts/normalized_candidates/candidates.jsonl",
+                "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151301280837Z/test_real_two_stage_sequence_design[rfd4]/optimization-input"
+              },
+              "job_type": "sequence_design",
+              "params": {
+                "auto_detect_cdrs": false,
+                "backend": "shared_ligandmpnn",
+                "bias_aa": "",
+                "bias_aa_per_residue": {},
+                "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151301280837Z/test_real_two_stage_sequence_design[rfd4]/optimization-input/artifacts/normalized_candidates/candidates.jsonl",
+                "cdr_regions": null,
+                "design_chains": "",
+                "designed_residues": "",
+                "fix_interface_residues": true,
+                "fixed_residues": "",
+                "global_transmembrane_label": true,
+                "gpu_device": "0",
+                "homo_oligomer": 0,
+                "interface_cutoff": 4.0,
+                "job_name": "proteinmpnn-design",
+                "model_type": "soluble_mpnn",
+                "noise_level": 0.2,
+                "num_seq_per_target": 2,
+                "number_of_packs_per_design": 1,
+                "omit_aa_per_residue": {},
+                "omit_aas": "C",
+                "optimization_enabled": true,
+                "pack_side_chains": false,
+                "require_backbone_hotspot_filter_pass": false,
+                "sabr_chain_type": "auto",
+                "sabr_mode": "sabr",
+                "sabr_noise_level": 0.0,
+                "sampling_temp": 0.4,
+                "seed": 20261027,
+                "selected_candidate_ids": null,
+                "sequence_stage": "soluble_optimization",
+                "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151301280837Z/test_real_two_stage_sequence_design[rfd4]/optimization-input",
+                "structure_path": null,
+                "transmembrane_buried": "",
+                "transmembrane_interface": "",
+                "use_side_chain_context": false,
+                "verify_sequences": false
+              },
+              "tool": "ligandmpnn"
+            }
+          },
+          {
+            "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151301280837Z/test_real_two_stage_sequence_design[rfd4]/runs/design/20261027-161301-dac7d35b",
+            "tool": "ligandmpnn",
+            "status": "completed",
+            "success": true,
+            "input_specification": {
+              "inputs": {
+                "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145654591911Z/test_real_two_stage_sequence_design[rfd4]/runs/design/20261027-155654-43e47419/artifacts/normalized_candidates/candidates.jsonl",
+                "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145654591911Z/test_real_two_stage_sequence_design[rfd4]/runs/design/20261027-155654-43e47419",
+                "structure_path": null
+              },
+              "job_type": "sequence_design",
+              "params": {
+                "auto_detect_cdrs": false,
+                "backend": "shared_ligandmpnn",
+                "bias_aa": "",
+                "bias_aa_per_residue": {},
+                "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145654591911Z/test_real_two_stage_sequence_design[rfd4]/runs/design/20261027-155654-43e47419/artifacts/normalized_candidates/candidates.jsonl",
+                "cdr_regions": null,
+                "design_chains": "",
+                "designed_residues": "",
+                "fix_interface_residues": false,
+                "fixed_residues": "",
+                "global_transmembrane_label": true,
+                "gpu_device": "0",
+                "homo_oligomer": 0,
+                "interface_cutoff": 4.0,
+                "job_name": "proteinmpnn-design",
+                "model_type": "protein_mpnn",
+                "noise_level": 0.2,
+                "num_seq_per_target": 1,
+                "number_of_packs_per_design": 1,
+                "omit_aa_per_residue": {},
+                "omit_aas": "C",
+                "optimization_enabled": false,
+                "pack_side_chains": false,
+                "require_backbone_hotspot_filter_pass": false,
+                "sabr_chain_type": "auto",
+                "sabr_mode": "sabr",
+                "sabr_noise_level": 0.0,
+                "sampling_temp": 0.1,
+                "seed": 20261027,
+                "selected_candidate_ids": null,
+                "sequence_stage": "initial",
+                "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145654591911Z/test_real_two_stage_sequence_design[rfd4]/runs/design/20261027-155654-43e47419",
+                "structure_path": null,
+                "transmembrane_buried": "",
+                "transmembrane_interface": "",
+                "use_side_chain_context": false,
+                "verify_sequences": false
+              },
+              "tool": "ligandmpnn"
+            }
+          },
+          {
+            "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151301280837Z/test_real_two_stage_sequence_design[rfd4]/runs/refolding-validation/20261027-161306-f6e57116",
+            "tool": "optimized_prediction_boltz2",
+            "status": "completed",
+            "success": true,
+            "prediction_runtime": {
+              "checkpoints": [
+                {
+                  "bytes": 2286561469,
+                  "path": "reference:///boltz_models/boltz2_conf.ckpt",
+                  "sha256": "090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1"
+                },
+                {
+                  "bytes": 2062139170,
+                  "path": "reference:///boltz_models/boltz2_aff.ckpt",
+                  "sha256": "dcc5cd3722b1c9eaa34267e4ae32f55cbbf1963f4c19319381ccfa30fdd2ca9e"
+                },
+                {
+                  "bytes": 345859128,
+                  "path": "reference:///boltz_models/ccd.pkl",
+                  "sha256": "2d3b2f03a3c5665944adba51e33263511e51b21c9cd05d902f9c4b7c1e58d2f4"
+                }
+              ],
+              "image": "mn-boltz2-opt:2.2.1-cu130-batch2",
+              "image_digest": "sha256:3054688e91908156071238adee167ad4963cfbca05c8a4cf0e55a634ba5a2a55",
+              "input_files": [
+                {
+                  "bytes": 224,
+                  "path": "artifacts/raw/optimized_prediction/inputs/ied4acf9c1a03f44c.yaml",
+                  "sha256": "fbe5eca230fc448572736240fcfaad8f533b3854ecdb39dd4a1a9274000eabfa"
+                },
+                {
+                  "bytes": 224,
+                  "path": "artifacts/raw/optimized_prediction/inputs/i5471e28ee3f85ff6.yaml",
+                  "sha256": "42dbbb7ede836d982e8e19df21407c41931aa9b062081f2f86df7c45c2971ad6"
+                },
+                {
+                  "bytes": 224,
+                  "path": "artifacts/raw/optimized_prediction/inputs/i5d015e1146c4bf10.yaml",
+                  "sha256": "e20630fcb33d4ecf28edc09d2fd1647439aa31cc33edf226f858e1eca307b443"
+                }
+              ]
+            },
+            "input_specification": {
+              "inputs": {
+                "engine": "boltz2",
+                "tasks": [
+                  {
+                    "binder_sequence": null,
+                    "compound_id": "",
+                    "compound_name": "",
+                    "dna_chains": [],
+                    "has_target_structure": false,
+                    "ligand_ccd_codes": [],
+                    "ligand_smiles": [],
+                    "name": "rfd4_000001_binder",
+                    "protein_chains": [
+                      {
+                        "id": "A",
+                        "role": "target",
+                        "sequence": "AFTVTVPKDLYVVEYGSNMTIECKFPVEKQLDLAALIVYW"
+                      },
+                      {
+                        "id": "B",
+                        "role": "binder",
+                        "sequence": "TATTTLATATTTLATAISTLISDAKTSIQTLNSEVLTLTSEVNTLTSEVNTLTSEVNTLT"
+                      }
+                    ],
+                    "restraints": [],
+                    "rna_chains": [],
+                    "source_input_name": "rfd4_000001_binder",
+                    "target_chain_id": null
+                  },
+                  {
+                    "binder_sequence": null,
+                    "compound_id": "",
+                    "compound_name": "",
+                    "dna_chains": [],
+                    "has_target_structure": false,
+                    "ligand_ccd_codes": [],
+                    "ligand_smiles": [],
+                    "name": "rfd4_000001_binder_soluble_mpnn_001",
+                    "protein_chains": [
+                      {
+                        "id": "A",
+                        "role": "target",
+                        "sequence": "AFTVTVPKDLYVVEYGSNMTIECKFPVEKQLDLAALIVYW"
+                      },
+                      {
+                        "id": "B",
+                        "role": "binder",
+                        "sequence": "TEVKNKLKETAEKAEEISKLIAQAKESIQKLNSEVLAEKKEQERKIKQQLEKQMEKQKQE"
+                      }
+                    ],
+                    "restraints": [],
+                    "rna_chains": [],
+                    "source_input_name": "rfd4_000001_binder_soluble_mpnn_001",
+                    "target_chain_id": null
+                  },
+                  {
+                    "binder_sequence": null,
+                    "compound_id": "",
+                    "compound_name": "",
+                    "dna_chains": [],
+                    "has_target_structure": false,
+                    "ligand_ccd_codes": [],
+                    "ligand_smiles": [],
+                    "name": "rfd4_000001_binder_soluble_mpnn_002",
+                    "protein_chains": [
+                      {
+                        "id": "A",
+                        "role": "target",
+                        "sequence": "AFTVTVPKDLYVVEYGSNMTIECKFPVEKQLDLAALIVYW"
+                      },
+                      {
+                        "id": "B",
+                        "role": "binder",
+                        "sequence": "TEEAQKARLTQEKANEISQLIAEAKSSIQKLNSEVLQKQEEEAALKKLLEEELQRLKALS"
+                      }
+                    ],
+                    "restraints": [],
+                    "rna_chains": [],
+                    "source_input_name": "rfd4_000001_binder_soluble_mpnn_002",
+                    "target_chain_id": null
+                  }
+                ]
+              },
+              "job_type": "complex_refolding",
+              "params": {
+                "accept_alphafold3_terms": false,
+                "api_engine": "boltz2",
+                "cpu_cores": 4,
+                "engine": "boltz2",
+                "engine_options": {
+                  "boltz_version": "2.2.1",
+                  "generate_ipsae": false,
+                  "max_msa_seqs": 8192,
+                  "max_parallel_samples": 5,
+                  "method": "",
+                  "output_format": "pdb",
+                  "sampling_steps": 20,
+                  "seed_count": 1,
+                  "step_scale": 1.5,
+                  "use_msa": false,
+                  "use_msa_server": false,
+                  "use_potentials": false,
+                  "write_full_pae": true
+                },
+                "gpu_count": 1,
+                "gpu_device": "0",
+                "image": "mn-boltz2-opt:2.2.1-cu130-batch2",
+                "num_recycles": 1,
+                "optimization_mode": "off",
+                "queue_resource": "gpu:0",
+                "samples": 1,
+                "seed": 20261027,
+                "task_count": 3,
+                "validation_mode": null,
+                "validation_sources": null
+              },
+              "tool": "optimized_prediction_boltz2"
+            }
+          }
+        ],
+        "results_candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T151301280837Z/test_real_two_stage_sequence_design[rfd4]/artifacts/pipeline_nodes/results/artifacts/normalized_candidates/candidates.jsonl"
+      }
+    ]
+  },
+  "earlier_trial_logs": [
+    "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase4/logs/gpu.log",
+    "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase4/logs/gpu-retest.log",
+    "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase4/logs/gpu-sequence-retest.log",
+    "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase4/logs/gpu-final.log",
+    "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase4/logs/cpu-full.log",
+    "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase4/logs/cpu-final.log"
+  ],
+  "limitations": [
+    "No experimental solubility or binding validation.",
+    "Only RFdiffusion and RFD4 generators were exercised; no all-generator campaign.",
+    "Contact masks reflect heavy atoms present in the candidate structure, with no inferred sidechain contacts or bond-geometry guarantee.",
+    "Native sequence conditions without a verifiable fixed-residue mapping are rejected by optional optimization.",
+    "Fresh sampling with reuse_completed=false reruns the graph; changing only sequence-design settings preserves reusable upstream generation.",
+    "External service/database revisions not reported by a runtime cannot be inferred from container identity."
+  ]
+}

@@ -191,3 +191,19 @@ def test_downstream_filters_use_variant_evidence_without_borrowing_parent_scores
     assert metric_value(predictions[1], field) == .8
     selection = evaluate_selection(predictions, {'rules': [{'field': field, 'operator': '>=', 'value': .5}]})
     assert [c['candidate_id'] for c in selected_candidates(selection)] == [predictions[1]['candidate_id']]
+
+
+def test_soluble_stage_rejects_native_cysteine_mutation_without_explicit_motif(capture_runner, monkeypatch):
+    source, collection, _ = _fake_valid_design(capture_runner, monkeypatch, damage='motif')
+    candidate = json.loads(collection.read_text())
+    path = source / 'designed.pdb'
+    lines = []
+    for line in path.read_text().splitlines():
+        if line.startswith('ATOM') and line[21] == 'B' and int(line[22:26]) == 2:
+            line = line[:17] + 'CYS' + line[20:]
+        lines.append(line)
+    path.write_text('\n'.join(lines) + '\n')
+    candidate.update(binder_sequence='KCMNP', raw_metadata={})
+    collection.write_text(json.dumps(candidate) + '\n')
+    with pytest.raises(ValueError, match='changed fixed residues'):
+        mpnn.run_mpnn_sequence_design(source, collection, sequence_stage='soluble_optimization', optimization_enabled=True)

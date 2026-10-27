@@ -935,6 +935,7 @@ def new_graph(template="foundry") -> dict[str, Any]:
             edges.append({"id": f"edge-mpnn-{i}", "source": node["id"], "sourceHandle": "out", "target": downstream[0]["id"], "targetHandle": "in"})
         for i, (source, dest) in enumerate(zip(downstream, downstream[1:])):
             edges.append({"id": f"edge-analysis-{i}", "source": source["id"], "sourceHandle": "out", "target": dest["id"], "targetHandle": "in"})
+        downstream[0]["data"]["label"] = "Initial sequences · ProteinMPNN or native"
         soluble = copy.deepcopy(downstream[0])
         soluble["id"] = "optional-soluble-mpnn"
         soluble["data"].update(label="Optional SolubleMPNN optimization")
@@ -1100,7 +1101,7 @@ def new_graph(template="foundry") -> dict[str, Any]:
                 use_interface_template=False,
                 msa_source="single_sequence",
             )
-    result={"schema_version": SCHEMA, "id": uuid.uuid4().hex, "name": {"foundry": "Foundry binder design", "bindcraft2": "BindCraft2 design", "boltzgen": "BoltzGen design", "complexa":"Proteina-Complexa custom pipeline", "complexa_generated":"Continue generated designs", "esmfold2_binder":"ESMFold2 Binder Design → ProteinMPNN → RosettaFold3", "rfdiffusion_beta_pairing":"RFdiffusion β-pairing → ProteinMPNN → AF2 Initial Guess", "rfdiffusion_beta_pairing_generated":"Continue β-pairing backbones → ProteinMPNN → AF2 Initial Guess"}.get(template, generator_input.ENGINES[engine]['title']+' · author-inspired pipeline' if engine in generator_input.ENGINES else "Untitled pipeline"), "nodes": nodes, "edges": edges, "viewport": {"x": 0, "y": 0, "zoom": 0.75}}
+    result={"schema_version": SCHEMA, "id": uuid.uuid4().hex, "name": {"foundry": "Foundry binder design", "bindcraft2": "BindCraft2 design", "boltzgen": "BoltzGen design", "complexa":"Proteina-Complexa custom pipeline", "complexa_generated":"Continue generated designs", "esmfold2_binder":"ESMFold2 Binder Design → native sequence → RosettaFold3", "rfdiffusion_beta_pairing":"RFdiffusion β-pairing → ProteinMPNN → AF2 Initial Guess", "rfdiffusion_beta_pairing_generated":"Continue β-pairing backbones → ProteinMPNN → AF2 Initial Guess"}.get(template, generator_input.ENGINES[engine]['title']+' · author-inspired pipeline' if engine in generator_input.ENGINES else "Untitled pipeline"), "nodes": nodes, "edges": edges, "viewport": {"x": 0, "y": 0, "zoom": 0.75}}
     if engine == "kejia_idr":
         result["name"] = "Kejia IDR → ProteinMPNN → AlphaFold2 Initial Guess"
     elif engine == "peptide_trap":
@@ -1108,6 +1109,7 @@ def new_graph(template="foundry") -> dict[str, Any]:
     for node in nodes:
         if node["data"]["kind"] in {"ligandmpnn", "foundry_mpnn"}:
             node["data"]["params"]["sequence_stage"] = "initial"
+            node["data"]["label"] = "Initial sequences · ProteinMPNN or native"
     if template in TEMPLATE_REFERENCES:result['template_id']=template
     return result
 
