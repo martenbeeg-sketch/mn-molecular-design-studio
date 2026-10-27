@@ -44,6 +44,8 @@ _HEADER_NUMBER = re.compile(r"(?:^|[,\s])([A-Za-z_]+)\s*=\s*([+-]?(?:\d+(?:\.\d*
 
 def engine_name(tool):
     name = str(tool or "").strip().lower().replace("-", "_")
+    if name.startswith("optimized_prediction_"):
+        name = name.removeprefix("optimized_prediction_")
     return ENGINE_ALIASES.get(name, name)
 
 
@@ -309,9 +311,74 @@ def candidate_output(candidate):
 
 def metric_value(candidate, field):
     """Shared selector for workflow filters; native metric keys still work."""
+    if str(field).startswith("evidence/"):
+        parts = str(field).split("/")
+        if len(parts) not in {4, 5}:
+            raise ValueError("Use evidence/<stage>/<tool>/<metric>, optionally with a candidate ID before the metric.")
+        _, stage, tool, *rest = parts
+        matches = [record for record in candidate_evidence(candidate)
+                   if record["stage"] == stage and record["source_tool"] == tool
+                   and record["same_sequence"] and (len(rest) == 1 or record["candidate_id"] == rest[0])]
+        if len(matches) != 1:  # ambiguity is missing evidence, never an implicit latest/best score
+            return None
+        record = matches[0]
+        if record["status"] in {"error", "failed", "missing", "invalid"}:
+            return None
+        return metric_value(record["candidate"], rest[-1])
     if str(field).startswith(PREFIX):
         return candidate_output(candidate)["metrics"].get(str(field)[len(PREFIX):])
     return (candidate.get("metrics") or {}).get(field)
+
+
+def candidate_evidence(candidate):
+    """Read lineage without relabeling ancestral measurements as current ones.
+
+    Different sequences remain visible as comparators, but cannot supply a
+    measurement for the current sequence. No files are loaded by this view.
+    """
+    records, seen = [], set()
+    pending = [(candidate, 0, True)]
+    while pending:
+        item, depth, compatible = pending.pop()
+        if id(item) in seen:
+            continue
+        if depth > 64:
+            raise ValueError("Candidate evidence lineage exceeds 64 stages.")
+        seen.add(id(item))
+        raw, metrics = item.get("raw_metadata") or {}, item.get("metrics") or {}
+        outcome = raw.get("measurement_status") or {}
+        errors = [str(metrics[key]) for key in ("ipsae_error", "rosetta_error", "qc_error", "validation_error") if metrics.get(key)]
+        sequence = item.get("binder_sequence")
+        compatible = compatible and (depth == 0 or bool(sequence and sequence == candidate.get("binder_sequence")))
+        records.append({"candidate_id": item.get("candidate_id"), "stage": item.get("stage"),
+                        "source_tool": item.get("source_tool") or item.get("tool"),
+                        "parents": list(item.get("parents") or []), "depth": depth,
+                        "same_sequence": compatible, "role": "candidate" if depth == 0 else "evidence" if compatible else "comparator",
+                        "status": "error" if errors else outcome.get("status") or metrics.get("analysis_status") or "unverified",
+                        "error": "; ".join(errors) or outcome.get("error", ""), "candidate": item})
+        parent = raw.get("source_candidate")
+        if isinstance(parent, dict):
+            pending.append((parent, depth + 1, compatible))
+    return records
+
+
+def evidence_rows(candidates):
+    """Long-form Results projection; sources, units and protocols stay explicit."""
+    rows = []
+    for candidate in candidates:
+        for record in candidate_evidence(candidate):
+            item = record["candidate"]
+            common = candidate_output(item)
+            fields = {**(item.get("metrics") or {}), **{PREFIX + key: value for key, value in common["metrics"].items()}}
+            for field, value in fields.items():
+                provenance = common.get("provenance", {}).get(field.removeprefix(PREFIX), {}) if field.startswith(PREFIX) else {}
+                rows.append({"candidate_id": candidate.get("candidate_id"), "measurement_candidate_id": record["candidate_id"],
+                             "stage": record["stage"], "source_tool": record["source_tool"], "role": record["role"],
+                             "same_sequence": record["same_sequence"], "measurement_status": record["status"], "error": record["error"],
+                             "field": field, "value": value, "unit": provenance.get("unit", "native"),
+                             "direction": provenance.get("direction", ""), "parents": ", ".join(record["parents"]),
+                             "selector": f"evidence/{record['stage']}/{record['source_tool']}/{record['candidate_id']}/{field}"})
+    return rows
 
 
 @lru_cache(maxsize=2048)

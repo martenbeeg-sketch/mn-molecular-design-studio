@@ -65,13 +65,17 @@ def _selected_source_rows(kind: str, selected: list[dict], all_rows: list[dict])
             if str(candidate.get("candidate_id") or "") in selected_ids]
 
 
-def _local_source(parent: Path, node_id: str, candidates: list[dict], target: dict | None = None, analysis_runs: list[dict] | None = None) -> dict:
+def _local_source(parent: Path, node_id: str, candidates: list[dict], target: dict | None = None, analysis_runs: list[dict] | None = None, *, final_evidence=False) -> dict:
     """Write a new candidate collection, keeping upstream artifacts read-only."""
     destination = parent / "artifacts" / "pipeline_nodes" / node_id
     normalized = destination / "artifacts" / "normalized_candidates"
     normalized.mkdir(parents=True, exist_ok=True)
     candidate_path = normalized / "candidates.jsonl"
     candidate_path.write_text("".join(json.dumps(c) + "\n" for c in candidates))
+    if final_evidence:
+        import pandas as pd
+        from mn_molecular_design_studio.output_vocabulary import evidence_rows
+        pd.DataFrame(evidence_rows(candidates)).to_csv(normalized / "final_evidence.csv", index=False)
     write_json(destination / "metadata.json", {"status": "completed", "tool": "pipeline_collection", "run_id": node_id})
     write_json(destination / "input.json", {"inputs": {}, "params": {}})
     write_json(destination / "result.json", {"success": True, "outputs": {"candidates": candidates}})
@@ -814,6 +818,7 @@ def _attach_refold_input_references(output: dict, source: dict, parent: Path, no
             reference = direct
         if not reference:
             continue
+        raw.setdefault("source_candidate", copy.deepcopy(reference))
         structure = reference.get("complex_pdb") or reference.get("binder_pdb")
         if not structure:
             continue
@@ -1194,7 +1199,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                 rows.append(row)
                         if kind == "filter":
                             rows = filter_candidates(rows, params)
-                        complete(node_id, _local_source(parent, node_id, rows, source.get("target"), analysis_runs if kind == "results" else []), key);progressed=True;continue
+                        complete(node_id, _local_source(parent, node_id, rows, source.get("target"), analysis_runs if kind == "results" else [], final_evidence=kind == "results"), key);progressed=True;continue
                     if kind == "sabr":
                         from mn_molecular_design_studio import sabr_runtime
                         from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path

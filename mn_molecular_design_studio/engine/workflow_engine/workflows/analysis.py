@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import copy
 import json
 import math
 import os
@@ -277,7 +278,7 @@ def _analysis_output_candidates(
                         "target_chains": list(source.get("target_chains") or []),
                         "status": metrics.get("analysis_status", "error" if metrics.get("ipsae_error" if tool == "ipsae" else "rosetta_error") else "unverified"),
                     },
-                    "source_candidate": source,
+                    "source_candidate": source.get("_measurement_source", source),
                 },
             }
         )
@@ -1096,7 +1097,8 @@ def run_ipsae_analysis_contract(
         note="Calculate standalone ipSAE interface scores from each selected complex structure and its saved pairwise PAE matrix.",
         mode="internal+docker",
     )
-    scored = _run_ipsae(source_run_dir, job.run_dir, candidates, pae_cutoff=float(pae_cutoff), dist_cutoff=float(dist_cutoff))
+    inputs = [{**copy.deepcopy(candidate), "metrics": {}, "_measurement_source": candidate} for candidate in candidates]
+    scored = _run_ipsae(source_run_dir, job.run_dir, inputs, pae_cutoff=float(pae_cutoff), dist_cutoff=float(dist_cutoff))
     for candidate in scored:
         raw = candidate.setdefault("raw_metadata", {})
         raw["analysis_parameters"] = {"pae_cutoff": float(pae_cutoff), "dist_cutoff": float(dist_cutoff),
@@ -1122,6 +1124,7 @@ def run_rosetta_metrics_contract(
     candidates_jsonl = Path(candidates_jsonl)
     nprocs = _allocated_cpu_cores(nprocs)
     candidates = _analysis_source_candidates(source_run_dir, candidates_jsonl)
+    candidates = [{**copy.deepcopy(candidate), "metrics": {}, "_measurement_source": candidate} for candidate in candidates]
     job = _analysis_job(
         source_run_dir,
         candidates_jsonl,

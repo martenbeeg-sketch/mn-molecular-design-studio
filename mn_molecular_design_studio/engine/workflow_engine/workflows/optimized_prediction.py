@@ -21,6 +21,7 @@ from mn_molecular_design_studio import design_validation, structure_templates
 from mn_molecular_design_studio.engine.workflow_engine.core.candidates import (
     STAGE_COMPLEX_REFOLDING,
     STAGE_MONOMER_REFOLDING,
+    read_candidates,
     write_candidates,
 )
 from mn_molecular_design_studio.engine.workflow_engine.core.gpu import (
@@ -2610,6 +2611,7 @@ def run_optimized_prediction(
         structures: list[Path] = []
         item_results = []
         failures = []
+        source_collections = {}
         for task in normalized_tasks:
             row = rows_by_id.get(task["id"])
             task_structures: list[Path] = []
@@ -2709,6 +2711,14 @@ def run_optimized_prediction(
                         ],
                     },
                 })
+                reference = task.get("validation_reference") or {}
+                source_run = task.get("source_run_dir") or reference.get("source_run_dir")
+                source_id = task.get("source_candidate_id") or reference.get("candidate_id")
+                if source_run and source_id:
+                    if source_run not in source_collections:
+                        source_collections[source_run] = {item["candidate_id"]: item for item in read_candidates(Path(source_run))}
+                    if source_id in source_collections[source_run]:
+                        candidates[-1]["raw_metadata"]["source_candidate"] = source_collections[source_run][source_id]
                 if task["validation_reference"]:
                     candidate = candidates[-1]
                     reference = task["validation_reference"]
