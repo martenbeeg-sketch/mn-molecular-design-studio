@@ -97,3 +97,7 @@ include = ["mn_molecular_design_studio*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+  "gpu: opt-in real GPU inference (MDS_GPU_TESTS=1)",
+  "gpu_e2e: opt-in multi-stage real GPU pipeline (MDS_GPU_TESTS=1)",
+]

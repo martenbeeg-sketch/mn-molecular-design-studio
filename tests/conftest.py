@@ -51,3 +51,55 @@ def design_source_factory(tmp_path):
             (run_dir / name).write_text(json.dumps(payload))
         return run_dir, candidate
     return create
+
+
+def pytest_collection_modifyitems(config, items):
+    """GPU inference is opt-in even when the whole test suite is collected."""
+    import os
+    if os.environ.get("MDS_GPU_TESTS") == "1":
+        return
+    skip = pytest.mark.skip(reason="real GPU inference requires MDS_GPU_TESTS=1")
+    for item in items:
+        if item.get_closest_marker("gpu") or item.get_closest_marker("gpu_e2e"):
+            item.add_marker(skip)
+
+
+@pytest.fixture
+def gpu_runtime(request, monkeypatch):
+    """Use production workers/containers and retain real inference artifacts."""
+    import datetime
+    import os
+    import subprocess
+    from mn_molecular_design_studio.runtime import reference_root
+
+    if os.environ.get("MDS_GPU_TESTS") != "1":
+        pytest.skip("real GPU inference requires MDS_GPU_TESTS=1")
+    device = os.environ.get("MDS_TEST_GPU", "0")
+    try:
+        inventory = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,name,uuid,driver_version,memory.total", "--format=csv"],
+            capture_output=True, text=True, check=True, timeout=30,
+        ).stdout
+        subprocess.run(["docker", "info"], capture_output=True, check=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        pytest.skip(f"GPU/container runtime unavailable: {exc}")
+    reference = reference_root()
+    root = Path(os.environ.get("MDS_GPU_ARTIFACTS", str(request.config.rootpath / ".tmp/gpu-tests")))
+    root = root.resolve() / datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") / request.node.name
+    root.mkdir(parents=True)
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_REFERENCE_DIR", str(reference))
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(root / "runs"))
+    # Installed checkpoints only. A missing checkpoint is a skip, never a download.
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    (root / "runtime.json").write_text(json.dumps({
+        "gpu_inventory": inventory, "selected_device": device, "reference_root": str(reference),
+        "test": request.node.nodeid,
+    }, indent=2))
+
+    def require_image(image):
+        result = subprocess.run(["docker", "image", "inspect", image], capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            pytest.skip(f"required local image unavailable: {image}")
+        (root / (image.replace("/", "_").replace(":", "_") + ".json")).write_text(result.stdout)
+
+    return {"root": root, "reference": reference, "device": device, "require_image": require_image}
