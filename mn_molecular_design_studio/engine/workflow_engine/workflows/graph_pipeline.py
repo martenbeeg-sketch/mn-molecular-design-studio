@@ -1014,6 +1014,12 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                 pending.extend(plan["incoming"][ancestor])
         return ancestors
     def complete(node_id, output, key, status="completed"):
+        from mn_molecular_design_studio.candidate_execution import inherit_partial_pool
+        pool = inherit_partial_pool(output, [outputs[p] for p in plan['incoming'][node_id] if p in outputs],
+                                    missing_branches=node_states.get(node_id, {}).get('missing_branches', []))
+        if pool:
+            output['partial_pool'] = pool
+            node_states.setdefault(node_id, {})['partial'] = True
         from mn_molecular_design_studio.cache_provenance import referenced_files
         output["content_manifest"] = referenced_files({k: output.get(k) for k in
             ("candidates_jsonl", "review_candidates_jsonl", "target", "molecule_task", "analysis_runs", "analysis_run")}, base=output.get("run_dir"))
@@ -1022,7 +1028,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         if output.get("review_candidates_jsonl"):
             output["review_digest"] = file_digest(Path(output["review_candidates_jsonl"]))
         output["fingerprint"] = fingerprint(key, {"candidate_digest": file_digest(Path(output["candidates_jsonl"])),
-            "review_digest": output.get("review_digest"), "artifact_digests": sorted(output["content_manifest"].values())}, []) if output.get("candidates_jsonl") else key
+            "review_digest": output.get("review_digest"), "artifact_digests": sorted(output["content_manifest"].values()),
+            **({'partial_pool': output['partial_pool']} if output.get('partial_pool') else {})}, []) if output.get("candidates_jsonl") else key
         outputs[node_id] = output
         node_states.setdefault(node_id, {}).update(status=status, output=output, fingerprint=key, candidate_count=output.get("candidate_count", 0), completed_at=utc_now())
         analyses = [*(output.get("analysis_runs") or []), *([output["analysis_run"]] if output.get("analysis_run") else [])]
@@ -1356,6 +1363,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             missing for upstream_output in upstream for missing in upstream_output.get('partial_pool', {}).get('missing_branches', [])})
                         partial_batches = [upstream_output['candidate_execution'] for upstream_output in upstream
                                            if upstream_output.get('candidate_execution', {}).get('missing_batches')]
+                        partial_batches.extend(record for upstream_output in upstream
+                                               for record in upstream_output.get('partial_pool', {}).get('candidate_batches', []))
                         if missing or partial_batches:
                             for row in rows:
                                 row.setdefault('raw_metadata', {})['partial_pool'] = dict(missing_branches=missing, candidate_batches=partial_batches)

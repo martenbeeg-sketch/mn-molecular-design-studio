@@ -499,3 +499,19 @@ def tick_incremental(parent, node, current, upstream_state, upstream_output, set
                                         progress=current['candidate_progress'])
     key = digest([kind, params, current['incremental_runtime'], [g['upstream_manifest'] for k, g in sorted(groups.items())]])
     return output, key, ('partial' if rows and settings['failure_policy'] == 'partial' else 'failed') if failed else 'completed'
+
+
+def inherit_partial_pool(output, upstream=(), *, missing_branches=()):
+    """Carry incomplete-pool context through ordinary successful middle stages."""
+    branches = set(missing_branches)
+    batches = {}
+    for source in [output, *upstream]:
+        pool = source.get('partial_pool', {})
+        branches.update(pool.get('missing_branches', []))
+        records = list(pool.get('candidate_batches', []))
+        execution = source.get('candidate_execution', {})
+        if execution.get('missing_batches'):
+            records.append(execution)
+        for record in records:
+            batches[digest(record)] = record
+    return dict(missing_branches=sorted(branches), candidate_batches=[batches[k] for k in sorted(batches)]) if branches or batches else None

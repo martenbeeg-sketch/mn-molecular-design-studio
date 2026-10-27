@@ -223,3 +223,14 @@ def test_controller_retry_waits_for_scheduler_retry_and_live_process_termination
         raise RuntimeError('scheduler disconnected')
     monkeypatch.setattr(central_scheduler, '_client', unavailable)
     assert ce.execution_status(metadata) == 'reconciling'
+
+
+def test_partial_pool_context_survives_successful_intermediate_analysis():
+    prediction = {'candidate_execution': {'missing_batches': ['b000002'], 'progress': {'completed_units': 2}}}
+    analysis = {'partial_pool': ce.inherit_partial_pool({}, [prediction])}
+    selection = {'partial_pool': ce.inherit_partial_pool({}, [analysis])}
+    result = ce.inherit_partial_pool({}, [selection, analysis], missing_branches=['generator-b'])
+    assert result['missing_branches'] == ['generator-b']
+    assert len(result['candidate_batches']) == 1
+    assert result['candidate_batches'][0]['missing_batches'] == ['b000002']
+    assert ce.inherit_partial_pool({}, [{}]) is None

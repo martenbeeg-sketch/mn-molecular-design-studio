@@ -478,3 +478,32 @@ render_pipeline_builder(owner_id="test-user",project_selector=lambda _:"test-pro
     app.button(key="visual-pipeline-test-project-open").click().run()
     assert not app.exception
     assert app.text_input(key="visual-pipeline-test-project-name").value=="Saved pipeline"
+
+
+@pytest.mark.parametrize('failure_policy', ['all', 'partial'])
+def test_explicit_partial_fan_in_reports_missing_branch_without_changing_saved_default(execution_harness, monkeypatch, failure_policy):
+    base, calls, _ = execution_harness
+    target = copy.deepcopy(next(n for n in base['nodes'] if n['data']['kind'] == 'target'))
+    target['id'] = 'target'
+    graph_data = graph.new_graph('blank')
+    result_node = node('results', 'results')
+    if failure_policy == 'partial':
+        result_node['data']['execution'] = {'failure_policy': 'partial'}
+    graph_data['nodes'] = [target, node('rfd3', 'good'), node('rfd3', 'bad'), result_node]
+    graph_data['edges'] = [edge('target', 'good'), edge('target', 'bad'), edge('good', 'results'), edge('bad', 'results')]
+    original_submit = runner._submit
+    def submit(request, parent, current_node, **kwargs):
+        if current_node['id'] == 'bad':
+            raise RuntimeError('Independent generator failed')
+        return original_submit(request, parent, current_node, **kwargs)
+    monkeypatch.setattr(runner, '_submit', submit)
+    run = runner.run_graph_pipeline(graph_data, 'partial-fan-in', 'owner', 'project', reuse_completed=False)
+    payload = json.loads((run / 'result.json').read_text())
+    assert payload['success'] is (failure_policy == 'partial')
+    states = payload['outputs']['pipeline_nodes']
+    if failure_policy == 'partial':
+        assert states['results']['missing_branches'] == ['bad']
+        assert payload['outputs']['comparison_status'] == 'partial'
+        assert payload['outputs']['candidates'][0]['raw_metadata']['partial_pool']['missing_branches'] == ['bad']
+    else:
+        assert states['results']['status'] == 'blocked'
