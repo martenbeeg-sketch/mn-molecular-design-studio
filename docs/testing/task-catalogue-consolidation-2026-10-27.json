@@ -1,0 +1,1030 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-27",
+  "timezone": "Europe/Berlin",
+  "branch": "fix/scientific-pipeline-validation",
+  "base_revision": "47700a7",
+  "implementation_commits": [
+    "3751557",
+    "24712cc",
+    "f550799"
+  ],
+  "catalogue": [
+    {
+      "id": "targeted_protein_binder",
+      "label": "Targeted Protein Binder Design",
+      "default": "rfd3",
+      "methods": [
+        {
+          "id": "rfd3",
+          "label": "RFdiffusion3",
+          "native": false,
+          "backbone_only": true,
+          "limitations": "Generate backbones only; sequence design and refolding are separate nodes."
+        },
+        {
+          "id": "rfdiffusion",
+          "label": "RFdiffusion",
+          "native": false,
+          "backbone_only": true,
+          "limitations": "Design or diversify proteins with target, motif, fold, or symmetry conditioning. Generation only."
+        },
+        {
+          "id": "rfd4",
+          "label": "RFD4-Proteina",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Co-designed sequences are retained; component/atom mapping restrictions are enforced by the existing handoff."
+        },
+        {
+          "id": "bindcraft2",
+          "label": "BindCraft2",
+          "native": true,
+          "backbone_only": false,
+          "limitations": "Complete design, MPNN refinement, validation and filtering workflow."
+        },
+        {
+          "id": "boltzgen",
+          "label": "BoltzGen",
+          "native": true,
+          "backbone_only": false,
+          "limitations": "Generation, inverse folding, refolding, analysis and filtering."
+        },
+        {
+          "id": "pxdesign",
+          "label": "PXDesign",
+          "native": false,
+          "backbone_only": true,
+          "limitations": "Generate protein binder backbones with diffusion models. Generation only."
+        },
+        {
+          "id": "genie3",
+          "label": "Genie3",
+          "native": false,
+          "backbone_only": true,
+          "limitations": "Generate protein structures with fast all-atom diffusion. Generation only."
+        },
+        {
+          "id": "complexa_generator",
+          "label": "Proteina-Complexa Generator",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Generate backbone and sequence. Choose a target here or connect a Target block, then attach sequence design or prediction steps."
+        },
+        {
+          "id": "esm_binder",
+          "label": "ESMFold2 Binder Generator",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Generate miniprotein, scFv, or VHH binder sequences against one target chain. ESMFold2 structure prediction is part of the gradient-guided design loop; sequences and predicted complexes remain available for downstream MPNN redesign or independent structure prediction."
+        },
+        {
+          "id": "rfdiffusion_beta_pairing",
+          "label": "RFdiffusion \u03b2-pairing",
+          "native": false,
+          "backbone_only": true,
+          "limitations": "Requires explicit compatible sheet/strand conditioning and motif mapping."
+        },
+        {
+          "id": "bindcraft2_generator",
+          "label": "BindCraft2 Generator",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Run gradient design and emit only trajectories that pass the pre-ProteinMPNN gate. Select a binder format such as VHH; connect ProteinMPNN and structure prediction as separate steps."
+        },
+        {
+          "id": "boltzgen_generator",
+          "label": "BoltzGen Generator",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Run BoltzGen's design stage only. Connect sequence redesign and structure prediction as separate steps."
+        },
+        {
+          "id": "complexa",
+          "label": "Proteina-Complexa",
+          "native": true,
+          "backbone_only": false,
+          "limitations": "Native generation, filtering, evaluation and analysis workflow."
+        },
+        {
+          "id": "pxdesign_pipeline",
+          "label": "PXDesign pipeline",
+          "native": true,
+          "backbone_only": false,
+          "limitations": "Bundled ProteinMPNN and AF2-IG evaluation; Extended also uses Protenix."
+        },
+        {
+          "id": "genie3_pipeline",
+          "label": "Genie3 pipeline",
+          "native": true,
+          "backbone_only": false,
+          "limitations": "Bundled generation, inverse folding and structure evaluation."
+        }
+      ],
+      "description": "Design against a folded protein target. Choose one method or explicitly compare independent methods.",
+      "experimental": false,
+      "prediction_modes": {},
+      "methods_by_mode": {},
+      "methods_by_binder_format": {
+        "protein": [
+          "rfd3",
+          "rfdiffusion",
+          "rfd4",
+          "bindcraft2",
+          "boltzgen",
+          "pxdesign",
+          "genie3",
+          "complexa_generator",
+          "esm_binder",
+          "rfdiffusion_beta_pairing",
+          "bindcraft2_generator",
+          "boltzgen_generator",
+          "complexa",
+          "pxdesign_pipeline",
+          "genie3_pipeline"
+        ],
+        "vhh": [
+          "esm_binder",
+          "bindcraft2_generator",
+          "boltzgen_generator"
+        ]
+      },
+      "availability": "Compatible registered adapters; installed images, checkpoints, terms and input chemistry remain subject to engine preflight."
+    },
+    {
+      "id": "antibody_cdr_redesign",
+      "label": "Antibody CDR Redesign",
+      "default": "abmpnn",
+      "methods": [
+        {
+          "id": "abmpnn",
+          "label": "AbMPNN \u00b7 CDR Sequence Redesign",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Redesign selected antibody CDRs using the connected SAbR annotation; keep the target, framework, and unselected CDRs fixed."
+        }
+      ],
+      "description": "Redesign selected CDRs of existing antibodies; protect frameworks, cysteines and fixed motifs.",
+      "experimental": false,
+      "prediction_modes": {},
+      "methods_by_mode": {},
+      "methods_by_binder_format": {},
+      "availability": "Compatible registered adapters; installed images, checkpoints, terms and input chemistry remain subject to engine preflight."
+    },
+    {
+      "id": "template_peptide_idr",
+      "label": "Template-Based Peptide / IDR Recognition",
+      "default": "peptide_trap",
+      "methods": [
+        {
+          "id": "peptide_trap",
+          "label": "Peptide Trap",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Requires a compatible published cleft/register; computational predictions do not establish anti-aggregation activity."
+        },
+        {
+          "id": "kejia_idr",
+          "label": "Kejia IDR threading",
+          "native": false,
+          "backbone_only": true,
+          "limitations": "Flexible template strategy; confidence in beta pairing does not establish native IDR accessibility. Exploratory method."
+        }
+      ],
+      "description": "Peptide Trap uses compatible beta-strand clefts. Kejia uses flexible template threading; select its template and fragment explicitly.",
+      "experimental": false,
+      "prediction_modes": {},
+      "methods_by_mode": {},
+      "methods_by_binder_format": {},
+      "availability": "Compatible registered adapters; installed images, checkpoints, terms and input chemistry remain subject to engine preflight."
+    },
+    {
+      "id": "molecular_structure_prediction",
+      "label": "Molecular Structure Prediction",
+      "default": "boltz2",
+      "methods": [
+        {
+          "id": "rf3",
+          "label": "RosettaFold3",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Refold designed target\u2013binder complexes with Foundry RF3."
+        },
+        {
+          "id": "boltz2",
+          "label": "Boltz-2",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Refold target\u2013binder complexes with configurable target MSA and optional target template conditioning."
+        },
+        {
+          "id": "af3",
+          "label": "AlphaFold3",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Refold target\u2013binder candidates with MN Cofolding's AlphaFold3-family JAX runner. Select the official AF3 weights or another supported AF3-family parameter set."
+        },
+        {
+          "id": "prediction_af3_torch",
+          "label": "AlphaFold3 PyTorch \u00b7 OpenFold3 P2 weights",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Refold connected target\u2013binder candidates with AlphaFold3 PyTorch \u00b7 OpenFold3 P2 weights. Protein, DNA, RNA, and CCD- or SMILES-defined ligands."
+        },
+        {
+          "id": "prediction_openfold3_jax",
+          "label": "AlphaFold3 JAX \u00b7 OpenFold3 P2 weights",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Refold connected target\u2013binder candidates with AlphaFold3 JAX \u00b7 OpenFold3 P2 weights. Protein, DNA, RNA, and CCD- or SMILES-defined ligands."
+        },
+        {
+          "id": "prediction_protenix_v2",
+          "label": "Protenix V2",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Refold connected target\u2013binder candidates with Protenix V2. Protein, DNA, RNA, and CCD- or SMILES-defined ligands."
+        },
+        {
+          "id": "prediction_esmfold",
+          "label": "ESMFold",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Refold connected target\u2013binder candidates with ESMFold. Protein chains entered in the shared cofolding editor. ESMFold can accept multiple chains, but was trained on monomers; treat complex predictions as exploratory. Fixed settings: ESMFold uses the submitted protein sequences directly; MSA search is not available.."
+        },
+        {
+          "id": "prediction_esmfold2",
+          "label": "ESMFold2 Full",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Refold connected target\u2013binder candidates with ESMFold2 Full. Protein chains with optional per-chain MSAs."
+        },
+        {
+          "id": "prediction_esmfold2_fast",
+          "label": "ESMFold2 Fast",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Refold connected target\u2013binder candidates with ESMFold2 Fast. Sequence-only protein chains; chain order assigns IDs but does not assign target/binder roles. Fixed settings: This engine uses single sequences and cannot consume an MSA.."
+        },
+        {
+          "id": "prediction_chai1",
+          "label": "Chai-1",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Refold connected target\u2013binder candidates with Chai-1. Protein, DNA, RNA, and SMILES-defined ligands; generic CCD ligand codes are not accepted by this FASTA adapter. Fixed settings: Diffusion timesteps: 200."
+        },
+        {
+          "id": "prediction_atlasfold",
+          "label": "AtlasFold-M",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Refold connected target\u2013binder candidates with AtlasFold-M. Sequence-only protein chains; chain order assigns IDs but does not assign target/binder roles. Fixed settings: This engine uses single sequences and cannot consume an MSA.."
+        },
+        {
+          "id": "prediction_openfold3_ob0",
+          "label": "OpenFold3 OpenBind-0",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Refold connected target\u2013binder candidates with OpenFold3 OpenBind-0. Protein, DNA, RNA, and CCD- or SMILES-defined ligands."
+        },
+        {
+          "id": "prediction_opendde_native",
+          "label": "OpenDDE",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Refold connected target\u2013binder candidates with OpenDDE. Sequence-only protein chains; chain order assigns IDs but does not assign target/binder roles."
+        },
+        {
+          "id": "prediction_protenix_v1",
+          "label": "Protenix V1",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Refold connected target\u2013binder candidates with Protenix V1. Protein, DNA, RNA, and CCD- or SMILES-defined ligands."
+        },
+        {
+          "id": "prediction_colabfold",
+          "label": "ColabFold",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Refold connected target\u2013binder candidates with ColabFold. Sequence-only protein chains; chain order assigns IDs but does not assign target/binder roles."
+        }
+      ],
+      "description": "Choose molecular mode and one compatible predictor. Compare structural conclusions; raw engine ranking scores are not calibrated across methods.",
+      "experimental": false,
+      "prediction_modes": {
+        "protein": "Protein monomer",
+        "protein_protein": "Protein\u2013protein complex",
+        "protein_ligand": "Protein\u2013ligand complex",
+        "protein_dna": "Protein\u2013DNA complex",
+        "protein_rna": "Protein\u2013RNA complex",
+        "protein_macrocyclic": "Cyclic protein/peptide partner"
+      },
+      "methods_by_mode": {
+        "protein": [
+          "rf3",
+          "boltz2",
+          "af3",
+          "prediction_af3_torch",
+          "prediction_openfold3_jax",
+          "prediction_protenix_v2",
+          "prediction_esmfold",
+          "prediction_esmfold2",
+          "prediction_esmfold2_fast",
+          "prediction_chai1",
+          "prediction_atlasfold",
+          "prediction_openfold3_ob0",
+          "prediction_opendde_native",
+          "prediction_protenix_v1",
+          "prediction_colabfold"
+        ],
+        "protein_protein": [
+          "rf3",
+          "boltz2",
+          "af3",
+          "prediction_af3_torch",
+          "prediction_openfold3_jax",
+          "prediction_protenix_v2",
+          "prediction_esmfold",
+          "prediction_esmfold2",
+          "prediction_esmfold2_fast",
+          "prediction_chai1",
+          "prediction_atlasfold",
+          "prediction_openfold3_ob0",
+          "prediction_opendde_native",
+          "prediction_protenix_v1",
+          "prediction_colabfold"
+        ],
+        "protein_ligand": [
+          "rf3",
+          "boltz2",
+          "af3",
+          "prediction_af3_torch",
+          "prediction_openfold3_jax",
+          "prediction_protenix_v2",
+          "prediction_chai1",
+          "prediction_openfold3_ob0",
+          "prediction_protenix_v1"
+        ],
+        "protein_dna": [
+          "rf3",
+          "boltz2",
+          "af3",
+          "prediction_af3_torch",
+          "prediction_openfold3_jax",
+          "prediction_protenix_v2",
+          "prediction_chai1",
+          "prediction_openfold3_ob0",
+          "prediction_protenix_v1"
+        ],
+        "protein_rna": [
+          "rf3",
+          "boltz2",
+          "af3",
+          "prediction_af3_torch",
+          "prediction_openfold3_jax",
+          "prediction_protenix_v2",
+          "prediction_chai1",
+          "prediction_openfold3_ob0",
+          "prediction_protenix_v1"
+        ],
+        "protein_macrocyclic": [
+          "boltz2"
+        ]
+      },
+      "methods_by_binder_format": {},
+      "availability": "Compatible registered adapters; installed images, checkpoints, terms and input chemistry remain subject to engine preflight."
+    },
+    {
+      "id": "small_molecule_hit_prioritization",
+      "label": "Small-Molecule Hit Prioritization",
+      "default": "unidock_active_learning",
+      "methods": [
+        {
+          "id": "unidock_active_learning",
+          "label": "unidock_active_learning",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Use the existing adaptive docking campaign for large libraries; direct docking remains available in Tools. Surrogate labels represent docking scores."
+        }
+      ],
+      "description": "Use the existing adaptive docking campaign for large libraries; direct docking remains available in Tools. Surrogate labels represent docking scores.",
+      "experimental": false,
+      "prediction_modes": {},
+      "methods_by_mode": {},
+      "methods_by_binder_format": {},
+      "availability": "Compatible registered adapters; installed images, checkpoints, terms and input chemistry remain subject to engine preflight."
+    },
+    {
+      "id": "new_protein_fold",
+      "label": "New Protein Fold Design",
+      "default": "protpardelle",
+      "methods": [
+        {
+          "id": "protpardelle",
+          "label": "Protpardelle-1C",
+          "native": false,
+          "backbone_only": true,
+          "limitations": "Generate protein structures with sidechain, motif, and multichain conditioning. Generation only."
+        }
+      ],
+      "description": "Unconditional fold generation, sequence design and monomer self-consistency. This task does not establish target binding.",
+      "experimental": false,
+      "prediction_modes": {},
+      "methods_by_mode": {},
+      "methods_by_binder_format": {},
+      "availability": "Compatible registered adapters; installed images, checkpoints, terms and input chemistry remain subject to engine preflight."
+    },
+    {
+      "id": "ligand_conditioned_pocket",
+      "label": "Ligand-Conditioned Protein-Pocket Design",
+      "default": "rfd4",
+      "methods": [
+        {
+          "id": "rfd4",
+          "label": "RFD4-Proteina",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Co-designed sequences are retained; component/atom mapping restrictions are enforced by the existing handoff."
+        }
+      ],
+      "experimental": true,
+      "description": "Specify exact ligand chemistry and atom constraints. Pocket geometry and prediction do not establish affinity.",
+      "prediction_modes": {},
+      "methods_by_mode": {},
+      "methods_by_binder_format": {},
+      "availability": "Compatible registered adapters; installed images, checkpoints, terms and input chemistry remain subject to engine preflight."
+    },
+    {
+      "id": "catalytic_motif_scaffolding",
+      "label": "Catalytic Motif Scaffolding",
+      "default": "rfd4",
+      "methods": [
+        {
+          "id": "rfd4",
+          "label": "RFD4-Proteina",
+          "native": false,
+          "backbone_only": false,
+          "limitations": "Co-designed sequences are retained; component/atom mapping restrictions are enforced by the existing handoff."
+        }
+      ],
+      "experimental": true,
+      "description": "Supply reaction-specific motif residues, active-site atoms and cofactors. Scaffold confidence does not establish catalytic activity.",
+      "prediction_modes": {},
+      "methods_by_mode": {},
+      "methods_by_binder_format": {},
+      "availability": "Compatible registered adapters; installed images, checkpoints, terms and input chemistry remain subject to engine preflight."
+    }
+  ],
+  "supported_template_ids": [
+    "abmpnn_cdr_redesign",
+    "all_generators_boltz2",
+    "antibody_cdr_redesign",
+    "bindcraft2",
+    "blank",
+    "boltzgen",
+    "catalytic_motif_scaffolding",
+    "cofold_protein",
+    "cofold_protein_dna",
+    "cofold_protein_ligand",
+    "cofold_protein_macrocyclic",
+    "cofold_protein_protein",
+    "cofold_protein_rna",
+    "complexa",
+    "complexa_generated",
+    "esmfold2_binder",
+    "foundry",
+    "genie3",
+    "genie3_generated",
+    "kejia_idr",
+    "kejia_idr_generated",
+    "ligand_conditioned_pocket",
+    "molecular_structure_prediction",
+    "new_protein_fold",
+    "peptide_trap",
+    "peptide_trap_generated",
+    "protpardelle",
+    "protpardelle_generated",
+    "pxdesign",
+    "pxdesign_generated",
+    "rfd4_enzyme",
+    "rfd4_protein_binder",
+    "rfd4_small_molecule",
+    "rfdiffusion",
+    "rfdiffusion_beta_pairing",
+    "rfdiffusion_beta_pairing_generated",
+    "rfdiffusion_generated",
+    "small_molecule_hit_prioritization",
+    "targeted_protein_binder",
+    "template_peptide_idr",
+    "unidock_active_learning",
+    "vhh_design"
+  ],
+  "cpu": {
+    "prior_regressions": {
+      "passed": 110,
+      "failed": 0,
+      "seconds": 69.4,
+      "log": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase5/logs/prior-regressions.log"
+    },
+    "first_full_suite": {
+      "passed": 1540,
+      "skipped": 30,
+      "failed": 0,
+      "seconds": 271.57,
+      "log": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase5/logs/full-cpu.log"
+    },
+    "full_suite": {
+      "passed": 1549,
+      "skipped": 30,
+      "failed": 0,
+      "seconds": 256.41,
+      "log": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase5/logs/full-cpu-verified.log"
+    },
+    "focused_graph_api_configuration": {
+      "passed": 168,
+      "failed": 0,
+      "seconds": 85.12,
+      "log": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase5/logs/final-focused.log"
+    },
+    "final_task_ui_suite": {
+      "passed": 108,
+      "failed": 0,
+      "seconds": 54.73,
+      "log": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase5/logs/tasks-final-ui.log",
+      "note": "Includes three final additional tests (two multi-engine execution cases and one all-task UI journey) after the full-suite collection."
+    }
+  },
+  "gpu": {
+    "passed": 2,
+    "failed": 0,
+    "seconds": 215.78,
+    "log": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase5/logs/gpu-verified.log",
+    "generation": "Reused retained real Phase 4 generation; fresh downstream inference only.",
+    "cases": [
+      {
+        "method": "rfdiffusion",
+        "generation_reused": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145954352924Z/test_real_two_stage_sequence_design[rfdiffusion]/runs/design/20261027-155954-47e51189",
+        "runtime": {
+          "gpu_inventory": "index, name, uuid, driver_version, memory.total [MiB]\n0, NVIDIA GeForce RTX 4090, GPU-195a1966-1148-340e-5fe2-bac2d7a9821a, 595.91.07, 24564 MiB\n1, NVIDIA GeForce RTX 4090, GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21, 595.91.07, 24564 MiB\n",
+          "selected_device": "0",
+          "reference_root": "/mnt/db/reference_files",
+          "test": "tests/test_scientific_tasks_gpu.py::test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]"
+        },
+        "recipe_evidence": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/task-recipe-evidence.json",
+        "executed_stages": [
+          {
+            "node": "method-0-rfdiffusion-initial",
+            "kind": "ligandmpnn",
+            "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/runs/design/20261027-163825-2d09c453",
+            "parameters": {
+              "model_type": "protein_mpnn",
+              "noise_level": 0.2,
+              "num_seq_per_target": 1,
+              "sampling_temp": 0.1,
+              "design_chains": "",
+              "designed_residues": "",
+              "fixed_residues": "",
+              "omit_aas": "C",
+              "seed": 20261027,
+              "fix_interface_residues": false,
+              "interface_cutoff": 4.0,
+              "sequence_stage": "initial",
+              "optimization_enabled": false,
+              "bias_aa": "",
+              "bias_aa_per_residue": {},
+              "omit_aa_per_residue": {},
+              "homo_oligomer": 0,
+              "global_transmembrane_label": true,
+              "transmembrane_buried": "",
+              "transmembrane_interface": "",
+              "use_side_chain_context": false,
+              "pack_side_chains": false,
+              "number_of_packs_per_design": 1,
+              "backend": "shared_ligandmpnn",
+              "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145954352924Z/test_real_two_stage_sequence_design[rfdiffusion]/runs/design/20261027-155954-47e51189",
+              "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145954352924Z/test_real_two_stage_sequence_design[rfdiffusion]/runs/design/20261027-155954-47e51189/artifacts/normalized_candidates/candidates.jsonl",
+              "gpu_device": "0"
+            },
+            "result_success": true,
+            "input": {
+              "path": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/runs/design/20261027-163825-2d09c453/input.json",
+              "sha256": "ae44d89508eef13a584f6bf32c57b320c03addccb2d4533de6263953533c0b0c"
+            },
+            "candidate_collection": {
+              "path": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/runs/design/20261027-163825-2d09c453/artifacts/normalized_candidates/candidates.jsonl",
+              "sha256": "483f227ca06cb219b578832c78de82596f1314d183493b680aba3bce61e65885"
+            },
+            "candidate_count": 1,
+            "settings_artifact": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/runs/design/20261027-163825-2d09c453/artifacts/mpnn_settings.json"
+          },
+          {
+            "node": "method-0-rfdiffusion-soluble",
+            "kind": "ligandmpnn",
+            "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/runs/design/20261027-163833-6620ba79",
+            "parameters": {
+              "model_type": "soluble_mpnn",
+              "noise_level": 0.2,
+              "num_seq_per_target": 1,
+              "sampling_temp": 0.4,
+              "design_chains": "",
+              "designed_residues": "",
+              "fixed_residues": "",
+              "omit_aas": "C",
+              "seed": 20261027,
+              "fix_interface_residues": true,
+              "interface_cutoff": 4.0,
+              "sequence_stage": "soluble_optimization",
+              "optimization_enabled": true,
+              "bias_aa": "",
+              "bias_aa_per_residue": {},
+              "omit_aa_per_residue": {},
+              "homo_oligomer": 0,
+              "global_transmembrane_label": true,
+              "transmembrane_buried": "",
+              "transmembrane_interface": "",
+              "use_side_chain_context": false,
+              "pack_side_chains": false,
+              "number_of_packs_per_design": 1,
+              "backend": "shared_ligandmpnn",
+              "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/runs/design/20261027-163825-2d09c453",
+              "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/runs/design/20261027-163825-2d09c453/artifacts/normalized_candidates/candidates.jsonl",
+              "gpu_device": "0"
+            },
+            "result_success": true,
+            "input": {
+              "path": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/runs/design/20261027-163833-6620ba79/input.json",
+              "sha256": "5f20feb552f234976ca700a055d05391e565f339377e82b8d14948529bf458bb"
+            },
+            "candidate_collection": {
+              "path": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/runs/design/20261027-163833-6620ba79/artifacts/normalized_candidates/candidates.jsonl",
+              "sha256": "9341ea808182596e3e61f93416ae0afd56658db0aadfd71190f0ac73f4f795b1"
+            },
+            "candidate_count": 2,
+            "settings_artifact": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/runs/design/20261027-163833-6620ba79/artifacts/mpnn_settings.json"
+          },
+          {
+            "node": "method-0-rfdiffusion-prediction",
+            "kind": "boltz2",
+            "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/runs/refolding-validation/20261027-163838-167afb5b",
+            "parameters": {
+              "engine": "boltz2",
+              "optimization_mode": "off",
+              "job_name": "phase5-task-rfdiffusion",
+              "seed": 20261027,
+              "samples": 1,
+              "num_recycles": 1,
+              "cpu_cores": 4,
+              "tasks": [
+                {
+                  "name": "rfdiffusion_generated_00001_protein_mpnn_001",
+                  "target_protein_sequences": "AFTVTVPKDLYVVEYGSNMTIECKFPVEKQLDLAALIVYW",
+                  "binder_sequence": "MNYTIGWSLKLNKDGTLTISPGSAEDRELLLKALGGKPELAKVGLEVFEKAKKTREEIAK",
+                  "molecule_chain_options": [
+                    {
+                      "id": "A",
+                      "use_msa": false
+                    },
+                    {
+                      "id": "B",
+                      "use_msa": false
+                    }
+                  ],
+                  "source_candidate_id": "rfdiffusion_generated_00001_protein_mpnn_001",
+                  "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/runs/design/20261027-163833-6620ba79"
+                },
+                {
+                  "name": "rfdiffusion_generated_00001_protein_mpnn_001_soluble_mpnn_001",
+                  "target_protein_sequences": "AFTVTVPKDLYVVEYGSNMTIECKFPVEKQLDLAALIVYW",
+                  "binder_sequence": "VTITLGWKLELKKDGEVILSAGSAEDLAKLLQALGGKEELAQVGLELFKKALETINAVAS",
+                  "molecule_chain_options": [
+                    {
+                      "id": "A",
+                      "use_msa": false
+                    },
+                    {
+                      "id": "B",
+                      "use_msa": false
+                    }
+                  ],
+                  "source_candidate_id": "rfdiffusion_generated_00001_protein_mpnn_001_soluble_mpnn_001",
+                  "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/runs/design/20261027-163833-6620ba79"
+                }
+              ],
+              "engine_options": {
+                "sampling_steps": 20,
+                "generate_ipsae": false,
+                "seed_count": 1,
+                "write_full_pae": true,
+                "use_msa": false
+              },
+              "use_target_template": false,
+              "target_use_msa": false,
+              "accept_alphafold3_terms": false,
+              "gpu_device": "0"
+            },
+            "result_success": true,
+            "input": {
+              "path": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/runs/refolding-validation/20261027-163838-167afb5b/input.json",
+              "sha256": "0ed1f93d9018a39ef19ebc2da939b0937788cd8b02ab3a5584eb89f8aaeb88bb"
+            },
+            "candidate_collection": {
+              "path": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/runs/refolding-validation/20261027-163838-167afb5b/artifacts/normalized_candidates/candidates.jsonl",
+              "sha256": "10bee1324ee265d4b5b0be5edb470290803e913d12afde2962bf817b46a2e08b"
+            },
+            "candidate_count": 2,
+            "settings_artifact": null
+          }
+        ],
+        "results": {
+          "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/artifacts/pipeline_nodes/task-results",
+          "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/artifacts/pipeline_nodes/task-results/artifacts/normalized_candidates/candidates.jsonl",
+          "target": {},
+          "candidate_count": 2,
+          "analysis_runs": []
+        },
+        "sequences": [
+          "MNYTIGWSLKLNKDGTLTISPGSAEDRELLLKALGGKPELAKVGLEVFEKAKKTREEIAK",
+          "VTITLGWKLELKKDGEVILSAGSAEDLAKLLQALGGKEELAQVGLELFKKALETINAVAS"
+        ],
+        "candidate_ids": [
+          "20261027-163838-167afb5b_boltz2_01_001",
+          "20261027-163838-167afb5b_boltz2_02_001"
+        ]
+      },
+      {
+        "method": "rfd4",
+        "generation_reused": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145654591911Z/test_real_two_stage_sequence_design[rfd4]/runs/design/20261027-155654-43e47419",
+        "runtime": {
+          "gpu_inventory": "index, name, uuid, driver_version, memory.total [MiB]\n0, NVIDIA GeForce RTX 4090, GPU-195a1966-1148-340e-5fe2-bac2d7a9821a, 595.91.07, 24564 MiB\n1, NVIDIA GeForce RTX 4090, GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21, 595.91.07, 24564 MiB\n",
+          "selected_device": "0",
+          "reference_root": "/mnt/db/reference_files",
+          "test": "tests/test_scientific_tasks_gpu.py::test_real_task_recipe_sequence_variants_prediction_and_results[rfd4]"
+        },
+        "recipe_evidence": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T154011683184Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfd4]/task-recipe-evidence.json",
+        "executed_stages": [
+          {
+            "node": "method-0-rfd4-soluble",
+            "kind": "ligandmpnn",
+            "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T154011683184Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfd4]/runs/design/20261027-164011-01a880c3",
+            "parameters": {
+              "model_type": "soluble_mpnn",
+              "noise_level": 0.2,
+              "num_seq_per_target": 1,
+              "sampling_temp": 0.4,
+              "design_chains": "",
+              "designed_residues": "",
+              "fixed_residues": "",
+              "omit_aas": "C",
+              "seed": 20261027,
+              "fix_interface_residues": true,
+              "interface_cutoff": 4.0,
+              "sequence_stage": "soluble_optimization",
+              "optimization_enabled": true,
+              "bias_aa": "",
+              "bias_aa_per_residue": {},
+              "omit_aa_per_residue": {},
+              "homo_oligomer": 0,
+              "global_transmembrane_label": true,
+              "transmembrane_buried": "",
+              "transmembrane_interface": "",
+              "use_side_chain_context": false,
+              "pack_side_chains": false,
+              "number_of_packs_per_design": 1,
+              "backend": "shared_ligandmpnn",
+              "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145654591911Z/test_real_two_stage_sequence_design[rfd4]/runs/design/20261027-155654-43e47419",
+              "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145654591911Z/test_real_two_stage_sequence_design[rfd4]/runs/design/20261027-155654-43e47419/artifacts/normalized_candidates/candidates.jsonl",
+              "gpu_device": "0"
+            },
+            "result_success": true,
+            "input": {
+              "path": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T154011683184Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfd4]/runs/design/20261027-164011-01a880c3/input.json",
+              "sha256": "099bbb45e1a00dec3f612e9f6e1cbf873ebe440f05dc519ffdf30622b39507d2"
+            },
+            "candidate_collection": {
+              "path": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T154011683184Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfd4]/runs/design/20261027-164011-01a880c3/artifacts/normalized_candidates/candidates.jsonl",
+              "sha256": "21342c876f13b743c22906d4aaf1c96ea3746ed78be10716f1b00f4ec1b07c89"
+            },
+            "candidate_count": 2,
+            "settings_artifact": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T154011683184Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfd4]/runs/design/20261027-164011-01a880c3/artifacts/mpnn_settings.json"
+          },
+          {
+            "node": "method-0-rfd4-prediction",
+            "kind": "boltz2",
+            "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T154011683184Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfd4]/runs/refolding-validation/20261027-164016-72edbb1c",
+            "parameters": {
+              "engine": "boltz2",
+              "optimization_mode": "off",
+              "job_name": "phase5-task-rfd4",
+              "seed": 20261027,
+              "samples": 1,
+              "num_recycles": 1,
+              "cpu_cores": 4,
+              "tasks": [
+                {
+                  "name": "rfd4_000001_binder",
+                  "source_candidate_id": "rfd4_000001_binder",
+                  "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T154011683184Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfd4]/runs/design/20261027-164011-01a880c3",
+                  "scientific_contract": {
+                    "schema_version": 1,
+                    "source_candidate_id": "rfd4_000001_binder",
+                    "source_molecule_id": "rfd4_000001_binder",
+                    "chain_map": {
+                      "A": "A",
+                      "B": "B"
+                    },
+                    "components": [
+                      {
+                        "chain": "A",
+                        "role": "",
+                        "sequence": "AFTVTVPKDLYVVEYGSNMTIECKFPVEKQLDLAALIVYW",
+                        "type": "protein"
+                      },
+                      {
+                        "chain": "B",
+                        "role": "",
+                        "sequence": "TATTTLATATTTLATAISTLISDAKTSIQTLNSEVLTLTSEVNTLTSEVNTLTSEVNTLT",
+                        "type": "protein"
+                      }
+                    ],
+                    "target_protein_ids": [
+                      "A"
+                    ],
+                    "binder_protein_ids": [
+                      "B"
+                    ],
+                    "binder_sequence": "TATTTLATATTTLATAISTLISDAKTSIQTLNSEVLTLTSEVNTLTSEVNTLTSEVNTLT",
+                    "source_structure": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145654591911Z/test_real_two_stage_sequence_design[rfd4]/runs/design/20261027-155654-43e47419/artifacts/rfd4_proteina/output/inference_samples/binder/binder_generated.cif",
+                    "reference_metadata": {
+                      "fixed_residues": [],
+                      "reference_constraints": {
+                        "condition_spec": "global_args:\n  input: PD-L1.pdb\nbinder:\n  contig: \"60-60,/0,A1-40\"\n  conditions:\n    C_SEQ:\n      true:\n        - select: \"sel('A')\"\n    C_CRDGRP:\n      1:\n        - select: \"sel('A/*/*/[N,CA,C,O]')\"\n",
+                        "options": {
+                          "filter_conditions": false,
+                          "refold": false
+                        },
+                        "task": "custom_conditions"
+                      }
+                    }
+                  },
+                  "protein_sequences": "AFTVTVPKDLYVVEYGSNMTIECKFPVEKQLDLAALIVYW:TATTTLATATTTLATAISTLISDAKTSIQTLNSEVLTLTSEVNTLTSEVNTLTSEVNTLT",
+                  "dna_sequences": "",
+                  "rna_sequences": "",
+                  "ligand_ccd_codes": "",
+                  "ligand_smiles": "",
+                  "molecule_chain_options": [
+                    {
+                      "id": "A",
+                      "use_msa": false
+                    },
+                    {
+                      "id": "B",
+                      "use_msa": false
+                    }
+                  ]
+                },
+                {
+                  "name": "rfd4_000001_binder_soluble_mpnn_001",
+                  "source_candidate_id": "rfd4_000001_binder_soluble_mpnn_001",
+                  "source_run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T154011683184Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfd4]/runs/design/20261027-164011-01a880c3",
+                  "scientific_contract": {
+                    "schema_version": 1,
+                    "source_candidate_id": "rfd4_000001_binder_soluble_mpnn_001",
+                    "source_molecule_id": "rfd4_000001_binder_soluble_mpnn_001",
+                    "chain_map": {
+                      "A": "A",
+                      "Z": "B"
+                    },
+                    "components": [
+                      {
+                        "chain": "A",
+                        "role": "",
+                        "sequence": "AFTVTVPKDLYVVEYGSNMTIECKFPVEKQLDLAALIVYW",
+                        "type": "protein"
+                      },
+                      {
+                        "chain": "Z",
+                        "role": "",
+                        "sequence": "SSVKNKLKETQEKAEEISKLIAQAKESIQKLNSEVLAEKKEQEKKLEEQKKKQEEKQKQE",
+                        "type": "protein"
+                      }
+                    ],
+                    "target_protein_ids": [
+                      "A"
+                    ],
+                    "binder_protein_ids": [
+                      "B"
+                    ],
+                    "binder_sequence": "SSVKNKLKETQEKAEEISKLIAQAKESIQKLNSEVLAEKKEQEKKLEEQKKKQEEKQKQE",
+                    "source_structure": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T154011683184Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfd4]/runs/design/20261027-164011-01a880c3/artifacts/raw/ligandmpnn/output/rfd4_000001_binder/backbones/rfd4_000001_binder_1.pdb",
+                    "reference_metadata": {
+                      "fixed_residues": [
+                        "Z10",
+                        "Z14",
+                        "Z17",
+                        "Z18",
+                        "Z20",
+                        "Z21",
+                        "Z24",
+                        "Z25",
+                        "Z27",
+                        "Z28",
+                        "Z29",
+                        "Z31",
+                        "Z32",
+                        "Z33",
+                        "Z35",
+                        "Z36"
+                      ],
+                      "fixed_sequence_validation": {
+                        "fixed_position_count": 16,
+                        "status": "verified"
+                      },
+                      "reference_constraints": {
+                        "condition_spec": "global_args:\n  input: PD-L1.pdb\nbinder:\n  contig: \"60-60,/0,A1-40\"\n  conditions:\n    C_SEQ:\n      true:\n        - select: \"sel('A')\"\n    C_CRDGRP:\n      1:\n        - select: \"sel('A/*/*/[N,CA,C,O]')\"\n",
+                        "options": {
+                          "filter_conditions": false,
+                          "refold": false
+                        },
+                        "task": "custom_conditions"
+                      }
+                    }
+                  },
+                  "protein_sequences": "AFTVTVPKDLYVVEYGSNMTIECKFPVEKQLDLAALIVYW:SSVKNKLKETQEKAEEISKLIAQAKESIQKLNSEVLAEKKEQEKKLEEQKKKQEEKQKQE",
+                  "dna_sequences": "",
+                  "rna_sequences": "",
+                  "ligand_ccd_codes": "",
+                  "ligand_smiles": "",
+                  "molecule_chain_options": [
+                    {
+                      "id": "A",
+                      "use_msa": false
+                    },
+                    {
+                      "id": "B",
+                      "use_msa": false
+                    }
+                  ]
+                }
+              ],
+              "engine_options": {
+                "sampling_steps": 20,
+                "generate_ipsae": false,
+                "seed_count": 1,
+                "write_full_pae": true,
+                "use_msa": false
+              },
+              "use_target_template": false,
+              "target_use_msa": false,
+              "accept_alphafold3_terms": false,
+              "gpu_device": "0"
+            },
+            "result_success": true,
+            "input": {
+              "path": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T154011683184Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfd4]/runs/refolding-validation/20261027-164016-72edbb1c/input.json",
+              "sha256": "dbfd0f4cf9d05614c3cd63691915e9100218af81ebee6d4cba8d1d7ecd857b85"
+            },
+            "candidate_collection": {
+              "path": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T154011683184Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfd4]/runs/refolding-validation/20261027-164016-72edbb1c/artifacts/normalized_candidates/candidates.jsonl",
+              "sha256": "dc0d2ef2b32619a9a53011f9a6ed35b5d9ff0870c2146a0d4062fed7c568322b"
+            },
+            "candidate_count": 2,
+            "settings_artifact": null
+          }
+        ],
+        "results": {
+          "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T154011683184Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfd4]/artifacts/pipeline_nodes/task-results",
+          "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T154011683184Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfd4]/artifacts/pipeline_nodes/task-results/artifacts/normalized_candidates/candidates.jsonl",
+          "target": {},
+          "candidate_count": 2,
+          "analysis_runs": []
+        },
+        "sequences": [
+          "SSVKNKLKETQEKAEEISKLIAQAKESIQKLNSEVLAEKKEQEKKLEEQKKKQEEKQKQE",
+          "TATTTLATATTTLATAISTLISDAKTSIQTLNSEVLTLTSEVNTLTSEVNTLTSEVNTLT"
+        ],
+        "candidate_ids": [
+          "20261027-164016-72edbb1c_boltz2_02_001",
+          "20261027-164016-72edbb1c_boltz2_01_001"
+        ]
+      }
+    ]
+  },
+  "earlier_trial_logs": [
+    "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase5/logs/tasks-first.log",
+    "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase5/logs/gpu.log"
+  ],
+  "limits": [
+    "No wet-lab binding, catalysis or solubility benchmark.",
+    "Native complete methods preserved and CPU-tested; not all rerun on GPU.",
+    "Molecular capability checks do not establish every engine is installed on every host.",
+    "Per-method attempt/sample budgets do not establish equal GPU time.",
+    "Existing chemistry and interface mapping restrictions remain.",
+    "No universal cross-engine score calibration or wall-clock estimator.",
+    "Initial preparation uses ProteinMPNN; alternate deliberate inverse folding remains in Tools and the editor."
+  ],
+  "commands": {
+    "cpu": "CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 /home/user/mambaforge/envs/mn-molecular-design-studio/bin/python -B -m pytest -q -p no:cacheprovider",
+    "final_tasks": "CUDA_VISIBLE_DEVICES='' /home/user/mambaforge/envs/mn-molecular-design-studio/bin/python -m pytest tests/test_scientific_tasks.py -q",
+    "gpu": "MDS_GPU_TESTS=1 MDS_TEST_GPU=0 MDS_TASK_GENERATION_RFDIFFUSION=<retained-rfdiffusion-run> MDS_TASK_GENERATION_RFD4=<retained-rfd4-run> /home/user/mambaforge/envs/mn-molecular-design-studio/bin/python -m pytest tests/test_scientific_tasks_gpu.py -v -s"
+  }
+}

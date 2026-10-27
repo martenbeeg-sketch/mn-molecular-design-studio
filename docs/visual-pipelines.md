@@ -1,7 +1,37 @@
 # Visual pipelines
 
-Open **Pipelines → Node canvas**, select a project, then choose a starter or a blank canvas.
-The Foundry starter connects Target → RFdiffusion3 → Foundry MPNN → RosettaFold3 → Results.
+Open **Pipelines → Node canvas**, select a project, then choose a scientific objective.
+Configure molecular inputs, choose one compatible method, configure optional stages,
+and click **Create editable pipeline**. Selecting another objective alone does not
+replace the current draft. Six standard tasks and two experimental tasks replace
+the engine-combination menu. **Blank canvas / custom workflow**, the node library,
+standalone Tools, and **Legacy recipes and continuation compatibility** remain available.
+
+The default binder recipe connects Target → Binder Design Context → RFdiffusion3 →
+initial ProteinMPNN → Boltz-2 → Results. Backbone methods require initial sequence
+design; co-design methods retain their sequences. Native BindCraft2, BoltzGen,
+Complexa, Genie3 and PXDesign pipelines keep their internal stages and do not
+receive redundant external redesign or prediction by default.
+
+**Compare selected methods independently** creates separate branches, including
+sequence, prediction, optional selection and Results nodes. Shared attempt counts
+are not equal runtime or native acceptance budgets. Successful branches remain
+available when another method fails; partial comparisons are labeled explicitly.
+Failed measurement rows remain inspectable and do not count as successful branches.
+Raw model ranking scores are not calibrated across engines. Workload summaries
+report encoded attempt/sample counts, without inventing runtime estimates.
+
+Molecular Structure Prediction has separate monomer, protein-complex, ligand,
+DNA, RNA and cyclic-partner modes. Method choices respect molecular capabilities,
+ligand notation and target-template requirements. It defaults to one engine;
+samples, seeds, comparison and advanced engine settings remain configurable.
+
+Optional SolubleMPNN retains parents alongside redesigned candidates and protects
+the mapped interface, fixed motifs, antibody framework and cysteines using the
+Phase 4 implementation. It is disabled by default and does not guarantee improved
+experimental solubility. Optional evidence-based selection uses the existing
+filter and Results infrastructure. Additional validation can run after an explicit
+shortlist. See [Phase 5 implementation and validation](testing/task-catalogue-consolidation.md).
 
 ## Working on the canvas
 
@@ -21,7 +51,11 @@ Sequence design, prediction, filtering, and collection are explicit downstream s
 Connections are checked for compatible inputs, structure formats, and cycles.
 Not every studio engine has a canvas adapter yet; the library lists the supported steps.
 
-## RFD4-Proteina starter workflows
+## Legacy RFD4-Proteina starter workflows
+
+The following IDs retain their historical settings for compatibility. New task
+recipes start without example-specific atom or motif selectors; supply constraints
+for the actual input through task settings or the existing RFD4 node form.
 
 The starter menu includes three RFD4-Proteina paths:
 

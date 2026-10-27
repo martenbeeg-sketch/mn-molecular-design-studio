@@ -88,3 +88,10 @@ map to native execution; the installed engine's mandatory full PAE output is exp
 
 See [implemented routing, constraint checks, cache provenance and GPU results](two-stage-sequence-design.md)
 and the [retained execution evidence](two-stage-sequence-design-2026-10-27.json).
+
+## Task-first catalogue — Phase 5
+
+See [implemented scientific tasks, compatibility and validation](task-catalogue-consolidation.md)
+and [retained CPU/GPU evidence](task-catalogue-consolidation-2026-10-27.json).
+Eight task entry points now compose existing editable nodes; old recipe IDs,
+native methods, custom graphs and generated-candidate continuations remain available.
