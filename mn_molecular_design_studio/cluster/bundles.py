@@ -149,6 +149,23 @@ def unpack(path, destination, *, expected_digest=None):
                 raise ValueError("Unsafe input archive member.")
         for entry in entries:
             archive.extract(entry, destination)
+    manifest = destination / 'input-manifest.json'
+    if manifest.is_file():
+        records = json.loads(manifest.read_text()).get('sha256', {})
+        for relative, checksum in records.items():
+            file = (destination / relative).resolve()
+            if not file.is_relative_to(destination.resolve()) or not file.is_file() or digest_file(file) != checksum:
+                raise ValueError('A candidate input failed its SHA-256 integrity check.')
+
+    # Candidate collections contain file references inside the transferred file.
+    # Verify native bytes first, then derive a worker-local collection.
+    if manifest.is_file():
+        for relative in records:
+            path = destination / relative
+            if path.suffix == '.jsonl':
+                rows = [restore(json.loads(line), staging=destination, node_id=config.identity())
+                        for line in path.read_text().splitlines() if line.strip()]
+                path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
 
 
 def restore(payload, *, staging, node_id):
@@ -161,7 +178,7 @@ def restore(payload, *, staging, node_id):
     if isinstance(payload, str) and payload.startswith("cluster-input:///"):
         relative = PurePosixPath(payload.removeprefix("cluster-input:///"))
         path = (Path(staging) / str(relative)).resolve()
-        if relative.is_absolute() or ".." in relative.parts or not path.is_relative_to(Path(staging).resolve()) or not path.is_file():
-            raise ValueError("A staged input file is unavailable.")
+        if relative.is_absolute() or ".." in relative.parts or not path.is_relative_to(Path(staging).resolve()) or not path.exists():
+            raise ValueError("A staged input file or directory is unavailable.")
         return str(path)
     return payload

@@ -200,6 +200,27 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
     for batch in batches:
         if batch['status'] == 'completed':
             continue
+        if batch.get('cluster_job_id'):
+            from mn_molecular_design_studio.cluster import candidate_batches
+            status, output, remote_job = candidate_batches.poll(batch, owner_id=owner_id, project_id=project_id)
+            batch['status'] = status
+            attempt = batch['attempts'][-1]
+            attempt.update(status=status, worker=remote_job.get('node_id'),
+                           allocation=remote_job.get('metadata', {}).get('resource_allocation'))
+            if output is not None:
+                attempt['software'] = remote_job.get('metadata', {}).get('software_environment', {})
+                rows = collect(batch, output, read_rows=graph._absolute_candidates)
+                path = Path(batch['manifest']).with_suffix('.results.json')
+                atomic_json(path, rows)
+                batch['rows_path'] = str(path)
+                batch['output_hashes'][str(path)] = file_digest(path)
+            elif status in {'failed', 'lost'}:
+                attempt.update(error=remote_job.get('wait_reason') or 'Remote candidate job failed.', finished_at=utc_now())
+                if len(batch['attempts']) <= settings['retries']:
+                    batch.pop('cluster_job_id', None)
+                    batch.pop('prepared_envelope', None)
+                    batch.pop('transfers', None)
+                    batch['status'] = 'retrying'
         if batch.get('job_run_dir'):
             child = Path(batch['job_run_dir'])
             metadata = read_json(child / 'metadata.json')
@@ -259,6 +280,19 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
             batch['status'] = 'submitting'
             persist()
             started = time.monotonic()
+            if settings['placement'] != 'local':
+                from mn_molecular_design_studio.cluster import candidate_batches, config
+                if config.enabled():
+                    request['resources']['gpu_device'] = selected_gpu
+                    result = candidate_batches.submit(request, batch['manifest'], submission_key, settings,
+                        owner_id=owner_id, project_id=project_id, state=batch)
+                    batch['attempts'].append(dict(index=attempt_index, cluster_job_id=result['cluster_job_id'],
+                        status='queued', started_at=utc_now(), submission_key=submission_key))
+                    batch.update(status='queued', cluster_job_id=result['cluster_job_id'])
+                    persist()
+                    continue
+                if settings['placement'] != 'auto':
+                    raise ValueError('Configure trusted peers before selecting a remote workstation.')
             if matches:
                 child = matches[0]
                 if not (child / 'worker_request.json').is_file():
@@ -295,6 +329,11 @@ def cancel(parent, state):
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import stop_job
     for node in state.get('nodes', {}).values():
         for batch in node.get('batches', []):
+            if batch.get('cluster_job_id') and batch['status'] not in TERMINAL:
+                from mn_molecular_design_studio.cluster import candidate_batches
+                marker = read_json(Path(parent) / 'molecular_design_studio.json')
+                candidate_batches.cancel(batch, owner_id=marker.get('studio_owner_id'), project_id=marker.get('project_id'))
+                batch['status'] = 'cancelled'
             if batch.get('job_run_dir') and batch['status'] not in TERMINAL:
                 stop_job(Path(batch['job_run_dir']), reason='Parent pipeline was cancelled')
                 batch['status'] = 'cancelled'
