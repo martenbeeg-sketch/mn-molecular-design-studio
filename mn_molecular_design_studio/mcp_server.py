@@ -224,11 +224,12 @@ def create_server(client=None):
 
     @server.tool(annotations=read)
     async def create_pipeline_draft(template: str, project_id: str, ctx: Context, parameters: dict | None = None,
-                                    source_job: str | None = None, selected_candidate_ids: list[str] | None = None) -> dict[str, Any]:
-        """Create an editable starter graph or continue completed Kejia/Peptide Trap candidates; does not save or run it."""
+                                    source_job: str | None = None, selected_candidate_ids: list[str] | None = None,
+                                    configuration: dict | None = None) -> dict[str, Any]:
+        """Create a task graph with optional configuration (methods, inputs, stages), a legacy recipe, or a Kejia/Peptide Trap continuation; does not save or run it."""
         return await call(ctx, "POST", "/api/v1/pipelines/drafts", body={"template": template, "project_id": project_id,
                           "parameters": parameters or {}, "source_job": source_job,
-                          "selected_candidate_ids": selected_candidate_ids or []})
+                          "selected_candidate_ids": selected_candidate_ids or [], "configuration": configuration or {}})
 
     @server.tool(annotations=read)
     async def molecule_viewer(molecule_id: str, ctx: Context, structure_id: str | None = None) -> dict[str, Any]:

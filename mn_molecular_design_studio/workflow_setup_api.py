@@ -24,6 +24,7 @@ class PipelineDraft(Contract):
     parameters: dict = Field(default_factory=dict)
     source_job: str | None = None
     selected_candidate_ids: list[str] = Field(default_factory=list, max_length=10000)
+    configuration: dict = Field(default_factory=dict)
 
 
 class StructurePreview(Contract):
@@ -94,18 +95,21 @@ def install(app, current_user, *, validate_paths, resolve_job):
 
     @router.get("/pipelines/templates")
     def pipeline_templates(user=Depends(current_user)):
-        from mn_molecular_design_studio.pipeline_graph import STARTER_TEMPLATES, TEMPLATE_REFERENCES
+        from mn_molecular_design_studio.pipeline_graph import STARTER_TEMPLATES, LEGACY_STARTER_TEMPLATES, TEMPLATE_REFERENCES
+        from mn_molecular_design_studio.scientific_tasks import catalogue
         return {"items": [{"id": key, "label": label, "reference": TEMPLATE_REFERENCES.get(key)}
-                          for label, key in STARTER_TEMPLATES.items()]}
+                          for label, key in STARTER_TEMPLATES.items()], "tasks": catalogue(),
+                "legacy_items": [{"id": key, "label": label} for label, key in LEGACY_STARTER_TEMPLATES.items()]}
 
     @router.post("/pipelines/drafts")
     def draft(payload: PipelineDraft, user=Depends(current_user)):
-        from mn_molecular_design_studio.pipeline_graph import STARTER_TEMPLATES, new_graph
+        from mn_molecular_design_studio.pipeline_graph import SUPPORTED_TEMPLATE_IDS, new_graph
+        from mn_molecular_design_studio.scientific_tasks import TASKS, new_task_graph
         project = call(validate_project_id, payload.project_id)
         if not project:
             raise HTTPException(422, "Choose an existing project.")
         call(require_project_access, user, project)
-        if payload.template not in STARTER_TEMPLATES.values():
+        if payload.template not in SUPPORTED_TEMPLATE_IDS:
             raise HTTPException(422, "Choose a template from /pipelines/templates.")
         template = payload.template
         source = None
@@ -118,7 +122,11 @@ def install(app, current_user, *, validate_paths, resolve_job):
             if source.get("project_id") != project:
                 raise HTTPException(422, "Continue results in their original project.")
             template += "_generated"
-        graph = call(new_graph, template)
+        if payload.configuration and template not in TASKS:
+            raise HTTPException(422, "Task configuration requires a scientific task ID; legacy graph settings remain explicit node parameters.")
+        configuration = call(api_files.resolve_references, payload.configuration, user)
+        validate_paths(configuration, user)
+        graph = call(new_task_graph, template, configuration) if template in TASKS else call(new_graph, template)
         params = call(api_files.resolve_references, payload.parameters, user)
         validate_paths(params, user)
         if source:
