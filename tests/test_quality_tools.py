@@ -72,7 +72,7 @@ def test_collection_is_one_container_and_keeps_failed_rows(tmp_path, monkeypatch
             return SimpleNamespace(returncode=0, stdout="sha256:test\n")
         commands.append(command)
         (run / "artifacts/analysis/batch_status.json").write_text(json.dumps({"items": [
-            {"id": "item_000000", "status": "completed", "metrics": {"qc_sequence_length": 5}},
+            {"id": "item_000000", "status": "completed", "metrics": {"qc_sequence_length": 5, "qc_sequence_pi": 7., "qc_sequence_gravy": .1}},
             {"id": "item_000001", "status": "failed", "metrics": {}, "error": "unknown residues"}]}))
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(quality.subprocess, "run", fake)

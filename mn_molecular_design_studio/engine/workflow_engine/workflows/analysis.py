@@ -21,6 +21,7 @@ from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths impor
 from mn_molecular_design_studio.engine.workflow_engine.core.hotspot_metrics import calculate_hotspot_metrics
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import create_job, finish_job, read_json, update_status, write_json
 from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import apply_docker_cpu_limits_to_steps
+from mn_molecular_design_studio.measurement_status import measurement_outcome, measurement_summary
 
 
 ANALYSIS_GROUP = "analysis"
@@ -206,16 +207,10 @@ def _candidate_artifacts(run_dir: Path) -> list[dict[str, str]]:
 
 
 def _analysis_source_candidates(source_run_dir: Path, candidates_jsonl: Path) -> list[dict[str, Any]]:
-    """Return candidates with a saved complex structure, including earlier analysis outputs."""
-    candidates = [
-        candidate
-        for candidate in read_candidates(candidates_jsonl)
-        if candidate.get("complex_pdb")
-        and (structure := _resolve_path(source_run_dir, str(candidate.get("complex_pdb")))) is not None
-        and structure.is_file()
-    ]
+    """Retain incomplete inputs so each requested measurement has an outcome."""
+    candidates = read_candidates(candidates_jsonl)
     if not candidates:
-        raise ValueError("The selected results contain no candidates with an accessible complex structure.")
+        raise ValueError("The selected results contain no candidates.")
     return candidates
 
 
@@ -316,27 +311,25 @@ def _finish_metric_analysis(
     analysis_dir.mkdir(parents=True, exist_ok=True)
     table_path = analysis_dir / table_name
     error_key = "ipsae_error" if tool == "ipsae" else "rosetta_error"
+    outcomes = []
+    required = ["ipsae"] if tool == "ipsae" else ["rosetta_interface_dG"]
     for candidate in candidates:
         metrics = candidate.setdefault("metrics", {})
-        measured = any(_safe_float(metrics.get(name)) is not None for name in metric_names)
-        if not measured and not metrics.get(error_key):
-            metrics[error_key] = "Analysis produced no finite measurements."
-        metrics["analysis_status"] = "error" if metrics.get(error_key) else "measured"
+        outcome = measurement_outcome(metrics, required, metrics.get(error_key))
+        outcomes.append(outcome)
+        if outcome["error"]:
+            metrics[error_key] = outcome["error"]
+        metrics["analysis_status"] = "measured" if outcome["status"] == "measured" else "error"
+        candidate.setdefault("raw_metadata", {})["measurement_status"] = outcome
     table = _analysis_metrics_table(candidates)
     table.to_csv(table_path, index=False)
     outputs = _analysis_output_candidates(candidates, tool=tool)
     normalized = write_candidates(job.run_dir, tool, outputs)
-    scored_count = sum(
-        1 for candidate in candidates
-        if not (candidate.get("metrics") or {}).get(error_key)
-        and any(_safe_float((candidate.get("metrics") or {}).get(name)) is not None for name in metric_names)
-    )
-    errors = sum(1 for candidate in candidates if (candidate.get("metrics") or {}).get(error_key))
+    counts = measurement_summary(outcomes)
     summary = {
         "tool": tool,
-        "candidate_count": len(candidates),
-        "scored_count": scored_count,
-        "error_count": errors,
+        **counts,
+        "execution_status": "completed",
         "metrics": metric_names,
         "source_ranking_preserved": True,
     }
@@ -345,10 +338,12 @@ def _finish_metric_analysis(
     artifacts = _candidate_artifacts(job.run_dir)
     finish_job(
         job.run_dir,
-        bool(normalized) and scored_count == len(candidates) and not errors,
+        counts["scored_count"] > 0,
         {
             "outputs": {"artifacts": artifacts, "candidates": normalized},
-            "metrics": {"candidate_count": len(normalized), "scored_count": scored_count, "error_count": errors},
+            "metrics": counts,
+            "execution_status": "completed",
+            "scientific_status": counts["scientific_status"],
             "downstream_artifacts": {
                 "candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl",
                 "campaign_result": "artifacts/normalized_candidates/campaign_result.json",
@@ -1092,20 +1087,6 @@ def run_ipsae_analysis_contract(
         candidates = [candidate for candidate in candidates if str(candidate.get("candidate_id") or "") in selected_ids]
         if not candidates:
             raise ValueError("None of the selected Database candidate IDs are present in this source run.")
-    matrix_count = sum(
-        1
-        for candidate in candidates
-        if (pae_path := _find_pae_path(
-            source_run_dir,
-            candidate,
-            _resolve_path(source_run_dir, str(candidate.get("complex_pdb") or "")),
-        ))
-        and pae_path.is_file()
-    )
-    if matrix_count == 0:
-        raise ValueError(
-            "The selected results have no saved pairwise PAE matrix. ipSAE cannot be calculated from scalar i_pAE/i_pDAE values alone."
-        )
     job = _analysis_job(
         source_run_dir,
         candidates_jsonl,

@@ -11,6 +11,7 @@ import subprocess
 import pandas as pd
 
 from mn_molecular_design_studio.quality_tools import TOOLS
+from mn_molecular_design_studio.measurement_status import measurement_outcome, measurement_summary
 from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates, write_candidates
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import finish_job, read_json, write_json
 from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import apply_docker_cpu_limits_to_steps
@@ -145,28 +146,32 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
     status = read_json(output / "batch_status.json")
     results = {item["id"]: item for item in status.get("items", [])}
     table = []
-    succeeded = 0
+    outcomes = []
     for source, item in zip(enhanced, items):
         result = results.get(item["id"], {"status": "failed", "metrics": {}, "error": f"Container exited {return_code} without an item result; see Logs."})
-        success = result["status"] == "completed"
-        succeeded += int(success)
         measured = dict(result.get("metrics") or {})
-        measured.update(qc_status=result["status"], qc_error=result.get("error", ""))
+        outcome = measurement_outcome(measured, profile["metrics"],
+            result.get("error") or ("QC item did not complete: " + str(result["status"]) if result["status"] != "completed" else ""),
+            boolean_fields=("posebusters_passed_all",))
+        outcomes.append(outcome)
+        measured.update(qc_status=result["status"], qc_error=outcome["error"], analysis_status=outcome["status"])
         source.update(candidate_id=item["candidate_id"] + "_" + tool, source_tool=tool, tool=tool, stage="analysis", metrics=measured,
                       parents=[item["candidate_id"]])
-        source["raw_metadata"].update(analysis_parameters=settings, image_digest=image_digest,
+        source["raw_metadata"].update(analysis_parameters=settings, image_digest=image_digest, measurement_status=outcome,
                                       structure_digest=item.get("structure_digest", ""), target_structure_digest=item["target_key"])
         table.append({"candidate_id": source["candidate_id"], "name": source["raw_metadata"].get("compound_name") or source["raw_metadata"].get("name") or item["candidate_id"],
                       "compound_id": source["raw_metadata"].get("compound_id") or "", "smiles": item.get("smiles") or "",
                       "source_candidate_id": item["candidate_id"], "status": result["status"], **measured})
     pd.DataFrame(table).to_csv(output / "qc_metrics.csv", index=False)
     normalized = write_candidates(run, tool, enhanced)
-    write_json(output / "qc_summary.json", {"schema": "studio.qc.v1", "tool": tool, "candidate_count": len(items),
-               "completed_count": succeeded, "failed_count": len(items) - succeeded, "settings": settings,
+    counts = measurement_summary(outcomes)
+    write_json(output / "qc_summary.json", {"schema": "studio.qc.v1", "tool": tool, **counts,
+               "completed_count": counts["scored_count"], "failed_count": len(items) - counts["scored_count"], "settings": settings,
                "image_digest": image_digest, "representative_policy": "first source item in each cluster; native ranks are unchanged"})
     artifacts = [{"name": path.name, "path": str(path.relative_to(run)), "type": "analysis"} for path in output.rglob("*") if path.is_file()]
-    finish_job(run, succeeded > 0, {"outputs": {"artifacts": artifacts, "candidates": normalized},
-        "metrics": {"candidate_count": len(items), "scored_count": succeeded, "error_count": len(items) - succeeded},
+    finish_job(run, counts["scored_count"] > 0, {"outputs": {"artifacts": artifacts, "candidates": normalized},
+        "execution_status": "completed" if return_code == 0 else "failed", "scientific_status": counts["scientific_status"],
+        "metrics": counts,
         "downstream_artifacts": {"candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl"}})
     return run
 
