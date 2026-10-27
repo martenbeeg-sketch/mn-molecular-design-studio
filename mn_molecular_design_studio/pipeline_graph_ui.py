@@ -468,14 +468,14 @@ def _activate_selected_template(prefix, templates):
 
 def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jobs):
     st.markdown("<style>.block-container{max-width:1900px;padding-top:1.35rem} [data-testid=stMainBlockContainer]{padding-left:2rem;padding-right:2rem}</style>", unsafe_allow_html=True)
-    project_col, template_col, new_col = st.columns([1.2, 1.1, .55], vertical_alignment="bottom")
+    project_col, new_col = st.columns([2, 1], vertical_alignment="bottom")
     with project_col:
         project_id = project_selector("visual-pipeline")
     prefix = f"visual-pipeline-{project_id or 'unassigned'}"
     state_key = prefix+"-graph"
     definitions = list_definitions(owner_id, project_id) if project_id else []
     if state_key not in st.session_state:
-        st.session_state[state_key] = copy.deepcopy(definitions[0]["graph"] if definitions else new_graph())
+        st.session_state[state_key] = copy.deepcopy(definitions[0]["graph"] if definitions else new_graph("targeted_protein_binder"))
         st.session_state[prefix+"-reset"] = uuid.uuid4().hex
         st.session_state[prefix+"-name"] = st.session_state[state_key]["name"]
     pending=st.session_state.get('pipeline-pending-draft')
@@ -486,21 +486,22 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     migrated_graph = migrate_template_graph(current_graph)
     if migrated_graph is not current_graph:
         _activate_graph(prefix, migrated_graph)
-    from mn_molecular_design_studio.pipeline_graph import STARTER_TEMPLATES
-    templates = STARTER_TEMPLATES
-    template_widget_key = prefix + "-template"
-    if st.session_state.get(template_widget_key) in {"UniDock Pro · THRα active learning", "UniDock Pro · active learning"}:
-        st.session_state[template_widget_key] = "Active-learning docking"
-    old_template_label = "All generators → ProteinMPNN → Boltz-2 + analysis"
-    if st.session_state.get(template_widget_key) == old_template_label:
-        st.session_state[template_widget_key] = "Miniprotein binders · all generators → ProteinMPNN → Boltz-2 + analysis"
-    with template_col:
-        template = st.selectbox("Start from a template", list(templates), key=prefix+"-template",
-                                on_change=_activate_selected_template, args=(prefix, templates))
     with new_col:
-        st.button("Reset canvas", key=prefix+"-new", use_container_width=True,
-                  on_click=_activate_selected_template, args=(prefix, templates))
+        st.caption("Choose an objective below to create an editable graph. Saved pipelines remain available.")
+    from mn_molecular_design_studio.scientific_tasks_ui import render_task_setup
+    created = render_task_setup(prefix)
+    if created is not None:
+        _activate_graph(prefix, created)
     graph = st.session_state[state_key]
+    from mn_molecular_design_studio.scientific_tasks import TASKS, workload
+    task_id = graph.get("task_configuration", {}).get("task_id")
+    if task_id in TASKS:
+        st.caption(("Experimental · " if TASKS[task_id].get("experimental") else "Standard · ") + TASKS[task_id]["description"])
+        with st.expander("Configured workload"):
+            estimate = workload(graph)
+            for line in estimate["counts"]:
+                st.write(line)
+            st.caption(estimate["note"])
     from mn_molecular_design_studio.pipeline_graph import TEMPLATE_REFERENCES
     if graph.get('template_id') in TEMPLATE_REFERENCES:
         url,description=TEMPLATE_REFERENCES[graph['template_id']]
@@ -542,6 +543,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 component_graph = copy.deepcopy(value["graph"])
                 if graph.get("template_id") and not component_graph.get("template_id"):
                     component_graph["template_id"] = graph["template_id"]
+                if graph.get("task_configuration"):
+                    component_graph["task_configuration"] = copy.deepcopy(graph["task_configuration"])
                 updated = clean_graph(component_graph)
                 # Input paths are authored through the trusted upload/project
                 # controls, rather than accepted from component messages.
@@ -594,5 +597,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 columns[1].write(row.get("status", "queued"))
                 columns[2].link_button("Open results", "/?job_ref="+row["run_id"])
                 execution=read_json(run_dir/"graph_execution.json")
+                if execution.get("comparison_status") == "partial":
+                    st.warning("Comparison partially completed: successful branches are available in Results. Failed branches and their errors are listed below.")
                 if execution.get("nodes"):
                     st.dataframe([{"Step": next((n["data"]["label"] for n in snapshot.get("nodes", []) if n["id"]==nid),nid), "Status": state.get("status"), "Job":state.get("job_code", ""), "Candidates":state.get("candidate_count"), "Detail":state.get("error", "")} for nid,state in execution["nodes"].items()], hide_index=True, use_container_width=True)

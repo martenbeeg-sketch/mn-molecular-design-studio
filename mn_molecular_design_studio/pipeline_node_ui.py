@@ -487,7 +487,7 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
             values["task_type"] = _render_field(next(f for f in spec["fields"] if f["name"] == "task_type"), values, key)
             task_type = values["task_type"]
             st.caption("Provide sequence inputs for this task. A target PDB path is optional for most models and required by AlphaFold2 Initial Guess and BoltzGen Fold.")
-            st.caption("The starter template includes every registered model that supports this molecule type. Ligand notation also affects which models are compatible.")
+            st.caption("Choose compatible prediction nodes for this molecule type and ligand notation. Task setup defaults to one engine; comparisons are explicit.")
             visible = {"target_protein_sequences", "target_pdb", "target_chain_id", "sequence_file"}
             if task_type in {"protein_protein", "protein_macrocyclic"}:
                 visible.add("partner_protein_sequences")
