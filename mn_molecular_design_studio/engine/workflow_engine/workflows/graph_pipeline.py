@@ -10,6 +10,7 @@ import shutil
 import signal
 import tempfile
 import time
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -875,6 +876,10 @@ def _add_target_aligned_pose_rmsd(candidate: dict, parent: Path) -> dict:
 
 def _cache_valid(output: dict) -> bool:
     try:
+        from mn_molecular_design_studio.cache_provenance import file_digest
+        manifest = output.get("content_manifest")
+        if not manifest or any(not Path(path).is_file() or file_digest(path) != digest for path, digest in manifest.items()):
+            return False
         analysis_runs = list(output.get("analysis_runs") or [])
         if output.get("analysis_run"):
             analysis_runs.append(output["analysis_run"])
@@ -975,15 +980,21 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
     cache_root = scope_root(owner_id, project_id) / "cache"
     cache_root.mkdir(parents=True, exist_ok=True)
     cancelled = [False]
+    runtime_identities = {}
     old_handler = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGTERM, lambda *_: cancelled.__setitem__(0, True))
     def persist():
         state["updated_at"] = utc_now(); write_json(parent / "graph_execution.json", state)
     def complete(node_id, output, key, status="completed"):
+        from mn_molecular_design_studio.cache_provenance import referenced_files
+        output["content_manifest"] = referenced_files({k: output.get(k) for k in
+            ("candidates_jsonl", "review_candidates_jsonl", "target", "molecule_task", "analysis_runs", "analysis_run")}, base=output.get("run_dir"))
+        if output.get("candidates_jsonl"):
+            output["content_manifest"].update(referenced_files(_absolute_candidates(output), base=output.get("run_dir")))
         if output.get("review_candidates_jsonl"):
             output["review_digest"] = file_digest(Path(output["review_candidates_jsonl"]))
         output["fingerprint"] = fingerprint(key, {"candidate_digest": file_digest(Path(output["candidates_jsonl"])),
-            "review_digest": output.get("review_digest")}, []) if output.get("candidates_jsonl") else key
+            "review_digest": output.get("review_digest"), "artifact_digests": sorted(output["content_manifest"].values())}, []) if output.get("candidates_jsonl") else key
         outputs[node_id] = output
         node_states.setdefault(node_id, {}).update(status=status, output=output, fingerprint=key, candidate_count=output.get("candidate_count", 0), completed_at=utc_now())
         analyses = [*(output.get("analysis_runs") or []), *([output["analysis_run"]] if output.get("analysis_run") else [])]
@@ -1042,6 +1053,9 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind in {'generation_source','backbone_source'} else {}
                     source_dir, _ = loader(params["source_run_dir"], project_id, params.get("selected_candidate_ids"),**extra)
                     key_params["source_digest"] = file_digest(source_dir / "artifacts/normalized_candidates/candidates.jsonl")
+                    from mn_molecular_design_studio.cache_provenance import referenced_files
+                    key_params["source_artifact_contents"] = referenced_files(_absolute_candidates({
+                        "run_dir": str(source_dir), "candidates_jsonl": str(source_dir / "artifacts/normalized_candidates/candidates.jsonl")}), base=source_dir)
                     if kind == "project_design_source":
                         from mn_molecular_design_studio import mimosa_motif
                         key_params["mimosa_motif_adapter_digest"] = file_digest(Path(mimosa_motif.__file__))
@@ -1096,10 +1110,42 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         key_params["native_runner_digest"] = file_digest(AF2_BINDER_EVAL)
                 if NODE_CATALOG[kind]["workflow"]:
                     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS, _get_function
-                    implementation = _get_function(WORKFLOWS[NODE_CATALOG[kind]["workflow"]])
+                    effective_request = node_request(kind, params, source, "cache-specification")
+                    implementation = _get_function(WORKFLOWS[effective_request["workflow"]])
                     key_params["implementation_digest"] = file_digest(Path(inspect.getfile(implementation)))
+                    from mn_molecular_design_studio.cache_provenance import execution_identity
+                    effective = effective_request["parameters"]
+                    identity_key = json.dumps([kind, params], sort_keys=True)
+                    if identity_key not in runtime_identities:
+                        runtime_identities[identity_key] = execution_identity(kind, effective, effective_request["workflow"])
+                    key_params["runtime_identity"] = runtime_identities[identity_key]
+                    # Cache the effective request, excluding run-local transport
+                    # paths whose scientific contents are covered by upstream keys.
+                    key_params["effective_parameters"] = {k: v for k, v in effective.items() if k not in
+                        {"source_run_dir", "candidates_jsonl", "job_name", "campaign_name", "target_pdb", "target_structure"}}
+                    if "seed" in effective:
+                        seed_key = fingerprint(kind, key_params, [o["fingerprint"] for o in upstream])
+                        seed_file = cache_root / (seed_key + ".seed.json")
+                        resolved_seed = current.get("resolved_seed") or effective.get("seed")
+                        if not resolved_seed:
+                            resolved_seed = (read_json(seed_file).get("seed") if reuse_completed else None) or secrets.randbelow(2147483646) + 1
+                        current["resolved_seed"] = resolved_seed
+                        if reuse_completed:
+                            write_json(seed_file, {"seed": resolved_seed})
+                        params = {**params, "seed": resolved_seed}
+                        key_params["effective_parameters"]["seed"] = resolved_seed
+                    current["execution_specification"] = key_params
                 key = fingerprint(kind, key_params, [o["fingerprint"] for o in upstream])
                 try:
+                    if current.get("job_run_dir") and (current.get("fingerprint") != key or current.get("output") and not _cache_valid(current["output"])):
+                        previous = {k: current.get(k) for k in ("job_run_dir", "fingerprint", "status", "resolved_seed")}
+                        current.setdefault("superseded_attempts", []).append(previous)
+                        child = Path(current.pop("job_run_dir"))
+                        if read_json(child / "metadata.json").get("status") not in {"completed", "failed", "cancelled"}:
+                            from mn_molecular_design_studio.engine.workflow_engine.core.jobs import stop_job
+                            stop_job(child, "Pipeline scientific inputs changed; superseded by a fresh execution")
+                        current.update(status="pending")
+                        current.pop("output", None)
                     if current.get("job_run_dir"):
                         child = Path(current["job_run_dir"])
                         metadata = read_json(child / "metadata.json")
@@ -1141,7 +1187,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         chains = [x for x in re.split(r"[\s,;]+", params["target_chains"]) if x]
                         if not chains:
                             raise ValueError("Select at least one target chain.")
-                        staged_target = parent / "artifacts" / "pipeline_inputs" / node_id / ("target" + target_path.suffix)
+                        staged_target = parent / "artifacts" / "pipeline_inputs" / node_id / ("target-" + key_params["structure_digest"][:16] + target_path.suffix)
                         staged_target.parent.mkdir(parents=True, exist_ok=True)
                         if not staged_target.exists():
                             shutil.copy2(target_path, staged_target)

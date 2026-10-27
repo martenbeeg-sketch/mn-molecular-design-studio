@@ -1580,7 +1580,9 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
 
 
 def fingerprint(kind: str, params: dict, upstream: list[str]) -> str:
-    return hashlib.sha256(json.dumps({"schema": SCHEMA, "kind": kind, "params": params, "upstream": sorted(upstream)}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    from mn_molecular_design_studio.cache_provenance import referenced_files
+    return hashlib.sha256(json.dumps({"schema": SCHEMA, "cache_contract": 2, "kind": kind, "params": params,
+        "referenced_contents": referenced_files(params), "upstream": sorted(upstream)}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def scope_root(owner_id: str, project_id: str) -> Path:
