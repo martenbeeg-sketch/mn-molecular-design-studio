@@ -62,7 +62,9 @@ active-learning docking remain covered by that suite.
 - Portable input bundles recursively rebase selected candidate JSONL structures
   and file references; they include per-file hashes and retain the existing
   512 MB bound. A source directory represents the selected snapshot, not its
-  original run/database. Transfers do not require identical absolute paths.
+  original run/database. Upstream execution/model records remain opaque, origin-tagged
+  provenance; they do not require installing prior-stage models or copying prior
+  collections. Transfers do not require identical absolute paths.
 - Remote outputs arrive through existing authorized artifact commands. Each blob
   is checksum verified and atomically published locally. Interrupted/expired
   transfers resume without rerunning inference. Foreign non-output paths remain
@@ -221,8 +223,8 @@ Logical commits: `f6f6884` candidate sharding; `c2364be` resource admission;
 `7d0e436` peer execution; `3cc396f` recovery/partial/incremental analysis;
 `a0f26f9` checksum optimization/CUDA matching; `fb0c7a9` monitoring;
 `22b5854` scheduler retry fencing; `02c9fe2` partial-pool propagation and explicit
-fan-in regressions. Tests, benchmark artifacts and this report are in
-the subsequent test/documentation commit.
+fan-in regressions. `94e536d` contains real execution tests, benchmark artifacts
+and this report. The subsequent portability fix bounds upstream provenance staging.
 
 Before claiming multi-workstation readiness, deploy the same reviewed revision to
 trusted peers through the normal authorized release process, refresh capability

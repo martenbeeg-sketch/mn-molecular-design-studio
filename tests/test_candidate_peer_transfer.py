@@ -84,3 +84,28 @@ def test_cuda_targets_distinguish_4090_and_5090_without_assuming_equal_support()
     assert not compatible({}, old)
     assert compatible({'compute_capability': '12.0'}, {'new': {'targets': ['sm_120']}})
     assert compatible({'compute_capability': '12.0'}, {'ptx': {'targets': ['compute_90']}})
+
+
+def test_peer_prediction_does_not_require_or_transfer_upstream_models(tmp_path, monkeypatch):
+    monkeypatch.setenv('MDS_CLUSTER_HOME', str(tmp_path / 'cluster'))
+    reference = tmp_path / 'reference'; reference.mkdir()
+    monkeypatch.setenv('MN_MOLECULAR_DESIGN_STUDIO_REFERENCE_DIR', str(reference))
+    weights = reference / 'upstream-generator.ckpt'; weights.write_bytes(b'prior model')
+    structure = tmp_path / 'candidate.pdb'; structure.write_text('ATOM')
+    old_collection = tmp_path / 'prior-full-collection.jsonl'; old_collection.write_text('{}\n')
+    provenance = {'checkpoint_provenance': {'path': str(weights), 'sha256': bundles.digest_file(weights)},
+                  'candidate_execution': {'effective_request': {'candidates_jsonl': str(old_collection)}}}
+    collection = tmp_path / 'selected.jsonl'
+    collection.write_text(json.dumps({'candidate_id': 'selected', 'complex_pdb': str(structure), 'raw_metadata': provenance})+'\n')
+    request = {'workflow': 'mock', 'parameters': {'source_run_dir': str(tmp_path), 'candidates_jsonl': str(collection)}}
+    archive = tmp_path / 'inputs.zip'
+    prepared, checksum, refs, size = cb.pack_request(request, archive)
+    assert refs == []
+    with zipfile.ZipFile(archive) as z:
+        assert not any('upstream-generator' in n or 'prior-full-collection' in n for n in z.namelist())
+    destination = tmp_path / 'worker'
+    bundles.unpack(archive, destination, expected_digest=checksum)
+    restored = bundles.restore(prepared, staging=destination, node_id='worker')
+    row = json.loads(Path(restored['parameters']['candidates_jsonl']).read_text())
+    for key, original in provenance.items():
+        assert json.loads(row['raw_metadata'][key]['record']) == original

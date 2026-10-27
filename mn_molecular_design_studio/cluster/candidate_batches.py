@@ -67,7 +67,14 @@ def pack_request(request, destination):
 
     def transform(value, base, key=''):
         if isinstance(value, dict):
-            result = {k: transform(v, base, k) for k, v in value.items() if k != 'source_run_dir'}
+            # Upstream execution/checkpoint records describe history, not
+            # files required by this new task. Preserve them as opaque origin
+            # records rather than installing upstream models or transferring
+            # recursively referenced prior candidate collections.
+            provenance = {'candidate_execution', 'checkpoint_provenance', 'input_provenance'} if key == 'raw_metadata' else set()
+            result = {k: ({'origin_node': config.identity(), 'record': json.dumps(v, sort_keys=True)}
+                          if k in provenance else transform(v, base, k))
+                      for k, v in value.items() if k != 'source_run_dir'}
             if value.get('source_run_dir') and value.get('candidates_jsonl'):
                 uri = result['candidates_jsonl']
                 if not uri.startswith('cluster-input:///'):
