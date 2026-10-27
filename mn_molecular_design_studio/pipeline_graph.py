@@ -1337,6 +1337,9 @@ def clean_graph(graph: dict) -> dict:
         if description is not None and not isinstance(description, str):
             raise ValueError("Node descriptions must be text.")
         node_data = {"kind": kind, "label": str(data.get("label") or NODE_CATALOG[kind]["label"])[:100], "params": params}
+        if "execution" in data:
+            from mn_molecular_design_studio.candidate_execution import policy
+            node_data["execution"] = policy(data["execution"])
         if description and description.strip():
             node_data["description"] = description.strip()[:1000]
         cleaned.append({"id": node["id"], "type": "studio", "position": position, "data": node_data})
@@ -1352,6 +1355,7 @@ def clean_graph(graph: dict) -> dict:
                           and kinds_by_id.get(edge.get("target")) == "active_docking"
                       ) else {})
                       for edge in edges if isinstance(edge, dict)],
+            **({"candidate_execution": __import__("mn_molecular_design_studio.candidate_execution", fromlist=["policy"]).policy(graph["candidate_execution"])} if "candidate_execution" in graph else {}),
             "viewport": viewport,**({'template_id':graph['template_id']} if graph.get('template_id') in SUPPORTED_TEMPLATE_IDS else {}),
             **({'task_configuration': copy.deepcopy(graph['task_configuration'])}
                if isinstance(graph.get('task_configuration'), dict) else {}),

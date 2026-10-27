@@ -462,6 +462,19 @@ def _adopt_queued_job(task_group: str, job_type: str, tool: str, inputs: dict, p
     return job
 
 
+_SUBMISSION_TAGS = ContextVar("studio_job_submission_tags", default={})
+
+
+@contextmanager
+def submission_tags(**tags):
+    """Attach durable dispatch receipts before a newly created job can launch."""
+    token = _SUBMISSION_TAGS.set(tags)
+    try:
+        yield
+    finally:
+        _SUBMISSION_TAGS.reset(token)
+
+
 def create_job(task_group: str, job_type: str, tool: str, inputs: dict, params: dict | None = None) -> JobPaths:
     from mn_molecular_design_studio.collection_policy import tag_created_metadata
     params = params or {}
@@ -498,6 +511,7 @@ def create_job(task_group: str, job_type: str, tool: str, inputs: dict, params: 
         metadata["queue_resource"] = queue_resource
     from mn_molecular_design_studio.cluster.context import tag_created_job
     tag_created_job(run_dir, metadata)
+    metadata.update(_SUBMISSION_TAGS.get())
     write_json(run_dir / "metadata.json", metadata)
     write_json(run_dir / "command.json", {"mode": "internal", "command": []})
     from mn_molecular_design_studio.batching import record_collection

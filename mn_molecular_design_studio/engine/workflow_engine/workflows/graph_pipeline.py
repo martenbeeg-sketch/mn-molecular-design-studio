@@ -762,7 +762,9 @@ def _submit(request: dict, parent: Path, node: dict, *, owner_id: str, project_i
     from mn_molecular_design_studio.quality_tools import WORKFLOWS as quality_workflows
     workflow = str(request.get("workflow", ""))
     cpu_analysis = workflow.startswith("analysis.") and not quality_workflows.get(workflow, {}).get("gpu", False)
-    request["resources"] = {"gpu_device": "none" if cpu_analysis or workflow in {"design.kejia_idr", "design.peptide_trap"} else gpu_device, "cpu_cores": 4}
+    request["resources"] = {**request.get("resources", {}), "gpu_device": "none" if cpu_analysis or workflow in {"design.kejia_idr", "design.peptide_trap"} else gpu_device, "cpu_cores": request.get("resources", {}).get("cpu_cores", 4)}
+    if cpu_analysis:
+        request["resources"]["min_vram_gb"] = 0
     if workflow in {"design.kejia_idr", "design.peptide_trap"}:
         request["resources"]["cpu_cores"] = int(request["parameters"].get("cpu_cores", 4))
     path = parent / "requests" / f"{node['id']}.json"
@@ -935,6 +937,8 @@ def _child_analysis_output(child: Path, target: dict) -> dict:
 
 def cancel_graph_children(run_dir: Path) -> None:
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import stop_job
+    from mn_molecular_design_studio.candidate_execution import cancel
+    cancel(run_dir, read_json(run_dir / "graph_execution.json"))
     for node in read_json(run_dir / "graph_execution.json").get("nodes", {}).values():
         raw = node.get("job_run_dir")
         if not raw:
@@ -1007,7 +1011,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         outputs[node_id] = output
         node_states.setdefault(node_id, {}).update(status=status, output=output, fingerprint=key, candidate_count=output.get("candidate_count", 0), completed_at=utc_now())
         analyses = [*(output.get("analysis_runs") or []), *([output["analysis_run"]] if output.get("analysis_run") else [])]
-        if (output.get("candidates_jsonl") or output.get("analysis_run", {}).get("success")) and all(a.get("success") for a in analyses) and status != "cached":
+        if (output.get("candidates_jsonl") or output.get("analysis_run", {}).get("success")) and all(a.get("success") for a in analyses) and status not in {"cached", "partial", "failed"}:
             write_json(cache_root / f"{key}.json", {"output": output})
         persist()
     try:
@@ -1023,10 +1027,12 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     continue
                 node, parents = nodes[node_id], plan["incoming"][node_id]
                 current = node_states.setdefault(node_id, {"status": "pending"})
+                from mn_molecular_design_studio import candidate_execution
+                settings = candidate_execution.policy(node["data"].get("execution", graph.get("candidate_execution")))
                 if current.get("status") in {"failed", "blocked"}:
                     continue
                 if any(
-                    node_states.get(p, {}).get("status") in {"failed", "blocked"} and p not in outputs
+                    node_states.get(p, {}).get("status") in {"failed", "blocked"} and (p not in outputs or node_states.get(p, {}).get("batches"))
                     for p in parents
                 ):
                     current.update(status="blocked", error="An upstream step failed."); persist(); progressed=True; continue
@@ -1051,6 +1057,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                 merged_rows.append(candidate)
                         source = _local_source(parent, f"{node_id}_fan_in", merged_rows, merged_target)
                     key_params = copy.deepcopy(params)
+                    if settings["mode"] != "native":
+                        key_params["candidate_execution"] = settings
                     if kind in {"filter", "results", "ipsae", "rosetta_metrics"} or NODE_CATALOG[kind]["workflow"] and NODE_CATALOG[kind]["workflow"].startswith("analysis."):
                         from mn_molecular_design_studio import output_vocabulary, candidate_selection, measurement_status
                         key_params["scientific_results_revision"] = [file_digest(Path(module.__file__)) for module in
@@ -1146,6 +1154,18 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             key_params["effective_parameters"]["seed"] = resolved_seed
                         current["execution_specification"] = key_params
                     key = fingerprint(kind, key_params, [o["fingerprint"] for o in upstream])
+                    if settings['mode'] == 'sharded' and candidate_execution.supports(kind, source):
+                        if current.get('batches') and current.get('fingerprint') != key:
+                            raise ValueError('Candidate inputs changed during execution. Submit a new pipeline.')
+                        import sys
+                        result = candidate_execution.tick(parent, node, current, source, params, key, settings,
+                            graph=sys.modules[__name__], owner_id=owner_id, project_id=project_id,
+                            gpu_device=gpu_device, persist=persist)
+                        if result:
+                            output, batch_status = result
+                            complete(node_id, output, key, batch_status)
+                            progressed = True
+                        continue
                     if current.get("job_run_dir") and (current.get("fingerprint") != key or current.get("output") and not _cache_valid(current["output"])):
                         previous = {k: current.get(k) for k in ("job_run_dir", "fingerprint", "status", "resolved_seed")}
                         current.setdefault("superseded_attempts", []).append(previous)
