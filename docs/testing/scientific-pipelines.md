@@ -95,3 +95,11 @@ See [implemented scientific tasks, compatibility and validation](task-catalogue-
 and [retained CPU/GPU evidence](task-catalogue-consolidation-2026-10-27.json).
 Eight task entry points now compose existing editable nodes; old recipe IDs,
 native methods, custom graphs and generated-candidate continuations remain available.
+
+## Candidate execution and GPU scheduling — Phase 6
+
+See [implemented scheduling, recovery, real execution and performance boundaries](multi-workstation-candidate-execution.md)
+and [machine-readable benchmark evidence](candidate-execution-benchmarks-2026-10-27.json).
+Native batching remains the default. Local multi-GPU ProteinMPNN/Boltz execution
+and CPU sequence analysis were exercised; actual cross-workstation inference is
+not yet verified because enrolled peers have incompatible code revisions.

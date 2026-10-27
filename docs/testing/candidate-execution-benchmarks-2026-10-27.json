@@ -1,0 +1,553 @@
+[
+  {
+    "kind": "ligandmpnn",
+    "retained_source": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T145954352924Z/test_real_two_stage_sequence_design[rfdiffusion]/runs/design/20261027-155954-47e51189",
+    "input_ids": [
+      "benchmark-input-000",
+      "benchmark-input-001",
+      "benchmark-input-002",
+      "benchmark-input-003"
+    ],
+    "effective_parameters": {
+      "sequences": 1,
+      "model_type": "protein_mpnn",
+      "noise_level": "",
+      "sampling_temp": 0.4,
+      "design_chains": "",
+      "designed_residues": "",
+      "fixed_residues": "",
+      "omit_aas": "C",
+      "seed": 20261027,
+      "fix_interface_residues": false,
+      "interface_cutoff": 4.0,
+      "sequence_stage": "redesign",
+      "optimization_enabled": false,
+      "bias_aa": "",
+      "bias_aa_per_residue": "",
+      "omit_aa_per_residue": "",
+      "homo_oligomer": 0,
+      "global_transmembrane_label": true,
+      "transmembrane_buried": "",
+      "transmembrane_interface": "",
+      "use_side_chain_context": false,
+      "pack_side_chains": false,
+      "number_of_packs_per_design": 1,
+      "backend": "shared_ligandmpnn"
+    },
+    "gpu_inventory": {
+      "gpu_inventory": "index, name, uuid, driver_version, memory.total [MiB]\n0, NVIDIA GeForce RTX 4090, GPU-195a1966-1148-340e-5fe2-bac2d7a9821a, 595.91.07, 24564 MiB\n1, NVIDIA GeForce RTX 4090, GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21, 595.91.07, 24564 MiB\n",
+      "selected_device": "0",
+      "reference_root": "/mnt/db/reference_files",
+      "test": "tests/test_candidate_execution_gpu.py::test_real_candidate_scheduler_benchmark[ligandmpnn]"
+    },
+    "artifact_file": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T163235030316Z/test_real_candidate_scheduler_benchmark[ligandmpnn]/benchmark.json",
+    "trials": [
+      {
+        "label": "single_gpu_native_batch",
+        "wall_seconds": 23.748106851009652,
+        "candidates_per_hour": 606.364123689623,
+        "candidates": 4,
+        "allocations": [
+          {
+            "allocated_at": "2026-10-27T16:32:37+00:00",
+            "cpu_cores": 4,
+            "cpu_slots": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "gpu_device": "0",
+            "gpu_devices": [
+              "0"
+            ],
+            "gpu_resource": "gpu:0",
+            "min_vram_gb": 8.0,
+            "ram_gb": 0.0,
+            "scheduler": "local-worker-service",
+            "scratch_gb": 0.0
+          }
+        ],
+        "telemetry": {
+          "0": {
+            "mean_utilization_percent": 1.2285714285714286,
+            "peak_utilization_percent": 16.0,
+            "peak_device_vram_mib": 546.0,
+            "minimum_device_vram_mib": 16.0,
+            "sample_count": 35
+          },
+          "1": {
+            "mean_utilization_percent": 11.628571428571428,
+            "peak_utilization_percent": 58.0,
+            "peak_device_vram_mib": 2053.0,
+            "minimum_device_vram_mib": 2024.0,
+            "sample_count": 35
+          }
+        },
+        "controller_seconds": 2.9260781230404973,
+        "scheduler_seconds": 1.909882096806541,
+        "transfer_bytes": 0,
+        "transfer_seconds": 0,
+        "retries": 0,
+        "failure_retry_cost_seconds": 0,
+        "model_initialization_seconds": null,
+        "native_cpu_preparation_seconds": null,
+        "jobs": [
+          "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T163235030316Z/test_real_candidate_scheduler_benchmark[ligandmpnn]/runs/design/20261027-173237-492938a8"
+        ]
+      },
+      {
+        "label": "single_gpu_shards",
+        "wall_seconds": 23.018497180892155,
+        "candidates_per_hour": 625.5838461927723,
+        "candidates": 4,
+        "allocations": [
+          {
+            "allocated_at": "2026-10-27T16:32:59+00:00",
+            "cpu_cores": 4,
+            "cpu_slots": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "gpu_device": "0",
+            "gpu_devices": [
+              "0"
+            ],
+            "gpu_resource": "gpu:0",
+            "min_vram_gb": 8.0,
+            "ram_gb": 0.0,
+            "scheduler": "local-worker-service",
+            "scratch_gb": 0.0
+          },
+          {
+            "allocated_at": "2026-10-27T16:33:10+00:00",
+            "cpu_cores": 4,
+            "cpu_slots": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "gpu_device": "0",
+            "gpu_devices": [
+              "0"
+            ],
+            "gpu_resource": "gpu:0",
+            "min_vram_gb": 8.0,
+            "ram_gb": 0.0,
+            "scheduler": "local-worker-service",
+            "scratch_gb": 0.0
+          }
+        ],
+        "telemetry": {
+          "0": {
+            "mean_utilization_percent": 0.5675675675675675,
+            "peak_utilization_percent": 7.0,
+            "peak_device_vram_mib": 546.0,
+            "minimum_device_vram_mib": 16.0,
+            "sample_count": 37
+          },
+          "1": {
+            "mean_utilization_percent": 10.378378378378379,
+            "peak_utilization_percent": 17.0,
+            "peak_device_vram_mib": 2025.0,
+            "minimum_device_vram_mib": 1992.0,
+            "sample_count": 37
+          }
+        },
+        "controller_seconds": 0.9422777735162526,
+        "scheduler_seconds": 2.120126482564956,
+        "transfer_bytes": 0,
+        "transfer_seconds": 0,
+        "retries": 0,
+        "failure_retry_cost_seconds": 0,
+        "model_initialization_seconds": null,
+        "native_cpu_preparation_seconds": null,
+        "jobs": [
+          "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T163235030316Z/test_real_candidate_scheduler_benchmark[ligandmpnn]/runs/design/20261027-173258-9f74c846",
+          "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T163235030316Z/test_real_candidate_scheduler_benchmark[ligandmpnn]/runs/design/20261027-173259-2cf3a7d3"
+        ]
+      },
+      {
+        "label": "two_gpus_shards",
+        "wall_seconds": 13.34198541007936,
+        "candidates_per_hour": 1079.299636253638,
+        "candidates": 4,
+        "allocations": [
+          {
+            "allocated_at": "2026-10-27T16:33:22+00:00",
+            "cpu_cores": 4,
+            "cpu_slots": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "gpu_device": "0",
+            "gpu_devices": [
+              "0"
+            ],
+            "gpu_resource": "gpu",
+            "min_vram_gb": 8.0,
+            "ram_gb": 0.0,
+            "scheduler": "local-worker-service",
+            "scratch_gb": 0.0
+          },
+          {
+            "allocated_at": "2026-10-27T16:33:22+00:00",
+            "cpu_cores": 4,
+            "cpu_slots": [
+              4,
+              5,
+              6,
+              7
+            ],
+            "gpu_device": "1",
+            "gpu_devices": [
+              "1"
+            ],
+            "gpu_resource": "gpu",
+            "min_vram_gb": 8.0,
+            "ram_gb": 0.0,
+            "scheduler": "local-worker-service",
+            "scratch_gb": 0.0
+          }
+        ],
+        "telemetry": {
+          "0": {
+            "mean_utilization_percent": 0.9047619047619048,
+            "peak_utilization_percent": 14.0,
+            "peak_device_vram_mib": 546.0,
+            "minimum_device_vram_mib": 16.0,
+            "sample_count": 21
+          },
+          "1": {
+            "mean_utilization_percent": 6.285714285714286,
+            "peak_utilization_percent": 20.0,
+            "peak_device_vram_mib": 2535.0,
+            "minimum_device_vram_mib": 1992.0,
+            "sample_count": 21
+          }
+        },
+        "controller_seconds": 0.8514544484205544,
+        "scheduler_seconds": 1.2671050906646997,
+        "transfer_bytes": 0,
+        "transfer_seconds": 0,
+        "retries": 0,
+        "failure_retry_cost_seconds": 0,
+        "model_initialization_seconds": null,
+        "native_cpu_preparation_seconds": null,
+        "jobs": [
+          "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T163235030316Z/test_real_candidate_scheduler_benchmark[ligandmpnn]/runs/design/20261027-173321-cb96d9bc",
+          "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T163235030316Z/test_real_candidate_scheduler_benchmark[ligandmpnn]/runs/design/20261027-173322-3095729d"
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "boltz2",
+    "retained_source": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T153825890090Z/test_real_task_recipe_sequence_variants_prediction_and_results[rfdiffusion]/runs/design/20261027-163825-2d09c453",
+    "input_ids": [
+      "benchmark-input-000",
+      "benchmark-input-001",
+      "benchmark-input-002",
+      "benchmark-input-003"
+    ],
+    "effective_parameters": {
+      "samples": 1,
+      "num_recycles": 1,
+      "sampling_steps": 20,
+      "seed_count": 1,
+      "seed": 20261027,
+      "target_use_msa": false,
+      "use_target_template": false,
+      "generate_ipsae": false
+    },
+    "gpu_inventory": {
+      "gpu_inventory": "index, name, uuid, driver_version, memory.total [MiB]\n0, NVIDIA GeForce RTX 4090, GPU-195a1966-1148-340e-5fe2-bac2d7a9821a, 595.91.07, 24564 MiB\n1, NVIDIA GeForce RTX 4090, GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21, 595.91.07, 24564 MiB\n",
+      "selected_device": "0",
+      "reference_root": "/mnt/db/reference_files",
+      "test": "tests/test_candidate_execution_gpu.py::test_real_candidate_scheduler_benchmark[boltz2]"
+    },
+    "artifact_file": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T162421003461Z/test_real_candidate_scheduler_benchmark[boltz2]/benchmark.json",
+    "trials": [
+      {
+        "label": "single_gpu_native_batch",
+        "wall_seconds": 99.76676801708527,
+        "candidates_per_hour": 144.3366392056919,
+        "candidates": 4,
+        "allocations": [
+          {
+            "allocated_at": "2026-10-27T16:24:21+00:00",
+            "cpu_cores": 4,
+            "cpu_slots": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "gpu_device": "0",
+            "gpu_devices": [
+              "0"
+            ],
+            "gpu_resource": "gpu:0",
+            "min_vram_gb": 8.0,
+            "ram_gb": 0.0,
+            "scheduler": "local-worker-service",
+            "scratch_gb": 0.0
+          }
+        ],
+        "telemetry": {
+          "0": {
+            "mean_utilization_percent": 2.7531645569620253,
+            "peak_utilization_percent": 36.0,
+            "peak_device_vram_mib": 2778.0,
+            "minimum_device_vram_mib": 16.0,
+            "sample_count": 158
+          },
+          "1": {
+            "mean_utilization_percent": 18.341772151898734,
+            "peak_utilization_percent": 53.0,
+            "peak_device_vram_mib": 2050.0,
+            "minimum_device_vram_mib": 1751.0,
+            "sample_count": 158
+          }
+        },
+        "controller_seconds": null,
+        "scheduler_seconds": null,
+        "transfer_bytes": 0,
+        "transfer_seconds": 0,
+        "retries": 0,
+        "failure_retry_cost_seconds": 0,
+        "model_initialization_seconds": null,
+        "native_cpu_preparation_seconds": null,
+        "jobs": [
+          "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T162421003461Z/test_real_candidate_scheduler_benchmark[boltz2]/runs/refolding-validation/20261027-172421-885ddb6f"
+        ]
+      },
+      {
+        "label": "single_gpu_shards",
+        "wall_seconds": 200.81537092896178,
+        "candidates_per_hour": 71.7076583001905,
+        "candidates": 4,
+        "allocations": [
+          {
+            "allocated_at": "2026-10-27T16:26:02+00:00",
+            "cpu_cores": 4,
+            "cpu_slots": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "gpu_device": "0",
+            "gpu_devices": [
+              "0"
+            ],
+            "gpu_resource": "gpu:0",
+            "min_vram_gb": 8.0,
+            "ram_gb": 0.0,
+            "scheduler": "local-worker-service",
+            "scratch_gb": 0.0
+          },
+          {
+            "allocated_at": "2026-10-27T16:27:46+00:00",
+            "cpu_cores": 4,
+            "cpu_slots": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "gpu_device": "0",
+            "gpu_devices": [
+              "0"
+            ],
+            "gpu_resource": "gpu:0",
+            "min_vram_gb": 8.0,
+            "ram_gb": 0.0,
+            "scheduler": "local-worker-service",
+            "scratch_gb": 0.0
+          }
+        ],
+        "telemetry": {
+          "0": {
+            "mean_utilization_percent": 2.0,
+            "peak_utilization_percent": 36.0,
+            "peak_device_vram_mib": 2778.0,
+            "minimum_device_vram_mib": 16.0,
+            "sample_count": 312
+          },
+          "1": {
+            "mean_utilization_percent": 18.766025641025642,
+            "peak_utilization_percent": 50.0,
+            "peak_device_vram_mib": 1846.0,
+            "minimum_device_vram_mib": 1778.0,
+            "sample_count": 312
+          }
+        },
+        "controller_seconds": null,
+        "scheduler_seconds": null,
+        "transfer_bytes": 0,
+        "transfer_seconds": 0,
+        "retries": 0,
+        "failure_retry_cost_seconds": 0,
+        "model_initialization_seconds": null,
+        "native_cpu_preparation_seconds": null,
+        "jobs": [
+          "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T162421003461Z/test_real_candidate_scheduler_benchmark[boltz2]/runs/refolding-validation/20261027-172601-b88aa8a8",
+          "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T162421003461Z/test_real_candidate_scheduler_benchmark[boltz2]/runs/refolding-validation/20261027-172601-f105bd29"
+        ]
+      },
+      {
+        "label": "two_gpus_shards",
+        "wall_seconds": 114.48702570889145,
+        "candidates_per_hour": 125.77844442055103,
+        "candidates": 4,
+        "allocations": [
+          {
+            "allocated_at": "2026-10-27T16:29:22+00:00",
+            "cpu_cores": 4,
+            "cpu_slots": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "gpu_device": "0",
+            "gpu_devices": [
+              "0"
+            ],
+            "gpu_resource": "gpu",
+            "min_vram_gb": 8.0,
+            "ram_gb": 0.0,
+            "scheduler": "local-worker-service",
+            "scratch_gb": 0.0
+          },
+          {
+            "allocated_at": "2026-10-27T16:29:22+00:00",
+            "cpu_cores": 4,
+            "cpu_slots": [
+              4,
+              5,
+              6,
+              7
+            ],
+            "gpu_device": "1",
+            "gpu_devices": [
+              "1"
+            ],
+            "gpu_resource": "gpu",
+            "min_vram_gb": 8.0,
+            "ram_gb": 0.0,
+            "scheduler": "local-worker-service",
+            "scratch_gb": 0.0
+          }
+        ],
+        "telemetry": {
+          "0": {
+            "mean_utilization_percent": 1.8160919540229885,
+            "peak_utilization_percent": 37.0,
+            "peak_device_vram_mib": 2778.0,
+            "minimum_device_vram_mib": 16.0,
+            "sample_count": 174
+          },
+          "1": {
+            "mean_utilization_percent": 10.201149425287356,
+            "peak_utilization_percent": 49.0,
+            "peak_device_vram_mib": 4927.0,
+            "minimum_device_vram_mib": 1755.0,
+            "sample_count": 174
+          }
+        },
+        "controller_seconds": null,
+        "scheduler_seconds": null,
+        "transfer_bytes": 0,
+        "transfer_seconds": 0,
+        "retries": 0,
+        "failure_retry_cost_seconds": 0,
+        "model_initialization_seconds": null,
+        "native_cpu_preparation_seconds": null,
+        "jobs": [
+          "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T162421003461Z/test_real_candidate_scheduler_benchmark[boltz2]/runs/refolding-validation/20261027-172922-a67d7320",
+          "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T162421003461Z/test_real_candidate_scheduler_benchmark[boltz2]/runs/refolding-validation/20261027-172922-37d8f9c5"
+        ]
+      }
+    ]
+  },
+  {
+    "artifact_file": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T163335690237Z/test_real_cpu_analysis_of_retained_gpu_candidates/benchmark.json",
+    "trials": [],
+    "cpu_analysis": {
+      "wall_seconds": 4.954125116812065,
+      "allocations": [
+        {
+          "allocated_at": "2026-10-27T16:33:36+00:00",
+          "cpu_cores": 4,
+          "cpu_slots": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "gpu_device": "cpu",
+          "gpu_devices": [],
+          "gpu_resource": null,
+          "min_vram_gb": 0.0,
+          "ram_gb": 0.0,
+          "scheduler": "local-worker-service",
+          "scratch_gb": 0.0
+        },
+        {
+          "allocated_at": "2026-10-27T16:33:36+00:00",
+          "cpu_cores": 4,
+          "cpu_slots": [
+            4,
+            5,
+            6,
+            7
+          ],
+          "gpu_device": "cpu",
+          "gpu_devices": [],
+          "gpu_resource": null,
+          "min_vram_gb": 0.0,
+          "ram_gb": 0.0,
+          "scheduler": "local-worker-service",
+          "scratch_gb": 0.0
+        }
+      ],
+      "output": {
+        "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T163335690237Z/test_real_cpu_analysis_of_retained_gpu_candidates/cpu-analysis/artifacts/pipeline_nodes/sequence_qc_batches",
+        "candidates_jsonl": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T163335690237Z/test_real_cpu_analysis_of_retained_gpu_candidates/cpu-analysis/artifacts/pipeline_nodes/sequence_qc_batches/artifacts/normalized_candidates/candidates.jsonl",
+        "target": {},
+        "candidate_count": 4,
+        "analysis_runs": [],
+        "candidate_execution": {
+          "policy": {
+            "mode": "sharded",
+            "placement": "local",
+            "batch_size": 2,
+            "max_in_flight": 2,
+            "retries": 0,
+            "failure_policy": "all",
+            "min_vram_gb": 8.0,
+            "ram_gb": 0.0,
+            "cpu_cores": 4,
+            "stall_timeout_seconds": 1800,
+            "incremental_cpu": false
+          },
+          "progress": {
+            "total_units": 4,
+            "completed_units": 4,
+            "completed_batches": 2,
+            "failed_batches": 0,
+            "retry_count": 0
+          },
+          "missing_batches": []
+        }
+      }
+    }
+  }
+]
