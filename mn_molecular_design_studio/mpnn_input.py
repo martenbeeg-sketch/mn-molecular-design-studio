@@ -29,6 +29,7 @@ def defaults():
     return dict(model_type="protein_mpnn", noise_level=None, num_seq_per_target=2, sampling_temp=.1,
                 design_chains="", designed_residues="", fixed_residues="", omit_aas="C", seed=None,
                 fix_interface_residues=False,
+                interface_cutoff=4.0, sequence_stage="redesign", optimization_enabled=False,
                 bias_aa="", bias_aa_per_residue={}, omit_aa_per_residue={}, homo_oligomer=0,
                 global_transmembrane_label=True, transmembrane_buried="",
                 transmembrane_interface="", use_side_chain_context=False, pack_side_chains=False,
@@ -104,6 +105,17 @@ def prepare(parameters, *, require_input=False):
     for key in ("structure_path", "source_run_dir", "candidates_jsonl"):
         if isinstance(p.get(key), Path):
             p[key] = str(p[key])
+    if p["sequence_stage"] not in {"redesign", "initial", "soluble_optimization"}:
+        raise ValueError("Choose initial sequence generation, redesign, or soluble optimization.")
+    if not isinstance(p["optimization_enabled"], bool):
+        raise ValueError("Soluble optimization must be enabled or disabled.")
+    if isinstance(p["interface_cutoff"], bool) or not math.isfinite(float(p["interface_cutoff"])) or not 0 < float(p["interface_cutoff"]) <= 20:
+        raise ValueError("Interface heavy-atom cutoff must be greater than 0 and at most 20 Å.")
+    p["interface_cutoff"] = float(p["interface_cutoff"])
+    if p["sequence_stage"] == "initial":
+        p["model_type"] = "protein_mpnn"
+    elif p["sequence_stage"] == "soluble_optimization":
+        p.update(model_type="soluble_mpnn", fix_interface_residues=True, backend="shared_ligandmpnn")
     model = p["model_type"]
     if not isinstance(p["fix_interface_residues"], bool):
         raise ValueError("Fix interface residues must be enabled or disabled.")

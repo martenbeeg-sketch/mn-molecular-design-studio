@@ -192,8 +192,20 @@ def render_inputs(*, owner_id, key_prefix, initial=None, connected=False, abmpnn
             except Exception as exc:
                 st.warning(f"SAbR will validate the selected antibody chain when the job starts: {exc}")
     else:
+        stages = ["redesign", "initial", "soluble_optimization"]
+        p["sequence_stage"] = st.selectbox("Sequence-design stage", stages, index=stages.index(p["sequence_stage"]),
+            key=prefix + "-field-stage", format_func=lambda s: {"redesign": "Explicit redesign", "initial": "Initial sequences · preserve co-designed sequences", "soluble_optimization": "Optional SolubleMPNN optimization"}[s])
+        if p["sequence_stage"] == "soluble_optimization":
+            p["optimization_enabled"] = st.checkbox("Enable SolubleMPNN optimization", value=p["optimization_enabled"], key=prefix + "-field-enable-optimization")
+            p["model_type"] = "soluble_mpnn"
+            p["fix_interface_residues"] = True
+            st.caption("Retains parents and creates interface-fixed variants. SolubleMPNN was trained on soluble proteins; experimental solubility is not guaranteed.")
+        elif p["sequence_stage"] == "initial":
+            p["model_type"] = "protein_mpnn"
         model = st.pills("Model Type", list(inputs.MODELS), format_func=lambda m: inputs.MODELS[m]["label"],
-            default=p["model_type"], selection_mode="single", key=prefix + "-field-model") or p["model_type"]
+            default=p["model_type"], selection_mode="single", key=prefix + "-field-model", disabled=p["sequence_stage"] != "redesign") or p["model_type"]
+        if p["sequence_stage"] != "redesign":
+            model = "protein_mpnn" if p["sequence_stage"] == "initial" else "soluble_mpnn"
         p["model_type"] = model
         st.caption(inputs.MODELS[model]["description"])
         if model == "ab_mpnn":
@@ -221,11 +233,14 @@ def render_inputs(*, owner_id, key_prefix, initial=None, connected=False, abmpnn
             help="Number of existing designed-chain copies to tie (2 = dimer, 3 = trimer). Copies must already be in the input and have matching residue counts. 0/1 disables tying."))
         p["fixed_residues"] = st.text_input("Fixed Residues", value=p["fixed_residues"], key=prefix + "-field-fixed", help="These residues and all upstream fixed motifs retain their sequence.")
         p["fix_interface_residues"] = st.checkbox(
-            "Fix interface residues from valid generator sequences",
+            "Fix interface residues",
             value=p["fix_interface_residues"],
             key=prefix + "-field-fix-interface",
-            help="For upstream generator candidates only, keep binder residues within 4 Å of the target fixed when the candidate has a valid amino-acid sequence matching its structure. Candidates without a valid sequence are redesigned normally.",
+            disabled=p["sequence_stage"] == "soluble_optimization",
+            help="Fix binder residues with a target heavy-atom contact at the selected cutoff. Requires explicit chain roles and matching sequence/structure; ambiguous candidates are rejected.",
         )
+        p["interface_cutoff"] = st.number_input("Interface heavy-atom cutoff (Å)", min_value=0.1, max_value=20.0,
+            value=float(p["interface_cutoff"]), step=0.5, key=prefix + "-field-interface-cutoff")
         if model == "global_label_membrane_mpnn":
             p["global_transmembrane_label"] = st.checkbox("Transmembrane protein", value=p["global_transmembrane_label"], key=prefix + "-field-global-membrane")
         if model == "per_residue_label_membrane_mpnn":

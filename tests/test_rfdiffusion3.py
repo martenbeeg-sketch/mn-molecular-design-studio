@@ -264,4 +264,4 @@ def test_sequence_design_keeps_rf3_motif_residues_after_chain_role_remapping():
     rf3_candidate = {"source_tool": "rfdiffusion3_foundry", "raw_metadata": {"fixed_residues": ["B4", "B5"]}}
     assert _fixed_residues_for_candidate(rf3_candidate, ["C9", "B4"], roles) == ["A4", "A5", "B9"]
     regular_candidate = {"source_tool": "boltz2", "raw_metadata": {"fixed_residues": ["B4"]}}
-    assert _fixed_residues_for_candidate(regular_candidate, ["C9"], roles) == ["B9"]
+    assert _fixed_residues_for_candidate(regular_candidate, ["C9"], roles) == ["A4", "B9"]

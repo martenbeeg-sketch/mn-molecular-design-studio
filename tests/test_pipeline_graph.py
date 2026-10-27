@@ -26,13 +26,14 @@ def test_foundry_template_has_explicit_generation_sequence_and_prediction():
     assert len(plan["order"]) == 6
 
 
-def test_all_generators_template_fans_into_one_mpnn_and_runs_boltz2_analysis():
+def test_all_generators_template_has_two_sequence_stages_and_boltz2_analysis():
     g = graph.new_graph("all_generators_boltz2")
     plan = graph.validate_graph(g)
     kinds = [n["data"]["kind"] for n in g["nodes"]]
     generators = {"rfd3", "rfdiffusion", "genie3", "pxdesign", "protpardelle", "bindcraft2_generator", "boltzgen_generator", "complexa_generator", "esm_binder"}
     assert generators <= set(kinds)
-    assert kinds.count("ligandmpnn") == kinds.count("boltz2") == kinds.count("ipsae") == kinds.count("rosetta_metrics") == 1
+    assert kinds.count("ligandmpnn") == 2
+    assert kinds.count("boltz2") == kinds.count("ipsae") == kinds.count("rosetta_metrics") == 1
     by_id = {n["id"]: n["data"]["kind"] for n in g["nodes"]}
     incoming = plan["incoming"]
     target_id = next(n["id"] for n in g["nodes"] if n["data"]["kind"] == "target")
@@ -42,7 +43,7 @@ def test_all_generators_template_fans_into_one_mpnn_and_runs_boltz2_analysis():
     assert incoming[context_id] == [target_id]
     assert all(incoming[node_id] == [context_id] for node_id, kind in by_id.items() if kind in generators)
     downstream = [by_id[node_id] for node_id in plan["order"] if by_id[node_id] in {"ligandmpnn", "boltz2", "ipsae", "rosetta_metrics", "results"}]
-    assert downstream == ["ligandmpnn", "boltz2", "ipsae", "rosetta_metrics", "results"]
+    assert downstream == ["ligandmpnn", "ligandmpnn", "boltz2", "ipsae", "rosetta_metrics", "results"]
     boltz = next(n for n in g["nodes"] if n["data"]["kind"] == "boltz2")
     assert boltz["data"]["params"]["write_full_pae"] is True
     mpnn = next(n for n in g["nodes"] if n["data"]["kind"] == "ligandmpnn")

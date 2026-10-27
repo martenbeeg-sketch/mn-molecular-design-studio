@@ -239,7 +239,7 @@ def test_ca_only_unknown_generator_backbone_is_validated_after_staging(capture_r
         collection,
         model_type="ligand_mpnn",
         fixed_residues="B2",
-        fix_interface_residues=True,
+        fix_interface_residues=False,
     )
 
     command = commands[0]

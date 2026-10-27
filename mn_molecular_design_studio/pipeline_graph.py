@@ -369,6 +369,10 @@ for _name, _default in mpnn_input.defaults().items():
         continue
     if _name == "model_type":
         _mpnn_fields.append(field(_name, "Model Type", _default, kind="select", options=list(mpnn_input.MODELS), section="basic"))
+    elif _name == "sequence_stage":
+        _mpnn_fields.append(field(_name, "Sequence-design stage", _default, kind="select",
+            options=["redesign", "initial", "soluble_optimization"], section="basic",
+            help="Initial: ProteinMPNN for backbone-only candidates, preserve co-designed sequences. Soluble optimization: optional interface-fixed redesign, retaining parents. Trained on soluble proteins; no experimental solubility guarantee."))
     elif _name == "backend":
         _mpnn_fields.append(field(_name, "Execution backend", _default, kind="select", options=["auto", "shared_ligandmpnn", "foundry"]))
     else:
@@ -378,7 +382,7 @@ for _name, _default in mpnn_input.defaults().items():
             "Fix interface residues from valid generator sequences" if _name == "fix_interface_residues" else _name.replace("_", " ").capitalize(),
             _default,
             kind="boolean" if isinstance(_default, bool) else "number" if isinstance(_default, (float, int)) else "text",
-            help="Keep binder residues within 4 Å of the target fixed when a generator candidate has a valid sequence matching its structure; otherwise this setting is ignored." if _name == "fix_interface_residues" else None,
+            help="Fix binder residues with a target heavy-atom contact at the interface cutoff (Å). Requires explicit chain roles and matching sequence/structure; ambiguous mappings are rejected." if _name == "fix_interface_residues" else None,
         ))
 for _kind in ("ligandmpnn", "foundry_mpnn"):
     _specification = NODE_CATALOG[_kind]
@@ -632,7 +636,7 @@ TEMPLATE_REFERENCES={
     'genie3':('https://github.com/aqlaboratory/genie3#application-3-binder-design','Binder Design Context supplies supported target-site annotations. One ProteinMPNN sequence per backbone is followed by AF2 target-template evaluation with five models and twenty recycles. Studio uses its AF2 Initial Guess adapter; the authors use ColabFold template mode.'),
     'protpardelle':('https://github.com/ProteinDesignLab/protpardelle-1c#sampling','Structure generation, eight ProteinMPNN sequences per backbone, then ESMFold self-consistency evaluation. The starter task is unconditional generation; switch to a conditioned task in the generator form.'),
     'esmfold2_binder':('https://github.com/Biohub/esm/tree/main/cookbook/tutorials','ESMFold2 Binder Design performs gradient-guided sequence optimization with its built-in ESMFold2 and ESMC scoring. Its candidate output can be sent through ProteinMPNN and then any compatible independent structure predictor; edit or replace these downstream starter steps on the canvas.'),
-    'all_generators_boltz2':('https://github.com/RosettaCommons/RFdiffusion','Miniprotein binder workflow: branch from one Miniprotein Design Context into each available generator, use compact 60–100 residue designs where that engine exposes a binder-length range, then redesign with ProteinMPNN, refold with Boltz-2, and calculate ipSAE and Rosetta interface metrics. Each generator receives only annotations it supports.'),
+    'all_generators_boltz2':('https://github.com/RosettaCommons/RFdiffusion','Miniprotein binder workflow: branch from one Miniprotein Design Context into each available generator, use compact 60–100 residue designs where that engine exposes a binder-length range, use ProteinMPNN only for backbone-only outputs, preserve native co-designed sequences, optionally create interface-fixed SolubleMPNN variants alongside parents, then predict with Boltz-2 and calculate ipSAE and Rosetta interface metrics. SolubleMPNN is trained on soluble proteins and does not guarantee experimental solubility. Each generator receives only annotations it supports.'),
     'vhh_design':('https://github.com/Biohub/esm/tree/main/cookbook/tutorials','VHH-focused workflow using only engines with an explicit VHH or nanobody mode: BindCraft2 VHH scaffold with CDR edit regions, BoltzGen nanobody task, and ESMFold2 Binder Design in VHH mode with a selectable framework. Their original sequences pass directly to Boltz-2 and interface analysis. Use the SAbR/AbMPNN CDR-redesign workflow when explicit redesign is needed. Hotspot and coldspot annotations are passed only to compatible generator paths.'),
     'cofold_protein':('https://github.com/google-deepmind/alphafold3','Compare the registered cofolding models that accept protein sequence inputs. ESMFold2 and other sequence-only engines are included for exploratory multimers; engines that require a target structure become runnable when one is provided.'),
     'cofold_protein_protein':('https://github.com/google-deepmind/alphafold3','Compare the registered protein–protein cofolding models. Enter target and partner sequences; add a target PDB path for AlphaFold2 Initial Guess and BoltzGen Fold, which require a structure template.'),
@@ -898,6 +902,7 @@ def new_graph(template="foundry") -> dict[str, Any]:
                     params["scaffold_edits"] = ""
             if kind == "ligandmpnn":
                 params["sequences"] = 1
+                params["sequence_stage"] = "initial"
             if kind == "boltz2":
                 params["write_full_pae"] = True
             nodes.append({
@@ -930,12 +935,23 @@ def new_graph(template="foundry") -> dict[str, Any]:
             edges.append({"id": f"edge-mpnn-{i}", "source": node["id"], "sourceHandle": "out", "target": downstream[0]["id"], "targetHandle": "in"})
         for i, (source, dest) in enumerate(zip(downstream, downstream[1:])):
             edges.append({"id": f"edge-analysis-{i}", "source": source["id"], "sourceHandle": "out", "target": dest["id"], "targetHandle": "in"})
+        soluble = copy.deepcopy(downstream[0])
+        soluble["id"] = "optional-soluble-mpnn"
+        soluble["data"].update(label="Optional SolubleMPNN optimization")
+        soluble["data"]["params"].update(sequence_stage="soluble_optimization", model_type="soluble_mpnn",
+            optimization_enabled=False, fix_interface_residues=True, backend="shared_ligandmpnn")
+        soluble["position"]["x"] += 300
+        nodes.insert(nodes.index(downstream[0]) + 1, soluble)
+        for item in downstream[1:]:
+            item["position"]["x"] += 330
+        next(e for e in edges if e["source"] == downstream[0]["id"])["source"] = soluble["id"]
+        edges.append({"id": "edge-initial-soluble", "source": downstream[0]["id"], "sourceHandle": "out", "target": soluble["id"], "targetHandle": "in"})
         result = {
             "schema_version": SCHEMA, "id": uuid.uuid4().hex,
-            "name": "Miniprotein binder design → ProteinMPNN → Boltz-2 + interface analysis",
+            "name": "Generator comparison → initial sequences → optional SolubleMPNN → Boltz-2 + analysis",
             "nodes": nodes, "edges": edges,
             "viewport": {"x": 0, "y": 0, "zoom": 0.42},
-            "template_id": template, "template_version": 3,
+            "template_id": template, "template_version": 4,
         }
         return clean_graph(result)
     if template == "vhh_design":
@@ -1089,12 +1105,36 @@ def new_graph(template="foundry") -> dict[str, Any]:
         result["name"] = "Kejia IDR → ProteinMPNN → AlphaFold2 Initial Guess"
     elif engine == "peptide_trap":
         result["name"] = "Peptide Trap → AlphaFold2 → interface analysis"
+    for node in nodes:
+        if node["data"]["kind"] in {"ligandmpnn", "foundry_mpnn"}:
+            node["data"]["params"]["sequence_stage"] = "initial"
     if template in TEMPLATE_REFERENCES:result['template_id']=template
     return result
 
 
 def migrate_template_graph(graph: dict[str, Any]) -> dict[str, Any]:
     """Migrate supported starter drafts while retaining explicit user settings."""
+    if graph.get("template_id") == "all_generators_boltz2" and graph.get("template_version") == 3:
+        stages = [n for n in graph.get("nodes", []) if n.get("data", {}).get("kind") == "ligandmpnn"]
+        defaults = {f["name"]: f["default"] for f in NODE_CATALOG["ligandmpnn"]["fields"]}
+        defaults["sequences"] = 1
+        if len(stages) == 1 and "sequence_stage" not in stages[0]["data"].get("params", {}) and all(
+            value == defaults.get(key) for key, value in stages[0]["data"].get("params", {}).items()
+        ):
+            migrated = copy.deepcopy(graph)
+            initial = next(n for n in migrated["nodes"] if n["id"] == stages[0]["id"])
+            initial["data"]["params"]["sequence_stage"] = "initial"
+            soluble = next(n for n in new_graph("all_generators_boltz2")["nodes"] if n["id"] == "optional-soluble-mpnn")
+            soluble["id"] = "soluble-" + uuid.uuid4().hex[:8]
+            soluble["position"] = {"x": initial["position"]["x"] + 300, "y": initial["position"]["y"]}
+            for edge in migrated["edges"]:
+                if edge["source"] == initial["id"]:
+                    edge["source"] = soluble["id"]
+            migrated["nodes"].append(soluble)
+            migrated["edges"].append({"id": "initial-" + soluble["id"], "source": initial["id"], "target": soluble["id"], "sourceHandle": "out", "targetHandle": "in"})
+            migrated["template_version"] = 4
+            return migrated
+        return graph
     if graph.get("template_id") == "vhh_design" and graph.get("template_version") in (None, 1):
         # Repair only the unmodified, implicit generic redesign in old starter drafts.
         # Explicitly configured redesign nodes remain the user's choice.
@@ -1155,7 +1195,7 @@ def migrate_template_graph(graph: dict[str, Any]) -> dict[str, Any]:
         if migrated.get("name") == "THRα · UniDock Pro active-learning screen":
             migrated["name"] = canonical["name"]
         return migrated
-    if graph.get("template_id") != "all_generators_boltz2" or graph.get("template_version") == 3:
+    if graph.get("template_id") != "all_generators_boltz2" or graph.get("template_version") in (3, 4):
         return graph
 
     migrated = copy.deepcopy(graph)
@@ -1216,7 +1256,7 @@ def migrate_template_graph(graph: dict[str, Any]) -> dict[str, Any]:
         if params.get("binder_length") == default_length:
             params["binder_length"] = "60-100"
     migrated["template_version"] = 3
-    return clean_graph(migrated)
+    return clean_graph(migrate_template_graph(migrated))
 
 
 def clean_graph(graph: dict) -> dict:
@@ -1308,7 +1348,7 @@ def clean_graph(graph: dict) -> dict:
                       for edge in edges if isinstance(edge, dict)],
             "viewport": viewport,**({'template_id':graph['template_id']} if graph.get('template_id') in TEMPLATE_REFERENCES else {}),
             **({'template_version':graph['template_version']} if type(graph.get('template_version')) is int and (
-                graph.get('template_id') == 'all_generators_boltz2' and 1 <= graph['template_version'] <= 3
+                graph.get('template_id') == 'all_generators_boltz2' and 1 <= graph['template_version'] <= 4
                 or graph.get('template_id') == 'vhh_design' and graph['template_version'] == 2
                 or graph.get('template_id') == 'unidock_active_learning' and 2 <= graph['template_version'] <= ACTIVE_LEARNING_TEMPLATE_VERSION) else {})}
 
@@ -1621,7 +1661,7 @@ STARTER_TEMPLATES = {"Active-learning docking": "unidock_active_learning",
                  "PXDesign · MPNN → AF2 + Protenix":"pxdesign","RFdiffusion · MPNN → AF2":"rfdiffusion",
                  "Genie3 · MPNN → AF2 template":"genie3","Protpardelle-1C · MPNN → ESMFold":"protpardelle",
                  "ESMFold2 Binder Design → ProteinMPNN → RF3":"esmfold2_binder",
-                 "Miniprotein binders · all generators → ProteinMPNN → Boltz-2 + analysis":"all_generators_boltz2",
+                 "Generator comparison · initial sequences → optional SolubleMPNN → Boltz-2 + analysis":"all_generators_boltz2",
                  "VHH binders · BindCraft2 + BoltzGen + ESMFold2 → Boltz-2":"vhh_design",
                  "RFD4 Protein Binder → Boltz-2 → interface analysis":"rfd4_protein_binder",
                  "RFD4 Small-Molecule Pocket Design → Boltz-2":"rfd4_small_molecule",

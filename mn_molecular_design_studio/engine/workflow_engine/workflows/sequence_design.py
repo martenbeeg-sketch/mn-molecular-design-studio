@@ -357,8 +357,7 @@ def _fixed_residues_for_candidate(
         raise ValueError('Sequence redesign requires a verified mapping for every fixed motif residue.')
     # Native generation adapters export fixed output residues. Chain-role
     # normalization must remap them before any sequence model runs.
-    authoritative = candidate.get('source_tool') == 'rfdiffusion3_foundry' or raw.get('fixed_motif_required')
-    automatic = (raw.get("fixed_residues") or []) if authoritative else []
+    automatic = raw.get("fixed_residues") or []
     combined = list(dict.fromkeys([*automatic, *requested]))
     return _remap_fixed_residues_to_engine_chains(combined, role_metadata)
 
@@ -448,7 +447,7 @@ def _candidate_sequence_matches_structure(
 ) -> bool:
     """Only lock an interface when the generator declared a canonical matching sequence."""
     declared = re.sub(r"\s+", "", str(candidate.get("binder_sequence") or "")).upper()
-    if not declared or not re.fullmatch(r"[ACDEFGHIKLMNPQRSTVWY]+", declared):
+    if not declared or not re.fullmatch(r"[ACDEFGHIKLMNPQRSTVWY]+(?::[ACDEFGHIKLMNPQRSTVWY]+)*", declared):
         return False
     try:
         from mn_molecular_design_studio.engine.workflow_engine.workflows import refolding as refolding_workflow
@@ -456,7 +455,9 @@ def _candidate_sequence_matches_structure(
     except (OSError, ValueError, KeyError, IndexError):
         return False
     observed = "".join(by_chain.get(chain, "") for chain in binder_chains).upper()
-    return bool(observed) and re.fullmatch(r"[ACDEFGHIKLMNPQRSTVWY]+", observed) is not None and observed == declared
+    if ":" in declared and declared.split(":") != [by_chain.get(chain, "") for chain in binder_chains]:
+        return False
+    return bool(observed) and re.fullmatch(r"[ACDEFGHIKLMNPQRSTVWY]+", observed) is not None and observed == declared.replace(":", "")
 
 
 def _interface_contacts_for_structure(
@@ -549,7 +550,11 @@ def _designed_sequence_from_multichain_fasta(sequence: str, input_pdb: Path | No
     parts = sequence.split(":")
     if not input_pdb or not input_pdb.exists() or not design_chains:
         return parts[0]
-    chain_order = _chain_ids_from_pdb(input_pdb)
+    # LigandMPNN parse_PDB sorts its protein chain_list before serializing
+    # FASTA, independently of the order of chains in the structure file.
+    chain_order = sorted(refolding_workflow._sequences_by_chain(input_pdb))
+    if len(parts) != len(chain_order):
+        raise ValueError("MPNN FASTA chain count does not match the input structure.")
     by_chain = {chain: parts[index] for index, chain in enumerate(chain_order) if index < len(parts)}
     selected = [by_chain[chain] for chain in design_chains if chain in by_chain]
     return "".join(selected) if selected else parts[0]
@@ -679,25 +684,25 @@ def _normalize_ligandmpnn_candidates(
                         design_chains,
                     )
                 fixed_validation = None
-                if params.get("model_type") == "ab_mpnn" and input_pdb:
+                if (params.get("unified_mpnn") or params.get("model_type") == "ab_mpnn") and input_pdb:
                     from mn_molecular_design_studio import design_validation as dv
                     from mn_molecular_design_studio.antibody_constraints import verify_fixed_sequence
                     if not backbone_path.exists():
-                        raise ValueError("AbMPNN returned a sequence without a matching output structure.")
+                        raise ValueError("MPNN returned a sequence without a matching output structure.")
                     fasta_sequence = _designed_sequence_from_multichain_fasta(str(seq_row.get("sequence") or ""), input_pdb, design_chains)
                     if fasta_sequence != binder_sequence:
-                        raise ValueError("AbMPNN FASTA sequence differs from its output structure.")
+                        raise ValueError("MPNN FASTA sequence differs from its output structure.")
                     chains = dv.protein_chains(dv.read_structure(input_pdb))
                     if backbone_path.exists():
                         output_chains = dv.protein_chains(dv.read_structure(backbone_path))
                         for chain in target_chains:
                             if chain not in output_chains or dv.sequence(output_chains[chain]) != dv.sequence(chains[chain]):
-                                raise ValueError("AbMPNN changed a fixed target-chain sequence.")
+                                raise ValueError("MPNN changed a fixed target-chain sequence.")
                     residues = [(chain, residue) for chain in design_chains for residue in chains[chain]]
                     labels = [f"{chain}{residue.id[1]}{residue.id[2].strip()}" for chain, residue in residues]
                     original = "".join(dv.sequence(chains[chain]) for chain in design_chains)
                     fixed_validation = verify_fixed_sequence(binder_sequence, labels, original,
-                        params.get("fixed_residues_by_candidate", {}).get(source_id, []))
+                        [label for label in params.get("fixed_residues_by_candidate", {}).get(source_id, []) if label in labels])
                 mimosa_fixed_validation = _verify_mimosa_fixed_identity_sequence(
                     source, binder_sequence, design_chains, input_pdb, role_metadata
                 )
@@ -903,15 +908,13 @@ def run_ligandmpnn_sequence_design(
                 normalized_source=staged_pdb,
             )
         auto_interface_fixed: list[str] = []
-        if direct_input and direct_input.get("fix_interface_residues") and _candidate_sequence_matches_structure(
-            candidate, staged_pdb, role_metadata.get("binder_chains") or []
-        ):
-            auto_interface_fixed = _interface_contacts_for_structure(
-                staged_pdb,
-                role_metadata.get("binder_chains") or [],
-                role_metadata.get("target_chains") or [],
-                cutoff=4.0,
-            )
+        if direct_input and direct_input.get("fix_interface_residues"):
+            if not _candidate_sequence_matches_structure(candidate, staged_pdb, role_metadata.get("binder_chains") or []):
+                raise ValueError("Candidate sequence does not match its structure; refusing unrestricted redesign.")
+            auto_interface_fixed = _remap_fixed_residues_to_engine_chains(_interface_contacts_for_structure(
+                source_pdb, role_metadata.get("binder_source_chains") or [],
+                role_metadata.get("target_source_chains") or [],
+                cutoff=direct_input.get("interface_cutoff", 4.0)), role_metadata)
         candidate_input_paths[source_id] = staged_pdb
         chains = list(role_metadata.get("binder_chains") or _infer_design_chains(candidate, staged_pdb, design_chains))
         design_chains_by_candidate[source_id] = chains
@@ -945,6 +948,9 @@ def run_ligandmpnn_sequence_design(
             candidate, fixed_residues_by_candidate.get(source_id, []), role_metadata
         )
         fixed_residues = list(dict.fromkeys([*fixed_residues, *auto_interface_fixed]))
+        if direct_input and direct_input.get("sequence_stage") == "soluble_optimization":
+            info = mpnn_input.inventory(staged_pdb)
+            fixed_residues += [r["label"] for c in chains for r in info["chains"][c]["residues"] if r.get("name") == "CYS"]
         if auto_interface_fixed:
             fixed_residues_by_candidate[source_id] = list(dict.fromkeys([
                 *fixed_residues_by_candidate.get(source_id, []), *auto_interface_fixed
@@ -953,6 +959,8 @@ def run_ligandmpnn_sequence_design(
             fixed_residues = list(dict.fromkeys([*fixed_residues, *extended["fixed_residues"]]))
             args += mpnn.shared_arguments(extended, staged_pdb.parent / source_id, "/work/artifacts/raw/ligandmpnn/inputs/" + source_id)
             args += ["--checkpoint_" + native_model, "/mpnn-checkpoint.pt"]
+        if direct_input and set(fixed_residues) - set(mpnn_input.inventory(staged_pdb)["residues"]):
+            raise ValueError("Fixed residues cannot be mapped to the MPNN input structure.")
         if fixed_residues:
             fixed_residues_by_candidate[source_id] = fixed_residues
         if fixed_residues:
@@ -1135,6 +1143,20 @@ def _normalize_foundry_mpnn_candidates(
                 target_engine_chains=target_chains or source.get("target_chains", []),
             )
             binder_sequence = _sequence_from_cif(cif_path, binder_chains or None)
+            fixed_validation = None
+            if params.get("unified_mpnn") and input_path:
+                from mn_molecular_design_studio import design_validation as dv
+                from mn_molecular_design_studio.antibody_constraints import verify_fixed_sequence
+                before = dv.protein_chains(dv.read_structure(input_path))
+                after = dv.protein_chains(dv.read_structure(cif_path))
+                source_binders = source["binder_chains"]
+                for chain in source.get("target_chains", []):
+                    if chain in before and (output_chain(chain) not in after or dv.sequence(before[chain]) != dv.sequence(after[output_chain(chain)])):
+                        raise ValueError("MPNN changed a fixed target-chain sequence.")
+                labels = [f"{c}{r.id[1]}{r.id[2].strip()}" for c in source_binders for r in before[c]]
+                original = "".join(dv.sequence(before[c]) for c in source_binders)
+                fixed_validation = verify_fixed_sequence(binder_sequence, labels, original,
+                    [label for label in params.get("fixed_residues_by_candidate", {}).get(source_id, []) if label in labels])
             normalized.append(
                 {
                     "candidate_id": f"{source_id}_foundry_mpnn_{index:03d}",
@@ -1154,7 +1176,10 @@ def _normalize_foundry_mpnn_candidates(
                     "metrics": {},
                     "parents": [source_id],
                     "raw_metadata": {
+                        **dict(source.get("raw_metadata") or {}),
                         "source_candidate": source,
+                        "fixed_sequence_validation": fixed_validation,
+                        "fixed_residues": params.get("fixed_residues_by_candidate", {}).get(source_id, []),
                         "input_cif": _rel_path(run_dir, input_path),
                         "mpnn_cif": _rel_path(run_dir, cif_path),
                         "output_chains": output_chains,
@@ -1258,11 +1283,11 @@ def run_foundry_mpnn_sequence_design(
             candidate["target_chains"] = [chain for chain in all_chains if chain not in binder_chains]
             fixed = set(_fixed_residues_for_candidate(candidate, [], {})) | set(extended["fixed_residues"])
             auto_interface_fixed: list[str] = []
-            if direct_input.get("fix_interface_residues") and _candidate_sequence_matches_structure(
-                candidate, staged_cif, binder_chains
-            ):
+            if direct_input.get("fix_interface_residues"):
+                if not _candidate_sequence_matches_structure(candidate, staged_cif, binder_chains):
+                    raise ValueError("Candidate sequence does not match its structure; refusing unrestricted redesign.")
                 auto_interface_fixed = _interface_contacts_for_structure(
-                    staged_cif, binder_chains, candidate["target_chains"], cutoff=4.0
+                    staged_cif, binder_chains, candidate["target_chains"], cutoff=direct_input.get("interface_cutoff", 4.0)
                 )
                 fixed.update(auto_interface_fixed)
                 if auto_interface_fixed:
@@ -1271,12 +1296,15 @@ def run_foundry_mpnn_sequence_design(
                     candidate["raw_metadata"] = raw
             if fixed:
                 info = mpnn_input.inventory(staged_cif)
+                if fixed - set(info["residues"]):
+                    raise ValueError("Fixed residues cannot be mapped to the MPNN input structure.")
                 designed = [r["label"] for c in binder_chains for r in info["chains"][c]["residues"] if r["label"] not in fixed]
                 if not designed:
                     raise ValueError("No residues remain to design after applying fixed residues.")
                 selection_args = ["--designed_residues", json.dumps(designed)]
             else:
                 selection_args = ["--designed_chains", ",".join(binder_chains)]
+            params.setdefault("fixed_residues_by_candidate", {})[source_id] = sorted(fixed)
             aa3 = {v: k for k, v in AA3_TO_1.items()} | {"X": "UNK"}
             extra_args += ["--temperature", str(extended["sampling_temp"]), "--omit", json.dumps([aa3[a] for a in extended["omit_aas"]])]
             if extended["seed"] is not None:
