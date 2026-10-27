@@ -136,11 +136,12 @@ NODE_CATALOG = {
         field("seed", "Random seed (0 = random)", 0, minimum=0, maximum=4294967295),
     ], color="#a88845", formats=("pdb", "cif")),
     "rf3": _spec("rf3", "RosettaFold3", "Structure prediction", "Refold designed target–binder complexes with Foundry RF3.", accepts=["sequence", "prediction", "molecule_task"], output="prediction", workflow="refolding.rf3", fields=[MSA, TEMPLATE], color="#477e9b", formats=("cif",)),
-    "boltz2": _spec("boltz2", "Boltz-2", "Structure prediction", "Refold target–binder complexes with the target MSA enabled and an optional target template.", accepts=["sequence", "prediction", "molecule_task"], output="prediction", workflow="refolding.optimized_prediction", fields=[
+    "boltz2": _spec("boltz2", "Boltz-2", "Structure prediction", "Refold target–binder complexes with configurable target MSA and optional target template conditioning.", accepts=["sequence", "prediction", "molecule_task"], output="prediction", workflow="refolding.optimized_prediction", fields=[
         field("samples", "Samples per candidate", 1, minimum=1, maximum=5),
         field("num_recycles", "Recycles", 3, minimum=1, maximum=100),
         field("sampling_steps", "Diffusion steps", 200, minimum=1, maximum=1000),
         field("seed_count", "Number of seeds", 1, minimum=1, maximum=16),
+        SEED, field("target_use_msa", "Use cached target MSA; fetch if missing", True, kind="boolean"),
         TEMPLATE,
     ], color="#477e9b", formats=("cif",)),
     "af3": _spec("af3", "AlphaFold3", "Structure prediction", "Refold target–binder candidates with MN Cofolding's AlphaFold3-family JAX runner. Select the official AF3 weights or another supported AF3-family parameter set.", accepts=["sequence", "prediction", "molecule_task"], output="prediction", workflow="refolding.optimized_prediction", fields=[
@@ -682,6 +683,9 @@ ACTIVE_LEARNING_LAYOUT = {
 
 
 def new_graph(template="foundry") -> dict[str, Any]:
+    from mn_molecular_design_studio.scientific_tasks import TASKS, new_task_graph
+    if template in TASKS:
+        return new_task_graph(template)
     if template == "unidock_active_learning":
         kinds = ["active_library", "active_seed", "active_docking", "active_accumulate",
                  "active_binder_rule", "active_train", "active_predict", "active_select",
@@ -1348,7 +1352,9 @@ def clean_graph(graph: dict) -> dict:
                           and kinds_by_id.get(edge.get("target")) == "active_docking"
                       ) else {})
                       for edge in edges if isinstance(edge, dict)],
-            "viewport": viewport,**({'template_id':graph['template_id']} if graph.get('template_id') in TEMPLATE_REFERENCES else {}),
+            "viewport": viewport,**({'template_id':graph['template_id']} if graph.get('template_id') in SUPPORTED_TEMPLATE_IDS else {}),
+            **({'task_configuration': copy.deepcopy(graph['task_configuration'])}
+               if isinstance(graph.get('task_configuration'), dict) else {}),
             **({'template_version':graph['template_version']} if type(graph.get('template_version')) is int and (
                 graph.get('template_id') == 'all_generators_boltz2' and 1 <= graph['template_version'] <= 4
                 or graph.get('template_id') == 'vhh_design' and graph['template_version'] == 2
@@ -1657,7 +1663,7 @@ WORKFLOW_ROLES = {
 
 
 # Shared by the canvas and REST/MCP template discovery.
-STARTER_TEMPLATES = {"Active-learning docking": "unidock_active_learning",
+LEGACY_STARTER_TEMPLATES = {"Active-learning docking": "unidock_active_learning",
                  "Foundry · RFD3 → MPNN → RF3": "foundry",
                  "Kejia IDR · Template threading → ProteinMPNN → AF2": "kejia_idr",
                  "Peptide Trap · Rosetta interface design → AF2 → analysis": "peptide_trap",
@@ -1677,3 +1683,12 @@ STARTER_TEMPLATES = {"Active-learning docking": "unidock_active_learning",
                  "Cofolding · Protein / RNA":"cofold_protein_rna",
                  "Cofolding · Protein / macrocyclic peptide":"cofold_protein_macrocyclic",
                  "Blank canvas": "blank"}
+
+# Navigation changes do not migrate or reinterpret saved graphs. All former IDs,
+# hidden native recipes and generated-result handoffs remain constructible.
+from mn_molecular_design_studio.scientific_tasks import TASKS
+STARTER_TEMPLATES = {spec['label']: key for key, spec in TASKS.items()} | {"Blank canvas": "blank"}
+SUPPORTED_TEMPLATE_IDS = (set(LEGACY_STARTER_TEMPLATES.values()) | set(STARTER_TEMPLATES.values())
+                          | {'bindcraft2', 'boltzgen', 'complexa', 'rfdiffusion_beta_pairing'}
+                          | {key + '_generated' for key in ('complexa', 'rfdiffusion', 'genie3', 'pxdesign',
+                                                           'protpardelle', 'kejia_idr', 'peptide_trap', 'rfdiffusion_beta_pairing')})

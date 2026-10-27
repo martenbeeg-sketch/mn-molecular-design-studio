@@ -494,9 +494,10 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
         p["job_name"] = name
         return {"schema_version": 1, "workflow": workflow, "parameters": p}
     if kind == "boltz2":
-        # Study validation always uses the target MSA; binder chains remain
-        # single-sequence through _optimized_prediction_tasks.
-        p["target_use_msa"] = True
+        # Historical saved graphs retain target MSA by default. New recipes may
+        # explicitly select single-sequence conditioning; binder chains retain
+        # their per-chain policy through _optimized_prediction_tasks.
+        p.setdefault("target_use_msa", True)
     if kind in {"rfd4", "rfd4_fold"}:
         from mn_molecular_design_studio import design_validation
         target=source.get("target") or {}
@@ -556,7 +557,7 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
         # Use the same MSA-aware Boltz-2 runner as the prediction tile. The
         # legacy initial-guess adapter only injected an MSA when a benchmark
         # CSV happened to be supplied, despite the graph tile promising one.
-        p["target_use_msa"] = True
+        p.setdefault("target_use_msa", True)
         return _optimized_prediction_request("boltz2", p, source, name)
     if kind == "surface_analysis":
         target = source.get("target") or {}
@@ -985,6 +986,14 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
     signal.signal(signal.SIGTERM, lambda *_: cancelled.__setitem__(0, True))
     def persist():
         state["updated_at"] = utc_now(); write_json(parent / "graph_execution.json", state)
+    def ancestors_of(node_id):
+        pending, ancestors = list(plan["incoming"][node_id]), set()
+        while pending:
+            ancestor = pending.pop()
+            if ancestor not in ancestors:
+                ancestors.add(ancestor)
+                pending.extend(plan["incoming"][ancestor])
+        return ancestors
     def complete(node_id, output, key, status="completed"):
         from mn_molecular_design_studio.cache_provenance import referenced_files
         output["content_manifest"] = referenced_files({k: output.get(k) for k in
@@ -1023,120 +1032,120 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     current.update(status="blocked", error="An upstream step failed."); persist(); progressed=True; continue
                 if not all(p in outputs for p in parents):
                     continue
-                kind, params = node["data"]["kind"], node["data"]["params"]
-                upstream = [outputs[p] for p in parents]
-                source = upstream[0] if upstream else {}
-                if kind in {"ligandmpnn", "foundry_mpnn", "sabr", "abmpnn"} and len(upstream) > 1:
-                    merged_rows = []
-                    merged_target = next((item.get("target") for item in upstream if item.get("target")), {})
-                    for source_id, output in zip(parents, upstream):
-                        for row in _absolute_candidates(output):
-                            candidate = copy.deepcopy(row)
-                            original_id = str(candidate.get("candidate_id") or "candidate")
-                            candidate["candidate_id"] = f"{source_id}:{original_id}"
-                            raw = dict(candidate.get("raw_metadata") or {})
-                            raw["pipeline_generator_node"] = source_id
-                            raw["pipeline_original_candidate_id"] = original_id
-                            candidate["raw_metadata"] = raw
-                            merged_rows.append(candidate)
-                    source = _local_source(parent, f"{node_id}_fan_in", merged_rows, merged_target)
-                key_params = copy.deepcopy(params)
-                if kind in {"filter", "results", "ipsae", "rosetta_metrics"} or NODE_CATALOG[kind]["workflow"] and NODE_CATALOG[kind]["workflow"].startswith("analysis."):
-                    from mn_molecular_design_studio import output_vocabulary, candidate_selection, measurement_status
-                    key_params["scientific_results_revision"] = [file_digest(Path(module.__file__)) for module in
-                        (output_vocabulary, candidate_selection, measurement_status)]
-                if kind == "target" or kind == 'cofold_input' and params.get('target_pdb') or kind=='complexa_generator' and params.get('target_pdb'):
-                    target_path = _path(params["target_pdb"])
-                    key_params["structure_digest"] = file_digest(target_path)
-                if kind in {"design_source","generation_source","backbone_source","molecule_source","project_design_source"}:
-                    loader=(source_molecule_selection if kind == 'molecule_source' else source_project_designs if kind == 'project_design_source' else source_generations if kind in {'generation_source','backbone_source'} else source_designs)
-                    extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind in {'generation_source','backbone_source'} else {}
-                    source_dir, _ = loader(params["source_run_dir"], project_id, params.get("selected_candidate_ids"),**extra)
-                    key_params["source_digest"] = file_digest(source_dir / "artifacts/normalized_candidates/candidates.jsonl")
-                    from mn_molecular_design_studio.cache_provenance import referenced_files
-                    key_params["source_artifact_contents"] = referenced_files(_absolute_candidates({
-                        "run_dir": str(source_dir), "candidates_jsonl": str(source_dir / "artifacts/normalized_candidates/candidates.jsonl")}), base=source_dir)
-                    if kind == "project_design_source":
-                        from mn_molecular_design_studio import mimosa_motif
-                        key_params["mimosa_motif_adapter_digest"] = file_digest(Path(mimosa_motif.__file__))
-                if kind=='complexa_generator':
-                    from mn_molecular_design_studio import complexa_input, complexa_container
-                    key_params['input_adapter_digest']=file_digest(Path(complexa_input.__file__))
-                    key_params['container_adapter_digest']=file_digest(Path(complexa_container.__file__))
-                from mn_molecular_design_studio import generator_input
-                from mn_molecular_design_studio import inverse_folding_input
-                if kind in inverse_folding_input.ENGINES:
-                    from mn_molecular_design_studio.engine.workflow_engine.workflows import inverse_folding
-                    key_params["input_adapter_digest"] = file_digest(Path(inverse_folding_input.__file__))
-                    key_params["container_adapter_digest"] = file_digest(inverse_folding.NATIVE)
-                if kind in generator_input.ENGINES:
-                    key_params['input_adapter_digest']=file_digest(Path(generator_input.__file__))
-                    for key in ('target_pdb','scaffold_pdb','scaffold_ss_file','scaffold_adj_file','target_ss_file','target_adj_file'):
-                        if params.get(key):key_params[key+'_digest']=file_digest(_path(params[key]))
-                elif kind == "peptide_trap":
-                    from mn_molecular_design_studio import peptide_trap_input
-                    from mn_molecular_design_studio.engine.workflow_engine.workflows import peptide_trap
-                    prepared = peptide_trap_input.prepare_request(params)
-                    key_params["input_adapter_digest"] = file_digest(Path(peptide_trap_input.__file__))
-                    key_params["workflow_adapter_digest"] = file_digest(Path(peptide_trap.__file__))
-                    key_params["template_digests"] = [file_digest(peptide_trap_input.template_path(key)) for key in prepared["scaffold_ids"]]
-                    key_params["native_protocol_digest"] = file_digest(peptide_trap_input.library_root() / "source/design_after_seqthread.xml")
-                    key_params["container_adapter_digest"] = file_digest(Path(__file__).parents[1] / "tools/peptide_trap_runtime.py")
-                elif kind == "kejia_idr":
-                    from mn_molecular_design_studio import kejia_idr_input
-                    key_params["input_adapter_digest"] = file_digest(Path(kejia_idr_input.__file__))
-                    key_params["source_revision"] = kejia_idr_input.SOURCE_REVISION
-                    prepared = kejia_idr_input.prepare_request(params)
-                    key_params["template_digests"] = [file_digest(Path(row["path"])) for row in prepared["templates"]]
-                    key_params["container_adapter_digest"] = file_digest(Path(__file__).parents[1] / "tools/kejia_idr_threading.py")
-                elif kind == "rfdiffusion_beta_pairing":
-                    from mn_molecular_design_studio import rfdiffusion_beta_pairing_input
-                    key_params["input_adapter_digest"] = file_digest(Path(rfdiffusion_beta_pairing_input.__file__))
-                    if params.get("target_pdb"):
-                        key_params["target_pdb_digest"] = file_digest(_path(params["target_pdb"]))
-                elif kind == "sabr":
-                    from mn_molecular_design_studio import sabr_runtime
-                    key_params["implementation_digest"] = file_digest(Path(sabr_runtime.__file__))
-                elif kind == "abmpnn":
-                    from mn_molecular_design_studio import mpnn_input
-                    from mn_molecular_design_studio import mimosa_motif
-                    key_params["checkpoint_digest"] = file_digest(mpnn_input.checkpoint("ab_mpnn"))
-                    key_params["mimosa_motif_adapter_digest"] = file_digest(Path(mimosa_motif.__file__))
-                if kind in {"af2", "boltz2"}:
-                    from mn_molecular_design_studio import prediction_configuration
-                    key_params["prediction_configuration_digest"] = file_digest(Path(prediction_configuration.__file__))
-                    if kind == "af2":
-                        from mn_molecular_design_studio.engine.workflow_engine.workflows.refolding import AF2_BINDER_EVAL
-                        key_params["native_runner_digest"] = file_digest(AF2_BINDER_EVAL)
-                if NODE_CATALOG[kind]["workflow"]:
-                    from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS, _get_function
-                    effective_request = node_request(kind, params, source, "cache-specification")
-                    implementation = _get_function(WORKFLOWS[effective_request["workflow"]])
-                    key_params["implementation_digest"] = file_digest(Path(inspect.getfile(implementation)))
-                    from mn_molecular_design_studio.cache_provenance import execution_identity
-                    effective = effective_request["parameters"]
-                    identity_key = json.dumps([kind, params], sort_keys=True)
-                    if identity_key not in runtime_identities:
-                        runtime_identities[identity_key] = execution_identity(kind, effective, effective_request["workflow"])
-                    key_params["runtime_identity"] = runtime_identities[identity_key]
-                    # Cache the effective request, excluding run-local transport
-                    # paths whose scientific contents are covered by upstream keys.
-                    key_params["effective_parameters"] = {k: v for k, v in effective.items() if k not in
-                        {"source_run_dir", "candidates_jsonl", "job_name", "campaign_name", "target_pdb", "target_structure"}}
-                    if "seed" in effective:
-                        seed_key = fingerprint(kind, key_params, [o["fingerprint"] for o in upstream])
-                        seed_file = cache_root / (seed_key + ".seed.json")
-                        resolved_seed = current.get("resolved_seed") or effective.get("seed")
-                        if not resolved_seed:
-                            resolved_seed = (read_json(seed_file).get("seed") if reuse_completed else None) or secrets.randbelow(2147483646) + 1
-                        current["resolved_seed"] = resolved_seed
-                        if reuse_completed:
-                            write_json(seed_file, {"seed": resolved_seed})
-                        params = {**params, "seed": resolved_seed}
-                        key_params["effective_parameters"]["seed"] = resolved_seed
-                    current["execution_specification"] = key_params
-                key = fingerprint(kind, key_params, [o["fingerprint"] for o in upstream])
                 try:
+                    kind, params = node["data"]["kind"], node["data"]["params"]
+                    upstream = [outputs[p] for p in parents]
+                    source = upstream[0] if upstream else {}
+                    if kind in {"ligandmpnn", "foundry_mpnn", "sabr", "abmpnn"} and len(upstream) > 1:
+                        merged_rows = []
+                        merged_target = next((item.get("target") for item in upstream if item.get("target")), {})
+                        for source_id, output in zip(parents, upstream):
+                            for row in _absolute_candidates(output):
+                                candidate = copy.deepcopy(row)
+                                original_id = str(candidate.get("candidate_id") or "candidate")
+                                candidate["candidate_id"] = f"{source_id}:{original_id}"
+                                raw = dict(candidate.get("raw_metadata") or {})
+                                raw["pipeline_generator_node"] = source_id
+                                raw["pipeline_original_candidate_id"] = original_id
+                                candidate["raw_metadata"] = raw
+                                merged_rows.append(candidate)
+                        source = _local_source(parent, f"{node_id}_fan_in", merged_rows, merged_target)
+                    key_params = copy.deepcopy(params)
+                    if kind in {"filter", "results", "ipsae", "rosetta_metrics"} or NODE_CATALOG[kind]["workflow"] and NODE_CATALOG[kind]["workflow"].startswith("analysis."):
+                        from mn_molecular_design_studio import output_vocabulary, candidate_selection, measurement_status
+                        key_params["scientific_results_revision"] = [file_digest(Path(module.__file__)) for module in
+                            (output_vocabulary, candidate_selection, measurement_status)]
+                    if kind == "target" or kind == 'cofold_input' and params.get('target_pdb') or kind=='complexa_generator' and params.get('target_pdb'):
+                        target_path = _path(params["target_pdb"])
+                        key_params["structure_digest"] = file_digest(target_path)
+                    if kind in {"design_source","generation_source","backbone_source","molecule_source","project_design_source"}:
+                        loader=(source_molecule_selection if kind == 'molecule_source' else source_project_designs if kind == 'project_design_source' else source_generations if kind in {'generation_source','backbone_source'} else source_designs)
+                        extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind in {'generation_source','backbone_source'} else {}
+                        source_dir, _ = loader(params["source_run_dir"], project_id, params.get("selected_candidate_ids"),**extra)
+                        key_params["source_digest"] = file_digest(source_dir / "artifacts/normalized_candidates/candidates.jsonl")
+                        from mn_molecular_design_studio.cache_provenance import referenced_files
+                        key_params["source_artifact_contents"] = referenced_files(_absolute_candidates({
+                            "run_dir": str(source_dir), "candidates_jsonl": str(source_dir / "artifacts/normalized_candidates/candidates.jsonl")}), base=source_dir)
+                        if kind == "project_design_source":
+                            from mn_molecular_design_studio import mimosa_motif
+                            key_params["mimosa_motif_adapter_digest"] = file_digest(Path(mimosa_motif.__file__))
+                    if kind=='complexa_generator':
+                        from mn_molecular_design_studio import complexa_input, complexa_container
+                        key_params['input_adapter_digest']=file_digest(Path(complexa_input.__file__))
+                        key_params['container_adapter_digest']=file_digest(Path(complexa_container.__file__))
+                    from mn_molecular_design_studio import generator_input
+                    from mn_molecular_design_studio import inverse_folding_input
+                    if kind in inverse_folding_input.ENGINES:
+                        from mn_molecular_design_studio.engine.workflow_engine.workflows import inverse_folding
+                        key_params["input_adapter_digest"] = file_digest(Path(inverse_folding_input.__file__))
+                        key_params["container_adapter_digest"] = file_digest(inverse_folding.NATIVE)
+                    if kind in generator_input.ENGINES:
+                        key_params['input_adapter_digest']=file_digest(Path(generator_input.__file__))
+                        for key in ('target_pdb','scaffold_pdb','scaffold_ss_file','scaffold_adj_file','target_ss_file','target_adj_file'):
+                            if params.get(key):key_params[key+'_digest']=file_digest(_path(params[key]))
+                    elif kind == "peptide_trap":
+                        from mn_molecular_design_studio import peptide_trap_input
+                        from mn_molecular_design_studio.engine.workflow_engine.workflows import peptide_trap
+                        prepared = peptide_trap_input.prepare_request(params)
+                        key_params["input_adapter_digest"] = file_digest(Path(peptide_trap_input.__file__))
+                        key_params["workflow_adapter_digest"] = file_digest(Path(peptide_trap.__file__))
+                        key_params["template_digests"] = [file_digest(peptide_trap_input.template_path(key)) for key in prepared["scaffold_ids"]]
+                        key_params["native_protocol_digest"] = file_digest(peptide_trap_input.library_root() / "source/design_after_seqthread.xml")
+                        key_params["container_adapter_digest"] = file_digest(Path(__file__).parents[1] / "tools/peptide_trap_runtime.py")
+                    elif kind == "kejia_idr":
+                        from mn_molecular_design_studio import kejia_idr_input
+                        key_params["input_adapter_digest"] = file_digest(Path(kejia_idr_input.__file__))
+                        key_params["source_revision"] = kejia_idr_input.SOURCE_REVISION
+                        prepared = kejia_idr_input.prepare_request(params)
+                        key_params["template_digests"] = [file_digest(Path(row["path"])) for row in prepared["templates"]]
+                        key_params["container_adapter_digest"] = file_digest(Path(__file__).parents[1] / "tools/kejia_idr_threading.py")
+                    elif kind == "rfdiffusion_beta_pairing":
+                        from mn_molecular_design_studio import rfdiffusion_beta_pairing_input
+                        key_params["input_adapter_digest"] = file_digest(Path(rfdiffusion_beta_pairing_input.__file__))
+                        if params.get("target_pdb"):
+                            key_params["target_pdb_digest"] = file_digest(_path(params["target_pdb"]))
+                    elif kind == "sabr":
+                        from mn_molecular_design_studio import sabr_runtime
+                        key_params["implementation_digest"] = file_digest(Path(sabr_runtime.__file__))
+                    elif kind == "abmpnn":
+                        from mn_molecular_design_studio import mpnn_input
+                        from mn_molecular_design_studio import mimosa_motif
+                        key_params["checkpoint_digest"] = file_digest(mpnn_input.checkpoint("ab_mpnn"))
+                        key_params["mimosa_motif_adapter_digest"] = file_digest(Path(mimosa_motif.__file__))
+                    if kind in {"af2", "boltz2"}:
+                        from mn_molecular_design_studio import prediction_configuration
+                        key_params["prediction_configuration_digest"] = file_digest(Path(prediction_configuration.__file__))
+                        if kind == "af2":
+                            from mn_molecular_design_studio.engine.workflow_engine.workflows.refolding import AF2_BINDER_EVAL
+                            key_params["native_runner_digest"] = file_digest(AF2_BINDER_EVAL)
+                    if NODE_CATALOG[kind]["workflow"]:
+                        from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS, _get_function
+                        effective_request = node_request(kind, params, source, "cache-specification")
+                        implementation = _get_function(WORKFLOWS[effective_request["workflow"]])
+                        key_params["implementation_digest"] = file_digest(Path(inspect.getfile(implementation)))
+                        from mn_molecular_design_studio.cache_provenance import execution_identity
+                        effective = effective_request["parameters"]
+                        identity_key = json.dumps([kind, params], sort_keys=True)
+                        if identity_key not in runtime_identities:
+                            runtime_identities[identity_key] = execution_identity(kind, effective, effective_request["workflow"])
+                        key_params["runtime_identity"] = runtime_identities[identity_key]
+                        # Cache the effective request, excluding run-local transport
+                        # paths whose scientific contents are covered by upstream keys.
+                        key_params["effective_parameters"] = {k: v for k, v in effective.items() if k not in
+                            {"source_run_dir", "candidates_jsonl", "job_name", "campaign_name", "target_pdb", "target_structure"}}
+                        if "seed" in effective:
+                            seed_key = fingerprint(kind, key_params, [o["fingerprint"] for o in upstream])
+                            seed_file = cache_root / (seed_key + ".seed.json")
+                            resolved_seed = current.get("resolved_seed") or effective.get("seed")
+                            if not resolved_seed:
+                                resolved_seed = (read_json(seed_file).get("seed") if reuse_completed else None) or secrets.randbelow(2147483646) + 1
+                            current["resolved_seed"] = resolved_seed
+                            if reuse_completed:
+                                write_json(seed_file, {"seed": resolved_seed})
+                            params = {**params, "seed": resolved_seed}
+                            key_params["effective_parameters"]["seed"] = resolved_seed
+                        current["execution_specification"] = key_params
+                    key = fingerprint(kind, key_params, [o["fingerprint"] for o in upstream])
                     if current.get("job_run_dir") and (current.get("fingerprint") != key or current.get("output") and not _cache_valid(current["output"])):
                         previous = {k: current.get(k) for k in ("job_run_dir", "fingerprint", "status", "resolved_seed")}
                         current.setdefault("superseded_attempts", []).append(previous)
@@ -1341,17 +1350,41 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     surface_analyses.append(analysis)
             if nodes[node_id]["data"]["kind"] != "results":
                 continue
+            ancestors = ancestors_of(node_id)
             for candidate in _absolute_candidates(output) if output.get("candidates_jsonl") else []:
                 candidate["candidate_id"] = f"{node_id}:{candidate['candidate_id']}"
                 candidate.setdefault("raw_metadata", {})["pipeline_result_node"] = node_id
+                if graph.get("task_configuration"):
+                    candidate["raw_metadata"]["pipeline_task"] = graph["task_configuration"].get("task_id")
+                    # Record actual graph ancestry, including edited recipes,
+                    # rather than infer provenance from menu labels/settings.
+                    candidate["raw_metadata"]["pipeline_method_nodes"] = [
+                        {"node_id": ancestor, "kind": nodes[ancestor]["data"]["kind"],
+                         "parameters": nodes[ancestor]["data"]["params"]}
+                        for ancestor in sorted(ancestors)
+                        if NODE_CATALOG[nodes[ancestor]["data"]["kind"]]["category"] in
+                        {"Design engine", "Design pipeline", "Structure prediction", "Sequence design"}]
                 candidates.append(candidate)
         write_candidates(parent, "visual_pipeline", candidates)
         from mn_molecular_design_studio.output_vocabulary import evidence_rows
         import pandas as pd
         pd.DataFrame(evidence_rows(candidates)).to_csv(parent / "artifacts/normalized_candidates/final_evidence.csv", index=False)
         failures = [v for v in node_states.values() if v.get("status") in {"failed", "blocked"}]
-        state["status"] = "failed" if failures else "completed";persist()
-        finish_job(parent, not failures, {"outputs": {"candidates": candidates, "surface_analyses": surface_analyses, "pipeline_nodes": node_states}, "metrics": {"candidate_count": len(candidates), "surface_analysis_count": len(surface_analyses), "node_count": len(nodes), "cached_steps": sum(v.get("status")=="cached" for v in node_states.values()), "failed_steps": len(failures)}, "downstream_artifacts": {"candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl", "graph_snapshot": "graph_snapshot.json", "graph_execution": "graph_execution.json"}})
+        # Only new, explicitly configured comparisons permit partial success.
+        # Legacy graphs retain their original failure semantics. Each comparison
+        # branch owns a Results node, so a failed branch has no fan-in barrier.
+        comparison = graph.get("task_configuration", {}).get("comparison") is True
+        successful_results = [node_id for node_id in outputs if nodes[node_id]["data"]["kind"] == "results"
+                              and node_states.get(node_id, {}).get("status") in {"completed", "cached"}
+                              and not any(node_states.get(a, {}).get("status") in {"failed", "blocked"}
+                                          for a in ancestors_of(node_id))]
+        success = not failures or comparison and bool(successful_results)
+        comparison_status = "partial" if failures and success else "failed" if failures else "completed"
+        state["status"] = "completed" if success else "failed"
+        state["comparison_status"] = comparison_status
+        persist()
+        finish_job(parent, success, {"outputs": {"candidates": candidates, "surface_analyses": surface_analyses, "pipeline_nodes": node_states,
+                    "comparison_status": comparison_status, "successful_result_nodes": successful_results}, "metrics": {"candidate_count": len(candidates), "surface_analysis_count": len(surface_analyses), "node_count": len(nodes), "cached_steps": sum(v.get("status")=="cached" for v in node_states.values()), "failed_steps": len(failures)}, "downstream_artifacts": {"candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl", "graph_snapshot": "graph_snapshot.json", "graph_execution": "graph_execution.json"}})
         return parent
     except Exception:
         cancel_graph_children(parent)
