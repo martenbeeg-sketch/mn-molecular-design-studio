@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 import sys
 from functools import wraps
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable
 
@@ -10,6 +12,18 @@ from mn_molecular_design_studio.engine.workflow_engine.core.jobs import create_j
 from mn_molecular_design_studio.engine.workflow_engine.core.local_worker import spawn_worker_for_run
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import portable_path
 from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import configured_cpu_slots
+
+
+_EXECUTION_RESOURCES = ContextVar('studio_workflow_execution_resources', default={})
+
+
+@contextmanager
+def execution_resources(resources):
+    token = _EXECUTION_RESOURCES.set(dict(resources or {}))
+    try:
+        yield
+    finally:
+        _EXECUTION_RESOURCES.reset(token)
 
 
 _INPUT_KEYS = {
@@ -153,7 +167,7 @@ def enqueue_workflow_call(
             {key: _json_value(value) for key, value in input_payload.items()}, params,
         )
     metadata = read_json(job.run_dir / "metadata.json")
-    metadata["resource_request"] = {"cpu_cores": int(requested_cores)}
+    metadata["resource_request"] = {**_EXECUTION_RESOURCES.get(), "cpu_cores": int(requested_cores)}
     write_json(job.run_dir / "metadata.json", metadata)
     positional_only = {
         name
@@ -175,7 +189,7 @@ def enqueue_workflow_call(
             "function": function_name,
             "args": serialized_args,
             "kwargs": serialized_kwargs,
-            "resources": {"cpu_cores": int(requested_cores), "gpu_device": normalized_gpu},
+            "resources": {**_EXECUTION_RESOURCES.get(), "cpu_cores": int(requested_cores), "gpu_device": normalized_gpu},
         },
     )
     write_json(

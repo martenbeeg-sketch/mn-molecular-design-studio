@@ -203,7 +203,7 @@ def request_for_run(run_dir: Path, cpu_capacity: int | None = None) -> ResourceR
     if gpu_resource and gpu_resource.startswith("gpu:"):
         gpu_device = gpu_resource.removeprefix("gpu:")
     elif gpu_resource == "gpu":
-        gpu_device = gpu_raw if gpu_raw and gpu_raw.lower() not in {"auto", "any"} else "all"
+        gpu_device = gpu_raw or "all"
     else:
         gpu_device = None
 

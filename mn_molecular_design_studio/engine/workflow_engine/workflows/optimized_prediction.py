@@ -2242,7 +2242,14 @@ def _prepare_prediction(
 
 def validate_prediction_request(parameters: dict[str, Any]) -> None:
     """Apply worker input checks before queueing, without jobs, searches, or seed generation."""
-    _prepare_prediction(**parameters, resolve_random_seed=False)
+    prepared = dict(parameters)
+    if str(prepared.get('gpu_device', '')).lower() in {'auto', 'any', 'all'}:
+        profile = ENGINE_PROFILES[prepared['engine']]
+        required = _profile_gpu_count(profile, prepared.get('optimization_mode', 'off'))
+        # Validate scientific settings before admission. Real execution still
+        # requires the concrete devices assigned by the scheduler.
+        prepared['gpu_device'] = ','.join(str(i) for i in range(required))
+    _prepare_prediction(**prepared, resolve_random_seed=False)
 
 
 def boltz2_prediction_parameters(

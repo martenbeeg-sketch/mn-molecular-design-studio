@@ -422,3 +422,22 @@ def test_rfdiffusion3_api_has_specific_identity_and_preflight(api_queue):
     payload["parameters"] = {"task": "protein_binder"}
     assert api_queue.client.post("/api/v1/workflows", json=payload).status_code == 422
     assert len(list(api_queue.root.glob("*/*/metadata.json"))) == 1
+
+
+def test_resource_limits_exist_before_scheduler_dispatch(api_queue):
+    payload = request_for('boltz2')
+    payload['parameters']['gpu_device'] = 'auto'
+    payload['resources'] = {'gpu_device': 'auto', 'cpu_cores': 2, 'min_vram_gb': 16, 'ram_gb': 8, 'scratch_gb': 2}
+    response = api_queue.client.post('/api/v1/workflows', json=payload)
+    assert response.status_code == 202, response.text
+    request = api_queue.dispatched[-1]['resource_request']
+    assert request['min_vram_gb'] == 16
+    assert request['ram_gb'] == 8
+    assert request['cpu_cores'] == 2
+
+
+@pytest.mark.parametrize('value', [-1, True, '8', float('inf')])
+def test_reject_invalid_resource_memory(value):
+    from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import _validate_resources, AutomationError
+    with pytest.raises(AutomationError):
+        _validate_resources({'min_vram_gb': value})

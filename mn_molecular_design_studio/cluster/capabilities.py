@@ -252,5 +252,5 @@ def requirements(payload, *, references=(), installed_images=None):
     return {"images": {image: installed.get(image, "") for image in sorted(needed_images)}, "references": sorted(needed_refs),
             "code_revision": code_revision(), "gpu_count": gpu_count, "gpu_ids": gpu_ids,
             "all_gpus": not cpu_only and device == "all",
-            "min_vram_gb": 8 if gpu_count else 0, "cpu_threads": requested.get("cpu_cores") or max((item.get("cpu_cores") or item.get("cpu_threads") or 4 for _, item in workflows), default=4),
-            "ram_gb": 0, "scratch_gb": 1}
+            "min_vram_gb": max(8, float(requested.get("min_vram_gb", 0))) if gpu_count else 0, "cpu_threads": requested.get("cpu_cores") or max((item.get("cpu_cores") or item.get("cpu_threads") or 4 for _, item in workflows), default=4),
+            "ram_gb": float(requested.get("ram_gb", 0)), "scratch_gb": float(requested.get("scratch_gb", 1))}

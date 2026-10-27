@@ -702,9 +702,14 @@ def _validate_resources(payload: object) -> tuple[int | None, str | None]:
         return None, None
     if not isinstance(payload, dict):
         raise AutomationError("resources must be a JSON object.")
-    unknown = sorted(set(payload) - {"cpu_cores", "gpu_device"})
+    unknown = sorted(set(payload) - {"cpu_cores", "gpu_device", "min_vram_gb", "ram_gb", "scratch_gb"})
     if unknown:
         raise AutomationError(f"Unsupported resource field(s): {', '.join(unknown)}")
+    import math
+    for key in ('min_vram_gb', 'ram_gb', 'scratch_gb'):
+        value = payload.get(key, 0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            raise AutomationError(f'resources.{key} must be finite and nonnegative.')
     cpu_cores = payload.get("cpu_cores")
     if cpu_cores is not None and (type(cpu_cores) is not int or cpu_cores < 1):
         raise AutomationError("resources.cpu_cores must be a positive integer.")
@@ -1049,6 +1054,22 @@ def _prepare_selection(spec, payload, request_path):
 
 
 def submit_workflow_request(request_file: str | Path) -> dict[str, Any]:
+    # Admission requirements must be recorded before spawn_worker_for_run;
+    # changing metadata after submission races the scheduler's first claim.
+    from mn_molecular_design_studio.engine.workflow_engine.core.workflow_queue import execution_resources
+    request_path = Path(request_file).expanduser().resolve()
+    try:
+        payload = json.loads(request_path.read_text())
+    except (OSError, ValueError) as exc:
+        raise AutomationError(f'Could not read workflow request JSON {request_path}: {exc}') from exc
+    if not isinstance(payload, dict):
+        raise AutomationError('Workflow request must be a JSON object.')
+    _validate_resources(payload.get('resources'))
+    with execution_resources(payload.get('resources')):
+        return _submit_workflow_request(request_path)
+
+
+def _submit_workflow_request(request_file: str | Path) -> dict[str, Any]:
     """Validate and submit one allowlisted workflow request."""
     request_path = Path(request_file).expanduser().resolve()
     try:
