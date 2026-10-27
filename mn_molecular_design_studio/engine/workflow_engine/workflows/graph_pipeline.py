@@ -5,7 +5,6 @@ import copy
 import hashlib
 import inspect
 import json
-import operator
 import re
 import shutil
 import signal
@@ -468,23 +467,11 @@ def _optimized_prediction_request(engine: str, params: dict, source: dict, name:
 
 
 def filter_candidates(rows: list[dict], settings: dict) -> list[dict]:
-    from mn_molecular_design_studio.design_validation import candidate_passes_filters
-    metric = str(settings.get("metric") or "").strip()
-    compare = {">=": operator.ge, "<=": operator.le, ">": operator.gt, "<": operator.lt}[settings["operator"]]
-    def score(row):
-        from mn_molecular_design_studio.output_vocabulary import metric_value
-        value = metric_value(row, metric)
-        try:
-            return float(value) if value is not None and not isinstance(value, bool) else None
-        except (TypeError, ValueError):
-            return None
-    result = [row for row in rows if not settings["passing_only"] or candidate_passes_filters(row)]
-    if metric:
-        import math
-        result = [row for row in result if score(row) is not None and math.isfinite(score(row)) and compare(score(row), settings["threshold"])]
-        result.sort(key=score, reverse=settings["higher_is_better"])
-    limit = int(settings["limit"])
-    return result[:limit] if limit else result
+    from mn_molecular_design_studio.candidate_selection import evaluate_selection, selected_candidates
+    outcomes = evaluate_selection(rows, settings)
+    if outcomes and all(row["raw_metadata"]["selection"]["status"] == "not_evaluated" for row in outcomes):
+        return outcomes[:settings["limit"]] if settings.get("limit") else outcomes
+    return selected_candidates(outcomes)
 
 
 def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
@@ -894,6 +881,10 @@ def _cache_valid(output: dict) -> bool:
         if output.get("analysis_run"):
             return True
         path = _path(output["candidates_jsonl"])
+        if output.get("review_candidates_jsonl"):
+            review_path = _path(output["review_candidates_jsonl"])
+            if output.get("review_digest") != file_digest(review_path):
+                return False
         root = _path(output["run_dir"])
         if read_json(root / "metadata.json").get("status") != "completed" or read_json(root / "result.json").get("success") is not True:
             return False
@@ -977,7 +968,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
     def persist():
         state["updated_at"] = utc_now(); write_json(parent / "graph_execution.json", state)
     def complete(node_id, output, key, status="completed"):
-        output["fingerprint"] = fingerprint(key, {"candidate_digest": file_digest(Path(output["candidates_jsonl"]))}, []) if output.get("candidates_jsonl") else key
+        if output.get("review_candidates_jsonl"):
+            output["review_digest"] = file_digest(Path(output["review_candidates_jsonl"]))
+        output["fingerprint"] = fingerprint(key, {"candidate_digest": file_digest(Path(output["candidates_jsonl"])),
+            "review_digest": output.get("review_digest")}, []) if output.get("candidates_jsonl") else key
         outputs[node_id] = output
         node_states.setdefault(node_id, {}).update(status=status, output=output, fingerprint=key, candidate_count=output.get("candidate_count", 0), completed_at=utc_now())
         analyses = [*(output.get("analysis_runs") or []), *([output["analysis_run"]] if output.get("analysis_run") else [])]
@@ -1024,6 +1018,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             merged_rows.append(candidate)
                     source = _local_source(parent, f"{node_id}_fan_in", merged_rows, merged_target)
                 key_params = copy.deepcopy(params)
+                if kind in {"filter", "results", "ipsae", "rosetta_metrics"} or NODE_CATALOG[kind]["workflow"] and NODE_CATALOG[kind]["workflow"].startswith("analysis."):
+                    from mn_molecular_design_studio import output_vocabulary, candidate_selection, measurement_status
+                    key_params["scientific_results_revision"] = [file_digest(Path(module.__file__)) for module in
+                        (output_vocabulary, candidate_selection, measurement_status)]
                 if kind == "target" or kind == 'cofold_input' and params.get('target_pdb') or kind=='complexa_generator' and params.get('target_pdb'):
                     target_path = _path(params["target_pdb"])
                     key_params["structure_digest"] = file_digest(target_path)
@@ -1108,6 +1106,11 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                 if NODE_CATALOG[kind]["category"] == "Structure prediction":
                                     output = _attach_refold_input_references(output, source, parent, node_id)
                                 complete(node_id, output, key); progressed=True
+                        elif current["status"] == "failed" and child_result.get("scientific_status") == "failed" and (child / "artifacts/normalized_candidates/candidates.jsonl").is_file():
+                            output = _child_output(child, source.get("target", {}))
+                            complete(node_id, output, key, "failed")
+                            node_states[node_id]["error"] = "No valid required measurements; per-candidate causes are retained."
+                            persist(); progressed = True
                         elif current["status"] in {"failed", "cancelled"}:
                             current.update(status="failed", error=f"Child job {current.get('job_code') or child.name} did not complete successfully.");persist();progressed=True
                         continue
@@ -1191,15 +1194,24 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             analysis_runs.extend(output.get("analysis_runs") or [])
                             if output.get("analysis_run"):
                                 analysis_runs.append(output["analysis_run"])
-                            for row in _absolute_candidates(output) if output.get("candidates_jsonl") else []:
+                            review_source = {**output, "candidates_jsonl": output["review_candidates_jsonl"]} if kind == "results" and output.get("review_candidates_jsonl") else output
+                            for row in _absolute_candidates(review_source) if review_source.get("candidates_jsonl") else []:
                                 if kind == "results":
                                     row = _add_target_aligned_pose_rmsd(row, parent)
                                     row.setdefault("raw_metadata", {}).update(pipeline_source_node=source_id, pipeline_original_candidate_id=row["candidate_id"])
                                     row["candidate_id"] = f"{source_id}:{row['candidate_id']}"
                                 rows.append(row)
                         if kind == "filter":
-                            rows = filter_candidates(rows, params)
-                        complete(node_id, _local_source(parent, node_id, rows, source.get("target"), analysis_runs if kind == "results" else [], final_evidence=kind == "results"), key);progressed=True;continue
+                            from mn_molecular_design_studio.candidate_selection import evaluate_selection, selected_candidates, write_selection_artifacts
+                            outcomes = evaluate_selection(rows, params)
+                            write_selection_artifacts(parent / "artifacts/pipeline_nodes" / node_id / "artifacts/selection", outcomes)
+                            rows = selected_candidates(outcomes)
+                            if outcomes and all(row["raw_metadata"]["selection"]["status"] == "not_evaluated" for row in outcomes):
+                                rows = outcomes[:params["limit"]] if params.get("limit") else outcomes
+                        output = _local_source(parent, node_id, rows, source.get("target"), analysis_runs if kind == "results" else [], final_evidence=kind == "results")
+                        if kind == "filter":
+                            output["review_candidates_jsonl"] = str(parent / "artifacts/pipeline_nodes" / node_id / "artifacts/selection/all_candidates.jsonl")
+                        complete(node_id, output, key);progressed=True;continue
                     if kind == "sabr":
                         from mn_molecular_design_studio import sabr_runtime
                         from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
@@ -1270,6 +1282,9 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                 candidate.setdefault("raw_metadata", {})["pipeline_result_node"] = node_id
                 candidates.append(candidate)
         write_candidates(parent, "visual_pipeline", candidates)
+        from mn_molecular_design_studio.output_vocabulary import evidence_rows
+        import pandas as pd
+        pd.DataFrame(evidence_rows(candidates)).to_csv(parent / "artifacts/normalized_candidates/final_evidence.csv", index=False)
         failures = [v for v in node_states.values() if v.get("status") in {"failed", "blocked"}]
         state["status"] = "failed" if failures else "completed";persist()
         finish_job(parent, not failures, {"outputs": {"candidates": candidates, "surface_analyses": surface_analyses, "pipeline_nodes": node_states}, "metrics": {"candidate_count": len(candidates), "surface_analysis_count": len(surface_analyses), "node_count": len(nodes), "cached_steps": sum(v.get("status")=="cached" for v in node_states.values()), "failed_steps": len(failures)}, "downstream_artifacts": {"candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl", "graph_snapshot": "graph_snapshot.json", "graph_execution": "graph_execution.json"}})

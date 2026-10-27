@@ -8025,6 +8025,18 @@ def _render_job_details() -> None:
             str(job.get("tool") or ""), run_dir, artifact_paths
         )
 
+        candidates_path = run_dir / "artifacts/normalized_candidates/candidates.jsonl"
+        if candidates_path.is_file():
+            result_candidates = read_candidates(candidates_path)
+            if any((row.get("raw_metadata") or {}).get(key) for row in result_candidates for key in ("measurement_status", "selection", "source_candidate")):
+                from mn_molecular_design_studio.result_presentation import candidate_state_rows
+                with st.expander("Candidate measurement and selection outcomes", expanded=True):
+                    st.caption("Computational completion, measurement validity and selection are separate outcomes. Selection refers to downstream evaluation; it does not establish experimental activity.")
+                    st.dataframe(candidate_state_rows(result_candidates[:10000]), hide_index=True, use_container_width=True)
+                    from mn_molecular_design_studio.output_vocabulary import evidence_rows
+                    if st.checkbox("Show measurements with their source stages", key=f"job-evidence-{run_id}"):
+                        st.dataframe(evidence_rows(result_candidates[:1000]), hide_index=True, use_container_width=True)
+
         csv_artifacts = (
             []
             if has_dedicated_prediction_results or has_dedicated_surface_results

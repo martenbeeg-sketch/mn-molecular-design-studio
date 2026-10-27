@@ -158,6 +158,7 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
         source.update(candidate_id=item["candidate_id"] + "_" + tool, source_tool=tool, tool=tool, stage="analysis", metrics=measured,
                       parents=[item["candidate_id"]])
         source["raw_metadata"].update(analysis_parameters=settings, image_digest=image_digest, measurement_status=outcome,
+                                      clustering_run_id=str(run) if profile.get("cohort") else "",
                                       structure_digest=item.get("structure_digest", ""), target_structure_digest=item["target_key"])
         table.append({"candidate_id": source["candidate_id"], "name": source["raw_metadata"].get("compound_name") or source["raw_metadata"].get("name") or item["candidate_id"],
                       "compound_id": source["raw_metadata"].get("compound_id") or "", "smiles": item.get("smiles") or "",

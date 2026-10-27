@@ -139,7 +139,7 @@ render_comparison({comparison_rows()!r}, key="test", settings={settings!r})''').
 def test_analysis_does_not_substitute_complex_confidence_or_guess_scale():
     from mn_molecular_design_studio.engine.workflow_engine.workflows.analysis import build_analysis_table
     candidates = [{"candidate_id": "a", "source_tool": "unknown", "metrics": {"plddt": .9, "boltz2_complex_plddt": .8, "boltz2_confidence_score": .7}}]
-    row = build_analysis_table(candidates).iloc[0]
+    row = build_analysis_table(candidates, thresholds={"min_binder_plddt": 70.}).iloc[0]
     assert row["binder_plddt"] is None
     assert "binder_plddt missing" in row["filter_failures"]
 

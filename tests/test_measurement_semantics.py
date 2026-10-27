@@ -75,3 +75,35 @@ def test_rerun_failure_cannot_use_stale_scores(tmp_path, monkeypatch):
         tool="ipsae", table_name="metrics.csv", metric_names=["ipsae"])
     assert captured[0][0] is False
     assert read_candidates(tmp_path)[0]["metrics"]["analysis_status"] == "error"
+
+
+def test_legacy_ranking_retains_all_candidates_and_does_not_invent_a_policy(tmp_path, monkeypatch, design_source_factory):
+    source, original = design_source_factory()
+    row = {**original, "metrics": {"iptm": .8}}
+    path = source / "artifacts/normalized_candidates/candidates.jsonl"
+    path.write_text(json.dumps(row) + "\n" + json.dumps({**row, "candidate_id": "second", "metrics": {"iptm": .2}}) + "\n")
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(tmp_path / "runs"))
+    run = analysis.run_analysis_contract(source, path, keep_top_n=1)
+    outputs = read_candidates(run)
+    assert len(outputs) == 2
+    assert all(row["metrics"]["analysis_score"] is None for row in outputs)
+    assert all(row["raw_metadata"]["selection"]["status"] == "not_evaluated" for row in outputs)
+    selected_run = analysis.run_analysis_contract(source, path, keep_top_n=1, thresholds={"min_iptm": .5}, ranking_metric="iptm")
+    rows = read_candidates(selected_run)
+    assert len(rows) == 2
+    assert sorted(row["raw_metadata"]["selection"]["status"] for row in rows) == ["pass", "reject"]
+    assert sum(row["raw_metadata"]["selection"]["selected"] for row in rows) == 1
+
+
+def test_legacy_ranking_without_measurements_is_not_scientific_success(tmp_path, monkeypatch, design_source_factory):
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+    source, row = design_source_factory()
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(tmp_path / "runs"))
+    path = source / "artifacts/normalized_candidates/candidates.jsonl"
+    path.write_text(json.dumps({**row, "metrics": {"ipsae_error": "original failed measurement"}}) + "\n")
+    run = analysis.run_analysis_contract(source, path)
+    result = read_json(run / "result.json")
+    assert result["success"] is False
+    assert result["execution_status"] == "completed"
+    assert result["scientific_status"] == "failed"
+    assert read_candidates(run)[0]["raw_metadata"]["source_candidate"]["metrics"]["ipsae_error"] == "original failed measurement"

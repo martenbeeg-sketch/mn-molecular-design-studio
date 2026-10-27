@@ -156,7 +156,13 @@ NODE_CATALOG = {
     "af2": _spec("af2", "AlphaFold2 Initial Guess", "Structure prediction", "Evaluate complexes with a target template and initial guess.", accepts=["sequence", "prediction", "molecule_task"], output="prediction", workflow="refolding.af2_initial_guess", fields=[field("num_recycles", "Recycles", 3, minimum=1, maximum=30), field("model_count", "Models", 1, minimum=1, maximum=5), field("multimer", "Use multimer model", True, kind="boolean")], color="#477e9b"),
     "esmfold": _spec("esmfold", "ESMFold · binder alone", "Structure prediction", "Predict each designed binder without the target.", accepts=["sequence", "prediction"], output="prediction", workflow="refolding.esmfold_monomer", fields=[], color="#477e9b"),
     "filter": _spec("filter", "Filter candidates", "Analysis", "Apply a score threshold, require passing filters, or retain the best candidates.", accepts=["backbone", "sequence", "prediction", "candidates"], output="candidates", color="#9a7854", fields=[
-        field("passing_only", "Require an explicit filter pass", False, kind="boolean"), field("metric", "Score field", "", kind="text"), field("operator", "Comparison", ">=", kind="select", options=[">=", "<=", ">", "<"]), field("threshold", "Threshold", 0.7), field("limit", "Keep at most (0 = all)", 0, minimum=0, maximum=100000), field("higher_is_better", "Higher scores rank first", True, kind="boolean")]),
+        field("passing_only", "Require an explicit native filter pass", False, kind="boolean"), field("metric", "Threshold measurement", "", kind="text"), field("operator", "Comparison", ">=", kind="select", options=[">=", "<=", ">", "<"]), field("threshold", "Threshold (only used with a measurement)", 0.7), field("limit", "Shortlist per comparable protocol (0 = all)", 0, minimum=0, maximum=100000), field("higher_is_better", "Higher scores rank first", True, kind="boolean"),
+        field("required_metrics", "Required finite measurements", [], kind="json"),
+        field("rules", "Additional threshold rules", [], kind="json", help='List of {"field": "...", "operator": ">=", "value": ...}. All rules must pass.'),
+        field("ranking_metric", "Ranking measurement (blank = threshold measurement)", "", kind="text"),
+        field("manual_ids", "Manually selected candidate IDs (optional)", [], kind="json"),
+        field("diversity_field", "Cluster measurement (optional)", "", kind="text"),
+        field("max_per_cluster", "Maximum selected per cluster", 1, minimum=1, maximum=100000)]),
     "surface_analysis": _spec("surface_analysis", "Protein Surface Analysis", "Analysis", "Run PeSTo, ScanNet, Surf2Spot, and MaSIF-seed against one target and compare predicted PPI and hotspot residues.", accepts=["target"], output="analysis", workflow="detection.surface_analysis", color="#397b5b", formats=("pdb",), fields=[
         field("pesto_interface", "PeSTo interface class", "protein", kind="select", options=["protein", "dna_rna", "ion", "ligand", "lipid"]),
         field("scannet_mode", "ScanNet prediction mode", "interface", kind="select", options=["interface", "epitope", "idp"]),
@@ -1379,6 +1385,9 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
     for node_id in order:
         kind = nodes[node_id]["data"]["kind"]
         spec = NODE_CATALOG[kind]
+        if kind == "filter":
+            from mn_molecular_design_studio.candidate_selection import selection_policy
+            selection_policy(nodes[node_id]["data"]["params"])
         inherited_tasks = {cofold_task_context[source] for source in incoming[node_id] if source in cofold_task_context}
         inherited_sources = {cofold_source_context[source] for source in incoming[node_id] if source in cofold_source_context}
         cofold_task_context[node_id] = (

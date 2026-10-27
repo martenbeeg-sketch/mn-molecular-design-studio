@@ -1,5 +1,7 @@
 """Small real-container integrations. No mocks and no numerical reproducibility claims."""
 import json
+import copy
+import os
 import math
 from pathlib import Path
 
@@ -14,6 +16,58 @@ from mn_molecular_design_studio.molecule_imports import parse_structure
 
 REPO = Path(__file__).resolve().parents[1]
 NANOBODY = REPO / 'mn_molecular_design_studio/assets/generators/protpardelle/motifs/nanobody/7eow_AB_atom.pdb'
+
+
+def assert_prediction_analysis_qc_selection(runtime, run, *, reused=False):
+    """Actual analysis containers over real predictions; retain failed controls."""
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import analysis, quality
+    from mn_molecular_design_studio.candidate_selection import evaluate_selection, selected_candidates, write_selection_artifacts
+    from mn_molecular_design_studio.output_vocabulary import metric_value
+    runtime['require_image'](analysis.IPSAE_IMAGE)
+    runtime['require_image']('mn-protein-qc:1.0.0')
+    original = read_candidates(run)[0]
+    assert math.isfinite(original['metrics']['iptm'])
+    source = runtime['root'] / 'measurement-input'
+    source.mkdir()
+    broken = copy.deepcopy(original)
+    broken.update(candidate_id='missing-structure-control', complex_pdb=None, binder_sequence='X')
+    write_candidates(source, 'real_prediction_replay', [original, broken])
+    scored = analysis.run_ipsae_analysis_contract(source, source / 'artifacts/normalized_candidates/candidates.jsonl', pae_cutoff=30., dist_cutoff=20.)
+    assert read_json(scored / 'result.json')['scientific_status'] == 'partial'
+    qc = quality.run_sequence_qc(scored, scored / 'artifacts/normalized_candidates/candidates.jsonl')
+    assert read_json(qc / 'result.json')['scientific_status'] == 'partial'
+    rows = read_candidates(qc)
+    prediction_field = f"evidence/complex_refolding/{original['source_tool']}/iptm"
+    ipsae_field = 'evidence/analysis/ipsae/ipsae'
+    assert metric_value(rows[0], prediction_field) == original['metrics']['iptm']
+    assert math.isfinite(metric_value(rows[0], ipsae_field))
+    outcomes = evaluate_selection(rows, {'required_metrics': [prediction_field, ipsae_field, 'qc_sequence_length'],
+        'rules': [{'field': 'qc_sequence_length', 'operator': '>=', 'value': len(original['binder_sequence'].replace(':', ''))}],
+        'ranking_metric': prediction_field, 'direction': 'higher', 'limit': 1})
+    assert len(outcomes) == 2 and len(selected_candidates(outcomes)) == 1
+    assert outcomes[-1]['raw_metadata']['selection']['status'] == 'failed'
+    write_selection_artifacts(runtime['root'] / 'selection', outcomes)
+    (runtime['root'] / 'phase2_evidence.json').write_text(json.dumps({'source_prediction': str(run), 'analysis': str(scored), 'qc': str(qc),
+        'selection': str(runtime['root'] / 'selection'), 'prediction_reused': reused}, indent=2))
+
+
+@pytest.mark.gpu_e2e
+def test_real_prediction_to_qc_and_selection(gpu_runtime):
+    source = gpu_runtime['root'] / 'source'
+    reference_candidate(source)
+    run, _ = predict_source(gpu_runtime, source)
+    assert_prediction_analysis_qc_selection(gpu_runtime, run)
+
+
+@pytest.mark.gpu_e2e
+def test_retained_prediction_to_qc_and_selection(gpu_runtime):
+    """Replays genuine GPU artifacts; does not perform new inference."""
+    source = os.environ.get('MDS_REPLAY_PREDICTION')
+    if not source:
+        pytest.skip('Set MDS_REPLAY_PREDICTION to a retained real prediction run')
+    run = Path(source).resolve()
+    assert read_json(run / 'result.json')['success'] is True
+    assert_prediction_analysis_qc_selection(gpu_runtime, run, reused=True)
 
 
 def reference_candidate(root):

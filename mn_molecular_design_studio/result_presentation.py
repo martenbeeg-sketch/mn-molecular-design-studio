@@ -7,6 +7,21 @@ import io
 import math
 
 
+def candidate_state_rows(candidates):
+    from mn_molecular_design_studio.output_vocabulary import candidate_evidence
+    rows = []
+    for candidate in candidates:
+        current = candidate_evidence(candidate)[0]
+        selection = (candidate.get("raw_metadata") or {}).get("selection") or {}
+        rows.append({"Candidate": candidate.get("candidate_id"), "Measurement": current["status"],
+                     "Selection": selection.get("status", "not_evaluated"), "Selected": selection.get("selected", False),
+                     "Rank within protocol": selection.get("rank"), "Cause": current["error"],
+                     "Selection reasons": "; ".join(selection.get("reasons") or []),
+                     "Sequence": candidate.get("binder_sequence"), "Structure": candidate.get("complex_pdb"),
+                     "Parents": ", ".join(candidate.get("parents") or [])})
+    return rows
+
+
 def convergence_table(payload, top_counts):
     return [{"round": row["round"], **summary} for row in payload.get("rounds", [])
             for summary in row.get("score_summaries", []) if summary.get("top_n") in top_counts]

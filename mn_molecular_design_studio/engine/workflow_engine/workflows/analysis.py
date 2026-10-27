@@ -22,7 +22,7 @@ from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths impor
 from mn_molecular_design_studio.engine.workflow_engine.core.hotspot_metrics import calculate_hotspot_metrics
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import create_job, finish_job, read_json, update_status, write_json
 from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import apply_docker_cpu_limits_to_steps
-from mn_molecular_design_studio.measurement_status import measurement_outcome, measurement_summary
+from mn_molecular_design_studio.measurement_status import finite_number, measurement_outcome, measurement_summary, RANGES
 
 
 ANALYSIS_GROUP = "analysis"
@@ -35,15 +35,8 @@ PYROSETTA_WORKDIR = Path("/opt/de_novo_binder_scoring")
 PYROSETTA_SCRIPT = PYROSETTA_WORKDIR / "scripts" / "compute_rosetta_metrics.py"
 
 
-DEFAULT_THRESHOLDS = {
-    "min_binder_plddt": 70.0,
-    "min_confidence": 0.0,
-    "min_iptm": 0.0,
-    "min_ipsae": 0.0,
-    "max_ipae": 10.0,
-    "max_ipde": 20.0,
-    "max_binder_rmsd": 5.0,
-}
+# Acceptance is task-specific; an empty policy is not an affirmative pass.
+DEFAULT_THRESHOLDS = {}
 
 METRIC_ALIASES = {
     "binder_plddt": [
@@ -212,6 +205,10 @@ def _analysis_source_candidates(source_run_dir: Path, candidates_jsonl: Path) ->
     candidates = read_candidates(candidates_jsonl)
     if not candidates:
         raise ValueError("The selected results contain no candidates.")
+    for candidate in candidates:
+        for key in ("complex_pdb", "binder_pdb", "target_pdb"):
+            if candidate.get(key):
+                candidate[key] = str(_resolve_path(source_run_dir, candidate[key]))
     return candidates
 
 
@@ -356,15 +353,7 @@ def _finish_metric_analysis(
 
 
 def _safe_float(value: Any) -> float | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(number):
-        return None
-    return number
+    return finite_number(value)
 
 
 def _allocated_cpu_cores(requested: int | None = None) -> int:
@@ -1293,7 +1282,9 @@ def _metric_value(flat_metrics: dict[str, Any], canonical: str) -> float | None:
         if alias.lower() in lowered:
             value = _safe_float(lowered[alias.lower()])
             if value is not None:
-                return value
+                low, high = RANGES.get(canonical, (None, None))
+                if (low is None or value >= low) and (high is None or value <= high):
+                    return value
     return None
 
 
@@ -1316,31 +1307,6 @@ def _add_hotspot_metrics(source_run_dir: Path, candidates: list[dict[str, Any]])
             metrics.update(hotspot_metrics)
         enhanced.append({**candidate, "metrics": metrics})
     return enhanced
-
-
-def _score_row(row: dict[str, Any], fields=None) -> float | None:
-    fields = fields if fields is not None else [key for key in ("binder_plddt", "iptm", "ipsae", "ipae", "ipde", "binder_rmsd", "monomer_rmsd", "hotspot_contact_fraction") if row.get(key) is not None]
-    if not fields:
-        return None
-    row = {key: row.get(key) for key in fields}
-    score = 0.0
-    if row.get("binder_plddt") is not None:
-        score += min(max(float(row["binder_plddt"]), 0.0), 100.0) / 100.0
-    if row.get("iptm") is not None:
-        score += float(row["iptm"])
-    if row.get("ipsae") is not None:
-        score += float(row["ipsae"])
-    if row.get("ipae") is not None:
-        score += max(0.0, 1.0 - float(row["ipae"]) / 30.0)
-    if row.get("ipde") is not None:
-        score += max(0.0, 1.0 - float(row["ipde"]) / 30.0)
-    if row.get("binder_rmsd") is not None:
-        score += max(0.0, 1.0 - float(row["binder_rmsd"]) / 10.0)
-    if row.get("monomer_rmsd") is not None:
-        score += max(0.0, 1.0 - float(row["monomer_rmsd"]) / 10.0)
-    if row.get("hotspot_contact_fraction") is not None:
-        score += min(1.0, max(0.0, float(row["hotspot_contact_fraction"])))
-    return round(score / len(fields), 6)
 
 
 def _passes_thresholds(row: dict[str, Any], thresholds: dict[str, float]) -> tuple[bool, list[str]]:
@@ -1449,7 +1415,7 @@ def build_analysis_table(
         row["ipsae_error"] = str(flat_metrics.get("ipsae_error") or "")
         row["analysis_score"] = None
         passed, failures = _passes_thresholds(row, thresholds)
-        row["passes_filters"] = passed
+        row["passes_filters"] = passed if thresholds or failures else None
         row["filter_failures"] = "; ".join(failures)
         rows.append(row)
     df = pd.DataFrame(rows)
@@ -1457,14 +1423,16 @@ def build_analysis_table(
         return df
     score_fields = [field for field in ("binder_plddt", "iptm", "ipsae", "ipae", "ipde", "binder_rmsd", "monomer_rmsd", "hotspot_contact_fraction")
                     if field in df and df[field].notna().all() and len(cohort_methods.get(field, set())) <= 1]
-    df["analysis_score"] = [_score_row(row, score_fields) for row in df.to_dict("records")]
+    df["analysis_score"] = None  # legacy column retained; no universal composite score
     df["comparison_metrics"] = ", ".join(score_fields)
     df["metric_coverage"] = df[[field for field in METRIC_ALIASES if field in df]].notna().sum(axis=1)
-    df["ranking_status"] = "Shared metrics" if score_fields else "No shared scoring metrics"
+    df["ranking_status"] = "Choose an explicit ranking measurement" if ranking_metric == "analysis_score" else "Within recorded protocol"
+    from mn_molecular_design_studio.candidate_selection import _digest, _protocol
+    df["comparison_protocol"] = [_digest(_protocol(candidates[int(index)])) for index in df["source_index"]]
     sort_cols, ascending = _ranking_sort_columns(ranking_metric)
     selected_sort = [(column, direction) for column, direction in zip(sort_cols, ascending) if column in df.columns]
-    selected_columns = [column for column, _direction in selected_sort]
-    selected_directions = [direction for _column, direction in selected_sort]
+    selected_columns = ["comparison_protocol", *[column for column, _direction in selected_sort], "candidate_id"]
+    selected_directions = [True, *[direction for _column, direction in selected_sort], True]
     return df.sort_values(
         selected_columns or ["passes_filters", "analysis_score"],
         ascending=selected_directions or [False, False],
@@ -1560,24 +1528,41 @@ def run_analysis_contract(
     )
     write_json(summary_json, summary)
 
-    ranked_df = df
-    if not ranked_df.empty and keep_per_attempt is not None:
-        ranked_df = ranked_df.groupby("attempt_key", group_keys=False).head(max(1, int(keep_per_attempt)))
-    if not ranked_df.empty:
-        ranked_df = ranked_df.head(max(1, int(keep_top_n)))
-
-    ranked = source_candidates if df.empty else [
-        source_candidates[int(source_index)]
-        for source_index in ranked_df["source_index"].tolist()
-    ]
-    ranked_rows = ranked_df.to_dict(orient="records") if not ranked_df.empty else []
+    from mn_molecular_design_studio.candidate_selection import evaluate_selection, write_selection_artifacts
+    threshold_fields = {"min_binder_plddt": "binder_plddt", "min_confidence": "confidence", "min_iptm": "iptm",
+        "min_ipsae": "ipsae", "max_ipae": "ipae", "max_ipde": "ipde", "max_binder_rmsd": "binder_rmsd",
+        "min_hotspot_contact_fraction": "hotspot_contact_fraction", "max_hotspot_distance": "min_binder_to_hotspot_distance"}
+    rules = [{"field": threshold_fields[key], "operator": ">=" if key.startswith("min_") else "<=", "value": value}
+             for key, value in thresholds.items() if key in threshold_fields and value is not None]
+    projections = [{**source_candidates[int(row["source_index"])], "metrics": {**(source_candidates[int(row["source_index"])].get("metrics") or {}),
+                    **{key: row[key] for key in METRIC_ALIASES}}} for row in df.to_dict("records")]
+    outcomes = evaluate_selection(projections, {"rules": rules, "limit": max(0, int(keep_top_n)),
+        "ranking_metric": "" if ranking_metric == "analysis_score" else ranking_metric,
+        "direction": "lower" if ranking_metric in {"ipae", "ipde", "binder_rmsd", "monomer_rmsd", "rosetta_interface_dG"} else "higher"})
+    if keep_per_attempt is not None:
+        attempt_counts = {}
+        for candidate in sorted(outcomes, key=lambda item: (item["raw_metadata"]["selection"]["rank"] or 0, item["candidate_id"])):
+            decision = candidate["raw_metadata"]["selection"]
+            group = (decision["cohort"], _analysis_attempt_key(candidate))
+            if decision["selected"]:
+                if attempt_counts.get(group, 0) >= max(1, int(keep_per_attempt)):
+                    decision["selected"] = False
+                    decision["reasons"].append("Per-attempt quota reached")
+                else:
+                    attempt_counts[group] = attempt_counts.get(group, 0) + 1
+    decisions = {row["candidate_id"]: row["raw_metadata"]["selection"] for row in outcomes}
+    df["selection_status"] = [decisions[identifier]["status"] for identifier in df["candidate_id"]]
+    df["selected"] = [decisions[identifier]["selected"] for identifier in df["candidate_id"]]
+    df.to_csv(ranked_csv, index=False)
+    ranked = [source_candidates[int(index)] for index in df["source_index"]]
+    ranked_rows = df.to_dict("records")
     candidates: list[dict[str, Any]] = []
     for rank, source in enumerate(ranked, start=1):
         row = ranked_rows[rank - 1] if rank - 1 < len(ranked_rows) else {}
-        metrics = dict(source.get("metrics") or {})
+        metrics = {}
         metrics.update(
             {
-                "analysis_rank": rank,
+                "analysis_rank": decisions[source["candidate_id"]]["rank"],
                 "analysis_score": row.get("analysis_score"),
                 "analysis_ranking_metric": ranking_metric,
                 "analysis_attempt_key": row.get("attempt_key"),
@@ -1602,15 +1587,27 @@ def run_analysis_contract(
                     "result_kind": "app_reanalysis",
                     "source_candidate": source,
                     "backend_status": "internal",
+                    "selection": decisions[source["candidate_id"]],
+                    "measurement_status": {"status": "not_measured", "error": "Ranking reads source-stage measurements; it does not measure new properties."},
                 },
             }
         )
 
     normalized = write_candidates(job.run_dir, tool, candidates)
+    write_selection_artifacts(analysis_dir / "selection", candidates)
+    if rules or ranking_metric != "analysis_score":
+        scored_count = sum(decision["status"] in {"pass", "reject"} for decision in decisions.values())
+    else:
+        scored_count = sum(int(row["metric_coverage"]) > 0 and not any(pd.notna(row.get(key)) and bool(row.get(key)) for key in
+            ("ipsae_error", "rosetta_error", "qc_error", "validation_error")) for row in ranked_rows)
+    scientific_status = "failed" if not scored_count else "valid" if scored_count == len(candidates) else "partial"
+    summary.update(scored_count=scored_count, scientific_status=scientific_status,
+                   selected_count=sum(row["raw_metadata"]["selection"]["selected"] for row in candidates))
+    write_json(summary_json, summary)
     artifacts = _candidate_artifacts(job.run_dir)
     finish_job(
         job.run_dir,
-        bool(normalized),
+        scored_count > 0,
         {
             "outputs": {"artifacts": artifacts, "candidates": normalized},
             "metrics": {
@@ -1623,6 +1620,8 @@ def run_analysis_contract(
                 "campaign_result": "artifacts/normalized_candidates/campaign_result.json",
             },
             "summary": summary,
+            "execution_status": "completed",
+            "scientific_status": summary["scientific_status"],
         },
     )
     return job.run_dir

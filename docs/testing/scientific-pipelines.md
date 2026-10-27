@@ -1,5 +1,9 @@
 # Scientific pipeline regression tests
 
+Phase 2 adds explicit measurement outcomes, provenance-qualified final evidence and
+optional candidate selection. See [Scientific results and candidate selection](scientific-results-selection.md)
+for API/UI behavior, compatibility changes, real execution evidence and rerun commands.
+
 Use the existing `mn-molecular-design-studio` Conda Python. CPU pytest never launches GPU tests unless `MDS_GPU_TESTS=1` is set. Mark real single-engine inference with `gpu`, and real multi-stage inference with `gpu_e2e`. Neither marker authorizes downloads or large campaigns.
 
 ```bash

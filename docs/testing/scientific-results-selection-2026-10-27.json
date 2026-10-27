@@ -1,0 +1,808 @@
+{
+  "date": "2026-10-27",
+  "timezone": "Europe/Berlin",
+  "branch": "fix/scientific-pipeline-validation",
+  "base_commit": "d0d77ca",
+  "measurement_commit": "af2956981f85b037e4b4b57c52db624a75023941",
+  "provenance_commit": "a492b7892b736250ebea779ead59245636568042",
+  "selection_commit": "commit containing this report",
+  "initial_regressions": {
+    "failed": 9,
+    "passed": 1,
+    "log": ".tmp/phase2/logs/initial-regressions.txt"
+  },
+  "runs": [
+    {
+      "test": "tests/test_scientific_gpu.py::test_real_prediction_to_qc_and_selection",
+      "artifact_root": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134741865513Z/test_real_prediction_to_qc_and_selection",
+      "runtime": {
+        "gpu_inventory": "index, name, uuid, driver_version, memory.total [MiB]\n0, NVIDIA GeForce RTX 4090, GPU-195a1966-1148-340e-5fe2-bac2d7a9821a, 595.91.07, 24564 MiB\n1, NVIDIA GeForce RTX 4090, GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21, 595.91.07, 24564 MiB\n",
+        "selected_device": "0",
+        "reference_root": "/mnt/db/reference_files",
+        "test": "tests/test_scientific_gpu.py::test_real_prediction_to_qc_and_selection"
+      },
+      "new_gpu_inference": true,
+      "jobs": [
+        {
+          "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134741865513Z/test_real_prediction_to_qc_and_selection/runs/analysis/20261027-144907-b165566d",
+          "tool": "ipsae",
+          "status": "completed",
+          "success": true,
+          "execution_status": "completed",
+          "scientific_status": "partial",
+          "metrics": {
+            "candidate_count": 2,
+            "error_count": 1,
+            "invalid_count": 0,
+            "missing_count": 0,
+            "scientific_status": "partial",
+            "scored_count": 1
+          },
+          "parameters": {
+            "backend": "internal+docker",
+            "candidate_ids": null,
+            "dist_cutoff": 20.0,
+            "pae_cutoff": 30.0
+          },
+          "artifacts": {
+            "input.json": "008659c8948296a527cc1040be6ca6cfddc44634887bae61b93e1cb323fb80ae",
+            "command.json": "0afb2a74d0afa000b72d1c2b5f1da68efdae8803ee78eb6e6ec3bd979474c753",
+            "result.json": "5c8515a0a1e28a5488bad4bc070674e29eff69db84dbcb665d2ae4ce3b7d712c",
+            "artifacts/normalized_candidates/candidates.jsonl": "57d4b506219c1f05f65aba7e7ee75eac2fd932ca83ed7a3088b018658d02c2b8"
+          }
+        },
+        {
+          "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134741865513Z/test_real_prediction_to_qc_and_selection/runs/analysis/20261027-144908-70fc14fb",
+          "tool": "sequence_qc",
+          "status": "completed",
+          "success": true,
+          "execution_status": "completed",
+          "scientific_status": "partial",
+          "metrics": {
+            "candidate_count": 2,
+            "error_count": 1,
+            "invalid_count": 0,
+            "missing_count": 0,
+            "scientific_status": "partial",
+            "scored_count": 1
+          },
+          "parameters": {
+            "backend": "docker-batch",
+            "cpu_cores": 4,
+            "ph": 7.4,
+            "protocol_revision": "d22f97658f4602dd2d75e6a1184d2882ebb4195804427b06c1051d2c1c008230",
+            "workers": 4
+          },
+          "artifacts": {
+            "input.json": "b22fade0272f833a8d8207e0f3eccaf638681e0480d89f17124e3ab57f61785f",
+            "command.json": "9bcc9ce34798f3925cf589119d3a45808fe0f400f41cbebb03bd91443bdfb7ad",
+            "result.json": "4375f5f94fa7d81a440eb3af9d379d2da6aa4bb6e04591cd228d3201e8e04a8c",
+            "artifacts/normalized_candidates/candidates.jsonl": "df6433ba6e48af54984668c480fe4585e06ddc4762fd7db5b5e2978cffa0ef58"
+          }
+        },
+        {
+          "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134741865513Z/test_real_prediction_to_qc_and_selection/runs/refolding-validation/20261027-144743-302b4a63",
+          "tool": "optimized_prediction_boltz2",
+          "status": "completed",
+          "success": true,
+          "execution_status": null,
+          "scientific_status": null,
+          "metrics": {
+            "candidate_count": 1,
+            "comparison_failure_count": 0,
+            "completed_task_count": 1,
+            "container_failure_count": 0,
+            "engine": "boltz2",
+            "engine_options": {
+              "boltz_version": "2.2.1",
+              "generate_ipsae": false,
+              "max_msa_seqs": 8192,
+              "max_parallel_samples": 5,
+              "method": "",
+              "output_format": "pdb",
+              "sampling_steps": 20,
+              "seed_count": 1,
+              "step_scale": 1.5,
+              "use_msa": false,
+              "use_msa_server": false,
+              "use_potentials": false
+            },
+            "failed_task_count": 0,
+            "gpu_count": 1,
+            "image": "mn-boltz2-opt:2.2.1-cu130-batch2",
+            "model_label": "Boltz-2",
+            "optimization_mode": "off",
+            "sample_count": 1,
+            "task_count": 1
+          },
+          "parameters": {
+            "accept_alphafold3_terms": false,
+            "api_engine": "boltz2",
+            "cpu_cores": 4,
+            "engine": "boltz2",
+            "engine_options": {
+              "boltz_version": "2.2.1",
+              "generate_ipsae": false,
+              "max_msa_seqs": 8192,
+              "max_parallel_samples": 5,
+              "method": "",
+              "output_format": "pdb",
+              "sampling_steps": 20,
+              "seed_count": 1,
+              "step_scale": 1.5,
+              "use_msa": false,
+              "use_msa_server": false,
+              "use_potentials": false
+            },
+            "gpu_count": 1,
+            "gpu_device": "0",
+            "image": "mn-boltz2-opt:2.2.1-cu130-batch2",
+            "num_recycles": 1,
+            "optimization_mode": "off",
+            "queue_resource": "gpu:0",
+            "samples": 1,
+            "seed": 20261027,
+            "task_count": 1,
+            "validation_mode": null,
+            "validation_sources": null
+          },
+          "artifacts": {
+            "input.json": "760a41f2dd6c609dd59af91c28270c72c64edec979fe393487f17aa4d96770de",
+            "command.json": "0a904b3613cd3ac16ec50c51cbe6d952ba831f7131a3d712e8ca96bb244ee88a",
+            "result.json": "15912e1c2a495067b345741e2345e87491a30f458c046b32ed748f9b0fa987c5",
+            "artifacts/normalized_candidates/candidates.jsonl": "a40dd81a18b48227391d28bc40544dbf2595071624a563a2c700c77f92afdfc9"
+          }
+        }
+      ],
+      "selection_evidence": {
+        "source_prediction": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134741865513Z/test_real_prediction_to_qc_and_selection/runs/refolding-validation/20261027-144743-302b4a63",
+        "analysis": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134741865513Z/test_real_prediction_to_qc_and_selection/runs/analysis/20261027-144907-b165566d",
+        "qc": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134741865513Z/test_real_prediction_to_qc_and_selection/runs/analysis/20261027-144908-70fc14fb",
+        "selection": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134741865513Z/test_real_prediction_to_qc_and_selection/selection",
+        "prediction_reused": false,
+        "metadata_correction": "Original flag reflected the replay environment variable; this fresh test actually called predict_source. Production inference artifacts and logs are unchanged."
+      },
+      "image_inspection_artifacts": [
+        "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134741865513Z/test_real_prediction_to_qc_and_selection/mn-boltz2-opt_2.2.1-cu130-batch2.json",
+        "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134741865513Z/test_real_prediction_to_qc_and_selection/mn-protein-qc_1.0.0.json",
+        "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134741865513Z/test_real_prediction_to_qc_and_selection/mn-protein-scoring-ipsae_latest.json"
+      ]
+    },
+    {
+      "test": "tests/test_scientific_gpu.py::test_retained_prediction_to_qc_and_selection",
+      "artifact_root": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134908944810Z/test_retained_prediction_to_qc_and_selection",
+      "runtime": {
+        "gpu_inventory": "index, name, uuid, driver_version, memory.total [MiB]\n0, NVIDIA GeForce RTX 4090, GPU-195a1966-1148-340e-5fe2-bac2d7a9821a, 595.91.07, 24564 MiB\n1, NVIDIA GeForce RTX 4090, GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21, 595.91.07, 24564 MiB\n",
+        "selected_device": "0",
+        "reference_root": "/mnt/db/reference_files",
+        "test": "tests/test_scientific_gpu.py::test_retained_prediction_to_qc_and_selection"
+      },
+      "new_gpu_inference": false,
+      "jobs": [
+        {
+          "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134908944810Z/test_retained_prediction_to_qc_and_selection/runs/analysis/20261027-144909-acf68357",
+          "tool": "ipsae",
+          "status": "completed",
+          "success": true,
+          "execution_status": "completed",
+          "scientific_status": "partial",
+          "metrics": {
+            "candidate_count": 2,
+            "error_count": 1,
+            "invalid_count": 0,
+            "missing_count": 0,
+            "scientific_status": "partial",
+            "scored_count": 1
+          },
+          "parameters": {
+            "backend": "internal+docker",
+            "candidate_ids": null,
+            "dist_cutoff": 20.0,
+            "pae_cutoff": 30.0
+          },
+          "artifacts": {
+            "input.json": "9027df55c6090ab37907edb4346ec500b27fe6f1d50ea848cb39ca03aa5a39ec",
+            "command.json": "f14b7793a9babb4c859f87d08d96f246f5d21700aa3665715ca3cd927863e907",
+            "result.json": "751b6bf11caa843c5ac270f78f574130b3aa532cc3674d2425e94fbde9878a76",
+            "artifacts/normalized_candidates/candidates.jsonl": "40fda40165b4e8590c476372e76b76a5992df72775797da3ac0e833d084571af"
+          }
+        },
+        {
+          "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134908944810Z/test_retained_prediction_to_qc_and_selection/runs/analysis/20261027-144910-804e8f5b",
+          "tool": "sequence_qc",
+          "status": "completed",
+          "success": true,
+          "execution_status": "completed",
+          "scientific_status": "partial",
+          "metrics": {
+            "candidate_count": 2,
+            "error_count": 1,
+            "invalid_count": 0,
+            "missing_count": 0,
+            "scientific_status": "partial",
+            "scored_count": 1
+          },
+          "parameters": {
+            "backend": "docker-batch",
+            "cpu_cores": 4,
+            "ph": 7.4,
+            "protocol_revision": "d22f97658f4602dd2d75e6a1184d2882ebb4195804427b06c1051d2c1c008230",
+            "workers": 4
+          },
+          "artifacts": {
+            "input.json": "960c0d7ddfb4a2ba7a806194a3d90f3de2a500db9d62c85afe1bf86159c53449",
+            "command.json": "143bd94e4537543aa9f4436f9dcb7761f89059d38e9634f43729547046a53a9d",
+            "result.json": "5c4ce3a4cdd1d8f643292e8c81db400f61aed0f792211c01b3e5a1c242897bf9",
+            "artifacts/normalized_candidates/candidates.jsonl": "30a4ebe0f04127b70f93df9be488e3fa4aef8c1fc4bf1c5b8bfa2507c9f1ce1d"
+          }
+        }
+      ],
+      "selection_evidence": {
+        "source_prediction": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T132424336694Z/test_rfd4_candidate_boltz2_interface_analysis/runs/refolding-validation/20261027-142426-25b725c1",
+        "analysis": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134908944810Z/test_retained_prediction_to_qc_and_selection/runs/analysis/20261027-144909-acf68357",
+        "qc": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134908944810Z/test_retained_prediction_to_qc_and_selection/runs/analysis/20261027-144910-804e8f5b",
+        "selection": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134908944810Z/test_retained_prediction_to_qc_and_selection/selection",
+        "prediction_reused": true
+      },
+      "image_inspection_artifacts": [
+        "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134908944810Z/test_retained_prediction_to_qc_and_selection/mn-protein-qc_1.0.0.json",
+        "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134908944810Z/test_retained_prediction_to_qc_and_selection/mn-protein-scoring-ipsae_latest.json"
+      ]
+    },
+    {
+      "test": "tests/test_scientific_gpu.py::test_real_rfd4_generation_boltz2",
+      "artifact_root": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134921975763Z/test_real_rfd4_generation_boltz2",
+      "runtime": {
+        "gpu_inventory": "index, name, uuid, driver_version, memory.total [MiB]\n0, NVIDIA GeForce RTX 4090, GPU-195a1966-1148-340e-5fe2-bac2d7a9821a, 595.91.07, 24564 MiB\n1, NVIDIA GeForce RTX 4090, GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21, 595.91.07, 24564 MiB\n",
+        "selected_device": "0",
+        "reference_root": "/mnt/db/reference_files",
+        "test": "tests/test_scientific_gpu.py::test_real_rfd4_generation_boltz2"
+      },
+      "new_gpu_inference": true,
+      "jobs": [
+        {
+          "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134921975763Z/test_real_rfd4_generation_boltz2/runs/design/20261027-144922-a8beee9c",
+          "tool": "rfd4_proteina",
+          "status": "completed",
+          "success": true,
+          "execution_status": null,
+          "scientific_status": null,
+          "metrics": {
+            "candidate_count": 1,
+            "checkpoint_revision": "a06e2509c7033b010fc43614e9fd840303588502",
+            "filter_conditions": false,
+            "folding_engine": null,
+            "input_design_count": 1,
+            "requested_designs": 1,
+            "task": "custom_conditions"
+          },
+          "parameters": {
+            "also_bind_structures": null,
+            "avoid_structures": null,
+            "batch_size": 1,
+            "compile_model": false,
+            "condition_spec": "global_args:\n  input: PD-L1.pdb\nbinder:\n  contig: \"30-30,/0,A1-20\"\n  conditions:\n    C_SEQ:\n      true:\n        - select: \"sel('A')\"\n    C_CRDGRP:\n      1:\n        - select: \"sel('A/*/*/[N,CA,C,O]')\"\n",
+            "cpu_cores": 4,
+            "gpu_device": "0",
+            "hotspots": "",
+            "input_files": [
+              "/home/user/programs/git-projects/mn-molecular-design-studio/mn_molecular_design_studio/assets/proteina_complexa/PD-L1.pdb"
+            ],
+            "input_mode": "condition_spec",
+            "job_name": "rfd4-proteina-design",
+            "length_max": 120,
+            "length_min": 60,
+            "nsteps": 60,
+            "num_designs": 1,
+            "options": {
+              "filter_conditions": false,
+              "refold": false
+            },
+            "protein_sequences": "",
+            "seed": 20261027,
+            "target_chains": null,
+            "target_structure": null,
+            "task": "custom_conditions",
+            "task_group": "design"
+          },
+          "artifacts": {
+            "input.json": "ad3fc4d4cee4d4d4aafaeeb2e78370c3d2a653f791425127d26d80dbc028e493",
+            "command.json": "793adaa4eb50fab7471df0dcd4871cc4e6d72e86b15c6430cf28d59fbd7ec36c",
+            "result.json": "100a311bfa0de79f9f0e3000a7395ef08c07b5809c4c55adbc5bec02abb61657",
+            "artifacts/normalized_candidates/candidates.jsonl": "856bf8c0d5d89b7f1613cc2e57ea4745fda0df4214859e4504b0ba44425dca95"
+          }
+        },
+        {
+          "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134921975763Z/test_real_rfd4_generation_boltz2/runs/refolding-validation/20261027-145114-4fa7a472",
+          "tool": "optimized_prediction_boltz2",
+          "status": "completed",
+          "success": true,
+          "execution_status": null,
+          "scientific_status": null,
+          "metrics": {
+            "candidate_count": 1,
+            "comparison_failure_count": 0,
+            "completed_task_count": 1,
+            "container_failure_count": 0,
+            "engine": "boltz2",
+            "engine_options": {
+              "boltz_version": "2.2.1",
+              "generate_ipsae": false,
+              "max_msa_seqs": 8192,
+              "max_parallel_samples": 5,
+              "method": "",
+              "output_format": "pdb",
+              "sampling_steps": 20,
+              "seed_count": 1,
+              "step_scale": 1.5,
+              "use_msa": false,
+              "use_msa_server": false,
+              "use_potentials": false
+            },
+            "failed_task_count": 0,
+            "gpu_count": 1,
+            "image": "mn-boltz2-opt:2.2.1-cu130-batch2",
+            "model_label": "Boltz-2",
+            "optimization_mode": "off",
+            "sample_count": 1,
+            "task_count": 1
+          },
+          "parameters": {
+            "accept_alphafold3_terms": false,
+            "api_engine": "boltz2",
+            "cpu_cores": 4,
+            "engine": "boltz2",
+            "engine_options": {
+              "boltz_version": "2.2.1",
+              "generate_ipsae": false,
+              "max_msa_seqs": 8192,
+              "max_parallel_samples": 5,
+              "method": "",
+              "output_format": "pdb",
+              "sampling_steps": 20,
+              "seed_count": 1,
+              "step_scale": 1.5,
+              "use_msa": false,
+              "use_msa_server": false,
+              "use_potentials": false
+            },
+            "gpu_count": 1,
+            "gpu_device": "0",
+            "image": "mn-boltz2-opt:2.2.1-cu130-batch2",
+            "num_recycles": 1,
+            "optimization_mode": "off",
+            "queue_resource": "gpu:0",
+            "samples": 1,
+            "seed": 20261027,
+            "task_count": 1,
+            "validation_mode": null,
+            "validation_sources": null
+          },
+          "artifacts": {
+            "input.json": "dec15454106db5427ddcd6a879d295e176c7c0a5940fc63cc2617e6097c91778",
+            "command.json": "2f3d4065cca5c04835e8f19e23ce03ca58ac2e43273b8f252353c4b890090f60",
+            "result.json": "db4fcdcd9c0bc287f534c56cbf9ac0ad47f4f305af46ad44ef804888712bd192",
+            "artifacts/normalized_candidates/candidates.jsonl": "51c2709739269678f2f54a5c35cfa3103fe7b4cee6ce6a3f25891a1a12b0f720"
+          }
+        }
+      ],
+      "image_inspection_artifacts": [
+        "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134921975763Z/test_real_rfd4_generation_boltz2/mn-boltz2-opt_2.2.1-cu130-batch2.json",
+        "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134921975763Z/test_real_rfd4_generation_boltz2/mn-rfd4-proteina_0.0.3-cu130.json"
+      ]
+    },
+    {
+      "test": "tests/test_vhh_gpu.py::test_real_abmpnn_preserves_framework_cysteines_and_unselected_cdrs",
+      "artifact_root": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T135231781021Z/test_real_abmpnn_preserves_framework_cysteines_and_unselected_cdrs",
+      "runtime": {
+        "gpu_inventory": "index, name, uuid, driver_version, memory.total [MiB]\n0, NVIDIA GeForce RTX 4090, GPU-195a1966-1148-340e-5fe2-bac2d7a9821a, 595.91.07, 24564 MiB\n1, NVIDIA GeForce RTX 4090, GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21, 595.91.07, 24564 MiB\n",
+        "selected_device": "0",
+        "reference_root": "/mnt/db/reference_files",
+        "test": "tests/test_vhh_gpu.py::test_real_abmpnn_preserves_framework_cysteines_and_unselected_cdrs"
+      },
+      "new_gpu_inference": true,
+      "jobs": [
+        {
+          "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T135231781021Z/test_real_abmpnn_preserves_framework_cysteines_and_unselected_cdrs/runs/design/20261027-145232-bbf03819",
+          "tool": "ligandmpnn",
+          "status": "completed",
+          "success": true,
+          "execution_status": null,
+          "scientific_status": null,
+          "metrics": {
+            "artifact_count": 8,
+            "candidate_count": 1,
+            "return_code": 0
+          },
+          "parameters": {
+            "auto_detect_cdrs": true,
+            "backend": "auto",
+            "bias_aa": "",
+            "bias_aa_per_residue": {},
+            "candidates_jsonl": null,
+            "cdr_regions": [
+              "CDR3"
+            ],
+            "design_chains": "B",
+            "designed_residues": "",
+            "fix_interface_residues": false,
+            "fixed_residues": "",
+            "global_transmembrane_label": true,
+            "gpu_device": "0",
+            "homo_oligomer": 0,
+            "job_name": "proteinmpnn-design",
+            "model_type": "ab_mpnn",
+            "noise_level": null,
+            "num_seq_per_target": 1,
+            "number_of_packs_per_design": 1,
+            "omit_aa_per_residue": {},
+            "omit_aas": "",
+            "pack_side_chains": false,
+            "require_backbone_hotspot_filter_pass": false,
+            "sabr_chain_type": "auto",
+            "sabr_mode": "sabr",
+            "sabr_noise_level": 0.0,
+            "sampling_temp": 0.1,
+            "seed": 20261027,
+            "selected_candidate_ids": null,
+            "source_run_dir": null,
+            "structure_path": "/home/user/programs/git-projects/mn-molecular-design-studio/mn_molecular_design_studio/assets/mpnn/9F6O.pdb",
+            "transmembrane_buried": "",
+            "transmembrane_interface": "",
+            "use_side_chain_context": false,
+            "verify_sequences": false
+          },
+          "artifacts": {
+            "input.json": "0e85bd335fa148b54b8633d2eeb5759f8e7cb5456fd6869a93fe5038be4c5fde",
+            "command.json": "4a9adbcda0ced45b0d088fa0c0d145a6aecaf9ece5e75a96ea3408efe3dc7a9e",
+            "result.json": "c7151d1e3da95ea12f49c4fb611d44c9282f47659962b50409f21b4fcba0255a",
+            "artifacts/normalized_candidates/candidates.jsonl": "5eeb49f1bd22148db62ec6e5d20df8f9280e729054a4c032f6d598d6860db7ff"
+          }
+        }
+      ],
+      "image_inspection_artifacts": [
+        "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T135231781021Z/test_real_abmpnn_preserves_framework_cysteines_and_unselected_cdrs/mn-ligandmpnn_latest.json"
+      ]
+    },
+    {
+      "test": "tests/test_vhh_gpu.py::test_real_esmfold2_vhh_generation_boltz2",
+      "artifact_root": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T135241133543Z/test_real_esmfold2_vhh_generation_boltz2",
+      "runtime": {
+        "gpu_inventory": "index, name, uuid, driver_version, memory.total [MiB]\n0, NVIDIA GeForce RTX 4090, GPU-195a1966-1148-340e-5fe2-bac2d7a9821a, 595.91.07, 24564 MiB\n1, NVIDIA GeForce RTX 4090, GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21, 595.91.07, 24564 MiB\n",
+        "selected_device": "0",
+        "reference_root": "/mnt/db/reference_files",
+        "test": "tests/test_vhh_gpu.py::test_real_esmfold2_vhh_generation_boltz2"
+      },
+      "new_gpu_inference": true,
+      "jobs": [
+        {
+          "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T135241133543Z/test_real_esmfold2_vhh_generation_boltz2/runs/design/20261027-145241-3c80ac6c",
+          "tool": "esmfold2_binder_design",
+          "status": "completed",
+          "success": true,
+          "execution_status": null,
+          "scientific_status": null,
+          "metrics": {
+            "candidate_count": 1,
+            "model_name": "ESMFold2-Experimental-Fast",
+            "return_code": 0
+          },
+          "parameters": {
+            "binder_cdr_lengths": {
+              "cdr1": {
+                "max": 9,
+                "min": 7
+              },
+              "cdr2": {
+                "max": 9,
+                "min": 7
+              },
+              "cdr3": {
+                "max": 11,
+                "min": 5
+              }
+            },
+            "binder_framework": "ozoralizumab_tnf_vhh",
+            "binder_length": 80,
+            "binder_prompt_template": "EVQLVESGGGLVQPGGSLRLSCAAS{cdr1}MYWVRQAPGKGLEWVSE{cdr2}KYPDSVKGRFTISRDNAKNTLYLQMNSLRPEDTAVYYC{cdr3}RGQGTLVTVSS",
+            "binder_template": "",
+            "binder_type": "vhh",
+            "campaign_name": "",
+            "checkpoint_lm": true,
+            "compile_model": false,
+            "gpu_device": "0",
+            "hotspots": "",
+            "learning_rate": 0.1,
+            "memory_profile": "lean_shared_model",
+            "model_name": "ESMFold2-Experimental-Fast",
+            "num_designs": 1,
+            "optimization_steps": 1,
+            "pipeline_mode": "biohub_esmfold2_gradient_binder_design",
+            "seed": 20261027,
+            "target_chain": "A",
+            "target_chains": [],
+            "target_hotspot_ids": [],
+            "target_sequence": "AFTVTVPKDLYVVEYGSNMTIECK"
+          },
+          "artifacts": {
+            "input.json": "91120f23869c49171dc2421973227a8b8896edc0df3f08e53dc6735cdbf52353",
+            "command.json": "4ba7bc9ee2bae19ee7518905f84e85d7039bf0b1623ef6d1180c3aa9c55bfe21",
+            "result.json": "bbea9a78c68c71a76469aea0a93b15b48bd11845e5cd867d828b3f8c8eb79b20",
+            "artifacts/normalized_candidates/candidates.jsonl": "aaad016cf0805faaa924d0b3d871aaee3baf85caf6443daa6cb524e9cf010e68"
+          }
+        },
+        {
+          "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T135241133543Z/test_real_esmfold2_vhh_generation_boltz2/runs/refolding-validation/20261027-145349-d845e4ff",
+          "tool": "optimized_prediction_boltz2",
+          "status": "completed",
+          "success": true,
+          "execution_status": null,
+          "scientific_status": null,
+          "metrics": {
+            "candidate_count": 1,
+            "comparison_failure_count": 0,
+            "completed_task_count": 1,
+            "container_failure_count": 0,
+            "engine": "boltz2",
+            "engine_options": {
+              "boltz_version": "2.2.1",
+              "generate_ipsae": false,
+              "max_msa_seqs": 8192,
+              "max_parallel_samples": 5,
+              "method": "",
+              "output_format": "pdb",
+              "sampling_steps": 20,
+              "seed_count": 1,
+              "step_scale": 1.5,
+              "use_msa": false,
+              "use_msa_server": false,
+              "use_potentials": false
+            },
+            "failed_task_count": 0,
+            "gpu_count": 1,
+            "image": "mn-boltz2-opt:2.2.1-cu130-batch2",
+            "model_label": "Boltz-2",
+            "optimization_mode": "off",
+            "sample_count": 1,
+            "task_count": 1
+          },
+          "parameters": {
+            "accept_alphafold3_terms": false,
+            "api_engine": "boltz2",
+            "cpu_cores": 4,
+            "engine": "boltz2",
+            "engine_options": {
+              "boltz_version": "2.2.1",
+              "generate_ipsae": false,
+              "max_msa_seqs": 8192,
+              "max_parallel_samples": 5,
+              "method": "",
+              "output_format": "pdb",
+              "sampling_steps": 20,
+              "seed_count": 1,
+              "step_scale": 1.5,
+              "use_msa": false,
+              "use_msa_server": false,
+              "use_potentials": false
+            },
+            "gpu_count": 1,
+            "gpu_device": "0",
+            "image": "mn-boltz2-opt:2.2.1-cu130-batch2",
+            "num_recycles": 1,
+            "optimization_mode": "off",
+            "queue_resource": "gpu:0",
+            "samples": 1,
+            "seed": 20261027,
+            "task_count": 1,
+            "validation_mode": null,
+            "validation_sources": null
+          },
+          "artifacts": {
+            "input.json": "f13888ebc63ce4525a3a431f0570c44f93ac4599c95383a15c2afc441f3b27dd",
+            "command.json": "b53ecdda331bd4c8d6ed27e6fbb8335ed2ab9dc23b6bd190dfffb91e6170f177",
+            "result.json": "100cd54ae7b9ff10a63f24e58e7e13cf26a03ee8d1bf556fca872b967d9c894f",
+            "artifacts/normalized_candidates/candidates.jsonl": "4dcdbf1d1ff11f92ba7c7d324fdd86c44974e3e0c21def03e7bcf8dd7eeda33f"
+          }
+        }
+      ],
+      "image_inspection_artifacts": [
+        "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T135241133543Z/test_real_esmfold2_vhh_generation_boltz2/mn-biohub-esm_3.4.1-cu128.json",
+        "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T135241133543Z/test_real_esmfold2_vhh_generation_boltz2/mn-boltz2-opt_2.2.1-cu130-batch2.json"
+      ]
+    },
+    {
+      "test": "tests/test_scientific_gpu.py::test_retained_prediction_to_qc_and_selection",
+      "artifact_root": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T135626812502Z/test_retained_prediction_to_qc_and_selection",
+      "runtime": {
+        "gpu_inventory": "index, name, uuid, driver_version, memory.total [MiB]\n0, NVIDIA GeForce RTX 4090, GPU-195a1966-1148-340e-5fe2-bac2d7a9821a, 595.91.07, 24564 MiB\n1, NVIDIA GeForce RTX 4090, GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21, 595.91.07, 24564 MiB\n",
+        "selected_device": "0",
+        "reference_root": "/mnt/db/reference_files",
+        "test": "tests/test_scientific_gpu.py::test_retained_prediction_to_qc_and_selection"
+      },
+      "new_gpu_inference": false,
+      "jobs": [
+        {
+          "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T135626812502Z/test_retained_prediction_to_qc_and_selection/runs/analysis/20261027-145629-7c53f342",
+          "tool": "ipsae",
+          "status": "completed",
+          "success": true,
+          "execution_status": "completed",
+          "scientific_status": "partial",
+          "metrics": {
+            "candidate_count": 2,
+            "error_count": 1,
+            "invalid_count": 0,
+            "missing_count": 0,
+            "scientific_status": "partial",
+            "scored_count": 1
+          },
+          "parameters": {
+            "backend": "internal+docker",
+            "candidate_ids": null,
+            "dist_cutoff": 20.0,
+            "pae_cutoff": 30.0
+          },
+          "artifacts": {
+            "input.json": "f3937ee2549136fd781b2e57441250d73758fe853a88f118b4e7c947efc5b2a7",
+            "command.json": "136afaf9f40dbb3221b374fea91d29ed532f7d6250f36e075a6b389e11bef4ac",
+            "result.json": "4c4ee8f05ce50f062d7944e1ac2e24a8874b2953ba6752d9095807858f06aabd",
+            "artifacts/normalized_candidates/candidates.jsonl": "624d2b0407faf15f518f96de658787603d6d20cc41fd85c2ad747a4d23b72010"
+          }
+        },
+        {
+          "run_dir": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T135626812502Z/test_retained_prediction_to_qc_and_selection/runs/analysis/20261027-145631-7e6efd42",
+          "tool": "sequence_qc",
+          "status": "completed",
+          "success": true,
+          "execution_status": "completed",
+          "scientific_status": "partial",
+          "metrics": {
+            "candidate_count": 2,
+            "error_count": 1,
+            "invalid_count": 0,
+            "missing_count": 0,
+            "scientific_status": "partial",
+            "scored_count": 1
+          },
+          "parameters": {
+            "backend": "docker-batch",
+            "cpu_cores": 4,
+            "ph": 7.4,
+            "protocol_revision": "d22f97658f4602dd2d75e6a1184d2882ebb4195804427b06c1051d2c1c008230",
+            "workers": 4
+          },
+          "artifacts": {
+            "input.json": "d521b06ff5376cda869728c6dd1ad1ab0112b17a1523a201ecc6397456458326",
+            "command.json": "285b0160f69d8e5e4a2a080735c2017476d85ad4dbf930a01a0e745b77dd6cdb",
+            "result.json": "65c04a5e3b5a68fb11204732fcfd0d0c3b586aee20ab04dec08e0db9b8ae6a29",
+            "artifacts/normalized_candidates/candidates.jsonl": "7fb6009698cff437d2857013effd63e53944c682b8493746d874b9942e125d09"
+          }
+        }
+      ],
+      "selection_evidence": {
+        "source_prediction": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T134741865513Z/test_real_prediction_to_qc_and_selection/runs/refolding-validation/20261027-144743-302b4a63",
+        "analysis": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T135626812502Z/test_retained_prediction_to_qc_and_selection/runs/analysis/20261027-145629-7c53f342",
+        "qc": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T135626812502Z/test_retained_prediction_to_qc_and_selection/runs/analysis/20261027-145631-7e6efd42",
+        "selection": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T135626812502Z/test_retained_prediction_to_qc_and_selection/selection",
+        "prediction_reused": true
+      },
+      "image_inspection_artifacts": [
+        "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T135626812502Z/test_retained_prediction_to_qc_and_selection/mn-protein-qc_1.0.0.json",
+        "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/gpu-tests/20261027T135626812502Z/test_retained_prediction_to_qc_and_selection/mn-protein-scoring-ipsae_latest.json"
+      ]
+    }
+  ],
+  "test_logs": {
+    ".tmp/phase2/logs/cpu-complete.txt": {
+      "summary": "1396 passed, 22 skipped, 17 warnings in 115.92s (0:01:55)",
+      "sha256": "fbed696754025c10666b64dd7f50c86d71b429454f1f65ecc036a9478f1bd11f"
+    },
+    ".tmp/phase2/logs/cpu-final.txt": {
+      "summary": "1395 passed, 22 skipped, 17 warnings in 144.08s (0:02:24)",
+      "sha256": "456eb265f4fbfb5511b14c79a54991519f020f07e1bb919daa0633332659fb0a"
+    },
+    ".tmp/phase2/logs/cpu-full.txt": {
+      "summary": "1390 passed, 22 skipped, 17 warnings in 120.00s (0:01:59)",
+      "sha256": "192817c5e8ba0cab8878af3a607cdde24d05f42da3d2de1200728a9507b8b971"
+    },
+    ".tmp/phase2/logs/evidence-tests.txt": {
+      "summary": "112 passed, 10 skipped in 5.04s",
+      "sha256": "c1b7b222cc82ed46cf40de0242fbbfb60bd371a36dff842bd74d2de784a09296"
+    },
+    ".tmp/phase2/logs/final-focused.txt": {
+      "summary": "108 passed, 10 skipped in 7.18s",
+      "sha256": "cb828f6833fe468fb112bc79f28ad1f8677408e3c0fe83c0b9ef264f6ac95073"
+    },
+    ".tmp/phase2/logs/final-scientific.txt": {
+      "summary": "62 passed in 2.54s",
+      "sha256": "d6c9ab583f2f9dd2575073f0e4f18f4aaf39e93e52d693821541223d59c75e64"
+    },
+    ".tmp/phase2/logs/gpu-existing-workflows.txt": {
+      "summary": "================= 3 passed, 4 deselected in 344.63s (0:05:44) ==================",
+      "sha256": "bd69b04c691290db66d797d41a128656d145974b6bc3756fd32089704d40413b"
+    },
+    ".tmp/phase2/logs/gpu-selection.txt": {
+      "summary": "================== 2 passed, 3 deselected in 88.88s (0:01:28) ==================",
+      "sha256": "37b14a1f92d5fb17fc3844f99c10548b93608ee336e747cd399a2f06750863c4"
+    },
+    ".tmp/phase2/logs/initial-regressions.txt": {
+      "summary": "9 failed, 1 passed in 1.49s",
+      "sha256": "c24406601cb2035fc8ec06118094471b19f82386720b0ddc43dafaa0a16d333e"
+    },
+    ".tmp/phase2/logs/last-focused.txt": {
+      "summary": "98 passed in 5.30s",
+      "sha256": "c7d24f0a8faffe0f77cd53147dfd86b96d582c0fd8270a1203b41a1fe2464ebd"
+    },
+    ".tmp/phase2/logs/measurement-tests.txt": {
+      "summary": "90 passed, 10 skipped in 2.86s",
+      "sha256": "cc51bf5d629be13f5842412847b06d86f12fb08e0bb69c27f0c3c3f29c6bdef7"
+    },
+    ".tmp/phase2/logs/pipeline-selection.txt": {
+      "summary": "21 passed in 1.79s",
+      "sha256": "d40520429df7f10c432abfba8af6c9f1d06678fc43bc5867b9a57b7cc1fd1411"
+    },
+    ".tmp/phase2/logs/provenance-tests.txt": {
+      "summary": "57 passed in 4.47s",
+      "sha256": "606de18de490cf7847bc59d0044f1045c922b3ec5390770c666a7b81d3739564"
+    },
+    ".tmp/phase2/logs/ranking-tests.txt": {
+      "summary": "1 failed, 63 passed in 3.34s",
+      "sha256": "bc73a74ac393e181106f96ec5e188e127761382e666f093cefedede695307ad2"
+    },
+    ".tmp/phase2/logs/replay-final.txt": {
+      "summary": "======================= 1 passed, 4 deselected in 6.05s ========================",
+      "sha256": "93251db43f4533423fc61e3704e406c16426183529e9e35fca135ee8469e55c5"
+    },
+    ".tmp/phase2/logs/selection-adapters.txt": {
+      "summary": "80 passed, 10 skipped in 4.45s",
+      "sha256": "cb4060093f924f5eb74907218a9299f6a7a777608025a30ec2eb417617d3cb02"
+    },
+    ".tmp/phase2/logs/selection-final.txt": {
+      "summary": "1 failed, 21 passed in 2.21s",
+      "sha256": "61958cb18084719957c7ac6b412cc75b9da082253023cbc956c06eb776afaedb"
+    },
+    ".tmp/phase2/logs/selection-focused.txt": {
+      "summary": "60 passed in 4.49s",
+      "sha256": "abe1d976ba4b538258834319367517cf19c260ba4a222ff72875a40127ab31a1"
+    },
+    ".tmp/phase2/logs/selection-tests.txt": {
+      "summary": "46 passed in 3.56s",
+      "sha256": "94bccd6004cdfda707e58847619a8eea240a352ea224717fec9f0a38d4210509"
+    },
+    ".tmp/phase2/logs/verification-final.txt": {
+      "summary": "92 passed in 5.25s",
+      "sha256": "30546ba8b5314489c6ad02078c73a847543452095ab37f67a580270e48353d0e"
+    }
+  },
+  "limitations": [
+    "No wet-lab or prospective calibration.",
+    "Smoke settings establish computation and identity handling, not predictive usefulness.",
+    "Replay entries use genuine saved inference artifacts and actual analysis containers; they perform no new GPU inference.",
+    "No new multichain/CCD GPU run in Phase 2; existing CPU identity regressions are retained."
+  ],
+  "final_results": {
+    "cpu": {
+      "passed": 1396,
+      "skipped": 22,
+      "warnings": 17,
+      "seconds": 115.92,
+      "log": ".tmp/phase2/logs/cpu-complete.txt"
+    },
+    "final_focused": {
+      "passed": 92,
+      "seconds": 5.25,
+      "log": ".tmp/phase2/logs/verification-final.txt"
+    },
+    "gpu_and_real_container_integration": {
+      "unique_tests_passed": 5,
+      "test_executions_passed": 6,
+      "new_inference_test_paths": 4,
+      "retained_production_jobs": 12,
+      "logs": [
+        ".tmp/phase2/logs/gpu-selection.txt",
+        ".tmp/phase2/logs/gpu-existing-workflows.txt",
+        ".tmp/phase2/logs/replay-final.txt"
+      ]
+    }
+  }
+}

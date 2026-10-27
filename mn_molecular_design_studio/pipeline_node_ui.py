@@ -178,6 +178,16 @@ def _render_field(field, values, key):
         from mn_molecular_design_studio.peptide_trap_input import SCAFFOLDS
         return st.multiselect(label, list(SCAFFOLDS), default=list(value or []),
                               format_func=lambda item: SCAFFOLDS[item]["label"], **kwargs)
+    if field["type"] == "json":
+        text = st.text_area(label, value=json.dumps(value, indent=2), **kwargs)
+        try:
+            parsed = json.loads(text)
+            if not isinstance(parsed, list):
+                raise ValueError("Expected a JSON list.")
+            return parsed
+        except ValueError as exc:
+            st.error(str(exc))
+            return text  # graph validation prevents saving an invalid list
     if field["type"] == "boolean":
         return st.checkbox(label, value=bool(value), **kwargs)
     if field["type"] == "select":
@@ -709,6 +719,8 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                 st.caption("Initial guess is enabled for this pipeline step.")
             if kind == "results":
                 st.info("Collect candidate structures and metrics from the connected branches. Existing results remain available when you edit the pipeline.")
+            if kind == "filter":
+                st.caption("Choose native fields, common fields, or evidence/<stage>/<tool>/<metric>. Add a candidate ID before the metric to resolve repeated stages. Missing, failed and nonfinite required measurements cannot pass. Ranking and limits apply within recorded comparable protocols. All decisions and selected sequence/structure exports remain in this step's selection files.")
         st.caption("Apply saves this step to the draft. The pipeline runs only when you choose Run pipeline on the canvas.")
         a,b,c = st.columns([1.3,1,1.3])
         if a.button("Reset to tool defaults", key=key+"-defaults", disabled=kind in {"target","binder_context","design_source","generation_source","backbone_source","project_design_source","results"}, use_container_width=True):
