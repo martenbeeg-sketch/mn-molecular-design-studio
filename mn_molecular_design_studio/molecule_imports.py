@@ -569,7 +569,7 @@ def parse_structure(data: bytes, filename: str, *, include_ligands: bool = True,
                 dna.append(code[-1].replace("I", "N"))
             elif code in {"A", "C", "G", "U", "I", "N"}:
                 rna.append(code.replace("I", "N"))
-            elif include_ligands and len(list(residue.get_atoms())) > 1:
+            elif include_ligands and len(list(residue.get_atoms())) >= 1:
                 locator = f"{chain_id}:{residue.id[1]}{residue.id[2].strip()}"
                 components.append({"type": "small_molecule", "chain": f"{chain_id}_{residue.id[1]}{residue.id[2].strip()}",
                                    "ccd": code, "residue_key": locator})

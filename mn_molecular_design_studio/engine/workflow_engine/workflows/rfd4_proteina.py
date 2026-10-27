@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 import csv
 import json
+import os
 import secrets
 import re
 import shutil
@@ -106,6 +107,8 @@ def normalize_outputs(run_dir, prepared, task, requested):
                 try: metrics[key]=float(value)
                 except (ValueError,TypeError): metrics[key]=value
         from mn_molecular_design_studio.molecule_imports import parse_structure
+        from mn_molecular_design_studio.scientific_contracts import structure_chemistry
+        unsupported_chemistry = structure_chemistry(path)
         components=parse_structure(path.read_bytes(),path.name,include_ligands=True)[0]['components']
         if task in {'unconditional','protein_binder','small_molecule_binder','dna_binder'} and sequence:
             if not prepared['parameters'].get('length_min',60)<=len(sequence)<=prepared['parameters'].get('length_max',120):
@@ -118,7 +121,8 @@ def normalize_outputs(run_dir, prepared, task, requested):
                         'source_candidate':parent,
                         'sequences_by_chain':item.get('sequences',{}),'engine_version':inputs.UPSTREAM_VERSION,
                         'upstream_commit':inputs.UPSTREAM_COMMIT,'requested_designs':requested,
-                        'studio_molecule_id':ident,'components':components,
+                        'studio_molecule_id':ident,'components':components,'unsupported_chemistry':unsupported_chemistry,
+                        'reference_constraints':{key:prepared['parameters'].get(key) for key in ('task','condition_spec','options')},
                         'folding_engine':prepared['parameters'].get('options',{}).get('folding_engine','openfold3_jax') if prepared['parameters'].get('options',{}).get('refold',True) else None}})
     return records
 
@@ -166,6 +170,8 @@ def run_rfd4_proteina_design(
                  'OMP_NUM_THREADS':str(cpu_cores),'PYTHONUNBUFFERED':'1',
                  'TMPDIR':'/work/'+temp.relative_to(job.run_dir).as_posix(),
                  'PYTHONPATH':'/work/'+runtime.relative_to(job.run_dir).as_posix()}
+            if os.environ.get('HF_HUB_OFFLINE'):
+                env['HF_HUB_OFFLINE'] = os.environ['HF_HUB_OFFLINE']
             mounts=[(cache,'/cache/huggingface',False)]
             if oracle:
                 mounts.append(oracle.mount)

@@ -19,6 +19,14 @@ from mn_molecular_design_studio.engine.workflow_engine.workflows import optimize
 PDB = "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 90.00           C  \nEND\n"
 
 
+# Queue tests still simulate execution, but their result must honor the requested sequence.
+from Bio.SeqUtils import seq3
+PREDICTION_PDB = "".join(
+    f"ATOM  {i:5d}  CA  {seq3(aa).upper()} A{i:4d}    {i * 3.8:8.3f}{0.:8.3f}{0.:8.3f}  1.00 90.00           C  \n"
+    for i, aa in enumerate("ACDEFGHIK", 1)
+) + "END\n"
+
+
 @pytest.fixture
 def api_queue(monkeypatch, tmp_path):
     # Keep API initialization, catalog writes, and queued runs inside this test.
@@ -174,7 +182,7 @@ def test_selected_inputs_reach_container_as_one_native_batch(api_queue, monkeypa
         rows = []
         for item in manifest["items"]:
             structure = raw / "output" / (item["id"] + ".pdb")
-            structure.write_text(PDB)
+            structure.write_text(PREDICTION_PDB)
             rows.append({"id": item["id"], "status": "completed", "outputs": [structure.relative_to(cwd).as_posix()]})
         (raw / "output/mn-batch-result.json").write_text(json.dumps({"items": rows}))
         return SimpleNamespace(returncode=0)
@@ -288,7 +296,7 @@ def test_worker_adopts_same_job_and_never_returns_to_queued(api_queue, monkeypat
         raw = cwd / "artifacts/raw/optimized_prediction"
         manifest = json.loads((raw / "mn_predict_manifest.json").read_text())
         structure = raw / "output/model.pdb"
-        structure.write_text(PDB)
+        structure.write_text(PREDICTION_PDB)
         (raw / "output/mn-batch-result.json").write_text(json.dumps({
             "items": [{"id": manifest["items"][0]["id"], "status": "completed",
                        "outputs": [structure.relative_to(cwd).as_posix()]}],

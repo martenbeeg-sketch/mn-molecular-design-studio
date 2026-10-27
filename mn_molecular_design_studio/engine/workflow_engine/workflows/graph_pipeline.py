@@ -342,26 +342,17 @@ def _optimized_prediction_tasks(engine: str, source: dict, params: dict) -> list
             raise ValueError(f"{profile['label']} cannot map a candidate without an ID back to its input.")
         library = candidate.get("raw_metadata") or {}
         if library.get("studio_molecule_id") and library.get("components"):
-            components = library["components"]
-            ligands = [row for row in components if row["type"] == "small_molecule"]
-            identity_metadata = library.get("metadata") if isinstance(library.get("metadata"), dict) else {}
-            task = {
-                "name": candidate_id,
-                "source_candidate_id": candidate_id, "source_run_dir": str(run_dir),
-                "protein_sequences": ":".join(row["sequence"] for row in components if row["type"] == "protein"),
-                "dna_sequences": ":".join(row["sequence"] for row in components if row["type"] == "dna"),
-                "rna_sequences": ":".join(row["sequence"] for row in components if row["type"] == "rna"),
-                "ligand_smiles": "\n".join(row["smiles"] for row in components if row["type"] == "small_molecule" and row.get("smiles")),
-                "ligand_ccd_codes": ":".join(row["ccd"] for row in components if row["type"] == "small_molecule" and not row.get("smiles") and row.get("ccd")),
-            }
-            if ligands:
-                task.update({
-                    "compound_id": str(identity_metadata.get("compound_id") or identity_metadata.get("pubchem_cid") or candidate_id),
-                    "compound_name": str(identity_metadata.get("compound_name") or library.get("name") or candidate_id),
-                })
+            from mn_molecular_design_studio.scientific_contracts import component_prediction_task
+            task = component_prediction_task(
+                candidate, run_dir, target_use_msa=bool(params.get("target_use_msa", True)),
+            )
             tasks.append(task)
             continue
         info = design_validation.candidate_description(run_dir, candidate)
+        if candidate.get("source_tool") in {"bindcraft2_generator", "boltzgen_generator", "esmfold2_binder_design"}:
+            observed = ":".join(design_validation.sequence(info["chains"][chain]) for chain in info["binder_chains"])
+            if observed.replace(":", "") != str(candidate.get("binder_sequence") or "").replace(":", ""):
+                raise ValueError("Generator binder sequence differs from structure; cannot predict a mismatched VHH.")
         target_chains = list(info["target_chains"])
         binder_chains = list(info["binder_chains"])
         if not target_chains:

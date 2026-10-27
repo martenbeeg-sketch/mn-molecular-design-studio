@@ -1783,9 +1783,10 @@ def _add_boltz_interface_metrics(run_dir: Path, candidates: list[dict[str, Any]]
         if len(chains) < 2:
             continue
         structure = Path(candidate["complex_pdb"])
+        native_structure = Path(raw.get("native_prediction_structure") or structure)
         pae = next((path for path in (
-            structure.with_name(f"pae_{structure.stem}.npz"),
-            structure.with_name(f"{structure.stem}_pae.npz"),
+            native_structure.with_name(f"pae_{native_structure.stem}.npz"),
+            native_structure.with_name(f"{native_structure.stem}_pae.npz"),
         ) if path.is_file()), None)
         if pae is None:
             candidate["metrics"]["ipsae_error"] = "The matching pairwise PAE file is missing."
@@ -2097,6 +2098,17 @@ def _prepare_prediction(
                 task_binder = ":".join(chain["sequence"] for chain in task_proteins if chain["id"] in binder_ids)
         else:
             ccd_entities, smiles_entities = [], []
+        scientific_contract = raw_task.get("scientific_contract") or {}
+        if scientific_contract:
+            expected = {scientific_contract["chain_map"][row["chain"]]: row["sequence"]
+                        for row in scientific_contract["components"] if row["type"] == "protein"}
+            if expected != {row["id"]: row["sequence"] for row in task_proteins}:
+                raise ValueError("Scientific contract protein sequence/chain mapping differs from task.")
+            target_ids = list(scientific_contract["target_protein_ids"])
+            binder_ids = list(scientific_contract["binder_protein_ids"])
+            if set(target_ids) & set(binder_ids) or set(target_ids + binder_ids) - expected.keys():
+                raise ValueError("Scientific contract has invalid target/binder roles.")
+            task_binder = ":".join(row["sequence"] for row in task_proteins if row["id"] in binder_ids)
         molecule_chain_options = _normalize_boltz_chain_options(
             raw_task.get("molecule_chain_options", []),
             proteins=task_proteins, dna=dna_chains, rna=rna_chains,
@@ -2142,6 +2154,7 @@ def _prepare_prediction(
             "compound_smiles": [str(row.get("smiles") or "") for row in task_smiles] + yaml_ligand_smiles,
             "job_name": task_job_name,
             "proteins": task_proteins,
+            "scientific_contract": scientific_contract,
             "target_protein_ids": target_ids,
             "binder_protein_ids": binder_ids,
             "dna": dna_chains,
@@ -2297,6 +2310,10 @@ def run_optimized_prediction(
         use_target_template=use_target_template, target_use_msa=target_use_msa,
         compound_set_file=compound_set_file, sequence_file=sequence_file,
     )
+    if engine == "boltz2":
+        from mn_molecular_design_studio.scientific_contracts import validate_component_chemistry
+        for task in prepared.normalized_tasks:
+            validate_component_chemistry(task, reference_root())
     profile = prepared.profile
     selected_mode = prepared.selected_mode
     recycle_count = prepared.recycle_count
@@ -2619,13 +2636,23 @@ def run_optimized_prediction(
                     task_structures.append(host_path)
             if not task_structures and not task_errors:
                 task_errors.append("The completed task returned no structure files.")
-            structures.extend(task_structures)
             if task_errors:
                 failures.append({"item_id": task["id"], "task_name": task["name"], "errors": task_errors})
             target_chains = list(task["target_protein_ids"])
             binder_chains = list(task["binder_protein_ids"])
             for sample_index, structure_path in enumerate(task_structures, start=1):
-                confidence = _confidence_sidecar(structure_path)
+                from mn_molecular_design_studio.scientific_contracts import verify_prediction_structure, restore_prediction_ccd_names
+                native_structure_path = structure_path
+                confidence = _confidence_sidecar(native_structure_path)
+                structure_path = restore_prediction_ccd_names(native_structure_path, task)
+                identity_check = verify_prediction_structure(structure_path, task)
+                structures.append(structure_path)
+                pae_path = next((value for value in (
+                    native_structure_path.with_name(f"pae_{native_structure_path.stem}.npz"),
+                    native_structure_path.with_name(f"{native_structure_path.stem}_pae.npz"),
+                    native_structure_path.with_name(f"{native_structure_path.stem}_pae.json"),
+                    native_structure_path.with_name(f"pae_{native_structure_path.stem}.json"),
+                ) if value.is_file()), None)
                 metrics = {
                     "plddt_mean": _mean_plddt(structure_path),
                     "ptm": _metric_float(confidence.get("ptm")),
@@ -2649,6 +2676,11 @@ def run_optimized_prediction(
                     "metrics": metrics,
                     "parents": [task["source_candidate_id"]] if task.get("source_candidate_id") else [],
                     "raw_metadata": {
+                        "scientific_contract": task["scientific_contract"],
+                        "native_prediction_structure": str(native_structure_path),
+                        "pae_path": str(pae_path) if pae_path else None,
+                        "identity_check": identity_check,
+                        "molecule_chain_options": task["molecule_chain_options"],
                         "engine": engine, "image": profile["image"], "api_engine": profile["api_engine"],
                         "optimization_mode": selected_mode, "seed": int(seed),
                         "confidence_outputs": confidence, "batch_item_id": task["id"],

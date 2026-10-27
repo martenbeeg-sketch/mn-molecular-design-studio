@@ -273,6 +273,15 @@ def _analysis_output_candidates(
                     **dict(source.get("raw_metadata") or {}),
                     "result_kind": "app_reanalysis",
                     "analysis_tool": tool,
+                    "measurement_provenance": {
+                        "tool": tool,
+                        "analysis_parameters": (source.get("raw_metadata") or {}).get("analysis_parameters", {}),
+                        "source_candidate_id": source_id,
+                        "structure": source.get("complex_pdb"),
+                        "binder_chains": list(source.get("binder_chains") or []),
+                        "target_chains": list(source.get("target_chains") or []),
+                        "status": metrics.get("analysis_status", "error" if metrics.get("ipsae_error" if tool == "ipsae" else "rosetta_error") else "unverified"),
+                    },
                     "source_candidate": source,
                 },
             }
@@ -306,15 +315,21 @@ def _finish_metric_analysis(
     analysis_dir = job.run_dir / "artifacts" / "analysis"
     analysis_dir.mkdir(parents=True, exist_ok=True)
     table_path = analysis_dir / table_name
+    error_key = "ipsae_error" if tool == "ipsae" else "rosetta_error"
+    for candidate in candidates:
+        metrics = candidate.setdefault("metrics", {})
+        measured = any(_safe_float(metrics.get(name)) is not None for name in metric_names)
+        if not measured and not metrics.get(error_key):
+            metrics[error_key] = "Analysis produced no finite measurements."
+        metrics["analysis_status"] = "error" if metrics.get(error_key) else "measured"
     table = _analysis_metrics_table(candidates)
     table.to_csv(table_path, index=False)
     outputs = _analysis_output_candidates(candidates, tool=tool)
     normalized = write_candidates(job.run_dir, tool, outputs)
-    error_key = "ipsae_error" if tool == "ipsae" else "rosetta_error"
     scored_count = sum(
-        1
-        for candidate in candidates
-        if any((candidate.get("metrics") or {}).get(name) not in {None, ""} for name in metric_names)
+        1 for candidate in candidates
+        if not (candidate.get("metrics") or {}).get(error_key)
+        and any(_safe_float((candidate.get("metrics") or {}).get(name)) is not None for name in metric_names)
     )
     errors = sum(1 for candidate in candidates if (candidate.get("metrics") or {}).get(error_key))
     summary = {
@@ -330,7 +345,7 @@ def _finish_metric_analysis(
     artifacts = _candidate_artifacts(job.run_dir)
     finish_job(
         job.run_dir,
-        bool(normalized),
+        bool(normalized) and scored_count == len(candidates) and not errors,
         {
             "outputs": {"artifacts": artifacts, "candidates": normalized},
             "metrics": {"candidate_count": len(normalized), "scored_count": scored_count, "error_count": errors},
@@ -687,6 +702,8 @@ def _chain_ca_coordinates(structure_path: Path) -> dict[str, list[tuple[float, f
 
 def _chain_roles(candidate: dict[str, Any]) -> tuple[str, str]:
     binder_chains, target_chains = _chain_role_groups(candidate)
+    if not binder_chains or not target_chains:
+        raise ValueError("Explicit binder and target chain assignments are required.")
     return (binder_chains[0], target_chains[0])
 
 
@@ -724,7 +741,7 @@ def _chain_role_groups(candidate: dict[str, Any]) -> tuple[list[str], list[str]]
     if target_chains:
         target_set = set(target_chains)
         binder_chains = [chain for chain in binder_chains if chain not in target_set]
-    return (binder_chains or ["A"], target_chains or ["B"])
+    return binder_chains, target_chains
 
 
 def _collapse_target_chains_for_ipsae(
@@ -863,9 +880,14 @@ def _run_ipsae(
             safe_id = f"{safe_id}_{index}"
         used_ids.add(safe_id)
         metrics = dict(candidate.get("metrics") or {})
+        metrics.pop("ipsae_error", None)
         binder_chains, target_chains = _chain_role_groups(candidate)
         if not binder_chains or not target_chains:
             metrics["ipsae_error"] = "binder or target chain roles are missing"
+            enhanced.append({**candidate, "metrics": metrics, "_ipsae_batch_id": safe_id})
+            continue
+        if len(binder_chains) != 1:
+            metrics["ipsae_error"] = "current ipSAE interface scorer supports exactly one binder chain"
             enhanced.append({**candidate, "metrics": metrics, "_ipsae_batch_id": safe_id})
             continue
         binder_chain, target_chain = binder_chains[0], target_chains[0]
@@ -1007,7 +1029,7 @@ def _run_ipsae(
         safe_id = str(candidate.pop("_ipsae_batch_id", _safe_id(candidate)))
         row_path = output_dir / f"{safe_id}_ipsae_row.csv"
         binder_chains, target_chains = _chain_role_groups(candidate)
-        if not binder_chains or not target_chains:
+        if len(binder_chains) != 1 or not target_chains:
             continue
         structure_path = _resolve_path(source_run_dir, candidate.get("complex_pdb"))
         pae_path = _find_pae_path(source_run_dir, candidate, structure_path)
@@ -1094,6 +1116,12 @@ def run_ipsae_analysis_contract(
         mode="internal+docker",
     )
     scored = _run_ipsae(source_run_dir, job.run_dir, candidates, pae_cutoff=float(pae_cutoff), dist_cutoff=float(dist_cutoff))
+    for candidate in scored:
+        raw = candidate.setdefault("raw_metadata", {})
+        raw["analysis_parameters"] = {"pae_cutoff": float(pae_cutoff), "dist_cutoff": float(dist_cutoff),
+            "image": IPSAE_IMAGE,
+            "pae_file": str(_find_pae_path(source_run_dir, candidate, _resolve_path(source_run_dir, candidate.get("complex_pdb"))) or "")}
+
     return _finish_metric_analysis(
         job,
         scored,
@@ -1137,9 +1165,15 @@ def run_rosetta_metrics_contract(
     by_safe_id: dict[str, dict[str, Any]] = {}
     for index, candidate in enumerate(candidates, start=1):
         metrics = dict(candidate.get("metrics") or {})
+        metrics.pop("rosetta_error", None)
         structure = _resolve_path(source_run_dir, str(candidate.get("complex_pdb") or ""))
         if not structure or not structure.is_file():
             metrics["rosetta_error"] = "complex structure missing"
+            candidate["metrics"] = metrics
+            continue
+        binders, targets = _chain_role_groups(candidate)
+        if len(binders) != 1 or len(targets) != 1:
+            metrics["rosetta_error"] = "current Rosetta interface scorer needs one binder chain and one target chain; explicit roles required"
             candidate["metrics"] = metrics
             continue
         safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", _safe_id(candidate)) or f"candidate_{index}"
@@ -1250,12 +1284,15 @@ def run_rosetta_metrics_contract(
         rosetta_metrics = result_rows.get(safe_id, {})
         if rosetta_metrics:
             metrics.update(rosetta_metrics)
+            metrics.pop("rosetta_error", None)
             metrics["rosetta_scoring_status"] = "completed"
         else:
             reason = f"Rosetta scorer produced no row (exit code {return_code})." if return_code is not None else "Rosetta scorer did not run."
             metrics["rosetta_error"] = reason
         candidate["metrics"] = metrics
 
+    for candidate in candidates:
+        candidate.setdefault("raw_metadata", {})["analysis_parameters"] = {"image": PYROSETTA_IMAGE, "nprocs": nprocs}
     return _finish_metric_analysis(
         job,
         candidates,
@@ -1323,7 +1360,7 @@ def _score_row(row: dict[str, Any], fields=None) -> float | None:
 
 
 def _passes_thresholds(row: dict[str, Any], thresholds: dict[str, float]) -> tuple[bool, list[str]]:
-    failures: list[str] = []
+    failures: list[str] = [str(row[key]) for key in ("ipsae_error", "rosetta_error", "validation_error") if row.get(key)]
     checks = [
         ("binder_plddt", ">=", thresholds.get("min_binder_plddt")),
         ("confidence", ">=", thresholds.get("min_confidence")),
@@ -1340,9 +1377,8 @@ def _passes_thresholds(row: dict[str, Any], thresholds: dict[str, float]) -> tup
         if threshold is None:
             continue
         value = row.get(metric)
-        if value is None:
-            if float(threshold) != 0:
-                failures.append(f"{metric} missing")
+        if _safe_float(value) is None:
+            failures.append(f"{metric} missing or non-finite")
             continue
         if op == ">=" and float(value) < float(threshold):
             failures.append(f"{metric} < {threshold:g}")

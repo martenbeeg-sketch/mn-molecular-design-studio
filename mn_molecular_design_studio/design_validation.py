@@ -80,6 +80,8 @@ def candidate_passes_filters(candidate: dict) -> bool:
     """Require affirmative overall filter evidence; unknown is not a pass."""
     metrics = candidate.get("metrics") or {}
     raw = candidate.get("raw_metadata") or {}
+    if any(metrics.get(key) for key in ("ipsae_error", "rosetta_error", "validation_error")):
+        return False
     if raw.get("candidate_pool_level") == "prefilter_generated" or raw.get("result_kind") in {
         "generation_only", "generator_trajectory",
     }:
