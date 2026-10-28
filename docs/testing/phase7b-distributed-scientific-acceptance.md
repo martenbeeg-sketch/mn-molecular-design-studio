@@ -1,6 +1,8 @@
-# Phase 7B — distributed scientific acceptance (activation gate)
+# Phase 7B — scientific acceptance blocked; activation rolled back
 
-28 October 2026, Europe/Berlin. **Incomplete: clean deployment staged; activation requires approval.**
+28 October 2026, Europe/Berlin. **Current status: incomplete. Approved `a628c33` activation was performed, verified, then rolled back after a real graph-submission defect.**
+
+The original three runtimes are restored and healthy. No fresh scientific inference started. The minimal correction is committed locally as `191c5a1` and has not been activated. See [section 21](#21-approved-activation-attempt-and-verified-rollback) for the latest acceptance result and [machine evidence](evidence/phase7b-activation-rollback.json). Sections 1–20 preserve the earlier preflight record; their pending-activation language is historical and superseded by section 21.
 No fresh design or predictor inference was submitted. Nothing in this report establishes new live scientific workflow acceptance or simultaneous four-GPU inference.
 
 Evidence labels used below are **Real GPU execution**, **Retained scientific artifact**, **Deterministic execution fixture**, **Source inspection**, and **Unverified**. CPU-only container imports/probes are Source inspection, not Real GPU execution.
@@ -215,3 +217,71 @@ Phase A is complete for source/staging checks but active-runtime attestation awa
 The next required action is the separately approved, idle-only service/bridge switch in section 3. After activation, verify common source fingerprints and exact model/reference probes before using the normal Studio Run action. Run one bounded complete BindCraft2 invocation, then reuse its genuine outcome in Mode 2 where eligible. Run the prepared RFD4 modular graph with automatic downstream prediction and the six-input ceiling. Measure real physical leases/process receipts and four-device overlap where compatible work exists. Finish fresh Results/provenance/ZIP verification and safe bounded cancellation. Do not expand generation budgets to force acceptance or device occupancy.
 
 If Mode 1 again yields no eligible complete-workflow candidate, preserve its native rejection and leave Mode 2's positive path explicitly incomplete unless an independently provenance-verified complete workflow source is available. RFD4 co-design does not satisfy that boundary. Models/images may not be replaced or services further modified beyond the reviewed activation scope without the request's stated approval boundary.
+
+
+## 21. Approved activation attempt and verified rollback
+
+### Current outcome
+
+**Software execution failure before scheduler acceptance; scientific outcomes unverified.** The approved activation of `a628c33becb3258df39e51ff89cf10643649e59d` succeeded operationally on all three machines. A real submission of the prepared complete-native graph then failed with HTTP 422 before any scheduler job or model inference started. The native settings string was treated as a filename. Because correcting that defect changes the explicitly approved runtime revision, acceptance stopped and the reviewed rollback was executed. The staged source was not modified in place.
+
+| Acceptance item | Actual evidence in this continuation | Status |
+| --- | --- | --- |
+| Activate API/agents/controller UI and idle application bridges | Seven services switched; exact process import paths and fresh common fingerprint verified | Performed, then rolled back |
+| Shared scheduler and SSH tunnels | Existing infrastructure used; no configuration/restart applied to either | Preserved |
+| Mode 1 fresh complete BindCraft2 | Normal Studio API/graph submission attempted; HTTP 422 before scheduler acceptance | Operational failure; no scientific invocation |
+| Mode 2 positive complete-native comparison | No fresh Mode 1 candidates exist | Unverified; no RFD4 substitution |
+| Mode 3 fresh modular workflow | Prepared graph passed normal API validation; not submitted after the rollback boundary was reached | Unverified |
+| Four-GPU scientific work / actual batching | 348 host observations; zero running Studio jobs and zero leases | Unverified, not inferred from registration |
+| Original P4/P5 and native benchmark artifacts | All 27 previously tracked source hashes rechecked after activation/rollback | Unchanged |
+| Original runtime health | API health, authenticated peers, original fingerprints, service unit hashes and idle queues verified | Restored |
+
+### Pre-activation safeguards and actual service actions
+
+**Source inspection.** Immediately before activation, each scheduler had zero reservations and no queued/running Studio jobs. No scientific Docker container was active. The four UUIDs remained the ones in section 4. Local GPU 1 had approximately 1.5 GiB of external/display memory use and sampled 0% utilization at this check; no Studio allocation was inferred from that memory.
+
+The seven prepared service drop-ins were installed only after private backups of original units and existing drop-in directories. API/agent services were switched on pc002975, pc004032 and pc004033; the controller UI was switched on pc002975. Idle application scheduler bridges were refreshed. The exact clean source root and pinned HEAD were checked before installation. The original Git checkouts, paper-reference modifications, installed images, checkpoint stores, Results roots, shared compute scheduler and SSH tunnels were preserved.
+
+The three APIs returned `status=ok`; fresh authenticated heartbeats reported `96814c66c8f1afdf5a7beae74a30f15f6452fddf32470e930bd73e4abc8f92fe` on all three machines. `/proc` verification established that each affected service and application bridge used the pinned source through `PYTHONPATH`, rather than relying only on source-on-disk hashes. The restarted Studio UI rendered its tool catalog, scientific mode selector and saved graphs. Normal API file/graph validation passed for the saved Mode 1 and Mode 3 graphs with the CPU controller explicitly placed locally; per-stage placement remained the saved policy.
+
+The prepared Mode 2 retained-import reference returned HTTP 404 at the public API ownership/catalog guard. It was therefore not run or silently replaced. The intended continuation after a successful fresh Mode 1 run remains to reference that genuine managed native output; the lightweight retained source used by the earlier direct graph replay is not evidence of a fully verified public-API retained-source journey.
+
+### Actual times and GPU observations
+
+**Source inspection; no Real GPU execution.** These are systemd lifecycle timestamps in Europe/Berlin, not model runtimes:
+
+| Host | First activation stop | Staged services started | Rollback began | Original services restarted |
+| --- | --- | --- | --- | --- |
+| pc002975 | 19:14:47 | 19:15:04 | 19:22:14 | 19:22:21 |
+| pc004032 | 19:15:02 | 19:15:04 | 19:22:21 | 19:22:27 |
+| pc004033 | 19:15:03 | 19:15:05 | 19:22:27 | 19:22:28 |
+
+Controller service reconnect time was approximately 17 seconds during activation and seven seconds during rollback. The peer service stop-to-start intervals were approximately 2.45/1.82 seconds for activation and 5.46/0.50 seconds for rollback. These intervals use the individual host's journal timestamps; `Started` is a service lifecycle event, with API health verified separately. The staged services remained active for approximately seven minutes while validation and diagnosis occurred. None of these timings measures scientific throughput or model initialization.
+
+`live/gpu-scheduler-samples.jsonl` contains 348 workstation samples across the three machines from 19:17:55 to 19:22:30 Berlin time (18:17:55–18:22:30 UTC). There are zero running Studio job observations and zero reservation observations. No new GPU UUID-linked scientific lease, native process receipt, native batch, prediction, initialization event, or overlapping scientific interval exists for this continuation. GPU confidence/acceptance/ranking results and scientific elapsed times remain unavailable, rather than assigned zeros or borrowed from retained work.
+
+### Exact submission failure and recovery disposition
+
+At 19:19:24 Berlin time, the saved Mode 1 graph was sent to the regular `/api/v1/pipelines/run` endpoint with unchanged scientific settings, `reuse_completed=false`, the CPU graph controller placed locally, and idempotency key `phase7b-live-native-a628c33-20261028`. No standalone native tool was invoked.
+
+The native `engine_overrides_json` value is 417 characters. `portable_paths` classified the new `*_json` field as an operational file path because it was missing from the existing inline-content allowlist. Reading the queued worker request during dispatch consequently raised `OSError: [Errno 36] File name too long`. Shortening the JSON is not a valid solution: the field would still be a file reference and its content would not reliably survive serialization.
+
+The rejected submission created local controller directory `campaign/20261028-191924-818b1d58` and wrote its input/worker request, but obtained **no scheduler job ID or GPU lease** and launched no worker/native process. This partially created controller was explicitly marked failed with `scientific_execution_started=false`; the original request files and an operational disposition record are preserved. The request-level idempotency entry remains uncertain and was not cleared or retried with a new key. This is an operational setup failure, not a native scientific rejection.
+
+Modes 2/3 were not launched after the explicitly stated stop/rollback boundary. No accepted binder, predictor measurement, complete-native success, comparative rank or fresh ZIP was fabricated. Prior retained exports in section 16 remain separate and unchanged.
+
+### Rollback verification and bounded local correction
+
+**Source inspection.** Only the seven newly installed `phase7b.conf` drop-ins were removed, after copying their installed bytes to the private rollback backup. The original service definitions were left intact. Idle application bridges were restarted from the original checkouts. The original fingerprint `5569f8a69023be09c6079d2608fb383d60ba7a1dbcca1bd29e96c92c7fa53d5b` again appeared in all three fresh online peer snapshots. The controller API was healthy, authenticated requests to both peers succeeded, Studio queues/reservations were empty, and all seven original service-file hashes matched their pre-activation values. All 27 protected scientific source hashes also matched after rollback.
+
+The minimal code correction adds `engine_overrides_json` to the same inline-content declaration already used for `options_json` and related engine input text. No scientific setting, algorithm, threshold, generator budget, scheduler policy or checkpoint changed. This correction is committed **locally only** as `191c5a1` on `codex/phase7b-acceptance`; it is not deployed, pushed or merged.
+
+**Deterministic execution fixture.** The added regression first reproduced two failures on the staged code (long JSON worker serialization and the normal non-admin API path guard), with 11 other checks passing. After the one-line correction, 49 focused portable/native/API tests passed in 19.70 seconds. A further exact normal `/pipelines/run` journey using the existing PD-L1 routing fixture queued one controller with the full long native-settings JSON preserved; repeating the idempotency key reused that queue entry. This journey plus inline-input regressions passed 14 tests in 1.61 seconds. Its worker launch was deliberately stubbed and is not GPU evidence. These suites overlap. Source diff whitespace validation passed.
+
+### Final acceptance status and remaining boundary
+
+**Phase 7B is incomplete and the original functioning runtime is restored.** The approved source could be activated consistently, but its normal native graph submission contract failed. The safe stop/rollback policy was exercised successfully without interrupting scientific work. This is a discovered integration defect, not a reason to change the benchmark, thresholds, workflow semantics or generation counts.
+
+A continuation requires review and authorization of the corrected runtime revision instead of `a628c33`, followed by another idle-only activation and the same bounded scientific acceptance. It must also replace the unmanaged Mode 2 retained-import reference with the genuine new managed native result, when available. No new architectural implementation phase is required for the local correction, but the approved runtime pin cannot be silently changed. Fresh complete BindCraft2/RFD4 execution, independent Boltz/Protenix evidence, real batching, four-GPU work, fresh Results/ZIP and scientific elapsed times remain unverified.
+
+Full continuation evidence: `activation/*-before.json`, `activation/*-active.json`, `activation/*-rollback.json`, `activation/*-service-events.json`, `activation/rollback-connectivity.json`, `live/native_complete-submission.json`, `live/native_complete-job.json`, `live/*validation*.json`, `live/gpu-scheduler-samples.jsonl`, `live/inline-json-reproduction.log`, `live/inline-json-fix-regression.log`, `live/native-api-fix-regression.log` and `live/original-source-hashes-after-activation-rollback.json` under the evidence root. Summary: [phase7b-activation-rollback.json](evidence/phase7b-activation-rollback.json).

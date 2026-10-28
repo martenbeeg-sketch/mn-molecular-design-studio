@@ -1,0 +1,243 @@
+{
+  "phase": "7B",
+  "status": "incomplete; approved activation rolled back after graph submission defect",
+  "approved_activated_revision": "a628c33becb3258df39e51ff89cf10643649e59d",
+  "final_runtime": "abf0f2ef5b3d1117df72c6a74a56e05bb3f21f2f plus preserved original modifications",
+  "rollback_complete": true,
+  "machines": {
+    "pc002975": {
+      "before_fingerprint": "5569f8a69023be09c6079d2608fb383d60ba7a1dbcca1bd29e96c92c7fa53d5b",
+      "active_fingerprint": "96814c66c8f1afdf5a7beae74a30f15f6452fddf32470e930bd73e4abc8f92fe",
+      "rollback_fingerprint": "5569f8a69023be09c6079d2608fb383d60ba7a1dbcca1bd29e96c92c7fa53d5b",
+      "active_processes": {
+        "studio-api": {
+          "pid": 945597,
+          "pythonpath": "/home/user/programs/deployments/mn-molecular-design-studio/phase7b/source",
+          "cwd": "/home/user/programs/deployments/mn-molecular-design-studio/phase7b/source"
+        },
+        "studio-agent": {
+          "pid": 945598,
+          "pythonpath": "/home/user/programs/deployments/mn-molecular-design-studio/phase7b/source",
+          "cwd": "/home/user/programs/deployments/mn-molecular-design-studio/phase7b/source"
+        },
+        "studio-ui": {
+          "pid": 945599,
+          "pythonpath": "/home/user/programs/deployments/mn-molecular-design-studio/phase7b/source",
+          "cwd": "/home/user/programs/deployments/mn-molecular-design-studio/phase7b/source"
+        },
+        "application_bridge": {
+          "pid": 945604,
+          "pythonpath": "/home/user/programs/deployments/mn-molecular-design-studio/phase7b/source"
+        }
+      },
+      "api_health_at_activation": {
+        "status": "ok",
+        "app": "mn-molecular-design-studio",
+        "api_version": "v1"
+      },
+      "original_units_preserved": true,
+      "rollback_jobs": [],
+      "rollback_reservations": [],
+      "events": [
+        {
+          "time_berlin": "2026-10-28T19:14:47.432609+01:00",
+          "message": "Stopping studio-ui.service - MN Molecular Design Studio UI..."
+        },
+        {
+          "time_berlin": "2026-10-28T19:14:47.433511+01:00",
+          "message": "Stopping studio-agent.service - MN Molecular Design Studio studio-agent..."
+        },
+        {
+          "time_berlin": "2026-10-28T19:14:48.650444+01:00",
+          "message": "Stopping studio-api.service - MN Molecular Design Studio studio-api..."
+        },
+        {
+          "time_berlin": "2026-10-28T19:15:04.328851+01:00",
+          "message": "Started studio-api.service - MN Molecular Design Studio studio-api."
+        },
+        {
+          "time_berlin": "2026-10-28T19:15:04.331618+01:00",
+          "message": "Started studio-agent.service - MN Molecular Design Studio studio-agent."
+        },
+        {
+          "time_berlin": "2026-10-28T19:15:04.334106+01:00",
+          "message": "Started studio-ui.service - MN Molecular Design Studio UI."
+        },
+        {
+          "time_berlin": "2026-10-28T19:22:14.124422+01:00",
+          "message": "Stopping studio-ui.service - MN Molecular Design Studio UI..."
+        },
+        {
+          "time_berlin": "2026-10-28T19:22:14.125296+01:00",
+          "message": "Stopping studio-agent.service - MN Molecular Design Studio studio-agent..."
+        },
+        {
+          "time_berlin": "2026-10-28T19:22:15.243717+01:00",
+          "message": "Stopping studio-api.service - MN Molecular Design Studio studio-api..."
+        },
+        {
+          "time_berlin": "2026-10-28T19:22:21.128680+01:00",
+          "message": "Started studio-api.service - MN Molecular Design Studio studio-api."
+        },
+        {
+          "time_berlin": "2026-10-28T19:22:21.130475+01:00",
+          "message": "Started studio-agent.service - MN Molecular Design Studio studio-agent."
+        },
+        {
+          "time_berlin": "2026-10-28T19:22:21.132063+01:00",
+          "message": "Started studio-ui.service - MN Molecular Design Studio UI."
+        }
+      ]
+    },
+    "pc004032": {
+      "before_fingerprint": "5569f8a69023be09c6079d2608fb383d60ba7a1dbcca1bd29e96c92c7fa53d5b",
+      "active_fingerprint": "96814c66c8f1afdf5a7beae74a30f15f6452fddf32470e930bd73e4abc8f92fe",
+      "rollback_fingerprint": "5569f8a69023be09c6079d2608fb383d60ba7a1dbcca1bd29e96c92c7fa53d5b",
+      "active_processes": {
+        "studio-api": {
+          "pid": 66380,
+          "pythonpath": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b/source",
+          "cwd": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b/source"
+        },
+        "studio-agent": {
+          "pid": 66381,
+          "pythonpath": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b/source",
+          "cwd": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b/source"
+        },
+        "application_bridge": {
+          "pid": 66383,
+          "pythonpath": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b/source"
+        }
+      },
+      "api_health_at_activation": {
+        "status": "ok",
+        "app": "mn-molecular-design-studio",
+        "api_version": "v1"
+      },
+      "original_units_preserved": true,
+      "rollback_jobs": [],
+      "rollback_reservations": [],
+      "events": [
+        {
+          "time_berlin": "2026-10-28T19:15:02.390875+01:00",
+          "message": "Stopping studio-agent.service - MN Molecular Design Studio studio-agent..."
+        },
+        {
+          "time_berlin": "2026-10-28T19:15:02.391168+01:00",
+          "message": "Stopping studio-api.service - MN Molecular Design Studio studio-api..."
+        },
+        {
+          "time_berlin": "2026-10-28T19:15:04.838913+01:00",
+          "message": "Started studio-api.service - MN Molecular Design Studio studio-api."
+        },
+        {
+          "time_berlin": "2026-10-28T19:15:04.840100+01:00",
+          "message": "Started studio-agent.service - MN Molecular Design Studio studio-agent."
+        },
+        {
+          "time_berlin": "2026-10-28T19:22:21.608492+01:00",
+          "message": "Stopping studio-agent.service - MN Molecular Design Studio studio-agent..."
+        },
+        {
+          "time_berlin": "2026-10-28T19:22:21.608796+01:00",
+          "message": "Stopping studio-api.service - MN Molecular Design Studio studio-api..."
+        },
+        {
+          "time_berlin": "2026-10-28T19:22:27.062896+01:00",
+          "message": "Started studio-api.service - MN Molecular Design Studio studio-api."
+        },
+        {
+          "time_berlin": "2026-10-28T19:22:27.064073+01:00",
+          "message": "Started studio-agent.service - MN Molecular Design Studio studio-agent."
+        }
+      ]
+    },
+    "pc004033": {
+      "before_fingerprint": "5569f8a69023be09c6079d2608fb383d60ba7a1dbcca1bd29e96c92c7fa53d5b",
+      "active_fingerprint": "96814c66c8f1afdf5a7beae74a30f15f6452fddf32470e930bd73e4abc8f92fe",
+      "rollback_fingerprint": "5569f8a69023be09c6079d2608fb383d60ba7a1dbcca1bd29e96c92c7fa53d5b",
+      "active_processes": {
+        "studio-api": {
+          "pid": 120196,
+          "pythonpath": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b/source",
+          "cwd": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b/source"
+        },
+        "studio-agent": {
+          "pid": 120197,
+          "pythonpath": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b/source",
+          "cwd": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b/source"
+        },
+        "application_bridge": {
+          "pid": 120199,
+          "pythonpath": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b/source"
+        }
+      },
+      "api_health_at_activation": {
+        "status": "ok",
+        "app": "mn-molecular-design-studio",
+        "api_version": "v1"
+      },
+      "original_units_preserved": true,
+      "rollback_jobs": [],
+      "rollback_reservations": [],
+      "events": [
+        {
+          "time_berlin": "2026-10-28T19:15:03.550445+01:00",
+          "message": "Stopping studio-agent.service - MN Molecular Design Studio studio-agent..."
+        },
+        {
+          "time_berlin": "2026-10-28T19:15:03.550730+01:00",
+          "message": "Stopping studio-api.service - MN Molecular Design Studio studio-api..."
+        },
+        {
+          "time_berlin": "2026-10-28T19:15:05.369982+01:00",
+          "message": "Started studio-api.service - MN Molecular Design Studio studio-api."
+        },
+        {
+          "time_berlin": "2026-10-28T19:15:05.371021+01:00",
+          "message": "Started studio-agent.service - MN Molecular Design Studio studio-agent."
+        },
+        {
+          "time_berlin": "2026-10-28T19:22:27.582178+01:00",
+          "message": "Stopping studio-agent.service - MN Molecular Design Studio studio-agent..."
+        },
+        {
+          "time_berlin": "2026-10-28T19:22:27.582478+01:00",
+          "message": "Stopping studio-api.service - MN Molecular Design Studio studio-api..."
+        },
+        {
+          "time_berlin": "2026-10-28T19:22:28.079992+01:00",
+          "message": "Started studio-api.service - MN Molecular Design Studio studio-api."
+        },
+        {
+          "time_berlin": "2026-10-28T19:22:28.081147+01:00",
+          "message": "Started studio-agent.service - MN Molecular Design Studio studio-agent."
+        }
+      ]
+    }
+  },
+  "native_submission": {
+    "status": 422,
+    "body": "{\"detail\":\"[Errno 36] File name too long: '{\\\"anneal_steps\\\": 1, \\\"autotune\\\": false, \\\"compile_next_length\\\": false, \\\"design_models\\\": [\\\"model_1_multimer_v3\\\"], \\\"desperation\\\": false, \\\"enough_passing_sequences\\\": 1, \\\"harden_steps\\\": 1, \\\"kept_sequences\\\": 1, \\\"mutate_steps\\\": 1, \\\"refine_steps\\\": 1, \\\"save_design_animations\\\": false, \\\"save_failed_trajectories\\\": true, \\\"save_loss_plots\\\": false, \\\"screen_steps\\\": 1, \\\"sequence_candidates\\\": 1, \\\"validation_models\\\": [\\\"model_1_ptm\\\"]}'\"}"
+  },
+  "orphan_controller_run": "campaign/20261028-191924-818b1d58",
+  "orphan_disposition": "failed before scheduler acceptance; request files preserved",
+  "local_correction_commit": "191c5a1",
+  "correction_activated": false,
+  "new_generator_invocations": 0,
+  "new_predictor_inputs": 0,
+  "monitor": {
+    "host_samples": 348,
+    "first_utc": "2026-10-28T18:17:55.009586+00:00",
+    "last_utc": "2026-10-28T18:22:30.170028+00:00",
+    "running_job_observations": 0,
+    "lease_observations": 0
+  },
+  "artifact_hashes_preserved": 27,
+  "tests": {
+    "reproduction": "2 failed, 11 passed (expected pre-fix failure)",
+    "fix_regressions": "49 passed in 19.70 s",
+    "exact_api_submission_and_inline_inputs": "14 passed in 1.61 s; deterministic, no GPU work"
+  },
+  "evidence_root": "/mnt/data/RESULTS/mn-molecular-design-studio/verification/phase7b-distributed-acceptance"
+}
