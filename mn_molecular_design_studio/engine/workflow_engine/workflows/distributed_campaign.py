@@ -658,6 +658,213 @@ def _gpu_for_attempt(config: dict[str, Any], ordinal: int) -> str:
     return ids[(ordinal - 1) % len(ids)]
 
 
+def _peer_campaign_mode(config: dict[str, Any]) -> bool:
+    """Whether this campaign should submit eligible attempts through peer dispatch."""
+    placement = str(config.get("workstation_selection") or "local").strip().lower()
+    if placement == "local":
+        return False
+    from mn_molecular_design_studio.cluster import config as cluster_config
+
+    mode = cluster_config.load().get("mode")
+    if mode in {"peer", "coordinator"}:
+        return True
+    if placement == "eligible":
+        raise ValueError("Eligible workstation execution requires an enrolled peer or coordinator.")
+    return False
+
+
+def _campaign_actor(parent_run_dir: Path) -> tuple[str, str]:
+    """Resolve the campaign owner/project from durable metadata or its API marker."""
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+
+    metadata = read_json(Path(parent_run_dir) / "metadata.json")
+    marker = read_json(Path(parent_run_dir) / "molecular_design_studio.json")
+    owner_id = str(metadata.get("studio_owner_id") or marker.get("studio_owner_id") or "")
+    project_id = str(metadata.get("studio_project_id") or metadata.get("project_id") or marker.get("project_id") or "")
+    if not owner_id or not project_id:
+        raise ValueError("Remote campaign attempts require a project-owned API submission.")
+    return owner_id, project_id
+
+
+def _submit_rfd4_peer_attempt(
+    parent_run_dir: Path,
+    ledger: CampaignLedger,
+    attempt: dict[str, Any],
+    child_run_dir: Path,
+) -> dict[str, Any]:
+    """Submit or recover one idempotent remote RFD4 attempt for its local proxy run."""
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json
+    from mn_molecular_design_studio.cluster import candidate_batches
+
+    parent_run_dir, child_run_dir = Path(parent_run_dir), Path(child_run_dir)
+    state = ledger.snapshot()
+    campaign_id = state["campaign_id"]
+    peer = dict(attempt.get("cluster_submission") or {})
+    peer.setdefault("manifest", str(child_run_dir / "artifacts" / "distributed_campaign" / "peer_submission.json"))
+    peer.setdefault("transfers", {})
+    peer.setdefault("submission_key", hashlib.sha256(
+        f"{campaign_id}:{attempt['attempt_id']}:rfd4".encode()
+    ).hexdigest())
+    owner_id, project_id = _campaign_actor(parent_run_dir)
+    child_payload = read_json(child_run_dir / "input.json")
+    parameters = dict(child_payload.get("params") or {})
+    parameters["gpu_device"] = "auto"
+    parameters.pop("distributed_campaign", None)
+    metadata = read_json(child_run_dir / "metadata.json")
+    resources = dict(metadata.get("resource_request") or {})
+    resources.update(gpu=True, gpu_device="auto")
+    request = {
+        "schema_version": 1,
+        "workflow": "design.rfd4_proteina",
+        "parameters": parameters,
+        "resources": resources,
+    }
+
+    def persist() -> None:
+        ledger.transition(
+            attempt["attempt_id"], "queued", child_run_dir=str(child_run_dir),
+            cluster_submission=peer, remote_submission_key=peer["submission_key"],
+        )
+
+    result = candidate_batches.submit(
+        request, peer["manifest"], peer["submission_key"], {"placement": "auto"},
+        owner_id=owner_id, project_id=project_id, state=peer, persist=persist,
+    )
+    peer["cluster_job_id"] = result["cluster_job_id"]
+    peer["origin_node_id"] = result.get("origin_node_id")
+    metadata.update(
+        cluster_remote=True,
+        cluster_job_id=peer["cluster_job_id"],
+        remote_submission_key=peer["submission_key"],
+        requested_workstation_selection=state["config"].get("workstation_selection"),
+    )
+    write_json(child_run_dir / "metadata.json", metadata)
+    ledger.transition(
+        attempt["attempt_id"], "queued", child_run_dir=str(child_run_dir),
+        cluster_job_id=peer["cluster_job_id"], cluster_submission=peer,
+        remote_submission_key=peer["submission_key"],
+    )
+    return peer
+
+
+def _materialize_rfd4_peer_output(
+    parent_run_dir: Path,
+    ledger: CampaignLedger,
+    attempt: dict[str, Any],
+    child_run_dir: Path,
+    peer: dict[str, Any],
+    output: dict[str, Any],
+    remote_job: dict[str, Any],
+) -> bool:
+    """Copy SHA-verified remote artifacts into the local attempt proxy."""
+    import shutil
+
+    from mn_molecular_design_studio.cluster import candidate_batches
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json
+
+    owner_id, project_id = _campaign_actor(parent_run_dir)
+    collected = Path(peer["manifest"]).with_suffix(".collected")
+    job_id = str(peer.get("cluster_job_id") or "")
+    # These files are needed by the campaign's existing target/parameter
+    # identity checks. Candidate structures and normalized rows are fetched by
+    # candidate_batches.poll() from their own artifact references.
+    request_relative = "artifacts/rfd4_proteina/request.json"
+    if candidate_batches._artifact(
+        peer, job_id, request_relative, candidate_batches.actor(owner_id, project_id), collected,
+    ) is None:
+        return False
+    remote_request = read_json(collected / request_relative)
+    target_value = remote_request.get("target_structure")
+    if not target_value and isinstance(remote_request.get("parameters"), dict):
+        target_value = remote_request["parameters"].get("target_structure")
+    target_name = Path(str(target_value or "")).name
+    if not target_name or target_name in {".", ".."}:
+        raise RuntimeError("Remote RFD4 request is missing its staged target identity.")
+    for relative in (
+        f"artifacts/rfd4_proteina/input/{target_name}",
+        "artifacts/rfd4_proteina/native_command.json",
+        "artifacts/rfd4_proteina/effective_config.yaml",
+        "artifacts/rfd4_proteina/prepared_inputs.json",
+    ):
+        if candidate_batches._artifact(peer, job_id, relative, candidate_batches.actor(owner_id, project_id), collected) is None:
+            return False
+
+    source_artifacts = collected / "artifacts"
+    if not source_artifacts.is_dir():
+        raise RuntimeError("Remote RFD4 completed without a collected artifact directory.")
+    shutil.copytree(source_artifacts, child_run_dir / "artifacts", dirs_exist_ok=True)
+    rows_path = Path(output["candidates_jsonl"])
+    if not rows_path.is_file():
+        raise RuntimeError("Remote RFD4 completed without normalized candidates.")
+
+    def rebase(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: rebase(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [rebase(item) for item in value]
+        if isinstance(value, str) and (value == str(collected) or value.startswith(str(collected) + os.sep)):
+            return str(child_run_dir) + value[len(str(collected)):]
+        return value
+
+    rows = [rebase(json.loads(line)) for line in rows_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    normalized = child_run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+    normalized.parent.mkdir(parents=True, exist_ok=True)
+    normalized.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
+    remote_metadata = read_json(collected / "metadata.json")
+    remote_result = read_json(collected / "result.json")
+    if remote_metadata.get("status") != "completed" or remote_result.get("success") is not True:
+        raise RuntimeError("Remote completion disagrees with the transferred RFD4 result.")
+    write_json(child_run_dir / "result.json", remote_result)
+    from mn_molecular_design_studio.cache_provenance import file_digest
+    native_command = read_json(child_run_dir / "artifacts" / "rfd4_proteina" / "native_command.json")
+    effective_config_path = child_run_dir / "artifacts" / "rfd4_proteina" / "effective_config.yaml"
+    allocation = remote_metadata.get("resource_allocation") if isinstance(remote_metadata.get("resource_allocation"), dict) else {}
+    write_json(child_run_dir / "artifacts" / "distributed_campaign" / "remote_execution.json", {
+        "cluster_job_id": job_id,
+        "worker_node_id": remote_job.get("node_id"),
+        "worker_name": remote_job.get("node_name") or remote_job.get("name"),
+        "status": remote_metadata.get("status"),
+        "resource_allocation": remote_metadata.get("resource_allocation") or {},
+        "software_environment": remote_metadata.get("software_environment") or {},
+        "checkpoint_revision": remote_result.get("metrics", {}).get("checkpoint_revision"),
+        "image": remote_result.get("metrics", {}).get("image"),
+        "started_at": remote_metadata.get("worker_started_at") or remote_metadata.get("started_at"),
+        "created_at": remote_metadata.get("created_at"),
+        "queue_wait_seconds": remote_metadata.get("queue_wait_seconds"),
+        "allocated_at": allocation.get("allocated_at"),
+        "completed_at": remote_metadata.get("completed_at"),
+        "native_invocation": native_command,
+        "effective_config_sha256": file_digest(effective_config_path) if effective_config_path.is_file() else None,
+        "input_transfer_bytes": peer.get("input_transfer_bytes", 0),
+        "output_transfer_bytes": peer.get("output_transfer_bytes", 0),
+        "transfers": peer.get("transfers", {}),
+    })
+    local_metadata = read_json(child_run_dir / "metadata.json")
+    local_metadata.update(
+        status="completed",
+        cluster_job_id=job_id,
+        execution_node_id=remote_job.get("node_id"),
+        scheduler_worker_id=remote_metadata.get("scheduler_worker_id") or remote_metadata.get("worker_id") or remote_job.get("node_id"),
+        resource_allocation=allocation,
+        worker_started_at=remote_metadata.get("worker_started_at") or allocation.get("allocated_at"),
+        completed_at=remote_metadata.get("completed_at"),
+        remote_execution_node_id=remote_job.get("node_id"),
+        remote_status="completed",
+    )
+    write_json(child_run_dir / "metadata.json", local_metadata)
+    attempt_state = ledger.snapshot()["attempts"].get(attempt["attempt_id"], {})
+    peer_state = dict(attempt_state.get("cluster_submission") or peer)
+    peer_state["collected_output"] = output
+    peer_state["worker_node_id"] = remote_job.get("node_id")
+    peer_state["resource_allocation"] = allocation
+    ledger.transition(
+        attempt["attempt_id"], "running", cluster_submission=peer_state,
+        worker_node_id=remote_job.get("node_id"), resource_allocation=allocation,
+        remote_completed_at=remote_metadata.get("completed_at"),
+    )
+    return True
+
+
 def _attempt_child_inputs(parent_inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
     """Rebase staged target references into each isolated native child run."""
     target_type = str(params.get("target_type") or parent_inputs.get("target_type") or "structure")
@@ -956,6 +1163,7 @@ def _create_rfd4_attempt_child(
     if staged_target is None or not staged_target.is_file():
         raise ValueError("RFD4 campaign parent has no staged target structure to share with attempts.")
 
+    peer_execution = _peer_campaign_mode(config)
     child_kwargs = dict(parent_params)
     child_kwargs.update(
         target_structure=str(staged_target),
@@ -965,7 +1173,7 @@ def _create_rfd4_attempt_child(
         num_designs=1,
         batch_size=1,
         seed=int(attempt["seed"]),
-        gpu_device=_gpu_for_attempt(config, int(attempt["ordinal"])),
+        gpu_device="auto" if peer_execution else _gpu_for_attempt(config, int(attempt["ordinal"])),
         cpu_cores=int((config.get("resources") or {}).get("cpu_cores") or parent_params.get("cpu_cores") or 8),
         job_name=f"{parent_params.get('job_name') or parent_run_dir.name}-{attempt['ordinal']:08d}",
         distributed_campaign=None,
@@ -1009,14 +1217,19 @@ def _create_rfd4_attempt_child(
         distributed_batch_id=attempt["batch_id"],
         benchmark_engine="rfd4_proteina",
         resource_request=resource_request,
+        cluster_remote=peer_execution,
     )
     write_json(child_run_dir / "metadata.json", metadata)
     ledger.transition(
         attempt["attempt_id"], "queued", child_run_dir=str(child_run_dir),
         native_campaign_seed=int(attempt["seed"]), attempt_unit="one native design request",
-        requested_outputs=1,
+        requested_outputs=1, cluster_remote=peer_execution,
     )
-    spawn_worker_for_run(child_run_dir)
+    if peer_execution:
+        current_attempt = ledger.snapshot()["attempts"][attempt["attempt_id"]]
+        _submit_rfd4_peer_attempt(parent_run_dir, ledger, current_attempt, child_run_dir)
+    else:
+        spawn_worker_for_run(child_run_dir)
     return child_run_dir
 
 
@@ -1042,9 +1255,10 @@ def _repair_rfd4_attempt_child(
     parent_run_dir, child_run_dir = Path(parent_run_dir), Path(child_run_dir)
     child_payload = read_json(child_run_dir / "input.json")
     params = child_payload.get("params") if isinstance(child_payload.get("params"), dict) else {}
+    peer_execution = _peer_campaign_mode(config)
     params.update(
         num_designs=1, batch_size=1, seed=int(attempt["seed"]),
-        gpu_device=_gpu_for_attempt(config, int(attempt["ordinal"])),
+        gpu_device="auto" if peer_execution else _gpu_for_attempt(config, int(attempt["ordinal"])),
         distributed_campaign=None,
     )
     child_payload["params"] = params
@@ -1064,6 +1278,7 @@ def _repair_rfd4_attempt_child(
         distributed_batch_id=attempt["batch_id"],
         benchmark_engine="rfd4_proteina",
         resource_request=resource_request,
+        cluster_remote=peer_execution,
     )
     write_json(child_run_dir / "metadata.json", metadata)
     request_path = child_run_dir / "worker_request.json"
@@ -1087,7 +1302,10 @@ def _repair_rfd4_attempt_child(
             ],
         })
     if metadata.get("status") == "queued" and not metadata.get("scheduler_dispatch_requested"):
-        spawn_worker_for_run(child_run_dir)
+        if peer_execution:
+            _submit_rfd4_peer_attempt(parent_run_dir, CampaignLedger(_campaign_ledger_path(parent_run_dir)), attempt, child_run_dir)
+        else:
+            spawn_worker_for_run(child_run_dir)
 
 
 def _create_attempt_child(
@@ -1377,9 +1595,12 @@ def _reconcile_attempts(
         elif str(read_json(child / "metadata.json").get("status") or "") == "queued":
             dispatch_meta = read_json(child / "metadata.json")
             if not dispatch_meta.get("scheduler_dispatch_requested") and not dispatch_meta.get("scheduler_job_id"):
-                from mn_molecular_design_studio.engine.workflow_engine.core.local_worker import spawn_worker_for_run
+                if dispatch_meta.get("cluster_remote"):
+                    _submit_rfd4_peer_attempt(parent_run_dir, ledger, attempt, child)
+                else:
+                    from mn_molecular_design_studio.engine.workflow_engine.core.local_worker import spawn_worker_for_run
 
-                spawn_worker_for_run(child)
+                    spawn_worker_for_run(child)
                 ledger.transition(attempt_id, "queued", child_run_dir=str(child))
     active: list[dict[str, Any]] = []
     candidate_rows: list[dict[str, Any]] = []
@@ -1408,6 +1629,84 @@ def _reconcile_attempts(
             if latest_attempt.get("status") in {"authorized", "queued", "running"}:
                 active.append(latest_attempt)
             continue
+        attempt = ledger.snapshot()["attempts"].get(attempt_id, attempt)
+        child_metadata = read_json(child / "metadata.json")
+        if (
+            generator_id == "rfd4_proteina"
+            and attempt.get("status") not in {"completed", "failed", "interrupted", "cancelled", "not_started"}
+            and (attempt.get("cluster_submission") or child_metadata.get("cluster_remote"))
+        ):
+            from mn_molecular_design_studio.cluster import candidate_batches
+
+            peer = dict(attempt.get("cluster_submission") or {})
+            try:
+                if not peer.get("cluster_job_id"):
+                    peer = _submit_rfd4_peer_attempt(parent_run_dir, ledger, attempt, child)
+                    attempt = ledger.snapshot()["attempts"][attempt_id]
+                    peer = dict(attempt.get("cluster_submission") or peer)
+                owner_id, project_id = _campaign_actor(parent_run_dir)
+                peer_status, peer_output, peer_job = candidate_batches.poll(
+                    peer, owner_id=owner_id, project_id=project_id,
+                )
+            except Exception as exc:
+                failure = f"{type(exc).__name__}: {exc}"
+                child_metadata.update(status="failed", worker_error=failure, completed_at=utc_now())
+                from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json
+                write_json(child / "metadata.json", child_metadata)
+                ledger.transition(attempt_id, "failed", child_run_dir=str(child), failure=failure)
+                continue
+            peer["cluster_job_id"] = peer.get("cluster_job_id") or peer_job.get("cluster_job_id")
+            peer["worker_node_id"] = peer_job.get("node_id")
+            peer["wait_reason"] = peer_job.get("wait_reason") or peer.get("wait_reason") or ""
+            remote_metadata = peer_job.get("metadata") if isinstance(peer_job.get("metadata"), dict) else {}
+            ledger.transition(
+                attempt_id,
+                "running" if peer_status == "running" else "queued",
+                cluster_submission=peer,
+                cluster_job_id=peer.get("cluster_job_id"),
+                worker_node_id=peer.get("worker_node_id"),
+                wait_reason=peer.get("wait_reason"),
+            )
+            child_metadata.update(
+                cluster_remote=True,
+                cluster_job_id=peer.get("cluster_job_id"),
+                execution_node_id=peer.get("worker_node_id"),
+                remote_status=peer_status,
+                remote_wait_reason=peer.get("wait_reason"),
+                resource_allocation=remote_metadata.get("resource_allocation") or child_metadata.get("resource_allocation") or {},
+                worker_started_at=remote_metadata.get("worker_started_at") or child_metadata.get("worker_started_at"),
+                scheduler_worker_id=remote_metadata.get("scheduler_worker_id") or peer.get("worker_node_id"),
+            )
+            if peer_status == "completed" and peer_output is not None:
+                if not _materialize_rfd4_peer_output(
+                    parent_run_dir, ledger, attempt, child, peer, peer_output, peer_job,
+                ):
+                    latest = ledger.snapshot()["attempts"][attempt_id]
+                    active.append({**latest, "worker_status": "collecting", "worker_node_id": peer.get("worker_node_id")})
+                    continue
+                attempt = ledger.snapshot()["attempts"][attempt_id]
+            elif peer_status in {"failed", "cancelled", "lost"}:
+                terminal = "cancelled" if peer_status == "cancelled" else "failed"
+                child_metadata.update(status=terminal, worker_error=peer_job.get("wait_reason") or peer_status, completed_at=utc_now())
+                from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json
+                write_json(child / "metadata.json", child_metadata)
+                ledger.transition(
+                    attempt_id, terminal, child_run_dir=str(child),
+                    failure=peer_job.get("wait_reason") or peer_status,
+                )
+                continue
+            else:
+                child_metadata["status"] = "running" if peer_status == "running" else "queued"
+                from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json
+                write_json(child / "metadata.json", child_metadata)
+                latest = ledger.snapshot()["attempts"][attempt_id]
+                active.append({
+                    **latest,
+                    "worker_status": peer_status,
+                    "worker_node_id": peer.get("worker_node_id"),
+                    "wait_reason": peer.get("wait_reason"),
+                })
+                continue
         metadata = read_json(child / "metadata.json")
         status = str(metadata.get("status") or "unknown")
         result = read_json(child / "result.json")
@@ -1466,7 +1765,10 @@ def _reconcile_attempts(
             )
             continue
         if status in {"failed", "cancelled"}:
-            retry_allowed = int(attempt.get("retry_count", 0)) < int(config["max_retries"])
+            retry_allowed = (
+                not attempt.get("cluster_submission")
+                and int(attempt.get("retry_count", 0)) < int(config["max_retries"])
+            )
             if generator_id == "rfd4_proteina" and not _rfd4_retry_safe(child):
                 retry_allowed = False
             if status == "failed" and retry_allowed:
@@ -1766,9 +2068,42 @@ def _cancel_queued_attempts(ledger: CampaignLedger, children: dict[str, Path], r
         child = children.get(attempt_id)
         if child is not None:
             metadata = read_json(child / "metadata.json")
-            if metadata.get("status") in {"queued", "preparing"}:
+            if attempt.get("cluster_submission"):
+                _cancel_campaign_attempt(ledger, attempt, child, reason)
+            elif metadata.get("status") in {"queued", "preparing"}:
                 stop_job(child, reason)
         ledger.transition(attempt_id, "not_started", stop_reason=reason)
+
+
+def _cancel_campaign_attempt(
+    ledger: CampaignLedger,
+    attempt: dict[str, Any],
+    child: Path,
+    reason: str,
+) -> None:
+    """Cancel the originating peer job when an attempt has been dispatched remotely."""
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json, stop_job
+
+    peer = attempt.get("cluster_submission") if isinstance(attempt.get("cluster_submission"), dict) else {}
+    if peer.get("cluster_job_id"):
+        from mn_molecular_design_studio.cluster import candidate_batches
+
+        parent = Path(child).parent
+        # Attempt runs live below the same results root as their campaign
+        # parent, recorded durably in their own metadata.
+        metadata = read_json(child / "metadata.json")
+        parent_text = str(metadata.get("parent_run_dir") or "")
+        if parent_text:
+            parent = Path(parent_text)
+        owner_id, project_id = _campaign_actor(parent)
+        candidate_batches.cancel(peer, owner_id=owner_id, project_id=project_id)
+        current = read_json(child / "metadata.json")
+        current.update(status="cancelled", cancel_reason=reason, completed_at=utc_now())
+        write_json(child / "metadata.json", current)
+        return
+    metadata = read_json(child / "metadata.json")
+    if metadata.get("status") in {"queued", "preparing", "running"}:
+        stop_job(child, reason)
 
 
 def _cancel_validation_runs(ledger: CampaignLedger, reason: str) -> None:
@@ -2545,10 +2880,15 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
             if parent_metadata.get("status") == "cancelled" or state.get("termination_reason") == "cancelled":
                 ledger.terminate("cancelled", detail="Campaign cancelled by user.")
                 children = _attempt_child_paths(ledger)
-                from mn_molecular_design_studio.engine.workflow_engine.core.jobs import stop_job
-                for child in children.values():
-                    if read_json(child / "metadata.json").get("status") in {"queued", "preparing", "running"}:
-                        stop_job(child, f"Parent {capability.label} campaign cancelled")
+                for attempt_id, attempt in ledger.snapshot()["attempts"].items():
+                    child = children.get(attempt_id)
+                    if child is None or attempt.get("status") not in {"authorized", "queued", "running"}:
+                        continue
+                    _cancel_campaign_attempt(
+                        ledger, attempt, child, f"Parent {capability.label} campaign cancelled",
+                    )
+                    if attempt.get("status") in {"authorized", "queued", "running"}:
+                        ledger.transition(attempt_id, "cancelled", stop_reason="Parent campaign cancelled")
                 _cancel_validation_runs(ledger, f"Parent {capability.label} campaign cancelled")
                 _, _, candidates = _reconcile_attempts(ledger, parent_run_dir, config)
                 _sync_parent_results(parent_run_dir, ledger, children, candidates)
@@ -2689,10 +3029,10 @@ def cancel_distributed_campaign(parent_run_dir: Path, reason: str = "Campaign ca
 
     children = _attempt_child_paths(ledger)
     for attempt_id, child in children.items():
+        attempt = ledger.snapshot()["attempts"].get(attempt_id, {})
         status = str(read_json(child / "metadata.json").get("status") or "")
         if status in {"queued", "preparing", "running"}:
-            stop_job(child, reason)
-        attempt = ledger.snapshot()["attempts"].get(attempt_id, {})
+            _cancel_campaign_attempt(ledger, attempt, child, reason)
         if attempt.get("status") in {"authorized", "queued", "running"}:
             ledger.transition(attempt_id, "cancelled", stop_reason=reason)
     _cancel_validation_runs(ledger, reason)

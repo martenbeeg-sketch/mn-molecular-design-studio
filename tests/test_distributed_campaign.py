@@ -148,6 +148,143 @@ def test_validated_acceptance_requires_explicit_stage_measurements(tmp_path):
         )
 
 
+def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worker(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs, workflow_queue, local_worker
+
+    parent = tmp_path / "parent"
+    target = parent / "artifacts/rfd4_proteina/input/PD-L1.pdb.cif"
+    target.parent.mkdir(parents=True)
+    target.write_text("data_target\n")
+    jobs.write_json(parent / "input.json", {"params": {
+        "task": "protein_binder", "input_mode": "guided_binder", "target_structure": str(target),
+        "target_chains": ["A"], "num_designs": 1, "batch_size": 1, "nsteps": 60,
+        "options": {"deterministic": True, "filter_conditions": True, "refold": False},
+    }})
+    jobs.write_json(parent / "artifacts/rfd4_proteina/request.json", {
+        "target_structure": "/work/artifacts/rfd4_proteina/input/PD-L1.pdb.cif",
+    })
+    jobs.write_json(parent / "metadata.json", {"studio_owner_id": "owner", "studio_project_id": "project"})
+    campaign_config = distributed_campaign.validate_campaign_config({
+        "generator_id": "rfd4_proteina", "accepted_target": 1, "max_attempts": 1,
+        "acceptance_level": "validated",
+        "validation_stages": [{"workflow": "refolding.optimized_prediction", "required_metrics": ["iptm"]}],
+        "workstation_selection": "auto", "max_retries": 0,
+    })
+    ledger = CampaignLedger.create(parent / "ledger.json", campaign_config, campaign_id="remote-campaign")
+    attempt = ledger.authorize(1, batch_id="b000001")[0]
+    monkeypatch.setattr(distributed_campaign, "_peer_campaign_mode", lambda _config: True)
+
+    child = tmp_path / "design" / "proxy-child"
+
+    def enqueue(_function, *, task_group, tool, job_type, kwargs, **_options):
+        child.mkdir(parents=True)
+        jobs.write_json(child / "input.json", {"task_group": task_group, "tool": tool,
+                                                "job_type": job_type, "params": kwargs})
+        jobs.write_json(child / "metadata.json", {"status": "queued"})
+        jobs.write_json(child / "worker_request.json", {"kind": "workflow_call"})
+        jobs.write_json(child / "command.json", {"mode": "internal", "command": []})
+        return child
+
+    monkeypatch.setattr(workflow_queue, "enqueue_workflow_call", enqueue)
+    monkeypatch.setattr(
+        local_worker, "spawn_worker_for_run",
+        lambda *_args, **_kwargs: pytest.fail("Remote attempts must not start a local worker."),
+    )
+    submissions = []
+
+    def submit(request, manifest, submission_key, settings, *, owner_id, project_id, state, persist):
+        assert request["workflow"] == "design.rfd4_proteina"
+        assert request["parameters"]["gpu_device"] == "auto"
+        assert request["resources"]["gpu_device"] == "auto"
+        assert settings["placement"] == "auto"
+        assert owner_id == "owner" and project_id == "project"
+        assert submission_key == state["submission_key"]
+        state["prepared_envelope"] = {"idempotency_key": submission_key}
+        persist()
+        submissions.append((manifest, submission_key, ledger.snapshot()["attempts"][attempt["attempt_id"]]))
+        state["cluster_job_id"] = "cluster-job"
+        persist()
+        return {"cluster_job_id": "cluster-job"}
+
+    monkeypatch.setattr("mn_molecular_design_studio.cluster.candidate_batches.submit", submit)
+    distributed_campaign._create_rfd4_attempt_child(parent, ledger, attempt, campaign_config)
+
+    latest = ledger.snapshot()["attempts"][attempt["attempt_id"]]
+    assert latest["status"] == "queued"
+    assert latest["cluster_job_id"] == "cluster-job"
+    assert latest["cluster_submission"]["prepared_envelope"]["idempotency_key"] == latest["remote_submission_key"]
+    assert submissions and submissions[0][2]["cluster_submission"]["prepared_envelope"]
+    metadata = jobs.read_json(child / "metadata.json")
+    assert metadata["cluster_remote"] is True
+    assert metadata["cluster_job_id"] == "cluster-job"
+
+
+def test_rfd4_remote_completion_materializes_verified_artifacts_and_provenance(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    from mn_molecular_design_studio.cluster import candidate_batches
+
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    jobs.write_json(parent / "metadata.json", {"studio_owner_id": "owner", "studio_project_id": "project"})
+    campaign = CampaignLedger.create(
+        parent / "ledger.json",
+        {"accepted_target": 1, "max_attempts": 1},
+        campaign_id="remote-collection-campaign",
+    )
+    attempt = campaign.authorize(1, batch_id="batch")[0]
+    campaign.transition(attempt["attempt_id"], "queued", cluster_job_id="cluster-job")
+    child = tmp_path / "design" / "child"
+    child.mkdir(parents=True)
+    jobs.write_json(child / "metadata.json", {"status": "queued", "cluster_remote": True})
+    manifest = tmp_path / "peer" / "submission.json"
+    collected = manifest.with_suffix(".collected")
+    artifacts = collected / "artifacts"
+    rfd4 = artifacts / "rfd4_proteina"
+    (rfd4 / "input").mkdir(parents=True)
+    jobs.write_json(rfd4 / "request.json", {"target_structure": "/work/artifacts/rfd4_proteina/input/benchmark_target.pdb.cif"})
+    (rfd4 / "input" / "benchmark_target.pdb.cif").write_text("target fixture\n")
+    jobs.write_json(rfd4 / "native_command.json", {"argv": ["rfd4-generate"]})
+    (rfd4 / "effective_config.yaml").write_text("seed: 19\n")
+    jobs.write_json(rfd4 / "prepared_inputs.json", {"target_chain": "A"})
+    jobs.write_json(collected / "metadata.json", {
+        "status": "completed", "resource_allocation": {"gpu_device": "0", "gpu_ids": ["GPU-5090"]},
+        "scheduler_worker_id": "worker-5090", "worker_started_at": "2026-10-28T10:00:00Z",
+        "completed_at": "2026-10-28T10:02:00Z",
+    })
+    jobs.write_json(collected / "result.json", {"success": True, "metrics": {"checkpoint_revision": "checkpoint-1", "image": "sha256:image"}})
+    normalized = artifacts / "normalized_candidates" / "candidates.jsonl"
+    normalized.parent.mkdir(parents=True)
+    normalized.write_text(json.dumps({"candidate_id": "native-1", "complex_structure_path": str(artifacts / "rfd4_proteina/output/complex.cif")}) + "\n")
+    remote_structure = rfd4 / "output" / "complex.cif"
+    remote_structure.parent.mkdir(parents=True)
+    remote_structure.write_text("complex fixture\n")
+    collected_normalized = artifacts / "normalized_candidates" / "collected.jsonl"
+    collected_normalized.write_text(normalized.read_text())
+
+    monkeypatch.setattr(candidate_batches, "actor", lambda *_args: {"id": "owner"})
+    monkeypatch.setattr(candidate_batches, "_artifact", lambda *_args: tmp_path / "unused")
+    peer = {
+        "manifest": str(manifest), "cluster_job_id": "cluster-job", "input_transfer_bytes": 42,
+        "output_transfer_bytes": 84, "transfers": {"result.json": {"sha256": "abc", "bytes": 10}},
+    }
+    output = {"candidates_jsonl": str(collected_normalized)}
+    remote_job = {"node_id": "node-5090", "node_name": "pc004032", "metadata": {}}
+
+    assert distributed_campaign._materialize_rfd4_peer_output(
+        parent, campaign, attempt, child, peer, output, remote_job,
+    )
+    local_rows = (child / "artifacts/normalized_candidates/candidates.jsonl").read_text()
+    assert str(child / "artifacts/rfd4_proteina/output/complex.cif") in local_rows
+    assert (child / "artifacts/rfd4_proteina/input/benchmark_target.pdb.cif").is_file()
+    provenance = jobs.read_json(child / "artifacts/distributed_campaign/remote_execution.json")
+    assert provenance["worker_node_id"] == "node-5090"
+    assert provenance["resource_allocation"]["gpu_ids"] == ["GPU-5090"]
+    assert provenance["checkpoint_revision"] == "checkpoint-1"
+    assert provenance["input_transfer_bytes"] == 42
+    assert jobs.read_json(child / "metadata.json")["scheduler_worker_id"] == "worker-5090"
+    assert campaign.snapshot()["attempts"][attempt["attempt_id"]]["worker_node_id"] == "node-5090"
+
+
 def test_failed_validation_stage_retries_same_run_within_campaign_limit(tmp_path, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs
 

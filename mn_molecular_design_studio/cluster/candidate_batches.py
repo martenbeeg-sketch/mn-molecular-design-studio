@@ -111,7 +111,7 @@ def pack_request(request, destination):
     return prepared, checksum, sorted(refs), total
 
 
-def submit(request, manifest, submission_key, settings, *, owner_id, project_id, state):
+def submit(request, manifest, submission_key, settings, *, owner_id, project_id, state, persist=None):
     if config.load()['mode'] not in {'peer', 'coordinator'}:
         raise ValueError('Candidate peer dispatch requires an enrolled peer or coordinator origin.')
     user = actor(owner_id, project_id)
@@ -124,12 +124,21 @@ def submit(request, manifest, submission_key, settings, *, owner_id, project_id,
             project_id=project_id, requirements=needs, origin_node=config.identity(),
             placement=settings['placement'], idempotency_key=submission_key)
         state['input_transfer_bytes'] = size
+        # Persist the immutable bundle and idempotency key before asking the
+        # coordinator to accept the job. A controller restart after acceptance
+        # can safely repeat the request and recover the same cluster job.
+        if persist is not None:
+            persist()
     envelope = state['prepared_envelope']
     with Store().connect() as db:
         db.execute('CREATE TABLE IF NOT EXISTS blob_grants(digest TEXT,owner_id TEXT,PRIMARY KEY(digest,owner_id))')
         db.execute('INSERT OR IGNORE INTO blob_grants VALUES (?,?)', (envelope['bundle_id'], owner_id))
     from .service import accept_submission
-    return accept_submission(envelope, user)['job']
+    result = accept_submission(envelope, user)['job']
+    state['cluster_job_id'] = result['cluster_job_id']
+    if persist is not None:
+        persist()
+    return result
 
 
 def _artifact(state, job_id, relative, user, directory):
