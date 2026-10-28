@@ -1274,7 +1274,8 @@
     "Four GPUs each executed real useful work, but maximum observed concurrent leases was three and simultaneous native inference across four was not demonstrated.",
     "Live Protenix chunks each contained one input; multi-input Protenix model reuse not tested.",
     "Native BindCraft root receipt missing from collected graph provenance; original worker receipt was retrieved read-only and retained.",
-    "Protenix candidate checkpoint_provenance/effective_settings fields are empty; model path/hash and exact settings are verified separately from native logs, mounts and manifest."
+    "Protenix candidate checkpoint_provenance/effective_settings fields are empty; model path/hash and exact settings are verified separately from native logs, mounts and manifest.",
+    "BindCraft requested min_vram_gb=8 in its graph but the native scheduler receipt reports 0.0; exact admission-floor propagation remains unverified."
   ],
   "original_files_preserved": [
     {

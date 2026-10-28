@@ -393,6 +393,8 @@ These are fresh computational confidence measurements, not experimental binding 
 
 The original P4/P5/native source ledgers and 27 tracked scientific files retain all pre-run hashes. The three original Git checkouts remain at `abf0f2e`, with their exact modified/untracked paper-reference files preserved byte-for-byte.
 
+**Resource receipt limit.** The BindCraft graph requested an 8-GiB minimum, but its native worker scheduler receipt reports `min_vram_gb=0.0`. CPU count, one GPU and the scientific trajectory cap were enforced, and the selected idle 5090 had ample memory, but end-to-end propagation of that admission floor is not verified. The actual receipt is retained rather than rewritten to the graph's requested value.
+
 **Provenance limits.** BindCraft's original worker `native_execution.json` confirms one returned Docker/native invocation, but its collected graph `source_provenance.native_execution` is null. The root receipt was retrieved read-only separately and preserved with the native source snapshot; the report's actual count uses that receipt. The original native campaign records AF2 checkpoint hashes and its image-internal MPNN checkpoint hash (`b166276f80a45cb3de24bceb3b47b2f47a60ff654660f09837cd775846411ad1`), without claiming that MPNN/validation ran. Boltz candidate records contain full checkpoint hashes. Protenix candidate `checkpoint_provenance` and `effective_settings` fields are empty: the actual model/settings are instead traced through the read-only reference mount, native checkpoint-load logs, unchanged preflight/final file hashes and exact CLI/batch manifest. This export-field gap remains unresolved and is not described as complete per-row provenance.
 
 ## 27. Results, exports and partial-output preservation
