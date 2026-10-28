@@ -1,9 +1,12 @@
-# Phase 7B — scientific acceptance blocked; activation rolled back
+# Phase 7B — bounded live execution completed; partial acceptance
 
-28 October 2026, Europe/Berlin. **Current status: incomplete. Approved `a628c33` activation was performed, verified, then rolled back after a real graph-submission defect.**
+28 October 2026, Europe/Berlin. **Final status: bounded live execution and recovery completed; acceptance is partial, with explicit remaining boundaries.**
 
-The original three runtimes are restored and healthy. No fresh scientific inference started. The minimal correction is committed locally as `191c5a1` and has not been activated. See [section 21](#21-approved-activation-attempt-and-verified-rollback) for the latest acceptance result and [machine evidence](evidence/phase7b-activation-rollback.json). Sections 1–20 preserve the earlier preflight record; their pending-activation language is historical and superseded by section 21.
-No fresh design or predictor inference was submitted. Nothing in this report establishes new live scientific workflow acceptance or simultaneous four-GPU inference.
+All three workstations run corrected revision `2edf8de82c9d43962bcb53f8a48f79080f9eebc3`, with matching active fingerprint `b16006af8914db18983c09225d595098214d6502f215600724f5a2b8545ab55e`. BindCraft2 completed one trajectory with a genuine screen rejection and zero eligible candidates. RFD4 produced one fresh candidate; it and the two retained P5 candidates each now have independent Boltz-2 and Protenix V2 results. Seven predictor input attempts produced six successful predictions; one Protenix failure on RTX 5090 was recovered on RTX 4090 without repeating completed inference. Results/ZIP and exact sequence/target identity passed verification.
+
+All four physical GPUs executed real work across the run. **Four simultaneous native inference processes were not demonstrated.** Positive complete-native comparison and downstream internal BindCraft stages remain unverified because the sole trajectory was rejected. Protenix V2's installed stock runtime failed on the 5090 despite passing the compiled-target inventory; its 4090 path succeeded. These limits prevent an unqualified full acceptance claim.
+
+The user authorized correcting problems and deploying working fixes to the other machines. Three scoped corrections were tested, committed locally and deployed through the reviewed idle-only service override/rollback pattern. Original checkouts, local edits and 27 protected scientific files remain unchanged; no shared scheduler/tunnel service, model, image, scientific threshold or generation budget was changed. No GitHub push or merge occurred. Sections 1–22 are the historical record; **sections 23–28 contain the final live findings**. Portable summary: [phase7b-live-acceptance.json](evidence/phase7b-live-acceptance.json).
 
 Evidence labels used below are **Real GPU execution**, **Retained scientific artifact**, **Deterministic execution fixture**, **Source inspection**, and **Unverified**. CPU-only container imports/probes are Source inspection, not Real GPU execution.
 
@@ -285,3 +288,147 @@ The minimal code correction adds `engine_overrides_json` to the same inline-cont
 A continuation requires review and authorization of the corrected runtime revision instead of `a628c33`, followed by another idle-only activation and the same bounded scientific acceptance. It must also replace the unmanaged Mode 2 retained-import reference with the genuine new managed native result, when available. No new architectural implementation phase is required for the local correction, but the approved runtime pin cannot be silently changed. Fresh complete BindCraft2/RFD4 execution, independent Boltz/Protenix evidence, real batching, four-GPU work, fresh Results/ZIP and scientific elapsed times remain unverified.
 
 Full continuation evidence: `activation/*-before.json`, `activation/*-active.json`, `activation/*-rollback.json`, `activation/*-service-events.json`, `activation/rollback-connectivity.json`, `live/native_complete-submission.json`, `live/native_complete-job.json`, `live/*validation*.json`, `live/gpu-scheduler-samples.jsonl`, `live/inline-json-reproduction.log`, `live/inline-json-fix-regression.log`, `live/native-api-fix-regression.log` and `live/original-source-hashes-after-activation-rollback.json` under the evidence root. Summary: [phase7b-activation-rollback.json](evidence/phase7b-activation-rollback.json).
+
+## 22. Authorized correction, redeployment and live continuation
+
+**Source inspection + Deterministic execution fixture.** Following the user's explicit instruction to fix problems and deploy working corrections to the other machines, revision `191c5a183656962b8311f2b587d6f486f7acb620` passed 29 focused tests and was activated through the same reviewed service drop-ins with only a new isolated source/backup directory (`phase7b-v2`). All three active fingerprints matched `136917928e508d86f8b710055a936e31272626fb2829730cb82914e45e807ed4`; exact service and idle application-bridge process environments were verified. All APIs were healthy.
+
+Two normal `/api/v1/pipelines/run` submissions then exposed a second integration defect before any native inference: `The candidate pipeline account is unavailable.` The local API tagged ordinary workflow controllers durably, but graph controllers lacked the development-account tag, and candidate batch lifecycle calls did not forward the existing `allow_development` permission. This did not indicate a scientific rejection. The native graph `20261028-193447-f20dc418` failed without a native child. The modular graph `20261028-193506-1465487b` preserved its two retained P5 candidate rows and exported partial Results despite generator/predictor dispatch failures. The normal Results API returned these two rows. Original services were restored after both controllers reached terminal states; no scientific work was interrupted. Raw evidence: `activation-v2/`, `live-v2/`.
+
+Revision `9668069435b4e9b1485163b2e9c8c9c74b074e73` applies the existing ordinary-workflow submission-tag pattern to the graph API and passes the durable controller development flag through peer submit/poll/cancel. It does not change authentication mode or infer admin access from a missing account. The existing actor still requires either a real enabled user or explicit permission for the single synthetic development identity, and checks project access. Production/development API identity, idempotent submission, peer lifecycle, cancellation, campaign and API integration tests passed: **91 passed in 23.56 s**. No model inference is represented by these fixtures.
+
+The revised deployment uses isolated `phase7b-v3/source` directories, pinned cleanly at `9668069`, on all three machines. Immediately before activation, app-filtered Studio queued/running jobs and scheduler reservations were empty and all four GPU utilization samples were zero. Only the seven Studio services and idle application bridges restarted. Original checkouts, units, unrelated scheduler/tunnel services, models and Results were preserved. After readiness settled, all APIs were healthy and exact process environments and fresh peer snapshots agreed on fingerprint `c9a5fd5e7e2300a3dff5943cba5e41447004ae79e43da3296f7ccc4bccc728bc`. An immediate first readiness request reached pc004033 before its API was listening; the subsequent check succeeded without another restart or code change. Evidence: `activation-v3/*-verify_active.json`.
+
+**Live execution in progress.** Normal API submissions, each with a new durable idempotency key after verifying prior attempts performed no inference:
+
+| Mode | Parent graph run | Submitted UTC | Saved graph revision |
+| --- | --- | --- | --- |
+| Complete native | `20261028-193839-caa59d85` | 18:38:39 | `b78b23a7` |
+| Modular RFD4 + retained P5 | `20261028-193858-4f33be74` | 18:38:58 | `f474b3a1` |
+
+Both use the normal CPU graph executor and distributed scheduler with the prepared scientific settings and retry limits. No native execution scripts were used. UUID-linked compute processes, app jobs, leases and GPU utilization are sampled every two seconds across the three machines into `live-v3/gpu-scheduler-samples.jsonl`. Final scientific outcomes, elapsed times, native counts, comparative Mode 2 and four-device acceptance remain pending until the actual receipts are collected.
+
+## 23. Final deployment and bounded recovery
+
+**Source inspection + Deterministic execution fixture.** Real prediction dispatch at `9668069` revealed a third integration defect: `resources.cpu_cores conflicts with parameters.cpu_cores`. The graph reserved its configured eight cores while the optimized-prediction adapter embedded a four-core default. Five candidate chunks failed validation before creating a native predictor process. The generator work was allowed to finish; its genuine outputs survived in partial Results. No active science was stopped.
+
+Correction `2edf8de82c9d43962bcb53f8a48f79080f9eebc3` binds the node's CPU choice into the effective parameters before freezing the immutable request. Ordinary resource conflict validation remains intact. Real Boltz/Protenix request construction through the normal validator, CandidateSet lifecycle, native collection and graph suites passed **153 tests in 97.32 s**. The focused CPU regression passed 16 tests in 1.88 s; these suites overlap. No model, numerical setting or acceptance rule changed.
+
+After all graph controllers and native jobs became terminal, original services were restored, then the reviewed override pattern activated new clean `phase7b-v4/source` directories on all three machines. Each activation rechecked app-filtered queues, scheduler leases and GPU activity. Service files and rollback backups remain available under each deployment directory. Final service/bridge process environments point to the pinned source and every fresh peer fingerprint matches. The APIs are healthy. The local controller UI is healthy and was used to inspect and download final Results. Existing runtime environments/images/checkpoints were reused; no installation, pull or image rebuild occurred.
+
+The modular continuation retained the newly completed RFD4 run plus the original two P5 candidates. The only graph changes were the genuine retained source and explicit placement of useful existing prediction chunks: fresh Boltz on local GPU 1, retained Boltz on pc004032, fresh Protenix on pc004033, retained Protenix on local GPU 0. CPU/VRAM, scientific settings, one seed/sample and retry limits were preserved. It validated and ran through `/api/v1/pipelines/run` and the ordinary distributed executor. No standalone scientific runner was used.
+
+The pc004033 Protenix process loaded the pinned checkpoint, then failed during its first model operation with `CUDA error: no kernel image is available for execution on the device`; its native CLI returned zero but the collection adapter correctly detected zero structures and marked the task failed. No prediction was fabricated from that exit status. Its failed manifest/logs and zero output count are retained. The CPU compiled-target probe was therefore insufficient to certify this installed stock runtime on RTX 5090. The exact underlying kernel/library cause remains unresolved; replacing images or numerical semantics was outside this bounded recovery.
+
+The same stock Protenix model succeeded on both retained candidates on a 4090. Recovery then changed only the failed fresh-candidate Protenix placement to local GPU 1 and enabled normal completed-step reuse. All relevant cache manifests were verified before submission. The recovery ran **one** new predictor child, reused **13** steps, and completed with zero failed steps. No generator or successful predictor was resampled. This used seven candidate–predictor input attempts in total, below the original eight-input ceiling, across six distinct input pairs. The generation counts remained one complete BindCraft invocation/one trajectory and one RFD4 request/one replicate; optional redesign generated zero variants.
+
+Raw evidence: `activation-v3/cpu-resource-*.log`, `activation-v4/`, `live-v4/*-submission.json`, `live-v4/*-job.json`, `live-v4/recovery-cache-verification.json`, `final-evidence/execution-receipts.json` and `final-evidence/active-runtime-verification.json`.
+
+## 24. Three live workflow outcomes and elapsed times
+
+**Real GPU execution.** All times below are UTC on 28 October; Europe/Berlin is UTC+1 on this date. Parent elapsed times include graph scheduling, staging, artifact collection and analysis; they are not native model throughput.
+
+| Operation | Managed run | Start → completion UTC | Elapsed | Outcome |
+| --- | --- | --- | --- | --- |
+| Mode 1 graph | `20261028-193839-caa59d85` | 18:38:39 → 18:40:46 | 127 s | Completed, 0 eligible candidates |
+| Native BindCraft2 child, pc004033 | `20261028-193907-c9b8a0a1` | 18:39:09 → 18:39:59 | 50 s worker interval | 1 trajectory, rejected at screen |
+| Initial Mode 3 graph | `20261028-193858-4f33be74` | 18:38:58 → 18:42:43 | 225 s | Fresh generation completed; predictor CPU conflict preserved partial Results |
+| Native RFD4 child, pc002975 GPU 0 | `20261028-193936-433a03d6` | 18:39:37 → 18:41:32 | 115 s worker interval | 1 sequence-complete 106-aa co-design |
+| Mode 2 graph, pc004033 | `20261028-194227-fc3fdda9` | 18:42:27 → 18:42:28 | 1 s | Genuine empty native source, 0 predictor jobs |
+| Mode 3 comparative continuation | `20261028-194549-e217df15` | 18:45:49 → 18:52:21 | 392 s | 3 Boltz + 2 Protenix outputs; 1 explicit Protenix failure |
+| Mode 3 recovery | `20261028-220218-57400312` | 21:02:18 → 21:05:36 | 198 s | 3 candidates, 6 predictions, 13 cached steps, 0 failures |
+
+**Mode 1.** The normal complete `design.bindcraft2` request recorded `trajectory_only=false`, the approved one-trajectory maximum, one worker, length 60, seed 20261027 and the preserved one-step stage overrides. The native campaign state reports one screen termination, zero MPNN-eligible trajectories and zero accepted candidates. The native log reports screen iPTM **0.12**, pLDDT **0.31**, rejection reason **pLDDT**. Native filters were unchanged. The failed trajectory CIF, losses CSV, campaign state, settings, checkpoint metadata and native stdout are preserved on pc004033 and in `live-v3/native-rejection-evidence.tar.gz` / `final-evidence/pc004033/20261028-193907-c9b8a0a1/`. Internal ProteinMPNN, AF2 validation and later filtering were not reached; running the complete workflow entrypoint is not proof that these conditional stages executed. No extra trajectory was generated to force passage.
+
+**Mode 2.** The graph uses the genuine completed managed native child on its execution workstation. Only the retained reference and its identical target path were changed from the prepared graph; target SHA-256 still equals `7da1c888011cdbd0937e3ff6b73429aa069e4c496cfa0cb8d8b53cc06ca73b57`. This avoids the earlier unmanaged-import API guard failure. Both enabled predictor branches recorded `batches=[]`, `processing_jobs=0`, and skipped empty input; analyzer, ranking and Results completed with zero rows while retaining the native rejection provenance. No RFD4 candidate was relabeled as a complete native output. Positive-candidate Mode 2 scientific evaluation remains **Unverified**, as required for zero eligible native candidates.
+
+**Mode 3.** One RFD4 guided co-design used the established PD-L1 chain A, hotspots A40/A99/A107, seed 20261028, 60 steps and the retained bounded settings. Its output was sequence-complete and bypassed initial ProteinMPNN. Optional redesign was disabled. The two existing P5 candidates were reused without new generation. Both independently configured predictor branches, unified analysis, cohort ranking and export executed automatically. Recovery required a new normal graph submission after the empirical runtime failure; this is not a claim that the initial end-to-end run was flawless.
+
+## 25. Physical GPU, scheduler lease and native process evidence
+
+**Real GPU execution.** Scheduler job IDs below identify the application leases; full lease owner IDs, run paths, GPU UUIDs, first/last samples and receipts are in `final-evidence/gpu-execution.json`. Native process intervals are conservative first/last `nvidia-smi --query-compute-apps` observations, sampled approximately every two seconds. They establish device-linked process activity, not continuous forward-pass utilization.
+
+| Workstation / GPU UUID | Useful workload | Scheduler job / lease | Native PID | CUDA process observations UTC |
+| --- | --- | --- | --- | --- |
+| pc004033 / `GPU-370f52fb-5676-7316-104d-5a9bf016fae1` | BindCraft2 native rejection | `2495488a005145938343cf57aec0c70d` | 142401 | 18:39:11.615–18:39:57.302 |
+| pc002975 GPU 0 / `GPU-195a1966-1148-340e-5fe2-bac2d7a9821a` | RFD4 fresh co-design | `4005bb5ab916469fae7f391abe8441fe` | 995823 | 18:40:30.966–18:41:26.344 |
+| pc004033 / same UUID above | Protenix failed first model operation | `f8c7e7fc2e074391a86886f630122492` | 161074 | 18:47:00.970–18:47:11.313 |
+| pc002975 GPU 1 / `GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21` | Boltz, fresh 106-aa input | `fcf13b7d0b13454998be753fcb409dcf` | 1015532 | 18:47:23.299–18:47:46.145 |
+| pc004032 / `GPU-b7f8339b-157f-e1f2-f136-bd0ad68bc780` | Boltz, two retained inputs | `ac10d8766bcb42b5925d568ddc839832` | 106184 | 18:47:46.162–18:47:51.087 |
+| pc002975 GPU 0 / same UUID above | Protenix, retained 94-aa input | `7b5db3f80b514d05bc1f550f4ffd7b67` | 1016592 | 18:49:06.051–18:49:35.140 |
+| pc002975 GPU 0 / same UUID above | Protenix, retained 116-aa input | `092f39c7c96c49d6aa3bacc0008c2d41` | 1025788 | 18:51:40.920–18:52:09.927 |
+| pc002975 GPU 1 / same UUID above | Protenix recovery, fresh 106-aa input | `0fb693cfed964fac96476c164b960674` | 1261764 | 21:04:56.536–21:05:25.574 |
+
+All four UUIDs have successful useful scientific execution: native BindCraft rejection on pc004033, Boltz on pc004032 and local GPU 1, and RFD4/Protenix on local GPU 0. The failed Protenix job is additional evidence, not the only scientific activity on pc004033.
+
+**Concurrency limit.** Maximum observed concurrent GPU leases was **three**, including preparation/loading: 18:46:39.000–18:47:13.735 and 18:47:28.178–18:47:51.161 UTC. The two native-design leases overlapped 18:39:37.969–18:40:02.117 UTC. The conservative CUDA-process observation intervals do not overlap sufficiently to establish simultaneous multi-device model forwards; four-process simultaneous inference is **Unverified**. In particular, the two Boltz observation intervals nearly abut and must not be promoted into proven overlap. Reference fingerprint publication delayed pc004032's eligibility until after pc004033's Protenix failure, and the local Protenix jobs spent substantial time initializing before CUDA work. No redundant design/prediction was added to manufacture occupancy. An unrelated RustDesk process was excluded from scientific counts.
+
+The monitor stopped after final idle checks. No queued/running Studio jobs or GPU reservations remained on any workstation. Shared compute scheduler and SSH tunnel services were neither modified nor restarted.
+
+## 26. Actual native batching, measurements and scientific integrity
+
+**Real GPU execution.** Counts below come from returned `native_execution.json`, native batch manifests and logs, not execution-plan forecasts. There were **eight native scientific processes/allocation events**: one BindCraft2, one RFD4, two Boltz and four Protenix (including one failed attempt). Five initial predictor chunks plus one recovery chunk processed seven input attempts and returned six successful predictions. The five CPU-conflict submissions and earlier account/inline failures launched zero native inference and are excluded from these counts.
+
+| Native operation | Candidate inputs / chunks | Native commands / Docker processes | Successful outputs | Native manifest elapsed |
+| --- | --- | --- | --- | --- |
+| BindCraft2 | 1 whole native invocation, 1 trajectory | 1 / 1 | 0 eligible; 1 genuine rejection | 50 s worker interval; native-only duration not separately measured |
+| RFD4 | 1 design, microbatch 1 | 1 / 1 | 1 co-design | 115 s worker interval; generation log retained |
+| Boltz on local GPU 1 | 1 input / 1 chunk | 1 / 1 | 1 | 81.455 s |
+| Boltz on pc004032 | 2 inputs / 1 chunk | 1 / 1 | 2 | 24.046 s |
+| Protenix failed on pc004033 | 1 input / 1 chunk | 1 / 1 | 0 | 44.337 s |
+| Protenix local GPU 0 | 2 inputs / 2 chunks | 2 / 2 | 2 | 178.200 s + 151.584 s |
+| Protenix recovery GPU 1 | 1 input / 1 chunk | 1 / 1 | 1 | 158.586 s |
+
+Boltz's two-input native manifest records `native_yaml_directory_single_persistent_worker`, one native command, seed `[42]`, two distinct input IDs and two returned structures. Its stdout reports processing/predicting two inputs. This verifies a real multi-input native process, not a tensor forward batch size of two. The two Protenix retained inputs used two one-input native directory invocations and separate model/checkpoint loads; live multi-input Protenix model reuse remains **Unverified**. Protenix logs show one checkpoint load per process; no total model-initialization count is inferred for BindCraft's conditional stages or hidden model internals.
+
+**Scientific identity verification.** Read-only parsing checked all original and successful predicted complexes against exact binder sequences and the PD-L1 115-aa chain-A sequence hash `c434254957dd7a7d80ce4ca859f9a6d101a1205f4ff822177dd0b3c31f02e968`. Every prediction joined the correct variant, with a distinct prediction identity, seed 42, image identity, recorded chain roles and source ancestry. Native measurements/filters remain separate from independent predictor measurements. No MSA/template, acceptance threshold or native filter was changed.
+
+| Source / binder length | Binder sequence SHA-256 | Boltz iPTM | Protenix iPTM | Recorded cohort rank |
+| --- | --- | --- | --- | --- |
+| Fresh RFD4 / 106 | `ffff82c4ee4f91b3dd2d4ad345c02a4700b901882fe4cf61aacb2c1530aca310` | 0.59279 | 0.28279 | 1 in its own recorded cohort |
+| Retained P5 / 116 | `ad6a651791941cbe4fbeebf027fb6c46b470034ebc4c3a2c66d80598285cdf68` | 0.48661 | 0.31441 | 1 in P5 cohort |
+| Retained P5 / 94 | `da0ba51511da10c21f61dfc4e86e686907a2e733d2e62ae19a39f1ea32e6acee` | 0.41334 | 0.58751 | 2 in P5 cohort |
+
+These are fresh computational confidence measurements, not experimental binding results. They differ from the original retained Boltz measurements and do not overwrite them. Ranking correctly follows the configured Boltz iPTM field descending within recorded comparable cohorts; it neither averages engines nor infers one global rank across the fresh/P5 cohorts. All three rows are selected by the configured unthresholded selection policy; this is not a native acceptance or experimental-binding claim. Fresh RFD4 native filter status remains `not_evaluated`; the retained P5 native filter status remains `unresolved`.
+
+The original P4/P5/native source ledgers and 27 tracked scientific files retain all pre-run hashes. The three original Git checkouts remain at `abf0f2e`, with their exact modified/untracked paper-reference files preserved byte-for-byte.
+
+**Provenance limits.** BindCraft's original worker `native_execution.json` confirms one returned Docker/native invocation, but its collected graph `source_provenance.native_execution` is null. The root receipt was retrieved read-only separately and preserved with the native source snapshot; the report's actual count uses that receipt. The original native campaign records AF2 checkpoint hashes and its image-internal MPNN checkpoint hash (`b166276f80a45cb3de24bceb3b47b2f47a60ff654660f09837cd775846411ad1`), without claiming that MPNN/validation ran. Boltz candidate records contain full checkpoint hashes. Protenix candidate `checkpoint_provenance` and `effective_settings` fields are empty: the actual model/settings are instead traced through the read-only reference mount, native checkpoint-load logs, unchanged preflight/final file hashes and exact CLI/batch manifest. This export-field gap remains unresolved and is not described as complete per-row provenance.
+
+## 27. Results, exports and partial-output preservation
+
+**Real GPU execution + Retained scientific artifact.** Normal Results APIs returned the native, comparative-empty, partial modular and recovered modular outcomes. Studio's final Results page displayed three candidates, six completed predictions, the saved graph and downloadable data. The native Results page displayed zero candidates and preserved rejection/native-source counts. Both native and recovered modular ZIPs were downloaded through the UI. The recovered export contains 95 files, including 13 structure files, all three exact selected FASTA sequences, six predictor records, native-source provenance, execution graph and ranking decisions. ZIP CRC and all **25** export-manifest SHA-256 checks passed.
+
+| Export | SHA-256 | Verification |
+| --- | --- | --- |
+| Native graph UI download | `19a280c91b5e7a67e5d13a3503caa2a36ddc9ca4c14d543b39962da7bdb3165e` | Valid ZIP, genuine screen rejection provenance |
+| Mode 2 empty graph ZIP | `472c5ee9799b66a90d02fb8afbdf1d6e4b40f2c80820c8ff45b83ea40a13a97b` | Standard `build_run_zip` on preserved managed-run snapshot; empty native provenance |
+| Partial modular graph ZIP | `243c60265b052e3eaf24d87e0359ee8d33c5a2448696da1c397e47c683ea44ba` | Standard ZIP helper; 3 candidates and 5 successful predictions survive failure |
+| Recovered modular UI download | `1b2388e95c047613e4d7db97d9b91df94501bcee96ba6d7e3304739788d41ebe` | 3 candidates, 6 predictions, exact FASTA, all checksums valid |
+
+Local UI downloads remain in `/home/user/Downloads/`; evidence copies are `live-v3/native-complete-ui-download.zip` and `final-evidence/modular-recovered-ui-download.zip`. The Mode 2/partial ZIPs are under `final-evidence/`. Raw native rejection artifacts are additionally preserved in their separate source-evidence archive; an empty-candidate graph ZIP is not claimed to contain every native compile/trajectory file.
+
+The partial modular run remains immutable, including its failed 5090 prediction. Before recovery, independent identity/ranking checks passed for its three candidates and five successful predictions. After recovery, the same variants and five original successful prediction records survived; the sixth result was added through ordinary cache reuse and analysis. No completed native job was repeated. Deterministic recovery tests remain separately labeled; no live cancellation, node-disconnect or interrupted-transfer scenario was intentionally injected during active science.
+
+## 28. Final acceptance disposition
+
+**Bounded live execution is finished; Phase 7B acceptance is partial.** The deployed fixes work across all three machines and the bounded scientific runs, recovery, Results and exports have real execution evidence. There are no unfinished acceptance jobs. Corrected runtime `2edf8de` remains active and healthy; the original runtime/units and every deployment backup remain available for rollback. Code corrections and this report are local commits only; nothing was pushed or merged.
+
+| Acceptance item | Final finding |
+| --- | --- |
+| Consistent active source/services and authenticated workers | Verified on all three machines |
+| Four physical GPUs dispatch real useful science | Verified across the run with UUID/lease/process evidence |
+| Four simultaneous native inference processes | Unverified; three overlapping leases include preparation, and conservative CUDA-process intervals do not demonstrate concurrent forwards |
+| Bounded complete-native entrypoint and true rejection | Verified; downstream internal MPNN/AF2 stages not reached |
+| Positive Mode 2 evaluation | Unverified because zero eligible complete-native candidates; empty routing verified |
+| Fresh RFD4 + automatic downstream evaluation | Verified with documented integration/runtime failure and normal graph recovery |
+| Exact identities, separate predictor measurements and cohort ranking | Verified for all three variants and six successful predictions |
+| Native multi-input batching | Boltz two-input invocation verified; Protenix multi-input reuse unverified |
+| Completed outputs survive partial failure and recovery | Verified live; 13 cached steps, one recovery prediction, no duplicate generation |
+| Full per-row provenance export | Partial: Protenix checkpoint/settings fields and collected BindCraft native-receipt gap documented above |
+| Results / downloadable ZIP | Verified; exact sequences and checksums passed |
+| Original work, scheduler/tunnels, images and scientific limits preserved | Verified within recorded evidence; no GitHub push/merge |
+
+Remaining priorities are narrowly identified: diagnose the installed Protenix stock RTX 5090 kernel mismatch and make eligibility reflect actual runtime support; complete missing per-row/native-receipt export coverage; demonstrate concurrent useful native forwards and multi-input Protenix reuse only when independent eligible work justifies it; evaluate a genuine positive complete-native output when one exists. These are not authorization to expand generation, replace images or start another architectural phase.
+
+Machine-readable final summary: [phase7b-live-acceptance.json](evidence/phase7b-live-acceptance.json). Full original worker receipts/logs, API outcomes, GPU lease/process samples, identity audit and verified exports are under `final-evidence/` in the evidence root. The final audit helper only reads existing outputs and starts no scientific job.

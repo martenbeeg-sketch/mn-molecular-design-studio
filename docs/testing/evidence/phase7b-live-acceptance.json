@@ -1,0 +1,1511 @@
+{
+  "status": "bounded live execution completed; partial acceptance with explicit limits",
+  "active_source_revision": "2edf8de82c9d43962bcb53f8a48f79080f9eebc3",
+  "source_fingerprint": "b16006af8914db18983c09225d595098214d6502f215600724f5a2b8545ab55e",
+  "github_push": false,
+  "merge": false,
+  "budgets": {
+    "fresh_bindcraft_invocations": 1,
+    "bindcraft_trajectory_attempts": 1,
+    "fresh_rfd4_invocations": 1,
+    "fresh_optional_redesign_variants": 0,
+    "distinct_predictor_inputs": 6,
+    "predictor_input_attempts_including_failure": 7,
+    "successful_prediction_outputs": 6,
+    "native_scientific_processes": 8
+  },
+  "scientific_identity": {
+    "run_dir": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/campaign/20261028-220218-57400312",
+    "candidate_count": 3,
+    "sequence_and_target_identity": "pass",
+    "ranking": "pass within reported cohorts",
+    "complete_prediction_count": 6,
+    "candidates": [
+      {
+        "candidate_id": "cs_3d471fca51facf66e75379b83e188d8c70599bed3649a4bf9d06048ae28ac3cd",
+        "native_candidate_id": "rfd4_000001_protein_binder",
+        "variant_id": "3d471fca51facf66e75379b83e188d8c70599bed3649a4bf9d06048ae28ac3cd",
+        "source_run": "20261028-193936-433a03d6",
+        "binder_length": 106,
+        "binder_sha256": "ffff82c4ee4f91b3dd2d4ad345c02a4700b901882fe4cf61aacb2c1530aca310",
+        "target_id": "14242665ed067ddebcec4cf2b286c10425ec63f5614c6640b5f201ad17d09a54",
+        "sequence_state": "sequence_ready",
+        "native_filter": "not_evaluated",
+        "native_measurements": {
+          "amino_acid_composition.ala_fraction": 0.0724,
+          "amino_acid_composition.gly_fraction": 0.0679,
+          "amino_acid_composition.n_generated_unknown_residues": 0.0,
+          "amino_acid_composition.n_standard_residues": 221.0,
+          "amino_acid_composition.val_fraction": 0.0905,
+          "binder_ca_count": 106,
+          "binder_ca_end_to_end_distance": 31.7164831403164,
+          "binder_ca_radius_of_gyration": 12.826531452493617,
+          "binder_ca_trace_c3": "-EEEE--EEEEEE-EEEEEEEEE-EEHE--EEEEEEEE-EEEEEEEEH-EEEEE-EE--EEEEEE----EEEEEEE-EEH--EEEEEEEEH-E-EEEE-EEEEEE-",
+          "binder_ca_trace_elements": 6,
+          "binder_ca_trace_extended_elements": 6,
+          "binder_ca_trace_extended_fraction": 0.7452830188679245,
+          "binder_ca_trace_extended_residues": 79,
+          "binder_ca_trace_helix_like_elements": 0,
+          "binder_ca_trace_helix_like_fraction": 0.03773584905660377,
+          "binder_ca_trace_helix_like_residues": 4,
+          "binder_ca_trace_other_fraction": 0.2169811320754717,
+          "binder_ca_trace_other_residues": 23,
+          "binder_ca_trace_raw_segment_count": 36,
+          "binder_ca_trace_raw_segments": "1-1:-;2-5:E;6-7:-;8-13:E;14-14:-;15-23:E;24-24:-;25-26:E;27-27:H;28-28:E;29-30:-;31-38:E;39-39:-;40-47:E;48-48:H;49-49:-;50-54:E;55-55:-;56-57:E;58-59:-;60-65:E;66-69:-;70-76:E;77-77:-;78-79:E;80-80:H;81-82:-;83-90:E;91-91:H;92-92:-;93-93:E;94-94:-;95-98:E;99-99:-;100-105:E;106-106:-",
+          "binder_ca_trace_residues": 106,
+          "binder_ca_trace_segment_count": 6,
+          "binder_ca_trace_segments": "2-23:E;31-54:E;60-65:E;70-76:E;83-90:E;95-105:E",
+          "binder_ca_trace_structure_method": "ca_trace_angle_i_to_i3_heuristic",
+          "binder_ca_trace_structure_status": "ok",
+          "binder_coil_fraction": 0.4811320754716981,
+          "binder_coil_residues": 51,
+          "binder_end_to_end_distance": 31.7164831403164,
+          "binder_geometry_status": "ok",
+          "binder_heavy_atom_count": 806,
+          "binder_helix_fraction": 0.02830188679245283,
+          "binder_helix_residues": 3,
+          "binder_helix_segment_count": 0,
+          "binder_radius_of_gyration": 12.955206305304708,
+          "binder_residue_count": 106,
+          "binder_secondary_structure_c3": "-EEEE--EEEE-----EEEEEEE-------EEEEEE------EE-EE---EE-------EEEEE-----EEEEEE----HHH-EEEEEEE-----EE---EEEEE-",
+          "binder_secondary_structure_elements": 7,
+          "binder_secondary_structure_method": "pydssp_c3",
+          "binder_secondary_structure_min_coil_separator": 3,
+          "binder_secondary_structure_min_helix_length": 4,
+          "binder_secondary_structure_min_sheet_length": 3,
+          "binder_secondary_structure_raw_segment_count": 27,
+          "binder_secondary_structure_raw_segments": "1-1:-;2-5:E;6-7:-;8-11:E;12-16:-;17-23:E;24-30:-;31-36:E;37-42:-;43-44:E;45-45:-;46-47:E;48-50:-;51-52:E;53-59:-;60-64:E;65-69:-;70-75:E;76-79:-;80-82:H;83-83:-;84-90:E;91-95:-;96-97:E;98-100:-;101-105:E;106-106:-",
+          "binder_secondary_structure_reconstructed_backbone": false,
+          "binder_secondary_structure_residues": 106,
+          "binder_secondary_structure_segment_count": 7,
+          "binder_secondary_structure_segments": "2-11:E;17-23:E;31-36:E;60-64:E;70-75:E;84-90:E;101-105:E",
+          "binder_secondary_structure_status": "ok",
+          "binder_sheet_fraction": 0.49056603773584906,
+          "binder_sheet_residues": 52,
+          "binder_sheet_segment_count": 7,
+          "binder_structured_fraction": 0.5188679245283019,
+          "binder_structured_residues": 55,
+          "bond_length_metrics.bond_length.frac_unreasonable": 0.0,
+          "bond_length_metrics.bond_length.frac_unreasonable.between_residue.within_chain": 0.0,
+          "bond_length_metrics.bond_length.frac_unreasonable.within_residue": 0.0,
+          "chain_of_interest": "B_1",
+          "ckpt_name": "model.safetensors",
+          "ckpt_path": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-193936-433a03d6/nvidia/RFD4-Proteina",
+          "clash_metrics.frac_atoms_clashing_1p5A": 0.0,
+          "clash_metrics.frac_atoms_clashing_inter_residue_ligand_ligand_1p5A": 0.0,
+          "clash_metrics.frac_atoms_clashing_inter_residue_polymer_ligand_1p5A": 0.0,
+          "clash_metrics.frac_atoms_clashing_inter_residue_polymer_polymer_1p5A": 0.0,
+          "clash_metrics.frac_atoms_clashing_intra_residue_ligand_1p5A": 0.0,
+          "clash_metrics.frac_atoms_clashing_intra_residue_polymer_1p5A": 0.0,
+          "dataset_name": "/work/artifacts/rfd4_proteina/prepared",
+          "designed_chain_path": "/work/artifacts/rfd4_proteina/output/inference_samples/foldseek_input_chains/7808834c/protein_binder/protein_binder_chain.cif",
+          "designed_structure_path": "/work/artifacts/rfd4_proteina/output/inference_samples/protein_binder/protein_binder_generated.cif",
+          "example_id": "protein_binder",
+          "generated_residue_count": 221,
+          "generation.args.bb_ca_only_trajectories": 1.0,
+          "generation.args.condition_decoder_on_sequence_prediction": 1.0,
+          "generation.args.couple_partial_t": 0.0,
+          "generation.args.dump_noisy_trajectories": 0.0,
+          "generation.args.guidance_w": 1.0,
+          "generation.args.inverse_folding": 0.0,
+          "generation.args.nsteps": 60.0,
+          "generation.args.save_trajectory_every": 0.0,
+          "generation.condition_on_recycle_remaining": 1.0,
+          "generation.dataset.num_replicates": 1.0,
+          "generation.dataset.transform.path_length_search_cutoff": 64.0,
+          "generation.model.bb_ca.gt.p": 1.0,
+          "generation.model.bb_ca.schedule.p": 2.0,
+          "generation.model.bb_ca.schedule.tail_step_multiplier": 2.0,
+          "generation.model.bb_ca.schedule.tail_steps": 10.0,
+          "generation.model.bb_ca.simulation_step_params.center_every_step": 0.0,
+          "generation.model.bb_ca.simulation_step_params.sc_scale_noise": 1.0,
+          "generation.model.bb_ca.simulation_step_params.t_lim_ode": 0.95,
+          "generation.model.bb_ca.simulation_step_params.t_lim_ode_below": 0.02,
+          "generation.model.bb_ca.simulation_step_params.tsr_k": 16.0,
+          "generation.model.bb_ca.simulation_step_params.tsr_sigma": 3.0,
+          "generation.model.local_latents.gt.p": 1.0,
+          "generation.model.local_latents.schedule.p": 2.0,
+          "generation.model.local_latents.schedule.tail_step_multiplier": 2.0,
+          "generation.model.local_latents.schedule.tail_steps": 10.0,
+          "generation.model.local_latents.simulation_step_params.center_every_step": 0.0,
+          "generation.model.local_latents.simulation_step_params.sc_scale_noise": 1.0,
+          "generation.model.local_latents.simulation_step_params.t_lim_ode": 0.95,
+          "generation.model.local_latents.simulation_step_params.t_lim_ode_below": 0.02,
+          "generation.model.local_latents.simulation_step_params.tsr_k": 4.0,
+          "generation.model.local_latents.simulation_step_params.tsr_sigma": 12.0,
+          "generation.n_recycle": 0.0,
+          "generation_target_alignment_ca_count": 115,
+          "generation_target_alignment_rmsd": 22.16004156235226,
+          "generation_target_alignment_status": "ok",
+          "hotspot_obedience.hotspot_obedience": 0.0,
+          "input_cif_path": "/work/artifacts/rfd4_proteina/prepared/protein_binder.cif",
+          "metrics_tags": "design,hotspot_conditioning",
+          "output_base_dir": "/work/artifacts/rfd4_proteina/output/inference_samples",
+          "pre_oracle_pass": 1.0,
+          "result_kind": "sequence_structure_codesign",
+          "seed": 20261028.0,
+          "sequence_adherence.n_violations": 0.0,
+          "sequence_adherence.sequence_adherence": 1.0,
+          "sequence_probability_adherence.n_one_conditions": 115.0,
+          "sequence_probability_adherence.n_one_violations": 0.0,
+          "sequence_probability_adherence.n_zero_conditions": 3105.0,
+          "sequence_probability_adherence.n_zero_violations": 0.0,
+          "sequence_probability_adherence.one_adherence": 1.0,
+          "sequence_probability_adherence.zero_adherence": 1.0,
+          "sse_distribution.helix_fraction": 0.0,
+          "sse_distribution.helix_fraction_coi": 0.0,
+          "sse_distribution.loop_fraction": 0.6561,
+          "sse_distribution.loop_fraction_coi": 0.6887,
+          "sse_distribution.num_ss_elements": 25.0,
+          "sse_distribution.num_ss_elements_coi": 11.0,
+          "sse_distribution.sheet_fraction": 0.3439,
+          "sse_distribution.sheet_fraction_coi": 0.3113,
+          "task": "protein_binder"
+        },
+        "prediction_matrix": {
+          "predictor-0": [
+            "completed"
+          ],
+          "predictor-1": [
+            "completed"
+          ]
+        },
+        "predictions": [
+          {
+            "branch": "predictor-0",
+            "status": "completed",
+            "prediction_id": "07af5e0160ced047dd4667fd7697f07b75c19321d760148a14b5970df2b1a748",
+            "engine": "boltz2",
+            "iptm": 0.59279,
+            "ptm": 0.77798,
+            "plddt_mean": 94.704,
+            "complex_pdb": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/refolding-validation/20261028-194617-6b2735c7/artifacts/raw/optimized_prediction/output/boltz_seed_42/boltz_results_.mn-predict-boltz2-inputs/predictions/i9ba555809165d1bb/i9ba555809165d1bb_model_0.pdb",
+            "structure_sha256": "b3f52010423c42913fd074b2a1720aa14cf7605a479ff5aa21af9be4f1822396",
+            "target_sequence_sha256": "c434254957dd7a7d80ce4ca859f9a6d101a1205f4ff822177dd0b3c31f02e968",
+            "provenance_keys": [
+              "api_engine",
+              "batch_item_id",
+              "candidate_execution",
+              "candidate_set",
+              "checkpoint_provenance",
+              "compound_id",
+              "compound_name",
+              "conditioning_mode",
+              "confidence_outputs",
+              "effective_settings",
+              "engine",
+              "engine_version",
+              "execution_manifest",
+              "identity_check",
+              "image",
+              "image_digest",
+              "input_name",
+              "input_provenance",
+              "ligand_ccd_codes",
+              "ligand_smiles",
+              "molecule_chain_options",
+              "native_execution",
+              "native_prediction_structure",
+              "optimization_mode",
+              "pae_path",
+              "pipeline_refold_input",
+              "prediction_protocol",
+              "protein_chains",
+              "scientific_contract",
+              "seed",
+              "source_candidate",
+              "source_compound_id",
+              "source_compound_name",
+              "source_run_dir",
+              "target_sequences"
+            ],
+            "effective_settings": {
+              "cache": "/models",
+              "max_msa_seqs": 8192,
+              "max_parallel_samples": 5,
+              "output_format": "pdb",
+              "recycling_steps": 1,
+              "samples_per_item": 1,
+              "sampling_steps": 20,
+              "seed": 42,
+              "seed_count": 1,
+              "step_scale": 1.5,
+              "use_msa_server": false,
+              "use_potentials": false,
+              "write_full_pae": true
+            },
+            "seed": 42,
+            "image": "mn-boltz2-opt:2.2.1-cu130-batch2",
+            "image_digest": "sha256:3054688e91908156071238adee167ad4963cfbca05c8a4cf0e55a634ba5a2a55",
+            "checkpoint_provenance": [
+              {
+                "bytes": 2286561469,
+                "path": "/mnt/db/reference_files/boltz_models/boltz2_conf.ckpt",
+                "sha256": "090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1"
+              },
+              {
+                "bytes": 2062139170,
+                "path": "/mnt/db/reference_files/boltz_models/boltz2_aff.ckpt",
+                "sha256": "dcc5cd3722b1c9eaa34267e4ae32f55cbbf1963f4c19319381ccfa30fdd2ca9e"
+              },
+              {
+                "bytes": 345859128,
+                "path": "/mnt/db/reference_files/boltz_models/ccd.pkl",
+                "sha256": "2d3b2f03a3c5665944adba51e33263511e51b21c9cd05d902f9c4b7c1e58d2f4"
+              }
+            ],
+            "identity_check": {
+              "sequence_chain_identity": "pass",
+              "source_candidate_id": "cs_3d471fca51facf66e75379b83e188d8c70599bed3649a4bf9d06048ae28ac3cd"
+            },
+            "candidate_execution_sha256": "1e0ec465def7065fca73861331012921a63e2495fac42d8f739826e1c48fe685",
+            "prediction_protocol_sha256": "70588f3d96546a70788f0fa37120845c87b3e8d28abe72d9495adcf13a8af06b"
+          },
+          {
+            "branch": "predictor-1",
+            "status": "completed",
+            "prediction_id": "75283a521d4fecf8776786c8fc1b4ef91cc85dc404f8326473d43850e4f83557",
+            "engine": "protenix_v2",
+            "iptm": 0.28279,
+            "ptm": 0.60181,
+            "plddt_mean": 71.252,
+            "complex_pdb": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/refolding-validation/20261028-220246-75f53651/artifacts/raw/optimized_prediction/output/idc0c4d94b21517ef/seed_42/predictions/idc0c4d94b21517ef_sample_0.cif",
+            "structure_sha256": "5b11b22f876806b21bb61c86661b664868535ca24a6d64244e735b2c7e06f04d",
+            "target_sequence_sha256": "c434254957dd7a7d80ce4ca859f9a6d101a1205f4ff822177dd0b3c31f02e968",
+            "provenance_keys": [
+              "api_engine",
+              "batch_item_id",
+              "candidate_execution",
+              "candidate_set",
+              "checkpoint_provenance",
+              "compound_id",
+              "compound_name",
+              "conditioning_mode",
+              "confidence_outputs",
+              "effective_settings",
+              "engine",
+              "engine_version",
+              "execution_manifest",
+              "identity_check",
+              "image",
+              "image_digest",
+              "input_name",
+              "input_provenance",
+              "ligand_ccd_codes",
+              "ligand_smiles",
+              "molecule_chain_options",
+              "native_execution",
+              "native_prediction_structure",
+              "optimization_mode",
+              "pae_path",
+              "pipeline_refold_input",
+              "prediction_protocol",
+              "protein_chains",
+              "scientific_contract",
+              "seed",
+              "source_candidate",
+              "source_compound_id",
+              "source_compound_name",
+              "source_run_dir",
+              "target_sequences"
+            ],
+            "effective_settings": {},
+            "seed": 42,
+            "image": "mn-protenix-opt:2.0.0-cu128-batch2",
+            "image_digest": "sha256:f9b86d5f136581795d0fd4ba968e6ae37a5fa256a63eebec5d896fe69182f5ca",
+            "checkpoint_provenance": [],
+            "identity_check": {
+              "sequence_chain_identity": "pass",
+              "source_candidate_id": "cs_3d471fca51facf66e75379b83e188d8c70599bed3649a4bf9d06048ae28ac3cd"
+            },
+            "candidate_execution_sha256": "0ee1e858eeb744f21417b126e5e2eb294695eedc2005219c2f6dd9d2d46745b9",
+            "prediction_protocol_sha256": "bdbcfdbec104ae02f70d8f53f65ae0b20d7ac8820279257771d818daf9f36672"
+          }
+        ],
+        "selection": {
+          "cohort": "18d648b1674edcbf9d1645eb12254973bf6974a0dcc8eae292c72005a119eff4",
+          "direction": "ordered_rules",
+          "measurements": {
+            "prediction/predictor-0/iptm": {
+              "status": "valid",
+              "value": 0.59279
+            }
+          },
+          "policy": {
+            "limit": 0,
+            "ranking_rules": [
+              {
+                "direction": "higher",
+                "field": "prediction/predictor-0/iptm"
+              }
+            ],
+            "rules": [],
+            "unique_sequences": true
+          },
+          "rank": 1,
+          "ranking_metric": "prediction/predictor-0/iptm",
+          "reasons": [],
+          "selected": true,
+          "status": "passed"
+        }
+      },
+      {
+        "candidate_id": "cs_81d7ff89c7695b8b40c92c246d7545cd69b069d60f15ded002a8d36c7a4637cd",
+        "native_candidate_id": "dc_00000001_d68026ec8a3e62d5",
+        "variant_id": "81d7ff89c7695b8b40c92c246d7545cd69b069d60f15ded002a8d36c7a4637cd",
+        "source_run": "20261028-124448-350f7294",
+        "binder_length": 116,
+        "binder_sha256": "ad6a651791941cbe4fbeebf027fb6c46b470034ebc4c3a2c66d80598285cdf68",
+        "target_id": "14242665ed067ddebcec4cf2b286c10425ec63f5614c6640b5f201ad17d09a54",
+        "sequence_state": "sequence_ready",
+        "native_filter": "unresolved",
+        "native_measurements": {
+          "amino_acid_composition.ala_fraction": 0.0909,
+          "amino_acid_composition.gly_fraction": 0.0433,
+          "amino_acid_composition.n_generated_unknown_residues": 0.0,
+          "amino_acid_composition.n_standard_residues": 231.0,
+          "amino_acid_composition.val_fraction": 0.0909,
+          "binder_ca_count": 116,
+          "binder_ca_end_to_end_distance": 43.137536781868086,
+          "binder_ca_radius_of_gyration": 14.624694127257035,
+          "binder_ca_trace_c3": "-EEEEEEEEEEEEE-EEEE-EEEEEEEH---HE-EEEEEEH--EEEEEEEE--EEEEEEHH-HH-EEEEEEHHHH---EEEEEE-EE--EEEEEEEEEEEHE-EEEEEEEEEEEE-",
+          "binder_ca_trace_elements": 8,
+          "binder_ca_trace_extended_elements": 7,
+          "binder_ca_trace_extended_fraction": 0.7155172413793104,
+          "binder_ca_trace_extended_residues": 83,
+          "binder_ca_trace_helix_like_elements": 1,
+          "binder_ca_trace_helix_like_fraction": 0.10344827586206896,
+          "binder_ca_trace_helix_like_residues": 12,
+          "binder_ca_trace_other_fraction": 0.1810344827586207,
+          "binder_ca_trace_other_residues": 21,
+          "binder_ca_trace_raw_segment_count": 34,
+          "binder_ca_trace_raw_segments": "1-1:-;2-14:E;15-15:-;16-19:E;20-20:-;21-27:E;28-28:H;29-31:-;32-32:H;33-33:E;34-34:-;35-40:E;41-41:H;42-43:-;44-51:E;52-53:-;54-59:E;60-61:H;62-62:-;63-64:H;65-65:-;66-71:E;72-75:H;76-78:-;79-84:E;85-85:-;86-87:E;88-89:-;90-100:E;101-101:H;102-102:E;103-103:-;104-115:E;116-116:-",
+          "binder_ca_trace_residues": 116,
+          "binder_ca_trace_segment_count": 8,
+          "binder_ca_trace_segments": "2-27:E;35-40:E;44-59:E;66-71:E;72-75:H;79-84:E;90-100:E;104-115:E",
+          "binder_ca_trace_structure_method": "ca_trace_angle_i_to_i3_heuristic",
+          "binder_ca_trace_structure_status": "ok",
+          "binder_coil_fraction": 0.3706896551724138,
+          "binder_coil_residues": 43,
+          "binder_end_to_end_distance": 43.137536781868086,
+          "binder_geometry_status": "ok",
+          "binder_heavy_atom_count": 845,
+          "binder_helix_fraction": 0.11206896551724138,
+          "binder_helix_residues": 13,
+          "binder_helix_segment_count": 2,
+          "binder_radius_of_gyration": 14.408620351593305,
+          "binder_residue_count": 116,
+          "binder_secondary_structure_c3": "-EEEE---EEE-----EEE---EEEE-HHH-----EEEEE-----EEEEEE--EEEEEE-HHHHHHEEE--HHHH-----EEEE------EEEEEEEEEEE---EEEEEEEEEEE-",
+          "binder_secondary_structure_elements": 12,
+          "binder_secondary_structure_method": "pydssp_c3",
+          "binder_secondary_structure_min_coil_separator": 3,
+          "binder_secondary_structure_min_helix_length": 4,
+          "binder_secondary_structure_min_sheet_length": 3,
+          "binder_secondary_structure_raw_segment_count": 28,
+          "binder_secondary_structure_raw_segments": "1-1:-;2-5:E;6-8:-;9-11:E;12-16:-;17-19:E;20-22:-;23-26:E;27-27:-;28-30:H;31-35:-;36-40:E;41-45:-;46-51:E;52-53:-;54-59:E;60-60:-;61-66:H;67-69:E;70-71:-;72-75:H;76-80:-;81-84:E;85-90:-;91-101:E;102-104:-;105-115:E;116-116:-",
+          "binder_secondary_structure_reconstructed_backbone": false,
+          "binder_secondary_structure_residues": 116,
+          "binder_secondary_structure_segment_count": 12,
+          "binder_secondary_structure_segments": "2-5:E;9-11:E;17-19:E;23-26:E;36-40:E;46-59:E;61-66:H;67-69:E;72-75:H;81-84:E;91-101:E;105-115:E",
+          "binder_secondary_structure_status": "ok",
+          "binder_sheet_fraction": 0.5172413793103449,
+          "binder_sheet_residues": 60,
+          "binder_sheet_segment_count": 10,
+          "binder_structured_fraction": 0.6293103448275862,
+          "binder_structured_residues": 73,
+          "bond_length_metrics.bond_length.frac_unreasonable": 0.0,
+          "bond_length_metrics.bond_length.frac_unreasonable.between_residue.within_chain": 0.0,
+          "bond_length_metrics.bond_length.frac_unreasonable.within_residue": 0.0,
+          "chain_of_interest": "B_1",
+          "ckpt_name": "model.safetensors",
+          "ckpt_path": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-124449-84e33f5e/nvidia/RFD4-Proteina",
+          "clash_metrics.frac_atoms_clashing_1p5A": 0.0,
+          "clash_metrics.frac_atoms_clashing_inter_residue_ligand_ligand_1p5A": 0.0,
+          "clash_metrics.frac_atoms_clashing_inter_residue_polymer_ligand_1p5A": 0.0,
+          "clash_metrics.frac_atoms_clashing_inter_residue_polymer_polymer_1p5A": 0.0,
+          "clash_metrics.frac_atoms_clashing_intra_residue_ligand_1p5A": 0.0,
+          "clash_metrics.frac_atoms_clashing_intra_residue_polymer_1p5A": 0.0,
+          "dataset_name": "worker-path://16b4dcfd-3b9f-4d59-80a4-95363125fcee/work/artifacts/rfd4_proteina/prepared",
+          "designed_chain_path": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-124449-84e33f5e/worker-path:/16b4dcfd-3b9f-4d59-80a4-95363125fcee/work/artifacts/rfd4_proteina/output/inference_samples/foldseek_input_chains/7808834c/protein_binder/protein_binder_chain.cif",
+          "designed_structure_path": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-124449-84e33f5e/worker-path:/16b4dcfd-3b9f-4d59-80a4-95363125fcee/work/artifacts/rfd4_proteina/output/inference_samples/protein_binder/protein_binder_generated.cif",
+          "example_id": "protein_binder",
+          "generated_residue_count": 231,
+          "generation.args.bb_ca_only_trajectories": 1.0,
+          "generation.args.condition_decoder_on_sequence_prediction": 1.0,
+          "generation.args.couple_partial_t": 0.0,
+          "generation.args.dump_noisy_trajectories": 0.0,
+          "generation.args.guidance_w": 1.0,
+          "generation.args.inverse_folding": 0.0,
+          "generation.args.nsteps": 60.0,
+          "generation.args.save_trajectory_every": 0.0,
+          "generation.condition_on_recycle_remaining": 1.0,
+          "generation.dataset.num_replicates": 1.0,
+          "generation.dataset.transform.path_length_search_cutoff": 64.0,
+          "generation.model.bb_ca.gt.p": 1.0,
+          "generation.model.bb_ca.schedule.p": 2.0,
+          "generation.model.bb_ca.schedule.tail_step_multiplier": 2.0,
+          "generation.model.bb_ca.schedule.tail_steps": 10.0,
+          "generation.model.bb_ca.simulation_step_params.center_every_step": 0.0,
+          "generation.model.bb_ca.simulation_step_params.sc_scale_noise": 1.0,
+          "generation.model.bb_ca.simulation_step_params.t_lim_ode": 0.95,
+          "generation.model.bb_ca.simulation_step_params.t_lim_ode_below": 0.02,
+          "generation.model.bb_ca.simulation_step_params.tsr_k": 16.0,
+          "generation.model.bb_ca.simulation_step_params.tsr_sigma": 3.0,
+          "generation.model.local_latents.gt.p": 1.0,
+          "generation.model.local_latents.schedule.p": 2.0,
+          "generation.model.local_latents.schedule.tail_step_multiplier": 2.0,
+          "generation.model.local_latents.schedule.tail_steps": 10.0,
+          "generation.model.local_latents.simulation_step_params.center_every_step": 0.0,
+          "generation.model.local_latents.simulation_step_params.sc_scale_noise": 1.0,
+          "generation.model.local_latents.simulation_step_params.t_lim_ode": 0.95,
+          "generation.model.local_latents.simulation_step_params.t_lim_ode_below": 0.02,
+          "generation.model.local_latents.simulation_step_params.tsr_k": 4.0,
+          "generation.model.local_latents.simulation_step_params.tsr_sigma": 12.0,
+          "generation.n_recycle": 0.0,
+          "generation_target_alignment_ca_count": 115,
+          "generation_target_alignment_rmsd": 9.665204031637847,
+          "generation_target_alignment_status": "ok",
+          "hotspot_obedience.hotspot_obedience": 0.0,
+          "input_cif_path": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-124449-84e33f5e/worker-path:/16b4dcfd-3b9f-4d59-80a4-95363125fcee/work/artifacts/rfd4_proteina/prepared/protein_binder.cif",
+          "metrics_tags": "design,hotspot_conditioning",
+          "output_base_dir": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-124449-84e33f5e/worker-path:/16b4dcfd-3b9f-4d59-80a4-95363125fcee/work/artifacts/rfd4_proteina/output/inference_samples",
+          "pre_oracle_pass": 1.0,
+          "result_kind": "sequence_structure_codesign",
+          "seed": 1185903269.0,
+          "sequence_adherence.n_violations": 0.0,
+          "sequence_adherence.sequence_adherence": 1.0,
+          "sequence_probability_adherence.n_one_conditions": 115.0,
+          "sequence_probability_adherence.n_one_violations": 0.0,
+          "sequence_probability_adherence.n_zero_conditions": 3105.0,
+          "sequence_probability_adherence.n_zero_violations": 0.0,
+          "sequence_probability_adherence.one_adherence": 1.0,
+          "sequence_probability_adherence.zero_adherence": 1.0,
+          "sse_distribution.helix_fraction": 0.026,
+          "sse_distribution.helix_fraction_coi": 0.0517,
+          "sse_distribution.loop_fraction": 0.5844,
+          "sse_distribution.loop_fraction_coi": 0.569,
+          "sse_distribution.num_ss_elements": 30.0,
+          "sse_distribution.num_ss_elements_coi": 16.0,
+          "sse_distribution.sheet_fraction": 0.3896,
+          "sse_distribution.sheet_fraction_coi": 0.3793,
+          "task": "protein_binder"
+        },
+        "prediction_matrix": {
+          "predictor-0": [
+            "completed"
+          ],
+          "predictor-1": [
+            "completed"
+          ]
+        },
+        "predictions": [
+          {
+            "branch": "predictor-1",
+            "status": "completed",
+            "prediction_id": "141c0c776beadef6d3c3267d7b4ef02e8670fe31a68a3a1f68d0a7bffbf8f4fe",
+            "engine": "protenix_v2",
+            "iptm": 0.31441,
+            "ptm": 0.46802,
+            "plddt_mean": 55.629,
+            "complex_pdb": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/refolding-validation/20261028-194638-365890bc/artifacts/raw/optimized_prediction/output/i428b6280c30dc99f/seed_42/predictions/i428b6280c30dc99f_sample_0.cif",
+            "structure_sha256": "e67dece6a278efbe7dd20343eb40f89592d74353e16099c37190278e2ff7ff05",
+            "target_sequence_sha256": "c434254957dd7a7d80ce4ca859f9a6d101a1205f4ff822177dd0b3c31f02e968",
+            "provenance_keys": [
+              "api_engine",
+              "batch_item_id",
+              "candidate_execution",
+              "candidate_set",
+              "checkpoint_provenance",
+              "compound_id",
+              "compound_name",
+              "conditioning_mode",
+              "confidence_outputs",
+              "effective_settings",
+              "engine",
+              "engine_version",
+              "execution_manifest",
+              "identity_check",
+              "image",
+              "image_digest",
+              "input_name",
+              "input_provenance",
+              "ligand_ccd_codes",
+              "ligand_smiles",
+              "molecule_chain_options",
+              "native_execution",
+              "native_prediction_structure",
+              "optimization_mode",
+              "pae_path",
+              "pipeline_refold_input",
+              "prediction_protocol",
+              "protein_chains",
+              "scientific_contract",
+              "seed",
+              "source_candidate",
+              "source_compound_id",
+              "source_compound_name",
+              "source_run_dir",
+              "target_sequences"
+            ],
+            "effective_settings": {},
+            "seed": 42,
+            "image": "mn-protenix-opt:2.0.0-cu128-batch2",
+            "image_digest": "sha256:f9b86d5f136581795d0fd4ba968e6ae37a5fa256a63eebec5d896fe69182f5ca",
+            "checkpoint_provenance": [],
+            "identity_check": {
+              "sequence_chain_identity": "pass",
+              "source_candidate_id": "cs_81d7ff89c7695b8b40c92c246d7545cd69b069d60f15ded002a8d36c7a4637cd"
+            },
+            "candidate_execution_sha256": "d1e4b08bfa69201e6287c0ce20fbaa57f4e0c55ab6f65c92fd46d43539a312dd",
+            "prediction_protocol_sha256": "bdbcfdbec104ae02f70d8f53f65ae0b20d7ac8820279257771d818daf9f36672"
+          },
+          {
+            "branch": "predictor-0",
+            "status": "completed",
+            "prediction_id": "388ce0fb8a1babb7ea6563dcb250c1e8faaa5e5fc4ad7ffac972a7b87f608270",
+            "engine": "boltz2",
+            "iptm": 0.48661,
+            "ptm": 0.69945,
+            "plddt_mean": 79.807,
+            "complex_pdb": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/campaign/20261028-194549-e217df15/candidate_batches/predictor-0-g1/d748691983be75349f91105a22f9e1b7c7f8d0da873d8f506eeb871d54cfed1e/b000000.collected/artifacts/raw/optimized_prediction/output/boltz_seed_42/boltz_results_.mn-predict-boltz2-inputs/predictions/i3752cd351c638c60/i3752cd351c638c60_model_0.pdb",
+            "structure_sha256": "cdd8b60ccf72d9c56a0194fb3b6c11900c27546fcb26e9b5569c6763a743c9f7",
+            "target_sequence_sha256": "c434254957dd7a7d80ce4ca859f9a6d101a1205f4ff822177dd0b3c31f02e968",
+            "provenance_keys": [
+              "api_engine",
+              "batch_item_id",
+              "candidate_execution",
+              "candidate_set",
+              "checkpoint_provenance",
+              "compound_id",
+              "compound_name",
+              "conditioning_mode",
+              "confidence_outputs",
+              "effective_settings",
+              "engine",
+              "engine_version",
+              "execution_manifest",
+              "identity_check",
+              "image",
+              "image_digest",
+              "input_name",
+              "input_provenance",
+              "ligand_ccd_codes",
+              "ligand_smiles",
+              "molecule_chain_options",
+              "native_execution",
+              "native_prediction_structure",
+              "optimization_mode",
+              "pae_path",
+              "pipeline_refold_input",
+              "prediction_protocol",
+              "protein_chains",
+              "scientific_contract",
+              "seed",
+              "source_compound_id",
+              "source_compound_name",
+              "target_sequences"
+            ],
+            "effective_settings": {
+              "cache": "worker-path://5bd75310-0d57-4484-b795-4e0e3ed6b01d/models",
+              "max_msa_seqs": 8192,
+              "max_parallel_samples": 5,
+              "output_format": "pdb",
+              "recycling_steps": 1,
+              "samples_per_item": 1,
+              "sampling_steps": 20,
+              "seed": 42,
+              "seed_count": 1,
+              "step_scale": 1.5,
+              "use_msa_server": false,
+              "use_potentials": false,
+              "write_full_pae": true
+            },
+            "seed": 42,
+            "image": "mn-boltz2-opt:2.2.1-cu130-batch2",
+            "image_digest": "sha256:057fac816f7434d517a77a82f59ba1685976eb7c60f44e1d39b7b03a7c545d94",
+            "checkpoint_provenance": [
+              {
+                "bytes": 2286561469,
+                "path": "/mnt/db/reference_files/boltz_models/boltz2_conf.ckpt",
+                "sha256": "090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1"
+              },
+              {
+                "bytes": 2062139170,
+                "path": "/mnt/db/reference_files/boltz_models/boltz2_aff.ckpt",
+                "sha256": "dcc5cd3722b1c9eaa34267e4ae32f55cbbf1963f4c19319381ccfa30fdd2ca9e"
+              },
+              {
+                "bytes": 345859128,
+                "path": "/mnt/db/reference_files/boltz_models/ccd.pkl",
+                "sha256": "2d3b2f03a3c5665944adba51e33263511e51b21c9cd05d902f9c4b7c1e58d2f4"
+              }
+            ],
+            "identity_check": {
+              "sequence_chain_identity": "pass",
+              "source_candidate_id": "cs_81d7ff89c7695b8b40c92c246d7545cd69b069d60f15ded002a8d36c7a4637cd"
+            },
+            "candidate_execution_sha256": "90d337e79ed5806d3b4ddcefdf11e39e50ce961df40be9db7fc7464034dad4a2",
+            "prediction_protocol_sha256": "70588f3d96546a70788f0fa37120845c87b3e8d28abe72d9495adcf13a8af06b"
+          }
+        ],
+        "selection": {
+          "cohort": "c643fbed5765756d0380cfc498081b8775667d7705fe98289034be6f8989de0b",
+          "direction": "ordered_rules",
+          "measurements": {
+            "prediction/predictor-0/iptm": {
+              "status": "valid",
+              "value": 0.48661
+            }
+          },
+          "policy": {
+            "limit": 0,
+            "ranking_rules": [
+              {
+                "direction": "higher",
+                "field": "prediction/predictor-0/iptm"
+              }
+            ],
+            "rules": [],
+            "unique_sequences": true
+          },
+          "rank": 1,
+          "ranking_metric": "prediction/predictor-0/iptm",
+          "reasons": [],
+          "selected": true,
+          "status": "passed"
+        }
+      },
+      {
+        "candidate_id": "cs_7d54648978e1ec0d7b765c95a5f3e5992dcce9392b9ac957be6dc26310680e97",
+        "native_candidate_id": "dc_00000002_d68026ec8a3e62d5",
+        "variant_id": "7d54648978e1ec0d7b765c95a5f3e5992dcce9392b9ac957be6dc26310680e97",
+        "source_run": "20261028-124448-350f7294",
+        "binder_length": 94,
+        "binder_sha256": "da0ba51511da10c21f61dfc4e86e686907a2e733d2e62ae19a39f1ea32e6acee",
+        "target_id": "14242665ed067ddebcec4cf2b286c10425ec63f5614c6640b5f201ad17d09a54",
+        "sequence_state": "sequence_ready",
+        "native_filter": "unresolved",
+        "native_measurements": {
+          "amino_acid_composition.ala_fraction": 0.0909,
+          "amino_acid_composition.gly_fraction": 0.0431,
+          "amino_acid_composition.n_generated_unknown_residues": 0.0,
+          "amino_acid_composition.n_standard_residues": 209.0,
+          "amino_acid_composition.val_fraction": 0.0766,
+          "binder_ca_count": 94,
+          "binder_ca_end_to_end_distance": 11.190648210099333,
+          "binder_ca_radius_of_gyration": 12.225102489943838,
+          "binder_ca_trace_c3": "-HHHHHHHHHHHHHHHHHHH---HHHHHHHHHHHHHHHHHHHH--EEEHHHHHHHHHHHHHHHHHHHH---HHHHHHHHHHHHHHHHHHHH---",
+          "binder_ca_trace_elements": 5,
+          "binder_ca_trace_extended_elements": 1,
+          "binder_ca_trace_extended_fraction": 0.031914893617021274,
+          "binder_ca_trace_extended_residues": 3,
+          "binder_ca_trace_helix_like_elements": 4,
+          "binder_ca_trace_helix_like_fraction": 0.8404255319148937,
+          "binder_ca_trace_helix_like_residues": 79,
+          "binder_ca_trace_other_fraction": 0.1276595744680851,
+          "binder_ca_trace_other_residues": 12,
+          "binder_ca_trace_raw_segment_count": 10,
+          "binder_ca_trace_raw_segments": "1-1:-;2-20:H;21-23:-;24-43:H;44-45:-;46-48:E;49-68:H;69-71:-;72-91:H;92-94:-",
+          "binder_ca_trace_residues": 94,
+          "binder_ca_trace_segment_count": 5,
+          "binder_ca_trace_segments": "2-20:H;24-43:H;46-48:E;49-68:H;72-91:H",
+          "binder_ca_trace_structure_method": "ca_trace_angle_i_to_i3_heuristic",
+          "binder_ca_trace_structure_status": "ok",
+          "binder_coil_fraction": 0.10638297872340426,
+          "binder_coil_residues": 10,
+          "binder_end_to_end_distance": 11.190648210099333,
+          "binder_geometry_status": "ok",
+          "binder_heavy_atom_count": 739,
+          "binder_helix_fraction": 0.8936170212765957,
+          "binder_helix_residues": 84,
+          "binder_helix_segment_count": 3,
+          "binder_radius_of_gyration": 12.72371131351876,
+          "binder_residue_count": 94,
+          "binder_secondary_structure_c3": "-HHHHHHHHHHHHHHHHHHHH---HHHHHHHHHHHHHHHHHHHHH--HHHHHHHHHHHHHHHHHHHHHH---HHHHHHHHHHHHHHHHHHHHH-",
+          "binder_secondary_structure_elements": 3,
+          "binder_secondary_structure_method": "pydssp_c3",
+          "binder_secondary_structure_min_coil_separator": 3,
+          "binder_secondary_structure_min_helix_length": 4,
+          "binder_secondary_structure_min_sheet_length": 3,
+          "binder_secondary_structure_raw_segment_count": 9,
+          "binder_secondary_structure_raw_segments": "1-1:-;2-21:H;22-24:-;25-45:H;46-47:-;48-69:H;70-72:-;73-93:H;94-94:-",
+          "binder_secondary_structure_reconstructed_backbone": false,
+          "binder_secondary_structure_residues": 94,
+          "binder_secondary_structure_segment_count": 3,
+          "binder_secondary_structure_segments": "2-21:H;25-69:H;73-93:H",
+          "binder_secondary_structure_status": "ok",
+          "binder_sheet_fraction": 0.0,
+          "binder_sheet_residues": 0,
+          "binder_sheet_segment_count": 0,
+          "binder_structured_fraction": 0.8936170212765957,
+          "binder_structured_residues": 84,
+          "bond_length_metrics.bond_length.frac_unreasonable": 0.0,
+          "bond_length_metrics.bond_length.frac_unreasonable.between_residue.within_chain": 0.0,
+          "bond_length_metrics.bond_length.frac_unreasonable.within_residue": 0.0,
+          "chain_of_interest": "B_1",
+          "ckpt_name": "model.safetensors",
+          "ckpt_path": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-124456-719b480b/nvidia/RFD4-Proteina",
+          "clash_metrics.frac_atoms_clashing_1p5A": 0.0,
+          "clash_metrics.frac_atoms_clashing_inter_residue_ligand_ligand_1p5A": 0.0,
+          "clash_metrics.frac_atoms_clashing_inter_residue_polymer_ligand_1p5A": 0.0,
+          "clash_metrics.frac_atoms_clashing_inter_residue_polymer_polymer_1p5A": 0.0,
+          "clash_metrics.frac_atoms_clashing_intra_residue_ligand_1p5A": 0.0,
+          "clash_metrics.frac_atoms_clashing_intra_residue_polymer_1p5A": 0.0,
+          "dataset_name": "worker-path://5bd75310-0d57-4484-b795-4e0e3ed6b01d/work/artifacts/rfd4_proteina/prepared",
+          "designed_chain_path": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-124456-719b480b/worker-path:/5bd75310-0d57-4484-b795-4e0e3ed6b01d/work/artifacts/rfd4_proteina/output/inference_samples/foldseek_input_chains/7808834c/protein_binder/protein_binder_chain.cif",
+          "designed_structure_path": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-124456-719b480b/worker-path:/5bd75310-0d57-4484-b795-4e0e3ed6b01d/work/artifacts/rfd4_proteina/output/inference_samples/protein_binder/protein_binder_generated.cif",
+          "example_id": "protein_binder",
+          "generated_residue_count": 209,
+          "generation.args.bb_ca_only_trajectories": 1.0,
+          "generation.args.condition_decoder_on_sequence_prediction": 1.0,
+          "generation.args.couple_partial_t": 0.0,
+          "generation.args.dump_noisy_trajectories": 0.0,
+          "generation.args.guidance_w": 1.0,
+          "generation.args.inverse_folding": 0.0,
+          "generation.args.nsteps": 60.0,
+          "generation.args.save_trajectory_every": 0.0,
+          "generation.condition_on_recycle_remaining": 1.0,
+          "generation.dataset.num_replicates": 1.0,
+          "generation.dataset.transform.path_length_search_cutoff": 64.0,
+          "generation.model.bb_ca.gt.p": 1.0,
+          "generation.model.bb_ca.schedule.p": 2.0,
+          "generation.model.bb_ca.schedule.tail_step_multiplier": 2.0,
+          "generation.model.bb_ca.schedule.tail_steps": 10.0,
+          "generation.model.bb_ca.simulation_step_params.center_every_step": 0.0,
+          "generation.model.bb_ca.simulation_step_params.sc_scale_noise": 1.0,
+          "generation.model.bb_ca.simulation_step_params.t_lim_ode": 0.95,
+          "generation.model.bb_ca.simulation_step_params.t_lim_ode_below": 0.02,
+          "generation.model.bb_ca.simulation_step_params.tsr_k": 16.0,
+          "generation.model.bb_ca.simulation_step_params.tsr_sigma": 3.0,
+          "generation.model.local_latents.gt.p": 1.0,
+          "generation.model.local_latents.schedule.p": 2.0,
+          "generation.model.local_latents.schedule.tail_step_multiplier": 2.0,
+          "generation.model.local_latents.schedule.tail_steps": 10.0,
+          "generation.model.local_latents.simulation_step_params.center_every_step": 0.0,
+          "generation.model.local_latents.simulation_step_params.sc_scale_noise": 1.0,
+          "generation.model.local_latents.simulation_step_params.t_lim_ode": 0.95,
+          "generation.model.local_latents.simulation_step_params.t_lim_ode_below": 0.02,
+          "generation.model.local_latents.simulation_step_params.tsr_k": 4.0,
+          "generation.model.local_latents.simulation_step_params.tsr_sigma": 12.0,
+          "generation.n_recycle": 0.0,
+          "generation_target_alignment_ca_count": 115,
+          "generation_target_alignment_rmsd": 5.91796693293569,
+          "generation_target_alignment_status": "ok",
+          "hotspot_obedience.hotspot_obedience": 0.0,
+          "input_cif_path": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-124456-719b480b/worker-path:/5bd75310-0d57-4484-b795-4e0e3ed6b01d/work/artifacts/rfd4_proteina/prepared/protein_binder.cif",
+          "metrics_tags": "design,hotspot_conditioning",
+          "output_base_dir": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-124456-719b480b/worker-path:/5bd75310-0d57-4484-b795-4e0e3ed6b01d/work/artifacts/rfd4_proteina/output/inference_samples",
+          "pre_oracle_pass": 1.0,
+          "result_kind": "sequence_structure_codesign",
+          "seed": 1639588292.0,
+          "sequence_adherence.n_violations": 0.0,
+          "sequence_adherence.sequence_adherence": 1.0,
+          "sequence_probability_adherence.n_one_conditions": 115.0,
+          "sequence_probability_adherence.n_one_violations": 0.0,
+          "sequence_probability_adherence.n_zero_conditions": 3105.0,
+          "sequence_probability_adherence.n_zero_violations": 0.0,
+          "sequence_probability_adherence.one_adherence": 1.0,
+          "sequence_probability_adherence.zero_adherence": 1.0,
+          "sse_distribution.helix_fraction": 0.4115,
+          "sse_distribution.helix_fraction_coi": 0.9149,
+          "sse_distribution.loop_fraction": 0.3636,
+          "sse_distribution.loop_fraction_coi": 0.0851,
+          "sse_distribution.num_ss_elements": 23.0,
+          "sse_distribution.num_ss_elements_coi": 9.0,
+          "sse_distribution.sheet_fraction": 0.2249,
+          "sse_distribution.sheet_fraction_coi": 0.0,
+          "task": "protein_binder"
+        },
+        "prediction_matrix": {
+          "predictor-0": [
+            "completed"
+          ],
+          "predictor-1": [
+            "completed"
+          ]
+        },
+        "predictions": [
+          {
+            "branch": "predictor-0",
+            "status": "completed",
+            "prediction_id": "abb8f3f6fa203231852fb88915123bdc30211ab1dff585d31bcd8a6e41ff61eb",
+            "engine": "boltz2",
+            "iptm": 0.41334,
+            "ptm": 0.71503,
+            "plddt_mean": 92.118,
+            "complex_pdb": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/campaign/20261028-194549-e217df15/candidate_batches/predictor-0-g1/d748691983be75349f91105a22f9e1b7c7f8d0da873d8f506eeb871d54cfed1e/b000000.collected/artifacts/raw/optimized_prediction/output/boltz_seed_42/boltz_results_.mn-predict-boltz2-inputs/predictions/i9ba555809165d1bb/i9ba555809165d1bb_model_0.pdb",
+            "structure_sha256": "eb4c8ae9ce3e20a90535f582a5b8f159823e24f81d6a62fc98335f902cd626a0",
+            "target_sequence_sha256": "c434254957dd7a7d80ce4ca859f9a6d101a1205f4ff822177dd0b3c31f02e968",
+            "provenance_keys": [
+              "api_engine",
+              "batch_item_id",
+              "candidate_execution",
+              "candidate_set",
+              "checkpoint_provenance",
+              "compound_id",
+              "compound_name",
+              "conditioning_mode",
+              "confidence_outputs",
+              "effective_settings",
+              "engine",
+              "engine_version",
+              "execution_manifest",
+              "identity_check",
+              "image",
+              "image_digest",
+              "input_name",
+              "input_provenance",
+              "ligand_ccd_codes",
+              "ligand_smiles",
+              "molecule_chain_options",
+              "native_execution",
+              "native_prediction_structure",
+              "optimization_mode",
+              "pae_path",
+              "pipeline_refold_input",
+              "prediction_protocol",
+              "protein_chains",
+              "scientific_contract",
+              "seed",
+              "source_compound_id",
+              "source_compound_name",
+              "target_sequences"
+            ],
+            "effective_settings": {
+              "cache": "worker-path://5bd75310-0d57-4484-b795-4e0e3ed6b01d/models",
+              "max_msa_seqs": 8192,
+              "max_parallel_samples": 5,
+              "output_format": "pdb",
+              "recycling_steps": 1,
+              "samples_per_item": 1,
+              "sampling_steps": 20,
+              "seed": 42,
+              "seed_count": 1,
+              "step_scale": 1.5,
+              "use_msa_server": false,
+              "use_potentials": false,
+              "write_full_pae": true
+            },
+            "seed": 42,
+            "image": "mn-boltz2-opt:2.2.1-cu130-batch2",
+            "image_digest": "sha256:057fac816f7434d517a77a82f59ba1685976eb7c60f44e1d39b7b03a7c545d94",
+            "checkpoint_provenance": [
+              {
+                "bytes": 2286561469,
+                "path": "/mnt/db/reference_files/boltz_models/boltz2_conf.ckpt",
+                "sha256": "090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1"
+              },
+              {
+                "bytes": 2062139170,
+                "path": "/mnt/db/reference_files/boltz_models/boltz2_aff.ckpt",
+                "sha256": "dcc5cd3722b1c9eaa34267e4ae32f55cbbf1963f4c19319381ccfa30fdd2ca9e"
+              },
+              {
+                "bytes": 345859128,
+                "path": "/mnt/db/reference_files/boltz_models/ccd.pkl",
+                "sha256": "2d3b2f03a3c5665944adba51e33263511e51b21c9cd05d902f9c4b7c1e58d2f4"
+              }
+            ],
+            "identity_check": {
+              "sequence_chain_identity": "pass",
+              "source_candidate_id": "cs_7d54648978e1ec0d7b765c95a5f3e5992dcce9392b9ac957be6dc26310680e97"
+            },
+            "candidate_execution_sha256": "891d72932e70b5fbd16c1078eb50768cf6ef8f4805f955bef08c020ccc1c2ec7",
+            "prediction_protocol_sha256": "70588f3d96546a70788f0fa37120845c87b3e8d28abe72d9495adcf13a8af06b"
+          },
+          {
+            "branch": "predictor-1",
+            "status": "completed",
+            "prediction_id": "b4cf43e095f463e1046f6bb29c37bb4d97122f6de2c6468b3f987312e6c5e0cb",
+            "engine": "protenix_v2",
+            "iptm": 0.58751,
+            "ptm": 0.76351,
+            "plddt_mean": 80.097,
+            "complex_pdb": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/refolding-validation/20261028-194635-8f0f7236/artifacts/raw/optimized_prediction/output/idc0c4d94b21517ef/seed_42/predictions/idc0c4d94b21517ef_sample_0.cif",
+            "structure_sha256": "4f4acda10b1c48f5820aea75632d6373198ef8e05c61992d3fa27c01d73516fe",
+            "target_sequence_sha256": "c434254957dd7a7d80ce4ca859f9a6d101a1205f4ff822177dd0b3c31f02e968",
+            "provenance_keys": [
+              "api_engine",
+              "batch_item_id",
+              "candidate_execution",
+              "candidate_set",
+              "checkpoint_provenance",
+              "compound_id",
+              "compound_name",
+              "conditioning_mode",
+              "confidence_outputs",
+              "effective_settings",
+              "engine",
+              "engine_version",
+              "execution_manifest",
+              "identity_check",
+              "image",
+              "image_digest",
+              "input_name",
+              "input_provenance",
+              "ligand_ccd_codes",
+              "ligand_smiles",
+              "molecule_chain_options",
+              "native_execution",
+              "native_prediction_structure",
+              "optimization_mode",
+              "pae_path",
+              "pipeline_refold_input",
+              "prediction_protocol",
+              "protein_chains",
+              "scientific_contract",
+              "seed",
+              "source_candidate",
+              "source_compound_id",
+              "source_compound_name",
+              "source_run_dir",
+              "target_sequences"
+            ],
+            "effective_settings": {},
+            "seed": 42,
+            "image": "mn-protenix-opt:2.0.0-cu128-batch2",
+            "image_digest": "sha256:f9b86d5f136581795d0fd4ba968e6ae37a5fa256a63eebec5d896fe69182f5ca",
+            "checkpoint_provenance": [],
+            "identity_check": {
+              "sequence_chain_identity": "pass",
+              "source_candidate_id": "cs_7d54648978e1ec0d7b765c95a5f3e5992dcce9392b9ac957be6dc26310680e97"
+            },
+            "candidate_execution_sha256": "bad5a0bc59f4a87bba30fdc2fa38149391905f14b228f3591c7cb6167b415105",
+            "prediction_protocol_sha256": "bdbcfdbec104ae02f70d8f53f65ae0b20d7ac8820279257771d818daf9f36672"
+          }
+        ],
+        "selection": {
+          "cohort": "c643fbed5765756d0380cfc498081b8775667d7705fe98289034be6f8989de0b",
+          "direction": "ordered_rules",
+          "measurements": {
+            "prediction/predictor-0/iptm": {
+              "status": "valid",
+              "value": 0.41334
+            }
+          },
+          "policy": {
+            "limit": 0,
+            "ranking_rules": [
+              {
+                "direction": "higher",
+                "field": "prediction/predictor-0/iptm"
+              }
+            ],
+            "rules": [],
+            "unique_sequences": true
+          },
+          "rank": 2,
+          "ranking_metric": "prediction/predictor-0/iptm",
+          "reasons": [],
+          "selected": true,
+          "status": "passed"
+        }
+      }
+    ]
+  },
+  "gpu_evidence": {
+    "gpu_leases": [
+      {
+        "host": "pc004033",
+        "scheduler_job_id": "2495488a005145938343cf57aec0c70d",
+        "gpu_index": "0",
+        "gpu_uuid": "GPU-370f52fb-5676-7316-104d-5a9bf016fae1",
+        "lease_owner": "scheduler-2495488a005145938343cf57aec0c70d-3bb6258bf1",
+        "run_dir": "/data/results/mn-molecular-design-studio/workdir/runs/design/20261028-193907-c9b8a0a1",
+        "first_sample": "2026-10-28T18:39:11.615169+00:00",
+        "last_sample": "2026-10-28T18:40:02.116702+00:00"
+      },
+      {
+        "host": "pc002975",
+        "scheduler_job_id": "4005bb5ab916469fae7f391abe8441fe",
+        "gpu_index": "0",
+        "gpu_uuid": "GPU-195a1966-1148-340e-5fe2-bac2d7a9821a",
+        "lease_owner": "scheduler-4005bb5ab916469fae7f391abe8441fe-8e02e762cc",
+        "run_dir": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-193936-433a03d6",
+        "first_sample": "2026-10-28T18:39:37.968613+00:00",
+        "last_sample": "2026-10-28T18:41:33.554141+00:00"
+      },
+      {
+        "host": "pc002975",
+        "scheduler_job_id": "fcf13b7d0b13454998be753fcb409dcf",
+        "gpu_index": "1",
+        "gpu_uuid": "GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21",
+        "lease_owner": "scheduler-fcf13b7d0b13454998be753fcb409dcf-ebf6ca7076",
+        "run_dir": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/refolding-validation/20261028-194617-6b2735c7",
+        "first_sample": "2026-10-28T18:46:19.200039+00:00",
+        "last_sample": "2026-10-28T18:47:51.161159+00:00"
+      },
+      {
+        "host": "pc004033",
+        "scheduler_job_id": "f8c7e7fc2e074391a86886f630122492",
+        "gpu_index": "0",
+        "gpu_uuid": "GPU-370f52fb-5676-7316-104d-5a9bf016fae1",
+        "lease_owner": "scheduler-f8c7e7fc2e074391a86886f630122492-481c6e2d77",
+        "run_dir": "/data/results/mn-molecular-design-studio/workdir/runs/refolding-validation/20261028-194628-f0ef1bf6",
+        "first_sample": "2026-10-28T18:46:29.368071+00:00",
+        "last_sample": "2026-10-28T18:47:13.735299+00:00"
+      },
+      {
+        "host": "pc002975",
+        "scheduler_job_id": "7b5db3f80b514d05bc1f550f4ffd7b67",
+        "gpu_index": "0",
+        "gpu_uuid": "GPU-195a1966-1148-340e-5fe2-bac2d7a9821a",
+        "lease_owner": "scheduler-7b5db3f80b514d05bc1f550f4ffd7b67-1daf9c9a78",
+        "run_dir": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/refolding-validation/20261028-194635-8f0f7236",
+        "first_sample": "2026-10-28T18:46:38.999771+00:00",
+        "last_sample": "2026-10-28T18:49:37.581979+00:00"
+      },
+      {
+        "host": "pc004032",
+        "scheduler_job_id": "ac10d8766bcb42b5925d568ddc839832",
+        "gpu_index": "0",
+        "gpu_uuid": "GPU-b7f8339b-157f-e1f2-f136-bd0ad68bc780",
+        "lease_owner": "scheduler-ac10d8766bcb42b5925d568ddc839832-1f4728b050",
+        "run_dir": "/data/RESULTS/mn-molecular-design-studio/workdir/runs/refolding-validation/20261028-194726-da50db00",
+        "first_sample": "2026-10-28T18:47:28.178137+00:00",
+        "last_sample": "2026-10-28T18:47:53.722263+00:00"
+      },
+      {
+        "host": "pc002975",
+        "scheduler_job_id": "092f39c7c96c49d6aa3bacc0008c2d41",
+        "gpu_index": "0",
+        "gpu_uuid": "GPU-195a1966-1148-340e-5fe2-bac2d7a9821a",
+        "lease_owner": "scheduler-092f39c7c96c49d6aa3bacc0008c2d41-577afab309",
+        "run_dir": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/refolding-validation/20261028-194638-365890bc",
+        "first_sample": "2026-10-28T18:49:39.977872+00:00",
+        "last_sample": "2026-10-28T18:52:12.314744+00:00"
+      },
+      {
+        "host": "pc002975",
+        "scheduler_job_id": "0fb693cfed964fac96476c164b960674",
+        "gpu_index": "1",
+        "gpu_uuid": "GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21",
+        "lease_owner": "scheduler-0fb693cfed964fac96476c164b960674-aa1127aa58",
+        "run_dir": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/refolding-validation/20261028-220246-75f53651",
+        "first_sample": "2026-10-28T21:02:48.206049+00:00",
+        "last_sample": "2026-10-28T21:05:27.979910+00:00"
+      }
+    ],
+    "native_process_observations": [
+      {
+        "host": "pc004033",
+        "gpu_uuid": "GPU-370f52fb-5676-7316-104d-5a9bf016fae1",
+        "pid": 142401,
+        "process_name": "/usr/bin/python3",
+        "first_sample": "2026-10-28T18:39:11.615169+00:00",
+        "last_sample": "2026-10-28T18:39:57.302035+00:00",
+        "matching_scheduler_jobs": [
+          "2495488a005145938343cf57aec0c70d"
+        ]
+      },
+      {
+        "host": "pc002975",
+        "gpu_uuid": "GPU-195a1966-1148-340e-5fe2-bac2d7a9821a",
+        "pid": 995823,
+        "process_name": "/usr/local/bin/python",
+        "first_sample": "2026-10-28T18:40:30.965658+00:00",
+        "last_sample": "2026-10-28T18:41:26.344055+00:00",
+        "matching_scheduler_jobs": [
+          "4005bb5ab916469fae7f391abe8441fe"
+        ]
+      },
+      {
+        "host": "pc004033",
+        "gpu_uuid": "GPU-370f52fb-5676-7316-104d-5a9bf016fae1",
+        "pid": 161074,
+        "process_name": "/opt/conda/bin/python",
+        "first_sample": "2026-10-28T18:47:00.969639+00:00",
+        "last_sample": "2026-10-28T18:47:11.312981+00:00",
+        "matching_scheduler_jobs": [
+          "f8c7e7fc2e074391a86886f630122492"
+        ]
+      },
+      {
+        "host": "pc002975",
+        "gpu_uuid": "GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21",
+        "pid": 1015532,
+        "process_name": "/usr/local/bin/python3",
+        "first_sample": "2026-10-28T18:47:23.299290+00:00",
+        "last_sample": "2026-10-28T18:47:46.145114+00:00",
+        "matching_scheduler_jobs": [
+          "fcf13b7d0b13454998be753fcb409dcf"
+        ]
+      },
+      {
+        "host": "pc004032",
+        "gpu_uuid": "GPU-b7f8339b-157f-e1f2-f136-bd0ad68bc780",
+        "pid": 106184,
+        "process_name": "/usr/local/bin/python3",
+        "first_sample": "2026-10-28T18:47:46.162031+00:00",
+        "last_sample": "2026-10-28T18:47:51.087125+00:00",
+        "matching_scheduler_jobs": [
+          "ac10d8766bcb42b5925d568ddc839832"
+        ]
+      },
+      {
+        "host": "pc002975",
+        "gpu_uuid": "GPU-195a1966-1148-340e-5fe2-bac2d7a9821a",
+        "pid": 1016592,
+        "process_name": "/opt/conda/bin/python",
+        "first_sample": "2026-10-28T18:49:06.050549+00:00",
+        "last_sample": "2026-10-28T18:49:35.140055+00:00",
+        "matching_scheduler_jobs": [
+          "7b5db3f80b514d05bc1f550f4ffd7b67"
+        ]
+      },
+      {
+        "host": "pc002975",
+        "gpu_uuid": "GPU-195a1966-1148-340e-5fe2-bac2d7a9821a",
+        "pid": 1025788,
+        "process_name": "/opt/conda/bin/python",
+        "first_sample": "2026-10-28T18:51:40.919671+00:00",
+        "last_sample": "2026-10-28T18:52:09.926553+00:00",
+        "matching_scheduler_jobs": [
+          "092f39c7c96c49d6aa3bacc0008c2d41"
+        ]
+      },
+      {
+        "host": "pc002975",
+        "gpu_uuid": "GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21",
+        "pid": 1261764,
+        "process_name": "/opt/conda/bin/python",
+        "first_sample": "2026-10-28T21:04:56.535627+00:00",
+        "last_sample": "2026-10-28T21:05:25.574201+00:00",
+        "matching_scheduler_jobs": [
+          "0fb693cfed964fac96476c164b960674"
+        ]
+      }
+    ],
+    "sampled_lease_overlap_intervals": [
+      {
+        "start": "2026-10-28T18:39:37.968613+00:00",
+        "end": "2026-10-28T18:40:02.116702+00:00",
+        "scheduler_jobs": [
+          "2495488a005145938343cf57aec0c70d",
+          "4005bb5ab916469fae7f391abe8441fe"
+        ],
+        "gpu_slots": 2
+      },
+      {
+        "start": "2026-10-28T18:46:29.368071+00:00",
+        "end": "2026-10-28T18:46:38.999771+00:00",
+        "scheduler_jobs": [
+          "f8c7e7fc2e074391a86886f630122492",
+          "fcf13b7d0b13454998be753fcb409dcf"
+        ],
+        "gpu_slots": 2
+      },
+      {
+        "start": "2026-10-28T18:46:38.999771+00:00",
+        "end": "2026-10-28T18:47:13.735299+00:00",
+        "scheduler_jobs": [
+          "7b5db3f80b514d05bc1f550f4ffd7b67",
+          "f8c7e7fc2e074391a86886f630122492",
+          "fcf13b7d0b13454998be753fcb409dcf"
+        ],
+        "gpu_slots": 3
+      },
+      {
+        "start": "2026-10-28T18:47:13.735299+00:00",
+        "end": "2026-10-28T18:47:28.178137+00:00",
+        "scheduler_jobs": [
+          "7b5db3f80b514d05bc1f550f4ffd7b67",
+          "fcf13b7d0b13454998be753fcb409dcf"
+        ],
+        "gpu_slots": 2
+      },
+      {
+        "start": "2026-10-28T18:47:28.178137+00:00",
+        "end": "2026-10-28T18:47:51.161159+00:00",
+        "scheduler_jobs": [
+          "7b5db3f80b514d05bc1f550f4ffd7b67",
+          "ac10d8766bcb42b5925d568ddc839832",
+          "fcf13b7d0b13454998be753fcb409dcf"
+        ],
+        "gpu_slots": 3
+      },
+      {
+        "start": "2026-10-28T18:47:51.161159+00:00",
+        "end": "2026-10-28T18:47:53.722263+00:00",
+        "scheduler_jobs": [
+          "7b5db3f80b514d05bc1f550f4ffd7b67",
+          "ac10d8766bcb42b5925d568ddc839832"
+        ],
+        "gpu_slots": 2
+      }
+    ],
+    "max_concurrent_sampled_gpu_leases": 3,
+    "conservative_process_overlap_intervals": [],
+    "max_concurrent_conservative_process_intervals": 1,
+    "four_simultaneous_inference_verified": false,
+    "warning": "Lease occupancy includes CPU preparation/model loading. Process observations show CUDA context presence, not proof of a simultaneous forward.",
+    "unrelated_process_observations": [
+      {
+        "host": "pc002975",
+        "gpu_uuid": "GPU-195a1966-1148-340e-5fe2-bac2d7a9821a",
+        "pid": 1042190,
+        "process_name": "/usr/share/rustdesk/rustdesk",
+        "first_sample": "2026-10-28T19:04:21.678206+00:00",
+        "last_sample": "2026-10-28T19:11:52.462396+00:00",
+        "matching_scheduler_jobs": []
+      }
+    ]
+  },
+  "tests": [
+    {
+      "suite": "inline JSON/native configuration",
+      "passed": 29,
+      "seconds": 2.07
+    },
+    {
+      "suite": "graph identity and API/campaign integration",
+      "passed": 91,
+      "seconds": 23.56
+    },
+    {
+      "suite": "CPU resources/native collection/graph integration",
+      "passed": 153,
+      "seconds": 97.32
+    }
+  ],
+  "limitations": [
+    "BindCraft rejected at screen; internal ProteinMPNN and AF2 validation not reached. Positive complete-native comparison unverified.",
+    "Protenix V2 installed stock path fails on RTX 5090 despite compiled-target probe. Recovery succeeded on RTX 4090.",
+    "Four GPUs each executed real useful work, but maximum observed concurrent leases was three and simultaneous native inference across four was not demonstrated.",
+    "Live Protenix chunks each contained one input; multi-input Protenix model reuse not tested.",
+    "Native BindCraft root receipt missing from collected graph provenance; original worker receipt was retrieved read-only and retained.",
+    "Protenix candidate checkpoint_provenance/effective_settings fields are empty; model path/hash and exact settings are verified separately from native logs, mounts and manifest."
+  ],
+  "original_files_preserved": [
+    {
+      "host": "pc002975",
+      "head": "abf0f2ef5b3d1117df72c6a74a56e05bb3f21f2f",
+      "status": " M mn_molecular_design_studio/run_app.py\n?? mn_molecular_design_studio/tool_references.py\n",
+      "files": {
+        "mn_molecular_design_studio/run_app.py": "8019fa5165955dacb00074ab9785ba3a2b1a3e15d44eabb7aaa96799ec31a0d1",
+        "mn_molecular_design_studio/tool_references.py": "3d039cd6c961cc2914fb60d83ede95abff29e0cc9d868c18bf208e757738f7de"
+      }
+    },
+    {
+      "host": "PC004032",
+      "head": "abf0f2ef5b3d1117df72c6a74a56e05bb3f21f2f",
+      "status": " M mn_molecular_design_studio/run_app.py\n?? mn_molecular_design_studio/tool_references.py\n",
+      "files": {
+        "mn_molecular_design_studio/run_app.py": "8019fa5165955dacb00074ab9785ba3a2b1a3e15d44eabb7aaa96799ec31a0d1",
+        "mn_molecular_design_studio/tool_references.py": "3d039cd6c961cc2914fb60d83ede95abff29e0cc9d868c18bf208e757738f7de"
+      }
+    },
+    {
+      "host": "PC004033",
+      "head": "abf0f2ef5b3d1117df72c6a74a56e05bb3f21f2f",
+      "status": " M mn_molecular_design_studio/run_app.py\n?? mn_molecular_design_studio/tool_references.py\n",
+      "files": {
+        "mn_molecular_design_studio/run_app.py": "8019fa5165955dacb00074ab9785ba3a2b1a3e15d44eabb7aaa96799ec31a0d1",
+        "mn_molecular_design_studio/tool_references.py": "3d039cd6c961cc2914fb60d83ede95abff29e0cc9d868c18bf208e757738f7de"
+      }
+    }
+  ],
+  "protected_scientific_hashes_unchanged": true,
+  "export": {
+    "browser_download": "/home/user/Downloads/Phase_7B_PD-L1_Mode_3_modular_retained_P5_collection_20261028-220218-57400312.zip",
+    "evidence_copy": "/mnt/data/RESULTS/mn-molecular-design-studio/verification/phase7b-distributed-acceptance/final-evidence/modular-recovered-ui-download.zip",
+    "sha256": "1b2388e95c047613e4d7db97d9b91df94501bcee96ba6d7e3304739788d41ebe",
+    "candidate_count": 3,
+    "prediction_count": 6,
+    "exact_fasta_identity": true,
+    "entries": 95,
+    "crc": "pass",
+    "export_checksums": "pass for included files",
+    "structure_files": 13
+  },
+  "raw_evidence_root": "/mnt/data/RESULTS/mn-molecular-design-studio/verification/phase7b-distributed-acceptance",
+  "protenix_checkpoint_verification": {
+    "source": "read-only native reference mount and native checkpoint-load logs",
+    "sha256": "8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599",
+    "candidate_record_checkpoint_list": [],
+    "candidate_record_effective_settings": {},
+    "native_cli_settings": {
+      "seed": 42,
+      "samples": 1,
+      "cycles": 10,
+      "steps": 200,
+      "dtype": "bf16",
+      "msa": false,
+      "templates": false,
+      "model": "protenix-v2"
+    }
+  },
+  "runtime_verification": [
+    {
+      "host": "pc002975",
+      "fingerprint": "b16006af8914db18983c09225d595098214d6502f215600724f5a2b8545ab55e",
+      "health": {
+        "status": "ok",
+        "app": "mn-molecular-design-studio",
+        "api_version": "v1"
+      },
+      "nodes": [
+        {
+          "id": "5bd75310-0d57-4484-b795-4e0e3ed6b01d",
+          "name": "4032",
+          "last_seen_at": "2026-10-28T21:07:06+00:00",
+          "availability": "online",
+          "fingerprint": "b16006af8914db18983c09225d595098214d6502f215600724f5a2b8545ab55e",
+          "accept_jobs": true
+        },
+        {
+          "id": "16b4dcfd-3b9f-4d59-80a4-95363125fcee",
+          "name": "4033",
+          "last_seen_at": "2026-10-28T21:07:05+00:00",
+          "availability": "online",
+          "fingerprint": "b16006af8914db18983c09225d595098214d6502f215600724f5a2b8545ab55e",
+          "accept_jobs": true
+        },
+        {
+          "id": "50e484e4-0ad5-47c9-a8c4-b46d4000a59b",
+          "name": "pc002975",
+          "last_seen_at": "2026-10-28T21:07:03+00:00",
+          "availability": "online",
+          "fingerprint": "b16006af8914db18983c09225d595098214d6502f215600724f5a2b8545ab55e",
+          "accept_jobs": true
+        }
+      ],
+      "processes": {
+        "studio-api": {
+          "pid": 1010007,
+          "pythonpath": "/home/user/programs/deployments/mn-molecular-design-studio/phase7b-v4/source",
+          "cwd": "/home/user/programs/deployments/mn-molecular-design-studio/phase7b-v4/source"
+        },
+        "studio-agent": {
+          "pid": 1010008,
+          "pythonpath": "/home/user/programs/deployments/mn-molecular-design-studio/phase7b-v4/source",
+          "cwd": "/home/user/programs/deployments/mn-molecular-design-studio/phase7b-v4/source"
+        },
+        "studio-ui": {
+          "pid": 1010009,
+          "pythonpath": "/home/user/programs/deployments/mn-molecular-design-studio/phase7b-v4/source",
+          "cwd": "/home/user/programs/deployments/mn-molecular-design-studio/phase7b-v4/source"
+        },
+        "application_bridge": {
+          "pid": 1010011,
+          "pythonpath": "/home/user/programs/deployments/mn-molecular-design-studio/phase7b-v4/source"
+        }
+      }
+    },
+    {
+      "host": "pc004032",
+      "fingerprint": "b16006af8914db18983c09225d595098214d6502f215600724f5a2b8545ab55e",
+      "health": {
+        "status": "ok",
+        "app": "mn-molecular-design-studio",
+        "api_version": "v1"
+      },
+      "nodes": [
+        {
+          "id": "5bd75310-0d57-4484-b795-4e0e3ed6b01d",
+          "name": "4032",
+          "last_seen_at": "2026-10-28T21:06:54+00:00",
+          "availability": "online",
+          "fingerprint": "b16006af8914db18983c09225d595098214d6502f215600724f5a2b8545ab55e",
+          "accept_jobs": true
+        },
+        {
+          "id": "16b4dcfd-3b9f-4d59-80a4-95363125fcee",
+          "name": "4033",
+          "last_seen_at": "2026-10-28T21:06:58+00:00",
+          "availability": "online",
+          "fingerprint": "b16006af8914db18983c09225d595098214d6502f215600724f5a2b8545ab55e",
+          "accept_jobs": true
+        },
+        {
+          "id": "50e484e4-0ad5-47c9-a8c4-b46d4000a59b",
+          "name": "pc002975",
+          "last_seen_at": "2026-10-28T21:07:06+00:00",
+          "availability": "online",
+          "fingerprint": "b16006af8914db18983c09225d595098214d6502f215600724f5a2b8545ab55e",
+          "accept_jobs": true
+        }
+      ],
+      "processes": {
+        "studio-api": {
+          "pid": 99865,
+          "pythonpath": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b-v4/source",
+          "cwd": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b-v4/source"
+        },
+        "studio-agent": {
+          "pid": 99866,
+          "pythonpath": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b-v4/source",
+          "cwd": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b-v4/source"
+        },
+        "application_bridge": {
+          "pid": 99868,
+          "pythonpath": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b-v4/source"
+        }
+      }
+    },
+    {
+      "host": "pc004033",
+      "fingerprint": "b16006af8914db18983c09225d595098214d6502f215600724f5a2b8545ab55e",
+      "health": {
+        "status": "ok",
+        "app": "mn-molecular-design-studio",
+        "api_version": "v1"
+      },
+      "nodes": [
+        {
+          "id": "5bd75310-0d57-4484-b795-4e0e3ed6b01d",
+          "name": "4032",
+          "last_seen_at": "2026-10-28T21:06:58+00:00",
+          "availability": "online",
+          "fingerprint": "b16006af8914db18983c09225d595098214d6502f215600724f5a2b8545ab55e",
+          "accept_jobs": true
+        },
+        {
+          "id": "16b4dcfd-3b9f-4d59-80a4-95363125fcee",
+          "name": "4033",
+          "last_seen_at": "2026-10-28T21:07:03+00:00",
+          "availability": "online",
+          "fingerprint": "b16006af8914db18983c09225d595098214d6502f215600724f5a2b8545ab55e",
+          "accept_jobs": true
+        },
+        {
+          "id": "50e484e4-0ad5-47c9-a8c4-b46d4000a59b",
+          "name": "pc002975",
+          "last_seen_at": "2026-10-28T21:07:06+00:00",
+          "availability": "online",
+          "fingerprint": "b16006af8914db18983c09225d595098214d6502f215600724f5a2b8545ab55e",
+          "accept_jobs": true
+        }
+      ],
+      "processes": {
+        "studio-api": {
+          "pid": 156835,
+          "pythonpath": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b-v4/source",
+          "cwd": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b-v4/source"
+        },
+        "studio-agent": {
+          "pid": 156840,
+          "pythonpath": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b-v4/source",
+          "cwd": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b-v4/source"
+        },
+        "application_bridge": {
+          "pid": 156865,
+          "pythonpath": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b-v4/source"
+        }
+      }
+    }
+  ],
+  "final_queues_and_leases_empty": true,
+  "mode1_ui_export": {
+    "browser_download": "/home/user/Downloads/Phase_7B_PD-L1_Mode_1_native_20261028-193839-caa59d85.zip",
+    "evidence_copy": "/mnt/data/RESULTS/mn-molecular-design-studio/verification/phase7b-distributed-acceptance/live-v3/native-complete-ui-download.zip",
+    "sha256": "19a280c91b5e7a67e5d13a3503caa2a36ddc9ca4c14d543b39962da7bdb3165e",
+    "entries": 37,
+    "native_rejection_provenance_present": true,
+    "corrupt_entry": null
+  },
+  "mode2_managed_run": "pc004033:campaign/20261028-194227-fc3fdda9",
+  "recovery_run": "20261028-220218-57400312",
+  "recovery_cached_steps": 13,
+  "recovery_failed_steps": 0
+}
