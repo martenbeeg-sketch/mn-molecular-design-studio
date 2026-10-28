@@ -1,5 +1,7 @@
 # Distributed Acceptance Campaigns — Phase 6B P0–P3
 
+P4 multi-engine adapter, lifecycle and validation results: [Phase 6B P4 report](distributed-campaign-multi-engine.md).
+
 ## Delivered commits
 
 - P0 ledger: `a6b10c3` — `feat: add durable distributed campaign ledger`
@@ -71,7 +73,7 @@ The Results root contained real retained prediction/analysis outputs, including 
 
 - Execution in this implementation is on the local scheduler. `workstation_selection` is persisted and validated, but cross-workstation dispatch, remote compatibility verification, deployment and controller takeover are not implemented or tested. No remote machine was changed.
 - GPU compute budgets use allocation leases, not device utilization measurements.
-- P4 can add an engine adapter that emits isolated bounded attempts, authoritative progress, verified candidate rows and retry-safe receipts.
+- P4 adds an RFD4-Proteina adapter with isolated one-request attempts, explicit non-authoritative native acceptance, verified sequence/structure rows and same-sequence downstream validation; see the report above.
 - P5 can connect eligible peers to the existing scheduler/receipt transport after source, capability and artifact checks; same-origin controller recovery remains the supported recovery model.
 - P6 can expand monitoring around the existing campaign progress and ledger counters. This work adds no separate dashboard.
 
