@@ -738,6 +738,7 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                     campaign, campaign_ready = render_campaign_config_editor(
                         st, kind, values.get("distributed_campaign"), key=key + "-campaign",
                         seed=int(values.get("campaign_seed", values.get("seed", 0)) or 0),
+                        generation_cpu_cores=values.get("cpu_cores"),
                     )
                     if campaign is None:
                         values.pop("distributed_campaign", None)

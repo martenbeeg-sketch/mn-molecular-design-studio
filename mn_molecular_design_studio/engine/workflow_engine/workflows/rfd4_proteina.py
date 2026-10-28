@@ -141,6 +141,9 @@ def run_rfd4_proteina_design(
     task_group: Literal['design','refolding']='design',
     distributed_campaign: dict|None=None,
 ) -> Path:
+    if isinstance(options,dict) and options.get('native_phase_timing') is True:
+        if (isinstance(distributed_campaign,dict) and distributed_campaign.get('enabled')) or task=='score_structures':
+            raise ValueError('Native phase timing supports ordinary local generation only; campaign and scoring execution are unchanged.')
     parameters=json.loads(json.dumps(dict(locals()),default=str)); job=None
     try:
         if seed is None: parameters['seed']=secrets.randbelow(2**32)
@@ -180,7 +183,10 @@ def run_rfd4_proteina_design(
             return run_rfd4_proteina_distributed_campaign(job.run_dir)
         # Stage the exact adapter with every run for reproducibility and remote execution.
         runtime=prepared['root']/'runtime'; runtime.mkdir(exist_ok=True)
-        for name in ('rfd4_runtime.py','rfd4_studio_oracle.py'):
+        runtime_files=['rfd4_runtime.py','rfd4_studio_oracle.py']
+        if parameters['options'].get('native_phase_timing'):
+            runtime_files.append('rfd4_native_diagnostics.py')
+        for name in runtime_files:
             source=Path(__file__).with_name(name)
             if source.exists(): shutil.copy2(source,runtime/name)
         write_json(job.run_dir/'parameters.json',{**parameters,'engine_version':inputs.UPSTREAM_VERSION,
@@ -195,6 +201,8 @@ def run_rfd4_proteina_design(
                  'OMP_NUM_THREADS':str(cpu_cores),'PYTHONUNBUFFERED':'1',
                  'TMPDIR':'/work/'+temp.relative_to(job.run_dir).as_posix(),
                  'PYTHONPATH':'/work/'+runtime.relative_to(job.run_dir).as_posix()}
+            if o.get('native_phase_timing'):
+                env['MN_STUDIO_RFD4_NATIVE_TIMING_FILE']='/work/'+(prepared['root']/'native_lifecycle.jsonl').relative_to(job.run_dir).as_posix()
             if os.environ.get('HF_HUB_OFFLINE'):
                 env['HF_HUB_OFFLINE'] = os.environ['HF_HUB_OFFLINE']
             mounts=[(cache,'/cache/huggingface',False)]

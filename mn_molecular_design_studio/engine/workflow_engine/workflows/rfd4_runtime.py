@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -734,7 +735,16 @@ def run(request, prepare_only=False):
         command=compose_settings(current,p,chunk_root)
         commands.append({'command':command,'overrides':current})
         (root/'native_command.json').write_text(json.dumps(commands,indent=2))
-        subprocess.run(command,check=True)
+        timing_file=os.environ.get('MN_STUDIO_RFD4_NATIVE_TIMING_FILE')
+        if timing_file:
+            from rfd4_native_diagnostics import phase, instrumented_command
+            diagnostic_command=instrumented_command(command,Path(__file__).with_name('rfd4_native_diagnostics.py'))
+            commands[-1]['diagnostic_command']=diagnostic_command
+            (root/'native_command.json').write_text(json.dumps(commands,indent=2))
+            with phase(timing_file,'native_subprocess_launch_through_exit'):
+                subprocess.run(diagnostic_command,check=True)
+        else:
+            subprocess.run(command,check=True)
     csvs=list(out.rglob('per_example_metrics*.csv'))
     if not csvs: raise RuntimeError('RFD4 did not write its per-design metrics table.')
     # Produce a portable result index using the annotations carried by native CIFs.

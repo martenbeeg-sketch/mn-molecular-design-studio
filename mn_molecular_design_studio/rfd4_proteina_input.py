@@ -253,7 +253,7 @@ def validate_options(p):
         value=o.get(key,default)
         if value is not None and (isinstance(value,bool) or not isinstance(value,(float,int)) or not low<=value<=high):
             raise ValueError(f'{key} must be between {low} and {high}.')
-    for key in ('repack_target','unindex_motif','deterministic','refold','filter_conditions','apo','energy','developability','cluster','save_trajectory','dock_independently','keep_constant_domains','hold_kept_in_place','scaffold_total_explicit'):
+    for key in ('repack_target','unindex_motif','deterministic','refold','filter_conditions','apo','energy','developability','cluster','save_trajectory','dock_independently','keep_constant_domains','hold_kept_in_place','scaffold_total_explicit','native_phase_timing'):
         if key in o and type(o[key]) is not bool: raise ValueError(f'{key} must be true or false.')
     for key,maximum in [('cdr_lengths',40),('scaffold_lengths',1024)]:
         rows=o.get(key) or []

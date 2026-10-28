@@ -50,6 +50,8 @@ def render_campaign_config_editor(
     *,
     key: str,
     seed: int = 0,
+    gpu_inventory: list[dict[str, Any]] | None = None,
+    generation_cpu_cores: int | None = None,
 ) -> tuple[dict[str, Any] | None, bool]:
     """Render supported campaign settings and return a validated API config."""
     generator_id = _GENERATORS.get(node_kind)
@@ -183,4 +185,28 @@ def render_campaign_config_editor(
     st.code(json.dumps(config, indent=2, sort_keys=True), language="json")
     if node_kind == "rfd4":
         st.caption("Distributed RFD4 children request one native design with dataloader batch size 1. Controller dispatch size changes only how the campaign groups separate execution jobs.")
+    with st.expander("Read-only native execution plan"):
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.execution_planning import (
+            PROPOSED_NATIVE_CHOICES, plan_campaign_execution,
+        )
+        st.caption("Preview only: these controls are not saved to the tile or sent for execution. Unsupported choices remain disabled for campaign submission.")
+        preview_count = st.selectbox(
+            "Hypothetical native attempts per job", list(PROPOSED_NATIVE_CHOICES),
+            key=key + "-plan-native-count",
+        )
+        preview_inputs = int(st.number_input(
+            "Hypothetical input count", min_value=1, value=1, step=1, key=key + "-plan-input-count",
+        ))
+        try:
+            plan = plan_campaign_execution(
+                config, native_attempts_per_job=preview_count, input_count=preview_inputs,
+                eligible_gpus=gpu_inventory, generation_cpu_cores=generation_cpu_cores,
+            )
+            for issue in plan["errors"]:
+                st.warning(issue)
+            if gpu_inventory is None:
+                st.caption("GPU inventory was not supplied to this preview. Workstation/GPU selectors and resource requirements are shown; exact eligibility remains unresolved until authenticated placement checks.")
+            st.json(plan)
+        except (TypeError, ValueError) as exc:
+            st.warning(f"Execution plan unavailable: {exc}")
     return config, ready
