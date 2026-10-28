@@ -622,6 +622,72 @@ def test_optimized_prediction_validation_request_keeps_source_sequence_and_resou
     ]
 
 
+def test_validation_dispatch_respects_two_job_concurrency_limit(tmp_path, monkeypatch, design_source_factory):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    stage = {
+        "workflow": "refolding.optimized_prediction",
+        "parameters": {"engine": "boltz2", "samples": 1, "num_recycles": 1},
+        "resources": {"gpu_device": "auto", "cpu_cores": 4, "min_vram_gb": 16},
+        "required_metrics": ["iptm"],
+    }
+    config = distributed_campaign.validate_campaign_config({
+        "generator_id": "rfd4_proteina",
+        "acceptance_level": "validated",
+        "accepted_target": 2,
+        "max_attempts": 3,
+        "max_concurrent_validations": 2,
+        "validation_stages": [stage],
+    })
+    root, parent = _parent_run(tmp_path, monkeypatch, {
+        "generator_id": "rfd4_proteina",
+        "acceptance_level": "validated",
+        "accepted_target": 2,
+        "max_attempts": 3,
+        "validation_stages": [stage],
+    })
+    campaign = CampaignLedger.create(parent / "artifacts/distributed_campaign/ledger.json", config)
+    candidates = []
+    for ordinal in range(1, 4):
+        source_run, candidate = design_source_factory(root / "design" / f"source-{ordinal}")
+        candidate["candidate_id"] = f"source-candidate-{ordinal}"
+        candidate["raw_metadata"]["source_run_dir"] = str(source_run)
+        attempt = campaign.authorize(1, batch_id=f"retained-{ordinal}")[0]
+        campaign.transition(attempt["attempt_id"], "running")
+        campaign.record_receipt(
+            attempt["attempt_id"], f"source-receipt-{ordinal}", candidates=[candidate],
+            native_state={"engine": "rfd4_proteina", "authoritative": False, "output_candidates": 1},
+        )
+        candidates.append(candidate)
+
+    submitted = []
+
+    def submit_validation(_parent, _ledger, candidate, submitted_stage, stage_index, _previous_run):
+        assert submitted_stage["resources"]["gpu_device"] == "auto"
+        run_dir = root / "refolding-validation" / f"validation-{candidate['candidate_id']}"
+        run_dir.mkdir(parents=True)
+        jobs.write_json(run_dir / "metadata.json", {
+            "run_id": run_dir.name, "task_group": "refolding-validation", "status": "queued",
+        })
+        submitted.append((candidate["candidate_id"], stage_index, run_dir))
+        return run_dir
+
+    monkeypatch.setattr(distributed_campaign, "_submit_validation_stage", submit_validation)
+
+    distributed_campaign._drive_validation(parent, campaign, candidates, config)
+    first_state = campaign.snapshot()
+    assert len(submitted) == 2
+    assert distributed_campaign._validation_active_count(first_state) == 2
+    assert distributed_campaign._validation_pending_candidates(first_state, config) == 3
+    assert {candidate_id for candidate_id, _index, _path in submitted} == {
+        "source-candidate-1", "source-candidate-2",
+    }
+
+    distributed_campaign._drive_validation(parent, campaign, candidates, config)
+    assert len(submitted) == 2
+    assert distributed_campaign._validation_active_count(campaign.snapshot()) == 2
+
+
 def test_ipsae_stage_request_depends_on_its_preceding_prediction(tmp_path):
     from mn_molecular_design_studio.engine.workflow_engine.core.candidates import candidates_jsonl_path
 

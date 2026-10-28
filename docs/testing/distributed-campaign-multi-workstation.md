@@ -91,6 +91,8 @@ The complete parent run lasted about 245 seconds, from 11:44:48 to 11:48:53 UTC.
 
 Focused CPU regressions passed during implementation: 147 tests in 39.32 seconds before the final reference-probe follow-up; then 44 campaign and peer-transfer tests in 4.89 seconds, plus 3 targeted cancellation, transfer, and placement tests. `git diff --check` passed. The full broad CPU suite was not rerun after these focused changes. The bounded P5 run itself supplied the real GPU evidence: two successful remote RFD4 inferences on RTX 5090 peers and two local Boltz validation runs on the RTX 4090 workstation. No opt-in pytest GPU suite was substituted for these executions.
 
+The P5 concurrency follow-up also passed 203 focused CPU tests in 16.76 seconds, including a new controller regression that limits dispatch to two validation jobs and keeps the third candidate pending. The real two-GPU Boltz execution is recorded in section 16.
+
 ## 14. Remaining limitations and excluded runs
 
 The campaign acceptance policy establishes valid measurements and exact lineage only; it makes no experimental affinity, specificity, or activity claim. Native RFD4 acceptance is unavailable. The `pc004032` heartbeat did not sample high utilization while its allocation was active, although the GPU-backed scheduler job completed and the GPU was released. Container startup and checkpoint loading were not separated from worker wall time. Fault-recovery paths were covered by deterministic tests rather than by interrupting these successful jobs.
@@ -110,6 +112,38 @@ P5 source commits on the deployed branch:
 
 P5 source changes are limited to `mn_molecular_design_studio/api.py`, `mn_molecular_design_studio/cluster/candidate_batches.py`, `mn_molecular_design_studio/cluster/context.py`, `mn_molecular_design_studio/engine/workflow_engine/workflows/distributed_campaign.py`, `tests/test_candidate_peer_transfer.py`, `tests/test_cluster.py`, and `tests/test_distributed_campaign.py`. This report is the only documentation file added for P5. The pre-existing local `run_app.py` modification and untracked `tool_references.py` were not staged or committed.
 
-## 16. P6 readiness
+## 16. P5 follow-up — concurrent Boltz validation and four-GPU scheduling
+
+### Deployment and live pool
+
+At the follow-up check, `pc002975`, `4032`, and `4033` were online, accepting jobs, and reported online schedulers. Their live runtime fingerprint remained `9ae11faca1ac4b2ada7e68f2c0c1ddc637dbd4d3a04d66bba0f63c53890f7cda`. The local checkout was at `a72a66a`; the peers remained on runtime source commit `4f9ba772fcb48c1961d74c99f2f5704f34c06197`. The checkout difference is documentation-only relative to the deployed runtime source. This follow-up changed no runtime code, so no remote deployment or service restart was needed or performed.
+
+| Workstation | GPU | UUID | Compute capability | VRAM | Follow-up allocation |
+|---|---:|---|---:|---:|---|
+| `pc004032` | 0, RTX 5090 | `GPU-b7f8339b-157f-e1f2-f136-bd0ad68bc780` | 12.0 | 31.84 GiB | Idle during local validation; used by P5 RFD4 attempt 2 |
+| `pc004033` | 0, RTX 5090 | `GPU-370f52fb-5676-7316-104d-5a9bf016fae1` | 12.0 | 31.84 GiB | Idle during local validation; used by P5 RFD4 attempt 1 |
+| `pc002975` | 0, RTX 4090 | `GPU-195a1966-1148-340e-5fe2-bac2d7a9821a` | 8.9 | 23.99 GiB | Candidate `dc_00000002_d68026ec8a3e62d5` |
+| `pc002975` | 1, RTX 4090 | `GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21` | 8.9 | 23.99 GiB | Candidate `dc_00000001_d68026ec8a3e62d5` |
+
+All machines reported CUDA driver API 13020. At final inspection, each scheduler had zero active reservations; the local GPUs were idle. The four-GPU pool was exercised across the distributed generation and validation phases: the two RTX 5090 peers ran the existing RFD4 campaign, and the two local RTX 4090s ran the concurrent validation. The four devices were not all active at the same time.
+
+### Concurrent validation results
+
+The original P5 campaign remains unchanged: its ledger SHA-256 is `205efddd4c18cea8f8ca9d9ee22a9b5ad193964f5e059854631bf2465e891b39`, matching before and after the follow-up. A separate validation-only ledger, campaign `af8ce7ac-b56f-4610-a26c-ec0765b2f7ec`, reused the same two retained candidates and PD-L1 chain-A target. It dispatched with `max_concurrent_validations=2`, `gpu_device=auto`, one GPU per job, 8 CPU cores, and 16 GiB minimum VRAM. No additional RFD4 generation ran and no global default changed.
+
+Boltz-2 used the P5 settings: one sample, one recycle, 20 sampling steps, optimization off, no MSA or target template, and required `iptm`, `ptm`, and `plddt_mean` measurements. Both jobs used `mn-boltz2-opt:2.2.1-cu130-batch2`, image ID `sha256:3054688e91908156071238adee167ad4963cfbca05c8a4cf0e55a634ba5a2a55`. The checkpoint hashes were `boltz2_conf.ckpt` `090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1`, `boltz2_aff.ckpt` `dcc5cd3722b1c9eaa34267e4ae32f55cbbf1963f4c19319381ccfa30fdd2ca9e`, and `ccd.pkl` `2d3b2f03a3c5665944adba51e33263511e51b21c9cd05d902f9c4b7c1e58d2f4`. The follow-up inputs retained the target file with SHA-256 `7da1c888011cdbd0937e3ff6b73429aa069e4c496cfa0cb8d8b53cc06ca73b57` and the two checksum-verified P5 complexes from section 9.
+
+| Source candidate | Follow-up Boltz run | GPU | Seed | iPTM | pTM | Mean pLDDT | Identity / lineage |
+|---|---|---:|---:|---:|---:|---:|---|
+| `dc_00000001_d68026ec8a3e62d5`, 116 residues | `20261028-132737-b243cd10` | 1 | 1203626143 | 0.64732 | 0.77642 | 80.499 | Sequence-chain and source-candidate checks passed |
+| `dc_00000002_d68026ec8a3e62d5`, 94 residues | `20261028-132734-d4512561` | 0 | 1801939714 | 0.43823 | 0.72855 | 91.590 | Sequence-chain and source-candidate checks passed |
+
+Both scheduler allocations overlapped from 12:27:38 to 12:29:01 UTC, about 83 seconds. A 145-sample `nvidia-smi` log captured four samples with both local GPUs above zero utilization; the first such sample showed 4% on GPU 0 and 38% on GPU 1, with 3,152 MiB and 4,166 MiB in use. The output metrics differ from the original P5 predictions because these are separate seeded inferences; the repeat results do not replace or modify the original campaign evidence. As in P5, the acceptance policy checks measurement presence and validity, not score thresholds or experimental binding.
+
+The follow-up ledger ended `completed/target_reached` with two attempts completed, two candidates validated accepted, and zero rejected or interrupted attempts. Replaying the controller after completion was idempotent. A first isolated harness pass did complete two Boltz predictions on distinct GPUs, but its parent run lacked the standard normalized-candidate index, so the strict lineage reconciler rejected those outputs. That pass is marked failed and preserved separately; it is excluded from acceptance counts. The corrected pass above included the index and passed both lineage checks. No original P5 results were overwritten, and no active job was interrupted.
+
+The full follow-up evidence is in `/mnt/data/RESULTS/mn-molecular-design-studio/verification/phase6b-p5-concurrent-validation/20261028T122730Z-f047554f`, including source snapshots, checksum manifest, request files, execution summary, scheduler metadata, and GPU samples. The initial harness pass and its failure disposition are preserved under `/mnt/data/RESULTS/mn-molecular-design-studio/verification/phase6b-p5-concurrent-validation/20261028T122312Z-06e45a21`.
+
+## 17. P6 readiness
 
 P5 verified that the existing campaign ledger can place two distinct RFD4 attempts on compatible enrolled peers, retain one shared attempt budget and seeds, recover and checksum native artifacts, validate those exact sequences downstream, and finalize after late validation. The backend is ready for P6 to expose these existing worker, validation, accounting, and transfer states. P6 UI work was not part of this verification and remains untested.
