@@ -80,6 +80,17 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
     """Validate engine capability, global counters, and execution bounds."""
     if not isinstance(config, dict):
         raise ValueError("distributed_campaign must be an object.")
+    # Accept a clearer dispatch alias without changing persisted legacy configs.
+    config = dict(config)
+    if "dispatch_batch_size" in config:
+        dispatch = config.pop("dispatch_batch_size")
+        if "batch_size" in config and (type(dispatch) is not type(config["batch_size"]) or dispatch != config["batch_size"]):
+            raise ValueError("dispatch_batch_size conflicts with legacy batch_size.")
+        config["batch_size"] = dispatch
+    if "native_attempts_per_job" in config:
+        native_attempts = config.pop("native_attempts_per_job")
+        if type(native_attempts) is not int or native_attempts != 1:
+            raise ValueError("native_attempts_per_job supports only 1 in current campaign adapters.")
     acceptance_level = str(config.get("acceptance_level", "native")).strip().lower()
     if acceptance_level not in {"native", "validated", "diversity_qualified"}:
         raise ValueError("acceptance_level must be native, validated, or diversity_qualified.")

@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from mn_molecular_design_studio.engine.workflow_engine.core.execution_timing import execution_phase
 from mn_molecular_design_studio.engine.workflow_engine.core.artifacts import Artifact, artifact_path
 from mn_molecular_design_studio.engine.workflow_engine.core.candidates import (
     STAGE_COMPLEX_REFOLDING,
@@ -1271,9 +1272,12 @@ def run_bindcraft2_job(run_dir: Path) -> Path:
     with stdout_path.open("a", encoding="utf-8") as stdout, stderr_path.open("a", encoding="utf-8") as stderr:
         stdout.write(f"$ {shlex.join(command_for_record)}\n")
         stdout.flush()
-        process = subprocess.run(command, cwd=run_dir, stdout=stdout, stderr=stderr, check=False)
+        with execution_phase(run_dir, "docker_command") as timing:
+            process = subprocess.run(command, cwd=run_dir, stdout=stdout, stderr=stderr, check=False)
+            timing["return_code"] = int(process.returncode)
 
-    candidates = normalize_bindcraft2_candidates(run_dir, params)
+    with execution_phase(run_dir, "candidate_normalization"):
+        candidates = normalize_bindcraft2_candidates(run_dir, params)
     trajectory_only = bool(params.get("trajectory_only"))
     artifacts = _bindcraft2_artifacts(run_dir, trajectory_only=trajectory_only)
     trajectory_csv = run_dir / "artifacts" / "raw" / "bindcraft2" / "output" / "1_Trajectories" / "!_Trajectories.csv"

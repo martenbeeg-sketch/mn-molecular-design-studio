@@ -14,6 +14,7 @@ from typing import Literal
 
 from Bio.PDB import MMCIFIO, Select
 
+from mn_molecular_design_studio.engine.workflow_engine.core.execution_timing import execution_phase
 from mn_molecular_design_studio import rfd4_proteina_input as inputs
 from mn_molecular_design_studio.design_validation import read_structure
 from mn_molecular_design_studio.engine.workflow_engine.core.candidates import (
@@ -212,8 +213,9 @@ def run_rfd4_proteina_design(
                 lines=[line for line in oracle_log.read_text(errors='replace').splitlines() if line.strip()]
                 if lines: detail=' '+lines[-1][:500]
             raise RuntimeError(f'RFD4 exited with status {code}.{detail} See the run logs for details.')
-        candidates=normalize_outputs(job.run_dir,prepared,task,num_designs)
-        normalized=write_candidates(job.run_dir,'rfd4_proteina',candidates) if candidates else []
+        with execution_phase(job.run_dir, "candidate_normalization"):
+            candidates=normalize_outputs(job.run_dir,prepared,task,num_designs)
+            normalized=write_candidates(job.run_dir,'rfd4_proteina',candidates) if candidates else []
         table=prepared['root']/'designs.csv'
         with table.open('w',newline='') as handle:
             writer=csv.DictWriter(handle,fieldnames=['candidate_id','task','binder_sequence','structure'])

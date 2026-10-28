@@ -11,6 +11,7 @@ from pathlib import Path
 
 import yaml
 
+from mn_molecular_design_studio.engine.workflow_engine.core.execution_timing import execution_phase
 from mn_molecular_design_studio import generator_input as inputs
 from mn_molecular_design_studio.engine.workflow_engine.core.candidates import write_candidates
 from mn_molecular_design_studio.engine.workflow_engine.core.gpu import docker_gpu_args, normalize_gpu_device
@@ -327,7 +328,10 @@ def _run(engine, parameters):
     steps={'pxdesign':_pxdesign,'genie3':_genie3,'protpardelle':_protpardelle,'rfdiffusion':_rfdiffusion}[engine](run,target)
     write_json(job.run_dir/'input.json',{'inputs':{'target_pdb':p.get('target_pdb'),'target_chains':p['target_chains']},'params':p})
     rc=design._run_shell_steps(job.run_dir,steps)
-    candidates=normalize_outputs(run,target) if rc==0 else []
+    candidates=[]
+    if rc==0:
+        with execution_phase(job.run_dir, "candidate_normalization"):
+            candidates=normalize_outputs(run,target)
     design._finish_design_job(job.run_dir,rc==0 and bool(candidates),rc,candidates,
         [(f'raw/{engine}/**/*.{ext}',ext) for ext in ('pdb','cif','yaml','json','csv','trb','pt','log')])
     return job.run_dir

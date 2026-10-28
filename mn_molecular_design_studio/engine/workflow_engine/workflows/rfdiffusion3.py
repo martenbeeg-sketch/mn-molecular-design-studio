@@ -10,6 +10,7 @@ import traceback
 from pathlib import Path
 from typing import Literal
 
+from mn_molecular_design_studio.engine.workflow_engine.core.execution_timing import execution_phase
 from mn_molecular_design_studio import rfdiffusion3_input as inputs
 from mn_molecular_design_studio.design_validation import protein_chains, read_structure, sequence
 from mn_molecular_design_studio.engine.workflow_engine.core.candidates import STAGE_GENERATION_BACKBONE, write_candidates
@@ -150,10 +151,13 @@ def run_rfdiffusion3_design(
         write_json(job.run_dir / "command.json", {"mode": "docker", "image": inputs.IMAGE, "command": command})
         update_status(job.run_dir, "running", current_phase=f"Generating {num_designs} design(s) per task input")
         with (job.run_dir / "stdout.log").open("a") as stdout, (job.run_dir / "stderr.log").open("a") as stderr:
-            process = subprocess.run(command, stdout=stdout, stderr=stderr, cwd=job.run_dir, check=False)
+            with execution_phase(job.run_dir, "docker_command") as timing:
+                process = subprocess.run(command, stdout=stdout, stderr=stderr, cwd=job.run_dir, check=False)
+                timing["return_code"] = int(process.returncode)
         update_status(job.run_dir, "running", current_phase="Collecting RFdiffusion3 designs")
-        candidates = _normalize(job.run_dir, prepared, num_designs)
-        normalized = write_candidates(job.run_dir, "rfdiffusion3_foundry", candidates) if candidates else []
+        with execution_phase(job.run_dir, "candidate_normalization"):
+            candidates = _normalize(job.run_dir, prepared, num_designs)
+            normalized = write_candidates(job.run_dir, "rfdiffusion3_foundry", candidates) if candidates else []
         table = root / "designs.csv"
         with table.open("w", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=["candidate_id", "task", "input", "designed_chains", "generated_residue_count", "structure"])

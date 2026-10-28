@@ -12,6 +12,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from mn_molecular_design_studio.engine.workflow_engine.core.execution_timing import execution_phase
 from mn_molecular_design_studio.engine.workflow_engine.core.artifacts import Artifact, artifact_path
 from mn_molecular_design_studio.engine.workflow_engine.core.candidates import (
     STAGE_COMPLEX_REFOLDING,
@@ -2491,7 +2492,10 @@ def _run_shell_steps(run_dir: Path, steps: list[dict]) -> int:
         for step in steps:
             stdout.write(f"$ {' '.join(step['command'])}\n")
             stdout.flush()
-            proc = subprocess.run(step["command"], stdout=stdout, stderr=stderr, check=False)
+            phase = "docker_command" if Path(str(step["command"][0])).name == "docker" else "execution_command"
+            with execution_phase(run_dir, phase) as timing:
+                proc = subprocess.run(step["command"], stdout=stdout, stderr=stderr, check=False)
+                timing["return_code"] = int(proc.returncode)
             if proc.returncode != 0:
                 return int(proc.returncode)
     return 0

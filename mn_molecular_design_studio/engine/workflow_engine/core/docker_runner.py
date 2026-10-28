@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from mn_molecular_design_studio.engine.workflow_engine.core.execution_timing import execution_phase
 from mn_molecular_design_studio.engine.workflow_engine.core.gpu import docker_gpu_args
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import update_status, write_json
 from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import apply_docker_cpu_limit
@@ -87,5 +88,7 @@ def run_docker_job(
     write_json(run_dir / "command.json", {"mode": "docker", "command": command, "image": manifest.get("image")})
     update_status(run_dir, "running")
     with (run_dir / "stdout.log").open("w") as stdout, (run_dir / "stderr.log").open("w") as stderr:
-        proc = subprocess.run(command, stdout=stdout, stderr=stderr, check=False)
+        with execution_phase(run_dir, "docker_command") as timing:
+            proc = subprocess.run(command, stdout=stdout, stderr=stderr, check=False)
+            timing["return_code"] = int(proc.returncode)
     return int(proc.returncode)

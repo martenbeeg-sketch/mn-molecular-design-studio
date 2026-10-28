@@ -11,6 +11,25 @@ from typing import Literal
 
 
 @dataclass(frozen=True)
+class NativeExecutionCapabilities:
+    """Descriptive source findings, separate from verified campaign support.
+
+    None means unknown. Source model reuse is not a runtime performance claim.
+    The campaign maximum remains one until attempt-level receipts are supported.
+    """
+    multi_attempt_invocation: bool | None = None
+    semantics: tuple[str, ...] = ()
+    max_verified_campaign_attempts_per_job: int = 0
+    max_measured_native_attempts_per_invocation: int | None = None
+    multiple_candidate_records: bool | None = None
+    seed_provenance: str = "unverified"
+    partial_recovery: str = "unverified"
+    model_reuse_source_verified: bool = False
+    model_reuse_runtime_measured: bool = False
+    evidence: str = "Native lifecycle not inspected."
+
+
+@dataclass(frozen=True)
 class GeneratorCapabilities:
     engine_id: str
     label: str
@@ -31,11 +50,13 @@ class GeneratorCapabilities:
     minimum_vram_gb: float | None
     supported_stopping_policies: tuple[str, ...]
     deferred_reason: str = ""
+    native_execution: NativeExecutionCapabilities = NativeExecutionCapabilities()
 
     def as_dict(self) -> dict[str, object]:
         value = asdict(self)
         value["downstream_validation"] = list(self.downstream_validation)
         value["supported_stopping_policies"] = list(self.supported_stopping_policies)
+        value["native_execution"]["semantics"] = list(self.native_execution.semantics)
         return value
 
 
@@ -55,6 +76,14 @@ _CAPABILITIES = {
         downstream_validation=("refolding.optimized_prediction", "analysis.ipsae"),
         gpu_required=True, minimum_vram_gb=None,
         supported_stopping_policies=("native", "validated", "diversity_qualified"),
+        native_execution=NativeExecutionCapabilities(
+            multi_attempt_invocation=True, semantics=("sequential_trajectories_per_worker",),
+            max_verified_campaign_attempts_per_job=1, max_measured_native_attempts_per_invocation=1,
+            multiple_candidate_records=True, seed_provenance="campaign_key_folded_by_trajectory",
+            partial_recovery="native_state_and_files; multi_attempt_campaign_recovery_unverified",
+            model_reuse_source_verified=True,
+            evidence="Installed v1.0.4-pae-v1: campaign.py run_campaign/run_campaign_arm; design_workers.py. Per-worker reuse; validation pool may rebuild.",
+        ),
     ),
     "rfd4_proteina": GeneratorCapabilities(
         engine_id="rfd4_proteina", label="RFD4-Proteina", campaign_adapter=True,
@@ -75,6 +104,14 @@ _CAPABILITIES = {
         downstream_validation=("refolding.optimized_prediction", "analysis.ipsae"),
         gpu_required=True, minimum_vram_gb=16.0,
         supported_stopping_policies=("validated", "diversity_qualified"),
+        native_execution=NativeExecutionCapabilities(
+            multi_attempt_invocation=True, semantics=("replicates_per_input", "vectorized_dataloader_batch"),
+            max_verified_campaign_attempts_per_job=1, max_measured_native_attempts_per_invocation=1,
+            multiple_candidate_records=True, seed_provenance="invocation_seed_and_replicate_id; independent_attempt_seeds_unverified",
+            partial_recovery="native_files_incremental; result_index_after_success_only",
+            model_reuse_source_verified=True,
+            evidence="Installed 0.0.3-cu130: rfproteina/generate.py run_generation loads once before trainer.validate; wrapper chunks above 100.",
+        ),
     ),
     "rfdiffusion": GeneratorCapabilities(
         engine_id="rfdiffusion", label="RFdiffusion", campaign_adapter=False,
@@ -92,6 +129,13 @@ _CAPABILITIES = {
         gpu_required=True, minimum_vram_gb=None,
         supported_stopping_policies=(),
         deferred_reason="The campaign adapter must include real ProteinMPNN sequence assignment before validation.",
+        native_execution=NativeExecutionCapabilities(
+            multi_attempt_invocation=True, semantics=("sequential_backbone_trajectories",),
+            multiple_candidate_records=True, seed_provenance="design_index_if_deterministic; otherwise_rng_stream",
+            partial_recovery="per_design_pdb_trb; campaign_recovery_unverified",
+            model_reuse_source_verified=True,
+            evidence="Installed mn-rfdiffusion:latest: scripts/run_inference.py sampler outside design loop; inference/model_runners.py.",
+        ),
     ),
     "rfdiffusion3": GeneratorCapabilities(
         engine_id="rfdiffusion3", label="RFdiffusion3 / Foundry", campaign_adapter=False,
@@ -109,6 +153,13 @@ _CAPABILITIES = {
         gpu_required=True, minimum_vram_gb=None,
         supported_stopping_policies=(),
         deferred_reason="Attempt-to-sequence accounting and explicit ProteinMPNN handoff need verification.",
+        native_execution=NativeExecutionCapabilities(
+            multi_attempt_invocation=True, semantics=("vectorized_diffusion_samples", "sequential_batches_per_specification"),
+            multiple_candidate_records=True, seed_provenance="invocation_seed_plus_example_and_sample_index; not_independent_seed_per_output",
+            partial_recovery="per_batch_cif_json; campaign_recovery_unverified",
+            model_reuse_source_verified=True,
+            evidence="Installed mn-foundry:cu128: RFD3InferenceEngine/BaseInferenceEngine created once, _run_multi loops with one trainer.",
+        ),
     ),
     "boltzgen": GeneratorCapabilities(
         engine_id="boltzgen", label="BoltzGen", campaign_adapter=False,

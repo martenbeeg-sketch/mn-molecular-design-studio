@@ -238,7 +238,7 @@ def test_rfd4_tile_campaign_controls_expose_independent_settings_before_submit()
     app.checkbox(key="tile-campaign-enabled").check().run()
     assert not app.exception
     assert any(widget.label == "Global accepted target" for widget in app.number_input)
-    assert any(widget.label == "Attempt budget" for widget in app.number_input)
+    assert any(widget.label == "Global maximum native attempts" for widget in app.number_input)
     assert any(widget.label == "Scientific acceptance policy" for widget in app.selectbox)
     assert any(widget.label == "Controller dispatch batch size" for widget in app.number_input)
     assert any(widget.label == "Concurrent generation batches" for widget in app.number_input)

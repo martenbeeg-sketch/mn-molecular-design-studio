@@ -76,7 +76,7 @@ def render_campaign_config_editor(
         step=1, key=key + "-accepted-target",
     ))
     max_attempts = int(st.number_input(
-        "Attempt budget", min_value=1, value=int(existing.get("max_attempts") or max(2, accepted_target)),
+        "Global maximum native attempts", min_value=1, value=int(existing.get("max_attempts") or max(2, accepted_target)),
         step=1, key=key + "-max-attempts",
     ))
     policy_options = list(capability.supported_stopping_policies)
@@ -94,7 +94,7 @@ def render_campaign_config_editor(
         "Controller dispatch batch size", min_value=1,
         value=int(existing.get("batch_size") or 1), step=1,
         key=key + "-controller-batch-size",
-        help="Attempt units grouped by the campaign controller. This does not change native inference batch_size.",
+        help="Legacy dispatch grouping. Each attempt currently launches a separate execution job and container.",
     ))
     max_concurrent_batches = int(right.number_input(
         "Concurrent generation batches", min_value=1,
@@ -173,8 +173,14 @@ def render_campaign_config_editor(
             ready = False
 
     st.caption("Available GPUs are candidates for scheduling; allocated GPUs are selected only when each attempt or validation starts. Validation concurrency is independent of generation concurrency.")
+    st.caption(
+        f"Native attempts per execution job: 1 (the only verified campaign choice). "
+        f"Maximum concurrent generation jobs: {controller_batch_size * max_concurrent_batches}; "
+        f"maximum concurrent validation jobs: {max_concurrent_validations}. "
+        "Generation capacity is the product of the two legacy dispatch controls, subject to the global target, attempt budget and available resources."
+    )
     st.markdown("**Effective campaign settings before submission**")
     st.code(json.dumps(config, indent=2, sort_keys=True), language="json")
     if node_kind == "rfd4":
-        st.caption("RFD4 native inference batch_size remains at the tile default of 1. Controller dispatch size changes only how the campaign groups attempts.")
+        st.caption("Distributed RFD4 children request one native design with dataloader batch size 1. Controller dispatch size changes only how the campaign groups separate execution jobs.")
     return config, ready
