@@ -710,6 +710,9 @@ def _submit_rfd4_peer_attempt(
     child_payload = read_json(child_run_dir / "input.json")
     parameters = dict(child_payload.get("params") or {})
     parameters["gpu_device"] = "auto"
+    # Queue routing metadata is stored alongside workflow parameters in the
+    # local child input, but it is not part of the public RFD4 request schema.
+    parameters.pop("task_group", None)
     parameters.pop("distributed_campaign", None)
     metadata = read_json(child_run_dir / "metadata.json")
     resources = dict(metadata.get("resource_request") or {})

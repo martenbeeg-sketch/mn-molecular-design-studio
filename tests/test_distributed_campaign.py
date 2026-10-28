@@ -197,6 +197,7 @@ def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worke
     def submit(request, manifest, submission_key, settings, *, owner_id, project_id, state, persist, allow_development):
         assert request["workflow"] == "design.rfd4_proteina"
         assert request["parameters"]["gpu_device"] == "auto"
+        assert "task_group" not in request["parameters"]
         assert request["resources"]["gpu_device"] == "auto"
         assert settings["placement"] == "auto"
         assert owner_id == "owner" and project_id == "project"
