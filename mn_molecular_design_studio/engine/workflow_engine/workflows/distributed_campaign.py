@@ -286,6 +286,15 @@ class CampaignLedger:
             "attempts_authorized": len(attempts),
             "attempts_started": sum(bool(item.get("first_started_at")) for item in attempts),
             "attempts_completed": sum(item.get("status") == "completed" for item in attempts),
+            "native_rejected_trajectories": sum(
+                max(
+                    0,
+                    int((item.get("native_state") or {}).get("trajectories", 0))
+                    - int((item.get("native_state") or {}).get("accepted", 0)),
+                )
+                for item in attempts
+                if item.get("status") == "completed" and isinstance(item.get("native_state"), dict)
+            ),
             "native_accepted_candidates": sum(item.get("native_acceptance") == "accepted" for item in candidates),
             "validated_accepted_candidates": sum(item.get("validated_acceptance") == "accepted" for item in candidates),
             "diversity_qualified_accepted_candidates": sum(item.get("diversity_acceptance") == "accepted" for item in candidates),

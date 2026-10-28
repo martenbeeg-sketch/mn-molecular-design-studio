@@ -33,11 +33,13 @@ def test_result_receipts_are_idempotent_and_acceptance_levels_are_independent(tm
     attempt = campaign.authorize(1, batch_id="b1")[0]
     campaign.transition(attempt["attempt_id"], "running")
     row = {"candidate_id": "campaign-test-a00000001-c1", "metrics": {"native_pass_filters": True}}
-    assert campaign.record_receipt(attempt["attempt_id"], "receipt-1", candidates=[row], native_state={"trajectories": 1})
-    assert not campaign.record_receipt(attempt["attempt_id"], "receipt-1", candidates=[row], native_state={"trajectories": 1})
-    assert not campaign.record_receipt(attempt["attempt_id"], "receipt-2", candidates=[row], native_state={"trajectories": 1})
+    native_state = {"trajectories": 1, "accepted": 1}
+    assert campaign.record_receipt(attempt["attempt_id"], "receipt-1", candidates=[row], native_state=native_state)
+    assert not campaign.record_receipt(attempt["attempt_id"], "receipt-1", candidates=[row], native_state=native_state)
+    assert not campaign.record_receipt(attempt["attempt_id"], "receipt-2", candidates=[row], native_state=native_state)
     counters = campaign.counters()
     assert counters["attempts_completed"] == 1
+    assert counters["native_rejected_trajectories"] == 0
     assert counters["native_accepted_candidates"] == 1
     assert counters["validated_accepted_candidates"] == 0
     campaign.set_candidate_acceptance(row["candidate_id"], validated="accepted", diversity="pending")
@@ -124,7 +126,10 @@ def test_failed_validation_stage_retries_same_run_within_campaign_limit(tmp_path
         "binder_sequence": "ACDE",
         "metrics": {"native_pass_filters": True},
     }
-    campaign.record_receipt(attempt["attempt_id"], "native-receipt", candidates=[candidate], native_state={"trajectories": 1})
+    campaign.record_receipt(
+        attempt["attempt_id"], "native-receipt", candidates=[candidate],
+        native_state={"trajectories": 1, "accepted": 1},
+    )
     validation_run = tmp_path / "validation-run"
     validation_run.mkdir()
     jobs.write_json(validation_run / "metadata.json", {"status": "failed", "worker_error": "transient worker error"})
@@ -624,3 +629,7 @@ def test_controller_waits_for_newly_dispatched_child_before_budget_exhaustion(
     assert state["termination_reason"] == "budget_exhausted"
     second_attempt_id = f"{state['campaign_id']}:a00000002"
     assert state["attempts"][second_attempt_id]["status"] == "completed"
+    assert state["candidates"] == {}
+    assert CampaignLedger(parent / "artifacts/distributed_campaign/ledger.json").counters()[
+        "native_rejected_trajectories"
+    ] == 1
