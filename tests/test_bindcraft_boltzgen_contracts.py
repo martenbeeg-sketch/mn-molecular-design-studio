@@ -37,6 +37,18 @@ def test_bindcraft2_settings_keep_job_name_modality_hotspots_and_lengths():
     assert settings["max_trajectories"] == 12
 
 
+def test_bindcraft2_bounded_attempt_replaces_local_targets_and_records_its_seed():
+    settings = bindcraft2.build_bindcraft2_settings(target_chains=["A"], binder_length="60")
+    attempt = bindcraft2.bounded_bindcraft2_settings(settings, 947)
+    assert attempt["number_of_final_designs"] == 1
+    assert attempt["max_trajectories"] == 1
+    assert attempt["campaign_seed"] == 947
+    assert attempt["save_failed_trajectories"] is True
+    assert settings["number_of_final_designs"] == 1
+    with pytest.raises(ValueError, match="nonnegative"):
+        bindcraft2.bounded_bindcraft2_settings(settings, -1)
+
+
 def test_bindcraft2_rejects_invalid_hotspot_and_incompatible_modality():
     with pytest.raises(ValueError, match="selected target chains"):
         bindcraft2.build_bindcraft2_settings(
@@ -55,6 +67,25 @@ def test_bindcraft2_normalizes_a_single_disordered_target_fasta():
     )
     with pytest.raises(ValueError, match="single >header"):
         bindcraft2.parse_disordered_target_fasta(">one\nACD\n>two\nEFG\n")
+
+
+def test_bindcraft2_campaign_state_is_the_authoritative_attempt_count(tmp_path):
+    run_dir = tmp_path / "run"
+    output = run_dir / "artifacts/raw/bindcraft2/output"
+    output.mkdir(parents=True)
+    (output / ".campaign_state.json").write_text(
+        json.dumps({"trajectories": 3, "accepted": 1, "rejections": {"terminated": {"screen": 2}}})
+    )
+    assert bindcraft2.read_bindcraft2_campaign_state(run_dir) == {
+        "trajectories": 3,
+        "accepted": 1,
+        "rejections": {"terminated": {"screen": 2}},
+    }
+    with pytest.raises(RuntimeError, match="invalid trajectories"):
+        (output / ".campaign_state.json").write_text(
+            json.dumps({"trajectories": 0.5, "accepted": 0, "rejections": {}})
+        )
+        bindcraft2.read_bindcraft2_campaign_state(run_dir)
 
 
 def test_bindcraft_stages_job_name_and_settings_without_running_docker(monkeypatch, tmp_path: Path):

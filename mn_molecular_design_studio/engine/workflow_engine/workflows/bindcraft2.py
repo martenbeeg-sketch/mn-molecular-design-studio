@@ -402,6 +402,22 @@ def build_bindcraft2_settings(
     return settings
 
 
+def bounded_bindcraft2_settings(settings: dict[str, Any], campaign_seed: int) -> dict[str, Any]:
+    """Make one isolated, reproducible native trajectory attempt."""
+    if type(campaign_seed) is not int or campaign_seed < 0:
+        raise ValueError("A bounded BindCraft2 attempt needs a nonnegative campaign seed.")
+    bounded = dict(settings)
+    bounded.update(
+        number_of_final_designs=1,
+        max_trajectories=1,
+        campaign_seed=campaign_seed,
+        resume=True,
+        save_design_trajectory=True,
+        save_failed_trajectories=True,
+    )
+    return bounded
+
+
 def _portable_command(command: list[str], reference_dir: Path) -> list[str]:
     source = str(reference_dir.expanduser().resolve())
     replacement = portable_path(reference_dir)
@@ -660,7 +676,10 @@ def _prepare_bindcraft2_run(
     settings_path = raw_dir / "settings.json"
     write_json(settings_path, settings)
     if dispatch_worker:
-        write_json(job.run_dir / "worker_request.json", {"kind": BINDCRAFT2_JOB_KIND, "kwargs": {}, "path_kwargs": []})
+        write_json(
+            job.run_dir / "worker_request.json",
+            {"kind": BINDCRAFT2_JOB_KIND, "kwargs": {}, "path_kwargs": []},
+        )
         write_json(
             job.run_dir / "command.json",
             {
@@ -1149,6 +1168,7 @@ def _bindcraft2_artifacts(run_dir: Path, *, trajectory_only: bool = False) -> li
         (raw / "output" / "1_Trajectories" / "!_Trajectories.csv", "bindcraft2_trajectory_table"),
         (raw / "output" / "summary.csv", "bindcraft2_summary"),
         (raw / "output" / "campaign_metadata.json", "bindcraft2_campaign_metadata"),
+        (raw / "output" / ".campaign_state.json", "bindcraft2_native_campaign_state"),
         (raw / "settings.json", "bindcraft2_input_settings"),
         (candidates / "candidates.jsonl", "normalized_candidates"),
         (candidates / "campaign_result.json", "campaign_result"),
@@ -1178,6 +1198,29 @@ def _bindcraft2_artifacts(run_dir: Path, *, trajectory_only: bool = False) -> li
                 if not path.stem.endswith("_monomer")
             )
     return [Artifact(path.stem, path, artifact_type).to_json(run_dir) for path, artifact_type in selected]
+
+
+def read_bindcraft2_campaign_state(run_dir: Path) -> dict[str, Any] | None:
+    """Read and validate native progress; the normalized full-campaign result omits this count."""
+    path = Path(run_dir) / "artifacts" / "raw" / "bindcraft2" / "output" / ".campaign_state.json"
+    if not path.is_file():
+        return None
+    import json
+
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"BindCraft2 campaign-state file is unreadable: {path}") from exc
+    if not isinstance(state, dict):
+        raise RuntimeError("BindCraft2 campaign state must be a JSON object.")
+    for key in ("trajectories", "accepted"):
+        value = state.get(key)
+        if type(value) is not int or value < 0:
+            raise RuntimeError(f"BindCraft2 campaign state has an invalid {key} count.")
+    rejections = state.get("rejections", {})
+    if not isinstance(rejections, dict):
+        raise RuntimeError("BindCraft2 campaign-state rejections must be an object.")
+    return {"trajectories": state["trajectories"], "accepted": state["accepted"], "rejections": rejections}
 
 
 def run_bindcraft2_job(run_dir: Path) -> Path:
@@ -1220,6 +1263,7 @@ def run_bindcraft2_job(run_dir: Path) -> Path:
     if trajectory_csv.is_file():
         with trajectory_csv.open(newline="", encoding="utf-8-sig") as handle:
             trajectory_rows = list(csv.DictReader(handle))
+    native_state = read_bindcraft2_campaign_state(run_dir)
     finish_job(
         run_dir,
         process.returncode == 0,
@@ -1235,7 +1279,13 @@ def run_bindcraft2_job(run_dir: Path) -> Path:
                 "trajectory_only": trajectory_only,
                 "generated_trajectory_count": len(candidates) if trajectory_only else 0,
                 "mpnn_eligible_trajectory_count": len(candidates) if trajectory_only else 0,
-                "trajectory_attempt_count": len(trajectory_rows) if trajectory_only else 0,
+                "trajectory_attempt_count": (
+                    native_state["trajectories"] if native_state is not None
+                    else len(trajectory_rows) if trajectory_only else 0
+                ),
+                "native_accepted_count": native_state["accepted"] if native_state is not None else None,
+                "native_rejections": native_state["rejections"] if native_state is not None else {},
+                "native_campaign_state_verified": native_state is not None,
                 "bindcraft2_image": image,
                 "bindcraft2_source_commit": str(params.get("bindcraft2_source_commit") or BINDCRAFT2_SOURCE_COMMIT),
                 "bindcraft2_source_url": str(params.get("bindcraft2_source_url") or BINDCRAFT2_SOURCE_URL),
