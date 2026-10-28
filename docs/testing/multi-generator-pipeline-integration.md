@@ -399,3 +399,165 @@ Implementation commit: **`9549be6` — `feat: compose batch-aware multi-generato
 The following documentation commit contains this report and both evidence JSON files;
 its hash is reported in the completion message and resolves with
 `git log -1 --format=%h -- docs/testing/multi-generator-pipeline-integration.md`.
+
+## Phase 7A execution-layer verification (follow-up)
+
+The earlier graph partitioning tests did not establish native process grouping.
+This follow-up exercises the existing scientific adapters at their process launch
+boundaries and the installed Boltz/Protenix image-side batch adapters, replacing
+execution with deterministic fixtures. No GPU inference, model download, remote
+runtime deployment or push was performed. All retained source hashes still match.
+
+### Generality and capability boundaries
+
+`native_execution.tool_inventory()` enumerates **every registered generator,
+sequence-design and prediction tile**, including hidden compatibility tiles,
+MPNN checkpoint variants, Caliby models/ensemble modes, and RFD4's existing
+inverse-folding, structure-prediction, sidechain-packing and diversification
+operations. The inventory is exposed in the canvas execution preview and pipeline
+validation API. Registry membership does not certify native model reuse. Inspected
+contracts, fixture-tested paths and unverified lifecycles are explicitly different.
+The generic graph, CandidateSet lineage, sequence eligibility, chunk controller,
+fan-out/fan-in and receipt aggregation do not depend on the default two generators.
+
+The pipeline factory accepts `sequence_designer` as well as generator/predictor
+lists. Existing ESM-IF1, Caliby, BoltzGen inverse-folding and AbMPNN tiles can replace
+MPNN; their own scientific eligibility/constraint checks still apply. Initial
+sequence preparation filters backbone-only records for every sequence-design tile
+and preserves native co-designed sequences. Explicit redesign creates variants.
+Collection chunking now recognizes the existing inverse-folding adapters too;
+ordinary workflows continue to pass the complete input list to their native runner.
+
+| Tool/operation | Actual current execution contract | Model initialization / limits |
+| --- | --- | --- |
+| Ordinary RFD4 generation and existing-structure operations | One outer container; up to 100 replicates **per input** in each native command; larger replicate requests launch more native processes. Dataloader batch size is independent. | Generator checkpoint reused within each invocation; search/oracle/affinity work can add initialization. Native source and wrapper fixtures verified. |
+| RFD4 inverse folding | Existing `existing_structure` + `operation=inverse_folding` supports several input files and replicates through the same native runtime. | Included in the inventory. A dedicated CandidateSet **sequence-stage** handoff is not verified. It is not interchangeable with the RFD4 structure-prediction tile. |
+| Ordinary BindCraft2 | One campaign entrypoint/container handles the trajectory budget; accepted-design target remains distinct. | Reuse is per native worker. Auto worker count and validation-pool rebuilds prevent an exact model initialization forecast. Fixtures preserve ordinary budgets 1–100. |
+| RFdiffusion / RFD3 | Existing native trajectory/vectorized sampling contracts retained, as documented in Phase 6C. | Source-verified lifecycle; no new multi-attempt campaign support. RFD3 rounding remains explicit in its existing planner. |
+| Shared LigandMPNN backend, including ProteinMPNN/SolubleMPNN/AbMPNN/custom checkpoint selections | Compatible structures use native `pdb_path_multi`, `fixed_residues_multi`, and per-residue bias/omission maps in **one** model process. Different global settings split native groups. | One model load per compatible group. The native RNG stream spans structures; input order, seed, masks, parent IDs, group ordinal, all FASTA/backbone/packed/statistics artifacts and native output IDs remain recorded. No numerical-equivalence claim versus separate seeded processes. |
+| Foundry MPNN backend | Existing one-structure command, one Docker/native process per structure within a scheduler chunk. | A chunk of five is **five native jobs**, five containers and repeated initialization. No verified multi-structure Foundry path is claimed. Backend/constraint-dependent plans show bounds until staging resolves them. |
+| ESM-IF1 | One native runner/model process receives all inputs and sequences per input. | Model loads before the input loop; deterministic library fixtures verify one load for 1, 5, 10, 25, 50 and 100 inputs. |
+| Caliby variants | One native runner receives all inputs; main Caliby model is constructed before the input loop. | Single/provided ensembles reuse the main model. Generated ensembles can initialize additional Protpardelle/MPNN models per input; that extra lifecycle is not counted as one verified model load. |
+| BoltzGen inverse folding | One native Python process receives all inputs but instantiates/runs a native task for each input. | Initialization repeats inside the process. Combining native task configurations is a separate unverified ordinary-workflow optimization. |
+| Boltz-2 optimized tile | One container per chunk; image-side adapter sends the complete YAML directory to one model entrypoint **per seed**. Samples per input are another axis. | Initialization repeats per seed/chunk. Protein complex fixture path verified against installed source. Multi-GPU/affinity legs can have additional model lifecycle costs. |
+| Protenix V2 optimized tile | One container and native directory invocation per chunk, all JSON items included. | Installed source constructs the runner before its JSON loop. Native launch grouping verified with the installed image-side adapter. |
+| Other selectable generators/cofolders and legacy prediction paths | Existing adapter contract preserved; inventory shows unverified internal lifecycle rather than inferring one model process from a batch API/container. | Deeper per-engine native lifecycle verification remains required before a model-reuse claim or optimization. No silent per-candidate workflow substitution is introduced. |
+
+The RFD4/BindCraft2 lifecycle findings reuse retained Phase 6C source evidence.
+Additional installed sources were copied read-only from stopped, **never started**
+inspection containers. Their hashes are in the evidence JSON; third-party source
+and weights are not committed. Boltz stock source loads a model before
+`trainer.predict` over its data module; the optimized worker consumes the full
+input directory. Protenix source constructs `get_default_runner` before iterating
+JSON inputs. These are source findings, not throughput measurements.
+
+### Accounting, forecast and recovery
+
+`native_execution.json` records process launch windows, returned process status,
+commands and exact input IDs separately from scheduler chunks. Model-call counts
+for prediction use returned image-side receipts only where the native lifecycle
+is verified. Unverified wrappers retain commands without inventing model counts.
+RFD4's inner runtime records each native command and completion separately.
+Unknown launch windows remain unknown. Allocation receipts are deduplicated by
+allocation/worker identity; five containers under one scheduler allocation count
+as one allocation. Scheduler reallocation is counted separately. A fixture verifies
+three containers across two allocations, independently of native invocation count.
+
+Per-node execution state/export/monitor reports candidates, chunks, scheduler
+attempts, native invocations, Docker processes, GPU allocation events/slots and
+prediction outputs separately. Missing receipts stay unknown. Read-only forecasts
+include partial chunks and expected model initialization scope; counts depend on
+eligible inputs and resolved backend/constraint groups. Preview settings neither
+submit jobs nor mutate tile scientific controls. Example: 25 candidates, chunk 5,
+Boltz three seeds and two samples gives **5 scheduler jobs, 5 containers, 15 native
+invocations and 150 requested prediction outputs**, with concurrency still 2.
+
+Failed local/remote jobs retain already normalized, artifact-backed member outputs
+and do not rerun those members. Missing members and incomplete samples remain
+explicit and the stage remains partial. LigandMPNN's grouped files are recovered
+by exact filename boundaries; completed FASTA/backbone pairs can be normalized
+without launching a model. ESM-IF1/Caliby/BoltzGen inverse runners atomically
+checkpoint completed sequence records between samples/inputs; failed/interrupted
+jobs can normalize that durable prefix. Fixed target/motif checks remain in the
+existing normalizers. Remote partial outputs use existing checksum-verified artifact
+transfers, including native receipts. An interrupted native job with unnormalized
+raw artifacts is quarantined for reconciliation instead of blindly resampled.
+
+### Execution fixture results
+
+A deterministic suite drives real Studio request builders and scientific adapters,
+intercepts actual Docker/native `subprocess.run` boundaries, and invokes copied
+installed Boltz/Protenix batch adapters. It checks native multi-input files,
+per-candidate constraints, output ancestry and returned sample counts, not just
+Python list partitioning. MPNN native constraint maps and prefix-colliding IDs have
+separate regressions. Generators preserve ordinary attempt budgets. The RFD4
+runtime fixture also crosses its 100-replicate wrapper boundary at 101.
+
+| Inputs | Scheduler chunks (size 5) | Shared MPNN / Protenix / one-seed Boltz native calls | Foundry MPNN native calls | Three-seed Boltz native calls |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 1 | 1 | 1 | 3 |
+| 5 | 1 | 1 | 5 | 3 |
+| 10 | 2 | 2 | 10 | 6 |
+| 25 | 5 | 5 | 25 | 15 |
+| 50 | 10 | 10 | 50 | 30 |
+| 100 | 20 | 20 | 100 | 60 |
+
+The same sequence/prediction launch matrix was repeated using copies of the three
+retained PD-L1 candidate structures. Larger collections cycle those **three real
+structures** under distinct deterministic fixture IDs; they are not 100 newly
+generated scientific candidates. Fixtures echo sequence/structure outputs to test
+mapping and process grouping; their scores/results are not new scientific evidence.
+The earlier retained replay remains the real scientific prediction evidence. GPU
+allocation metadata in these fixtures is simulated, not a real GPU reservation.
+
+Machine-readable launch observations, full tile inventory, source hashes,
+read-only forecasts and retained-source hash checks are committed in
+[evidence/phase7a-native-execution.json](evidence/phase7a-native-execution.json).
+Reproduce from the repository using the existing Python environment:
+
+```bash
+python scripts/verify_native_collection_execution.py \
+  --image-source /path/to/copied-image-api-sources \
+  --evidence-dir /tmp/phase7a-native-observations \
+  --output /tmp/phase7a-native-verification.json
+# Add --retained for the local retained PD-L1 coordinate fixtures.
+python -m pytest tests/test_inverse_folding.py tests/test_candidate_peer_transfer.py -q
+```
+
+The copied-source directory contains `boltz/` and `protenix/`, each copied from
+`/opt/mn_batch_api` in its pinned image. Without copied image sources, the default
+fixture discovery uses the sibling container-source repository when available;
+missing source skips those image-side tests explicitly. CI without these images
+can still run Studio adapter, recovery, capability and model-library fixtures.
+
+### Remaining work and campaign boundary
+
+Phase 6B distributed acceptance campaigns still use one verified native attempt
+per child. Their validation and Phase 6C.2 durable ledger are unchanged. Enabling
+multi-attempt campaign dispatch still needs persisted per-attempt seeds, exact
+attempt receipts, partial recovery/retry semantics and measured equivalence. No
+ordinary workflow batching setting authorizes that change.
+
+Separate ordinary-workflow work remains for the dedicated RFD4 inverse-folding
+CandidateSet stage, verified Foundry multi-structure execution, BoltzGen inverse
+model reuse, generated-Caliby-ensemble lifecycle accounting, and deeper verification
+of other selectable cofolders. Those are listed as limitations rather than being
+silently certified by the generalized orchestration layer.
+
+Follow-up verification: full regression suite **1,861 passed, 33 skipped,
+17 warnings (436.05 s)**. Final focused adapter/MPNN/inverse-library/controller/peer
+suite **205 passed (58.18 s)**; subsequent forecast/inventory checks **2 passed**,
+managed-path interruption recovery **4 passed**, and cache/sequence-routing checks
+**2 passed**. Retained PD-L1 native-launch matrix **30 passed (383.64 s)**.
+The skips are opt-in GPU/container tests and unavailable optional dependencies;
+they do not establish live inference equivalence or throughput. The native
+matrix observations include **61 deterministic cases** and **30 retained-coordinate
+cases**, plus the library/recovery/regression checks described above.
+
+Follow-up implementation commit: **`642f986` — `feat: verify native collection
+batching and preserve completed members`**. This includes the native contract and
+process receipts, shared MPNN grouping, generic inverse-folding collection handling,
+partial recovery, read-only inventory/forecast, native launch fixtures and verification
+script. The following documentation commit contains the updated report and execution
+evidence. Pre-existing `run_app.py` and `tool_references.py` checksums/diff remain
+unchanged and are excluded from both commits.
