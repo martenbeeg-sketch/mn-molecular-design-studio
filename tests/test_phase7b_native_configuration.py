@@ -3,6 +3,7 @@ import copy
 import json
 
 import pytest
+from test_api_integrations import api_data
 
 from mn_molecular_design_studio import candidate_pipeline as cp, pipeline_graph as pg
 from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import node_request
@@ -103,3 +104,35 @@ if action == 'apply':
     assert app.session_state['applied']['max_trajectories'] == 1
     assert app.session_state['applied']['workers_per_gpu'] == '1'
     assert json.loads(app.session_state['applied']['engine_overrides_json']) == {'screen_steps': 1}
+
+
+def test_native_graph_api_submission_preserves_long_settings_and_retry_identity(api_data, monkeypatch):
+    """The real Phase 7B failure occurred after validation, during submission."""
+    import shutil
+    from pathlib import Path
+    from mn_molecular_design_studio.engine.workflow_engine.core import workflow_queue, jobs
+    target = api_data['root'] / 'PD-L1.pdb'
+    shutil.copyfile(Path(__file__).parent / 'fixtures/pdl1_p4_ca.pdb', target)
+    graph = cp.new_pipeline(['bindcraft2'], mode='native_complete')
+    graph['nodes'][0]['data']['params'].update(target_pdb=str(target), target_chains='A')
+    overrides = {f'{stage}_steps': 1 for stage in ('screen', 'refine', 'anneal', 'harden', 'mutate')}
+    overrides.update(design_models=['model_1_multimer_v3'], validation_models=['model_1_ptm'],
+                     sequence_candidates=1, kept_sequences=1, enough_passing_sequences=1,
+                     save_failed_trajectories=True, save_design_animations=False, autotune=False)
+    content = json.dumps(overrides)
+    assert len(content) > 255
+    graph['nodes'][1]['data']['params'].update(num_designs=1, max_trajectories=1,
+        workers_per_gpu='1', engine_overrides_json=content)
+    launches = []
+    monkeypatch.setattr(workflow_queue, 'spawn_worker_for_run', lambda run: launches.append(run))
+    payload = dict(project_id=api_data['project']['id'], graph=graph, reuse_completed=False,
+                   execution={'placement': 'local'}, gpu_device='all')
+    headers = {'Idempotency-Key': 'phase7b-inline-native-fixture'}
+    response = api_data['client'].post('/api/v1/pipelines/run', json=payload, headers=headers)
+    assert response.status_code == 202, response.text
+    assert len(launches) == 1
+    restored = jobs.read_json(launches[0] / 'worker_request.json')['kwargs']['graph']
+    assert restored['nodes'][1]['data']['params']['engine_overrides_json'] == content
+    replay = api_data['client'].post('/api/v1/pipelines/run', json=payload, headers=headers)
+    assert replay.status_code == 202 and replay.json() == response.json()
+    assert len(launches) == 1  # One controller queue entry, no scientific worker execution.
