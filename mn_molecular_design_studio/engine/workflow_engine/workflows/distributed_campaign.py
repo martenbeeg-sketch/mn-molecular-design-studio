@@ -77,7 +77,7 @@ def _read(path: Path) -> dict[str, Any]:
 
 
 def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Validate global counters and execution bounds without inventing science thresholds."""
+    """Validate engine capability, global counters, and execution bounds."""
     if not isinstance(config, dict):
         raise ValueError("distributed_campaign must be an object.")
     acceptance_level = str(config.get("acceptance_level", "native")).strip().lower()
@@ -180,8 +180,26 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
             index < 2 or requirements[index - 2].get("workflow") != "refolding.optimized_prediction"
         ):
             raise ValueError("analysis.ipsae must follow a refolding.optimized_prediction stage.")
+    generator_id = str(config.get("generator_id") or "bindcraft2").strip().lower()
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.generator_capabilities import (
+        generator_capabilities,
+        validate_stopping_policy,
+    )
+
+    capability = generator_capabilities(generator_id)
+    validate_stopping_policy(
+        generator_id, acceptance_level, requirements,
+        has_validation_criteria=has_validation_criteria,
+    )
     if acceptance_level == "validated" and (not requirements or not has_validation_criteria):
         raise ValueError("Validated acceptance requires downstream stages with explicit measurements or scientific rules.")
+    if capability.minimum_vram_gb is not None:
+        requested_minimum = float(resources.get("min_vram_gb", 0))
+        if requested_minimum and requested_minimum < capability.minimum_vram_gb:
+            raise ValueError(
+                f"{capability.label} requires at least {capability.minimum_vram_gb:g} GiB of GPU memory for campaign attempts."
+            )
+        resources = {**resources, "min_vram_gb": max(requested_minimum, capability.minimum_vram_gb)}
     validation_concurrency = config.get("max_concurrent_validations", 2)
     if type(validation_concurrency) is not int or validation_concurrency < 1:
         raise ValueError("max_concurrent_validations must be a positive integer.")
@@ -209,6 +227,7 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("diversity.interface_cluster_field must use a stage-qualified evidence/<stage>/<tool>/<metric> selector.")
     return {
         **config,
+        "generator_id": generator_id,
         "acceptance_level": acceptance_level,
         "max_attempts": maximum,
         "accepted_target": target,
@@ -293,9 +312,18 @@ class CampaignLedger:
                     - int((item.get("native_state") or {}).get("accepted", 0)),
                 )
                 for item in attempts
-                if item.get("status") == "completed" and isinstance(item.get("native_state"), dict)
+                if item.get("status") == "completed"
+                and isinstance(item.get("native_state"), dict)
+                and (item.get("native_state") or {}).get("authoritative") is not False
+            ),
+            "native_acceptance_unavailable_attempts": sum(
+                item.get("status") == "completed"
+                and isinstance(item.get("native_state"), dict)
+                and (item.get("native_state") or {}).get("authoritative") is False
+                for item in attempts
             ),
             "native_accepted_candidates": sum(item.get("native_acceptance") == "accepted" for item in candidates),
+            "native_acceptance_unavailable_candidates": sum(item.get("native_acceptance") == "unavailable" for item in candidates),
             "validated_accepted_candidates": sum(item.get("validated_acceptance") == "accepted" for item in candidates),
             "diversity_qualified_accepted_candidates": sum(item.get("diversity_acceptance") == "accepted" for item in candidates),
             "rejected_candidates": sum(
@@ -477,15 +505,23 @@ class CampaignLedger:
             if attempt.get("child_run_dir"):
                 attempt["compute_runs"][Path(str(attempt["child_run_dir"])).name] = max(0.0, float(gpu_seconds))
             attempt["candidate_ids"] = []
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.generator_capabilities import (
+                generator_capabilities,
+            )
+
+            capability = generator_capabilities(str(state["config"].get("generator_id") or "bindcraft2"))
             for candidate in candidates:
                 candidate_id = str(candidate.get("candidate_id") or "")
                 if not candidate_id:
                     raise ValueError("Verified campaign candidates need nonempty stable IDs.")
                 if candidate_id in state["candidates"]:
                     continue
-                native_acceptance = (
-                    "accepted" if candidate.get("metrics", {}).get("native_pass_filters") is True else "rejected"
-                )
+                if capability.native_acceptance_available:
+                    native_acceptance = (
+                        "accepted" if candidate.get("metrics", {}).get("native_pass_filters") is True else "rejected"
+                    )
+                else:
+                    native_acceptance = "unavailable"
                 state["candidates"][candidate_id] = {
                     "candidate_id": candidate_id,
                     "attempt_id": attempt_id,
@@ -519,10 +555,10 @@ class CampaignLedger:
             candidate = state["candidates"].get(candidate_id)
             if candidate is None:
                 raise KeyError(f"Unknown campaign candidate: {candidate_id}")
-            if validated == "accepted" and candidate.get("native_acceptance") != "accepted":
-                raise ValueError("Validated acceptance requires verified native BindCraft2 acceptance.")
-            if diversity == "accepted" and candidate.get("native_acceptance") != "accepted":
-                raise ValueError("Diversity acceptance requires verified native BindCraft2 acceptance.")
+            if validated == "accepted" and candidate.get("native_acceptance") not in {"accepted", "unavailable"}:
+                raise ValueError("Validated acceptance requires a native-accepted candidate or an engine without native acceptance.")
+            if diversity == "accepted" and candidate.get("native_acceptance") not in {"accepted", "unavailable"}:
+                raise ValueError("Diversity acceptance requires a native-accepted candidate or an engine without native acceptance.")
             if (
                 diversity == "accepted"
                 and state["config"].get("validation_stages")
@@ -1643,7 +1679,7 @@ def _validation_pending_candidates(state: dict[str, Any], config: dict[str, Any]
         return 0
     pending = 0
     for candidate in state["candidates"].values():
-        if candidate.get("native_acceptance") != "accepted":
+        if candidate.get("native_acceptance") not in {"accepted", "unavailable"}:
             continue
         if candidate.get("validated_acceptance") in {"accepted", "rejected", "failed"}:
             continue
@@ -1674,7 +1710,7 @@ def _drive_validation(
         key=lambda item: (state["attempts"][item[1]["attempt_id"]]["ordinal"], item[0]),
     ):
         native = candidate_rows.get(candidate_id)
-        if native is None or ledger_candidate.get("native_acceptance") != "accepted":
+        if native is None or ledger_candidate.get("native_acceptance") not in {"accepted", "unavailable"}:
             continue
         stage_results = dict(ledger_candidate.get("validation_stages") or {})
         previous_run: Path | None = None
@@ -1843,7 +1879,7 @@ def _drive_validation(
     by_id = {row.get("candidate_id"): row for row in candidates}
     for candidate_id, row in by_id.items():
         ledger_candidate = updated["candidates"].get(str(candidate_id), {})
-        if ledger_candidate.get("native_acceptance") == "accepted":
+        if ledger_candidate.get("native_acceptance") in {"accepted", "unavailable"}:
             raw = row.setdefault("raw_metadata", {})
             raw["evidence_candidates"] = ledger_candidate.get("validation_evidence") or []
             raw.setdefault("distributed_campaign", {})["validated_acceptance"] = ledger_candidate.get("validated_acceptance", "pending")
@@ -1972,7 +2008,7 @@ def _apply_diversity(
     clusters: list[list[tuple[str, dict[str, Any], int]]] = []
     for candidate_id, ledger_candidate in ordered:
         row = candidate_by_id.get(candidate_id)
-        if row is None or ledger_candidate.get("native_acceptance") != "accepted":
+        if row is None or ledger_candidate.get("native_acceptance") not in {"accepted", "unavailable"}:
             continue
         if use_validation and ledger_candidate.get("validated_acceptance") != "accepted":
             if ledger_candidate.get("validated_acceptance") in {"rejected", "failed"}:
