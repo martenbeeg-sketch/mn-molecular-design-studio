@@ -1,0 +1,217 @@
+# Phase 7B — distributed scientific acceptance (activation gate)
+
+28 October 2026, Europe/Berlin. **Incomplete: clean deployment staged; activation requires approval.**
+No fresh design or predictor inference was submitted. Nothing in this report establishes new live scientific workflow acceptance or simultaneous four-GPU inference.
+
+Evidence labels used below are **Real GPU execution**, **Retained scientific artifact**, **Deterministic execution fixture**, **Source inspection**, and **Unverified**. CPU-only container imports/probes are Source inspection, not Real GPU execution.
+
+Raw evidence: `/mnt/data/RESULTS/mn-molecular-design-studio/verification/phase7b-distributed-acceptance`. Portable machine summary: [phase7b-preflight.json](evidence/phase7b-preflight.json).
+
+## 1. Exact source and GitHub baseline
+
+**Source inspection.** All three original checkouts were already at `abf0f2ef5b3d1117df72c6a74a56e05bb3f21f2f`, the Phase 7A.2 commit “feat: add three scientific workflow modes with distributed branch execution.” Both peers had moved beyond historical `4f9ba77`; this was observed over SSH, not assumed. `git ls-remote origin refs/heads/fix/scientific-pipeline-validation` returned the exact same full commit. No push was needed or performed.
+
+The original local branch remains `fix/scientific-pipeline-validation`. All three original checkouts retain their modified `run_app.py` and untracked `tool_references.py`; their file hashes match across machines. No original checkout was reset, stashed, rebased, merged or updated. The four requested architecture/testing documents were read.
+
+Fixes were reviewed and committed separately as `a628c33becb3258df39e51ff89cf10643649e59d` on isolated branch `codex/phase7b-acceptance`. No code or documentation from this task was pushed to GitHub. There was no merge into main.
+
+## 2. Observed runtime and staged deployment
+
+**Source inspection.** Existing API/agent services were active on all three machines, using the existing Studio Python 3.11.17 environments. Published heartbeat source fingerprints matched the original source trees, including the preserved paper-reference edits:
+
+`5569f8a69023be09c6079d2608fb383d60ba7a1dbcca1bd29e96c92c7fa53d5b`.
+
+This is source-on-disk and heartbeat evidence. Local API/agent processes predate the latest code; exact in-memory module revisions are **Unverified**. A matching heartbeat alone is not proof that every already-imported Python module was refreshed.
+
+| Host | Original checkout HEAD | Clean staged HEAD | Activation |
+| --- | --- | --- | --- |
+| pc002975 | `abf0f2e` | `a628c33` | Not performed |
+| pc004032 | `abf0f2e` | `a628c33` | Not performed |
+| pc004033 | `abf0f2e` | `a628c33` | Not performed |
+
+Local pinned source is `/home/user/programs/deployments/mn-molecular-design-studio/phase7b/source`; each peer has `/home/compute/programs/deployments/mn-molecular-design-studio/phase7b/source`. All three checkouts are clean, detached at the full staged commit and import the expected package path. Their common clean runtime fingerprint is `96814c66c8f1afdf5a7beae74a30f15f6452fddf32470e930bd73e4abc8f92fe`. The full-history source bundle was verified before the two remote clean clones. This is staged deployment, not an active-runtime claim.
+
+The existing environments are `/home/user/mambaforge/envs/mn-molecular-design-studio` and `/home/compute/programs/miniforge3/envs/mn-molecular-design-studio` on the peers. No global installation or environment replacement was performed.
+
+## 3. Activation boundary and rollback
+
+**Source inspection; activation Unverified.** Reproducing the retained native configuration required a graph handoff fix. The new source must be activated consistently before fresh acceptance. Seven host-specific service drop-ins and an exact activation/rollback plan are prepared under `deployment/` in the evidence root. None was installed.
+
+The approval action is to switch API/agent services on all three machines plus the controller UI to the pinned clean source, and restart only idle Studio application scheduler bridges. The existing shared MN Compute Scheduler and SSH tunnel services remain in use. Merely refreshing the API would leave old bridge processes spawning workers from the old import root.
+
+The request's section 3 explicitly requires stopping before service modifications. Approval was requested; elapsed time is not approval. Activation must recheck Studio queues and leases first and must not interrupt useful scientific work. It causes a short UI/API reconnect and dispatch pause. It includes no model download, image rebuild/replacement or GitHub push.
+
+Rollback removes only the newly introduced `phase7b.conf` drop-ins, restores the previous service environment, and restarts idle application bridges from the original source. Existing units/drop-ins must be backed up before any change. The original three checkouts, settings, credentials, images, weights and Results remain available; rollback requires no destructive Git action. Full procedure: `/mnt/data/RESULTS/mn-molecular-design-studio/verification/phase7b-distributed-acceptance/deployment/activation-plan.md`.
+
+## 4. Four physical GPUs and live availability
+
+**Source inspection.** UUIDs and telemetry came from `nvidia-smi` and the existing scheduler inventory.
+
+| Host | Index | GPU | UUID | VRAM |
+| --- | --- | --- | --- | --- |
+| pc002975 | 0 | NVIDIA GeForce RTX 4090 | `GPU-195a1966-1148-340e-5fe2-bac2d7a9821a` | 23.99 GiB |
+| pc002975 | 1 | NVIDIA GeForce RTX 4090 | `GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21` | 23.99 GiB |
+| pc004032 | 0 | NVIDIA GeForce RTX 5090 | `GPU-b7f8339b-157f-e1f2-f136-bd0ad68bc780` | 31.84 GiB |
+| pc004033 | 0 | NVIDIA GeForce RTX 5090 | `GPU-370f52fb-5676-7316-104d-5a9bf016fae1` | 31.84 GiB |
+
+All three schedulers were online and their snapshots showed zero GPU reservations at inspection. The local scheduler's global counts included 388 queued jobs, but a separate app-filtered query returned **zero queued/running Molecular Design Studio jobs**. Those global jobs were left untouched. GPU 1 had some external/display memory use and nonzero sampled utilization; a free Studio lease does not prove the physical GPU is otherwise idle. Exact memory/utilization snapshots are in `preflight/*-models.json`.
+
+Four registered devices are not four active scientific allocations. New Phase 7B leases, UUID-linked process receipts and simultaneous four-device intervals are **Unverified**.
+
+## 5. Authenticated workers and artifact transport
+
+**Source inspection.** Authenticated read-only peer API requests succeeded to both configured peers using existing credentials; no credential was printed or changed. All three agents were online, accepting jobs, reporting accessible storage, and using the existing scheduler and transfer system. Snapshot timestamps and resource observations are preserved in raw JSON.
+
+Results/reference roots and preserved service/configuration hashes are recorded per machine. Source bundles were transferred by SSH/SCP into new deployment directories. That transfer is not a scientific artifact-transfer acceptance test. Real fresh candidate upload/download, checksum receipts, process lifecycle transfer and live remote cancellation remain **Unverified**; retained scientific lineage and deterministic transfer/recovery coverage are recorded separately below.
+
+## 6. Images and checkpoints
+
+**Source inspection.** Existing images were inspected without pull/rebuild. The following are exact local IDs and portable content fingerprints; peer image IDs differ because their Docker image stores represent identity differently. The portable content fingerprints match on all three workstations, including all five rows.
+
+| Image | pc002975 image ID | Portable content fingerprint |
+| --- | --- | --- |
+| `mn-bindcraft2:v1.0.4-cu13-pae-v1` | `sha256:673ec7cf961eb892f6977ed425920a2fae22eb0b0aae4510b9e7cbecc7fedbcb` | `sha256:14782c560a9c20271119332d22a497d4f88328cd6842261f809ae17d283b9113` |
+| `mn-rfd4-proteina:0.0.3-cu130` | `sha256:c34efb5afca78c0341cf996c9dadc8102a7fb3760e1792697a8779803e0e44f5` | `sha256:a0b8ed6e9c418b6ee7435ff633d77f1248abdab5b8d7b249b18b3a2dc5d3f82a` |
+| `mn-boltz2-opt:2.2.1-cu130-batch2` | `sha256:3054688e91908156071238adee167ad4963cfbca05c8a4cf0e55a634ba5a2a55` | `sha256:10b16971ffc0567920260f71b45dd5fe0041b9fbce2a9f39655bd92bad852f12` |
+| `mn-protenix-opt:2.0.0-cu128-batch2` | `sha256:f9b86d5f136581795d0fd4ba968e6ae37a5fa256a63eebec5d896fe69182f5ca` | `sha256:5f3881201c380dc823cf4abb924c586b1dbdd52eb7f30cefc332b6d8fb2cb33b` |
+| `mn-ligandmpnn:latest` | `sha256:7f85a354ebe11a8edf2722aa3cf2247189ff74f62985d4ac9e72e8a9a40e181d` | `sha256:1d8a6644e5c449dd6e164fe047f1cf7027e30a77afcfe06dc65bc1beb3503c96` |
+
+Selected checkpoint/config hashes match on all three machines:
+
+| Relative reference artifact | SHA-256 |
+| --- | --- |
+| `rfd4-proteina/huggingface/hub/models--nvidia--RFD4-Proteina/snapshots/a06e2509c7033b010fc43614e9fd840303588502/config.json` | `154ea927ab8005b7eac2d047a792147fb4606ab4878e496aa8414b6b40dad368` |
+| `rfd4-proteina/huggingface/hub/models--nvidia--RFD4-Proteina/snapshots/a06e2509c7033b010fc43614e9fd840303588502/model.safetensors` | `5b549dd61adb2f6c6b5cb95bda13f40f5e31556b4e6c755edc0ca6f011c68fb0` |
+| `boltz_models/boltz2_conf.ckpt` | `090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1` |
+| `boltz_models/boltz2_aff.ckpt` | `dcc5cd3722b1c9eaa34267e4ae32f55cbbf1963f4c19319381ccfa30fdd2ca9e` |
+| `boltz_models/ccd.pkl` | `2d3b2f03a3c5665944adba51e33263511e51b21c9cd05d902f9c4b7c1e58d2f4` |
+| `protenix/checkpoint/protenix-v2.pt` | `8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599` |
+| `protenix/common/components.cif.rdkit_mol.pkl` | `d1cfb71f5993a3ebea7c47877022d7f597bbfbaf86e28a4770e957da6c50cd35` |
+| `alphafold_models/params_model_1_multimer_v3.npz` | `611da8fc7478928f68de12e8b226260ef1f4ce62bcc29b008572e52f4f212959` |
+| `alphafold_models/params_model_1_ptm.npz` | `5e564f79af5bcd54ccef6e2a6bb0ff01015d01650ebc41d4575e35f0de9ecc84` |
+| `mpnn/v48_020_epoch300_hyper.pt` | `2635afa506cbad850af3fffa7629d80b72ee166d386e2d63a05435b5bd9b459f` |
+
+The staged compatibility probe reports RFD4, Boltz-2 and Protenix V2 compatible with the four observed GPUs and driver APIs. Protenix reports PyTorch `2.7.1+cu128` and targets `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120 compute_120`; this is a CPU import/compiled-target inspection, not inference. The original generic probe failed before importing torch because it did not reproduce `mn-predict`'s existing removal of legacy `PROTENIX_OPT_MODE`. The fix follows that launcher exactly, preserving real driver/architecture checks.
+
+The torch probe does not establish BindCraft2's JAX runtime compatibility. Prior real native 4090 evidence is retained; fresh native placement still requires its ordinary preflight and process evidence. No assumption is made that every installed model runs on every GPU.
+
+## 7. Integration fixes and review
+
+**Source inspection + Deterministic execution fixture.** The complete BindCraft2 graph tile previously rejected the retained benchmark's `engine_overrides` and native worker controls, despite standalone support. It also coupled the accepted-design target and trajectory cap. The fix exposes a separate native trajectory limit, native workers/GPU and an advanced native-settings JSON object in the existing form. It maps these into the same complete `design.bindcraft2` request. A default zero trajectory override preserves old saved graphs' count-derived cap; auto worker/default settings remain omitted from the native request.
+
+Advanced JSON is validated before submission and cannot change trajectory limits, accepted-design budget, workers/GPU or full/generator mode. Nonfinite/invalid JSON fails. The native operation remains one whole invocation. The selected complete tile continues to use the adapter's `trajectory_only=False` default. No scientific thresholds, algorithms, models or campaign packing limits were changed. A second fix makes the Protenix CPU compatibility probe use its installed launcher's startup convention.
+
+Code and tests were reviewed using the staged diff. Validation includes saved/reopened native configuration, request preservation, backward compatibility, scientific cache-key changes, invalid-budget settings, the actual Streamlit tile form, and driver/architecture constraints. No runtime compatibility bypass was added.
+
+## 8. PD-L1 reference and retained lineage
+
+**Retained scientific artifact.** The target is `/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-124448-350f7294/artifacts/rfd4_proteina/input/PD-L1.pdb.cif`.
+
+Target SHA-256: `7da1c888011cdbd0937e3ff6b73429aa069e4c496cfa0cb8d8b53cc06ca73b57`. Chain A is 115 residues; sequence SHA-256 `c434254957dd7a7d80ce4ca859f9a6d101a1205f4ff822177dd0b3c31f02e968`. RFD4 hotspots are A40, A99, A107. Author residue mapping is stored in `retained/lineage.json`.
+
+P4 ledger `20261028-101057-a07ef0a4`: `0f575ca3e563181423524207c34ebc5fbcf1c6c9b6ff8c5bf71409ae10bc1460`.
+P5 ledger `20261028-124448-350f7294`: `205efddd4c18cea8f8ca9d9ee22a9b5ad193964f5e059854631bf2465e891b39`.
+
+P4 predates the external Results-root migration. Its original run is under `/home/user/.local/share/mn-molecular-design-studio/workdir/runs/design/20261028-101057-a07ef0a4`; portable references were resolved against each recorded source root, following the existing retained-import convention. No original paths/files were rewritten. Original ledgers, candidate records, source inputs/results and available source/prediction structures were hashed before/after replay. All tracked hashes match. Parsed target/binder chains exactly matched the retained sequences for all three P4/P5 candidates (75/116/94 residues).
+
+## 9. Mode 1 — complete native workflow
+
+**Prepared configuration, Source inspection.** Target chain A → complete `bindcraft2` → native outcomes → Native Results; no external ProteinMPNN, Boltz or Protenix nodes. The saved bounded configuration uses binder length 60, native seed 20261027, one accepted-design stopping target, **one trajectory maximum**, one native worker/GPU and the original benchmark's one-step native stage overrides, model_1_multimer_v3 design/model_1_ptm validation, one sequence candidate, native filtering and failed-trajectory preservation. The retained one-trajectory cap is stricter than the request's maximum two. No generation was repeated to seek an accepted binder.
+
+**Retained scientific artifact.** Original native run `20261028-085821-36356a14` records two historical rejected trajectories and zero normalized candidates. Its imported outcome ran through the normal graph and exported successfully, without external predictions. This establishes rejection/empty routing, not a fresh native execution. Actual gradient design/internal sequence design/AF2 evaluation/filter process receipts for a new Phase 7B invocation are **Unverified**.
+
+## 10. Mode 2 — native workflow plus comparative evaluation
+
+**Retained scientific artifact.** The genuine complete native rejection source routed automatically through CandidateSet, both enabled empty predictor branches, analyzer, ranking and Results. Both predictors recorded zero processing jobs. No RFD4 co-design source was relabeled as a complete internally evaluated native workflow.
+
+**Unverified.** A positive complete-workflow candidate was not available in the inspected benchmark, and no fresh Mode 1 result exists yet. After activation, reuse the genuine Mode 1 output if eligible and replace the prepared Mode 2 retained reference accordingly. Preserve its original sequences/native filters and use independently configured Boltz-2 and Protenix V2 branches; no mandatory redesign. Positive Mode 2 contracts are deterministic fixtures only. The positive scientific acceptance boundary remains explicitly incomplete.
+
+## 11. Mode 3 — modular pipeline
+
+**Prepared configuration, Source inspection.** One fresh RFD4 guided binder request uses the retained P5 chain/hotspots, 60 steps, one replicate/design, native microbatch one, 60–120 aa length range, seed 20261028, deterministic/native-condition filtering enabled and native refolding disabled. The graph label `guided` and P5 label `guided_binder` enter the same existing native preparation branch. A second explicit retained RFD4 branch supplies the two original P5 candidates, without another generator launch.
+
+Initial ProteinMPNN is conditional and sequence-complete RFD4 outputs bypass it. Optional redesign remains disabled for this prepared live graph. Its disabled path is covered by retained execution; interface-fixed child identity and parent-evidence isolation are covered by deterministic tests. No new redesign variant was generated.
+
+Both predictors are enabled: same exact target/binder sequences, no MSA or target template, seed 42, one sample. Boltz retains P5's one recycle/20 sampling steps; Protenix retains its ordinary 10 recycle/200 step profile. Ranking explicitly uses `prediction/predictor-0/iptm` within recorded protocol cohorts; no threshold or zero fill is introduced, and no numerical equivalence to a Protenix measurement is assumed.
+
+**Retained scientific artifact.** The two P5 variants bypassed sequence inference, joined their original Boltz evidence (iPTM 0.46578 and 0.65414), produced consolidated Results/selection and ZIP export. Protenix is explicitly disabled in this retained replay. RFD4 native acceptance remains unavailable. Retained campaign validated acceptance records measurement presence and lineage, not a native filter pass or experimental binding. Fresh RFD4 and both fresh predictor branches are **Unverified** pending activation.
+
+## 12. Saved graph configurations and normal execution
+
+**Source inspection.** Prepared graph definitions were saved/versioned through Studio's normal graph API, with validation and CandidateSet preflight. They submit no jobs. These are snapshots for opening in the existing editor after consistent activation:
+
+| Mode | Graph ID | Saved revision |
+| --- | --- | --- |
+| native_complete | `9c6b0015ed11428f8677991122532249` | `b78b23a7b869fb32e4815bc107bc6097037d2683fc5e11f9ba27a3a9d24d0342` |
+| native_comparative | `264de98ded9d4edaa608043289febeee` | `019c43621405cdd411a23357b7bb91cdd77c30a2dddd9d22aa643253bc65015b` |
+| modular_design | `2c1cb60b631d44ccbe8e45109b780d07` | `f474b3a1129367e3ab3050145e273f0392cc9f953bfacabb15363a215bd388a9` |
+
+Owner is the existing development user; project is `37130be6726a40d1a37652b0d7106c37` (Phase 6A deployment verification). The existing browser displayed the three-mode setup and a four-node complete-native graph. No live Run button was used. Native input editing, plan review, per-stage/GPU monitoring and final fresh Results interaction are not claimed complete. Streamlit setup/Results contracts and the new native form are covered by deterministic execution fixtures.
+
+## 13. CandidateSet fan-out/fan-in and batch accounting
+
+**Retained scientific artifact + Deterministic execution fixture.** Candidate normalization, exact variant IDs, original sequences and native provenance survive retained fan-in and analysis. The modular replay has two original sequence-ready candidates, zero redesign variants, two retained Boltz predictions, two analyzed rows and two selected rows. Native/filter absence remains explicit. Empty native sources retain their two rejection attempts even with zero normalized rows.
+
+Planned fresh bound is at most three eligible candidates per predictor, at most **six candidate–predictor inputs total**, one seed/sample each. Retained Boltz candidates are grouped in one two-input chunk; retained Protenix candidates use two independent one-input chunks. This supplies useful work for placement while also exercising one actual multi-input interface when run. Actual scheduler jobs, containers, native invocations, model initializations, samples, returned predictions and accepted candidates must be read from the new receipts; forecast chunk counts do not establish them.
+
+No campaign `native_attempts_per_job` larger than one was enabled. Deterministic collection/recovery tests preserve the existing campaign boundary and native multi-input behavior. No new live native batching claim is made.
+
+## 14. Distributed parallel scheduling
+
+**Deterministic execution fixture.** Existing tests exercise independent generator submission, downstream prediction while another generator remains active, four independent in-flight chunks, stale/unavailable machines, shared lease accounting and strict receipt reconciliation. Existing authenticated worker/image/checkpoint eligibility remains authoritative.
+
+**Unverified.** No new physical lease or overlapping scientific allocation was created. The planned native and modular graphs expose useful independent tasks, but neither four-device occupancy nor placement of any specific new model is promised. Capture UUIDs, lease IDs, allocation/start/finish timestamps and actual process receipts during the authorized live continuation. Prior P5 evidence used all four devices across phases but did not show four simultaneous devices; it is not relabeled as Phase 7B concurrency.
+
+## 15. Provenance and scientific identity
+
+**Retained scientific artifact.** The read-only lineage check parses original complexes and verifies exact chain-A target and binder sequences. The normal graph preserves source/native candidate IDs, backbone IDs, sequence variant IDs, original sequence/reference structures, target hash, predictor ancestry and independent measurement namespaces. Missing historical trajectory/model metadata remains unavailable.
+
+The analyzer's same-variant/same-sequence joins, distinct redesign child IDs, missing predictor entries, native rejection versus operational failure and parent-evidence isolation are exercised in deterministic tests. Complete fresh model/settings/seed/GPU/native receipts and remote artifact hashes remain **Unverified**. No confidence score is described as experimentally measured binding.
+
+## 16. Results and exports
+
+**Retained scientific artifact.** Three new lightweight retained graph runs completed through the normal engine and `build_run_zip`; exports contain CandidateSet workflow summary and native-source provenance. ZIP identities are:
+
+| Mode | Retained graph run | Candidates | ZIP SHA-256 |
+| --- | --- | --- | --- |
+| native_complete | `20261028-185830-26e7d024` | 0 | `9177afa19956270cccf7f962556108d5e12643b2c276f8177b2c92cc19689018` |
+| native_comparative | `20261028-185830-0eb629d1` | 0 | `1e3049a92bd96a013a97ea1a407d97a0b2e635372a786d09a183248d6dcd8ad5` |
+| modular_design | `20261028-185831-33dafdbb` | 2 | `a0732e1c9401f0b82944984e9b82917fe45bd123a6bc40cafef0391cf518260b` |
+
+ZIP paths are recorded in `retained/summary.json`. The modular ZIP includes consolidated measurements/selection from genuine retained Boltz outputs. Empty native mode ZIPs preserve source/rejection evidence. Fresh per-GPU progress, real partial failures, positive complete-native comparison Results and fresh scientific ZIP export remain **Unverified**. Analyzer-only upstream cache reuse is fixture/source evidence, not a new live inference claim.
+
+## 17. Recovery and failure coverage
+
+**Deterministic execution fixture.** Focused suites cover unavailable/disconnected workers; failed/retried submissions; corrupted/interrupted output transfer; partial native output and missing artifacts; duplicate/conflicting receipts; failed prediction siblings with preserved successful evidence; restart/configuration checks; completed-member preservation; queued cancellation and no-launch fences. Representative contracts are in `test_candidate_execution.py`, `test_candidate_peer_transfer.py`, `test_execution_job_ledger.py`, `test_workflow_modes.py`, `test_native_collection_execution.py`, `test_cluster.py` and `test_peer_workstations.py`.
+
+No useful scientific inference was killed. Actual fresh remote cancellation/transfer interruption is **Unverified**. Replaying completed receipt records is not treated as a scientifically equivalent restart of a stochastic generator.
+
+## 18. Runtime and utilization measurements
+
+**Source inspection.** Captured GPU memory/utilization samples, scheduler resource snapshots, model/file sizes and exact source/image/checkpoint hashes are available. CPU-only container imports yielded compiled-target profiles. Test suite wall times below are software-test measurements, not model timings.
+
+**Unverified.** New scientific queue time, leases, native process durations, model initialization, candidate/transfer/prediction/analyzer/end-to-end durations and concurrent GPU utilization were not measured because no new inference ran. Retained graphs' lightweight completion times are not scientific performance data. No startup/batching speedup is claimed from fewer scheduler jobs. Phase 6C.1's older measured RFD4 import/load phases retain their original scope.
+
+## 19. Validation record and scientific outcome
+
+**Deterministic execution fixture** (overlapping suites, not a sum of unique tests):
+
+- Baseline: **163 passed in 233.99 s** — modes, CandidateSet, candidate execution/peer transfer, distributed campaigns and job ledger.
+- Native-settings fix: **219 passed in 208.52 s** — new configuration tests, workflow modes, graph, candidate execution/peer transfer, native collections and ledger; before the separate Protenix probe follow-up.
+- Compatibility follow-up: **85 passed in 10.81 s** — configuration/probe, peer-workstation and cluster tests.
+- Final native configuration/UI: **15 passed in 0.53 s** — includes actual Streamlit form editing and apply.
+- Source diff whitespace validation passed. Staged source imported at the exact pinned revision on all three machines. CPU-only probes used existing installed images.
+
+Initial harness setup mistakes (a nonexistent test filename, pre-workspace path resolution, and unsupported raw graph settings) failed before inference and were corrected. They are not counted as scientific failures or successful live runs. The native graph rejection exposed the configuration gap fixed here. Earlier retained replay artifacts are preserved separately; the final summary points to the replay with explicit original-structure checks.
+
+**Software outcome:** staged source, focused regressions, retained graph routing/lineage and retained export pass. Active runtime switch and fresh distributed execution are incomplete.
+
+**Scientific outcome:** no new candidate or prediction. Genuine retained BindCraft2 rejection remains rejection; retained P4/P5 RFD4/Boltz evidence remains available. Positive-looking fixtures are never accepted as scientific evidence.
+
+## 20. Limitations, remaining priorities and continuation
+
+Phase A is complete for source/staging checks but active-runtime attestation awaits activation. Phase B retained checks pass. Phases C/D/E are not executed. Phase F passes retained export and deterministic recovery contracts; fresh UI/scientific recovery remains incomplete. Phase 7B's definition of done is **not met**.
+
+The next required action is the separately approved, idle-only service/bridge switch in section 3. After activation, verify common source fingerprints and exact model/reference probes before using the normal Studio Run action. Run one bounded complete BindCraft2 invocation, then reuse its genuine outcome in Mode 2 where eligible. Run the prepared RFD4 modular graph with automatic downstream prediction and the six-input ceiling. Measure real physical leases/process receipts and four-device overlap where compatible work exists. Finish fresh Results/provenance/ZIP verification and safe bounded cancellation. Do not expand generation budgets to force acceptance or device occupancy.
+
+If Mode 1 again yields no eligible complete-workflow candidate, preserve its native rejection and leave Mode 2's positive path explicitly incomplete unless an independently provenance-verified complete workflow source is available. RFD4 co-design does not satisfy that boundary. Models/images may not be replaced or services further modified beyond the reviewed activation scope without the request's stated approval boundary.

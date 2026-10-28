@@ -1,0 +1,1470 @@
+{
+  "phase": "7B",
+  "status": "activation approval required; fresh scientific acceptance incomplete",
+  "evidence_root": "/mnt/data/RESULTS/mn-molecular-design-studio/verification/phase7b-distributed-acceptance",
+  "feature_branch": "fix/scientific-pipeline-validation",
+  "feature_head": "abf0f2ef5b3d1117df72c6a74a56e05bb3f21f2f",
+  "github_feature_head_observed": "abf0f2ef5b3d1117df72c6a74a56e05bb3f21f2f",
+  "review_branch": "codex/phase7b-acceptance",
+  "staged_revision": "a628c33becb3258df39e51ff89cf10643649e59d",
+  "staged_runtime_fingerprint": "96814c66c8f1afdf5a7beae74a30f15f6452fddf32470e930bd73e4abc8f92fe",
+  "activation_executed": false,
+  "new_generator_invocations": 0,
+  "new_predictor_inputs": 0,
+  "four_gpu_concurrency": "Unverified",
+  "model_hashes_match": true,
+  "machines": {
+    "pc004033": {
+      "git_head": {
+        "returncode": 0,
+        "stdout": "abf0f2ef5b3d1117df72c6a74a56e05bb3f21f2f",
+        "stderr": ""
+      },
+      "source_fingerprint": "5569f8a69023be09c6079d2608fb383d60ba7a1dbcca1bd29e96c92c7fa53d5b",
+      "python": "/home/compute/programs/miniforge3/envs/mn-molecular-design-studio/bin/python",
+      "python_version": "3.11.17",
+      "gpu_details": {
+        "0": {
+          "name": "NVIDIA GeForce RTX 5090",
+          "uuid": "GPU-370f52fb-5676-7316-104d-5a9bf016fae1",
+          "driver_version": "595.99.02",
+          "compute_capability": "12.0",
+          "driver_cuda_api": 13020,
+          "total_vram_gb": 31.8427734375,
+          "free_vram_gb": 31.2080078125,
+          "utilization_percent": 0.0
+        }
+      },
+      "images": {
+        "mn-bindcraft2:v1.0.4-cu13-pae-v1": {
+          "available": true,
+          "id": "sha256:e1051e285b94dd73efe1d1eb74109022bdbad7f6e2d150b0933a3166c75424cf",
+          "content_fingerprint": "sha256:14782c560a9c20271119332d22a497d4f88328cd6842261f809ae17d283b9113"
+        },
+        "mn-rfd4-proteina:0.0.3-cu130": {
+          "available": true,
+          "id": "sha256:9ffb161fd399a2fd60d29c7520a30d21b57c292893fa281d076f4a2953704d46",
+          "content_fingerprint": "sha256:a0b8ed6e9c418b6ee7435ff633d77f1248abdab5b8d7b249b18b3a2dc5d3f82a"
+        },
+        "mn-boltz2-opt:2.2.1-cu130-batch2": {
+          "available": true,
+          "id": "sha256:057fac816f7434d517a77a82f59ba1685976eb7c60f44e1d39b7b03a7c545d94",
+          "content_fingerprint": "sha256:10b16971ffc0567920260f71b45dd5fe0041b9fbce2a9f39655bd92bad852f12"
+        },
+        "mn-protenix-opt:2.0.0-cu128-batch2": {
+          "available": true,
+          "id": "sha256:504bf472de37078f72f9b8397085bfe6a35f0782f8ccc7a8cc3e134ee9c1b6e4",
+          "content_fingerprint": "sha256:5f3881201c380dc823cf4abb924c586b1dbdd52eb7f30cefc332b6d8fb2cb33b"
+        },
+        "mn-ligandmpnn:latest": {
+          "available": true,
+          "id": "sha256:7592af7ca98497dfdb5c37a30094fb04c9ec84c08fdb627fed901606f3c4ec9b",
+          "content_fingerprint": "sha256:1d8a6644e5c449dd6e164fe047f1cf7027e30a77afcfe06dc65bc1beb3503c96"
+        }
+      },
+      "checkpoint_hashes": {
+        "rfd4-proteina/huggingface/hub/models--nvidia--RFD4-Proteina/snapshots/a06e2509c7033b010fc43614e9fd840303588502/config.json": "154ea927ab8005b7eac2d047a792147fb4606ab4878e496aa8414b6b40dad368",
+        "rfd4-proteina/huggingface/hub/models--nvidia--RFD4-Proteina/snapshots/a06e2509c7033b010fc43614e9fd840303588502/model.safetensors": "5b549dd61adb2f6c6b5cb95bda13f40f5e31556b4e6c755edc0ca6f011c68fb0",
+        "boltz_models/boltz2_conf.ckpt": "090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1",
+        "boltz_models/boltz2_aff.ckpt": "dcc5cd3722b1c9eaa34267e4ae32f55cbbf1963f4c19319381ccfa30fdd2ca9e",
+        "boltz_models/ccd.pkl": "2d3b2f03a3c5665944adba51e33263511e51b21c9cd05d902f9c4b7c1e58d2f4",
+        "protenix/checkpoint/protenix-v2.pt": "8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599",
+        "protenix/common/components.cif.rdkit_mol.pkl": "d1cfb71f5993a3ebea7c47877022d7f597bbfbaf86e28a4770e957da6c50cd35",
+        "alphafold_models/params_model_1_multimer_v3.npz": "611da8fc7478928f68de12e8b226260ef1f4ce62bcc29b008572e52f4f212959",
+        "alphafold_models/params_model_1_ptm.npz": "5e564f79af5bcd54ccef6e2a6bb0ff01015d01650ebc41d4575e35f0de9ecc84",
+        "mpnn/v48_020_epoch300_hyper.pt": "2635afa506cbad850af3fffa7629d80b72ee166d386e2d63a05435b5bd9b459f"
+      },
+      "preserved_files": {
+        "mn_molecular_design_studio/run_app.py": "8019fa5165955dacb00074ab9785ba3a2b1a3e15d44eabb7aaa96799ec31a0d1",
+        "mn_molecular_design_studio/tool_references.py": "3d039cd6c961cc2914fb60d83ede95abff29e0cc9d868c18bf208e757738f7de"
+      },
+      "runs_root": "/data/results/mn-molecular-design-studio/workdir/runs",
+      "reference_root": "/data/reference_files"
+    },
+    "pc004032": {
+      "git_head": {
+        "returncode": 0,
+        "stdout": "abf0f2ef5b3d1117df72c6a74a56e05bb3f21f2f",
+        "stderr": ""
+      },
+      "source_fingerprint": "5569f8a69023be09c6079d2608fb383d60ba7a1dbcca1bd29e96c92c7fa53d5b",
+      "python": "/home/compute/programs/miniforge3/envs/mn-molecular-design-studio/bin/python",
+      "python_version": "3.11.17",
+      "gpu_details": {
+        "0": {
+          "name": "NVIDIA GeForce RTX 5090",
+          "uuid": "GPU-b7f8339b-157f-e1f2-f136-bd0ad68bc780",
+          "driver_version": "595.99.02",
+          "compute_capability": "12.0",
+          "driver_cuda_api": 13020,
+          "total_vram_gb": 31.8427734375,
+          "free_vram_gb": 31.2451171875,
+          "utilization_percent": 0.0
+        }
+      },
+      "images": {
+        "mn-bindcraft2:v1.0.4-cu13-pae-v1": {
+          "available": true,
+          "id": "sha256:e1051e285b94dd73efe1d1eb74109022bdbad7f6e2d150b0933a3166c75424cf",
+          "content_fingerprint": "sha256:14782c560a9c20271119332d22a497d4f88328cd6842261f809ae17d283b9113"
+        },
+        "mn-rfd4-proteina:0.0.3-cu130": {
+          "available": true,
+          "id": "sha256:9ffb161fd399a2fd60d29c7520a30d21b57c292893fa281d076f4a2953704d46",
+          "content_fingerprint": "sha256:a0b8ed6e9c418b6ee7435ff633d77f1248abdab5b8d7b249b18b3a2dc5d3f82a"
+        },
+        "mn-boltz2-opt:2.2.1-cu130-batch2": {
+          "available": true,
+          "id": "sha256:057fac816f7434d517a77a82f59ba1685976eb7c60f44e1d39b7b03a7c545d94",
+          "content_fingerprint": "sha256:10b16971ffc0567920260f71b45dd5fe0041b9fbce2a9f39655bd92bad852f12"
+        },
+        "mn-protenix-opt:2.0.0-cu128-batch2": {
+          "available": true,
+          "id": "sha256:504bf472de37078f72f9b8397085bfe6a35f0782f8ccc7a8cc3e134ee9c1b6e4",
+          "content_fingerprint": "sha256:5f3881201c380dc823cf4abb924c586b1dbdd52eb7f30cefc332b6d8fb2cb33b"
+        },
+        "mn-ligandmpnn:latest": {
+          "available": true,
+          "id": "sha256:7592af7ca98497dfdb5c37a30094fb04c9ec84c08fdb627fed901606f3c4ec9b",
+          "content_fingerprint": "sha256:1d8a6644e5c449dd6e164fe047f1cf7027e30a77afcfe06dc65bc1beb3503c96"
+        }
+      },
+      "checkpoint_hashes": {
+        "rfd4-proteina/huggingface/hub/models--nvidia--RFD4-Proteina/snapshots/a06e2509c7033b010fc43614e9fd840303588502/config.json": "154ea927ab8005b7eac2d047a792147fb4606ab4878e496aa8414b6b40dad368",
+        "rfd4-proteina/huggingface/hub/models--nvidia--RFD4-Proteina/snapshots/a06e2509c7033b010fc43614e9fd840303588502/model.safetensors": "5b549dd61adb2f6c6b5cb95bda13f40f5e31556b4e6c755edc0ca6f011c68fb0",
+        "boltz_models/boltz2_conf.ckpt": "090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1",
+        "boltz_models/boltz2_aff.ckpt": "dcc5cd3722b1c9eaa34267e4ae32f55cbbf1963f4c19319381ccfa30fdd2ca9e",
+        "boltz_models/ccd.pkl": "2d3b2f03a3c5665944adba51e33263511e51b21c9cd05d902f9c4b7c1e58d2f4",
+        "protenix/checkpoint/protenix-v2.pt": "8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599",
+        "protenix/common/components.cif.rdkit_mol.pkl": "d1cfb71f5993a3ebea7c47877022d7f597bbfbaf86e28a4770e957da6c50cd35",
+        "alphafold_models/params_model_1_multimer_v3.npz": "611da8fc7478928f68de12e8b226260ef1f4ce62bcc29b008572e52f4f212959",
+        "alphafold_models/params_model_1_ptm.npz": "5e564f79af5bcd54ccef6e2a6bb0ff01015d01650ebc41d4575e35f0de9ecc84",
+        "mpnn/v48_020_epoch300_hyper.pt": "2635afa506cbad850af3fffa7629d80b72ee166d386e2d63a05435b5bd9b459f"
+      },
+      "preserved_files": {
+        "mn_molecular_design_studio/run_app.py": "8019fa5165955dacb00074ab9785ba3a2b1a3e15d44eabb7aaa96799ec31a0d1",
+        "mn_molecular_design_studio/tool_references.py": "3d039cd6c961cc2914fb60d83ede95abff29e0cc9d868c18bf208e757738f7de"
+      },
+      "runs_root": "/data/RESULTS/mn-molecular-design-studio/workdir/runs",
+      "reference_root": "/data/reference_files"
+    },
+    "pc002975": {
+      "git_head": {
+        "returncode": 0,
+        "stdout": "abf0f2ef5b3d1117df72c6a74a56e05bb3f21f2f",
+        "stderr": ""
+      },
+      "source_fingerprint": "5569f8a69023be09c6079d2608fb383d60ba7a1dbcca1bd29e96c92c7fa53d5b",
+      "python": "/home/user/mambaforge/envs/mn-molecular-design-studio/bin/python",
+      "python_version": "3.11.17",
+      "gpu_details": {
+        "0": {
+          "name": "NVIDIA GeForce RTX 4090",
+          "uuid": "GPU-195a1966-1148-340e-5fe2-bac2d7a9821a",
+          "driver_version": "595.91.07",
+          "compute_capability": "8.9",
+          "driver_cuda_api": 13020,
+          "total_vram_gb": 23.98828125,
+          "free_vram_gb": 23.5009765625,
+          "utilization_percent": 0.0
+        },
+        "1": {
+          "name": "NVIDIA GeForce RTX 4090",
+          "uuid": "GPU-c0569fbb-42d6-594e-a304-0a84a0c60a21",
+          "driver_version": "595.91.07",
+          "compute_capability": "8.9",
+          "driver_cuda_api": 13020,
+          "total_vram_gb": 23.98828125,
+          "free_vram_gb": 22.0,
+          "utilization_percent": 0.0
+        }
+      },
+      "images": {
+        "mn-bindcraft2:v1.0.4-cu13-pae-v1": {
+          "available": true,
+          "id": "sha256:673ec7cf961eb892f6977ed425920a2fae22eb0b0aae4510b9e7cbecc7fedbcb",
+          "content_fingerprint": "sha256:14782c560a9c20271119332d22a497d4f88328cd6842261f809ae17d283b9113"
+        },
+        "mn-rfd4-proteina:0.0.3-cu130": {
+          "available": true,
+          "id": "sha256:c34efb5afca78c0341cf996c9dadc8102a7fb3760e1792697a8779803e0e44f5",
+          "content_fingerprint": "sha256:a0b8ed6e9c418b6ee7435ff633d77f1248abdab5b8d7b249b18b3a2dc5d3f82a"
+        },
+        "mn-boltz2-opt:2.2.1-cu130-batch2": {
+          "available": true,
+          "id": "sha256:3054688e91908156071238adee167ad4963cfbca05c8a4cf0e55a634ba5a2a55",
+          "content_fingerprint": "sha256:10b16971ffc0567920260f71b45dd5fe0041b9fbce2a9f39655bd92bad852f12"
+        },
+        "mn-protenix-opt:2.0.0-cu128-batch2": {
+          "available": true,
+          "id": "sha256:f9b86d5f136581795d0fd4ba968e6ae37a5fa256a63eebec5d896fe69182f5ca",
+          "content_fingerprint": "sha256:5f3881201c380dc823cf4abb924c586b1dbdd52eb7f30cefc332b6d8fb2cb33b"
+        },
+        "mn-ligandmpnn:latest": {
+          "available": true,
+          "id": "sha256:7f85a354ebe11a8edf2722aa3cf2247189ff74f62985d4ac9e72e8a9a40e181d",
+          "content_fingerprint": "sha256:1d8a6644e5c449dd6e164fe047f1cf7027e30a77afcfe06dc65bc1beb3503c96"
+        }
+      },
+      "checkpoint_hashes": {
+        "rfd4-proteina/huggingface/hub/models--nvidia--RFD4-Proteina/snapshots/a06e2509c7033b010fc43614e9fd840303588502/config.json": "154ea927ab8005b7eac2d047a792147fb4606ab4878e496aa8414b6b40dad368",
+        "rfd4-proteina/huggingface/hub/models--nvidia--RFD4-Proteina/snapshots/a06e2509c7033b010fc43614e9fd840303588502/model.safetensors": "5b549dd61adb2f6c6b5cb95bda13f40f5e31556b4e6c755edc0ca6f011c68fb0",
+        "boltz_models/boltz2_conf.ckpt": "090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1",
+        "boltz_models/boltz2_aff.ckpt": "dcc5cd3722b1c9eaa34267e4ae32f55cbbf1963f4c19319381ccfa30fdd2ca9e",
+        "boltz_models/ccd.pkl": "2d3b2f03a3c5665944adba51e33263511e51b21c9cd05d902f9c4b7c1e58d2f4",
+        "protenix/checkpoint/protenix-v2.pt": "8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599",
+        "protenix/common/components.cif.rdkit_mol.pkl": "d1cfb71f5993a3ebea7c47877022d7f597bbfbaf86e28a4770e957da6c50cd35",
+        "alphafold_models/params_model_1_multimer_v3.npz": "611da8fc7478928f68de12e8b226260ef1f4ce62bcc29b008572e52f4f212959",
+        "alphafold_models/params_model_1_ptm.npz": "5e564f79af5bcd54ccef6e2a6bb0ff01015d01650ebc41d4575e35f0de9ecc84",
+        "mpnn/v48_020_epoch300_hyper.pt": "2635afa506cbad850af3fffa7629d80b72ee166d386e2d63a05435b5bd9b459f"
+      },
+      "preserved_files": {
+        "mn_molecular_design_studio/run_app.py": "8019fa5165955dacb00074ab9785ba3a2b1a3e15d44eabb7aaa96799ec31a0d1",
+        "mn_molecular_design_studio/tool_references.py": "3d039cd6c961cc2914fb60d83ede95abff29e0cc9d868c18bf208e757738f7de"
+      },
+      "runs_root": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs",
+      "reference_root": "/mnt/db/reference_files"
+    }
+  },
+  "staged": {
+    "pc004033": {
+      "evidence_class": "Source inspection",
+      "python": "/home/compute/programs/miniforge3/envs/mn-molecular-design-studio/bin/python",
+      "root": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b/source",
+      "git_head": "a628c33becb3258df39e51ff89cf10643649e59d",
+      "git_status": "",
+      "source_fingerprint": "96814c66c8f1afdf5a7beae74a30f15f6452fddf32470e930bd73e4abc8f92fe",
+      "runtime_profiles": {
+        "mn-rfd4-proteina:0.0.3-cu130": {
+          "cuda": "13.0",
+          "targets": [
+            "sm_75",
+            "sm_80",
+            "sm_86",
+            "sm_90",
+            "sm_100",
+            "sm_120"
+          ]
+        },
+        "mn-boltz2-opt:2.2.1-cu130-batch2": {
+          "cuda": "13.0",
+          "targets": [
+            "sm_75",
+            "sm_80",
+            "sm_86",
+            "sm_90",
+            "sm_100",
+            "sm_120"
+          ]
+        },
+        "mn-protenix-opt:2.0.0-cu128-batch2": {
+          "cuda": "12.8",
+          "targets": [
+            "sm_75",
+            "sm_80",
+            "sm_86",
+            "sm_90",
+            "sm_100",
+            "sm_120",
+            "compute_120"
+          ]
+        }
+      },
+      "compatibility": {
+        "0": {
+          "mn-rfd4-proteina:0.0.3-cu130": true,
+          "mn-boltz2-opt:2.2.1-cu130-batch2": true,
+          "mn-protenix-opt:2.0.0-cu128-batch2": true
+        }
+      },
+      "native_fields": [
+        "num_designs",
+        "binder_length",
+        "campaign_seed",
+        "max_trajectories",
+        "workers_per_gpu",
+        "engine_overrides_json",
+        "redesign_interface",
+        "coldspots"
+      ],
+      "scheduler_job_counts": {
+        "completed": 137,
+        "failed": 4,
+        "cancelled": 3
+      },
+      "scheduler_resources": {
+        "cpu_threads_total": 24,
+        "ram_available_gb": 119.192,
+        "ram_total_gb": 125.018,
+        "scratch_free_gb": 1550.779,
+        "scratch_total_gb": 3753.435,
+        "gpus": [
+          {
+            "gpu_id": 0,
+            "free_vram_gb": 31.208,
+            "total_vram_gb": 31.843
+          }
+        ],
+        "cpu_pool_capacity": 23,
+        "visible_gpu_ids": [
+          0
+        ],
+        "reservations": [],
+        "state_dir": "/home/compute/.local/state/mn-compute-scheduler"
+      },
+      "preserved_configuration_hashes": {
+        "/home/compute/.local/share/mn-molecular-design-studio/cluster/config.json": "f091673c8fa407126e090fbb109cba677327ac48b014491432e4ceb4c16b37da",
+        "/home/compute/.local/share/mn-molecular-design-studio/settings.json": "99b06262a06af06ad0e0044d37db6bb8cb1798258e6b27a1bd4b1e8b79edcd90",
+        "/home/compute/.config/systemd/user/studio-agent.service": "dbcf5e4220012b73478bcef4d4872552b85b04782a7a074de45dd96ecb137a6a",
+        "/home/compute/.config/systemd/user/studio-api.service": "92c602b4d1b1a16474d28e5aa0bd95b62f664eb363286f5085d6c23722911b84",
+        "/home/compute/.config/systemd/user/studio-peer-4032.service": "7166898fc3e04e39fcfa9955fea8eb6c2e7ee4c213477316594cdd48dd54e24b",
+        "/home/compute/.config/systemd/user/studio-ui.service": "2cbc36f1208d1457424ee37607ae0ba8becafcf404cad198f1b58de06b916d0c"
+      }
+    },
+    "pc004032": {
+      "evidence_class": "Source inspection",
+      "python": "/home/compute/programs/miniforge3/envs/mn-molecular-design-studio/bin/python",
+      "root": "/home/compute/programs/deployments/mn-molecular-design-studio/phase7b/source",
+      "git_head": "a628c33becb3258df39e51ff89cf10643649e59d",
+      "git_status": "",
+      "source_fingerprint": "96814c66c8f1afdf5a7beae74a30f15f6452fddf32470e930bd73e4abc8f92fe",
+      "runtime_profiles": {
+        "mn-rfd4-proteina:0.0.3-cu130": {
+          "cuda": "13.0",
+          "targets": [
+            "sm_75",
+            "sm_80",
+            "sm_86",
+            "sm_90",
+            "sm_100",
+            "sm_120"
+          ]
+        },
+        "mn-boltz2-opt:2.2.1-cu130-batch2": {
+          "cuda": "13.0",
+          "targets": [
+            "sm_75",
+            "sm_80",
+            "sm_86",
+            "sm_90",
+            "sm_100",
+            "sm_120"
+          ]
+        },
+        "mn-protenix-opt:2.0.0-cu128-batch2": {
+          "cuda": "12.8",
+          "targets": [
+            "sm_75",
+            "sm_80",
+            "sm_86",
+            "sm_90",
+            "sm_100",
+            "sm_120",
+            "compute_120"
+          ]
+        }
+      },
+      "compatibility": {
+        "0": {
+          "mn-rfd4-proteina:0.0.3-cu130": true,
+          "mn-boltz2-opt:2.2.1-cu130-batch2": true,
+          "mn-protenix-opt:2.0.0-cu128-batch2": true
+        }
+      },
+      "native_fields": [
+        "num_designs",
+        "binder_length",
+        "campaign_seed",
+        "max_trajectories",
+        "workers_per_gpu",
+        "engine_overrides_json",
+        "redesign_interface",
+        "coldspots"
+      ],
+      "scheduler_job_counts": {
+        "failed": 9,
+        "cancelled": 4,
+        "completed": 138
+      },
+      "scheduler_resources": {
+        "cpu_threads_total": 24,
+        "ram_available_gb": 119.391,
+        "ram_total_gb": 125.011,
+        "scratch_free_gb": 984.389,
+        "scratch_total_gb": 3753.435,
+        "gpus": [
+          {
+            "gpu_id": 0,
+            "free_vram_gb": 31.245,
+            "total_vram_gb": 31.843
+          }
+        ],
+        "cpu_pool_capacity": 23,
+        "visible_gpu_ids": [
+          0
+        ],
+        "reservations": [],
+        "state_dir": "/home/compute/.local/state/mn-compute-scheduler"
+      },
+      "preserved_configuration_hashes": {
+        "/home/compute/.local/share/mn-molecular-design-studio/cluster/config.json": "034f8f4d90d597b37375a07531cb54dc62782458bd51f5d916b5dd6795183970",
+        "/home/compute/.local/share/mn-molecular-design-studio/settings.json": "5d49914d2b629a829093f26f99f2b0386067f31bedfc9ca8d72bee989e6fe7ff",
+        "/home/compute/.config/systemd/user/studio-agent.service": "dbcf5e4220012b73478bcef4d4872552b85b04782a7a074de45dd96ecb137a6a",
+        "/home/compute/.config/systemd/user/studio-api.service": "92c602b4d1b1a16474d28e5aa0bd95b62f664eb363286f5085d6c23722911b84",
+        "/home/compute/.config/systemd/user/studio-peer-4033.service": "635619ca46f1269b32ba38286dee66341d2daa24e3ed867aff1b89e242f192d1",
+        "/home/compute/.config/systemd/user/studio-ui.service": "2cbc36f1208d1457424ee37607ae0ba8becafcf404cad198f1b58de06b916d0c"
+      }
+    },
+    "pc002975": {
+      "evidence_class": "Source inspection",
+      "python": "/home/user/mambaforge/envs/mn-molecular-design-studio/bin/python",
+      "root": "/home/user/programs/deployments/mn-molecular-design-studio/phase7b/source",
+      "git_head": "a628c33becb3258df39e51ff89cf10643649e59d",
+      "git_status": "",
+      "source_fingerprint": "96814c66c8f1afdf5a7beae74a30f15f6452fddf32470e930bd73e4abc8f92fe",
+      "runtime_profiles": {
+        "mn-rfd4-proteina:0.0.3-cu130": {
+          "cuda": "13.0",
+          "targets": [
+            "sm_75",
+            "sm_80",
+            "sm_86",
+            "sm_90",
+            "sm_100",
+            "sm_120"
+          ]
+        },
+        "mn-boltz2-opt:2.2.1-cu130-batch2": {
+          "cuda": "13.0",
+          "targets": [
+            "sm_75",
+            "sm_80",
+            "sm_86",
+            "sm_90",
+            "sm_100",
+            "sm_120"
+          ]
+        },
+        "mn-protenix-opt:2.0.0-cu128-batch2": {
+          "cuda": "12.8",
+          "targets": [
+            "sm_75",
+            "sm_80",
+            "sm_86",
+            "sm_90",
+            "sm_100",
+            "sm_120",
+            "compute_120"
+          ]
+        }
+      },
+      "compatibility": {
+        "0": {
+          "mn-rfd4-proteina:0.0.3-cu130": true,
+          "mn-boltz2-opt:2.2.1-cu130-batch2": true,
+          "mn-protenix-opt:2.0.0-cu128-batch2": true
+        },
+        "1": {
+          "mn-rfd4-proteina:0.0.3-cu130": true,
+          "mn-boltz2-opt:2.2.1-cu130-batch2": true,
+          "mn-protenix-opt:2.0.0-cu128-batch2": true
+        }
+      },
+      "native_fields": [
+        "num_designs",
+        "binder_length",
+        "campaign_seed",
+        "max_trajectories",
+        "workers_per_gpu",
+        "engine_overrides_json",
+        "redesign_interface",
+        "coldspots"
+      ],
+      "scheduler_job_counts": {
+        "completed": 2312,
+        "cancelled": 8514,
+        "failed": 8806,
+        "queued": 388
+      },
+      "scheduler_resources": {
+        "cpu_threads_total": 64,
+        "ram_available_gb": 440.247,
+        "ram_total_gb": 503.54,
+        "scratch_free_gb": 490.081,
+        "scratch_total_gb": 3519.257,
+        "gpus": [
+          {
+            "gpu_id": 0,
+            "free_vram_gb": 23.501,
+            "total_vram_gb": 23.988
+          },
+          {
+            "gpu_id": 1,
+            "free_vram_gb": 21.604,
+            "total_vram_gb": 23.988
+          }
+        ],
+        "cpu_pool_capacity": 63,
+        "visible_gpu_ids": [
+          0,
+          1
+        ],
+        "reservations": [],
+        "state_dir": "/home/user/.local/state/mn-compute-scheduler"
+      },
+      "preserved_configuration_hashes": {
+        "/home/user/.local/share/mn-molecular-design-studio/cluster/config.json": "9f456c828c6e820a32a1483d811db0e880fbd73652c2ec4f9bfeb74978498f55",
+        "/home/user/.local/share/mn-molecular-design-studio/settings.json": "b280e0a8ab2c42f8b9d583b7c029f7d1c448e49ef37b6520c6623a667322d4c9",
+        "/home/user/.config/systemd/user/studio-agent.service": "71b9834251d3163ddb415a062749d1356ffcb00011cb183a25dac0d647b18ea1",
+        "/home/user/.config/systemd/user/studio-api.service": "9aaf1ff2135e4175cbbb5275e94b2f5e6b5512887229f126f3909911772d1749",
+        "/home/user/.config/systemd/user/studio-reverse-tunnel-4032.service": "5f6231c47778ba37d734fbbc2ff625fb0d09b43a63fed2979d946874a75da908",
+        "/home/user/.config/systemd/user/studio-reverse-tunnel-4033.service": "74fbdf4d074570b1d886f45bc8ddb866e776e9f600a91ff80734051e597f9629",
+        "/home/user/.config/systemd/user/studio-ui.service": "1b4bcd9edd2de3c5b8dbe44e7ba97f459628a51bda3cce3d53c3d6e0743ae708"
+      }
+    }
+  },
+  "retained": {
+    "source_hashes_unchanged": true,
+    "runs": [
+      {
+        "evidence_class": "Retained scientific artifact",
+        "mode": "native_complete",
+        "run_dir": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/campaign/20261028-185830-26e7d024",
+        "candidate_count": 0,
+        "workflow_summary": {
+          "candidate_count": 0,
+          "downstream_stages": [
+            {
+              "kind": "candidate_merge",
+              "label": "Native outcomes",
+              "node": "collection",
+              "retained": false
+            }
+          ],
+          "effective_label": "Complete Native Workflow",
+          "effective_mode": "native_complete",
+          "execution_plan": [
+            {
+              "actual_output_candidates": 0,
+              "actual_processing_jobs": 0,
+              "candidates": null,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection transformation",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "target",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "Target Structure"
+            },
+            {
+              "actual_output_candidates": 0,
+              "actual_processing_jobs": 0,
+              "candidates": null,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "retained evidence",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "generator-0",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "auto",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "BindCraft2"
+            },
+            {
+              "actual_output_candidates": 0,
+              "actual_processing_jobs": 0,
+              "candidates": 0,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection transformation",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "collection",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "Candidate collection"
+            },
+            {
+              "actual_output_candidates": 0,
+              "actual_processing_jobs": 0,
+              "candidates": 0,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection transformation",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "results",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "Results & comparison"
+            }
+          ],
+          "generator_operations": [
+            {
+              "complete_native_workflow": true,
+              "generator_only": false,
+              "kind": "bindcraft2",
+              "label": "BindCraft2",
+              "native_ranking": "Only explicit finite native rank evidence is displayed; unavailable otherwise.",
+              "node": "generator-0",
+              "note": "Native design, MPNN, validation and filters; final rank only when recorded.",
+              "retained": true,
+              "sequence_output": "native_evaluated"
+            }
+          ],
+          "preset_label": "Complete Native Workflow",
+          "preset_mode": "native_complete",
+          "ranking": "Native evidence only; no common numerical rank",
+          "stage_counts": {
+            "collection": {
+              "native_attempts": 2,
+              "native_rejected_attempts": 2
+            },
+            "generator-0": {
+              "native_attempts": 2,
+              "native_rejected_attempts": 2
+            },
+            "results": {},
+            "target": {}
+          }
+        },
+        "archive": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/campaign/20261028-185830-26e7d024/phase7b-retained-results.zip",
+        "archive_sha256": "9177afa19956270cccf7f962556108d5e12643b2c276f8177b2c92cc19689018"
+      },
+      {
+        "evidence_class": "Retained scientific artifact",
+        "mode": "native_comparative",
+        "run_dir": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/campaign/20261028-185830-0eb629d1",
+        "candidate_count": 0,
+        "workflow_summary": {
+          "candidate_count": 0,
+          "downstream_stages": [
+            {
+              "kind": "candidate_merge",
+              "label": "Candidate collection",
+              "node": "collection",
+              "retained": false
+            },
+            {
+              "kind": "shared_filter",
+              "label": "Shared scientific filters",
+              "node": "shared-filter",
+              "retained": false
+            },
+            {
+              "kind": "boltz2",
+              "label": "Boltz-2",
+              "node": "predictor-0",
+              "retained": false
+            },
+            {
+              "kind": "prediction_protenix_v2",
+              "label": "Protenix V2",
+              "node": "predictor-1",
+              "retained": false
+            },
+            {
+              "kind": "candidate_analyzer",
+              "label": "Unified candidate analyzer",
+              "node": "analyzer",
+              "retained": false
+            },
+            {
+              "kind": "candidate_rank",
+              "label": "Ranking and diversity",
+              "node": "ranking",
+              "retained": false
+            }
+          ],
+          "effective_label": "Complete Native Workflow + Comparative Evaluation",
+          "effective_mode": "native_comparative",
+          "execution_plan": [
+            {
+              "actual_output_candidates": 0,
+              "actual_processing_jobs": 0,
+              "candidates": null,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection transformation",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "target",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "Target Structure"
+            },
+            {
+              "actual_output_candidates": 0,
+              "actual_processing_jobs": 0,
+              "candidates": null,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "retained evidence",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "generator-0",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "auto",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "BindCraft2"
+            },
+            {
+              "actual_output_candidates": 0,
+              "actual_processing_jobs": 0,
+              "candidates": 0,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection transformation",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "collection",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "Candidate collection"
+            },
+            {
+              "actual_output_candidates": 0,
+              "actual_processing_jobs": 0,
+              "candidates": 0,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection transformation",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "shared-filter",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "Shared scientific filters"
+            },
+            {
+              "actual_output_candidates": 0,
+              "actual_processing_jobs": 0,
+              "candidates": 0,
+              "candidates_per_chunk": 5,
+              "collection_chunks": 0,
+              "count_basis": "source-verified expectation",
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection chunks",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 2,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "native_multi_input": true,
+              "node": "predictor-0",
+              "note": "One model entrypoint per seed for the entire input directory; initialization repeats per seed/chunk. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "auto",
+              "prediction_outputs": 0,
+              "status": "skipped",
+              "tool": "Boltz-2"
+            },
+            {
+              "actual_output_candidates": 0,
+              "actual_processing_jobs": 0,
+              "candidates": 0,
+              "candidates_per_chunk": 5,
+              "collection_chunks": 0,
+              "count_basis": "source-verified expectation",
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection chunks",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 2,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "native_multi_input": true,
+              "node": "predictor-1",
+              "note": "One model process for the input collection; initialization repeats per chunk. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "auto",
+              "prediction_outputs": 0,
+              "status": "skipped",
+              "tool": "Protenix V2"
+            },
+            {
+              "actual_output_candidates": 0,
+              "actual_processing_jobs": 0,
+              "candidates": null,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection transformation",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "analyzer",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "Unified candidate analyzer"
+            },
+            {
+              "actual_output_candidates": 0,
+              "actual_processing_jobs": 0,
+              "candidates": 0,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection transformation",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "ranking",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "Ranking and diversity"
+            },
+            {
+              "actual_output_candidates": 0,
+              "actual_processing_jobs": 0,
+              "candidates": 0,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection transformation",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "results",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "Results & comparison"
+            }
+          ],
+          "generator_operations": [
+            {
+              "complete_native_workflow": true,
+              "generator_only": false,
+              "kind": "bindcraft2",
+              "label": "BindCraft2",
+              "native_ranking": "Only explicit finite native rank evidence is displayed; unavailable otherwise.",
+              "node": "generator-0",
+              "note": "Native design, MPNN, validation and filters; final rank only when recorded.",
+              "retained": true,
+              "sequence_output": "native_evaluated"
+            }
+          ],
+          "preset_label": "Complete Native Workflow + Comparative Evaluation",
+          "preset_mode": "native_comparative",
+          "ranking": "Explicit measurements within recorded comparable protocols",
+          "stage_counts": {
+            "analyzer": {},
+            "collection": {
+              "native_attempts": 2,
+              "native_rejected_attempts": 2
+            },
+            "generator-0": {
+              "native_attempts": 2,
+              "native_rejected_attempts": 2
+            },
+            "predictor-0": {
+              "processing_jobs": 0
+            },
+            "predictor-1": {
+              "processing_jobs": 0
+            },
+            "ranking": {},
+            "results": {},
+            "shared-filter": {
+              "candidates_filtered": 0
+            },
+            "target": {}
+          }
+        },
+        "archive": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/campaign/20261028-185830-0eb629d1/phase7b-retained-results.zip",
+        "archive_sha256": "1e3049a92bd96a013a97ea1a407d97a0b2e635372a786d09a183248d6dcd8ad5"
+      },
+      {
+        "evidence_class": "Retained scientific artifact",
+        "mode": "modular_design",
+        "run_dir": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/campaign/20261028-185831-33dafdbb",
+        "candidate_count": 2,
+        "workflow_summary": {
+          "candidate_count": 2,
+          "downstream_stages": [
+            {
+              "kind": "candidate_merge",
+              "label": "Candidate collection",
+              "node": "collection",
+              "retained": false
+            },
+            {
+              "kind": "ligandmpnn",
+              "label": "ProteinMPNN",
+              "node": "sequence-preparation",
+              "retained": false
+            },
+            {
+              "kind": "ligandmpnn",
+              "label": "ProteinMPNN",
+              "node": "optional-redesign",
+              "retained": false
+            },
+            {
+              "kind": "shared_filter",
+              "label": "Shared scientific filters",
+              "node": "shared-filter",
+              "retained": false
+            },
+            {
+              "kind": "boltz2",
+              "label": "Boltz-2",
+              "node": "predictor-0",
+              "retained": true
+            },
+            {
+              "kind": "candidate_analyzer",
+              "label": "Unified candidate analyzer",
+              "node": "analyzer",
+              "retained": false
+            },
+            {
+              "kind": "candidate_rank",
+              "label": "Ranking and diversity",
+              "node": "ranking",
+              "retained": false
+            }
+          ],
+          "effective_label": "Modular Design Pipeline",
+          "effective_mode": "modular_design",
+          "execution_plan": [
+            {
+              "actual_output_candidates": 0,
+              "actual_processing_jobs": 0,
+              "candidates": null,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection transformation",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "target",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "Target Structure"
+            },
+            {
+              "actual_output_candidates": 2,
+              "actual_processing_jobs": 0,
+              "candidates": null,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "retained evidence",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "generator-0",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "auto",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "RFD4-Proteina"
+            },
+            {
+              "actual_output_candidates": 2,
+              "actual_processing_jobs": 0,
+              "candidates": 2,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection transformation",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "collection",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "Candidate collection"
+            },
+            {
+              "actual_output_candidates": 2,
+              "actual_processing_jobs": 0,
+              "candidates": 2,
+              "candidates_per_chunk": null,
+              "collection_chunks": 1,
+              "count_basis": "backend and compatible constraint groups resolved during staging",
+              "docker_processes": null,
+              "enabled": true,
+              "execution": "ordinary native workflow",
+              "expected_jobs": 1,
+              "gpu_allocation_events": 1,
+              "gpu_slots": 1,
+              "max_concurrent_jobs": 1,
+              "model_initializations": null,
+              "native_invocations": null,
+              "native_invocations_max": 2,
+              "native_invocations_min": 1,
+              "native_multi_input": null,
+              "node": "sequence-preparation",
+              "note": "LigandMPNN reuses one model per compatible multi-PDB group. Foundry uses one process per structure. Initial co-design and disabled redesign use zero processes. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "ProteinMPNN"
+            },
+            {
+              "actual_output_candidates": 2,
+              "actual_processing_jobs": 0,
+              "candidates": 2,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "preserve sequences",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "optional-redesign",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "ProteinMPNN"
+            },
+            {
+              "actual_output_candidates": 2,
+              "actual_processing_jobs": 0,
+              "candidates": 2,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection transformation",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "shared-filter",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "Shared scientific filters"
+            },
+            {
+              "actual_output_candidates": 2,
+              "actual_processing_jobs": 0,
+              "candidates": 2,
+              "candidates_per_chunk": 5,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "retained evidence",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 2,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "predictor-0",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "auto",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "Boltz-2"
+            },
+            {
+              "actual_output_candidates": 0,
+              "actual_processing_jobs": 0,
+              "candidates": 2,
+              "candidates_per_chunk": 5,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": false,
+              "execution": "disabled",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 2,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "predictor-1",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "auto",
+              "prediction_outputs": 0,
+              "status": "skipped",
+              "tool": "Protenix V2"
+            },
+            {
+              "actual_output_candidates": 2,
+              "actual_processing_jobs": 0,
+              "candidates": null,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection transformation",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "analyzer",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "Unified candidate analyzer"
+            },
+            {
+              "actual_output_candidates": 2,
+              "actual_processing_jobs": 0,
+              "candidates": 2,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection transformation",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "ranking",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "Ranking and diversity"
+            },
+            {
+              "actual_output_candidates": 2,
+              "actual_processing_jobs": 0,
+              "candidates": 2,
+              "candidates_per_chunk": null,
+              "collection_chunks": 0,
+              "docker_processes": 0,
+              "enabled": true,
+              "execution": "collection transformation",
+              "expected_jobs": 0,
+              "gpu_allocation_events": 0,
+              "gpu_slots": 0,
+              "max_concurrent_jobs": 1,
+              "model_initializations": 0,
+              "native_invocations": 0,
+              "node": "results",
+              "note": "No new scientific execution. Forecast uses upstream counts; conditional sequence eligibility can reduce work. Actual jobs are reported separately.",
+              "placement": "local",
+              "prediction_outputs": 0,
+              "status": "completed",
+              "tool": "Results & comparison"
+            }
+          ],
+          "generator_operations": [
+            {
+              "complete_native_workflow": false,
+              "generator_only": true,
+              "kind": "rfd4",
+              "label": "RFD4-Proteina",
+              "native_ranking": "Only explicit finite native rank evidence is displayed; unavailable otherwise.",
+              "node": "generator-0",
+              "note": "Guided co-design; refolding/evaluation depends on task options. No validated final native ranking.",
+              "retained": true,
+              "sequence_output": "co_design"
+            }
+          ],
+          "preset_label": "Modular Design Pipeline",
+          "preset_mode": "modular_design",
+          "ranking": "Explicit measurements within recorded comparable protocols",
+          "stage_counts": {
+            "analyzer": {
+              "analyzed_candidates": 2,
+              "completed_predictions": 2,
+              "native_rejected_candidates": 0,
+              "normalized_candidates": 2,
+              "selected_candidates": 0,
+              "sequence_ready": 2,
+              "sequence_variants": 0
+            },
+            "collection": {
+              "analyzed_candidates": 0,
+              "completed_predictions": 0,
+              "native_attempts": 2,
+              "native_rejected_attempts": 0,
+              "native_rejected_candidates": 0,
+              "normalized_candidates": 2,
+              "selected_candidates": 0,
+              "sequence_ready": 2,
+              "sequence_variants": 0
+            },
+            "generator-0": {
+              "analyzed_candidates": 0,
+              "completed_predictions": 0,
+              "native_attempts": 2,
+              "native_rejected_attempts": 0,
+              "native_rejected_candidates": 0,
+              "normalized_candidates": 2,
+              "selected_candidates": 0,
+              "sequence_ready": 2,
+              "sequence_variants": 0
+            },
+            "optional-redesign": {
+              "analyzed_candidates": 0,
+              "completed_predictions": 0,
+              "native_rejected_candidates": 0,
+              "normalized_candidates": 2,
+              "selected_candidates": 0,
+              "sequence_ready": 2,
+              "sequence_variants": 0
+            },
+            "predictor-0": {
+              "analyzed_candidates": 0,
+              "completed_predictions": 2,
+              "native_rejected_candidates": 0,
+              "normalized_candidates": 2,
+              "selected_candidates": 0,
+              "sequence_ready": 2,
+              "sequence_variants": 0
+            },
+            "predictor-1": {},
+            "ranking": {
+              "analyzed_candidates": 2,
+              "completed_predictions": 2,
+              "native_rejected_candidates": 0,
+              "normalized_candidates": 2,
+              "selected_candidates": 2,
+              "sequence_ready": 2,
+              "sequence_variants": 0
+            },
+            "results": {
+              "analyzed_candidates": 2,
+              "completed_predictions": 2,
+              "native_rejected_candidates": 0,
+              "normalized_candidates": 2,
+              "selected_candidates": 2,
+              "sequence_ready": 2,
+              "sequence_variants": 0
+            },
+            "sequence-preparation": {
+              "analyzed_candidates": 0,
+              "completed_predictions": 0,
+              "native_rejected_candidates": 0,
+              "normalized_candidates": 2,
+              "selected_candidates": 0,
+              "sequence_ready": 2,
+              "sequence_variants": 0
+            },
+            "shared-filter": {
+              "analyzed_candidates": 0,
+              "candidates_filtered": 0,
+              "completed_predictions": 0,
+              "filter_not_evaluated": 2,
+              "native_rejected_candidates": 0,
+              "normalized_candidates": 2,
+              "selected_candidates": 0,
+              "sequence_ready": 2,
+              "sequence_variants": 0
+            },
+            "target": {}
+          }
+        },
+        "archive": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/campaign/20261028-185831-33dafdbb/phase7b-retained-results.zip",
+        "archive_sha256": "a0732e1c9401f0b82944984e9b82917fe45bd123a6bc40cafef0391cf518260b"
+      }
+    ],
+    "new_generator_invocations": 0,
+    "new_predictor_inputs": 0
+  },
+  "lineage": {
+    "candidates": [
+      {
+        "source_run": "/home/user/.local/share/mn-molecular-design-studio/workdir/runs/design/20261028-101057-a07ef0a4",
+        "candidate_id": "dc_00000001_081fdf168c82bc16",
+        "binder_length": 75,
+        "binder_sha256": "4a92e21a05b04cab399b21ea17e8e3438c88f8e7d3ded10c3e10b32136609d24",
+        "chain_and_sequence_identity": "pass"
+      },
+      {
+        "source_run": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-124448-350f7294",
+        "candidate_id": "dc_00000001_d68026ec8a3e62d5",
+        "binder_length": 116,
+        "binder_sha256": "ad6a651791941cbe4fbeebf027fb6c46b470034ebc4c3a2c66d80598285cdf68",
+        "chain_and_sequence_identity": "pass"
+      },
+      {
+        "source_run": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-124448-350f7294",
+        "candidate_id": "dc_00000002_d68026ec8a3e62d5",
+        "binder_length": 94,
+        "binder_sha256": "da0ba51511da10c21f61dfc4e86e686907a2e733d2e62ae19a39f1ea32e6acee",
+        "chain_and_sequence_identity": "pass"
+      }
+    ]
+  },
+  "target": {
+    "target_id": "14242665ed067ddebcec4cf2b286c10425ec63f5614c6640b5f201ad17d09a54",
+    "source_sha256": "7da1c888011cdbd0937e3ff6b73429aa069e4c496cfa0cb8d8b53cc06ca73b57",
+    "selected_chains": [
+      "A"
+    ],
+    "constraints": {
+      "hotspots": "A40,A99,A107",
+      "coldspots": ""
+    }
+  },
+  "definitions": [
+    {
+      "mode": "native_complete",
+      "graph_id": "9c6b0015ed11428f8677991122532249",
+      "name": "Phase 7B PD-L1 \u00b7 Mode 1 native",
+      "revision": "b78b23a7b869fb32e4815bc107bc6097037d2683fc5e11f9ba27a3a9d24d0342",
+      "owner_id": "00000000000000000000000000000001",
+      "project_id": "37130be6726a40d1a37652b0d7106c37",
+      "path": "/mnt/data/RESULTS/mn-molecular-design-studio/verification/phase7b-distributed-acceptance/graphs/native_complete.json"
+    },
+    {
+      "mode": "native_comparative",
+      "graph_id": "264de98ded9d4edaa608043289febeee",
+      "name": "Phase 7B PD-L1 \u00b7 Mode 2 retained native comparison",
+      "revision": "019c43621405cdd411a23357b7bb91cdd77c30a2dddd9d22aa643253bc65015b",
+      "owner_id": "00000000000000000000000000000001",
+      "project_id": "37130be6726a40d1a37652b0d7106c37",
+      "path": "/mnt/data/RESULTS/mn-molecular-design-studio/verification/phase7b-distributed-acceptance/graphs/native_comparative.json"
+    },
+    {
+      "mode": "modular_design",
+      "graph_id": "2c1cb60b631d44ccbe8e45109b780d07",
+      "name": "Phase 7B PD-L1 \u00b7 Mode 3 modular + retained P5 collection",
+      "revision": "f474b3a1129367e3ab3050145e273f0392cc9f953bfacabb15363a215bd388a9",
+      "owner_id": "00000000000000000000000000000001",
+      "project_id": "37130be6726a40d1a37652b0d7106c37",
+      "path": "/mnt/data/RESULTS/mn-molecular-design-studio/verification/phase7b-distributed-acceptance/graphs/modular_design.json"
+    }
+  ],
+  "tests": [
+    {
+      "class": "Deterministic execution fixture",
+      "stage": "baseline",
+      "passed": 163,
+      "seconds": 233.99
+    },
+    {
+      "class": "Deterministic execution fixture",
+      "stage": "native-settings regression before compatibility follow-up",
+      "passed": 219,
+      "seconds": 208.52
+    },
+    {
+      "class": "Deterministic execution fixture",
+      "stage": "compatibility follow-up",
+      "passed": 85,
+      "seconds": 10.81
+    },
+    {
+      "class": "Deterministic execution fixture",
+      "stage": "final native configuration and UI",
+      "passed": 15,
+      "seconds": 0.53
+    }
+  ],
+  "activation_plan": "/mnt/data/RESULTS/mn-molecular-design-studio/verification/phase7b-distributed-acceptance/deployment/activation-plan.md"
+}
