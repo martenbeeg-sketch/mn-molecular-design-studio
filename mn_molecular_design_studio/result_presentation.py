@@ -19,6 +19,24 @@ def candidate_state_rows(candidates):
                      "Selection reasons": "; ".join(selection.get("reasons") or []),
                      "Sequence": candidate.get("binder_sequence"), "Structure": candidate.get("complex_pdb"),
                      "Parents": ", ".join(candidate.get("parents") or [])})
+        collection = (candidate.get('raw_metadata') or {}).get('candidate_set')
+        if collection:
+            native_execution = (candidate.get('raw_metadata') or {}).get('distributed_campaign', {})
+            predictor_execution = [{'predictor': item['branch'],
+                'execution': item['candidate'].get('raw_metadata', {}).get('candidate_execution') or
+                    item['candidate'].get('raw_metadata', {}).get('execution_provenance') or
+                    item['candidate'].get('raw_metadata', {}).get('candidate_set', {}).get('prediction_execution', {})}
+                for item in collection.get('predictions', [])]
+            rows[-1].update({'Generator': collection.get('generator'), 'Source run': collection.get('source_run'),
+                'Native attempt': collection.get('native_attempt_id'), 'Backbone': collection.get('backbone_id'),
+                'Sequence variant': collection.get('variant_id'), 'Parent variants': ', '.join(collection.get('parent_variant_ids', [])),
+                'Original sequence': collection.get('original_sequence'), 'Original structure': collection.get('original_structure'),
+                'Native filter': collection.get('native_filter'), 'Shared filter': collection.get('shared_filter', {}).get('status', 'not_evaluated'),
+                'Predictor outcomes': str(collection.get('predictor_matrix', {})),
+                'Measurements': str(collection.get('analysis', {}).get('measurements', {})),
+                'Predictions': len(collection.get('predictions', [])), 'Diversity': str(collection.get('deduplication', {})),
+                'Worker / GPU provenance': str({'native': native_execution or collection.get('source_provenance', {}).get('metadata', {}).get('resource_allocation', {}),
+                                               'predictions': predictor_execution})})
     return rows
 
 

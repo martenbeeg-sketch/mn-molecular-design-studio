@@ -29,7 +29,8 @@ def test_each_task_has_a_valid_editable_default(task):
 def test_catalogue_has_six_standard_and_two_experimental_tasks_and_blank():
     assert len(TASKS) == 8
     assert sum(bool(t.get("experimental")) for t in TASKS.values()) == 2
-    assert len(graph.STARTER_TEMPLATES) == 9
+    assert len(graph.STARTER_TEMPLATES) == 10
+    assert graph.STARTER_TEMPLATES["Multi-Generator Binder Design & Evaluation"] == "multi_generator_binder"
     assert "blank" in graph.STARTER_TEMPLATES.values()
 
 

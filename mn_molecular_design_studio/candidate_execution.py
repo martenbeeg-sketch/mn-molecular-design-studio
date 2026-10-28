@@ -9,6 +9,8 @@ import copy
 import hashlib
 import json
 import math
+import re
+from itertools import islice
 from pathlib import Path
 
 from mn_molecular_design_studio.cache_provenance import file_digest, referenced_files
@@ -31,9 +33,15 @@ def policy(value=None):
     defaults = dict(mode='native', placement='local', batch_size=4, max_in_flight=2,
                     retries=1, failure_policy='all', min_vram_gb=8., ram_gb=0.,
                     cpu_cores=4, stall_timeout_seconds=1800, incremental_cpu=False)
-    if set(value) - defaults.keys():
-        raise ValueError('Unsupported candidate execution settings: ' + ', '.join(sorted(set(value) - defaults.keys())))
+    if set(value) - defaults.keys() - {'gpu_device'}:
+        raise ValueError('Unsupported candidate execution settings: ' + ', '.join(sorted(set(value) - defaults.keys() - {'gpu_device'})))
     result = defaults | value
+    if 'gpu_device' in value:
+        from mn_molecular_design_studio.engine.workflow_engine.core.gpu import normalize_gpu_device
+        selector = value['gpu_device']
+        if not isinstance(selector, str) or selector not in {'auto', 'all'} and not re.fullmatch(r'\d+(?:,\d+)*', selector):
+            raise ValueError('Choose auto, all, or explicit GPU indices for this processing step.')
+        normalize_gpu_device(selector)
     if result['mode'] not in {'native', 'sharded'} or result['failure_policy'] not in {'all', 'partial'}:
         raise ValueError('Choose native/sharded execution and all/partial failure policy.')
     if type(result['incremental_cpu']) is not bool:
@@ -101,9 +109,10 @@ def data_hashes(value):
                 if path.suffix == '.json':
                     visit(json.loads(path.read_text()), path.parent)
                 elif path.suffix == '.jsonl':
-                    for line in path.read_text().splitlines():
-                        if line.strip():
-                            visit(json.loads(line), path.parent)
+                    with path.open() as handle:
+                        for line in handle:
+                            if line.strip():
+                                visit(json.loads(line), path.parent)
             except (ValueError, UnicodeError):
                 pass
     visit(value)
@@ -112,17 +121,25 @@ def data_hashes(value):
 
 def initialize(parent, node, source, params, key, settings, *, make_source, make_request, read_rows):
     """Freeze ordered units and complete effective requests before submitting any work."""
-    rows = read_rows(source) if source.get('candidates_jsonl') else []
-    ids = [str(r.get('candidate_id') or '') for r in rows]
-    if rows and (not all(ids) or len(ids) != len(set(ids))):
-        raise ValueError('Candidate sharding requires nonempty unique input candidate IDs.')
-    generation = node['data']['kind'] in GENERATION_KINDS and not rows
-    total = int(params.get('num_designs', 1)) if generation else len(rows)
+    collection = bool(source.get('candidates_jsonl'))
+    generation = node['data']['kind'] in GENERATION_KINDS and not collection
+    total = int(params.get('num_designs', 1)) if generation else source.get('candidate_count')
+    if source.get('candidate_set_manifest'):
+        from mn_molecular_design_studio.candidate_sets import iter_candidates
+        iterator = iter_candidates(source)
+    else:
+        rows = read_rows(source) if collection else []
+        iterator = iter(rows)
+        if not generation:
+            total = len(rows)
+    if total is None:
+        raise ValueError('Candidate collection must declare its count before sharding.')
     if total <= 0:
         return []
     directory = Path(parent) / 'candidate_batches' / node['id'] / key
     directory.mkdir(parents=True, exist_ok=True)
     batches = []
+    seen = set()
     seed = int(params.get('seed') or 0)
     if not seed:
         # Persisted scientific key -> stable positive seed on replay/retry.
@@ -130,8 +147,12 @@ def initialize(parent, node, source, params, key, settings, *, make_source, make
     for offset in range(0, total, settings['batch_size']):
         count = min(settings['batch_size'], total - offset)
         batch_id = f'b{offset:06d}'
-        selected = rows[offset:offset + count]
-        batch_source = make_source(parent, f'{node["id"]}_{batch_id}_inputs', selected, source.get('target')) if rows else source
+        selected = list(islice(iterator, count)) if collection else []
+        ids = [str(r.get('candidate_id') or '') for r in selected]
+        if collection and (len(selected) != count or not all(ids) or len(set(ids)) != len(ids) or seen.intersection(ids)):
+            raise ValueError('Candidate sharding requires nonempty unique input candidate IDs and an exact collection count.')
+        seen.update(ids)
+        batch_source = make_source(parent, f'{node["id"]}_{batch_id}_inputs', selected, source.get('target')) if collection else source
         effective = copy.deepcopy(params)
         if generation:
             effective['num_designs'] = count
@@ -145,8 +166,14 @@ def initialize(parent, node, source, params, key, settings, *, make_source, make
                 effective.pop('seed')
         request = make_request(node['data']['kind'], effective, batch_source, f'{node["data"]["label"]} · {batch_id}')
         manifest = dict(schema_version=1, pipeline=str(parent), node=node['id'], batch_id=batch_id,
-                        scientific_key=key, offset=offset, input_candidate_ids=ids[offset:offset + count],
+                        scientific_key=key, offset=offset, input_candidate_ids=ids,
                         unit_count=count, request=request, input_hashes=data_hashes(request), policy=settings)
+        if request['workflow'] == 'refolding.optimized_prediction':
+            prediction = request['parameters']
+            manifest['expected_outputs_per_input'] = int(prediction.get('samples', 1)) * int(prediction.get('engine_options', {}).get('seed_count', 1))
+            manifest['expected_output_count'] = count * manifest['expected_outputs_per_input']
+        if source.get('candidate_set_manifest'):
+            manifest['candidate_set_schema'] = 'studio.candidate-set.v1'
         manifest['sha256'] = digest(manifest)
         path = directory / f'{batch_id}.json'
         if path.exists():
@@ -156,6 +183,8 @@ def initialize(parent, node, source, params, key, settings, *, make_source, make
             atomic_json(path, manifest)
         batches.append(dict(batch_id=batch_id, offset=offset, unit_count=count, manifest=str(path),
                             manifest_sha256=manifest['sha256'], status='pending', attempts=[]))
+    if collection and next(iterator, None) is not None:
+        raise ValueError('Candidate collection contains more records than its declared count.')
     return batches
 
 
@@ -192,6 +221,12 @@ def collect(batch, output, *, read_rows):
     # order define identity; retain every original identity in provenance.
     mapping = {v: (v if v in inputs else f'{manifest["node"]}:{batch["batch_id"]}:{i:06d}')
                for i, v in enumerate(native_ids)}
+    if manifest.get('candidate_set_schema'):
+        # Native result ordering is not scientific identity. Run-local prefixes
+        # vary on retries; tool-specific output/sample suffixes remain explicit.
+        mapping = {native_id: native_id if native_id in inputs else 'cs_output_' + digest([
+            manifest['node'], manifest['scientific_key'], sorted(row.get('parents') or []),
+            native_id.removeprefix(Path(output['run_dir']).name)]) for row, native_id in zip(rows, native_ids)}
     attempt = batch['attempts'][-1]
     for row, native_id in zip(rows, native_ids):
         row['candidate_id'] = mapping[native_id]
@@ -208,27 +243,50 @@ def collect(batch, output, *, read_rows):
     batch['output_hashes'] = data_hashes(rows)
     accounted = {p for row in rows for p in row.get('parents', [])} | {row['candidate_id'] for row in rows}
     batch['missing_candidate_ids'] = sorted(inputs - accounted)
-    batch['completed_units'] = len(inputs & accounted) if inputs else batch['unit_count'] if rows else 0
+    expected = manifest.get('expected_outputs_per_input')
+    if expected is not None:
+        membership = {key: {'expected_outputs': expected, 'returned_outputs': 0, 'valid_outputs': 0} for key in inputs}
+        for row in rows:
+            represented = ({row['candidate_id']} | set(row.get('parents') or [])) & inputs
+            outcome = row.get('raw_metadata', {}).get('measurement_status', {})
+            outcome = outcome.get('status') if isinstance(outcome, dict) else outcome
+            valid = bool(row.get('complex_pdb') or row.get('binder_pdb')) and outcome not in {'error', 'failed', 'invalid', 'missing'}
+            for member in represented:
+                membership[member]['returned_outputs'] += 1
+                membership[member]['valid_outputs'] += valid
+        for values in membership.values():
+            values['status'] = 'completed' if values['valid_outputs'] >= expected else 'partial' if values['valid_outputs'] else 'missing'
+        batch['candidate_states'] = membership
+        batch['expected_output_count'] = manifest['expected_output_count']
+        batch['returned_output_count'] = len(rows)
+        batch['missing_output_count'] = sum(max(0, v['expected_outputs'] - v['valid_outputs']) for v in membership.values())
+    batch['returned_input_units'] = len(inputs & accounted) if inputs else batch['unit_count'] if rows else 0
+    batch['completed_units'] = (sum(value['status'] == 'completed' for value in batch['candidate_states'].values())
+                                if expected is not None else batch['returned_input_units'])
     batch['candidate_count'] = len(rows)
-    batch['status'] = 'partial' if batch['missing_candidate_ids'] else 'completed'
+    batch['status'] = 'partial' if batch['missing_candidate_ids'] or batch.get('missing_output_count') else 'completed'
     batch['completed_at'] = utc_now()
     return rows
 
 
-def aggregate(batches):
+def aggregate(batches, *, stream=False):
     """Stable input-batch ordering, refusing rather than dropping duplicate results."""
-    rows, seen = [], set()
-    for batch in sorted(batches, key=lambda b: b['offset']):
-        if batch['status'] not in {'completed', 'partial'}:
-            continue
-        if not output_valid(batch):
-            raise ValueError('Completed candidate artifacts failed their checksum verification.')
-        values = json.loads(Path(batch['rows_path']).read_text())
-        for row in values:
-            if row['candidate_id'] in seen:
-                raise ValueError('Duplicate candidate identity during batch aggregation.')
-            seen.add(row['candidate_id']); rows.append(row)
-    return rows
+    def rows():
+        from mn_molecular_design_studio.candidate_sets import index
+        with index() as db:
+            db.execute('CREATE TABLE seen (id TEXT PRIMARY KEY)')
+            for batch in sorted(batches, key=lambda b: b['offset']):
+                if batch['status'] not in {'completed', 'partial'}:
+                    continue
+                if not output_valid(batch):
+                    raise ValueError('Completed candidate artifacts failed their checksum verification.')
+                values = json.loads(Path(batch['rows_path']).read_text())
+                for row in values:
+                    if db.execute('SELECT 1 FROM seen WHERE id=?', (row['candidate_id'],)).fetchone():
+                        raise ValueError('Duplicate candidate identity during batch aggregation.')
+                    db.execute('INSERT INTO seen VALUES (?)', (row['candidate_id'],))
+                    yield row
+    return rows() if stream else list(rows())
 
 
 def progress(batches):
@@ -359,7 +417,7 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                 raise ValueError('Duplicate candidate submission receipt.')
             request = copy.deepcopy(manifest['request'])
             request['resources'] = dict(cpu_cores=settings['cpu_cores'], min_vram_gb=settings['min_vram_gb'], ram_gb=settings['ram_gb'])
-            selected_gpu = gpu_device
+            selected_gpu = settings.get('gpu_device', gpu_device)
             if str(selected_gpu) == 'all':
                 selected_gpu = 'auto'
                 if request['workflow'] == 'refolding.optimized_prediction':
@@ -404,15 +462,19 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
     if any(b['status'] not in TERMINAL for b in batches):
         return None
     failures = [b['batch_id'] for b in batches if b['status'] != 'completed']
-    rows = aggregate(batches)
-    output = graph._local_source(parent, node['id'] + '_batches', rows, source.get('target'))
-    if graph.NODE_CATALOG[node['data']['kind']]['category'] == 'Structure prediction':
+    if source.get('candidate_set_manifest'):
+        from mn_molecular_design_studio.candidate_sets import write_collection
+        output = write_collection(parent, node['id'] + '_batches', aggregate(batches, stream=True), source['target'])
+        output['collection_stage_pending'] = True
+    else:
+        output = graph._local_source(parent, node['id'] + '_batches', aggregate(batches), source.get('target'))
+    if not source.get('candidate_set_manifest') and graph.NODE_CATALOG[node['data']['kind']]['category'] == 'Structure prediction':
         output = graph._attach_refold_input_references(output, source, parent, node['id'])
     output['candidate_execution'] = dict(policy=settings, progress=progress(batches), missing_batches=failures)
     current['partial'] = bool(failures)
     if failures:
         current['error'] = 'Unsuccessful candidate batches: ' + ', '.join(failures)
-    return output, ('partial' if rows and settings['failure_policy'] == 'partial' else 'failed') if failures else 'completed'
+    return output, ('partial' if output['candidate_count'] and settings['failure_policy'] == 'partial' else 'failed') if failures else 'completed'
 
 
 def cancel(parent, state):

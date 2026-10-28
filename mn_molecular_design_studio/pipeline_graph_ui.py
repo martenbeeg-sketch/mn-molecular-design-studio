@@ -532,7 +532,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                             **{n['id']: cluster_config.display_name(n['name']) + ' · ' + n['availability'] for n in nodes}}
             placement = st.selectbox('Batch destination', list(destinations), format_func=destinations.get,
                 index=list(destinations).index(settings['placement']) if settings['placement'] in destinations else 0, key=prefix+'-batch-placement')
-            batch_size = st.number_input('Candidates per native batch', min_value=1, max_value=10000, value=settings['batch_size'], key=prefix+'-batch-size')
+            batch_size = st.number_input('Candidates per processing chunk', min_value=1, max_value=10000, value=settings['batch_size'], key=prefix+'-batch-size')
             in_flight = st.number_input('Maximum batches in flight', min_value=1, max_value=32, value=settings['max_in_flight'], key=prefix+'-batch-limit')
             cpu_cores = st.number_input('CPU threads per batch', min_value=1, max_value=256, value=settings['cpu_cores'], key=prefix+'-batch-cpu')
             ram = st.number_input('RAM per batch (GiB)', min_value=0., value=float(settings['ram_gb']), key=prefix+'-batch-ram')
@@ -555,6 +555,45 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
             st.dataframe([{'GPU': i, 'Model': g.get('name', ''), 'Free VRAM GiB': g.get('free_vram_gb'),
                            'Compute capability': g.get('compute_capability'), 'Utilization %': g.get('utilization_percent')}
                           for i, g in devices.items()], hide_index=True)
+    with st.expander("Branch and processing settings", expanded=False):
+        configurable = [n for n in graph['nodes'] if NODE_CATALOG[n['data']['kind']]['category'] in {'Design engine', 'Design pipeline', 'Structure prediction', 'Sequence design'}]
+        if configurable:
+            selected_id = st.selectbox('Pipeline branch or processing step', [n['id'] for n in configurable],
+                format_func=lambda value: next(n['data']['label'] + ' · ' + value for n in configurable if n['id'] == value),
+                key=prefix+'-processing-node-'+graph['id'])
+            selected = next(n for n in configurable if n['id'] == selected_id)
+            node_key = prefix + '-processing-' + graph['id'] + '-' + selected_id
+            data = selected['data']
+            category = NODE_CATALOG[data['kind']]['category']
+            if category in {'Design engine', 'Design pipeline', 'Structure prediction'}:
+                data['enabled'] = st.checkbox('Enable branch', value=data.get('enabled', True), key=node_key+'-enabled')
+                data['retained_run_dir'] = st.text_input('Reuse retained run from this project (optional)', value=data.get('retained_run_dir', ''), key=node_key+'-retained',
+                    help='Explicit read-only evidence reuse. Source native settings and hashes remain recorded; the tile controls apply to fresh execution.')
+            current_policy = candidate_execution.policy(data.get('execution', graph.get('candidate_execution')))
+            if candidate_execution.supports(data['kind'], {'candidates_jsonl': 'preview'}):
+                distribute = st.checkbox('Partition this step into processing chunks', value=current_policy['mode'] == 'sharded', key=node_key+'-sharded')
+                if distribute:
+                    current_policy['batch_size'] = int(st.number_input('Candidates per chunk for this step', min_value=1, max_value=10000, value=current_policy['batch_size'], key=node_key+'-size'))
+                    current_policy['max_in_flight'] = int(st.number_input('Maximum concurrent jobs for this step', min_value=1, max_value=32, value=current_policy['max_in_flight'], key=node_key+'-concurrency'))
+                    current_policy['mode'] = 'sharded'
+                else:
+                    current_policy['mode'] = 'native'
+                destinations = {'local': 'This workstation', 'auto': 'Automatic · eligible trusted workstations',
+                                **{n['id']: cluster_config.display_name(n['name']) + ' · ' + n['availability'] for n in nodes}}
+                current_policy['placement'] = st.selectbox('Workstation destination for this step', list(destinations), format_func=destinations.get,
+                    index=list(destinations).index(current_policy['placement']) if current_policy['placement'] in destinations else 0, key=node_key+'-placement')
+                selector = st.text_input('GPU selector for this step (blank = pipeline assignment)', value=current_policy.get('gpu_device', ''), key=node_key+'-gpu', help='Use auto, all, or explicit device indices such as 0 or 0,1. The existing scheduler verifies physical reservations.')
+                if selector.strip():
+                    current_policy['gpu_device'] = selector.strip()
+                else:
+                    current_policy.pop('gpu_device', None)
+                current_policy['cpu_cores'] = int(st.number_input('CPU cores per processing job', min_value=1, max_value=256, value=current_policy['cpu_cores'], key=node_key+'-cpu'))
+                current_policy['min_vram_gb'] = st.number_input('Minimum VRAM per GPU for this step (GiB)', min_value=0., value=float(current_policy['min_vram_gb']), key=node_key+'-vram')
+                data['execution'] = current_policy
+                st.caption('Collection chunks use the existing scheduler. Engine-native samples, sequence multiplicity and GPU microbatching remain in the tool controls. Per-step execution settings override the pipeline policy.')
+    with st.expander('Collection execution plan', expanded=False):
+        from mn_molecular_design_studio.candidate_pipeline import execution_plan
+        st.dataframe(execution_plan(graph), hide_index=True, use_container_width=True)
     with st.expander("Saved pipelines & versions", expanded=False):
         if definitions:
             saved = st.selectbox("Saved draft", definitions, format_func=lambda d:f"{d['graph']['name']} · {d['versions']} saved versions", key=prefix+"-saved")
@@ -589,6 +628,9 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                     previous_node = next((n for n in graph["nodes"] if n["id"] == component_node["id"]), {})
                     if previous_node.get("data", {}).get("execution"):
                         component_node["data"]["execution"] = copy.deepcopy(previous_node["data"]["execution"])
+                    for branch_option in ('enabled', 'retained_run_dir'):
+                        if branch_option in previous_node.get('data', {}):
+                            component_node['data'][branch_option] = copy.deepcopy(previous_node['data'][branch_option])
                 if graph.get("template_id") and not component_graph.get("template_id"):
                     component_graph["template_id"] = graph["template_id"]
                 if graph.get("task_configuration"):
@@ -663,3 +705,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                     st.dataframe(batch_rows, hide_index=True, use_container_width=True)
                 if execution.get("nodes"):
                     st.dataframe([{"Step": next((n["data"]["label"] for n in snapshot.get("nodes", []) if n["id"]==nid),nid), "Status": state.get("status"), "Job":state.get("job_code", ""), "Candidates":state.get("candidate_count"), "Detail":state.get("error", "")} for nid,state in execution["nodes"].items()], hide_index=True, use_container_width=True)
+                    stage_rows = [{'Step': nid, 'Stage count': name, 'Count': count} for nid, step in execution['nodes'].items()
+                                  for name, count in step.get('stage_counts', {}).items()]
+                    if stage_rows:
+                        st.dataframe(stage_rows, hide_index=True, use_container_width=True)

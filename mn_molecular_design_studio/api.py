@@ -597,6 +597,17 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
     graph = _call(clean_graph, request.get("graph"))
     _validate_user_path_values(graph, user, _request_directory(user, None))
     for node in graph["nodes"]:
+        if node["data"].get("retained_run_dir") and node["data"].get("enabled", True):
+            from mn_molecular_design_studio.candidate_pipeline import retained_source
+            retained_path = resolve_stored_path(node["data"]["retained_run_dir"], must_exist=True)
+            if retained_path is None:
+                raise HTTPException(status_code=422, detail="Retained evidence is unavailable.")
+            source_reference = f"{retained_path.parent.name}/{retained_path.name}"
+            _guard_source_job({"source_job": source_reference}, user, project_id=project_id)
+            source_job = _resolve_api_job(source_reference, user)
+            if Path(source_job["run_dir"]).resolve() != retained_path.resolve():
+                raise HTTPException(status_code=422, detail="Choose the exact managed retained run.")
+            _call(retained_source, node, project_id)
         if node["data"]["kind"] in {"design_source","generation_source","backbone_source","molecule_source","project_design_source"} and node["data"]["params"].get("source_run_dir"):
             params = node["data"]["params"]
             _guard_source_job({"parameters": {"validation_sources": [{"source_run_dir": params["source_run_dir"]}]}}, user, project_id=project_id)
@@ -607,6 +618,8 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
     if runnable:
         plan = _call(validate_graph, graph, require_inputs=True)
         graph = plan["graph"]
+        from mn_molecular_design_studio.candidate_pipeline import preflight
+        _call(preflight, graph, plan, project_id)
         from mn_molecular_design_studio.rfdiffusion3_input import inventory
         for node in graph["nodes"]:
             if node["data"]["kind"] != "target":
@@ -646,6 +659,8 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
             target_contexts[node_id] = target
         for node in graph["nodes"]:
             kind = node["data"]["kind"]
+            if node["data"].get("enabled") is False or node["data"].get("retained_run_dir"):
+                continue
             if NODE_CATALOG[kind]["category"] not in {"Design engine", "Design pipeline"} and kind != "surface_analysis":
                 continue
             parents=plan["incoming"][node["id"]]
@@ -696,7 +711,9 @@ def validate_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any] 
     payload = dict(request, project_id=project_id)
     graph, _, _ = _pipeline_payload(payload, user, runnable=True)
     plan = _call(validate_graph, graph, require_inputs=True)
-    return {"valid": True, "order": plan["order"], "node_count": len(graph["nodes"]), "connection_count": len(graph["edges"])}
+    from mn_molecular_design_studio.candidate_pipeline import execution_plan
+    return {"valid": True, "order": plan["order"], "node_count": len(graph["nodes"]), "connection_count": len(graph["edges"]),
+            "collection_execution_plan": execution_plan(graph)}
 
 
 @app.post("/api/v1/pipelines/run", status_code=202)

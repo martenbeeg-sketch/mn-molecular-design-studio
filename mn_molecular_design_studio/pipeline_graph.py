@@ -624,7 +624,35 @@ for _engine, _metadata in inverse_folding_input.ENGINES.items():
         accepts=["target", "backbone", "sequence", "prediction"], output="sequence", workflow=inverse_folding_input.WORKFLOWS[_engine],
         fields=inverse_folding_input.canvas_fields(_engine), color="#a88845")
 
+# Generic collection sockets use the existing normalized-candidate transport.
+NODE_CATALOG.update({
+    "candidate_merge": _spec("candidate_merge", "Candidate collection", "Collection", "Merge native outputs without replacing sequences or deleting scientific histories.",
+        accepts=["backbone", "sequence", "prediction", "candidates"], output="candidates", fields=[
+            field("deduplication", "Sequence deduplication", "mark_duplicates", kind="select", options=["keep_all", "mark_duplicates"], section="basic")]),
+    "shared_filter": _spec("shared_filter", "Shared scientific filters", "Collection", "Keep every decision; route sequence-ready, eligible variants to prediction.",
+        accepts=["candidates", "sequence", "prediction"], output="sequence", fields=[
+            field("rules", "Scientific threshold rules", [], kind="json", section="basic"),
+            field("exclude_native_rejected", "Exclude native-rejected designs from independent prediction", True, kind="boolean", section="basic")]),
+    "candidate_analyzer": _spec("candidate_analyzer", "Unified candidate analyzer", "Collection", "Join independent predictor evidence to exact sequence variants, with explicit missing measurements.",
+        accepts=["candidates", "sequence", "prediction"], output="candidates", fields=[
+            field("calculate_self_consistency", "Calculate target-aligned binder pose RMSD when a reference exists", False, kind="boolean", section="basic")]),
+    "candidate_rank": _spec("candidate_rank", "Ranking and diversity", "Collection", "Rank declared measurements within comparable protocols; retain unselected and unresolved records.",
+        accepts=["candidates"], output="candidates", fields=[
+            field("rules", "Scientific threshold rules", [], kind="json", section="basic"),
+            field("ranking_rules", "Ordered ranking measurements", [], kind="json", section="basic"),
+            field("limit", "Selected candidates per comparable protocol (0 = unlimited)", 0, minimum=0, maximum=10000, section="basic"),
+            field("unique_sequences", "Select one representative per exact sequence and protocol", True, kind="boolean", section="basic")]),
+})
+for _kind in ("candidate_merge", "candidate_analyzer"):
+    NODE_CATALOG[_kind]["inputs"][0]["multiple"] = True
+for _kind, _specification in NODE_CATALOG.items():
+    if _specification["category"] in {"Sequence design", "Structure prediction"}:
+        for _socket in _specification["inputs"]:
+            if "candidates" not in _socket["accepts"]:
+                _socket["accepts"].append("candidates")
+
 TEMPLATE_REFERENCES={
+    'multi_generator_binder': ('https://www.anthropic.com/research/claude-scorpion-toxin-binder-design', 'General composition inspired by Figure 2: complete native generators, conditional initial ProteinMPNN, independent predictors and consolidated scientific evidence. No paper-specific target, campaign, thresholds or autonomous agent is reproduced.'),
     'peptide_trap': ('https://doi.org/10.1038/s41589-024-01578-5', 'Published peptide-trap scaffolds → burial-pattern matching and threading → Rosetta interface redesign → AlphaFold2 Initial Guess → Rosetta interface analysis. Uses the authors’ archived models and an adaptation of their deposited FastDesign/FastRelax protocol. C37 and the complete C104.1 model are available initially. Initial scaffold generation, hairpin retargeting and the paper’s complete selection procedure are not reproduced.'),
     'kejia_idr': ('https://github.com/drhicks/Kejia_peptide_binders', 'Kejia template threading and flexible peptide docking → ProteinMPNN → AlphaFold2 multimer with a whole-complex initial guess. This starter uses five sequences per backbone and five AF2 models. Native Kejia threading is reused; downstream Studio implementations replace the upstream cluster scripts. Iterative redesign, clustering and the modified diffusion refinement branch are not included automatically.'),
     'unidock_active_learning':('https://github.com/Novartis/OpenVS','Active-learning study template inspired by OpenVS: an independent centroid sample, configurable docking engine, cumulative score ranking, changing binder percentage, a 1024-bit/3000-node classifier, prediction across the compound library, and selection of predicted hits plus random exploration.'),
@@ -683,6 +711,9 @@ ACTIVE_LEARNING_LAYOUT = {
 
 
 def new_graph(template="foundry") -> dict[str, Any]:
+    if template == "multi_generator_binder":
+        from mn_molecular_design_studio.candidate_pipeline import new_pipeline
+        return clean_graph(new_pipeline())
     from mn_molecular_design_studio.scientific_tasks import TASKS, new_task_graph
     if template in TASKS:
         return new_task_graph(template)
@@ -1348,6 +1379,12 @@ def clean_graph(graph: dict) -> dict:
         if description is not None and not isinstance(description, str):
             raise ValueError("Node descriptions must be text.")
         node_data = {"kind": kind, "label": str(data.get("label") or NODE_CATALOG[kind]["label"])[:100], "params": params}
+        if "enabled" in data or "retained_run_dir" in data:
+            if NODE_CATALOG[kind]["category"] not in {"Design engine", "Design pipeline", "Structure prediction"}:
+                raise ValueError("Branch controls apply to generator and predictor nodes only.")
+            if type(data.get("enabled", True)) is not bool or not isinstance(data.get("retained_run_dir", ""), str):
+                raise ValueError("Branch enabled must be boolean and retained_run_dir must be a path string.")
+            node_data.update(enabled=data.get("enabled", True), retained_run_dir=data.get("retained_run_dir", ""))
         if "execution" in data:
             from mn_molecular_design_studio.candidate_execution import policy
             node_data["execution"] = policy(data["execution"])
@@ -1456,6 +1493,9 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
     for node_id in order:
         kind = nodes[node_id]["data"]["kind"]
         spec = NODE_CATALOG[kind]
+        from mn_molecular_design_studio.candidate_sets import KINDS, validate_settings
+        if kind in KINDS:
+            validate_settings(kind, nodes[node_id]["data"]["params"])
         if kind == "filter":
             from mn_molecular_design_studio.candidate_selection import selection_policy
             selection_policy(nodes[node_id]["data"]["params"])
@@ -1483,6 +1523,14 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
         output_formats[node_id] = output_formats[incoming[node_id][0]] if kind == "filter" and incoming[node_id] else spec["formats"]
     for node_id, node in nodes.items():
         kind = node["data"]["kind"]
+        from mn_molecular_design_studio.candidate_execution import policy, supports
+        execution = policy(node["data"].get("execution", graph.get("candidate_execution")))
+        if (execution["mode"] == "sharded" and "execution" in node["data"]
+                and not supports(kind, {"candidates_jsonl": "preflight"}) and kind not in KINDS
+                and kind not in {"target", "binder_context", "results"}):
+            raise ValueError(f"{node['data']['label']} has no collection-sharding adapter; use native execution.")
+        if node["data"].get("enabled") is False:
+            continue
         if NODE_CATALOG[kind]["inputs"] and not incoming[node_id] and not NODE_CATALOG[kind]["inputs"][0].get("optional"):
             raise ValueError(f"Connect an input to {node['data']['label']}.")
         if kind not in {"results", "active_results"} and not any(e["source"] == node_id for e in graph["edges"]):
@@ -1702,7 +1750,7 @@ LEGACY_STARTER_TEMPLATES = {"Active-learning docking": "unidock_active_learning"
 # Navigation changes do not migrate or reinterpret saved graphs. All former IDs,
 # hidden native recipes and generated-result handoffs remain constructible.
 from mn_molecular_design_studio.scientific_tasks import TASKS
-STARTER_TEMPLATES = {spec['label']: key for key, spec in TASKS.items()} | {"Blank canvas": "blank"}
+STARTER_TEMPLATES = {spec['label']: key for key, spec in TASKS.items()} | {"Multi-Generator Binder Design & Evaluation": "multi_generator_binder", "Blank canvas": "blank"}
 SUPPORTED_TEMPLATE_IDS = (set(LEGACY_STARTER_TEMPLATES.values()) | set(STARTER_TEMPLATES.values())
                           | {'bindcraft2', 'boltzgen', 'complexa', 'rfdiffusion_beta_pairing'}
                           | {key + '_generated' for key in ('complexa', 'rfdiffusion', 'genie3', 'pxdesign',

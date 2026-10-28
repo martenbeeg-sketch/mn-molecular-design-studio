@@ -517,7 +517,7 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
         else:
             options=json.loads(p.pop("options_json","{}"))
             if not isinstance(options,dict): raise ValueError("RFD4 task options must be a JSON object.")
-            p["options"]={**options,"refold":False}
+            p["options"]={"refold":False,**options}
             p["input_files"]=[x.strip() for x in str(p.get("input_files") or "").splitlines() if x.strip()]
             chains=target.get("target_chains") or []
             p["target_chains"]=[x for x in re.split(r"[,;\s]+",chains) if x] if isinstance(chains,str) else chains
@@ -830,9 +830,12 @@ def _child_output(child: Path, target: dict) -> dict:
     candidate_path = child / "artifacts" / "normalized_candidates" / "candidates.jsonl"
     if not candidate_path.is_file():
         raise ValueError(f"Job {child.name} completed without a candidate collection.")
-    candidates = read_candidates(candidate_path)
+    from mn_molecular_design_studio import candidate_sets
+    candidates = list(candidate_sets.iter_candidates(dict(run_dir=str(child), candidates_jsonl=str(candidate_path))))
+    provenance = dict(input=read_json(child / "input.json"), metadata=read_json(child / "metadata.json"),
+                      result_metrics=read_json(child / "result.json").get("metrics", {}))
     params=read_json(child/'input.json').get('params',{})
-    if params.get('generator_only'):
+    if params.get('generator_only') and not target.get('identity'):
         target=_generation_target(params)
     # Bundled tools retain intermediate stage records; the next node receives
     # only final outputs, rather than redesigning/refolding all three pools.
@@ -840,8 +843,11 @@ def _child_output(child: Path, target: dict) -> dict:
     if final and len(final) != len(candidates):
         output = _local_source(child, "final_outputs", _absolute_candidates({"run_dir": str(child), "candidates_jsonl": str(candidate_path)}), target)
         rows = [c for c in _absolute_candidates(output) if c.get("metrics", {}).get("candidate_pool_level") == "native_pipeline"]
-        return _local_source(child, "final_outputs", rows, target)
-    return {"run_dir": str(child), "candidates_jsonl": str(candidate_path), "target": target, "candidate_count": len(candidates)}
+        output = _local_source(child, "final_outputs", rows, target)
+        output.update(review_candidates_jsonl=str(candidate_path), source_run_id=child.name, source_provenance=provenance)
+        return output
+    return {"run_dir": str(child), "candidates_jsonl": str(candidate_path), "target": target, "candidate_count": len(candidates),
+            "source_run_id": child.name, "source_provenance": provenance, "stage_counts": candidate_sets.native_counts(provenance)}
 
 
 def _attach_refold_input_references(output: dict, source: dict, parent: Path, node_id: str) -> dict:
@@ -871,7 +877,11 @@ def _attach_refold_input_references(output: dict, source: dict, parent: Path, no
             "source_candidate_id": str(reference.get("candidate_id") or ""),
         }
         row["raw_metadata"] = raw
-    return _local_source(parent, f"{node_id}_pose_inputs", rows, output.get("target"))
+    result = _local_source(parent, f"{node_id}_pose_inputs", rows, output.get("target"))
+    for key in ("source_run_id", "source_provenance", "candidate_execution", "partial_pool"):
+        if key in output:
+            result[key] = output[key]
+    return result
 
 
 def _add_target_aligned_pose_rmsd(candidate: dict, parent: Path) -> dict:
@@ -947,7 +957,9 @@ def _cache_valid(output: dict) -> bool:
         root = _path(output["run_dir"])
         if read_json(root / "metadata.json").get("status") != "completed" or read_json(root / "result.json").get("success") is not True:
             return False
-        for row in _absolute_candidates(output):
+        from mn_molecular_design_studio.candidate_sets import iter_candidates
+        rows = iter_candidates(output) if output.get("candidate_set_manifest") else _absolute_candidates(output)
+        for row in rows:
             structure = row.get("complex_pdb") or row.get("binder_pdb")
             if structure and not Path(structure).is_file():
                 return False
@@ -990,7 +1002,10 @@ def cancel_graph_children(run_dir: Path) -> None:
 
 def enqueue_graph_pipeline(graph: dict, *, pipeline_name: str, owner_id: str, project_id: str, reuse_completed=True, gpu_device="all") -> Path:
     from mn_molecular_design_studio.engine.workflow_engine.core.workflow_queue import enqueue_workflow_call
-    graph = validate_graph(graph, require_inputs=True)["graph"]
+    plan = validate_graph(graph, require_inputs=True)
+    graph = plan["graph"]
+    from mn_molecular_design_studio.candidate_pipeline import preflight
+    preflight(graph, plan, project_id)
     if graph.get("template_id") == "unidock_active_learning":
         from mn_molecular_design_studio.engine.workflow_engine.workflows.active_learning_controller import run_active_learning_pipeline
         from mn_molecular_design_studio.collection_policy import collection_scope
@@ -1008,12 +1023,14 @@ def enqueue_graph_pipeline(graph: dict, *, pipeline_name: str, owner_id: str, pr
 def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_id: str, reuse_completed: bool = True, gpu_device: str = "all") -> Path:
     plan = validate_graph(graph, require_inputs=True)
     graph = plan["graph"]
+    from mn_molecular_design_studio.candidate_pipeline import preflight
+    preflight(graph, plan, project_id)
     job = create_job("campaign", "visual_pipeline", "visual_pipeline", {}, {"pipeline_name": pipeline_name, "graph": graph, "reuse_completed": reuse_completed, "gpu_device": "none"})
     parent = job.run_dir
     from mn_molecular_design_studio.workspace import mark_studio_job
     mark_studio_job({"job": {"run_dir": str(parent)}}, owner_id=owner_id, project_id=project_id)
     snapshot = parent / "graph_snapshot.json"
-    if snapshot.exists() and read_json(snapshot) != graph:
+    if snapshot.exists() and json.loads(snapshot.read_text()) != graph:
         raise ValueError("A submitted pipeline snapshot cannot be edited. Submit the changed draft as a new run.")
     if not snapshot.exists():
         with snapshot.open("x") as handle:
@@ -1038,6 +1055,13 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                 pending.extend(plan["incoming"][ancestor])
         return ancestors
     def complete(node_id, output, key, status="completed"):
+        from mn_molecular_design_studio import candidate_sets
+        category = NODE_CATALOG[nodes[node_id]["data"]["kind"]]["category"]
+        source_parents = [outputs[p] for p in plan['incoming'][node_id] if p in outputs]
+        has_stage = category in {"Sequence design", "Structure prediction"} or category == "Analysis" and NODE_CATALOG[nodes[node_id]["data"]["kind"]].get("workflow")
+        if output.get("candidates_jsonl") and source_parents and has_stage and not output.get("disabled"):
+            output = candidate_sets.attach_stage(parent, node_id, output, source_parents[0], category=category,
+                scientific_key=key, settings=nodes[node_id]["data"]["params"])
         from mn_molecular_design_studio.candidate_execution import inherit_partial_pool
         pool = inherit_partial_pool(output, [outputs[p] for p in plan['incoming'][node_id] if p in outputs],
                                     missing_branches=node_states.get(node_id, {}).get('missing_branches', []))
@@ -1045,10 +1069,13 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
             output['partial_pool'] = pool
             node_states.setdefault(node_id, {})['partial'] = True
         from mn_molecular_design_studio.cache_provenance import referenced_files
-        output["content_manifest"] = referenced_files({k: output.get(k) for k in
-            ("candidates_jsonl", "review_candidates_jsonl", "target", "molecule_task", "analysis_runs", "analysis_run")}, base=output.get("run_dir"))
+        from mn_molecular_design_studio.candidate_execution import data_hashes
+        hash_files = (lambda value, **_: data_hashes(value)) if output.get("candidate_set_manifest") else referenced_files
+        output["content_manifest"] = hash_files({k: output.get(k) for k in
+            ("candidates_jsonl", "review_candidates_jsonl", "candidate_set_manifest", "target", "molecule_task", "analysis_runs", "analysis_run")}, base=output.get("run_dir"))
         if output.get("candidates_jsonl"):
-            output["content_manifest"].update(referenced_files(_absolute_candidates(output), base=output.get("run_dir")))
+            for candidate in candidate_sets.iter_candidates(output):
+                output["content_manifest"].update(hash_files(candidate, base=output.get("run_dir")))
         if output.get("review_candidates_jsonl"):
             output["review_digest"] = file_digest(Path(output["review_candidates_jsonl"]))
         output["fingerprint"] = fingerprint(key, {"candidate_digest": file_digest(Path(output["candidates_jsonl"])),
@@ -1056,6 +1083,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
             **({'partial_pool': output['partial_pool']} if output.get('partial_pool') else {})}, []) if output.get("candidates_jsonl") else key
         outputs[node_id] = output
         node_states.setdefault(node_id, {}).update(status=status, output=output, fingerprint=key, candidate_count=output.get("candidate_count", 0), completed_at=utc_now())
+        if output.get("stage_counts"):
+            node_states[node_id]["stage_counts"] = output["stage_counts"]
+        if node_states[node_id].get("batches") is not None:
+            node_states[node_id].setdefault("stage_counts", {})["processing_jobs"] = len(node_states[node_id]["batches"])
         analyses = [*(output.get("analysis_runs") or []), *([output["analysis_run"]] if output.get("analysis_run") else [])]
         if (output.get("candidates_jsonl") or output.get("analysis_run", {}).get("success")) and all(a.get("success") for a in analyses) and status not in {"cached", "partial", "failed"} and not output.get('partial_pool') and not output.get('candidate_execution', {}).get('missing_batches'):
             write_json(cache_root / f"{key}.json", {"output": output})
@@ -1119,6 +1150,57 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     kind, params = node["data"]["kind"], node["data"]["params"]
                     upstream = [outputs[p] for p in parents]
                     source = upstream[0] if upstream else {}
+                    from mn_molecular_design_studio import candidate_sets, candidate_pipeline
+                    if node["data"].get("enabled") is False:
+                        key = fingerprint(kind, {"enabled": False}, [o["fingerprint"] for o in upstream])
+                        output = _local_source(parent, node_id + "_disabled", [], source.get("target"))
+                        output["disabled"] = True
+                        complete(node_id, output, key, "skipped"); progressed = True; continue
+                    if node["data"].get("retained_run_dir"):
+                        retained = candidate_pipeline.retained_source(node, project_id)
+                        key = fingerprint(kind, {"retained_run": retained, "retained_digest": file_digest(Path(retained["candidates_jsonl"])),
+                            "adapter_digest": file_digest(Path(candidate_pipeline.__file__))}, [o["fingerprint"] for o in upstream])
+                        cached = read_json(cache_root / f"{key}.json").get("output") if reuse_completed else None
+                        output = cached if cached and _cache_valid(cached) else candidate_pipeline.replay(parent, node, source, retained, key)
+                        complete(node_id, output, key, "cached" if output is cached else "completed")
+                        progressed = True; continue
+                    if kind in candidate_sets.KINDS or kind == "results" and source.get("candidate_set_manifest"):
+                        expected = {p: dict(kind=nodes[p]["data"]["kind"], enabled=nodes[p]["data"].get("enabled", True),
+                                             retained=bool(nodes[p]["data"].get("retained_run_dir")),
+                                             status=node_states.get(p, {}).get("status"), params=nodes[p]["data"]["params"])
+                                    for p in plan["incoming"][node_id] if NODE_CATALOG[nodes[p]["data"]["kind"]]["category"] == "Structure prediction"}
+                        key = fingerprint(kind, {**params, "adapter_digest": file_digest(Path(candidate_sets.__file__)),
+                                                 "expected_predictors": expected}, [o["fingerprint"] for o in upstream])
+                        cached = read_json(cache_root / f"{key}.json").get("output") if reuse_completed else None
+                        if cached and _cache_valid(cached):
+                            complete(node_id, cached, key, "cached"); progressed = True; continue
+                        sources = list(zip(parents, upstream))
+                        if kind == "candidate_merge":
+                            output = candidate_sets.merge(parent, node_id, sources, params)
+                        elif kind == "shared_filter":
+                            output = candidate_sets.shared_filter(parent, node_id, source, params)
+                        elif kind == "candidate_analyzer":
+                            output = candidate_sets.analyze(parent, node_id, sources, params, expected)
+                        elif kind == "candidate_rank":
+                            output = candidate_sets.rank(parent, node_id, source, params)
+                        else:
+                            output = candidate_sets.write_collection(parent, node_id, candidate_sets.iter_candidates(source, review=True), source["target"])
+                        complete(node_id, output, key); progressed = True; continue
+                    if kind in {"ligandmpnn", "foundry_mpnn"} and source.get("candidate_set_manifest"):
+                        original_source = source
+                        source = candidate_sets.sequence_inputs(parent, node_id, source, params)
+                        if source.get("candidate_count") == 0:
+                            key = fingerprint(kind, {**params, "preserve_native_sequences": True,
+                                "adapter_digest": file_digest(Path(candidate_sets.__file__))}, [o["fingerprint"] for o in upstream])
+                            cached = read_json(cache_root / f"{key}.json").get("output") if reuse_completed else None
+                            output = cached if cached and _cache_valid(cached) else candidate_sets.write_collection(parent, node_id + "_preserved", candidate_sets.iter_candidates(original_source), source["target"])
+                            complete(node_id, output, key, "cached" if output is cached else "completed"); progressed = True; continue
+                    if source.get("candidate_set_manifest") and source.get("candidate_count") == 0:
+                        key = fingerprint(kind, {**params, "empty_collection": True}, [o["fingerprint"] for o in upstream])
+                        output = candidate_sets.write_collection(parent, node_id + "_empty", [], source["target"])
+                        if settings["mode"] == "sharded":
+                            current.update(batches=[], candidate_progress=candidate_execution.progress([]))
+                        complete(node_id, output, key, "skipped"); progressed = True; continue
                     if kind in {"ligandmpnn", "foundry_mpnn", "sabr", "abmpnn"} and len(upstream) > 1:
                         merged_rows = []
                         merged_target = next((item.get("target") for item in upstream if item.get("target")), {})
@@ -1304,6 +1386,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             shutil.copy2(target_path, staged_target)
                         output = {"target": {"target_pdb": str(staged_target), "target_chains": chains,
                                              "hotspots": params["hotspots"], "coldspots": params.get("coldspots", "")}}
+                        if any(n["data"]["kind"] in candidate_sets.KINDS for n in nodes.values()):
+                            output["target"]["identity"] = candidate_sets.target_identity(output["target"])
                         complete(node_id, output, key);progressed=True;continue
                     if kind == 'cofold_input':
                         task = {key: copy.deepcopy(params.get(key, '')) for key in (
@@ -1393,6 +1477,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             for row in rows:
                                 row.setdefault('raw_metadata', {})['partial_pool'] = dict(missing_branches=missing, candidate_batches=partial_batches)
                         output = _local_source(parent, node_id, rows, source.get("target"), analysis_runs if kind == "results" else [], final_evidence=kind == "results")
+                        if kind == "filter" and source.get("candidate_set_manifest"):
+                            output = candidate_sets.write_collection(parent, node_id, rows, source["target"])
                         if missing or partial_batches:
                             output['partial_pool'] = dict(missing_branches=missing, candidate_batches=partial_batches)
                             current['partial'] = True
@@ -1440,7 +1526,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     if source.get("candidates_jsonl") and not source.get("candidate_count"):
                         complete(node_id, _local_source(parent, node_id, [], source.get("target")), key, "skipped");progressed=True;continue
                     request = node_request(kind, params, source, f"{pipeline_name} · {node['data']['label']}")
-                    child = _submit(request, parent, node, owner_id=owner_id, project_id=project_id, gpu_device=gpu_device)
+                    child = _submit(request, parent, node, owner_id=owner_id, project_id=project_id, gpu_device=settings.get('gpu_device', gpu_device))
                     metadata = read_json(child / "metadata.json")
                     current.update(status="queued", job_run_dir=str(child), job_code=metadata.get("job_code"), fingerprint=key, started_at=utc_now())
                     persist();progressed=True
@@ -1468,7 +1554,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                 continue
             ancestors = ancestors_of(node_id)
             for candidate in _absolute_candidates(output) if output.get("candidates_jsonl") else []:
-                candidate["candidate_id"] = f"{node_id}:{candidate['candidate_id']}"
+                if not output.get("candidate_set_manifest"):
+                    candidate["candidate_id"] = f"{node_id}:{candidate['candidate_id']}"
                 candidate.setdefault("raw_metadata", {})["pipeline_result_node"] = node_id
                 if graph.get("task_configuration"):
                     candidate["raw_metadata"]["pipeline_task"] = graph["task_configuration"].get("task_id")
@@ -1481,6 +1568,9 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         if NODE_CATALOG[nodes[ancestor]["data"]["kind"]]["category"] in
                         {"Design engine", "Design pipeline", "Structure prediction", "Sequence design"}]
                 candidates.append(candidate)
+            if output.get("candidate_set_manifest"):
+                from mn_molecular_design_studio.candidate_sets import export_collection
+                export_collection(parent, output, graph, node_states)
         write_candidates(parent, "visual_pipeline", candidates)
         from mn_molecular_design_studio.output_vocabulary import evidence_rows
         import pandas as pd

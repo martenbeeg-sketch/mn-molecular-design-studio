@@ -142,6 +142,22 @@ def render_task_setup(prefix):
                 return graph
             except (ValueError, TypeError, KeyError) as exc:
                 st.error(str(exc))
+    with st.expander("Multi-Generator Binder Design & Evaluation"):
+        st.caption("Compose complete native generator workflows, conditional sequence preparation, shared filtering and independent predictor branches.")
+        generators = [kind for kind, spec in NODE_CATALOG.items() if spec["category"] in {"Design engine", "Design pipeline"} and not spec.get("hidden")
+                      and any("target" in socket["accepts"] for socket in spec["inputs"])]
+        predictors = [kind for kind, spec in NODE_CATALOG.items() if spec["category"] == "Structure prediction" and not spec.get("hidden")]
+        selected_generators = st.multiselect("Generator branches", generators, default=["rfd4", "bindcraft2"],
+            format_func=lambda kind: NODE_CATALOG[kind]["label"], key=prefix + "-multi-generators")
+        selected_predictors = st.multiselect("Independent predictor branches", predictors, default=["boltz2", "prediction_protenix_v2"],
+            format_func=lambda kind: NODE_CATALOG[kind]["label"], key=prefix + "-multi-predictors")
+        st.caption("The first predictor starts enabled. Enable additional branches and set each processing chunk/concurrency in Branch and processing settings.")
+        if st.button("Create multi-generator pipeline", key=prefix + "-create-multi"):
+            from mn_molecular_design_studio.candidate_pipeline import new_pipeline
+            try:
+                return new_pipeline(selected_generators, selected_predictors)
+            except (ValueError, KeyError) as exc:
+                st.error(str(exc))
     with st.expander("Legacy recipes and continuation compatibility"):
         st.caption("Saved graphs and existing candidate handoffs retain their original stages. Engines are also available from the canvas node library and Tools.")
         legacy = st.selectbox("Legacy recipe", list(LEGACY_STARTER_TEMPLATES), key=prefix + "-legacy")
