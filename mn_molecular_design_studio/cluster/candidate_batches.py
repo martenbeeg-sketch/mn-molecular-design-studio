@@ -16,10 +16,12 @@ from . import bundles, capabilities, config
 from .store import Store
 
 
-def actor(owner_id, project_id):
+def actor(owner_id, project_id, *, allow_development=False):
     from mn_molecular_design_studio import auth
     user = next((u for u in auth.list_users() if u['id'] == owner_id and not u.get('disabled')), None)
-    if user is None and auth.is_development_mode() and owner_id == auth.development_user()['id']:
+    # API-created development-user jobs can run later under the scheduler's
+    # environment, which may not inherit the API's development-mode setting.
+    if user is None and allow_development and owner_id == auth.development_user()['id']:
         user = auth.development_user()
     if user is None:
         raise PermissionError('The candidate pipeline account is unavailable.')
@@ -111,10 +113,11 @@ def pack_request(request, destination):
     return prepared, checksum, sorted(refs), total
 
 
-def submit(request, manifest, submission_key, settings, *, owner_id, project_id, state, persist=None):
+def submit(request, manifest, submission_key, settings, *, owner_id, project_id, state, persist=None,
+           allow_development=False):
     if config.load()['mode'] not in {'peer', 'coordinator'}:
         raise ValueError('Candidate peer dispatch requires an enrolled peer or coordinator origin.')
-    user = actor(owner_id, project_id)
+    user = actor(owner_id, project_id, allow_development=allow_development)
     if 'prepared_envelope' not in state:
         prepared, checksum, references, size = pack_request(request, Path(manifest).with_suffix('.inputs.zip'))
         needs = capabilities.requirements(request, references=references)
@@ -176,9 +179,9 @@ def _artifact(state, job_id, relative, user, directory):
     return path
 
 
-def poll(batch, *, owner_id, project_id):
+def poll(batch, *, owner_id, project_id, allow_development=False):
     """Return a local verified snapshot only after every candidate file arrives."""
-    user = actor(owner_id, project_id)
+    user = actor(owner_id, project_id, allow_development=allow_development)
     store = Store()
     job = store.job(batch['cluster_job_id'], user)
     batch['worker'] = job.get('node_id')
@@ -255,5 +258,8 @@ def poll(batch, *, owner_id, project_id):
                          'candidate_count': len(rows)}, job | {'metadata': metadata}
 
 
-def cancel(batch, *, owner_id, project_id):
-    return Store().action(batch['cluster_job_id'], 'cancel', {}, actor(owner_id, project_id))
+def cancel(batch, *, owner_id, project_id, allow_development=False):
+    return Store().action(
+        batch['cluster_job_id'], 'cancel', {},
+        actor(owner_id, project_id, allow_development=allow_development),
+    )

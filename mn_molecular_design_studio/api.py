@@ -520,7 +520,10 @@ def submit_workflow(
         # start. Distributed child submissions can race the post-submit
         # project marker written below, so they read these tags from metadata.
         from mn_molecular_design_studio.engine.workflow_engine.core.jobs import submission_tags
-        with submission_tags(studio_owner_id=str(user["id"]), studio_project_id=project_id):
+        with submission_tags(
+            studio_owner_id=str(user["id"]), studio_project_id=project_id,
+            studio_development_mode=is_development_mode(),
+        ):
             result = _with_request_file(request_payload, submit_workflow_request, base_dir=str(request_dir))
         return mark_studio_job(result, project_id=project_id, owner_id=str(user["id"]))
     return _submit_once(request_payload, project_id, user, "workflow", idempotency_key, perform)

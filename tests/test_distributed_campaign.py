@@ -163,7 +163,9 @@ def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worke
     jobs.write_json(parent / "artifacts/rfd4_proteina/request.json", {
         "target_structure": "/work/artifacts/rfd4_proteina/input/PD-L1.pdb.cif",
     })
-    jobs.write_json(parent / "metadata.json", {"studio_owner_id": "owner", "studio_project_id": "project"})
+    jobs.write_json(parent / "metadata.json", {
+        "studio_owner_id": "owner", "studio_project_id": "project", "studio_development_mode": True,
+    })
     campaign_config = distributed_campaign.validate_campaign_config({
         "generator_id": "rfd4_proteina", "accepted_target": 1, "max_attempts": 1,
         "acceptance_level": "validated",
@@ -192,12 +194,13 @@ def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worke
     )
     submissions = []
 
-    def submit(request, manifest, submission_key, settings, *, owner_id, project_id, state, persist):
+    def submit(request, manifest, submission_key, settings, *, owner_id, project_id, state, persist, allow_development):
         assert request["workflow"] == "design.rfd4_proteina"
         assert request["parameters"]["gpu_device"] == "auto"
         assert request["resources"]["gpu_device"] == "auto"
         assert settings["placement"] == "auto"
         assert owner_id == "owner" and project_id == "project"
+        assert allow_development is True
         assert submission_key == state["submission_key"]
         state["prepared_envelope"] = {"idempotency_key": submission_key}
         persist()
@@ -219,13 +222,77 @@ def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worke
     assert metadata["cluster_job_id"] == "cluster-job"
 
 
+def test_candidate_batch_actor_can_restore_api_development_identity_in_scheduler_worker(monkeypatch):
+    from mn_molecular_design_studio import auth
+    from mn_molecular_design_studio.cluster import candidate_batches, service
+
+    development_user = auth.development_user()
+    monkeypatch.setattr(auth, "list_users", lambda: [])
+    monkeypatch.setattr(auth, "is_development_mode", lambda: False)
+    monkeypatch.setattr(auth, "require_project_access", lambda user, project: None)
+    monkeypatch.setattr(service, "user_record", lambda user: user)
+
+    with pytest.raises(PermissionError, match="account is unavailable"):
+        candidate_batches.actor(development_user["id"], "project")
+    restored = candidate_batches.actor(
+        development_user["id"], "project", allow_development=True,
+    )
+    assert restored["id"] == development_user["id"]
+    assert restored["role"] == "admin"
+
+
+def test_dispatch_failure_marks_created_child_terminal(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    jobs.write_json(parent / "input.json", {"params": {}})
+    config = distributed_campaign.validate_campaign_config({
+        "generator_id": "rfd4_proteina", "accepted_target": 1, "max_attempts": 1,
+        "acceptance_level": "validated", "max_retries": 0,
+        "validation_stages": [{
+            "workflow": "refolding.optimized_prediction", "required_metrics": ["iptm"],
+        }],
+    })
+    campaign = CampaignLedger.create(
+        parent / "artifacts/distributed_campaign/ledger.json", config,
+        campaign_id="dispatch-failure-campaign",
+    )
+    child = tmp_path / "design" / "failed-proxy"
+
+    def create_child(_parent, ledger, attempt, _config):
+        child.mkdir(parents=True)
+        jobs.write_json(child / "metadata.json", {"status": "queued", "cluster_remote": True})
+        ledger.transition(
+            attempt["attempt_id"], "queued", child_run_dir=str(child), cluster_remote=True,
+        )
+        raise PermissionError("peer actor unavailable")
+
+    monkeypatch.setattr(distributed_campaign, "_create_attempt_child", create_child)
+    distributed_campaign._dispatch_attempts(
+        parent, campaign, config, active_count=0, accepted_count=0,
+    )
+
+    attempt_id, attempt = next(iter(campaign.snapshot()["attempts"].items()))
+    assert attempt["status"] == "failed"
+    metadata = jobs.read_json(child / "metadata.json")
+    assert metadata["status"] == "failed"
+    assert "peer actor unavailable" in metadata["worker_error"]
+    children, active, candidates = distributed_campaign._reconcile_attempts(campaign, parent, config)
+    assert children[attempt_id] == child
+    assert active == []
+    assert candidates == []
+
+
 def test_rfd4_remote_completion_materializes_verified_artifacts_and_provenance(tmp_path, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs
     from mn_molecular_design_studio.cluster import candidate_batches
 
     parent = tmp_path / "parent"
     parent.mkdir()
-    jobs.write_json(parent / "metadata.json", {"studio_owner_id": "owner", "studio_project_id": "project"})
+    jobs.write_json(parent / "metadata.json", {
+        "studio_owner_id": "owner", "studio_project_id": "project", "studio_development_mode": True,
+    })
     campaign = CampaignLedger.create(
         parent / "ledger.json",
         {"accepted_target": 1, "max_attempts": 1},
@@ -261,7 +328,7 @@ def test_rfd4_remote_completion_materializes_verified_artifacts_and_provenance(t
     collected_normalized = artifacts / "normalized_candidates" / "collected.jsonl"
     collected_normalized.write_text(normalized.read_text())
 
-    monkeypatch.setattr(candidate_batches, "actor", lambda *_args: {"id": "owner"})
+    monkeypatch.setattr(candidate_batches, "actor", lambda *_args, **_kwargs: {"id": "owner"})
     monkeypatch.setattr(candidate_batches, "_artifact", lambda *_args: tmp_path / "unused")
     peer = {
         "manifest": str(manifest), "cluster_job_id": "cluster-job", "input_transfer_bytes": 42,

@@ -673,7 +673,7 @@ def _peer_campaign_mode(config: dict[str, Any]) -> bool:
     return False
 
 
-def _campaign_actor(parent_run_dir: Path) -> tuple[str, str]:
+def _campaign_actor(parent_run_dir: Path) -> tuple[str, str, bool]:
     """Resolve the campaign owner/project from durable metadata or its API marker."""
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
 
@@ -683,7 +683,8 @@ def _campaign_actor(parent_run_dir: Path) -> tuple[str, str]:
     project_id = str(metadata.get("studio_project_id") or metadata.get("project_id") or marker.get("project_id") or "")
     if not owner_id or not project_id:
         raise ValueError("Remote campaign attempts require a project-owned API submission.")
-    return owner_id, project_id
+    development_mode = bool(metadata.get("studio_development_mode") or marker.get("studio_development_mode"))
+    return owner_id, project_id, development_mode
 
 
 def _submit_rfd4_peer_attempt(
@@ -705,7 +706,7 @@ def _submit_rfd4_peer_attempt(
     peer.setdefault("submission_key", hashlib.sha256(
         f"{campaign_id}:{attempt['attempt_id']}:rfd4".encode()
     ).hexdigest())
-    owner_id, project_id = _campaign_actor(parent_run_dir)
+    owner_id, project_id, development_mode = _campaign_actor(parent_run_dir)
     child_payload = read_json(child_run_dir / "input.json")
     parameters = dict(child_payload.get("params") or {})
     parameters["gpu_device"] = "auto"
@@ -729,6 +730,7 @@ def _submit_rfd4_peer_attempt(
     result = candidate_batches.submit(
         request, peer["manifest"], peer["submission_key"], {"placement": "auto"},
         owner_id=owner_id, project_id=project_id, state=peer, persist=persist,
+        allow_development=development_mode,
     )
     peer["cluster_job_id"] = result["cluster_job_id"]
     peer["origin_node_id"] = result.get("origin_node_id")
@@ -762,7 +764,7 @@ def _materialize_rfd4_peer_output(
     from mn_molecular_design_studio.cluster import candidate_batches
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json
 
-    owner_id, project_id = _campaign_actor(parent_run_dir)
+    owner_id, project_id, development_mode = _campaign_actor(parent_run_dir)
     collected = Path(peer["manifest"]).with_suffix(".collected")
     job_id = str(peer.get("cluster_job_id") or "")
     # These files are needed by the campaign's existing target/parameter
@@ -770,7 +772,8 @@ def _materialize_rfd4_peer_output(
     # candidate_batches.poll() from their own artifact references.
     request_relative = "artifacts/rfd4_proteina/request.json"
     if candidate_batches._artifact(
-        peer, job_id, request_relative, candidate_batches.actor(owner_id, project_id), collected,
+        peer, job_id, request_relative,
+        candidate_batches.actor(owner_id, project_id, allow_development=development_mode), collected,
     ) is None:
         return False
     remote_request = read_json(collected / request_relative)
@@ -786,7 +789,10 @@ def _materialize_rfd4_peer_output(
         "artifacts/rfd4_proteina/effective_config.yaml",
         "artifacts/rfd4_proteina/prepared_inputs.json",
     ):
-        if candidate_batches._artifact(peer, job_id, relative, candidate_batches.actor(owner_id, project_id), collected) is None:
+        if candidate_batches._artifact(
+            peer, job_id, relative,
+            candidate_batches.actor(owner_id, project_id, allow_development=development_mode), collected,
+        ) is None:
             return False
 
     source_artifacts = collected / "artifacts"
@@ -1644,9 +1650,10 @@ def _reconcile_attempts(
                     peer = _submit_rfd4_peer_attempt(parent_run_dir, ledger, attempt, child)
                     attempt = ledger.snapshot()["attempts"][attempt_id]
                     peer = dict(attempt.get("cluster_submission") or peer)
-                owner_id, project_id = _campaign_actor(parent_run_dir)
+                owner_id, project_id, development_mode = _campaign_actor(parent_run_dir)
                 peer_status, peer_output, peer_job = candidate_batches.poll(
                     peer, owner_id=owner_id, project_id=project_id,
+                    allow_development=development_mode,
                 )
             except Exception as exc:
                 failure = f"{type(exc).__name__}: {exc}"
@@ -1976,10 +1983,20 @@ def _dispatch_attempts(
         try:
             _create_attempt_child(parent_run_dir, ledger, attempt, config)
         except Exception as exc:
+            failure = f"{type(exc).__name__}: {exc}"
             ledger.transition(
                 attempt["attempt_id"], "failed",
-                failure=f"{type(exc).__name__}: {exc}",
+                failure=failure,
             )
+            child_text = ledger.snapshot()["attempts"][attempt["attempt_id"]].get("child_run_dir")
+            if child_text:
+                from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json
+
+                child = Path(child_text)
+                metadata = read_json(child / "metadata.json")
+                if metadata.get("status") in {"queued", "preparing"}:
+                    metadata.update(status="failed", worker_error=failure, completed_at=utc_now())
+                    write_json(child / "metadata.json", metadata)
 
 
 def _campaign_elapsed_seconds(state: dict[str, Any]) -> float:
@@ -2095,8 +2112,11 @@ def _cancel_campaign_attempt(
         parent_text = str(metadata.get("parent_run_dir") or "")
         if parent_text:
             parent = Path(parent_text)
-        owner_id, project_id = _campaign_actor(parent)
-        candidate_batches.cancel(peer, owner_id=owner_id, project_id=project_id)
+        owner_id, project_id, development_mode = _campaign_actor(parent)
+        candidate_batches.cancel(
+            peer, owner_id=owner_id, project_id=project_id,
+            allow_development=development_mode,
+        )
         current = read_json(child / "metadata.json")
         current.update(status="cancelled", cancel_reason=reason, completed_at=utc_now())
         write_json(child / "metadata.json", current)

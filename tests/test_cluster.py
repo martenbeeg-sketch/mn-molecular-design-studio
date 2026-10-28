@@ -373,6 +373,7 @@ def test_agent_catalog_uses_cluster_submission_id_after_scheduler_rewrites_metad
 
 def test_submission_context_writes_both_cluster_job_id_fields(monkeypatch, tmp_path):
     from mn_molecular_design_studio.cluster import context
+    from mn_molecular_design_studio.auth import development_user
 
     node_id = str(uuid.uuid4())
     submission_id = str(uuid.uuid4())
@@ -388,6 +389,18 @@ def test_submission_context_writes_both_cluster_job_id_fields(monkeypatch, tmp_p
     marker = json.loads((run / "molecular_design_studio.json").read_text())
     assert metadata["cluster_job_id"] == metadata["cluster_submission_id"] == submission_id
     assert marker["cluster_job_id"] == marker["cluster_submission_id"] == submission_id
+    assert metadata["studio_development_mode"] is False
+    assert marker["studio_development_mode"] is False
+
+    dev_run = tmp_path / "design" / "dev-run"
+    dev_run.mkdir(parents=True)
+    dev_metadata = {"run_id": "dev-run"}
+    dev_command = {"job_id": str(uuid.uuid4()), "project_id": "project-a", "owner_id": development_user()["id"]}
+    with context.submission(dev_command):
+        context.tag_created_job(dev_run, dev_metadata)
+    dev_marker = json.loads((dev_run / "molecular_design_studio.json").read_text())
+    assert dev_metadata["studio_development_mode"] is True
+    assert dev_marker["studio_development_mode"] is True
 
 
 def test_heartbeat_promotes_legacy_fallback_job_to_submission_id_and_replicates_tombstone(cluster, monkeypatch):
