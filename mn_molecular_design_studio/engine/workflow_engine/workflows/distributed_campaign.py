@@ -575,6 +575,42 @@ def _gpu_for_attempt(config: dict[str, Any], ordinal: int) -> str:
     return ids[(ordinal - 1) % len(ids)]
 
 
+def _attempt_child_inputs(parent_inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    """Rebase staged target references into each isolated native child run."""
+    target_type = str(params.get("target_type") or parent_inputs.get("target_type") or "structure")
+    target_file = Path(str(params.get("target_file") or "target.pdb")).name
+    if target_file not in {"target.pdb", "target.cif", "target.fasta"}:
+        raise ValueError(f"Unsupported staged BindCraft2 target filename: {target_file!r}.")
+    target_ref = f"artifacts/raw/bindcraft2/{target_file}"
+    child_inputs = dict(parent_inputs)
+    child_inputs.update(
+        target_type=target_type,
+        target_chains=[str(value) for value in params.get("target_chains") or parent_inputs.get("target_chains") or []],
+        target_structure=target_ref if target_type == "structure" else None,
+        target_pdb=target_ref if target_type == "structure" and target_file == "target.pdb" else None,
+        target_fasta=target_ref if target_type == "sequence" else None,
+        second_target_pdb=(
+            "artifacts/raw/bindcraft2/second_target.pdb"
+            if parent_inputs.get("second_target_pdb") else None
+        ),
+    )
+    return child_inputs
+
+
+def _bounded_child_settings(parent_raw: Path, child_params: dict[str, Any], attempt: dict[str, Any]) -> dict[str, Any]:
+    """Read raw settings so paths relative to BindCraft2's working folder stay relative."""
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import bounded_bindcraft2_settings
+
+    settings = json.loads((parent_raw / "settings.json").read_text(encoding="utf-8"))
+    settings = bounded_bindcraft2_settings(settings, int(attempt["seed"]))
+    settings["campaign_name"] = child_params["campaign_name"]
+    settings["workers_per_gpu"] = 1
+    settings["project_folder"] = "output"
+    for target in settings.get("targets", []):
+        target["target_path"] = Path(str(target.get("target_path") or "target.pdb")).name
+    return settings
+
+
 def _sequence_is_subsequence(candidate_sequence: str, target_sequence: str) -> bool:
     candidate_sequence = "".join(str(candidate_sequence or "").split()).upper()
     target_sequence = "".join(str(target_sequence or "").split()).upper()
@@ -709,6 +745,7 @@ def _create_attempt_child(
     parent_params = parent_payload.get("params") if isinstance(parent_payload.get("params"), dict) else {}
     child_params = copy.deepcopy(parent_params)
     child_params.pop("distributed_campaign", None)
+    child_params["target_file"] = Path(str(child_params.get("target_file") or "target.pdb")).name
     child_params["campaign_name"] = f"{parent_params.get('campaign_name') or parent_run_dir.name}-{attempt['ordinal']:08d}"
     child_params["number_of_final_designs"] = 1
     child_params["max_trajectories"] = 1
@@ -737,7 +774,7 @@ def _create_attempt_child(
             DESIGN_GROUP,
             "bindcraft2_design",
             BINDCRAFT2_TOOL,
-            inputs=copy.deepcopy(parent_payload.get("inputs") or {}),
+            inputs=_attempt_child_inputs(parent_payload.get("inputs") or {}, child_params),
             params=child_params,
         )
     child_run_dir = child_job.run_dir
@@ -755,12 +792,7 @@ def _create_attempt_child(
         source = parent_raw / filename
         if source.is_file():
             shutil.copyfile(source, child_raw / filename)
-    parent_settings = read_json(parent_raw / "settings.json")
-    from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import bounded_bindcraft2_settings
-
-    settings = bounded_bindcraft2_settings(parent_settings, int(attempt["seed"]))
-    settings["campaign_name"] = child_params["campaign_name"]
-    settings["workers_per_gpu"] = 1
+    settings = _bounded_child_settings(parent_raw, child_params, attempt)
     write_json(child_raw / "settings.json", settings)
     metadata = read_json(child_run_dir / "metadata.json")
     metadata.update(
@@ -814,6 +846,12 @@ def _repair_attempt_child(
 
     child_payload = read_json(child_run_dir / "input.json")
     params = child_payload.get("params") if isinstance(child_payload.get("params"), dict) else {}
+    parent_payload = read_json(parent_run_dir / "input.json")
+    parent_params = parent_payload.get("params") if isinstance(parent_payload.get("params"), dict) else {}
+    params["target_file"] = Path(str(params.get("target_file") or parent_params.get("target_file") or "target.pdb")).name
+    child_payload["params"] = params
+    child_payload["inputs"] = _attempt_child_inputs(parent_payload.get("inputs") or {}, params)
+    write_json(child_run_dir / "input.json", child_payload)
     campaign_id = CampaignLedger(_campaign_ledger_path(parent_run_dir)).snapshot()["campaign_id"]
     child_raw = child_run_dir / "artifacts" / "raw" / "bindcraft2"
     parent_raw = parent_run_dir / "artifacts" / "raw" / "bindcraft2"
@@ -823,14 +861,12 @@ def _repair_attempt_child(
         destination = child_raw / filename
         if source.is_file() and not destination.is_file():
             shutil.copyfile(source, destination)
-    settings_path = child_raw / "settings.json"
-    if not settings_path.is_file():
-        settings = bounded_bindcraft2_settings(
-            read_json(parent_raw / "settings.json"), int(attempt["seed"]),
-        )
-        settings["campaign_name"] = params.get("campaign_name") or child_run_dir.name
-        settings["workers_per_gpu"] = 1
-        write_json(settings_path, settings)
+    settings = _bounded_child_settings(
+        parent_raw,
+        {**params, "campaign_name": params.get("campaign_name") or child_run_dir.name},
+        attempt,
+    )
+    write_json(child_raw / "settings.json", settings)
     mark_internal_job(
         child_run_dir, parent_run_dir=parent_run_dir,
         parent_task_group=parent_run_dir.parent.name,
@@ -2108,6 +2144,11 @@ def _run_bindcraft2_distributed_campaign(parent_run_dir: Path) -> Path:
                     active_count=len(active) + _validation_pending_candidates(ledger.snapshot(), config),
                     accepted_count=selected,
                 )
+                # Newly created child jobs are scheduler-owned immediately,
+                # even before the scheduler records their first status. Reconcile
+                # them before deciding that the attempt budget is exhausted.
+                children, active, candidates = _reconcile_attempts(ledger, parent_run_dir, config)
+                _sync_parent_results(parent_run_dir, ledger, children, candidates)
                 state = ledger.snapshot()
                 if (
                     len(state["attempts"]) >= int(config["max_attempts"])

@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 import json
+from pathlib import Path
 
 import pytest
 
@@ -404,6 +405,64 @@ def _mock_finish(monkeypatch):
     monkeypatch.setattr(jobs, "finish_job", finish)
 
 
+def test_attempt_child_rebases_target_and_native_settings_to_its_run(tmp_path, monkeypatch):
+    import json
+
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    config = distributed_campaign.validate_campaign_config({
+        "accepted_target": 1,
+        "max_attempts": 1,
+        "seed": 44,
+        "gpu_selection": "0",
+        "resources": {"cpu_cores": 2},
+    })
+    _root, parent = _parent_run(tmp_path, monkeypatch, config)
+    parent_raw = parent / "artifacts/raw/bindcraft2"
+    (parent_raw / "target.pdb").write_text("parent target")
+    jobs.write_json(parent / "input.json", {
+        "tool": "bindcraft2_campaign",
+        "inputs": {
+            "target_type": "structure",
+            "target_structure": "artifacts/raw/bindcraft2/target.pdb",
+            "target_pdb": "artifacts/raw/bindcraft2/target.pdb",
+            "target_chains": ["A"],
+        },
+        "params": {
+            "campaign_name": "test-campaign",
+            "target_type": "structure",
+            "target_file": "target.pdb",
+            "target_chains": ["A"],
+            "cpu_cores": 2,
+            "distributed_campaign": {"enabled": True, **config},
+        },
+    })
+    jobs.write_json(parent_raw / "settings.json", {
+        "campaign_seed": 44,
+        "project_folder": "output",
+        "targets": [{"name": "app_target", "target_path": "target.pdb", "chains": "A"}],
+    })
+    ledger_path = parent / "artifacts/distributed_campaign/ledger.json"
+    campaign = CampaignLedger.create(ledger_path, config, campaign_id="localized-child")
+    attempt = campaign.authorize(1, batch_id="batch-1")[0]
+    monkeypatch.setattr(
+        "mn_molecular_design_studio.engine.workflow_engine.core.local_worker.spawn_worker_for_run",
+        lambda _run_dir: None,
+    )
+
+    child = distributed_campaign._create_attempt_child(parent, campaign, attempt, config)
+
+    assert (child / "artifacts/raw/bindcraft2/target.pdb").read_text() == "parent target"
+    child_input = jobs.read_json(child / "input.json")
+    assert child_input["inputs"]["target_pdb"] == str(child / "artifacts/raw/bindcraft2/target.pdb")
+    assert child_input["inputs"]["target_structure"] == str(child / "artifacts/raw/bindcraft2/target.pdb")
+    assert Path(child_input["params"]["target_file"]).name == "target.pdb"
+    settings = json.loads((child / "artifacts/raw/bindcraft2/settings.json").read_text())
+    assert settings["project_folder"] == "output"
+    assert settings["targets"][0]["target_path"] == "target.pdb"
+    assert settings["campaign_seed"] == attempt["seed"]
+
+
 def test_controller_reaches_one_global_target_and_keeps_unique_seed_and_gpu_lineage(
     tmp_path, monkeypatch, design_source_factory
 ):
@@ -500,3 +559,68 @@ def test_controller_generates_more_after_global_diversity_rejection(
     assert result["metrics"]["diversity_qualified_accepted_candidates"] == 1
     assert result["metrics"]["attempts_authorized"] == 3
     assert len(made) == 3
+
+
+def test_controller_waits_for_newly_dispatched_child_before_budget_exhaustion(
+    tmp_path, monkeypatch
+):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    config = {
+        "accepted_target": 2,
+        "acceptance_level": "native",
+        "max_attempts": 2,
+        "batch_size": 1,
+        "max_concurrent_batches": 2,
+        "gpu_selection": "0,1",
+        "poll_interval_seconds": 0.25,
+        "max_retries": 0,
+        "seed": 88,
+    }
+    root, parent = _parent_run(tmp_path, monkeypatch, config)
+    children = {}
+    sleeps = []
+
+    def create_child(_parent, campaign, attempt, _config):
+        child = root / "design" / f"queued-{attempt['ordinal']:08d}"
+        (child / "artifacts/raw/bindcraft2/output").mkdir(parents=True)
+        jobs.write_json(child / "metadata.json", {
+            "run_id": child.name, "task_group": "design", "job_type": "bindcraft2_design",
+            "tool": "bindcraft2", "status": "queued",
+            "resource_allocation": {"gpu_device": str(attempt["ordinal"] - 1)},
+        })
+        jobs.write_json(child / "input.json", {"params": {"gpu_device": str(attempt["ordinal"] - 1)}})
+        jobs.write_json(child / "result.json", {})
+        (child / "artifacts/normalized_candidates").mkdir(parents=True)
+        (child / "artifacts/normalized_candidates/candidates.jsonl").write_text("")
+        campaign.transition(attempt["attempt_id"], "queued", child_run_dir=str(child))
+        children[attempt["ordinal"]] = child
+        return child
+
+    def advance_scheduler(_seconds):
+        sleeps.append(None)
+        if len(sleeps) == 1:
+            metadata = jobs.read_json(children[1] / "metadata.json")
+            metadata.update(status="failed", worker_error="simulated worker failure")
+            jobs.write_json(children[1] / "metadata.json", metadata)
+        elif len(sleeps) == 2:
+            metadata = jobs.read_json(children[2] / "metadata.json")
+            metadata.update(status="completed", completed_at=jobs.utc_now())
+            jobs.write_json(children[2] / "metadata.json", metadata)
+            jobs.write_json(children[2] / "result.json", {"success": True})
+            (children[2] / "artifacts/raw/bindcraft2/output/.campaign_state.json").write_text(json.dumps({
+                "trajectories": 1, "accepted": 0, "rejections": {"terminated": {"screen": 1}},
+            }))
+
+    monkeypatch.setattr(distributed_campaign, "_create_attempt_child", create_child)
+    monkeypatch.setattr(distributed_campaign.time, "sleep", advance_scheduler)
+    _mock_finish(monkeypatch)
+
+    distributed_campaign.run_bindcraft2_distributed_campaign(parent)
+
+    state = CampaignLedger(parent / "artifacts/distributed_campaign/ledger.json").snapshot()
+    assert len(children) == 2
+    assert len(sleeps) == 2
+    assert state["termination_reason"] == "budget_exhausted"
+    second_attempt_id = f"{state['campaign_id']}:a00000002"
+    assert state["attempts"][second_attempt_id]["status"] == "completed"
