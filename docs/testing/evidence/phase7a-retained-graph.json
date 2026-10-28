@@ -1,0 +1,166 @@
+{
+  "schema": "studio.phase7a-verification.v1",
+  "run_dir": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/campaign/20261028-164454-50d74667",
+  "graph_id": "934d533d05f043ffb51bc378d73f6c57",
+  "project_id": "37130be6726a40d1a37652b0d7106c37",
+  "scientific_execution": "retained outputs only; zero new inference and zero scheduler submissions",
+  "real_predictor": "retained Boltz-2",
+  "additional_predictor": "disabled here; deterministic adapter worker tested separately",
+  "source_hashes_unchanged": true,
+  "source_files": {
+    "/home/user/.local/share/mn-molecular-design-studio/workdir/runs/design/20261028-101057-a07ef0a4/artifacts/normalized_candidates/candidates.jsonl": "9f20f2b0fed006e9c1e6aeddc1db2b569ed12addccda2f5dcce1cecce235b3ab",
+    "/home/user/.local/share/mn-molecular-design-studio/workdir/runs/design/20261028-101057-a07ef0a4/artifacts/distributed_campaign/ledger.json": "0f575ca3e563181423524207c34ebc5fbcf1c6c9b6ff8c5bf71409ae10bc1460",
+    "/home/user/.local/share/mn-molecular-design-studio/workdir/runs/design/20261028-101057-a07ef0a4/artifacts/rfd4_proteina/input/PD-L1.pdb.cif": "7da1c888011cdbd0937e3ff6b73429aa069e4c496cfa0cb8d8b53cc06ca73b57",
+    "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-124448-350f7294/artifacts/distributed_campaign/ledger.json": "205efddd4c18cea8f8ca9d9ee22a9b5ad193964f5e059854631bf2465e891b39",
+    "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-124448-350f7294/artifacts/rfd4_proteina/input/PD-L1.pdb.cif": "7da1c888011cdbd0937e3ff6b73429aa069e4c496cfa0cb8d8b53cc06ca73b57",
+    "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-124448-350f7294/artifacts/normalized_candidates/candidates.jsonl": "3f1eaf14f499d884c4449db4ac2c4d6766626d0f4d35c6c9d4348a3770acb9b7",
+    "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-085821-36356a14/artifacts/distributed_campaign/ledger.json": "43f3d051978a597e9307afaad3c98a9f86b83d85830e17a82f7b809878eed163",
+    "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-085821-36356a14/artifacts/raw/bindcraft2/target.pdb": "d3c95434dcadf26d005340b15bd92be61e101ed921478c26f2a5550f198e61f6",
+    "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-085821-36356a14/artifacts/normalized_candidates/candidates.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "candidates": [
+    {
+      "candidate_id": "cs_81d7ff89c7695b8b40c92c246d7545cd69b069d60f15ded002a8d36c7a4637cd",
+      "generator": "rfd4_proteina",
+      "source_run": "20261028-124448-350f7294",
+      "binder_length": 116,
+      "sequence_sha256": "ad6a651791941cbe4fbeebf027fb6c46b470034ebc4c3a2c66d80598285cdf68",
+      "variant_id": "81d7ff89c7695b8b40c92c246d7545cd69b069d60f15ded002a8d36c7a4637cd",
+      "predictor_matrix": {
+        "predictor-0": [
+          "completed"
+        ],
+        "predictor-1": [
+          "disabled"
+        ]
+      },
+      "iptm": 0.46578
+    },
+    {
+      "candidate_id": "cs_7d54648978e1ec0d7b765c95a5f3e5992dcce9392b9ac957be6dc26310680e97",
+      "generator": "rfd4_proteina",
+      "source_run": "20261028-124448-350f7294",
+      "binder_length": 94,
+      "sequence_sha256": "da0ba51511da10c21f61dfc4e86e686907a2e733d2e62ae19a39f1ea32e6acee",
+      "variant_id": "7d54648978e1ec0d7b765c95a5f3e5992dcce9392b9ac957be6dc26310680e97",
+      "predictor_matrix": {
+        "predictor-0": [
+          "completed"
+        ],
+        "predictor-1": [
+          "disabled"
+        ]
+      },
+      "iptm": 0.65414
+    },
+    {
+      "candidate_id": "cs_0e6f81b9ae1d7c749912c71d2e9b3b970c80c70da8db1b08f8d4b75805d6978e",
+      "generator": "rfd4_proteina",
+      "source_run": "20261028-101057-a07ef0a4",
+      "binder_length": 75,
+      "sequence_sha256": "4a92e21a05b04cab399b21ea17e8e3438c88f8e7d3ded10c3e10b32136609d24",
+      "variant_id": "0e6f81b9ae1d7c749912c71d2e9b3b970c80c70da8db1b08f8d4b75805d6978e",
+      "predictor_matrix": {
+        "predictor-0": [
+          "completed"
+        ],
+        "predictor-1": [
+          "disabled"
+        ]
+      },
+      "iptm": 0.42641
+    }
+  ],
+  "stage_counts": {
+    "analyzer": {
+      "analyzed_candidates": 3,
+      "completed_predictions": 3,
+      "native_rejected_candidates": 0,
+      "normalized_candidates": 3,
+      "selected_candidates": 0,
+      "sequence_ready": 3,
+      "sequence_variants": 0
+    },
+    "collection": {
+      "analyzed_candidates": 0,
+      "completed_predictions": 0,
+      "native_attempts": 5,
+      "native_rejected_attempts": 2,
+      "native_rejected_candidates": 0,
+      "normalized_candidates": 3,
+      "selected_candidates": 0,
+      "sequence_ready": 3,
+      "sequence_variants": 0
+    },
+    "generator-0": {
+      "analyzed_candidates": 0,
+      "completed_predictions": 0,
+      "native_rejected_candidates": 0,
+      "normalized_candidates": 3,
+      "selected_candidates": 0,
+      "sequence_ready": 3,
+      "sequence_variants": 0
+    },
+    "generator-1": {},
+    "optional-redesign": {
+      "analyzed_candidates": 0,
+      "completed_predictions": 0,
+      "native_rejected_candidates": 0,
+      "normalized_candidates": 3,
+      "selected_candidates": 0,
+      "sequence_ready": 3,
+      "sequence_variants": 0
+    },
+    "predictor-0": {
+      "analyzed_candidates": 0,
+      "completed_predictions": 3,
+      "native_rejected_candidates": 0,
+      "normalized_candidates": 3,
+      "selected_candidates": 0,
+      "sequence_ready": 3,
+      "sequence_variants": 0
+    },
+    "predictor-1": {},
+    "ranking": {
+      "analyzed_candidates": 3,
+      "completed_predictions": 3,
+      "native_rejected_candidates": 0,
+      "normalized_candidates": 3,
+      "selected_candidates": 3,
+      "sequence_ready": 3,
+      "sequence_variants": 0
+    },
+    "results": {
+      "analyzed_candidates": 3,
+      "completed_predictions": 3,
+      "native_rejected_candidates": 0,
+      "normalized_candidates": 3,
+      "selected_candidates": 3,
+      "sequence_ready": 3,
+      "sequence_variants": 0
+    },
+    "sequence-preparation": {
+      "analyzed_candidates": 0,
+      "completed_predictions": 0,
+      "native_rejected_candidates": 0,
+      "normalized_candidates": 3,
+      "selected_candidates": 0,
+      "sequence_ready": 3,
+      "sequence_variants": 0
+    },
+    "shared-filter": {
+      "analyzed_candidates": 0,
+      "candidates_filtered": 0,
+      "completed_predictions": 0,
+      "filter_not_evaluated": 3,
+      "native_rejected_candidates": 0,
+      "normalized_candidates": 3,
+      "selected_candidates": 0,
+      "sequence_ready": 3,
+      "sequence_variants": 0
+    },
+    "target": {}
+  },
+  "export_archive": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/campaign/20261028-164454-50d74667/phase7a-evidence.zip",
+  "export_sha256": "3c23c668d06cd83e177e976257d04d9b64c7f73ec92121d361f2eef2cb74a1da"
+}

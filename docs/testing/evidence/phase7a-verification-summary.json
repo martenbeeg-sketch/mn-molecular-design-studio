@@ -1,0 +1,303 @@
+{
+  "schema_version": "studio.phase7a-verification-summary.v1",
+  "implementation_commit": "9549be679a189cfffe90416a1e30b48547a3fa86",
+  "baseline_commit": "fcc4dcc",
+  "date": "2026-10-28",
+  "tests": {
+    "full_cpu": {
+      "log": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase7a/full-cpu.log",
+      "result": "1768 passed, 33 skipped, 17 warnings in 380.51s (0:06:20)"
+    },
+    "focused": {
+      "log": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase7a/focused-final.log",
+      "result": "211 passed in 190.73s (0:03:10)"
+    },
+    "final_followup": {
+      "log": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase7a/final-checks.log",
+      "result": "20 passed, 15 deselected in 35.90s"
+    },
+    "existing_selector": {
+      "log": "/home/user/programs/git-projects/mn-molecular-design-studio/.tmp/phase7a/existing-selector.log",
+      "result": "1 passed, 22 deselected in 3.55s"
+    }
+  },
+  "test_overlap": "Focused/follow-up cases overlap the broad sweep; totals must not be added.",
+  "collection_regressions": [
+    {
+      "candidate_count": 0,
+      "chunks_per_predictor": [],
+      "predictor_branches": 2,
+      "verification": "executed graph and asserted membership/identity/prediction matrix in test_real_graph_collection_sizes_and_predictor_matrix"
+    },
+    {
+      "candidate_count": 1,
+      "chunks_per_predictor": [
+        1
+      ],
+      "predictor_branches": 2,
+      "verification": "executed graph and asserted membership/identity/prediction matrix in test_real_graph_collection_sizes_and_predictor_matrix"
+    },
+    {
+      "candidate_count": 2,
+      "chunks_per_predictor": [
+        2
+      ],
+      "predictor_branches": 2,
+      "verification": "executed graph and asserted membership/identity/prediction matrix in test_real_graph_collection_sizes_and_predictor_matrix"
+    },
+    {
+      "candidate_count": 5,
+      "chunks_per_predictor": [
+        5
+      ],
+      "predictor_branches": 2,
+      "verification": "executed graph and asserted membership/identity/prediction matrix in test_real_graph_collection_sizes_and_predictor_matrix"
+    },
+    {
+      "candidate_count": 10,
+      "chunks_per_predictor": [
+        5,
+        5
+      ],
+      "predictor_branches": 2,
+      "verification": "executed graph and asserted membership/identity/prediction matrix in test_real_graph_collection_sizes_and_predictor_matrix"
+    },
+    {
+      "candidate_count": 25,
+      "chunks_per_predictor": [
+        5,
+        5,
+        5,
+        5,
+        5
+      ],
+      "predictor_branches": 2,
+      "verification": "executed graph and asserted membership/identity/prediction matrix in test_real_graph_collection_sizes_and_predictor_matrix"
+    },
+    {
+      "candidate_count": 50,
+      "chunks_per_predictor": [
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5
+      ],
+      "predictor_branches": 2,
+      "verification": "executed graph and asserted membership/identity/prediction matrix in test_real_graph_collection_sizes_and_predictor_matrix"
+    },
+    {
+      "candidate_count": 100,
+      "chunks_per_predictor": [
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5
+      ],
+      "predictor_branches": 2,
+      "verification": "executed graph and asserted membership/identity/prediction matrix in test_real_graph_collection_sizes_and_predictor_matrix"
+    }
+  ],
+  "real_retained_run": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/campaign/20261028-164454-50d74667",
+  "retained_source_hashes_unchanged": true,
+  "real_retained_candidate_lengths": [
+    75,
+    94,
+    116
+  ],
+  "ui": {
+    "run_dir": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/campaign/20261028-164454-50d74667",
+    "exceptions": 0,
+    "pipeline_controls": [
+      "Scientific objective",
+      "Binder format",
+      "Method",
+      "Primary prediction engine",
+      "Legacy recipe",
+      "GPU assignment",
+      "Pipeline branch or processing step",
+      "Workstation destination for this step",
+      "Saved draft",
+      "Version history"
+    ],
+    "table_rows": [
+      3,
+      2,
+      12,
+      12,
+      67,
+      3
+    ],
+    "real_retained_candidate_table": true,
+    "scheduler_submissions": 0
+  },
+  "api": {
+    "run_dir": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/campaign/20261028-164454-50d74667",
+    "project_id": "37130be6726a40d1a37652b0d7106c37",
+    "nodes": 12,
+    "source_access_guards": "actual managed-run and project checks; no mocks",
+    "workflow_submissions": 0,
+    "execution_plan": [
+      {
+        "node": "target",
+        "tool": "Target Structure",
+        "enabled": true,
+        "execution": "collection transformation",
+        "candidates_per_chunk": null,
+        "expected_jobs": null,
+        "max_concurrent_jobs": null,
+        "placement": null,
+        "note": "Counts remain unknown until generators finish; native sampling and GPU microbatch settings remain on each tile."
+      },
+      {
+        "node": "generator-0",
+        "tool": "RFD4-Proteina",
+        "enabled": true,
+        "execution": "retained evidence",
+        "candidates_per_chunk": null,
+        "expected_jobs": null,
+        "max_concurrent_jobs": null,
+        "placement": null,
+        "note": "Counts remain unknown until generators finish; native sampling and GPU microbatch settings remain on each tile."
+      },
+      {
+        "node": "generator-1",
+        "tool": "BindCraft2",
+        "enabled": true,
+        "execution": "retained evidence",
+        "candidates_per_chunk": null,
+        "expected_jobs": null,
+        "max_concurrent_jobs": null,
+        "placement": null,
+        "note": "Counts remain unknown until generators finish; native sampling and GPU microbatch settings remain on each tile."
+      },
+      {
+        "node": "collection",
+        "tool": "Candidate collection",
+        "enabled": true,
+        "execution": "collection transformation",
+        "candidates_per_chunk": null,
+        "expected_jobs": null,
+        "max_concurrent_jobs": null,
+        "placement": null,
+        "note": "Counts remain unknown until generators finish; native sampling and GPU microbatch settings remain on each tile."
+      },
+      {
+        "node": "sequence-preparation",
+        "tool": "ProteinMPNN",
+        "enabled": true,
+        "execution": "ordinary native workflow",
+        "candidates_per_chunk": null,
+        "expected_jobs": null,
+        "max_concurrent_jobs": null,
+        "placement": null,
+        "note": "Counts remain unknown until generators finish; native sampling and GPU microbatch settings remain on each tile."
+      },
+      {
+        "node": "optional-redesign",
+        "tool": "ProteinMPNN",
+        "enabled": true,
+        "execution": "ordinary native workflow",
+        "candidates_per_chunk": null,
+        "expected_jobs": null,
+        "max_concurrent_jobs": null,
+        "placement": null,
+        "note": "Counts remain unknown until generators finish; native sampling and GPU microbatch settings remain on each tile."
+      },
+      {
+        "node": "shared-filter",
+        "tool": "Shared scientific filters",
+        "enabled": true,
+        "execution": "collection transformation",
+        "candidates_per_chunk": null,
+        "expected_jobs": null,
+        "max_concurrent_jobs": null,
+        "placement": null,
+        "note": "Counts remain unknown until generators finish; native sampling and GPU microbatch settings remain on each tile."
+      },
+      {
+        "node": "predictor-0",
+        "tool": "Boltz-2",
+        "enabled": true,
+        "execution": "retained evidence",
+        "candidates_per_chunk": 5,
+        "expected_jobs": null,
+        "max_concurrent_jobs": 2,
+        "placement": "local",
+        "note": "Counts remain unknown until generators finish; native sampling and GPU microbatch settings remain on each tile."
+      },
+      {
+        "node": "predictor-1",
+        "tool": "Protenix V2",
+        "enabled": false,
+        "execution": "collection chunks",
+        "candidates_per_chunk": 5,
+        "expected_jobs": null,
+        "max_concurrent_jobs": 2,
+        "placement": "local",
+        "note": "Counts remain unknown until generators finish; native sampling and GPU microbatch settings remain on each tile."
+      },
+      {
+        "node": "analyzer",
+        "tool": "Unified candidate analyzer",
+        "enabled": true,
+        "execution": "collection transformation",
+        "candidates_per_chunk": null,
+        "expected_jobs": null,
+        "max_concurrent_jobs": null,
+        "placement": null,
+        "note": "Counts remain unknown until generators finish; native sampling and GPU microbatch settings remain on each tile."
+      },
+      {
+        "node": "ranking",
+        "tool": "Ranking and diversity",
+        "enabled": true,
+        "execution": "collection transformation",
+        "candidates_per_chunk": null,
+        "expected_jobs": null,
+        "max_concurrent_jobs": null,
+        "placement": null,
+        "note": "Counts remain unknown until generators finish; native sampling and GPU microbatch settings remain on each tile."
+      },
+      {
+        "node": "results",
+        "tool": "Results & comparison",
+        "enabled": true,
+        "execution": "collection transformation",
+        "candidates_per_chunk": null,
+        "expected_jobs": null,
+        "max_concurrent_jobs": null,
+        "placement": null,
+        "note": "Counts remain unknown until generators finish; native sampling and GPU microbatch settings remain on each tile."
+      }
+    ]
+  },
+  "new_gpu_inference_jobs": 0,
+  "remote_deployment": false,
+  "github_push": false,
+  "unrelated_changes_preserved": [
+    "mn_molecular_design_studio/run_app.py",
+    "mn_molecular_design_studio/tool_references.py"
+  ]
+}
