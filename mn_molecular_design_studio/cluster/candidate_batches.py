@@ -30,6 +30,22 @@ def actor(owner_id, project_id, *, allow_development=False):
     return user_record(user)
 
 
+def select_eligible_peer(needs, *, origin_node, ordinal=1, exclude_node_ids=()):
+    """Choose a currently compatible, available peer workstation for a campaign attempt."""
+    store = Store()
+    excluded = {str(value) for value in exclude_node_ids if value}
+    options = [
+        item for item in store.placement_options(needs, origin_node=origin_node)
+        if item.get("node_id") != origin_node and item.get("node_id") not in excluded
+    ]
+    if not options:
+        raise ValueError(
+            "No distinct compatible peer workstation is currently available for eligible execution."
+        )
+    index = (max(1, int(ordinal)) - 1) % len(options)
+    return str(options[index]["node_id"])
+
+
 def pack_request(request, destination):
     """Stage selected input files, recursively rebasing candidate JSONL contents.
 
@@ -123,9 +139,20 @@ def submit(request, manifest, submission_key, settings, *, owner_id, project_id,
         needs = capabilities.requirements(request, references=references)
         from .gpu_runtime import profiles, request_images
         needs['gpu_runtime_profiles'] = profiles(request_images(request))
+        requested_placement = str(settings.get('placement') or 'auto')
+        placement = requested_placement
+        if requested_placement == 'eligible':
+            placement = select_eligible_peer(
+                needs,
+                origin_node=config.identity(),
+                ordinal=settings.get('placement_ordinal', 1),
+                exclude_node_ids=settings.get('exclude_node_ids', ()),
+            )
+            state['placement_policy'] = 'eligible'
+            state['placement_node_id'] = placement
         state['prepared_envelope'] = dict(kind='workflow', payload=prepared, bundle_id=checksum,
             project_id=project_id, requirements=needs, origin_node=config.identity(),
-            placement=settings['placement'], idempotency_key=submission_key)
+            placement=placement, idempotency_key=submission_key)
         state['input_transfer_bytes'] = size
         # Persist the immutable bundle and idempotency key before asking the
         # coordinator to accept the job. A controller restart after acceptance

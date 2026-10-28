@@ -148,7 +148,10 @@ def test_validated_acceptance_requires_explicit_stage_measurements(tmp_path):
         )
 
 
-def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worker(tmp_path, monkeypatch):
+@pytest.mark.parametrize("workstation_selection", ["auto", "eligible"])
+def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worker(
+    tmp_path, monkeypatch, workstation_selection,
+):
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs, workflow_queue, local_worker
 
     parent = tmp_path / "parent"
@@ -170,7 +173,7 @@ def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worke
         "generator_id": "rfd4_proteina", "accepted_target": 1, "max_attempts": 1,
         "acceptance_level": "validated",
         "validation_stages": [{"workflow": "refolding.optimized_prediction", "required_metrics": ["iptm"]}],
-        "workstation_selection": "auto", "max_retries": 0,
+        "workstation_selection": workstation_selection, "max_retries": 0,
     })
     ledger = CampaignLedger.create(parent / "ledger.json", campaign_config, campaign_id="remote-campaign")
     attempt = ledger.authorize(1, batch_id="b000001")[0]
@@ -206,7 +209,10 @@ def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worke
         assert "task_group" not in request["parameters"]
         assert request["resources"]["gpu_device"] == "auto"
         assert "gpu" not in request["resources"]
-        assert settings["placement"] == "auto"
+        assert settings["placement"] == workstation_selection
+        if workstation_selection == "eligible":
+            assert settings["placement_ordinal"] == 1
+            assert settings["exclude_node_ids"] == []
         assert owner_id == "owner" and project_id == "project"
         assert allow_development is True
         assert submission_key == state["submission_key"]
@@ -358,6 +364,96 @@ def test_rfd4_remote_completion_materializes_verified_artifacts_and_provenance(t
     assert provenance["input_transfer_bytes"] == 42
     assert jobs.read_json(child / "metadata.json")["scheduler_worker_id"] == "worker-5090"
     assert campaign.snapshot()["attempts"][attempt["attempt_id"]]["worker_node_id"] == "node-5090"
+
+
+def test_rfd4_pending_artifact_command_is_persisted_and_reused(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    from mn_molecular_design_studio.cluster import candidate_batches
+
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    jobs.write_json(parent / "metadata.json", {
+        "studio_owner_id": "owner", "studio_project_id": "project", "studio_development_mode": True,
+    })
+    campaign = CampaignLedger.create(
+        parent / "artifacts/distributed_campaign/ledger.json",
+        {"accepted_target": 1, "max_attempts": 1},
+        campaign_id="persist-artifact-transfer-campaign",
+    )
+    attempt = campaign.authorize(1, batch_id="batch")[0]
+    child = tmp_path / "design" / "child"
+    child.mkdir(parents=True)
+    manifest = tmp_path / "peer" / "submission.json"
+    peer = {"manifest": str(manifest), "cluster_job_id": "cluster-job", "transfers": {}}
+    campaign.transition(
+        attempt["attempt_id"], "queued", child_run_dir=str(child),
+        cluster_job_id="cluster-job", cluster_submission=peer,
+    )
+    monkeypatch.setattr(candidate_batches, "actor", lambda *_args, **_kwargs: {"id": "owner"})
+    requests = []
+
+    def pending_artifact(state, _job_id, relative, _user, _directory):
+        transfer = state.setdefault("transfers", {}).setdefault(relative, {})
+        if "command_id" not in transfer:
+            transfer["command_id"] = f"transfer-{len(requests) + 1}"
+            requests.append(relative)
+        return None
+
+    monkeypatch.setattr(candidate_batches, "_artifact", pending_artifact)
+    output = {"candidates_jsonl": str(tmp_path / "not-needed.jsonl")}
+
+    for _ in range(2):
+        stored = campaign.snapshot()["attempts"][attempt["attempt_id"]]["cluster_submission"]
+        assert not distributed_campaign._materialize_rfd4_peer_output(
+            parent, campaign, attempt, child, stored, output, {"node_id": "peer-4032"},
+        )
+
+    stored = campaign.snapshot()["attempts"][attempt["attempt_id"]]["cluster_submission"]
+    relative = "artifacts/rfd4_proteina/request.json"
+    assert stored["transfers"][relative]["command_id"] == "transfer-1"
+    assert requests == [relative]
+
+
+def test_campaign_cancellation_uses_parent_ledger_and_preserves_completed_peer_job(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.cluster import candidate_batches
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    jobs.write_json(parent / "metadata.json", {
+        "studio_owner_id": "owner", "studio_project_id": "project", "studio_development_mode": True,
+    })
+    campaign = CampaignLedger.create(
+        parent / "artifacts/distributed_campaign/ledger.json",
+        {"accepted_target": 1, "max_attempts": 1},
+        campaign_id="cancel-completed-peer-campaign",
+    )
+    attempt = campaign.authorize(1, batch_id="batch")[0]
+    child = tmp_path / "design" / "child"
+    child.mkdir(parents=True)
+    jobs.write_json(child / "metadata.json", {"status": "queued"})
+    peer = {"cluster_job_id": "completed-job"}
+    campaign.transition(
+        attempt["attempt_id"], "queued", child_run_dir=str(child), cluster_submission=peer,
+    )
+
+    class Store:
+        def job(self, job_id, user):
+            assert job_id == "completed-job"
+            assert user == {"id": "owner"}
+            return {"status": "completed"}
+
+    monkeypatch.setattr(candidate_batches, "Store", Store)
+    monkeypatch.setattr(candidate_batches, "actor", lambda *_args, **_kwargs: {"id": "owner"})
+    monkeypatch.setattr(
+        candidate_batches, "cancel",
+        lambda *_args, **_kwargs: pytest.fail("A completed inference job must not be cancelled."),
+    )
+
+    distributed_campaign._cancel_campaign_attempt(campaign, attempt, child, "controller stopped")
+
+    assert jobs.read_json(child / "metadata.json")["status"] == "cancelled"
+    assert campaign.snapshot()["attempts"][attempt["attempt_id"]]["cluster_submission"] == peer
 
 
 def test_failed_validation_stage_retries_same_run_within_campaign_limit(tmp_path, monkeypatch):

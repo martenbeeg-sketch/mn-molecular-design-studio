@@ -76,6 +76,66 @@ def test_output_transfer_resumes_and_rejects_corruption(tmp_path, monkeypatch):
         cb._artifact(*args)
 
 
+def test_eligible_campaign_placement_pins_distinct_compatible_peers(tmp_path, monkeypatch):
+    class Connection:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def execute(self, *_args):
+            return None
+
+    options = [
+        {'node_id': 'origin'},
+        {'node_id': 'peer-4032'},
+        {'node_id': 'peer-4033'},
+    ]
+
+    class Store:
+        def connect(self):
+            return Connection()
+        def placement_options(self, needs, *, origin_node):
+            assert needs['gpu_count'] == 1
+            assert needs['gpu_runtime_profiles'] == {}
+            assert origin_node == 'origin'
+            return options
+
+    monkeypatch.setattr(cb.config, 'load', lambda: {'mode': 'coordinator'})
+    monkeypatch.setattr(cb.config, 'identity', lambda: 'origin')
+    monkeypatch.setattr(cb, 'Store', Store)
+    monkeypatch.setattr(cb, 'pack_request', lambda *_args: ({'workflow': 'mock'}, 'bundle', [], 7))
+    monkeypatch.setattr(cb.capabilities, 'requirements', lambda *_args, **_kwargs: {'gpu_count': 1})
+    from mn_molecular_design_studio.cluster import gpu_runtime, service
+    monkeypatch.setattr(gpu_runtime, 'profiles', lambda _images: {})
+    monkeypatch.setattr(cb, 'actor', lambda *_args, **_kwargs: {'id': 'owner'})
+    selected = []
+
+    def accept(envelope, _user):
+        selected.append(envelope['placement'])
+        return {'job': {'cluster_job_id': f'job-{len(selected)}', 'node_id': envelope['placement']}}
+
+    monkeypatch.setattr(service, 'accept_submission', accept)
+    first = {}
+    second = {}
+    common = {
+        'workflow': 'mock', 'parameters': {},
+    }
+    for ordinal, state, exclusions in (
+        (1, first, []),
+        (2, second, [first.get('placement_node_id')]),
+    ):
+        cb.submit(
+            common, str(tmp_path / f'{ordinal}.json'), f'key-{ordinal}',
+            {'placement': 'eligible', 'placement_ordinal': ordinal, 'exclude_node_ids': exclusions},
+            owner_id='owner', project_id='project', state=state, persist=lambda: None,
+        )
+
+    assert selected == ['peer-4032', 'peer-4033']
+    assert first['placement_policy'] == second['placement_policy'] == 'eligible'
+    assert first['placement_node_id'] == first['prepared_envelope']['placement'] == 'peer-4032'
+    assert second['placement_node_id'] == second['prepared_envelope']['placement'] == 'peer-4033'
+
+
 def test_cuda_targets_distinguish_4090_and_5090_without_assuming_equal_support():
     from mn_molecular_design_studio.cluster.gpu_runtime import compatible
     old = {'torch-image': {'cuda': '12.1', 'targets': ['sm_80', 'sm_86', 'sm_90']}}
