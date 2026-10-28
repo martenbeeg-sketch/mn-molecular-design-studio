@@ -88,6 +88,39 @@ def test_bindcraft2_campaign_state_is_the_authoritative_attempt_count(tmp_path):
         bindcraft2.read_bindcraft2_campaign_state(run_dir)
 
 
+def test_bindcraft2_distributed_tile_creates_a_cpu_controller_parent(monkeypatch, tmp_path):
+    target = tmp_path / "target.pdb"
+    target.write_text(
+        "ATOM      1  CA  ALA A   1      10.000  11.000  12.000  1.00 20.00           C\nEND\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(jobs, "runs_root", lambda: tmp_path / "runs")
+    monkeypatch.setattr(bindcraft2, "missing_bindcraft2_parameters", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(bindcraft2, "bindcraft2_image_available", lambda *_args, **_kwargs: True)
+    dispatched = []
+    monkeypatch.setattr(bindcraft2, "spawn_worker_for_run", lambda path: dispatched.append(path))
+
+    run_dir = bindcraft2.enqueue_bindcraft2_design(
+        target_pdb=target,
+        target_chains=["A"],
+        binder_length="60",
+        distributed_campaign={
+            "enabled": True,
+            "accepted_target": 2,
+            "max_attempts": 4,
+            "batch_size": 2,
+            "max_concurrent_batches": 2,
+        },
+        gpu_device="auto",
+    )
+    params = jobs.read_json(run_dir / "input.json")["params"]
+    assert jobs.read_json(run_dir / "metadata.json")["job_type"] == "bindcraft2_campaign"
+    assert params["gpu_device"] == "none"
+    assert params["distributed_campaign"]["gpu_selection"] == "auto"
+    assert jobs.read_json(run_dir / "worker_request.json")["kind"] == "bindcraft2_campaign_controller"
+    assert dispatched == [run_dir]
+
+
 def test_bindcraft_stages_job_name_and_settings_without_running_docker(monkeypatch, tmp_path: Path):
     runs_root = tmp_path / "runs"
     target_pdb = tmp_path / "target.pdb"

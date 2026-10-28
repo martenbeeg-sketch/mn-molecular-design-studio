@@ -62,6 +62,18 @@ params:
   campaign_seed:
     type: integer
     default: 0
+  distributed_campaign:
+    type: object
+    required: false
+    description: >-
+      Optional global campaign policy. Set enabled=true with accepted_target,
+      acceptance_level (native, validated, or diversity_qualified), max_attempts,
+      batch_size, max_concurrent_batches, and gpu_selection. Optional fields include
+      workstation_selection, resources, max_runtime_seconds, max_compute_seconds,
+      validation_stages (optimized_prediction and then optional ipSAE with explicit
+      required_metrics/rules), and diversity (exact deduplication, sequence identity,
+      binder C-alpha RMSD, interface cluster field, and max_per_cluster). If omitted
+      or disabled, ordinary BindCraft2 execution is unchanged.
   gpu_device:
     type: string
     default: "0"

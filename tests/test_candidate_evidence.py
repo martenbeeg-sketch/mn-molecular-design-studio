@@ -37,6 +37,21 @@ def test_lineage_includes_parental_comparator_but_cannot_borrow_its_scores():
     assert {entry["measurement_candidate_id"] for entry in evidence_rows([row])} == {"qc", "interface", "prediction", "parental-antibody"}
 
 
+def test_distributed_campaign_evidence_candidates_are_visible_without_relabeling():
+    evidence = {"candidate_id": "prediction-1", "source_tool": "optimized_prediction_boltz2",
+                "stage": "complex_refolding", "binder_sequence": "KLMNP", "metrics": {"iptm": .61},
+                "parents": ["campaign-1"], "raw_metadata": {"prediction_protocol": {"engine": "boltz2"}}}
+    candidate = {"candidate_id": "campaign-1", "source_tool": "bindcraft2",
+                 "stage": "generation.backbone_sequence", "binder_sequence": "KLMNP",
+                 "metrics": {}, "raw_metadata": {"evidence_candidates": [evidence]}}
+    records = candidate_evidence(candidate)
+    assert any(record["candidate_id"] == "prediction-1"
+               and record["stage"] == "complex_refolding"
+               and record["source_tool"] == "optimized_prediction_boltz2"
+               and record["same_sequence"] is True for record in records)
+    assert metric_value(candidate, "evidence/complex_refolding/optimized_prediction_boltz2/iptm") == .61
+
+
 def test_identical_metric_names_and_ambiguous_stages_are_never_overwritten():
     row = final_candidate()
     row["metrics"]["iptm"] = .1

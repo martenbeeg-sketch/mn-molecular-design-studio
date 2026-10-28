@@ -360,6 +360,9 @@ def candidate_evidence(candidate):
         parent = raw.get("source_candidate")
         if isinstance(parent, dict):
             pending.append((parent, depth + 1, compatible))
+        additional = raw.get("evidence_candidates")
+        if isinstance(additional, list):
+            pending.extend((item, depth + 1, compatible) for item in reversed(additional) if isinstance(item, dict))
     return records
 
 

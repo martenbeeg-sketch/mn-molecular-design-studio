@@ -765,6 +765,16 @@ def _submit(request: dict, parent: Path, node: dict, *, owner_id: str, project_i
     request["resources"] = {**request.get("resources", {}), "gpu_device": "none" if cpu_analysis or workflow in {"design.kejia_idr", "design.peptide_trap"} else gpu_device, "cpu_cores": request.get("resources", {}).get("cpu_cores", 4)}
     if cpu_analysis:
         request["resources"]["min_vram_gb"] = 0
+    distributed_campaign = request.get("parameters", {}).get("distributed_campaign")
+    if (
+        workflow == "design.bindcraft2"
+        and isinstance(distributed_campaign, dict)
+        and distributed_campaign.get("enabled")
+    ):
+        distributed_campaign.setdefault("gpu_selection", str(gpu_device))
+        request["parameters"]["distributed_campaign"] = distributed_campaign
+        request["resources"]["gpu_device"] = "none"
+        request["resources"]["min_vram_gb"] = 0
     if workflow in {"design.kejia_idr", "design.peptide_trap"}:
         request["resources"]["cpu_cores"] = int(request["parameters"].get("cpu_cores", 4))
     if node.get('candidate_batch') and request['resources']['gpu_device'] not in {'none', 'cpu'}:

@@ -496,11 +496,21 @@ def _prepare_bindcraft2_run(
     quality_filters: dict[str, Any] | None = None,
     engine_overrides: dict[str, Any] | None = None,
     trajectory_only: bool = False,
+    distributed_campaign: dict[str, Any] | None = None,
     cpu_cores: int = 4,
     gpu_device: object = "0",
     dispatch_worker: bool,
     parent_run_dir: Path | None = None,
 ) -> Path:
+    distributed_config = dict(distributed_campaign or {})
+    distributed_enabled = bool(distributed_config.get("enabled"))
+    if distributed_enabled:
+        if trajectory_only:
+            raise ValueError("Distributed acceptance campaigns require the full BindCraft2 design tile.")
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import validate_campaign_config
+
+        distributed_config = validate_campaign_config(distributed_config)
+        distributed_config.setdefault("gpu_selection", normalize_gpu_device(gpu_device))
     target_type = str(target_type).strip().lower()
     target_chains = [str(chain).strip() for chain in (target_chains or []) if str(chain).strip()]
     if target_type not in {"structure", "sequence"}:
@@ -605,7 +615,7 @@ def _prepare_bindcraft2_run(
             "bash scripts/build_bindcraft2_pae_image.sh from the Design Studio repository root."
         )
 
-    selected_gpu = normalize_gpu_device(gpu_device)
+    selected_gpu = "none" if distributed_enabled else normalize_gpu_device(gpu_device)
     params = {
         "target_type": target_type,
         "target_file": target_filename,
@@ -643,11 +653,12 @@ def _prepare_bindcraft2_run(
         "reference_key": f"reference:///{BINDCRAFT2_REFERENCE_SUBDIR}",
         "quality_filters": quality_filters or {},
         "trajectory_only": bool(trajectory_only),
+        "distributed_campaign": distributed_config if distributed_enabled else {},
     }
     job = create_job(
         DESIGN_GROUP,
-        "bindcraft2_generator" if trajectory_only else "bindcraft2_design",
-        BINDCRAFT2_GENERATOR_TOOL if trajectory_only else BINDCRAFT2_TOOL,
+        "bindcraft2_campaign" if distributed_enabled else "bindcraft2_generator" if trajectory_only else "bindcraft2_design",
+        "bindcraft2_campaign" if distributed_enabled else BINDCRAFT2_GENERATOR_TOOL if trajectory_only else BINDCRAFT2_TOOL,
         inputs={
             "target_type": target_type,
             "target_structure": f"artifacts/raw/bindcraft2/{target_filename}" if target_type == "structure" else None,
@@ -678,7 +689,7 @@ def _prepare_bindcraft2_run(
     if dispatch_worker:
         write_json(
             job.run_dir / "worker_request.json",
-            {"kind": BINDCRAFT2_JOB_KIND, "kwargs": {}, "path_kwargs": []},
+            {"kind": "bindcraft2_campaign_controller" if distributed_enabled else BINDCRAFT2_JOB_KIND, "kwargs": {}, "path_kwargs": []},
         )
         write_json(
             job.run_dir / "command.json",
@@ -753,9 +764,15 @@ def enqueue_bindcraft2_design(
     target_crop_count: int | None = None,
     engine_overrides: dict[str, Any] | None = None,
     trajectory_only: bool = False,
+    distributed_campaign: dict[str, Any] | None = None,
     cpu_cores: int = 4,
     gpu_device: object = "0",
 ) -> Path:
+    campaign_config = dict(distributed_campaign or {})
+    selected_gpu = normalize_gpu_device(gpu_device)
+    if campaign_config.get("enabled"):
+        campaign_config.setdefault("gpu_selection", selected_gpu)
+        gpu_device = "none"
     return _prepare_bindcraft2_run(
         target_pdb=target_pdb,
         target_chains=target_chains,
@@ -796,6 +813,7 @@ def enqueue_bindcraft2_design(
         target_crop_count=target_crop_count,
         engine_overrides=engine_overrides,
         trajectory_only=trajectory_only,
+        distributed_campaign=campaign_config,
         cpu_cores=cpu_cores,
         gpu_device=gpu_device,
         dispatch_worker=True,

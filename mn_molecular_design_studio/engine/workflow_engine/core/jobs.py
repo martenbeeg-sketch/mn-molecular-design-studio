@@ -511,7 +511,23 @@ def create_job(task_group: str, job_type: str, tool: str, inputs: dict, params: 
         metadata["queue_resource"] = queue_resource
     from mn_molecular_design_studio.cluster.context import tag_created_job
     tag_created_job(run_dir, metadata)
-    metadata.update(_SUBMISSION_TAGS.get())
+    submission_metadata = dict(_SUBMISSION_TAGS.get())
+    metadata.update(submission_metadata)
+    parent_run_text = submission_metadata.get("parent_campaign_run_dir")
+    if submission_metadata.get("distributed_campaign_id") and parent_run_text:
+        parent_run = Path(str(parent_run_text)).expanduser().resolve()
+        metadata.update(
+            hidden=True,
+            parent_task_group=parent_run.parent.name,
+            parent_run_id=parent_run.name,
+            parent_run_dir=str(parent_run),
+            parent_role=(
+                "distributed_bindcraft2_validation"
+                if submission_metadata.get("distributed_validation_stage") is not None
+                else "distributed_bindcraft2_attempt"
+            ),
+            benchmark_engine="bindcraft2",
+        )
     write_json(run_dir / "metadata.json", metadata)
     write_json(run_dir / "command.json", {"mode": "internal", "command": []})
     from mn_molecular_design_studio.batching import record_collection
@@ -677,6 +693,11 @@ def stop_job(run_dir: Path, reason: str = "Stopped by user") -> None:
     """Stop a queued/running job and mark it cancelled without deleting artifacts."""
     from mn_molecular_design_studio.engine.workflow_engine.core.central_scheduler import cancel_scheduled_run
 
+    initial_metadata = read_json(run_dir / "metadata.json")
+    if str(initial_metadata.get("job_type") or "") == "bindcraft2_campaign":
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import cancel_bindcraft2_distributed_campaign
+
+        cancel_bindcraft2_distributed_campaign(run_dir, reason)
     cancel_scheduled_run(run_dir)
     _signal_worker_process(run_dir, signal.SIGTERM)
     if read_json(run_dir / "metadata.json").get("job_type") == "visual_pipeline":

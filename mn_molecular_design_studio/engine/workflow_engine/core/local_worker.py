@@ -63,6 +63,11 @@ def run_worker_job(run_dir: Path) -> int:
 
             run_bindcraft2_job(run_dir)
             return 0
+        if kind == "bindcraft2_campaign_controller":
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import run_bindcraft2_distributed_campaign
+
+            run_bindcraft2_distributed_campaign(run_dir)
+            return 0
         if kind == "target_preparation":
             from mn_molecular_design_studio.engine.workflow_engine.workflows.target_prep import run_queued_target_preparation
 
