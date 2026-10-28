@@ -7703,6 +7703,15 @@ def _render_job_details() -> None:
         f"{summary_items}</div>",
         unsafe_allow_html=True,
     )
+    from mn_molecular_design_studio.distributed_campaign_ui import campaign_context_for_job, render_campaign_context
+    campaign_context = campaign_context_for_job(run_dir, metadata, input_payload)
+    render_campaign_context(st, campaign_context)
+    from mn_molecular_design_studio.distributed_campaign_controls_ui import render_campaign_lifecycle_controls
+    render_campaign_lifecycle_controls(
+        st, reference=reference, run_dir=run_dir, status=str(job.get("status") or ""),
+        context=campaign_context,
+        cancel=lambda value: _cancel_current_user_job(value, reason="Campaign cancelled from Results"),
+    )
     if str(job.get("tool")) == "visual_pipeline":
         pipeline_run = Path(job["run_dir"])
         try:

@@ -1301,6 +1301,8 @@ def clean_graph(graph: dict) -> dict:
             direct = any(e.get('target') == node['id'] and upstream_kinds.get(e.get('source')) == 'cofold_input' for e in edges)
             params['af2_validation_mode'] = 'target_only' if direct else 'conditioned_self_consistency'
         allowed = {f["name"] for f in NODE_CATALOG[kind]["fields"]} | ({"selected_candidate_ids"} if kind in {"design_source","generation_source","backbone_source","project_design_source"} else set())
+        if kind in {"bindcraft2", "rfd4"}:
+            allowed.add("distributed_campaign")
         if kind == 'boltz2':
             allowed |= {'prediction_config_version', 'configuration_migration', 'write_full_pae'}
         # Migrate generation-only kinds from the previous small canvas forms.
@@ -1310,6 +1312,15 @@ def clean_graph(graph: dict) -> dict:
             params.pop('prepare_target_msa',None)
         if set(params) - allowed:
             raise ValueError(f"Unsupported settings for {NODE_CATALOG[kind]['label']}: {', '.join(sorted(set(params)-allowed))}.")
+        if "distributed_campaign" in params:
+            campaign = params["distributed_campaign"]
+            if kind not in {"bindcraft2", "rfd4"} or not isinstance(campaign, dict) or campaign.get("enabled") is not True:
+                raise ValueError("Distributed campaign settings are available only when enabled on a supported BindCraft2 or RFD4 tile.")
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import validate_campaign_config
+            campaign = {**campaign, "generator_id": "bindcraft2" if kind == "bindcraft2" else "rfd4_proteina"}
+            params["distributed_campaign"] = validate_campaign_config(campaign)
+            if kind == "rfd4" and (params.get("task") != "protein_binder" or params.get("input_mode") not in {"guided", "guided_binder"}):
+                raise ValueError("RFD4 distributed campaigns support guided protein-binder tiles only.")
         if "selected_candidate_ids" in params and (not isinstance(params["selected_candidate_ids"], list) or not all(isinstance(v, str) for v in params["selected_candidate_ids"])):
             raise ValueError("Selected designs must be a list of candidate IDs.")
         for f in NODE_CATALOG[kind]["fields"]:

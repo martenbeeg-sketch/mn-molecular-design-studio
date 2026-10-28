@@ -277,6 +277,8 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
     spec = NODE_CATALOG[kind]
     values = {f["name"]:copy.deepcopy(node["data"]["params"].get(f["name"],f["default"])) for f in spec["fields"]}
     values.update({k:copy.deepcopy(v) for k,v in node["data"]["params"].items() if k in {"selected_candidate_ids", "configuration_migration", "prediction_config_version"}})
+    if kind in {"bindcraft2", "rfd4"} and "distributed_campaign" in node["data"]["params"]:
+        values["distributed_campaign"] = copy.deepcopy(node["data"]["params"]["distributed_campaign"])
     if kind == "boltz2":
         values["prediction_config_version"] = 2
     st.html('''<style>
@@ -730,6 +732,18 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                 st.info("Collect candidate structures and metrics from the connected branches. Existing results remain available when you edit the pipeline.")
             if kind == "filter":
                 st.caption("Choose native fields, common fields, or evidence/<stage>/<tool>/<metric>. Add a candidate ID before the metric to resolve repeated stages. Missing, failed and nonfinite required measurements cannot pass. Ranking and limits apply within recorded comparable protocols. All decisions and selected sequence/structure exports remain in this step's selection files.")
+            if kind in {"bindcraft2", "rfd4"}:
+                with st.expander("Distributed acceptance campaign", expanded=bool(values.get("distributed_campaign"))):
+                    from mn_molecular_design_studio.distributed_campaign_config_ui import render_campaign_config_editor
+                    campaign, campaign_ready = render_campaign_config_editor(
+                        st, kind, values.get("distributed_campaign"), key=key + "-campaign",
+                        seed=int(values.get("campaign_seed", values.get("seed", 0)) or 0),
+                    )
+                    if campaign is None:
+                        values.pop("distributed_campaign", None)
+                    else:
+                        values["distributed_campaign"] = campaign
+                    ready = ready and campaign_ready
         st.caption("Apply saves this step to the draft. The pipeline runs only when you choose Run pipeline on the canvas.")
         a,b,c = st.columns([1.3,1,1.3])
         if a.button("Reset to tool defaults", key=key+"-defaults", disabled=kind in {"target","binder_context","design_source","generation_source","backbone_source","project_design_source","results"}, use_container_width=True):

@@ -598,7 +598,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 # controls, rather than accepted from component messages.
                 known = {n["id"]: n for n in graph["nodes"]}
                 for n in updated["nodes"]:
-                    if n["data"]["kind"] in {"target", "active_library", "active_target", "active_seed", "active_docking", "active_accumulate", "active_binder_rule", "active_train", "active_predict", "active_select", "active_decision", "active_results", "binder_context", "design_source", "generation_source", "backbone_source", "project_design_source", "complexa_generator", "pxdesign", "rfdiffusion", "genie3", "protpardelle"}:
+                    if n["data"]["kind"] in {"target", "active_library", "active_target", "active_seed", "active_docking", "active_accumulate", "active_binder_rule", "active_train", "active_predict", "active_select", "active_decision", "active_results", "binder_context", "design_source", "generation_source", "backbone_source", "project_design_source", "complexa_generator", "pxdesign", "rfdiffusion", "genie3", "protpardelle", "bindcraft2", "rfd4"}:
                         previous = known.get(n["id"])
                         n["data"]["params"] = copy.deepcopy(previous["data"]["params"] if previous and previous["data"]["kind"]==n["data"]["kind"] else {f["name"]:f["default"] for f in NODE_CATALOG[n["data"]["kind"]]["fields"]})
                 updated["name"] = graph["name"]

@@ -522,6 +522,14 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
             chains=target.get("target_chains") or []
             p["target_chains"]=[x for x in re.split(r"[,;\s]+",chains) if x] if isinstance(chains,str) else chains
             p["hotspots"]=target.get("hotspots","")
+            campaign=p.pop("distributed_campaign",None)
+            if campaign is not None:
+                if p.get("task")!="protein_binder" or p.get("input_mode") not in {"guided","guided_binder"} or p["input_files"]:
+                    raise ValueError("RFD4 distributed campaigns support one guided protein-binder target only.")
+                campaign={**campaign,"generator_id":"rfd4_proteina"}
+                campaign.setdefault("seed",int(p.get("seed") or 0))
+                from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import validate_campaign_config
+                p["distributed_campaign"]=validate_campaign_config(campaign)
         return {"schema_version":1,"workflow":workflow,"parameters":p}
     if isinstance(source.get("molecule_task"), dict):
         molecule_task = source["molecule_task"]
@@ -654,6 +662,12 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
             p["run_mode"] = "generation_only" if kind == "pxdesign" else "pipeline"
         elif kind == "bindcraft2":
             attempts = int(p.pop("num_designs")); p.update(number_of_final_designs=attempts, max_trajectories=attempts)
+            campaign=p.get("distributed_campaign")
+            if campaign is not None:
+                campaign={**campaign,"generator_id":"bindcraft2"}
+                campaign.setdefault("seed",int(p.get("campaign_seed") or 0))
+                from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import validate_campaign_config
+                p["distributed_campaign"]=validate_campaign_config(campaign)
         elif kind == "bindcraft2_generator":
             trajectories = int(p.pop("num_designs")); p.update(number_of_final_designs=1, max_trajectories=trajectories)
         elif kind == "boltzgen_generator":
@@ -767,7 +781,7 @@ def _submit(request: dict, parent: Path, node: dict, *, owner_id: str, project_i
         request["resources"]["min_vram_gb"] = 0
     distributed_campaign = request.get("parameters", {}).get("distributed_campaign")
     if (
-        workflow == "design.bindcraft2"
+        workflow in {"design.bindcraft2", "design.rfd4_proteina"}
         and isinstance(distributed_campaign, dict)
         and distributed_campaign.get("enabled")
     ):

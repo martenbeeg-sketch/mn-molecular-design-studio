@@ -26,6 +26,114 @@ def test_foundry_template_has_explicit_generation_sequence_and_prediction():
     assert len(plan["order"]) == 6
 
 
+def test_supported_campaign_tile_settings_survive_graph_validation_and_use_normal_workflow_requests():
+    from mn_molecular_design_studio.distributed_campaign_config_ui import _default_validation_stages
+
+    campaign = {
+        "enabled": True,
+        "accepted_target": 2,
+        "max_attempts": 6,
+        "acceptance_level": "validated",
+        "batch_size": 1,
+        "max_concurrent_batches": 2,
+        "max_concurrent_validations": 3,
+        "workstation_selection": "eligible",
+        "gpu_selection": "auto",
+        "validation_stages": _default_validation_stages(),
+    }
+    target = node("target", "target-1")
+    target["data"]["params"].update(target_pdb="/tmp/pd-l1.pdb", target_chains="A")
+    generator = node("rfd4", "rfd4-1")
+    generator["data"]["params"]["distributed_campaign"] = copy.deepcopy(campaign)
+    saved_graph = graph.clean_graph({
+        "schema_version": graph.SCHEMA,
+        "id": "a" * 32,
+        "name": "Retained campaign fixture",
+        "nodes": [target, generator],
+        "edges": [edge("target-1", "rfd4-1")],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    })
+    saved_node = next(item for item in saved_graph["nodes"] if item["id"] == "rfd4-1")
+    assert saved_node["data"]["params"]["distributed_campaign"]["generator_id"] == "rfd4_proteina"
+    assert saved_node["data"]["params"]["distributed_campaign"]["max_concurrent_batches"] == 2
+    assert saved_node["data"]["params"]["distributed_campaign"]["max_concurrent_validations"] == 3
+
+    request = runner.node_request(
+        "rfd4", saved_node["data"]["params"],
+        {"target": {"target_pdb": "/tmp/pd-l1.pdb", "target_chains": ["A"], "hotspots": "A40"}},
+        "RFD4 tile campaign",
+    )
+    assert request["workflow"] == "design.rfd4_proteina"
+    assert request["parameters"]["distributed_campaign"]["generator_id"] == "rfd4_proteina"
+    assert request["parameters"]["distributed_campaign"]["accepted_target"] == 2
+    assert request["parameters"].get("batch_size", 1) == 1
+
+
+def test_bindcraft2_campaign_tile_keeps_authoritative_native_policy():
+    campaign = {
+        "enabled": True,
+        "accepted_target": 1,
+        "max_attempts": 2,
+        "acceptance_level": "native",
+        "batch_size": 1,
+        "max_concurrent_batches": 2,
+        "max_concurrent_validations": 3,
+        "workstation_selection": "auto",
+        "gpu_selection": "auto",
+        "validation_stages": [],
+    }
+    target = node("target", "target-1")
+    bindcraft = node("bindcraft2", "bindcraft2-1")
+    bindcraft["data"]["params"]["distributed_campaign"] = campaign
+    cleaned = graph.clean_graph({
+        "schema_version": graph.SCHEMA,
+        "id": "c" * 32,
+        "name": "BindCraft campaign fixture",
+        "nodes": [target, bindcraft], "edges": [edge("target-1", "bindcraft2-1")],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    })
+    params = next(item["data"]["params"] for item in cleaned["nodes"] if item["data"]["kind"] == "bindcraft2")
+    request = runner.node_request("bindcraft2", params,
+        {"target": {"target_pdb": "/tmp/pd-l1.pdb", "target_chains": ["A"]}},
+        "BindCraft2 tile campaign")
+    assert request["workflow"] == "design.bindcraft2"
+    assert request["parameters"]["distributed_campaign"]["generator_id"] == "bindcraft2"
+    assert request["parameters"]["distributed_campaign"]["acceptance_level"] == "native"
+
+
+@pytest.mark.parametrize("workflow", ["design.bindcraft2", "design.rfd4_proteina"])
+def test_distributed_tile_submission_uses_cpu_controller_and_normal_workflow_api(tmp_path, monkeypatch, workflow):
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
+    parent = tmp_path / "parent"
+    child = tmp_path / "child"
+    parent.mkdir()
+    child.mkdir()
+    (parent / "input.json").write_text(json.dumps({"params": {"pipeline_name": "Fixture"}}))
+    (child / "metadata.json").write_text(json.dumps({"status": "queued", "tool": workflow.rsplit(".", 1)[-1]}))
+    submitted = []
+
+    def submit_workflow_request(path):
+        submitted.append(json.loads(Path(path).read_text()))
+        return {"job": {"run_dir": str(child)}}
+
+    from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation
+    from mn_molecular_design_studio import workspace
+    monkeypatch.setattr(workflow_automation, "submit_workflow_request", submit_workflow_request)
+    monkeypatch.setattr(workspace, "mark_studio_job", lambda result, **kwargs: result)
+
+    request = {"workflow": workflow, "parameters": {"distributed_campaign": {
+        "enabled": True, "generator_id": "rfd4_proteina" if workflow.endswith("rfd4_proteina") else "bindcraft2",
+        "gpu_selection": "auto", "workstation_selection": "eligible",
+    }}}
+    runner._submit(request, parent, {"id": "tile-1"}, owner_id="owner", project_id="project", gpu_device="all")
+
+    assert len(submitted) == 1
+    assert submitted[0]["parameters"]["distributed_campaign"]["enabled"] is True
+    assert submitted[0]["parameters"]["distributed_campaign"]["workstation_selection"] == "eligible"
+    assert submitted[0]["resources"]["gpu_device"] == "none"
+    assert submitted[0]["resources"]["min_vram_gb"] == 0
+
+
 def test_all_generators_template_has_two_sequence_stages_and_boltz2_analysis():
     g = graph.new_graph("all_generators_boltz2")
     plan = graph.validate_graph(g)

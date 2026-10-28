@@ -1117,14 +1117,67 @@ def _refresh_results_snapshot(user, token, local_search):
     }
 
 
+def _gpu_counts(node):
+    snapshot = node.get("snapshot") if isinstance(node.get("snapshot"), dict) else {}
+    resources = snapshot.get("resources") if isinstance(snapshot.get("resources"), dict) else {}
+    detected = resources.get("gpus")
+    free = resources.get("free_gpus")
+    if isinstance(detected, list):
+        if not isinstance(free, list):
+            return len(detected), None, None
+        return len(detected), len(free), max(0, len(detected) - len(free))
+    if isinstance(free, list):
+        return None, len(free), None
+    return None, None, None
+
+
+def _gpu_inventory_rows(nodes, *, snapshot_current=True):
+    rows = []
+    for node in nodes:
+        snapshot = node.get("snapshot") if isinstance(node.get("snapshot"), dict) else {}
+        resources = snapshot.get("resources") if isinstance(snapshot.get("resources"), dict) else {}
+        detected = resources.get("gpus")
+        free = resources.get("free_gpus")
+        free_known = isinstance(free, list)
+        free = free if free_known else []
+        devices = detected if isinstance(detected, list) else free
+        free_ids = {
+            str(gpu.get("gpu_id", gpu.get("index")))
+            for gpu in free if isinstance(gpu, dict) and gpu.get("gpu_id", gpu.get("index")) is not None
+        }
+        is_online = snapshot_current and str(node.get("availability") or "").casefold() == "online"
+        for gpu in devices:
+            if not isinstance(gpu, dict):
+                continue
+            device_id = str(gpu.get("gpu_id") if gpu.get("gpu_id") is not None else gpu.get("index", "—"))
+            available = device_id in free_ids
+            if not free_known:
+                state = "Allocation status not reported" if is_online else "Last reported allocation status unavailable"
+            elif is_online:
+                state = "Available now" if available else "Allocated now"
+            else:
+                state = "Last reported available" if available else "Last reported allocated"
+            rows.append({
+                "Workstation": config.display_name(str(node.get("name") or node.get("id") or "Unknown")),
+                "Device": device_id,
+                "Model": str(gpu.get("name") or gpu.get("model") or "GPU model not reported"),
+                "Scheduler state": state,
+                "Connection": str(node.get("availability") or "unknown").title(),
+                "Resource snapshot": str(node.get("last_seen_at") or "Not timestamped"),
+            })
+    return rows
+
+
 def execution_selector(user, token):
     if not config.enabled():
         return
     settings = config.load()
+    snapshot_current = True
     try:
         nodes = _request("/nodes", token)["nodes"]
         config.atomic_json(_cache(user["id"], "nodes-cache"), {"nodes": nodes})
     except (transport.ClusterUnavailable, ValueError):
+        snapshot_current = False
         try:
             nodes = json.loads(_cache(user["id"], "nodes-cache").read_text())["nodes"]
         except (FileNotFoundError, json.JSONDecodeError):
@@ -1137,10 +1190,37 @@ def execution_selector(user, token):
     st.sidebar.caption(f"This workstation: {config.display_name(settings['name'])}")
     if nodes:
         with st.sidebar.expander("Workstation resources"):
+            pool_counts = [_gpu_counts(node) for node in nodes]
+            pool_detected = sum(item[0] or 0 for item in pool_counts) if all(item[0] is not None for item in pool_counts) else None
+            pool_available = sum(item[1] for item in pool_counts) if all(item[1] is not None for item in pool_counts) else None
+            pool_allocated = sum(item[2] or 0 for item in pool_counts) if all(item[2] is not None for item in pool_counts) else None
+            pool_age = "current coordinator response" if snapshot_current else "cached workstation snapshots"
+            detected_text = str(pool_detected) if pool_detected is not None else "total not reported"
+            available_text = str(pool_available) if pool_available is not None else "available count not reported"
+            allocated_text = str(pool_allocated) if pool_allocated is not None else "allocated count not reported"
+            st.caption(f"Pool snapshot ({pool_age}): {detected_text} detected · {available_text} · {allocated_text} GPUs.")
             for node in nodes:
-                resource = node["snapshot"].get("resources", {})
-                st.write(f"**{config.display_name(node['name'])}** · {node['availability']}")
-                st.caption(f"{len(resource.get('free_gpus', []))} free GPUs · {resource.get('cpu_free', 0)} free CPU threads · {resource.get('ram_available_gb', 0):.0f} GB RAM available")
+                snapshot = node.get("snapshot") if isinstance(node.get("snapshot"), dict) else {}
+                resource = snapshot.get("resources") if isinstance(snapshot.get("resources"), dict) else {}
+                st.write(f"**{config.display_name(node.get('name') or node.get('id') or 'Unknown')}** · {node.get('availability', 'unknown')}")
+                detected = resource.get("gpus")
+                free = resource.get("free_gpus")
+                if isinstance(free, list):
+                    gpu_summary = f"{len(free)} free GPUs available"
+                else:
+                    free = []
+                    gpu_summary = "GPU availability/allocations not reported"
+                if isinstance(detected, list) and isinstance(resource.get("free_gpus"), list):
+                    gpu_summary += f" · {len(detected)} detected · {max(0, len(detected) - len(free))} allocated"
+                elif isinstance(detected, list):
+                    gpu_summary += f" · {len(detected)} detected"
+                else:
+                    gpu_summary += " · total inventory not reported"
+                if not snapshot_current:
+                    gpu_summary += " (cached report)"
+                st.caption(f"{gpu_summary} · {resource.get('cpu_free', 0)} free CPU threads · {resource.get('ram_available_gb', 0):.0f} GB RAM available")
+                for gpu_row in _gpu_inventory_rows([node], snapshot_current=snapshot_current):
+                    st.caption(f"GPU {gpu_row['Device']} · {gpu_row['Model']} · {gpu_row['Scheduler state']}")
 
 
 def settings(user, token):
@@ -1184,9 +1264,26 @@ def settings(user, token):
     try:
         nodes = _request("/nodes", token)["nodes"]
         st.dataframe(pd.DataFrame([{"Workstation": config.display_name(n["name"]), "Connection": n["availability"], "Last seen": n["last_seen_at"],
-                                   "Free GPUs": len(n["snapshot"].get("resources", {}).get("free_gpus", [])),
+                                   "Detected GPUs": _gpu_counts(n)[0],
+                                   "Available GPUs": _gpu_counts(n)[1],
+                                   "Allocated GPUs": _gpu_counts(n)[2],
                                    "Free CPU threads": n["snapshot"].get("resources", {}).get("cpu_free"),
                                    "Accepts jobs": n["snapshot"].get("accept_jobs", False)} for n in nodes]), hide_index=True, use_container_width=True)
+        with st.expander("GPU inventory", expanded=True):
+            counts = [_gpu_counts(node) for node in nodes]
+            total_detected = sum(item[0] or 0 for item in counts) if all(item[0] is not None for item in counts) else None
+            total_available = sum(item[1] for item in counts) if all(item[1] is not None for item in counts) else None
+            total_allocated = sum(item[2] or 0 for item in counts) if all(item[2] is not None for item in counts) else None
+            detected_label = str(total_detected) if total_detected is not None else "Not reported"
+            available_label = str(total_available) if total_available is not None else "Not reported"
+            allocated_label = str(total_allocated) if total_allocated is not None else "Not reported"
+            st.caption(f"Latest workstation snapshots: {detected_label} detected · {available_label} available · {allocated_label} allocated GPUs.")
+            gpu_rows = _gpu_inventory_rows(nodes)
+            if gpu_rows:
+                st.caption("Available means unreserved in the latest scheduler snapshot. Offline workstations show their last reported state.")
+                st.dataframe(gpu_rows, hide_index=True, use_container_width=True)
+            else:
+                st.info("GPU inventory has not been reported by the connected workstations.")
     except (transport.ClusterUnavailable, ValueError) as exc:
         st.info(str(exc))
     if current["mode"] == "peer":
@@ -1841,6 +1938,8 @@ def render_job(reference, user, token, submit):
             if op["status"] != "completed":
                 st.info("Waiting for the owning workstation to return the results."); return
             data = op["response"]
+            from mn_molecular_design_studio.distributed_campaign_ui import render_campaign_context
+            render_campaign_context(st, data.get("distributed_campaign_context"))
             candidates = data.get("results", {}).get("candidates", [])
             if candidates:
                 tool = " ".join(

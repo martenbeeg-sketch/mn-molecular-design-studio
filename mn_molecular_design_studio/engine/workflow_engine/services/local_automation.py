@@ -321,6 +321,8 @@ def inspect_job(reference: str, *, include_hidden: bool = False) -> dict[str, An
     result = jobs.read_json(run_dir / "result.json")
     candidates_path = campaign_result_path(run_dir)
     candidates = read_candidates(run_dir)
+    from mn_molecular_design_studio.distributed_campaign_ui import campaign_context_for_job
+
     return {
         "job": row,
         "metadata": metadata,
@@ -328,6 +330,7 @@ def inspect_job(reference: str, *, include_hidden: bool = False) -> dict[str, An
         "result": result,
         "candidate_count": len(candidates),
         "campaign_result_path": str(candidates_path) if candidates_path.exists() else None,
+        "distributed_campaign_context": campaign_context_for_job(run_dir, metadata, input_payload),
     }
 
 

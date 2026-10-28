@@ -450,3 +450,74 @@ def test_group_schema_api_retains_owner_write_permission(api_data):
     response = client.put(path, json=schema)
     assert response.status_code == 200, response.text
     assert client.put(path, json=schema, headers=headers(data, "other")).status_code == 404
+
+
+def test_pipeline_campaign_tile_submits_through_normal_api_without_dispatching_inference(api_data, tmp_path, monkeypatch):
+    from mn_molecular_design_studio import api
+    from mn_molecular_design_studio.auth import user_input_root
+    from mn_molecular_design_studio.distributed_campaign_config_ui import _default_validation_stages
+    from mn_molecular_design_studio.engine.workflow_engine.services import local_automation
+    from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, SCHEMA
+
+    data, client = api_data, api_data["client"]
+    target_path = user_input_root(data["admin"]["id"]) / "campaign-target.pdb"
+    write_structure(target_path, chains=(("A", 4),))
+
+    def pipeline_node(kind, identifier):
+        spec = NODE_CATALOG[kind]
+        params = {field["name"]: field["default"] for field in spec["fields"]}
+        return {"id": identifier, "type": "studio", "position": {"x": 0, "y": 0},
+                "data": {"kind": kind, "label": spec["label"], "params": params}}
+
+    target = pipeline_node("target", "target")
+    target["data"]["params"].update(target_pdb=str(target_path), target_chains="A")
+    rfd4 = pipeline_node("rfd4", "generator")
+    rfd4["data"]["params"]["distributed_campaign"] = {
+        "enabled": True,
+        "accepted_target": 2,
+        "max_attempts": 5,
+        "acceptance_level": "validated",
+        "batch_size": 1,
+        "max_concurrent_batches": 2,
+        "max_concurrent_validations": 3,
+        "workstation_selection": "eligible",
+        "gpu_selection": "auto",
+        "validation_stages": _default_validation_stages(),
+    }
+    results = pipeline_node("results", "results")
+    graph = {
+        "schema_version": SCHEMA, "id": "b" * 32, "name": "API campaign fixture",
+        "nodes": [target, rfd4, results],
+        "edges": [
+            {"id": "target-generator", "source": "target", "sourceHandle": "out", "target": "generator", "targetHandle": "in"},
+            {"id": "generator-results", "source": "generator", "sourceHandle": "out", "target": "results", "targetHandle": "in"},
+        ],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+
+    target_run = tmp_path / "enqueued-campaign"
+    target_run.mkdir()
+    captured = {}
+    original_call = api._call
+
+    def call(function, *args, **kwargs):
+        if getattr(function, "__name__", "") == "enqueue_graph_pipeline":
+            captured["graph"] = args[0]
+            captured["gpu_device"] = kwargs.get("gpu_device")
+            return target_run
+        return original_call(function, *args, **kwargs)
+
+    monkeypatch.setattr(api, "_call", call)
+    monkeypatch.setattr(api, "mark_studio_job", lambda result, **kwargs: result)
+    monkeypatch.setattr(local_automation, "job_reference", lambda run_dir: {"run_id": "fixture-campaign", "run_dir": str(run_dir)})
+    response = client.post("/api/v1/pipelines/run", json={"project_id": data["project"]["id"], "graph": graph})
+
+    assert response.status_code == 202, response.text
+    submitted = next(node for node in captured["graph"]["nodes"] if node["data"]["kind"] == "rfd4")
+    config = submitted["data"]["params"]["distributed_campaign"]
+    assert config["accepted_target"] == 2
+    assert config["max_attempts"] == 5
+    assert config["workstation_selection"] == "eligible"
+    assert config["max_concurrent_batches"] == 2
+    assert config["max_concurrent_validations"] == 3
+    assert captured["gpu_device"] == "all"
