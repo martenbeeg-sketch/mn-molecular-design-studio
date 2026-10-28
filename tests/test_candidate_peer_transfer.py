@@ -132,8 +132,37 @@ def test_eligible_campaign_placement_pins_distinct_compatible_peers(tmp_path, mo
 
     assert selected == ['peer-4032', 'peer-4033']
     assert first['placement_policy'] == second['placement_policy'] == 'eligible'
+    assert first['placement_reference_probe_pending'] is False
+    assert second['placement_reference_probe_pending'] is False
     assert first['placement_node_id'] == first['prepared_envelope']['placement'] == 'peer-4032'
     assert second['placement_node_id'] == second['prepared_envelope']['placement'] == 'peer-4033'
+
+
+def test_eligible_placement_waits_for_exact_reference_probe_before_dispatch(monkeypatch):
+    requirements_seen = []
+
+    class Store:
+        def placement_options(self, needs, *, origin_node):
+            assert origin_node == 'origin'
+            requirements_seen.append(dict(needs))
+            if needs.get('references') or needs.get('reference_hashes'):
+                return []
+            return [{'node_id': 'peer-4032'}]
+
+    monkeypatch.setattr(cb, 'Store', Store)
+    requirements = {
+        'code_revision': 'reviewed-source',
+        'references': ['rfd4/model.safetensors'],
+        'reference_hashes': {'rfd4/model.safetensors': 'expected-sha256'},
+    }
+
+    selection = cb.select_eligible_peer(requirements, origin_node='origin')
+
+    assert selection == {'node_id': 'peer-4032', 'reference_probe_pending': True}
+    assert requirements_seen[0] == requirements
+    assert requirements_seen[1] == {
+        **requirements, 'references': [], 'reference_hashes': {},
+    }
 
 
 def test_cuda_targets_distinguish_4090_and_5090_without_assuming_equal_support():

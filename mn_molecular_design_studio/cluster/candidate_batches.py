@@ -31,19 +31,34 @@ def actor(owner_id, project_id, *, allow_development=False):
 
 
 def select_eligible_peer(needs, *, origin_node, ordinal=1, exclude_node_ids=()):
-    """Choose a currently compatible, available peer workstation for a campaign attempt."""
+    """Choose an available peer, allowing only exact reference hashes to await probing."""
     store = Store()
     excluded = {str(value) for value in exclude_node_ids if value}
-    options = [
-        item for item in store.placement_options(needs, origin_node=origin_node)
-        if item.get("node_id") != origin_node and item.get("node_id") not in excluded
-    ]
+    def peer_options(requirements):
+        return [
+            item for item in store.placement_options(requirements, origin_node=origin_node)
+            if item.get("node_id") != origin_node and item.get("node_id") not in excluded
+        ]
+
+    options = peer_options(needs)
+    reference_probe_pending = False
+    if not options and (needs.get("references") or needs.get("reference_hashes")):
+        # A pinned submission with its full requirements remains queued until
+        # the agent publishes exact hashes. Use the probe-only requirements to
+        # choose a reachable, otherwise-capable peer; the scheduler still
+        # applies the original requirements before any worker can claim it.
+        probe_needs = {**needs, "references": [], "reference_hashes": {}}
+        options = peer_options(probe_needs)
+        reference_probe_pending = bool(options)
     if not options:
         raise ValueError(
             "No distinct compatible peer workstation is currently available for eligible execution."
         )
     index = (max(1, int(ordinal)) - 1) % len(options)
-    return str(options[index]["node_id"])
+    return {
+        "node_id": str(options[index]["node_id"]),
+        "reference_probe_pending": reference_probe_pending,
+    }
 
 
 def pack_request(request, destination):
@@ -142,14 +157,16 @@ def submit(request, manifest, submission_key, settings, *, owner_id, project_id,
         requested_placement = str(settings.get('placement') or 'auto')
         placement = requested_placement
         if requested_placement == 'eligible':
-            placement = select_eligible_peer(
+            selection = select_eligible_peer(
                 needs,
                 origin_node=config.identity(),
                 ordinal=settings.get('placement_ordinal', 1),
                 exclude_node_ids=settings.get('exclude_node_ids', ()),
             )
             state['placement_policy'] = 'eligible'
-            state['placement_node_id'] = placement
+            state['placement_node_id'] = selection['node_id']
+            state['placement_reference_probe_pending'] = selection['reference_probe_pending']
+            placement = selection['node_id']
         state['prepared_envelope'] = dict(kind='workflow', payload=prepared, bundle_id=checksum,
             project_id=project_id, requirements=needs, origin_node=config.identity(),
             placement=placement, idempotency_key=submission_key)
