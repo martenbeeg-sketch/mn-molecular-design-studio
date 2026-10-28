@@ -896,3 +896,19 @@ contains the reviewed implementation and tests. The following documentation comm
 `docs: record native phase measurements and execution planning`, contains this updated
 report and the timing/planning evidence. Its actual hash is reported in the completion
 message. Only these scoped source, test, report and evidence files are committed.
+
+## 21. Phase 6C.2 — Durable job/attempt accounting
+
+[Native execution-job ledger](native-execution-job-ledger.md) documents the
+implemented schema-v2 contract, atomic ordered manifests, independent native attempt
+states, operational execution retries, strict receipts, resource accounting,
+recovery tests and retained P4/P5 checks. Sections 9–10 and 14 above remain the
+historical design context; the new report distinguishes implemented accounting from
+remaining native-adapter and distributed execution requirements.
+
+New production ledgers attach one independent job to each authorized attempt;
+existing schema-v1 ledgers retain their original interpretation without migration.
+Multi-member reservations remain accounting-only and are refused by dispatch.
+The read-only planner now includes bounded, synthetic membership previews without
+authorizing work. Supported campaign native sizes remain `[1]`. No new inference,
+performance measurement, peer deployment or batching capacity was introduced.
