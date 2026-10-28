@@ -106,11 +106,15 @@ if action == 'apply':
     assert json.loads(app.session_state['applied']['engine_overrides_json']) == {'screen_steps': 1}
 
 
-def test_native_graph_api_submission_preserves_long_settings_and_retry_identity(api_data, monkeypatch):
+@pytest.mark.parametrize('development', [False, True])
+def test_native_graph_api_submission_preserves_long_settings_and_retry_identity(api_data, monkeypatch, development):
     """The real Phase 7B failure occurred after validation, during submission."""
     import shutil
     from pathlib import Path
     from mn_molecular_design_studio.engine.workflow_engine.core import workflow_queue, jobs
+    from mn_molecular_design_studio import auth
+    if development:
+        monkeypatch.setenv('MN_MOLECULAR_DESIGN_STUDIO_AUTH_MODE', 'development')
     target = api_data['root'] / 'PD-L1.pdb'
     shutil.copyfile(Path(__file__).parent / 'fixtures/pdl1_p4_ca.pdb', target)
     graph = cp.new_pipeline(['bindcraft2'], mode='native_complete')
@@ -131,6 +135,10 @@ def test_native_graph_api_submission_preserves_long_settings_and_retry_identity(
     response = api_data['client'].post('/api/v1/pipelines/run', json=payload, headers=headers)
     assert response.status_code == 202, response.text
     assert len(launches) == 1
+    metadata = jobs.read_json(launches[0] / 'metadata.json')
+    assert metadata['studio_owner_id'] == (auth.development_user()['id'] if development else api_data['admin']['id'])
+    assert metadata['studio_project_id'] == api_data['project']['id']
+    assert metadata['studio_development_mode'] is development
     restored = jobs.read_json(launches[0] / 'worker_request.json')['kwargs']['graph']
     assert restored['nodes'][1]['data']['params']['engine_overrides_json'] == content
     replay = api_data['client'].post('/api/v1/pipelines/run', json=payload, headers=headers)

@@ -234,3 +234,38 @@ def test_partial_pool_context_survives_successful_intermediate_analysis():
     assert len(result['candidate_batches']) == 1
     assert result['candidate_batches'][0]['missing_batches'] == ['b000002']
     assert ce.inherit_partial_pool({}, [{}]) is None
+
+
+@pytest.mark.parametrize('development', [False, True])
+def test_peer_batch_lifecycle_uses_durable_controller_identity(tmp_path, monkeypatch, development):
+    import time
+    from mn_molecular_design_studio import runtime
+    from mn_molecular_design_studio.cluster import candidate_batches as peers, config
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    jobs.write_json(tmp_path / 'metadata.json', dict(studio_owner_id='owner',
+        studio_project_id='project', studio_development_mode=development))
+    monkeypatch.setattr(runtime, 'runs_root', lambda: tmp_path / 'runs')
+    monkeypatch.setattr(config, 'enabled', lambda: True)
+    batch = batches(tmp_path)[0]
+    current = {'batches': [batch]}
+    calls = []
+    def submit(*args, **kwargs):
+        calls.append(('submit', kwargs['allow_development']))
+        return {'cluster_job_id': 'remote'}
+    def poll(*args, **kwargs):
+        calls.append(('poll', kwargs['allow_development']))
+        return 'disconnected', None, {'node_id': 'offline'}
+    def cancel(*args, **kwargs):
+        calls.append(('cancel', kwargs['allow_development']))
+        assert kwargs['owner_id'] == 'owner' and kwargs['project_id'] == 'project'
+    monkeypatch.setattr(peers, 'submit', submit)
+    monkeypatch.setattr(peers, 'poll', poll)
+    monkeypatch.setattr(peers, 'cancel', cancel)
+    node = dict(id='predict', data=dict(kind='boltz2', label='Prediction'))
+    arguments = dict(graph=gp, owner_id='owner', project_id='project', gpu_device='all', persist=lambda: None)
+    settings = ce.policy(dict(mode='sharded', placement='auto', stall_timeout_seconds=60))
+    assert ce.tick(tmp_path, node, current, {}, {}, 'a' * 64, settings, **arguments) is None
+    batch['disconnected_since'] = time.time() - 120
+    assert ce.tick(tmp_path, node, current, {}, {}, 'a' * 64, settings, **arguments)[1] == 'failed'
+    ce.cancel(tmp_path, {'nodes': {'predict': {'batches': [dict(status='queued', cluster_job_id='other')]}}})
+    assert calls == [('submit', development), ('poll', development), ('cancel', development), ('cancel', development)]

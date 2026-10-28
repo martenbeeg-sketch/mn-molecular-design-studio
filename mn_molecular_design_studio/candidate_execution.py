@@ -335,6 +335,7 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
     import socket
     import time
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import submission_tags
+    allow_development = bool(read_json(Path(parent) / 'metadata.json').get('studio_development_mode'))
     if 'batches' not in current:
         current['batches'] = initialize(parent, node, source, params, key, settings,
             make_source=graph._local_source, make_request=graph.node_request, read_rows=graph._absolute_candidates)
@@ -346,7 +347,8 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
             continue
         if batch.get('cluster_job_id'):
             from mn_molecular_design_studio.cluster import candidate_batches
-            status, output, remote_job = candidate_batches.poll(batch, owner_id=owner_id, project_id=project_id)
+            status, output, remote_job = candidate_batches.poll(batch, owner_id=owner_id, project_id=project_id,
+                                                              allow_development=allow_development)
             batch['status'] = status
             if status == 'disconnected':
                 batch.setdefault('disconnected_since', time.time())
@@ -354,7 +356,8 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                     # A disconnected job may still be computing. Queue cancellation
                     # and quarantine its identity; never sample it again elsewhere
                     # until the original execution can be reconciled.
-                    candidate_batches.cancel(batch, owner_id=owner_id, project_id=project_id)
+                    candidate_batches.cancel(batch, owner_id=owner_id, project_id=project_id,
+                                             allow_development=allow_development)
                     batch.update(status='lost', quarantined=True,
                         error='Worker disconnected beyond the recovery window; cancellation queued. No duplicate attempt was launched.')
             else:
@@ -478,7 +481,8 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                 if config.enabled():
                     request['resources']['gpu_device'] = selected_gpu
                     result = candidate_batches.submit(request, batch['manifest'], submission_key, settings,
-                        owner_id=owner_id, project_id=project_id, state=batch)
+                        owner_id=owner_id, project_id=project_id, state=batch,
+                        allow_development=allow_development)
                     batch['attempts'].append(dict(index=attempt_index, cluster_job_id=result['cluster_job_id'],
                         status='queued', started_at=utc_now(), submission_key=submission_key))
                     batch.update(status='queued', cluster_job_id=result['cluster_job_id'])
@@ -530,6 +534,7 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
 
 def cancel(parent, state):
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import stop_job
+    metadata = read_json(Path(parent) / 'metadata.json')
     for node in state.get('nodes', {}).values():
         for group in node.get('incremental_groups', {}).values():
             cancel(parent, {'nodes': {'group': group['state']}})
@@ -539,7 +544,9 @@ def cancel(parent, state):
             if batch.get('cluster_job_id') and batch['status'] not in TERMINAL:
                 from mn_molecular_design_studio.cluster import candidate_batches
                 marker = read_json(Path(parent) / 'molecular_design_studio.json')
-                candidate_batches.cancel(batch, owner_id=marker.get('studio_owner_id'), project_id=marker.get('project_id'))
+                candidate_batches.cancel(batch, owner_id=metadata.get('studio_owner_id') or marker.get('studio_owner_id'),
+                    project_id=metadata.get('studio_project_id') or marker.get('project_id'),
+                    allow_development=bool(metadata.get('studio_development_mode')))
                 batch['status'] = 'cancelled'
             if batch.get('job_run_dir') and batch['status'] not in TERMINAL:
                 stop_job(Path(batch['job_run_dir']), reason='Parent pipeline was cancelled')

@@ -742,7 +742,12 @@ def run_visual_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any
         if device not in {"all", "0", "1"}:
             raise HTTPException(status_code=422, detail="Choose automatic GPU assignment, GPU 0, or GPU 1.")
         version = _call(save_definition, graph, str(user["id"]), project_id, version=True)
-        run_dir = _call(enqueue_graph_pipeline, graph, pipeline_name=graph["name"], owner_id=str(user["id"]), project_id=project_id, reuse_completed=reuse, gpu_device=device)
+        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import submission_tags
+        with submission_tags(
+            studio_owner_id=str(user["id"]), studio_project_id=project_id,
+            studio_development_mode=is_development_mode(),
+        ):
+            run_dir = _call(enqueue_graph_pipeline, graph, pipeline_name=graph["name"], owner_id=str(user["id"]), project_id=project_id, reuse_completed=reuse, gpu_device=device)
         result = {"job": job_reference(run_dir), "revision": version["revision"]}
         return mark_studio_job(result, project_id=project_id, owner_id=str(user["id"]))
     return _submit_once(request, selected_project, user, "pipeline", idempotency_key, perform)
