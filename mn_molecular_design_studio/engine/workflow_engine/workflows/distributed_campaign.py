@@ -716,7 +716,10 @@ def _submit_rfd4_peer_attempt(
     parameters.pop("distributed_campaign", None)
     metadata = read_json(child_run_dir / "metadata.json")
     resources = dict(metadata.get("resource_request") or {})
-    resources.update(gpu=True, gpu_device="auto")
+    # The scheduler's boolean GPU reservation marker is internal metadata;
+    # the remote workflow API infers GPU use from the workflow and device.
+    resources.pop("gpu", None)
+    resources.update(gpu_device="auto")
     request = {
         "schema_version": 1,
         "workflow": "design.rfd4_proteina",

@@ -182,7 +182,13 @@ def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worke
         child.mkdir(parents=True)
         jobs.write_json(child / "input.json", {"task_group": task_group, "tool": tool,
                                                 "job_type": job_type, "params": kwargs})
-        jobs.write_json(child / "metadata.json", {"status": "queued"})
+        jobs.write_json(child / "metadata.json", {
+            "status": "queued",
+            "resource_request": {
+                "cpu_cores": 8, "gpu": True, "gpu_device": "auto", "min_vram_gb": 16.0,
+                "ram_gb": 0.0, "scratch_gb": 0.0,
+            },
+        })
         jobs.write_json(child / "worker_request.json", {"kind": "workflow_call"})
         jobs.write_json(child / "command.json", {"mode": "internal", "command": []})
         return child
@@ -199,6 +205,7 @@ def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worke
         assert request["parameters"]["gpu_device"] == "auto"
         assert "task_group" not in request["parameters"]
         assert request["resources"]["gpu_device"] == "auto"
+        assert "gpu" not in request["resources"]
         assert settings["placement"] == "auto"
         assert owner_id == "owner" and project_id == "project"
         assert allow_development is True
