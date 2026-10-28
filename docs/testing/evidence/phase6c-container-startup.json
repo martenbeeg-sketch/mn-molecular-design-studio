@@ -1,0 +1,308 @@
+{
+  "measured_at": "2026-10-28T13:49:58.121147+00:00",
+  "host": "pc002975",
+  "scope": "CPU-only Docker client wall interval; includes create/start/exit/--rm; excludes engine imports, GPU runtime and model initialization.",
+  "images": [
+    {
+      "image": "mn-bindcraft2:v1.0.4-cu13-pae-v1",
+      "image_id": "sha256:673ec7cf961eb892f6977ed425920a2fae22eb0b0aae4510b9e7cbecc7fedbcb",
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--pull=never",
+        "--network=none",
+        "--runtime=runc",
+        "--entrypoint",
+        "/bin/true",
+        "mn-bindcraft2:v1.0.4-cu13-pae-v1"
+      ],
+      "samples": [
+        {
+          "elapsed_seconds": 0.2145275839138776,
+          "return_code": 0,
+          "span_id": "4ddb40a3-29d0-4af9-8e4c-59e76b6d9479"
+        },
+        {
+          "elapsed_seconds": 0.21589780715294182,
+          "return_code": 0,
+          "span_id": "df13f22c-a376-4ac5-b30a-a06aec239dad"
+        },
+        {
+          "elapsed_seconds": 0.19922377401962876,
+          "return_code": 0,
+          "span_id": "707c64e6-2f01-4274-8779-713306231f69"
+        }
+      ]
+    },
+    {
+      "image": "mn-bindcraft2:v1.0.4-cu13-pae-v1",
+      "image_id": "sha256:673ec7cf961eb892f6977ed425920a2fae22eb0b0aae4510b9e7cbecc7fedbcb",
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--pull=never",
+        "--network=none",
+        "--runtime=runc",
+        "--entrypoint",
+        "python3",
+        "mn-bindcraft2:v1.0.4-cu13-pae-v1",
+        "-c",
+        "pass"
+      ],
+      "samples": [
+        {
+          "elapsed_seconds": 0.2488561379723251,
+          "return_code": 0,
+          "span_id": "a986ae9e-5258-4bab-8797-e73a2ef93149"
+        },
+        {
+          "elapsed_seconds": 0.2653338019736111,
+          "return_code": 0,
+          "span_id": "bb489111-a0b0-4da1-a96f-173fead1f2a6"
+        },
+        {
+          "elapsed_seconds": 0.31303650606423616,
+          "return_code": 0,
+          "span_id": "72ec39f1-af9e-4a98-8c0a-95c18fa51cc6"
+        }
+      ]
+    },
+    {
+      "image": "mn-rfd4-proteina:0.0.3-cu130",
+      "image_id": "sha256:c34efb5afca78c0341cf996c9dadc8102a7fb3760e1792697a8779803e0e44f5",
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--pull=never",
+        "--network=none",
+        "--runtime=runc",
+        "--entrypoint",
+        "/bin/true",
+        "mn-rfd4-proteina:0.0.3-cu130"
+      ],
+      "samples": [
+        {
+          "elapsed_seconds": 0.2283775929827243,
+          "return_code": 0,
+          "span_id": "ee5fcefa-a410-4a0a-8813-7c29faa9c6d8"
+        },
+        {
+          "elapsed_seconds": 0.21131535293534398,
+          "return_code": 0,
+          "span_id": "f50aff77-5815-4331-b7e4-b34b24730dad"
+        },
+        {
+          "elapsed_seconds": 0.2012194620911032,
+          "return_code": 0,
+          "span_id": "1ae1b88f-7873-4b96-b899-888321fa653c"
+        }
+      ]
+    },
+    {
+      "image": "mn-rfd4-proteina:0.0.3-cu130",
+      "image_id": "sha256:c34efb5afca78c0341cf996c9dadc8102a7fb3760e1792697a8779803e0e44f5",
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--pull=never",
+        "--network=none",
+        "--runtime=runc",
+        "--entrypoint",
+        "python3",
+        "mn-rfd4-proteina:0.0.3-cu130",
+        "-c",
+        "pass"
+      ],
+      "samples": [
+        {
+          "elapsed_seconds": 0.2639201970305294,
+          "return_code": 0,
+          "span_id": "968bb583-cebd-4a5f-b03d-02d288016462"
+        },
+        {
+          "elapsed_seconds": 0.24490625387988985,
+          "return_code": 0,
+          "span_id": "7a0b4a7d-80c1-42e0-8de2-3ac1134c82b1"
+        },
+        {
+          "elapsed_seconds": 0.3321211049333215,
+          "return_code": 0,
+          "span_id": "438bf67f-d043-471d-8029-69401e9a7688"
+        }
+      ]
+    },
+    {
+      "image": "mn-rfdiffusion:latest",
+      "image_id": "sha256:8b40d74ca0193a7439fd592b283f34f701cf3d24ea1f390675a141a059bb62fe",
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--pull=never",
+        "--network=none",
+        "--runtime=runc",
+        "--entrypoint",
+        "/bin/true",
+        "mn-rfdiffusion:latest"
+      ],
+      "samples": [
+        {
+          "elapsed_seconds": 0.2858005450107157,
+          "return_code": 0,
+          "span_id": "5133edaa-79ca-4497-b00b-1cb6dc4e11a7"
+        },
+        {
+          "elapsed_seconds": 0.2300938421394676,
+          "return_code": 0,
+          "span_id": "d7405525-6f92-49cc-bd5f-0be643d92b8f"
+        },
+        {
+          "elapsed_seconds": 0.17410714807920158,
+          "return_code": 0,
+          "span_id": "ab9026f7-4af8-46b0-b573-b4c744ace90e"
+        }
+      ]
+    },
+    {
+      "image": "mn-rfdiffusion:latest",
+      "image_id": "sha256:8b40d74ca0193a7439fd592b283f34f701cf3d24ea1f390675a141a059bb62fe",
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--pull=never",
+        "--network=none",
+        "--runtime=runc",
+        "--entrypoint",
+        "python3",
+        "mn-rfdiffusion:latest",
+        "-c",
+        "pass"
+      ],
+      "samples": [
+        {
+          "elapsed_seconds": 0.22728189104236662,
+          "return_code": 0,
+          "span_id": "8973e90a-3f16-4db0-be49-28d7c9e4f5ce"
+        },
+        {
+          "elapsed_seconds": 0.18586803996004164,
+          "return_code": 0,
+          "span_id": "fd697d6a-0ebd-4bae-b120-ebde339d6bf8"
+        },
+        {
+          "elapsed_seconds": 0.20696814288385212,
+          "return_code": 0,
+          "span_id": "9081810b-fc39-460b-a436-043d7a4907bb"
+        }
+      ]
+    },
+    {
+      "image": "mn-foundry:cu128",
+      "image_id": "sha256:bd959dfe52dc2d9e4ec4ddb0618770cb3566a9e5dcdfda2edce8d0051379917a",
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--pull=never",
+        "--network=none",
+        "--runtime=runc",
+        "--entrypoint",
+        "/bin/true",
+        "mn-foundry:cu128"
+      ],
+      "samples": [
+        {
+          "elapsed_seconds": 0.2110426970757544,
+          "return_code": 0,
+          "span_id": "eaa2f3b6-4eea-457f-b608-2b8bd80df780"
+        },
+        {
+          "elapsed_seconds": 0.2086915650870651,
+          "return_code": 0,
+          "span_id": "78de74dd-5744-42eb-bcf3-71d5a7015229"
+        },
+        {
+          "elapsed_seconds": 0.20726879313588142,
+          "return_code": 0,
+          "span_id": "9ee9a709-38c4-4e5c-8ab5-0bf447885470"
+        }
+      ]
+    },
+    {
+      "image": "mn-foundry:cu128",
+      "image_id": "sha256:bd959dfe52dc2d9e4ec4ddb0618770cb3566a9e5dcdfda2edce8d0051379917a",
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--pull=never",
+        "--network=none",
+        "--runtime=runc",
+        "--entrypoint",
+        "python3",
+        "mn-foundry:cu128",
+        "-c",
+        "pass"
+      ],
+      "samples": [
+        {
+          "elapsed_seconds": 0.2599861631169915,
+          "return_code": 0,
+          "span_id": "4d419afd-f9c1-4e89-8be2-c9627116050e"
+        },
+        {
+          "elapsed_seconds": 0.26017211214639246,
+          "return_code": 0,
+          "span_id": "e1c54f6d-7f47-4d53-845a-9ba8928c36f9"
+        },
+        {
+          "elapsed_seconds": 0.22657283395528793,
+          "return_code": 0,
+          "span_id": "7d227b13-7cd4-49d0-8c0d-2f2b820e4696"
+        }
+      ]
+    }
+  ],
+  "inspected_source_sha256": {
+    "bindcraft2": "050ddc940176d6c549590dc830308c44dfbde172676008f242dccb683b8ed246",
+    "rfd4_generate": "aba4eae926d62ddb22caa0f162224fc21e1e65e18175e5980c9b752f6bdcaa34",
+    "rfd4_model": "74dae63c857e1e325546161ff1aa66367de191d7b1de9ec8e37312290d7dd716",
+    "rfdiffusion": "fd63eeabc654eec036a5f490eaffcda18f48a3982e58a212c6811e8058b8c8b2",
+    "rfdiffusion_sampler": "9a72c4c85f30e8a644cbf5310504032042cd419f8af784ec22702743bdf286da",
+    "rfd3": "be25f35466241cfcb3bf977421f83ccc567a5aa83e53823c63895d40b3def71e",
+    "foundry_base": "64776598652a1f8fa9defe1176b2c7f8fb3cff36a5afb8f9990e31f92e773783"
+  },
+  "peer_inspection": {
+    "pc004032": {
+      "source_commit": "4f9ba772fcb48c1961d74c99f2f5704f34c06197",
+      "dirty_paths": [
+        "mn_molecular_design_studio/run_app.py",
+        "mn_molecular_design_studio/tool_references.py"
+      ],
+      "rfd4_image_id": "sha256:9ffb161fd399a2fd60d29c7520a30d21b57c292893fa281d076f4a2953704d46",
+      "rfd4_generate_sha256": "aba4eae926d62ddb22caa0f162224fc21e1e65e18175e5980c9b752f6bdcaa34",
+      "rfd4_model_sha256": "74dae63c857e1e325546161ff1aa66367de191d7b1de9ec8e37312290d7dd716"
+    },
+    "pc004033": {
+      "source_commit": "4f9ba772fcb48c1961d74c99f2f5704f34c06197",
+      "dirty_paths": [
+        "mn_molecular_design_studio/run_app.py",
+        "mn_molecular_design_studio/tool_references.py"
+      ],
+      "rfd4_image_id": "sha256:9ffb161fd399a2fd60d29c7520a30d21b57c292893fa281d076f4a2953704d46",
+      "rfd4_generate_sha256": "aba4eae926d62ddb22caa0f162224fc21e1e65e18175e5980c9b752f6bdcaa34",
+      "rfd4_model_sha256": "74dae63c857e1e325546161ff1aa66367de191d7b1de9ec8e37312290d7dd716"
+    }
+  },
+  "local_starting_commit": "a25a570",
+  "measurement_limitations": [
+    "Three samples per command, local warm daemon; CPU test activity overlapped; no GPU runtime requested.",
+    "No native engine or checkpoint import; do not subtract from P4/P5 worker intervals.",
+    "Source hash equality only covers the inspected files, not complete image equivalence."
+  ]
+}

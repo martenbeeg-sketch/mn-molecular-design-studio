@@ -1,0 +1,36 @@
+[
+  {
+    "run_id": "20261028-101057-a07ef0a4",
+    "ledger_sha256": "0f575ca3e563181423524207c34ebc5fbcf1c6c9b6ff8c5bf71409ae10bc1460",
+    "legacy_config_equal_after_validation": true,
+    "candidate_count": 1,
+    "validation_checks": [
+      {
+        "candidate_id": "dc_00000001_081fdf168c82bc16",
+        "same_sequence": true,
+        "identity": "pass",
+        "stage_status": "completed"
+      }
+    ]
+  },
+  {
+    "run_id": "20261028-124448-350f7294",
+    "ledger_sha256": "205efddd4c18cea8f8ca9d9ee22a9b5ad193964f5e059854631bf2465e891b39",
+    "legacy_config_equal_after_validation": true,
+    "candidate_count": 2,
+    "validation_checks": [
+      {
+        "candidate_id": "dc_00000001_d68026ec8a3e62d5",
+        "same_sequence": true,
+        "identity": "pass",
+        "stage_status": "completed"
+      },
+      {
+        "candidate_id": "dc_00000002_d68026ec8a3e62d5",
+        "same_sequence": true,
+        "identity": "pass",
+        "stage_status": "completed"
+      }
+    ]
+  }
+]
