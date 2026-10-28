@@ -694,10 +694,10 @@ def stop_job(run_dir: Path, reason: str = "Stopped by user") -> None:
     from mn_molecular_design_studio.engine.workflow_engine.core.central_scheduler import cancel_scheduled_run
 
     initial_metadata = read_json(run_dir / "metadata.json")
-    if str(initial_metadata.get("job_type") or "") == "bindcraft2_campaign":
-        from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import cancel_bindcraft2_distributed_campaign
+    if str(initial_metadata.get("job_type") or "") in {"bindcraft2_campaign", "rfd4_proteina_campaign"}:
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import cancel_distributed_campaign
 
-        cancel_bindcraft2_distributed_campaign(run_dir, reason)
+        cancel_distributed_campaign(run_dir, reason)
     cancel_scheduled_run(run_dir)
     _signal_worker_process(run_dir, signal.SIGTERM)
     if read_json(run_dir / "metadata.json").get("job_type") == "visual_pipeline":

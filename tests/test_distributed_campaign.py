@@ -60,6 +60,18 @@ def test_retry_preserves_attempt_identity_and_seed(tmp_path):
     assert campaign.counters()["attempts_authorized"] == 1
 
 
+def test_rfd4_retry_is_only_safe_before_native_container_launch(tmp_path):
+    child = tmp_path / "rfd4-child"
+    child.mkdir()
+    assert distributed_campaign._rfd4_retry_safe(child)
+    (child / "command.json").write_text(json.dumps({"mode": "local_worker"}))
+    assert distributed_campaign._rfd4_retry_safe(child)
+    (child / "command.json").write_text(json.dumps({"mode": "docker"}))
+    assert not distributed_campaign._rfd4_retry_safe(child)
+    (child / "command.json").write_text("not-json")
+    assert not distributed_campaign._rfd4_retry_safe(child)
+
+
 def test_gpu_compute_receipts_are_durable_and_idempotent(tmp_path):
     campaign = ledger(tmp_path, max_attempts=1, target=1)
     attempt = campaign.authorize(1, batch_id="b1")[0]
@@ -76,6 +88,32 @@ def test_budget_termination_is_explicit_and_stable(tmp_path):
     assert state["termination_reason"] == "budget_exhausted"
     assert campaign.authorize(1, batch_id="b2") == []
     assert campaign.terminate("target_reached")["termination_reason"] == "budget_exhausted"
+
+
+def test_campaign_success_reflects_final_target_even_when_budget_was_the_termination_reason(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    campaign = CampaignLedger.create(
+        tmp_path / "campaign.json",
+        {"accepted_target": 1, "max_attempts": 1, "acceptance_level": "native"},
+        campaign_id="budget-target-campaign",
+    )
+    attempt = campaign.authorize(1, batch_id="batch")[0]
+    candidate = {"candidate_id": "accepted-candidate", "metrics": {"native_pass_filters": True}}
+    campaign.record_receipt(
+        attempt["attempt_id"], "receipt", candidates=[candidate],
+        native_state={"trajectories": 1, "accepted": 1},
+    )
+    campaign.terminate("budget_exhausted")
+    captured = {}
+    monkeypatch.setattr(jobs, "finish_job", lambda _path, success, result: captured.update(success=success, result=result))
+
+    distributed_campaign._finish_campaign(tmp_path, campaign, [candidate])
+
+    metrics = captured["result"]["metrics"]
+    assert metrics["termination_reason"] == "budget_exhausted"
+    assert metrics["campaign_success"] is True
+    assert metrics["target_met"] is True
 
 
 @pytest.mark.parametrize(
@@ -163,6 +201,51 @@ def test_failed_validation_stage_retries_same_run_within_campaign_limit(tmp_path
     assert state["validated_acceptance"] == "failed"
 
 
+def test_requeued_validation_reopens_failed_acceptance_until_evidence_is_reconciled(tmp_path):
+    config = distributed_campaign.validate_campaign_config({
+        "accepted_target": 1,
+        "max_attempts": 1,
+        "acceptance_level": "validated",
+        "validation_stages": [{
+            "workflow": "refolding.optimized_prediction",
+            "required_metrics": ["iptm"],
+        }],
+    })
+    campaign = CampaignLedger.create(tmp_path / "campaign.json", config, campaign_id="requeue-campaign")
+    attempt = campaign.authorize(1, batch_id="batch")[0]
+    candidate = {
+        "candidate_id": "requeue-candidate",
+        "binder_sequence": "ACDE",
+        "metrics": {"native_pass_filters": True},
+    }
+    campaign.record_receipt(
+        attempt["attempt_id"], "native-receipt", candidates=[candidate],
+        native_state={"trajectories": 1, "accepted": 1},
+    )
+    validation_run = tmp_path / "validation-run"
+    validation_run.mkdir()
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json
+
+    write_json(validation_run / "metadata.json", {"status": "running"})
+    campaign.update_candidate(
+        candidate["candidate_id"],
+        validated_acceptance="failed",
+        validation_decision_reason="previous submission failed",
+        decision_reason="previous submission failed",
+        validation_stages={"0": {"status": "queued", "run_dir": str(validation_run)}},
+    )
+
+    distributed_campaign._drive_validation(
+        tmp_path, campaign, [candidate], config, dispatch=False,
+    )
+
+    state = campaign.snapshot()
+    record = state["candidates"][candidate["candidate_id"]]
+    assert record["validated_acceptance"] == "pending"
+    assert record["validation_decision_reason"] == ""
+    assert distributed_campaign._validation_pending_candidates(state, config) == 1
+
+
 def test_validation_rules_are_stage_and_candidate_qualified():
     source = {
         "candidate_id": "dc_00000001_a", "stage": "generation.backbone_sequence",
@@ -209,12 +292,12 @@ def test_optimized_prediction_validation_request_keeps_source_sequence_and_resou
         {
             "workflow": "refolding.optimized_prediction",
             "parameters": {"engine": "boltz2", "samples": 1, "num_recycles": 6},
-            "resources": {"gpu_device": "auto", "cpu_cores": 3},
+            "resources": {"gpu_device": "0", "cpu_cores": 3},
         },
         0, "campaign-test", None,
     )
     assert payload["workflow"] == "refolding.optimized_prediction"
-    assert payload["resources"] == {"cpu_cores": 3, "gpu_device": "auto"}
+    assert payload["resources"] == {"cpu_cores": 3, "gpu_device": "0"}
     task = payload["parameters"]["tasks"][0]
     assert task["target_protein_sequences"] == "ACDEFG"
     assert task["binder_sequence"] == "KLMNP"
@@ -466,6 +549,180 @@ def test_attempt_child_rebases_target_and_native_settings_to_its_run(tmp_path, m
     assert settings["project_folder"] == "output"
     assert settings["targets"][0]["target_path"] == "target.pdb"
     assert settings["campaign_seed"] == attempt["seed"]
+
+
+def test_rfd4_attempt_child_queues_one_seeded_gpu_co_design(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    root = tmp_path / "runs"
+    monkeypatch.setattr(jobs, "runs_root", lambda: root)
+    parent = root / "design" / "rfd4-parent"
+    staged_target = parent / "artifacts/rfd4_proteina/input/target.cif"
+    staged_target.parent.mkdir(parents=True)
+    staged_target.write_text("target")
+    jobs.write_json(parent / "metadata.json", {
+        "run_id": parent.name, "task_group": "design", "status": "running",
+        "tool": "rfd4_proteina", "job_type": "rfd4_proteina_campaign",
+    })
+    jobs.write_json(parent / "input.json", {
+        "tool": "rfd4_proteina", "inputs": {}, "params": {
+            "task": "protein_binder", "input_mode": "guided_binder",
+            "target_structure": str(staged_target), "target_chains": ["A"],
+            "hotspots": "A40", "length_min": 60, "length_max": 120,
+            "num_designs": 8, "batch_size": 1, "nsteps": 60, "seed": 55,
+            "options": {"refold": False}, "cpu_cores": 3, "gpu_device": "0",
+            "job_name": "PD-L1 campaign", "task_group": "design",
+            "distributed_campaign": {"enabled": True, "generator_id": "rfd4_proteina"},
+        },
+    })
+    jobs.write_json(parent / "artifacts/rfd4_proteina/request.json", {
+        "target_structure": "/work/artifacts/rfd4_proteina/input/target.cif",
+    })
+    config = distributed_campaign.validate_campaign_config({
+        "generator_id": "rfd4_proteina", "acceptance_level": "validated",
+        "max_attempts": 1, "accepted_target": 1, "seed": 101,
+        "gpu_selection": "0,1", "resources": {"cpu_cores": 3},
+        "validation_stages": [{"workflow": "refolding.optimized_prediction",
+                                "required_metrics": ["model_1_iptm"]}],
+    })
+    ledger = CampaignLedger.create(parent / "artifacts/distributed_campaign/ledger.json", config)
+    attempt = ledger.authorize(1, batch_id="batch-rfd4")[0]
+    dispatched = []
+    monkeypatch.setattr(
+        "mn_molecular_design_studio.engine.workflow_engine.core.local_worker.spawn_worker_for_run",
+        lambda run_dir: dispatched.append(Path(run_dir)),
+    )
+
+    child = distributed_campaign._create_attempt_child(parent, ledger, attempt, config)
+
+    child_params = jobs.read_json(child / "input.json")["params"]
+    worker = jobs.read_json(child / "worker_request.json")
+    metadata = jobs.read_json(child / "metadata.json")
+    assert child_params["num_designs"] == child_params["batch_size"] == 1
+    assert child_params["seed"] == attempt["seed"]
+    assert child_params["target_structure"] == str(staged_target)
+    assert child_params["distributed_campaign"] is None
+    assert child_params["task"] == "protein_binder"
+    assert worker["resources"]["gpu_device"] == "0"
+    assert worker["resources"]["min_vram_gb"] == 16.0
+    assert worker["resources"]["cpu_cores"] == 3
+    assert metadata["distributed_attempt_id"] == attempt["attempt_id"]
+    assert metadata["parent_role"] == "distributed_rfd4_attempt"
+    assert dispatched == [child]
+    assert ledger.snapshot()["attempts"][attempt["attempt_id"]]["requested_outputs"] == 1
+
+
+def test_rfd4_candidate_reconciliation_preserves_co_designed_sequence_and_target_mapping(
+    tmp_path, design_source_factory
+):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    child, candidate = design_source_factory(tmp_path / "rfd4-child")
+    target_path = child / "target.cif"
+    target_path.write_bytes((child / "designed.cif").read_bytes())
+    jobs.write_json(child / "input.json", {"params": {
+        "target_structure": str(target_path), "target_chains": ["A"],
+        "length_min": 5, "length_max": 20,
+    }})
+    jobs.write_json(child / "metadata.json", {
+        "resource_allocation": {"gpu_device": "1", "gpu_ids": [1]},
+        "scheduler_worker_id": "local-test-worker",
+    })
+    candidate.update(
+        source_tool="rfd4_proteina", target_pdb=str(target_path),
+        raw_metadata={"engine_version": "test"},
+    )
+    (child / "artifacts/normalized_candidates/candidates.jsonl").write_text(
+        json.dumps(candidate) + "\n"
+    )
+    attempt = {"ordinal": 1, "attempt_id": "a00000001", "batch_id": "batch-1", "seed": 4242}
+    native_state = {
+        "engine": "rfd4_proteina", "authoritative": False,
+        "attempt_unit": "one native design request", "requested_designs": 1,
+        "output_candidates": 1, "seed": 4242,
+    }
+
+    rows = distributed_campaign._rfd4_candidate_rows(child, "campaign-rfd4", attempt, native_state)
+
+    assert len(rows) == 1
+    row = rows[0]
+    lineage = row["raw_metadata"]["distributed_campaign"]
+    mapping = row["raw_metadata"]["source_to_prediction_components"]
+    assert row["source_tool"] == "rfd4_proteina"
+    assert row["binder_sequence"] == "KLMNP"
+    assert row["binder_chains"] == ["B"] and row["target_chains"] == ["A"]
+    assert mapping["target"] == [{
+        "source_chain": "A", "prediction_chain": "A",
+        "source_sequence": "ACDEFG", "prediction_sequence": "ACDEFG",
+    }]
+    assert lineage["native_acceptance"] == "unavailable"
+    assert lineage["attempt_seed"] == 4242
+    assert lineage["sequence_structure_mode"] == "co_design"
+
+
+def test_rfd4_candidate_reconciliation_maps_mmcif_author_chain_to_label_chain(
+    tmp_path, design_source_factory
+):
+    from Bio.PDB import MMCIFIO
+    from Bio.PDB.MMCIF2Dict import MMCIF2Dict
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    child, candidate = design_source_factory(tmp_path / "rfd4-numeric-chain-child")
+    target_path = child / "target.cif"
+    payload = MMCIF2Dict(str(child / "designed.cif"))
+    payload["_atom_site.auth_asym_id"] = [
+        "1" if str(value) == "A" else str(value)
+        for value in payload["_atom_site.auth_asym_id"]
+    ]
+    writer = MMCIFIO()
+    writer.set_dict(payload)
+    writer.save(str(target_path))
+    jobs.write_json(child / "input.json", {"params": {
+        "target_structure": str(target_path), "target_chains": ["1"],
+        "length_min": 5, "length_max": 20,
+    }})
+    jobs.write_json(child / "metadata.json", {"resource_allocation": {"gpu_device": "0"}})
+    candidate.update(source_tool="rfd4_proteina", raw_metadata={})
+    (child / "artifacts/normalized_candidates/candidates.jsonl").write_text(
+        json.dumps(candidate) + "\n"
+    )
+
+    rows = distributed_campaign._rfd4_candidate_rows(
+        child, "campaign-rfd4-labels",
+        {"ordinal": 1, "attempt_id": "a00000001", "batch_id": "b1", "seed": 9},
+        {"authoritative": False, "output_candidates": 1},
+    )
+
+    assert rows[0]["raw_metadata"]["source_to_prediction_components"]["target"] == [{
+        "source_chain": "1", "prediction_chain": "A",
+        "source_sequence": "ACDEFG", "prediction_sequence": "ACDEFG",
+    }]
+
+
+def test_rfd4_campaign_stop_routes_through_global_child_cancellation(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import central_scheduler, jobs
+
+    run_dir = tmp_path / "design" / "campaign-parent"
+    run_dir.mkdir(parents=True)
+    jobs.write_json(run_dir / "metadata.json", {
+        "run_id": run_dir.name, "task_group": "design", "job_type": "rfd4_proteina_campaign",
+        "tool": "rfd4_proteina", "status": "running",
+    })
+    jobs.write_json(run_dir / "result.json", {"success": True})
+    calls = []
+    monkeypatch.setattr(
+        distributed_campaign, "cancel_distributed_campaign",
+        lambda path, reason: calls.append((Path(path), reason)),
+    )
+    monkeypatch.setattr(central_scheduler, "cancel_scheduled_run", lambda _path: None)
+    monkeypatch.setattr(jobs, "_signal_worker_process", lambda *_args: None)
+    monkeypatch.setattr(jobs, "_stop_run_docker_containers", lambda _path: [])
+    monkeypatch.setattr(jobs, "_release_resource_lock", lambda _path: None)
+
+    jobs.stop_job(run_dir, "cancel RFD4 campaign")
+
+    assert calls == [(run_dir, "cancel RFD4 campaign")]
+    assert jobs.read_json(run_dir / "metadata.json")["status"] == "cancelled"
 
 
 def test_controller_reaches_one_global_target_and_keeps_unique_seed_and_gpu_lineage(

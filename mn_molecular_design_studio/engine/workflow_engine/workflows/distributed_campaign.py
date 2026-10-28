@@ -760,12 +760,306 @@ def _native_candidate_rows(
     return result
 
 
+def _rfd4_candidate_rows(
+    child_run_dir: Path,
+    campaign_id: str,
+    attempt: dict[str, Any],
+    native_state: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Verify one RFD4 co-designed sequence/structure output without inventing native acceptance."""
+    import copy
+
+    from mn_molecular_design_studio.design_validation import protein_chains, read_structure, sequence
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import (
+        _resolve_candidate_structure_path,
+        read_candidates,
+    )
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+    from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import portable_path, resolve_stored_path
+    from mn_molecular_design_studio.rfd4_proteina_input import _cif_label_mapping
+
+    child_run_dir = Path(child_run_dir)
+    candidates_path = child_run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+    candidates = read_candidates(candidates_path)
+    if len(candidates) > 1:
+        raise RuntimeError(
+            f"RFD4 attempt {attempt['attempt_id']} requested one output but normalized {len(candidates)} candidates."
+        )
+    payload = read_json(child_run_dir / "input.json")
+    params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+    target_path = resolve_stored_path(params.get("target_structure"), must_exist=True)
+    if target_path is None or not target_path.is_file():
+        raise RuntimeError(f"RFD4 attempt {attempt['attempt_id']} has no readable staged target structure.")
+    target_chains = protein_chains(read_structure(target_path))
+    selected_source_ids = [str(value) for value in params.get("target_chains") or []]
+    if not selected_source_ids or any(value not in target_chains for value in selected_source_ids):
+        raise RuntimeError(f"RFD4 attempt {attempt['attempt_id']} has invalid source target-chain identities.")
+    source_to_label, _residue_mapping = _cif_label_mapping(target_path)
+    selected_target_sequences: dict[str, tuple[str, str]] = {}
+    for source_id in selected_source_ids:
+        label_id = source_to_label.get(source_id)
+        if not label_id or label_id in selected_target_sequences:
+            raise RuntimeError(f"RFD4 attempt {attempt['attempt_id']} has an ambiguous source-to-label target-chain mapping.")
+        selected_target_sequences[label_id] = (source_id, sequence(target_chains[source_id]))
+    metadata = read_json(child_run_dir / "metadata.json")
+    allocation = metadata.get("resource_allocation") if isinstance(metadata.get("resource_allocation"), dict) else {}
+    result: list[dict[str, Any]] = []
+    seen_native_ids: set[str] = set()
+    for row in candidates:
+        native_id = str(row.get("candidate_id") or "")
+        if not native_id or native_id in seen_native_ids:
+            raise RuntimeError(f"RFD4 returned a missing or duplicate candidate ID in {child_run_dir.name}.")
+        seen_native_ids.add(native_id)
+        binder_ids = [str(value) for value in row.get("binder_chains") or []]
+        target_ids = [str(value) for value in row.get("target_chains") or []]
+        if not binder_ids or not target_ids:
+            raise RuntimeError(f"RFD4 candidate {native_id} is missing explicit target/binder roles.")
+        structure = _resolve_candidate_structure_path(child_run_dir, row)
+        if structure is None or not structure.is_file():
+            raise RuntimeError(f"RFD4 candidate {native_id} has no readable co-designed complex structure.")
+        structure_chains = protein_chains(read_structure(structure))
+        if any(chain_id not in structure_chains for chain_id in binder_ids + target_ids):
+            raise RuntimeError(f"RFD4 candidate {native_id} references a missing protein chain.")
+        actual_binder = ":".join(sequence(structure_chains[chain_id]) for chain_id in binder_ids)
+        expected_binder = str(row.get("binder_sequence") or "").replace(" ", "").upper()
+        if not expected_binder or actual_binder.replace(":", "") != expected_binder.replace(":", ""):
+            raise RuntimeError(f"RFD4 candidate {native_id} sequence differs from its co-designed complex structure.")
+        if len(target_ids) != len(selected_source_ids):
+            raise RuntimeError(f"RFD4 candidate {native_id} changed the number of selected target chains.")
+        target_mapping = []
+        unmatched = dict(selected_target_sequences)
+        for prediction_chain in target_ids:
+            predicted_sequence = sequence(structure_chains[prediction_chain])
+            matches = [
+                label_chain for label_chain, (_source_chain, source_sequence) in unmatched.items()
+                if label_chain == prediction_chain and _sequence_is_subsequence(predicted_sequence, source_sequence)
+            ]
+            if len(matches) != 1:
+                raise RuntimeError(
+                    f"RFD4 candidate {native_id} target chain {prediction_chain} does not map uniquely to a selected source chain."
+                )
+            label_chain = matches[0]
+            source_chain, source_sequence = unmatched.pop(label_chain)
+            target_mapping.append({
+                "source_chain": source_chain,
+                "prediction_chain": prediction_chain,
+                "source_sequence": source_sequence,
+                "prediction_sequence": predicted_sequence,
+            })
+        minimum, maximum = int(params.get("length_min", 60)), int(params.get("length_max", 120))
+        if not minimum <= len(actual_binder.replace(":", "")) <= maximum:
+            raise RuntimeError(f"RFD4 candidate {native_id} is outside its requested binder-length range.")
+
+        candidate = copy.deepcopy(row)
+        candidate["candidate_id"] = (
+            f"dc_{int(attempt['ordinal']):08d}_"
+            f"{hashlib.sha256(f'{campaign_id}:{native_id}'.encode()).hexdigest()[:16]}"
+        )
+        raw = candidate.setdefault("raw_metadata", {})
+        raw["source_run_dir"] = portable_path(child_run_dir)
+        raw["native_candidate_id"] = native_id
+        raw["source_to_prediction_components"] = {
+            "target": target_mapping,
+            "designed_binder": [{
+                "source_chain": None,
+                "prediction_chain": chain_id,
+                "prediction_sequence": sequence(structure_chains[chain_id]),
+            } for chain_id in binder_ids],
+        }
+        raw["distributed_campaign"] = {
+            "campaign_id": campaign_id,
+            "generator_id": "rfd4_proteina",
+            "attempt_id": attempt["attempt_id"],
+            "batch_id": attempt["batch_id"],
+            "attempt_seed": attempt["seed"],
+            "attempt_unit": "one native design request",
+            "worker_run_id": child_run_dir.name,
+            "worker": metadata.get("scheduler_worker_id") or metadata.get("worker_id") or "",
+            "gpu_device": allocation.get("gpu_device") or params.get("gpu_device") or "",
+            "gpu_ids": allocation.get("gpu_ids") or [],
+            "native_state": native_state,
+            "native_acceptance": "unavailable",
+            "sequence_structure_mode": "co_design",
+        }
+        result.append(candidate)
+    return result
+
+
+def _create_rfd4_attempt_child(
+    parent_run_dir: Path,
+    ledger: CampaignLedger,
+    attempt: dict[str, Any],
+    config: dict[str, Any],
+) -> Path:
+    """Queue one independently seeded, one-output RFD4 co-design request."""
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import (
+        mark_internal_job,
+        read_json,
+        submission_tags,
+        write_json,
+    )
+    from mn_molecular_design_studio.engine.workflow_engine.core.local_worker import spawn_worker_for_run
+    from mn_molecular_design_studio.engine.workflow_engine.core.workflow_queue import (
+        enqueue_workflow_call,
+        execution_resources,
+    )
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import rfd4_proteina
+
+    parent_run_dir = Path(parent_run_dir)
+    parent_payload = read_json(parent_run_dir / "input.json")
+    parent_params = parent_payload.get("params") if isinstance(parent_payload.get("params"), dict) else {}
+    if parent_params.get("task") != "protein_binder" or parent_params.get("input_mode") not in {"guided", "guided_binder"}:
+        raise ValueError("RFD4 campaign attempts support the guided protein-binder workflow only.")
+    if parent_params.get("input_files") or parent_params.get("avoid_structures") or parent_params.get("also_bind_structures"):
+        raise ValueError("RFD4 campaign attempts currently require one target structure without secondary specificity files.")
+    request_path = parent_run_dir / "artifacts" / "rfd4_proteina" / "request.json"
+    request = read_json(request_path)
+    staged_target = rfd4_proteina.local_path(parent_run_dir, request.get("target_structure"))
+    if staged_target is None or not staged_target.is_file():
+        raise ValueError("RFD4 campaign parent has no staged target structure to share with attempts.")
+
+    child_kwargs = dict(parent_params)
+    child_kwargs.update(
+        target_structure=str(staged_target),
+        input_files=[],
+        avoid_structures=[],
+        also_bind_structures=[],
+        num_designs=1,
+        batch_size=1,
+        seed=int(attempt["seed"]),
+        gpu_device=_gpu_for_attempt(config, int(attempt["ordinal"])),
+        cpu_cores=int((config.get("resources") or {}).get("cpu_cores") or parent_params.get("cpu_cores") or 8),
+        job_name=f"{parent_params.get('job_name') or parent_run_dir.name}-{attempt['ordinal']:08d}",
+        distributed_campaign=None,
+        task_group="design",
+    )
+    resource_options = config.get("resources") if isinstance(config.get("resources"), dict) else {}
+    resource_request = {
+        "gpu": True,
+        "gpu_device": child_kwargs["gpu_device"],
+        "cpu_cores": child_kwargs["cpu_cores"],
+        "min_vram_gb": float(resource_options.get("min_vram_gb") or 16.0),
+        "ram_gb": float(resource_options.get("ram_gb") or 0),
+        "scratch_gb": float(resource_options.get("scratch_gb") or 0),
+    }
+    campaign_id = ledger.snapshot()["campaign_id"]
+    with submission_tags(
+        distributed_campaign_id=campaign_id,
+        distributed_attempt_id=attempt["attempt_id"],
+        distributed_batch_id=attempt["batch_id"],
+        parent_campaign_run_dir=str(parent_run_dir),
+    ), execution_resources(resource_request):
+        child_run_dir = enqueue_workflow_call(
+            rfd4_proteina.run_rfd4_proteina_design,
+            task_group="design",
+            tool="rfd4_proteina",
+            job_type="rfd4_proteina_design",
+            kwargs=child_kwargs,
+            cpu_cores=int(child_kwargs["cpu_cores"]),
+            gpu_device=child_kwargs["gpu_device"],
+            dispatch=False,
+        )
+    mark_internal_job(
+        child_run_dir, parent_run_dir=parent_run_dir,
+        parent_task_group=parent_run_dir.parent.name,
+        role="distributed_rfd4_attempt", engine="rfd4_proteina",
+    )
+    metadata = read_json(child_run_dir / "metadata.json")
+    metadata.update(
+        distributed_campaign_id=campaign_id,
+        distributed_attempt_id=attempt["attempt_id"],
+        distributed_batch_id=attempt["batch_id"],
+        benchmark_engine="rfd4_proteina",
+        resource_request=resource_request,
+    )
+    write_json(child_run_dir / "metadata.json", metadata)
+    ledger.transition(
+        attempt["attempt_id"], "queued", child_run_dir=str(child_run_dir),
+        native_campaign_seed=int(attempt["seed"]), attempt_unit="one native design request",
+        requested_outputs=1,
+    )
+    spawn_worker_for_run(child_run_dir)
+    return child_run_dir
+
+
+def _repair_rfd4_attempt_child(
+    parent_run_dir: Path,
+    child_run_dir: Path,
+    attempt: dict[str, Any],
+    config: dict[str, Any],
+) -> None:
+    """Repair an interrupted RFD4 queue write before dispatching the child."""
+    import inspect
+
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import (
+        mark_internal_job,
+        read_json,
+        write_json,
+    )
+    from mn_molecular_design_studio.engine.workflow_engine.core.local_worker import spawn_worker_for_run
+    from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import portable_path
+    from mn_molecular_design_studio.engine.workflow_engine.runtime import runs_root
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.rfd4_proteina import run_rfd4_proteina_design
+
+    parent_run_dir, child_run_dir = Path(parent_run_dir), Path(child_run_dir)
+    child_payload = read_json(child_run_dir / "input.json")
+    params = child_payload.get("params") if isinstance(child_payload.get("params"), dict) else {}
+    params.update(
+        num_designs=1, batch_size=1, seed=int(attempt["seed"]),
+        gpu_device=_gpu_for_attempt(config, int(attempt["ordinal"])),
+        distributed_campaign=None,
+    )
+    child_payload["params"] = params
+    write_json(child_run_dir / "input.json", child_payload)
+    metadata = read_json(child_run_dir / "metadata.json")
+    resource_request = metadata.get("resource_request") if isinstance(metadata.get("resource_request"), dict) else {}
+    campaign_id = CampaignLedger(_campaign_ledger_path(parent_run_dir)).snapshot()["campaign_id"]
+    mark_internal_job(
+        child_run_dir, parent_run_dir=parent_run_dir,
+        parent_task_group=parent_run_dir.parent.name,
+        role="distributed_rfd4_attempt", engine="rfd4_proteina",
+    )
+    metadata = read_json(child_run_dir / "metadata.json")
+    metadata.update(
+        distributed_campaign_id=campaign_id,
+        distributed_attempt_id=attempt["attempt_id"],
+        distributed_batch_id=attempt["batch_id"],
+        benchmark_engine="rfd4_proteina",
+        resource_request=resource_request,
+    )
+    write_json(child_run_dir / "metadata.json", metadata)
+    request_path = child_run_dir / "worker_request.json"
+    if not request_path.is_file():
+        kwargs = {
+            key: value for key, value in params.items()
+            if key in inspect.signature(run_rfd4_proteina_design).parameters
+        }
+        write_json(child_run_dir / "worker_request.json", {
+            "kind": "workflow_call",
+            "module": "mn_molecular_design_studio.engine.workflow_engine.workflows.rfd4_proteina",
+            "function": "run_rfd4_proteina_design",
+            "args": [], "kwargs": kwargs,
+            "resources": {**resource_request, "gpu_device": params.get("gpu_device"), "cpu_cores": params.get("cpu_cores")},
+        })
+        write_json(child_run_dir / "command.json", {
+            "mode": "local_worker",
+            "command": [
+                "python", "-m", "mn_molecular_design_studio.engine.workflow_engine.core.local_worker",
+                "--run-dir", portable_path(child_run_dir, run_dir=runs_root()),
+            ],
+        })
+    if metadata.get("status") == "queued" and not metadata.get("scheduler_dispatch_requested"):
+        spawn_worker_for_run(child_run_dir)
+
+
 def _create_attempt_child(
     parent_run_dir: Path,
     ledger: CampaignLedger,
     attempt: dict[str, Any],
     config: dict[str, Any],
 ) -> Path:
+    if str(config.get("generator_id") or "bindcraft2") == "rfd4_proteina":
+        return _create_rfd4_attempt_child(parent_run_dir, ledger, attempt, config)
     import copy
     import shutil
 
@@ -877,6 +1171,8 @@ def _repair_attempt_child(
     config: dict[str, Any],
 ) -> None:
     """Finish durable staging if the controller stopped between job creation and dispatch."""
+    if str(config.get("generator_id") or "bindcraft2") == "rfd4_proteina":
+        return _repair_rfd4_attempt_child(parent_run_dir, child_run_dir, attempt, config)
     import shutil
 
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import (
@@ -971,7 +1267,7 @@ def _find_unlinked_children(ledger: CampaignLedger) -> dict[str, Path]:
         attempt_id = str(metadata.get("distributed_attempt_id") or "")
         if attempt_id in unlinked:
             if attempt_id in found:
-                raise RuntimeError(f"Multiple BindCraft2 child runs claim attempt {attempt_id}.")
+                raise RuntimeError(f"Multiple generator child runs claim attempt {attempt_id}.")
             found[attempt_id] = child
     return found
 
@@ -1000,13 +1296,29 @@ def _accepted_count(ledger: CampaignLedger, config: dict[str, Any]) -> int:
     return counters[key]
 
 
+def _rfd4_retry_safe(child_run_dir: Path) -> bool:
+    """Only retry an RFD4 child if its native Docker process was never launched."""
+    command_path = Path(child_run_dir) / "command.json"
+    if not command_path.is_file():
+        return True
+    try:
+        command = json.loads(command_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return command.get("mode") != "docker"
+
+
 def _reconcile_attempts(
     ledger: CampaignLedger,
     parent_run_dir: Path,
     config: dict[str, Any],
 ) -> tuple[dict[str, Path], list[dict[str, Any]], list[dict[str, Any]]]:
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, resume_job
-    from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import read_bindcraft2_campaign_state
+    generator_id = str(config.get("generator_id") or "bindcraft2")
+    if generator_id == "bindcraft2":
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import read_bindcraft2_campaign_state
+    else:
+        read_bindcraft2_campaign_state = None
 
     state = ledger.snapshot()
     children = _attempt_child_paths(ledger)
@@ -1039,7 +1351,11 @@ def _reconcile_attempts(
             if attempt["status"] == "authorized":
                 continue
             if attempt["status"] in {"queued", "running"}:
-                if int(attempt.get("retry_count", 0)) < int(config["max_retries"]):
+                retry_allowed = (
+                    generator_id != "rfd4_proteina"
+                    and int(attempt.get("retry_count", 0)) < int(config["max_retries"])
+                )
+                if retry_allowed:
                     if attempt["status"] != "interrupted":
                         ledger.transition(attempt_id, "interrupted", failure="Origin child run is unavailable for reconciliation.")
                     retried = ledger.retry(attempt_id)
@@ -1062,23 +1378,47 @@ def _reconcile_attempts(
         if status in {"queued", "preparing", "running"}:
             if attempt["status"] != status and attempt["status"] in {"authorized", "queued", "running"}:
                 ledger.transition(attempt_id, "running" if status == "running" else "queued", child_run_dir=str(child))
-            try:
-                progress = read_bindcraft2_campaign_state(child)
-            except RuntimeError:
-                progress = None  # Native writes this small progress file while the worker is running.
+            if read_bindcraft2_campaign_state is not None:
+                try:
+                    progress = read_bindcraft2_campaign_state(child)
+                except RuntimeError:
+                    progress = None  # Native writes this small progress file while the worker is running.
+            else:
+                progress = {
+                    "authoritative": False,
+                    "phase": metadata.get("current_phase") or metadata.get("progress_label") or status,
+                    "requested_outputs": 1,
+                }
             active.append({**attempt, "worker_status": status, "native_progress": progress or {}})
             continue
         if attempt["status"] == "completed":
             continue
         if status == "completed" and result.get("success") is True:
-            native_state = read_bindcraft2_campaign_state(child)
-            if native_state is None:
-                raise RuntimeError(f"Completed BindCraft2 attempt {attempt_id} has no native .campaign_state.json.")
-            if native_state["trajectories"] != 1:
-                raise RuntimeError(
-                    f"Bounded BindCraft2 attempt {attempt_id} reports {native_state['trajectories']} native trajectories; expected 1."
-                )
-            rows = _native_candidate_rows(child, state["campaign_id"], attempt, native_state)
+            if generator_id == "bindcraft2":
+                native_state = read_bindcraft2_campaign_state(child)
+                if native_state is None:
+                    raise RuntimeError(f"Completed BindCraft2 attempt {attempt_id} has no native .campaign_state.json.")
+                if native_state["trajectories"] != 1:
+                    raise RuntimeError(
+                        f"Bounded BindCraft2 attempt {attempt_id} reports {native_state['trajectories']} native trajectories; expected 1."
+                    )
+                rows = _native_candidate_rows(child, state["campaign_id"], attempt, native_state)
+            elif generator_id == "rfd4_proteina":
+                from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+
+                candidate_path = child / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+                output_count = len(read_candidates(candidate_path))
+                native_state = {
+                    "engine": "rfd4_proteina",
+                    "authoritative": False,
+                    "attempt_unit": "one native design request",
+                    "requested_designs": 1,
+                    "output_candidates": output_count,
+                    "seed": int(attempt["seed"]),
+                }
+                rows = _rfd4_candidate_rows(child, state["campaign_id"], attempt, native_state)
+            else:
+                raise ValueError(f"No campaign reconciliation adapter is registered for {generator_id}.")
             receipt_id = hashlib.sha256(
                 f"{child.name}:{metadata.get('completed_at') or result.get('completed_at') or result}".encode()
             ).hexdigest()
@@ -1088,7 +1428,10 @@ def _reconcile_attempts(
             )
             continue
         if status in {"failed", "cancelled"}:
-            if status == "failed" and int(attempt.get("retry_count", 0)) < int(config["max_retries"]):
+            retry_allowed = int(attempt.get("retry_count", 0)) < int(config["max_retries"])
+            if generator_id == "rfd4_proteina" and not _rfd4_retry_safe(child):
+                retry_allowed = False
+            if status == "failed" and retry_allowed:
                 if attempt["status"] != "queued":
                     ledger.retry(attempt_id, child_run_dir=str(child))
                 metadata = read_json(child / "metadata.json")
@@ -1129,11 +1472,13 @@ def _reconcile_attempts(
         child = children.get(attempt_id)
         if attempt.get("status") != "completed" or child is None:
             continue
-        candidate_rows.extend(
-            row for row in _native_candidate_rows(
-                child, state["campaign_id"], attempt, attempt.get("native_state") or {},
-            ) if str(row.get("candidate_id") or "") not in known_ids
-        )
+        if generator_id == "bindcraft2":
+            recovered = _native_candidate_rows(child, state["campaign_id"], attempt, attempt.get("native_state") or {})
+        elif generator_id == "rfd4_proteina":
+            recovered = _rfd4_candidate_rows(child, state["campaign_id"], attempt, attempt.get("native_state") or {})
+        else:
+            raise ValueError(f"No campaign recovery adapter is registered for {generator_id}.")
+        candidate_rows.extend(row for row in recovered if str(row.get("candidate_id") or "") not in known_ids)
     return children, active, candidate_rows
 
 
@@ -1175,7 +1520,7 @@ def _sync_parent_results(
         or metadata.get("distributed_candidate_digest") != candidate_digest
         or not (parent_run_dir / "artifacts" / "normalized_candidates" / "campaign_result.json").is_file()
     ):
-        write_candidates(parent_run_dir, "bindcraft2", enriched)
+        write_candidates(parent_run_dir, str(state["config"].get("generator_id") or "bindcraft2"), enriched)
         metadata["distributed_candidate_ids"] = candidate_ids
         metadata["distributed_candidate_digest"] = candidate_digest
     attempts = []
@@ -1195,6 +1540,7 @@ def _sync_parent_results(
     summary = {
         "schema_version": 1,
         "campaign_id": state["campaign_id"],
+        "generator_id": state["config"].get("generator_id") or "bindcraft2",
         "acceptance_level": state["config"]["acceptance_level"],
         "accepted_target": state["config"]["accepted_target"],
         "termination_reason": state.get("termination_reason"),
@@ -1221,12 +1567,14 @@ def _parent_progress(
     active: list[dict[str, Any]],
 ) -> None:
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import update_status
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.generator_capabilities import generator_capabilities
 
     counters = ledger.counters()
+    capability = generator_capabilities(str(config.get("generator_id") or "bindcraft2"))
     selected = _accepted_count(ledger, config)
     active_ids = [str(item.get("attempt_id") or "") for item in active]
     label = (
-        f"BindCraft2 · {selected}/{config['accepted_target']} accepted · "
+        f"{capability.label} · {selected}/{config['accepted_target']} accepted · "
         f"{counters['attempts_started']}/{config['max_attempts']} attempts started · "
         f"{len(active_ids)} active"
     )
@@ -1234,7 +1582,7 @@ def _parent_progress(
         parent_run_dir,
         "running",
         current_phase=label,
-        current_engine="BindCraft2 distributed campaign",
+        current_engine=f"{capability.label} acceptance-driven campaign",
         progress_label=label,
         campaign_progress={
             **counters,
@@ -1404,6 +1752,7 @@ def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: l
     counters = ledger.counters()
     reason = str(state.get("termination_reason") or "failed")
     accepted = _accepted_count(ledger, state["config"])
+    target_met = accepted >= int(state["config"]["accepted_target"])
     success = reason in {"target_reached", "budget_exhausted", "runtime_exhausted", "compute_exhausted"}
     result = {
         "outputs": {
@@ -1414,11 +1763,12 @@ def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: l
         },
         "metrics": {
             **counters,
+            "generator_id": state["config"].get("generator_id") or "bindcraft2",
             "accepted_target": state["config"]["accepted_target"],
             "acceptance_level": state["config"]["acceptance_level"],
-            "campaign_success": reason == "target_reached",
+            "campaign_success": target_met,
             "termination_reason": reason,
-            "target_met": accepted >= int(state["config"]["accepted_target"]),
+            "target_met": target_met,
             "gpu_compute_seconds": ledger.gpu_compute_seconds(),
         },
         "downstream_artifacts": {
@@ -1687,6 +2037,12 @@ def _validation_pending_candidates(state: dict[str, Any], config: dict[str, Any]
     return pending
 
 
+def _mark_validation_pending(ledger: CampaignLedger, candidate_id: str) -> None:
+    """Keep requeued validation visible as pending until its evidence is reconciled."""
+    ledger.set_candidate_acceptance(candidate_id, validated="pending")
+    ledger.update_candidate(candidate_id, validation_decision_reason="", decision_reason="")
+
+
 def _drive_validation(
     parent_run_dir: Path,
     ledger: CampaignLedger,
@@ -1725,6 +2081,7 @@ def _drive_validation(
                 metadata = read_json(run_dir / "metadata.json")
                 worker_status = str(metadata.get("status") or "unknown")
                 if worker_status in {"queued", "preparing", "running"}:
+                    _mark_validation_pending(ledger, candidate_id)
                     stage_result.update(status=worker_status, run_dir=str(run_dir))
                     stage_results[key] = stage_result
                     ledger.update_candidate(candidate_id, validation_stages=stage_results)
@@ -1746,6 +2103,9 @@ def _drive_validation(
                             status="completed", run_dir=str(run_dir), output_candidate_id=evidence["candidate_id"],
                             evidence_candidate=evidence, selection=selection,
                         )
+                        recovered_error = stage_result.pop("error", None)
+                        if recovered_error:
+                            stage_result.setdefault("recovered_submission_errors", []).append(recovered_error)
                         ledger_candidate.setdefault("validation_evidence", [])
                         evidence_rows = [
                             row for row in ledger_candidate["validation_evidence"]
@@ -1796,6 +2156,7 @@ def _drive_validation(
                     )
                     stage_results[key] = stage_result
                     ledger.update_candidate(candidate_id, validation_stages=stage_results)
+                    _mark_validation_pending(ledger, candidate_id)
                     try:
                         retry_gpu = str((stage_config.get("resources") or {}).get("gpu_device") or "auto")
                         resume_job(run_dir, gpu_device=retry_gpu)
@@ -1833,6 +2194,11 @@ def _drive_validation(
                 break
 
             if stage_result.get("status") == "completed":
+                recovered_error = stage_result.pop("error", None)
+                if recovered_error:
+                    stage_result.setdefault("recovered_submission_errors", []).append(recovered_error)
+                    stage_results[key] = stage_result
+                    ledger.update_candidate(candidate_id, validation_stages=stage_results)
                 previous_run = Path(str(stage_result["run_dir"]))
                 continue
             if failed_stage:
@@ -1850,6 +2216,7 @@ def _drive_validation(
                 run_dir = _submit_validation_stage(
                     parent_run_dir, ledger, native, stage_config, stage_index, previous_run,
                 )
+                _mark_validation_pending(ledger, candidate_id)
                 stage_result.update(status="queued", run_dir=str(run_dir))
                 stage_results[key] = stage_result
                 ledger.update_candidate(candidate_id, validation_stages=stage_results)
@@ -2077,18 +2444,24 @@ def _apply_diversity(
     return candidates
 
 
-def _run_bindcraft2_distributed_campaign(parent_run_dir: Path) -> Path:
-    """Run a durable controller while every native trajectory remains a scheduler-owned child job."""
+def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) -> Path:
+    """Run one durable campaign controller with engine-specific attempt adapters."""
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, update_status
-    from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import BINDCRAFT2_TOOL
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.generator_capabilities import generator_capabilities
 
     parent_run_dir = Path(parent_run_dir).expanduser().resolve()
     parent_payload = read_json(parent_run_dir / "input.json")
     parent_params = parent_payload.get("params") if isinstance(parent_payload.get("params"), dict) else {}
     raw_config = parent_params.get("distributed_campaign")
     if not isinstance(raw_config, dict) or not raw_config.get("enabled"):
-        raise ValueError("BindCraft2 distributed campaign settings are missing or disabled.")
+        raise ValueError("Distributed campaign settings are missing or disabled.")
+    raw_config = {**raw_config, "generator_id": str(raw_config.get("generator_id") or expected_generator_id)}
+    if raw_config["generator_id"] != expected_generator_id:
+        raise ValueError(
+            f"Campaign parent is for {expected_generator_id}, but settings select {raw_config['generator_id']}."
+        )
     config = validate_campaign_config(raw_config)
+    capability = generator_capabilities(expected_generator_id)
     ledger = CampaignLedger.create(_campaign_ledger_path(parent_run_dir), config)
     with ledger.controller_lock():
         state = ledger.snapshot()
@@ -2096,6 +2469,7 @@ def _run_bindcraft2_distributed_campaign(parent_run_dir: Path) -> Path:
             parent_run_dir, "running",
             distributed_campaign_id=state["campaign_id"],
             distributed_campaign_acceptance_level=config["acceptance_level"],
+            distributed_campaign_generator=config["generator_id"],
         )
         while True:
             state = ledger.snapshot()
@@ -2108,8 +2482,8 @@ def _run_bindcraft2_distributed_campaign(parent_run_dir: Path) -> Path:
                 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import stop_job
                 for child in children.values():
                     if read_json(child / "metadata.json").get("status") in {"queued", "preparing", "running"}:
-                        stop_job(child, "Parent BindCraft2 campaign cancelled")
-                _cancel_validation_runs(ledger, "Parent BindCraft2 campaign cancelled")
+                        stop_job(child, f"Parent {capability.label} campaign cancelled")
+                _cancel_validation_runs(ledger, f"Parent {capability.label} campaign cancelled")
                 _, _, candidates = _reconcile_attempts(ledger, parent_run_dir, config)
                 _sync_parent_results(parent_run_dir, ledger, children, candidates)
                 return parent_run_dir
@@ -2208,10 +2582,10 @@ def _run_bindcraft2_distributed_campaign(parent_run_dir: Path) -> Path:
             time.sleep(float(config["poll_interval_seconds"]))
 
 
-def run_bindcraft2_distributed_campaign(parent_run_dir: Path) -> Path:
+def _run_distributed_campaign_with_failure_state(parent_run_dir: Path, expected_generator_id: str) -> Path:
     parent_run_dir = Path(parent_run_dir).expanduser().resolve()
     try:
-        return _run_bindcraft2_distributed_campaign(parent_run_dir)
+        return _run_distributed_campaign(parent_run_dir, expected_generator_id)
     except CampaignControllerAlreadyRunning:
         return parent_run_dir
     except Exception as exc:
@@ -2224,7 +2598,15 @@ def run_bindcraft2_distributed_campaign(parent_run_dir: Path) -> Path:
         raise
 
 
-def cancel_bindcraft2_distributed_campaign(parent_run_dir: Path, reason: str = "Campaign cancelled by user") -> None:
+def run_bindcraft2_distributed_campaign(parent_run_dir: Path) -> Path:
+    return _run_distributed_campaign_with_failure_state(parent_run_dir, "bindcraft2")
+
+
+def run_rfd4_proteina_distributed_campaign(parent_run_dir: Path) -> Path:
+    return _run_distributed_campaign_with_failure_state(parent_run_dir, "rfd4_proteina")
+
+
+def cancel_distributed_campaign(parent_run_dir: Path, reason: str = "Campaign cancelled by user") -> None:
     """Cancel only children owned by this campaign; the controller remains origin-bound."""
     path = _campaign_ledger_path(Path(parent_run_dir))
     if not path.is_file():
@@ -2242,3 +2624,8 @@ def cancel_bindcraft2_distributed_campaign(parent_run_dir: Path, reason: str = "
         if attempt.get("status") in {"authorized", "queued", "running"}:
             ledger.transition(attempt_id, "cancelled", stop_reason=reason)
     _cancel_validation_runs(ledger, reason)
+
+
+def cancel_bindcraft2_distributed_campaign(parent_run_dir: Path, reason: str = "Campaign cancelled by user") -> None:
+    """Backward-compatible BindCraft2 campaign cancellation entry point."""
+    cancel_distributed_campaign(parent_run_dir, reason)

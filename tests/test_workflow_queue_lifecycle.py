@@ -436,6 +436,23 @@ def test_resource_limits_exist_before_scheduler_dispatch(api_queue):
     assert request['cpu_cores'] == 2
 
 
+def test_cpu_coordinator_keeps_nested_gpu_resource_selectors():
+    from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import _selector_device_for_allocation
+    from mn_molecular_design_studio.engine.workflow_engine.core.central_scheduler_worker import _patch_gpu_selectors
+
+    request = {
+        "params": {
+            "gpu_device": "none",
+            "distributed_campaign": {
+                "validation_stages": [{"resources": {"gpu_device": "0"}}],
+            },
+        },
+    }
+    selector_device = _selector_device_for_allocation("none")
+    assert selector_device == "cpu"
+    assert _patch_gpu_selectors(request, selector_device) == request
+
+
 @pytest.mark.parametrize('value', [-1, True, '8', float('inf')])
 def test_reject_invalid_resource_memory(value):
     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import _validate_resources, AutomationError

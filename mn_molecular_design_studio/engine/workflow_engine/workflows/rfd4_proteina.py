@@ -31,7 +31,6 @@ Task = Literal['protein_binder','nanobody','antibody','tcr','motif_scaffolding',
                'custom_conditions','score_structures','unconditional']
 InputMode = Literal['guided','guided_binder','annotated_cif','condition_spec','unconditional']
 
-
 def sequence_structure(text: str, destination: Path) -> Path:
     """Create a sequence carrier; none of its placeholder coordinates are conditioned."""
     import numpy as np
@@ -113,10 +112,12 @@ def normalize_outputs(run_dir, prepared, task, requested):
         if task in {'unconditional','protein_binder','small_molecule_binder','dna_binder'} and sequence:
             if not prepared['parameters'].get('length_min',60)<=len(sequence)<=prepared['parameters'].get('length_max',120):
                 raise ValueError('RFD4 returned a designed chain outside the requested length range.')
+        target_reference=prepared.get('target_structure')
+        target_artifact=str(local_path(run_dir,target_reference)) if target_reference else None
         records.append({'candidate_id':ident,'source_tool':'rfd4_proteina','stage':stage,
                         'parents':[parent['candidate_id']] if parent.get('candidate_id') else [],
                         'complex_pdb':str(path),'binder_pdb':str(binder_path),'binder_sequence':sequence,
-                        'target_pdb':prepared.get('target_structure'),'target_chains':targets,'binder_chains':binder,
+                        'target_pdb':target_artifact,'target_chains':targets,'binder_chains':binder,
                         'metrics':metrics,'raw_metadata':{'task':task,'native_structure':str(path),
                         'source_candidate':parent,
                         'sequences_by_chain':item.get('sequences',{}),'engine_version':inputs.UPSTREAM_VERSION,
@@ -137,12 +138,29 @@ def run_rfd4_proteina_design(
     gpu_device: str='0', job_name: str='rfd4-proteina-design',
     protein_sequences: str='',
     task_group: Literal['design','refolding']='design',
+    distributed_campaign: dict|None=None,
 ) -> Path:
     parameters=json.loads(json.dumps(dict(locals()),default=str)); job=None
     try:
         if seed is None: parameters['seed']=secrets.randbelow(2**32)
         parameters['options']=dict(options or {})
-        job_type='rfd4_structure_prediction' if task_group=='refolding' else 'rfd4_proteina_design'
+        campaign_config=dict(distributed_campaign or {})
+        distributed_enabled=bool(campaign_config.get('enabled'))
+        if distributed_enabled:
+            if task_group!='design' or task!='protein_binder' or input_mode not in {'guided','guided_binder'}:
+                raise ValueError('RFD4 acceptance-driven campaigns currently support guided protein-binder co-design only.')
+            if not target_structure or not target_chains or input_files or avoid_structures or also_bind_structures or protein_sequences:
+                raise ValueError('RFD4 campaigns require one selected target structure and chain set without secondary inputs.')
+            campaign_config['generator_id']='rfd4_proteina'
+            campaign_config.setdefault('seed',int(parameters['seed']))
+            campaign_resources=dict(campaign_config.get('resources') or {})
+            campaign_resources.setdefault('cpu_cores',int(cpu_cores or 8))
+            campaign_config['resources']=campaign_resources
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import validate_campaign_config
+            campaign_config=validate_campaign_config(campaign_config)
+            parameters['distributed_campaign']=campaign_config
+        job_type=('rfd4_proteina_campaign' if distributed_enabled else
+                  'rfd4_structure_prediction' if task_group=='refolding' else 'rfd4_proteina_design')
         job=create_job(task_group,job_type,'rfd4_proteina',
                        {'target_structure':str(target_structure) if target_structure else None,
                         'input_files':[str(p) for p in input_files or []]},parameters)
@@ -152,7 +170,13 @@ def run_rfd4_proteina_design(
             if task!='existing_structure' or parameters['options'].get('operation')!='structure_prediction':
                 raise ValueError('Sequence input is available for structure prediction.')
             parameters['target_structure']=str(sequence_structure(protein_sequences,job.run_dir/'artifacts/sequence_input.cif'))
-        prepared=inputs.prepare_request(parameters,run_dir=job.run_dir)
+        design_parameters={key:value for key,value in parameters.items() if key!='distributed_campaign'}
+        prepared=inputs.prepare_request(design_parameters,run_dir=job.run_dir)
+        if distributed_enabled:
+            write_json(job.run_dir/'parameters.json',{**parameters,'engine_version':inputs.UPSTREAM_VERSION,
+                       'upstream_commit':inputs.UPSTREAM_COMMIT,'checkpoint_revision':inputs.HF_REVISION,'image':inputs.IMAGE})
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import run_rfd4_proteina_distributed_campaign
+            return run_rfd4_proteina_distributed_campaign(job.run_dir)
         # Stage the exact adapter with every run for reproducibility and remote execution.
         runtime=prepared['root']/'runtime'; runtime.mkdir(exist_ok=True)
         for name in ('rfd4_runtime.py','rfd4_studio_oracle.py'):

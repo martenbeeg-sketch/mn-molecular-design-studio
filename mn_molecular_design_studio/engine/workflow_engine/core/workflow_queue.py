@@ -111,8 +111,13 @@ def enqueue_workflow_call(
     kwargs: dict[str, Any] | None = None,
     cpu_cores: int | None = None,
     gpu_device: object | None = None,
+    dispatch: bool = True,
 ) -> Path:
-    """Queue one normal workflow function and let it create its job in this run directory."""
+    """Queue one normal workflow function and let it create its job in this run directory.
+
+    ``dispatch=False`` lets an owning controller attach durable parent/attempt
+    metadata before it makes the queued child visible to the scheduler.
+    """
     module = str(getattr(function, "__module__", ""))
     function_name = str(getattr(function, "__name__", ""))
     if not module.startswith("mn_molecular_design_studio.engine.workflow_engine.workflows.") or not function_name.startswith("run_"):
@@ -122,6 +127,27 @@ def enqueue_workflow_call(
     # Shared refolding workflows expose a tool selector in their regular signature.
     # Keep their queue entry consistent with the backend that the worker will run.
     tool = str(call_kwargs.get("tool") or tool)
+    distributed_config = call_kwargs.get("distributed_campaign")
+    if isinstance(distributed_config, dict) and distributed_config.get("enabled"):
+        campaign_generators = {"bindcraft2": "bindcraft2", "rfd4_proteina": "rfd4_proteina"}
+        generator_id = campaign_generators.get(tool)
+        if generator_id is None:
+            raise ValueError(f"{tool} does not have a verified distributed-campaign adapter.")
+        distributed_config = {**distributed_config, "generator_id": generator_id}
+        configured_resources = distributed_config.get("resources")
+        configured_resources = dict(configured_resources) if isinstance(configured_resources, dict) else {}
+        configured_resources.setdefault("cpu_cores", int(call_kwargs.get("cpu_cores") or 8))
+        distributed_config["resources"] = configured_resources
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import validate_campaign_config
+
+        validate_campaign_config(distributed_config)
+        call_kwargs["distributed_campaign"] = distributed_config
+        gpu_device = "none"
+        call_kwargs["gpu_device"] = "none"
+        # The parent only coordinates attempts. Each generator child obtains its
+        # own GPU and the configured per-attempt CPU allocation.
+        call_kwargs["cpu_cores"] = 1
+        cpu_cores = 1
     signature = inspect.signature(function)
     if gpu_device is None:
         gpu_device = call_kwargs.get("gpu_device")
@@ -205,7 +231,8 @@ def enqueue_workflow_call(
             ],
         },
     )
-    spawn_worker_for_run(job.run_dir)
+    if dispatch:
+        spawn_worker_for_run(job.run_dir)
     return job.run_dir
 
 

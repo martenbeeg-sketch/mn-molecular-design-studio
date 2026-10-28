@@ -71,6 +71,12 @@ class ResourceRequest:
     scratch_gb: float = 0.0
 
 
+def _selector_device_for_allocation(gpu_device: str | None) -> str:
+    """Keep nested GPU selectors intact when a CPU-only coordinator is dispatched."""
+    value = str(gpu_device or "cpu").strip()
+    return "cpu" if value.casefold() in {"none", "cpu"} else value
+
+
 @dataclass
 class ActiveWorker:
     process: subprocess.Popen
@@ -579,9 +585,10 @@ class WorkerScheduler:
         # An automatic request is concretized only after resource admission.
         # Use the same selector rewrite as the central scheduler bridge.
         from .central_scheduler_worker import _patch_gpu_selectors
+        selector_device = _selector_device_for_allocation(request.gpu_device)
         for name in ('worker_request.json', 'input.json'):
             payload = read_json(run_dir / name)
-            write_json(run_dir / name, _patch_gpu_selectors(payload, request.gpu_device or 'none'))
+            write_json(run_dir / name, _patch_gpu_selectors(payload, selector_device))
         try:
             proc = subprocess.Popen(
                 command,
