@@ -198,3 +198,30 @@ def test_peer_prediction_does_not_require_or_transfer_upstream_models(tmp_path, 
     row = json.loads(Path(restored['parameters']['candidates_jsonl']).read_text())
     for key, original in provenance.items():
         assert json.loads(row['raw_metadata'][key]['record']) == original
+
+
+@pytest.mark.parametrize('status', ['completed', 'failed', 'lost'])
+def test_poll_preserves_native_receipts_and_completed_partial_members(tmp_path, monkeypatch, status):
+    directory = tmp_path / 'batch.collected'
+    directory.mkdir()
+    collection = 'artifacts/normalized_candidates/candidates.jsonl'
+    content = {'metadata.json': {'status': status}, 'input.json': {},
+               collection: {'candidate_id': 'exact-member', 'parents': ['original'], 'complex_pdb': 'artifacts/output.pdb'},
+               'native_execution.json': {'native_invocations': 1, 'docker_processes': 1}}
+    if status != 'lost': content['result.json'] = {'success': status == 'completed'}
+    for name, value in content.items():
+        path = directory / name; path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value) + '\n')
+    (directory / 'artifacts/output.pdb').write_text('ATOM')
+    remote = dict(status=status, node_id='worker', artifacts=[{'relative_path': p} for p in content])
+    class Store:
+        def job(self, *_): return remote
+    monkeypatch.setattr(cb, 'Store', Store)
+    monkeypatch.setattr(cb, 'actor', lambda *a, **k: {})
+    monkeypatch.setattr(cb, '_artifact', lambda batch, job, path, user, destination: directory / path)
+    outcome, output, job = cb.poll({'cluster_job_id': 'job', 'manifest': str(tmp_path / 'batch.json')}, owner_id='owner', project_id=None)
+    assert outcome == ('completed' if status == 'completed' else 'partial')
+    row = json.loads(Path(output['candidates_jsonl']).read_text())
+    assert row['candidate_id'] == 'exact-member' and row['parents'] == ['original']
+    assert job['native_execution']['native_invocations'] == 1
+    assert Path(row['complex_pdb']).read_text() == 'ATOM'

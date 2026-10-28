@@ -89,6 +89,8 @@ def run_docker_job(
     update_status(run_dir, "running")
     with (run_dir / "stdout.log").open("w") as stdout, (run_dir / "stderr.log").open("w") as stderr:
         with execution_phase(run_dir, "docker_command") as timing:
-            proc = subprocess.run(command, stdout=stdout, stderr=stderr, check=False)
+            from mn_molecular_design_studio.native_execution import record_process
+            proc = record_process(run_dir, command, native_invocations=None,
+                                  runner=subprocess.run, stdout=stdout, stderr=stderr, check=False)
             timing["return_code"] = int(proc.returncode)
     return int(proc.returncode)

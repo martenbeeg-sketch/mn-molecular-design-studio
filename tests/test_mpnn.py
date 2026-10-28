@@ -203,9 +203,12 @@ def test_batch_constraints_are_not_overwritten_by_the_next_candidate(capture_run
     second = dict(candidate, candidate_id="second-design")
     collection.write_text(json.dumps(candidate) + "\n" + json.dumps(second) + "\n")
     mpnn.run_mpnn_sequence_design(source, collection, bias_aa_per_residue={"B2": {"W": 2}})
-    paths = [c[c.index("--bias_AA_per_residue") + 1] for c in commands]
-    assert len(set(paths)) == 2
-    assert all((run / p.removeprefix("/work/")).is_file() for p in paths)
+    assert len(commands) == 1
+    command = commands[0]
+    path = run / command[command.index('--bias_AA_per_residue_multi') + 1].removeprefix('/work/')
+    mapping = json.loads(path.read_text())
+    assert set(mapping) == {f'/work/artifacts/raw/ligandmpnn/inputs/{row["candidate_id"]}.pdb' for row in (candidate, second)}
+    assert all(value == {'Z2': {'W': 2}} for value in mapping.values())
 
 
 def test_cif_long_chain_ids_and_author_residue_constraints_are_remapped(capture_runner):

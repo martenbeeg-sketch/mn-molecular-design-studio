@@ -177,8 +177,10 @@ def test_partial_chunks_retry_and_restart_are_idempotent(collection_harness, mon
     result = read_json(run / "result.json")
     assert result["success"] is True and result["outputs"]["comparison_status"] == "partial"
     assert len(result["outputs"]["candidates"]) == 12
-    assert sum(len(cs.metadata(r)["predictions"]) for r in result["outputs"]["candidates"]) == 19
-    assert state["nodes"]["predictor-1"]["candidate_progress"]["retry_count"] == 1
+    # Failed collection workers can already have completed member outputs.
+    # Preserve those exact results instead of rerunning every member.
+    assert sum(len(cs.metadata(r)["predictions"]) for r in result["outputs"]["candidates"]) == 24
+    assert state["nodes"]["predictor-1"]["candidate_progress"]["retry_count"] == 0
     before = len(h.submissions)
     monkeypatch.setattr(gp, "create_job", lambda *a, **k: SimpleNamespace(run_dir=run))
     gp.run_graph_pipeline(graph, "partial", "owner", "project", reuse_completed=False)
@@ -288,9 +290,9 @@ def test_predictor_failure_keeps_other_evidence_and_expected_samples(collection_
     assert all(values["status"] == "partial" for values in batch["candidate_states"].values())
     rows = read_json(run / "result.json")["outputs"]["candidates"]
     assert len(rows) == 2
-    assert all(len(cs.metadata(row)["predictions"]) == 1 for row in rows)
+    assert all(len(cs.metadata(row)["predictions"]) == 2 for row in rows)
     assert all(cs.metadata(row)["predictor_matrix"]["predictor-0"] == ["completed", "missing_evidence"] for row in rows)
-    assert all(cs.metadata(row)["predictor_matrix"]["predictor-1"] == ["failed"] for row in rows)
+    assert all(cs.metadata(row)["predictor_matrix"]["predictor-1"] == ["completed"] for row in rows)
 
 
 def test_preflight_rejects_wrong_target_and_project_before_jobs(collection_harness):

@@ -733,7 +733,7 @@ def run(request, prepare_only=False):
             current=[arg.split('=',1)[0]+'='+replacements[arg.split('=',1)[0]]
                      if '=' in arg and arg.split('=',1)[0] in replacements else arg for arg in current]
         command=compose_settings(current,p,chunk_root)
-        commands.append({'command':command,'overrides':current})
+        commands.append({'command':command,'overrides':current,'status':'launch_window'})
         (root/'native_command.json').write_text(json.dumps(commands,indent=2))
         timing_file=os.environ.get('MN_STUDIO_RFD4_NATIVE_TIMING_FILE')
         if timing_file:
@@ -745,6 +745,8 @@ def run(request, prepare_only=False):
                 subprocess.run(diagnostic_command,check=True)
         else:
             subprocess.run(command,check=True)
+        commands[-1]['status']='returned'
+        (root/'native_command.json').write_text(json.dumps(commands,indent=2))
     csvs=list(out.rglob('per_example_metrics*.csv'))
     if not csvs: raise RuntimeError('RFD4 did not write its per-design metrics table.')
     # Produce a portable result index using the annotations carried by native CIFs.

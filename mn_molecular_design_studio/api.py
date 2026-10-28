@@ -712,8 +712,10 @@ def validate_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any] 
     graph, _, _ = _pipeline_payload(payload, user, runnable=True)
     plan = _call(validate_graph, graph, require_inputs=True)
     from mn_molecular_design_studio.candidate_pipeline import execution_plan
+    from mn_molecular_design_studio.native_execution import tool_inventory
     return {"valid": True, "order": plan["order"], "node_count": len(graph["nodes"]), "connection_count": len(graph["edges"]),
-            "collection_execution_plan": execution_plan(graph)}
+            "collection_execution_plan": execution_plan(graph),
+            "native_tool_inventory": tool_inventory()}
 
 
 @app.post("/api/v1/pipelines/run", status_code=202)

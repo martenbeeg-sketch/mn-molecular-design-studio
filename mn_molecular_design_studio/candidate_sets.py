@@ -334,7 +334,7 @@ def sequence_inputs(parent, node_id, source, params):
             if info.get("native_filter") in {"failed", "invalid_metadata"} or info.get("native_output_role") == "intermediate":
                 continue
             state = sequence_state(row)
-            if state != ("backbone_only" if initial else "sequence_ready"):
+            if state not in ({"backbone_only"} if initial else {"backbone_only", "sequence_ready"}):
                 continue
             if not row.get("binder_chains") or not (row.get("complex_pdb") or row.get("binder_pdb")):
                 continue

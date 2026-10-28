@@ -271,7 +271,8 @@ render_inputs({engine!r}, owner_id="test", key_prefix="same", connected=True)
     assert app.number_input(key="same-field-count").value == inputs.defaults(engine)["num_sequences"]
 
 
-def test_esm_native_sampler_receives_fixed_target_and_residue_masks(source, tmp_path, monkeypatch):
+@pytest.mark.parametrize('count', [1, 5, 10, 25, 50, 100])
+def test_esm_native_sampler_receives_fixed_target_and_residue_masks(source, tmp_path, monkeypatch, count):
     import contextlib
     import sys
     from mn_molecular_design_studio.engine.workflow_engine.workflows import inverse_folding_native as native
@@ -283,7 +284,9 @@ def test_esm_native_sampler_receives_fixed_target_and_residue_masks(source, tmp_
         def sample(self, coords, partial_seq, **kwargs):
             calls.append(partial_seq)
             return "".join("A" if v == "<mask>" else v for v in partial_seq)
-    fake = SimpleNamespace(pretrained=SimpleNamespace(load_model_and_alphabet_local=lambda _: (Model(), None)))
+    loads = []
+    fake = SimpleNamespace(pretrained=SimpleNamespace(load_model_and_alphabet_local=lambda _: loads.append('model') or (Model(), None)))
+    items = [copy.deepcopy(items[0]) | {'key': f'input_{i:04d}'} for i in range(count)]
     coords = {"A": np.zeros((6, 3, 3)), "B": np.zeros((5, 3, 3))}
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(manual_seed=lambda _: None,
         cuda=SimpleNamespace(is_available=lambda: False), inference_mode=contextlib.nullcontext))
@@ -292,14 +295,18 @@ def test_esm_native_sampler_receives_fixed_target_and_residue_masks(source, tmp_
         load_complex_coords=lambda *args: (coords, {}),
         _concatenate_coords=lambda context, chain: np.zeros((sum(len(v) for v in context.values()) + 10, 3, 3)),
         score_sequence_in_complex=lambda *args: (-1., -1.)))
-    records = native.esm_if1(dict(parameters=p | dict(seed=123, multichain_backbone=True), items=items, checkpoint="/weights/model.pt"))
+    output = tmp_path / 'native-checkpoint.json'
+    records = native.esm_if1(dict(parameters=p | dict(seed=123, multichain_backbone=True), items=items, checkpoint="/weights/model.pt", output=str(output)))
+    assert len(loads) == 1 and len(records) == count
+    assert json.loads(output.read_text()) == records
     assert calls[0][:5] == ["K", "<mask>", "M", "N", "P"]
     assert all(v == "<pad>" for v in calls[0][5:])
     assert records[0]["sequences"] == dict(A="ACDEFG", B="KAMNP")
 
 
 @pytest.mark.parametrize("ensemble_mode,task", [("single", "design"), ("generate", "design"), ("single", "score")])
-def test_caliby_native_api_constraints_ensembles_and_scoring(source, tmp_path, monkeypatch, ensemble_mode, task):
+@pytest.mark.parametrize('count', [1, 5, 10, 25, 50, 100])
+def test_caliby_native_api_constraints_ensembles_and_scoring(source, tmp_path, monkeypatch, ensemble_mode, task, count):
     import sys
     from mn_molecular_design_studio.engine.workflow_engine.workflows import inverse_folding_native as native
     run, p, items = prepared(source, tmp_path)
@@ -316,10 +323,13 @@ def test_caliby_native_api_constraints_ensembles_and_scoring(source, tmp_path, m
     monkeypatch.setattr(native, "_clean_chain_map", lambda *a: dict(A="A", B="B"))
     # Container paths are translated to this test's job files; no engine runs.
     items[0]["path"] = str(run / items[0]["path"].removeprefix("/work/"))
-    monkeypatch.setitem(sys.modules, "caliby", SimpleNamespace(load_model=lambda _: Model(), clean_pdbs=lambda paths, **kw: paths,
+    loads = []
+    items = [copy.deepcopy(items[0]) | {'key': f'input_{i:04d}'} for i in range(count)]
+    monkeypatch.setitem(sys.modules, "caliby", SimpleNamespace(load_model=lambda _: loads.append('model') or Model(), clean_pdbs=lambda paths, **kw: paths,
         make_constraints=lambda rows: rows, generate_ensembles=conformers))
     monkeypatch.setitem(sys.modules, "lightning", SimpleNamespace(seed_everything=lambda _: None))
     records = native.caliby_design(dict(parameters=p, items=items))
+    assert len(loads) == 1 and len(records) == count
     assert records[0]["metrics"]["caliby_energy"] in {-3., -2.}
     method, kwargs = calls[-1]
     assert method == ("score" if task == "score" else "sample" if ensemble_mode == "single" else "ensemble")

@@ -650,6 +650,9 @@ for _kind, _specification in NODE_CATALOG.items():
         for _socket in _specification["inputs"]:
             if "candidates" not in _socket["accepts"]:
                 _socket["accepts"].append("candidates")
+    if _specification['category'] == 'Sequence design' and not any(f['name'] == 'sequence_stage' for f in _specification['fields']):
+        _specification['fields'].append(field('sequence_stage', 'Sequence-design stage', 'redesign', kind='select',
+            options=['redesign', 'initial'], help='Initial designs backbone-only inputs and preserves existing native sequences. Redesign explicitly creates additional variants.'))
 
 TEMPLATE_REFERENCES={
     'multi_generator_binder': ('https://www.anthropic.com/research/claude-scorpion-toxin-binder-design', 'General composition inspired by Figure 2: complete native generators, conditional initial ProteinMPNN, independent predictors and consolidated scientific evidence. No paper-specific target, campaign, thresholds or autonomous agent is reproduced.'),

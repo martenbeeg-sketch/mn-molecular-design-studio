@@ -1273,7 +1273,9 @@ def run_bindcraft2_job(run_dir: Path) -> Path:
         stdout.write(f"$ {shlex.join(command_for_record)}\n")
         stdout.flush()
         with execution_phase(run_dir, "docker_command") as timing:
-            process = subprocess.run(command, cwd=run_dir, stdout=stdout, stderr=stderr, check=False)
+            from mn_molecular_design_studio.native_execution import record_process
+            process = record_process(run_dir, command, native_invocations=1, runner=subprocess.run,
+                                     cwd=run_dir, stdout=stdout, stderr=stderr, check=False)
             timing["return_code"] = int(process.returncode)
 
     with execution_phase(run_dir, "candidate_normalization"):

@@ -2602,7 +2602,13 @@ def run_optimized_prediction(
         with (job.run_dir / "stdout.log").open("a", encoding="utf-8") as stdout, (job.run_dir / "stderr.log").open("a", encoding="utf-8") as stderr:
             stdout.write("$ " + " ".join(command) + "\n")
             stdout.flush()
-            process = subprocess.run(command, cwd=job.run_dir, stdout=stdout, stderr=stderr, check=False)
+            from mn_molecular_design_studio.native_execution import prediction_contract, record_process
+            execution = prediction_contract(engine, len(normalized_tasks), seeds=selected_options.get("seed_count", 1),
+                                            samples=int(samples), mode=selected_mode)
+            process = record_process(job.run_dir, command, native_invocations=1 if engine == "esmfold" else None,
+                                     candidate_ids=[task.get("source_candidate_id") or task["id"] for task in normalized_tasks],
+                                     gpu_slots=requested_gpu_count, runner=subprocess.run,
+                                     cwd=job.run_dir, stdout=stdout, stderr=stderr, check=False)
         if profile["api_engine"] == "esmfold":
             esmfold_rows = []
             for task in normalized_tasks:
@@ -2623,6 +2629,21 @@ def run_optimized_prediction(
             _cache_generated_boltz_msas(job.run_dir, output_dir)
         result_path = output_dir / "mn-batch-result.json"
         batch_result = json.loads(result_path.read_text(encoding="utf-8")) if result_path.is_file() else {}
+        # The image-side receipt distinguishes one container from its native
+        # model launches (e.g. one Boltz invocation for every seed).
+        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+        receipt = read_json(job.run_dir / "native_execution.json")
+        native = batch_result.get("execution", {})
+        commands = native.get("commands") or ([native["command"]] if native.get("command") else None)
+        if commands is not None:
+            receipt['processes'][-1]['native_invocations'] = len(commands) if engine in {'boltz2', 'protenix_v2'} else None
+            native_counts = [p.get('native_invocations') for p in receipt['processes']]
+            receipt["native_invocations"] = sum(native_counts) if all(n is not None for n in native_counts) else None
+            receipt["native_commands"] = commands
+            receipt["native_count_basis"] = "image-side process launch receipt and verified model lifecycle" if engine in {'boltz2', 'protenix_v2'} else "image-side launcher receipt; inner model lifecycle unverified"
+        else:
+            receipt["native_count_basis"] = "direct native CLI" if engine == "esmfold" else "image-side receipt unavailable"
+        write_json(job.run_dir / "native_execution.json", receipt)
         rows = batch_result.get("items") if isinstance(batch_result, dict) else []
         rows_by_id = {
             str(value.get("id") or ""): value
@@ -2714,7 +2735,7 @@ def run_optimized_prediction(
                         "conditioning_mode": "target_template" if (task.get("structure_templates") or task.get("boltz_templates") or task.get("target_pdb_text")) else "sequence_only",
                         "effective_settings": {"samples_per_item": int(samples), "seed": int(seed), **options} if profile["api_engine"] == "boltz2" else {},
                         "execution_manifest": str(manifest_path) if profile["api_engine"] == "boltz2" else None,
-                        "native_execution": batch_result.get("execution", {}) if profile["api_engine"] == "boltz2" else {},
+                        "native_execution": batch_result.get("execution", {}),
                         "prediction_protocol": {"engine": engine, "image": profile["image"], "optimization_mode": selected_mode,
                             "samples": int(samples), "seed": int(seed),
                             "num_recycles": recycle_count, "engine_options": selected_options, "validation_mode": validation_mode,
@@ -2785,6 +2806,8 @@ def run_optimized_prediction(
             _add_boltz_interface_metrics(job.run_dir, candidates, workers=int(cpu_cores))
         if candidates:
             write_candidates(job.run_dir, "optimized_prediction_" + str(engine), candidates)
+        receipt["prediction_outputs"] = len(structures)
+        write_json(job.run_dir / "native_execution.json", receipt)
         validation_report = design_validation.write_report(job.run_dir, candidates) if validation_sources is not None else None
         failure_text = "; ".join(
             f"{failure.get('task_name') or failure.get('scope')}: {'; '.join(failure.get('errors') or [failure.get('error', 'failed')])}"

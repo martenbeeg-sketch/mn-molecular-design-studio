@@ -13,7 +13,7 @@ from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_jso
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
 
 
-def new_pipeline(generators=None, predictors=None):
+def new_pipeline(generators=None, predictors=None, sequence_designer="ligandmpnn"):
     from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, SCHEMA
     generators = ["rfd4", "bindcraft2"] if generators is None else generators
     predictors = ["boltz2", "prediction_protenix_v2"] if predictors is None else predictors
@@ -27,6 +27,8 @@ def new_pipeline(generators=None, predictors=None):
     for kind in predictors:
         if NODE_CATALOG[kind]["category"] != "Structure prediction":
             raise ValueError("Choose existing predictor tiles.")
+    if NODE_CATALOG[sequence_designer]["category"] != "Sequence design":
+        raise ValueError("Choose an existing sequence-design tile.")
     nodes, edges = [], []
     def add(kind, node_id, x, y, **params):
         spec = NODE_CATALOG[kind]
@@ -42,7 +44,9 @@ def new_pipeline(generators=None, predictors=None):
         connect("target", "generator-" + str(i))
         connect("generator-" + str(i), "collection")
     add("candidate_merge", "collection", 700, 170)
-    add("ligandmpnn", "sequence-preparation", 1040, 170, sequence_stage="initial", sequences=1)
+    from mn_molecular_design_studio.inverse_folding_input import ENGINES as INVERSE_ENGINES
+    sequence_count = {'num_sequences': 1} if sequence_designer in INVERSE_ENGINES else {'sequences': 1}
+    add(sequence_designer, "sequence-preparation", 1040, 170, sequence_stage="initial", **sequence_count)
     add("ligandmpnn", "optional-redesign", 1380, 170, sequence_stage="soluble_optimization", optimization_enabled=False)
     add("shared_filter", "shared-filter", 1720, 170)
     connect("collection", "sequence-preparation")
@@ -239,22 +243,76 @@ def replay(parent, node, source, retained, scientific_key):
 
 
 def execution_plan(graph, candidate_counts=None):
-    """Read-only collection plan; native attempt batching remains a separate planner."""
-    from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
+    """Read-only native execution forecast. Counts are eligible inputs per tile.
+
+    Unknown generator yields, sequence routing and compatibility groups stay
+    unknown. Preview counts never change saved scientific or scheduler settings.
+    """
+    from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, OPTIMIZED_PREDICTION_NODE_ENGINES
     from mn_molecular_design_studio.candidate_execution import policy, supports
-    counts = candidate_counts or {}
-    plan = []
+    from mn_molecular_design_studio.native_execution import prediction_contract, request_contract, prediction_engine
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.execution_planning import describe_native_invocation
+    counts, plan = candidate_counts or {}, []
     for node in graph["nodes"]:
-        kind = node["data"]["kind"]
+        data = node["data"]
+        kind, params = data["kind"], data.get("params", {})
         spec = NODE_CATALOG[kind]
-        settings = policy(node["data"].get("execution", graph.get("candidate_execution")))
+        settings = policy(data.get("execution", graph.get("candidate_execution")))
         sharded = settings["mode"] == "sharded" and supports(kind, {"candidates_jsonl": "plan"})
         count = counts.get(node["id"])
-        plan.append(dict(node=node["id"], tool=spec["label"], enabled=node["data"].get("enabled", True),
-            execution="retained evidence" if node["data"].get("retained_run_dir") else "collection chunks" if sharded else "ordinary native workflow" if spec["workflow"] else "collection transformation",
+        if count is not None and (type(count) is not int or count < 0):
+            raise ValueError("Preview candidate counts must be nonnegative integers.")
+        preserve_sequences = params.get('sequence_stage') == 'soluble_optimization' and not params.get('optimization_enabled')
+        inactive = not data.get("enabled", True) or bool(data.get("retained_run_dir")) or not spec["workflow"] or preserve_sequences
+        chunks = 0 if inactive else None if count is None else (count + settings["batch_size"] - 1) // settings["batch_size"] if sharded else int(count > 0)
+        row = dict(node=node["id"], tool=spec["label"], enabled=data.get("enabled", True),
+            execution="disabled" if not data.get("enabled", True) else "preserve sequences" if preserve_sequences else "retained evidence" if data.get("retained_run_dir") else "collection chunks" if sharded else "ordinary native workflow" if spec["workflow"] else "collection transformation",
+            candidates=count, collection_chunks=chunks, expected_jobs=chunks,
             candidates_per_chunk=settings["batch_size"] if sharded else None,
-            expected_jobs=(count + settings["batch_size"] - 1) // settings["batch_size"] if sharded and count is not None else None,
-            max_concurrent_jobs=settings["max_in_flight"] if sharded else None,
-            placement=settings["placement"] if sharded else None,
-            note="Counts remain unknown until generators finish; native sampling and GPU microbatch settings remain on each tile."))
+            max_concurrent_jobs=settings["max_in_flight"] if sharded else 1,
+            placement=settings["placement"] if sharded else "local",
+            native_invocations=None, docker_processes=None, gpu_allocation_events=None,
+            gpu_slots=None, prediction_outputs=None, model_initializations=None,
+            note="Input counts unknown until upstream outputs and sequence routing resolve.")
+        if inactive:
+            row.update(native_invocations=0, docker_processes=0, gpu_allocation_events=0, gpu_slots=0,
+                       prediction_outputs=0, model_initializations=0, note="No new scientific execution.")
+        elif kind in {"rfd4", "bindcraft2", "rfdiffusion", "rfd3"}:
+            engine = {"rfd4": "rfd4_proteina", "rfd3": "rfdiffusion3"}.get(kind, kind)
+            attempts = int(params.get("num_designs", 1))
+            input_files = params.get('input_files') or []
+            input_count = max(1, sum(bool(str(value).strip()) for value in (input_files.splitlines() if isinstance(input_files, str) else input_files))) if kind == 'rfd4' else 1
+            attempt_chunks = (attempts + settings['batch_size'] - 1) // settings['batch_size'] if sharded else 1
+            native = describe_native_invocation(engine, attempts_per_input=attempts, input_count=input_count,
+                         native_batch_size=int(params.get("batch_size", params.get("diffusion_batch_size", 1))))
+            row.update(requested_generator_attempts=attempts * input_count, attempts_per_input=attempts, generator_input_count=input_count,
+                       gpu_microbatch=params.get("batch_size", params.get("diffusion_batch_size")),
+                       expected_jobs=attempt_chunks, generator_attempt_chunks=attempt_chunks, collection_chunks=0, docker_processes=attempt_chunks,
+                       native_invocations=(sum((min(settings['batch_size'], attempts-offset)+99)//100 for offset in range(0, attempts, settings['batch_size'])) if sharded and kind == 'rfd4' else attempt_chunks if sharded else native["native_python_invocations"]),
+                       gpu_allocation_events=attempt_chunks, gpu_slots=attempt_chunks, prediction_outputs=0,
+                       model_initializations=None,
+                       note="Ordinary native attempts retained. BindCraft2 initialization is per worker; auto worker count and validation rebuilds are unknown. RFD4 search/oracle multiplicity is excluded from simple counts.")
+            if kind == "rfd4" and (any(json.loads(params.get("options_json") or "{}").get(k) for k in ("refold", "apo", "reward_search", "cluster")) or params.get('avoid_structures') or params.get('also_bind_structures')):
+                row.update(native_invocations=None, docker_processes=None, model_initializations=None,
+                           note="RFD4 oracle/search enabled: extra process count depends on native execution.")
+            if params.get("distributed_campaign"):
+                row.update(native_invocations=None, docker_processes=None, expected_jobs=None,
+                           note="Acceptance-driven campaign uses its existing planner and one verified attempt per child; this preview does not authorize native campaign batching.")
+            elif kind != 'bindcraft2':
+                row['model_initializations'] = row['native_invocations']
+        else:
+            engine = prediction_engine(kind)
+            native = (prediction_contract(engine, count or 1,
+                        seeds=params.get("seed_count", 1), samples=params.get("samples", 1),
+                        mode=params.get("optimization_mode", "off")) if engine else
+                      request_contract(dict(workflow=spec["workflow"], parameters=params), count or 1))
+            row.update(native_multi_input=native["native_multi_input"], note=native["model_reuse"], count_basis=native["count_basis"])
+            if count is not None:
+                for key in ("native_invocations", "docker_processes", "gpu_allocation_events", "gpu_slots", "model_initializations"):
+                    value = native.get(key)
+                    row[key] = 0 if not count else value * chunks if value is not None else None
+                row["prediction_outputs"] = (count * int(params.get("samples", 1)) * (int(params.get("seed_count", 1)) if engine == "boltz2" else 1) if engine else native.get('prediction_outputs'))
+                if "native_invocations_max" in native:
+                    row.update(native_invocations_min=chunks, native_invocations_max=count)
+        plan.append(row)
     return plan

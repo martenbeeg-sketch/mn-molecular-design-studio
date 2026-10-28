@@ -573,7 +573,10 @@ def _run_shell_steps(run_dir: Path, steps: list[dict]) -> int:
         for step in steps:
             stdout.write(f"$ {' '.join(step['command'])}\n")
             stdout.flush()
-            proc = subprocess.run(step["command"], stdout=stdout, stderr=stderr, check=False)
+            from mn_molecular_design_studio.native_execution import record_process
+            proc = record_process(run_dir, step["command"], native_invocations=step.get('native_invocations', 1),
+                                  candidate_ids=step.get("candidate_ids", []), runner=subprocess.run,
+                                  stdout=stdout, stderr=stderr, check=False)
             if proc.returncode != 0:
                 return int(proc.returncode)
     return 0
@@ -670,6 +673,8 @@ def _normalize_ligandmpnn_candidates(
                     packed = sorted((raw_root / "output" / source_id / "packed").glob(f"{source_id}_packed_{design_index}_*.pdb"))
                     if packed:
                         backbone_path = packed[0]
+                if params.get('recover_completed_only') and not backbone_path.is_file():
+                    continue
                 from mn_molecular_design_studio.generation_io import has_ligand_target, restore_ligand_context
                 if backbone_path.exists() and input_pdb and has_ligand_target(source):
                     restore_ligand_context(input_pdb,backbone_path,{chain:chain for chain in target_chains})
@@ -716,6 +721,7 @@ def _normalize_ligandmpnn_candidates(
                     "sequence_index": sequence_index,
                     "ligandmpnn_design_index": design_index,
                     "fixed_residues": params.get("fixed_residues_by_candidate", {}).get(source_id, []),
+                    "native_execution_group": params.get("native_group_by_candidate", {}).get(source_id),
                     "chain_role_schema": role_metadata.get("chain_role_schema"),
                     "chain_roles": role_metadata.get("chain_roles"),
                     "binder_source_chains": role_metadata.get("binder_source_chains", []),
@@ -978,7 +984,7 @@ def run_ligandmpnn_sequence_design(
             manifest["image"],
             *args,
         ]
-        steps.append({"name": f"{model_type}-{source_id}", "command": command})
+        steps.append({"name": f"{model_type}-{source_id}", "command": command, "candidate_ids": [source_id]})
 
     if not steps:
         raise ValueError("No selected candidates had an existing PDB structure file. Foundry CIF outputs should use the Foundry-native MPNN path or be converted first.")
@@ -986,8 +992,22 @@ def run_ligandmpnn_sequence_design(
     params["design_chains_by_candidate"] = design_chains_by_candidate
     params["role_metadata_by_candidate"] = role_metadata_by_candidate
     write_json(raw_root / "ligandmpnn_params.json", params)
-    rc = _run_shell_steps(job.run_dir, steps)
-    candidates = _normalize_ligandmpnn_candidates(job.run_dir, source_candidates, candidate_input_paths, params) if rc == 0 else []
+    from mn_molecular_design_studio.ligandmpnn_batching import group_steps, materialize
+    steps, native_groups = group_steps(job.run_dir, steps)
+    params['native_group_by_candidate'] = {candidate_id: dict(group=i, input_ordinal=ordinal,
+        seed=seed, seed_scope='one invocation RNG stream across structures and sequences',
+        candidate_ids=step['candidate_ids']) for i, step in enumerate(steps)
+        for ordinal, candidate_id in enumerate(step.get('candidate_ids', []))}
+    write_json(raw_root / 'ligandmpnn_params.json', params)
+    try:
+        rc = _run_shell_steps(job.run_dir, steps)
+    finally:
+        materialize(job.run_dir, native_groups)
+    # A later input can fail after earlier inputs completed. Normalize only
+    # native FASTA/backbone pairs that exist, retaining their exact parents.
+    if rc != 0:
+        params['recover_completed_only'] = True
+    candidates = _normalize_ligandmpnn_candidates(job.run_dir, source_candidates, candidate_input_paths, params)
     artifacts = _collect_artifacts(
         job.run_dir,
         job.run_dir / "artifacts",
@@ -995,6 +1015,7 @@ def run_ligandmpnn_sequence_design(
             ("raw/ligandmpnn/**/*.fa", "fasta"),
             ("raw/ligandmpnn/**/*.pdb", "pdb"),
             ("raw/ligandmpnn/**/*.json", "sequence_design_input"),
+            ("raw/ligandmpnn/**/*.pt", "native_sequence_statistics"),
             ("normalized_candidates/*.jsonl", "normalized_candidates"),
             ("normalized_candidates/*.json", "campaign_result"),
         ],
@@ -1356,14 +1377,14 @@ def run_foundry_mpnn_sequence_design(
             f"/work/artifacts/raw/foundry_mpnn/output/{source_id}",
             *extra_args,
         ]
-        steps.append({"name": f"foundry-mpnn-{source_id}", "command": command})
+        steps.append({"name": f"foundry-mpnn-{source_id}", "command": command, "candidate_ids": [source_id]})
 
     if not steps:
         raise ValueError("No selected candidates had an existing CIF structure file. RFdiffusion PDB outputs should use the shared LigandMPNN backend.")
 
     write_json(raw_root / "foundry_mpnn_params.json", params)
     rc = _run_shell_steps(job.run_dir, steps)
-    candidates = _normalize_foundry_mpnn_candidates(job.run_dir, source_candidates, candidate_input_paths, params) if rc == 0 else []
+    candidates = _normalize_foundry_mpnn_candidates(job.run_dir, source_candidates, candidate_input_paths, params)
     artifacts = _collect_artifacts(
         job.run_dir,
         job.run_dir / "artifacts",

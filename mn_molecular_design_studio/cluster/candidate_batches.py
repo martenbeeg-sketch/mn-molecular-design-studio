@@ -231,25 +231,41 @@ def poll(batch, *, owner_id, project_id, allow_development=False):
     batch['worker'] = job.get('node_id')
     batch['wait_reason'] = job.get('wait_reason') or ''
     status = job.get('status', 'queued')
+    collection = 'artifacts/normalized_candidates/candidates.jsonl'
+    remote_root = str(job.get('location') or '').rstrip('/')
+    catalog = {str(a.get('relative_path') or a.get('path') or '').removeprefix(remote_root + '/') for a in job.get('artifacts', [])}
+    partial = status in {'failed', 'cancelled', 'lost'} and collection in catalog
     if status in {'failed', 'cancelled', 'lost'}:
-        return status, None, job
-    if status != 'completed':
+        if not partial:
+            # Native files may exist before normalization. Keep that execution
+            # identity for forensic recovery instead of duplicating completed work.
+            if any(p.startswith('artifacts/raw/') for p in catalog):
+                batch['quarantined'] = True
+            return status, None, job
+    if status != 'completed' and not partial:
         node = next((n for n in store.nodes() if n['id'] == job.get('node_id')), None)
         if node and node['availability'] != 'online':
             batch['wait_reason'] = 'Execution workstation disconnected; retaining its job identity until reconciliation.'
             return 'disconnected', None, job
         return status, None, job
     directory = Path(batch['manifest']).with_suffix('.collected')
-    collection = 'artifacts/normalized_candidates/candidates.jsonl'
-    paths = {name: _artifact(batch, batch['cluster_job_id'], name, user, directory)
-             for name in ['metadata.json', 'input.json', 'result.json', collection]}
+    names = ['metadata.json', 'input.json', collection]
+    if not partial or 'result.json' in catalog:
+        names.append('result.json')
+    paths = {name: _artifact(batch, batch['cluster_job_id'], name, user, directory) for name in names}
     if not all(paths.values()):
         return 'collecting', None, job
     metadata = json.loads(paths['metadata.json'].read_text())
-    result = json.loads(paths['result.json'].read_text())
-    if metadata.get('status') != 'completed' or result.get('success') is not True:
+    result = json.loads(paths['result.json'].read_text()) if 'result.json' in paths else {}
+    if not partial and (metadata.get('status') != 'completed' or result.get('success') is not True):
         raise ValueError('Remote job completion disagrees with its scientific artifacts.')
     rows = [json.loads(line) for line in paths[collection].read_text().splitlines() if line.strip()]
+    receipt = None
+    if 'native_execution.json' in catalog:
+        receipt_path = _artifact(batch, batch['cluster_job_id'], 'native_execution.json', user, directory)
+        if receipt_path is None:
+            return 'collecting', None, job
+        receipt = json.loads(receipt_path.read_text())
     missing = set()
     remote_root = str(job.get('location') or '').rstrip('/')
     # Portable paths belong to the execution worker; resolve only run-relative
@@ -298,8 +314,8 @@ def poll(batch, *, owner_id, project_id, allow_development=False):
     rebased = directory / 'artifacts/normalized_candidates/collected.jsonl'
     rebased.write_text(''.join(json.dumps(r) + '\n' for r in rewritten))
     batch['output_transfer_bytes'] = sum(t.get('bytes', 0) for t in batch.get('transfers', {}).values())
-    return 'completed', {'run_dir': str(directory), 'candidates_jsonl': str(rebased),
-                         'candidate_count': len(rows)}, job | {'metadata': metadata}
+    return ('partial' if partial else 'completed'), {'run_dir': str(directory), 'candidates_jsonl': str(rebased),
+                         'candidate_count': len(rows)}, job | {'metadata': metadata, 'native_execution': receipt}
 
 
 def cancel(batch, *, owner_id, project_id, allow_development=False):

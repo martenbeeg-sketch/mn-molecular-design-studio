@@ -8,6 +8,16 @@ import sys
 from pathlib import Path
 
 
+def checkpoint_outputs(request, outputs):
+    """Keep finished sequence identities durable between native inputs/samples."""
+    if not request.get('output'):
+        return  # Direct library callers can request in-memory results.
+    path = Path(request['output'])
+    temporary = path.with_suffix('.partial.tmp')
+    temporary.write_text(json.dumps(outputs, indent=2) + '\n')
+    temporary.replace(path)
+
+
 def _native_sequences(item):
     result = {}
     for row in item["mapping"]:
@@ -48,6 +58,7 @@ def esm_if1(request):
                     likelihoods.append(score_sequence_in_complex(model, alphabet, context, engine_chain, sequence)[0])
                 outputs.append(dict(key=item["key"], sequences=sequences,
                     metrics=dict(esm_if1_log_likelihood=float(sum(likelihoods) / len(likelihoods)))))
+                checkpoint_outputs(request, outputs)
     return outputs
 
 
@@ -124,6 +135,7 @@ def caliby_design(request):
                 raise ValueError("Caliby returned an unexpected number of chain sequences.")
             sequences = {reverse[chain]: seq for chain, seq in zip(sorted(reverse), pieces)}
             outputs.append(dict(key=item["key"], sequences=sequences, metrics=dict(caliby_energy=float(result["U"][index]))))
+            checkpoint_outputs(request, outputs)
     return outputs
 
 
@@ -178,6 +190,7 @@ def boltzgen_inverse(request):
             if set(sequences) != expected:
                 raise ValueError("BoltzGen changed the input protein chain identifiers.")
             outputs.append(dict(key=item["key"], sequences=sequences, metrics={}))
+            checkpoint_outputs(request, outputs)
     return outputs
 
 

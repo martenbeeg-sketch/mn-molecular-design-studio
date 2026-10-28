@@ -214,6 +214,17 @@ def run_rfd4_proteina_design(
             args=['/work/'+(runtime/'rfd4_runtime.py').relative_to(job.run_dir).as_posix(),
                   '/work/'+prepared['request_path'].relative_to(job.run_dir).as_posix()]
             code=run_docker_job(job.run_dir,manifest,args,gpu_device=gpu_device,extra_mounts=mounts,environment=env)
+        native_commands=prepared['root']/'native_command.json'
+        receipt_path=job.run_dir/'native_execution.json'
+        if receipt_path.is_file() and native_commands.is_file():
+            receipt=json.loads(receipt_path.read_text())
+            commands=json.loads(native_commands.read_text())
+            receipt['processes'][-1]['native_invocations']=len(commands) if all(c.get('status')=='returned' for c in commands) else None
+            native_counts=[p.get('native_invocations') for p in receipt['processes']]
+            receipt.update(native_invocations=sum(native_counts) if all(n is not None for n in native_counts) else None,
+                           native_commands=commands, prediction_outputs=0,
+                           native_count_basis='RFD4 wrapper process receipts; oracle processes recorded separately')
+            write_json(receipt_path,receipt)
         if code:
             detail=''
             oracle_log=prepared['root']/'oracle.log'
@@ -224,6 +235,10 @@ def run_rfd4_proteina_design(
         with execution_phase(job.run_dir, "candidate_normalization"):
             candidates=normalize_outputs(job.run_dir,prepared,task,num_designs)
             normalized=write_candidates(job.run_dir,'rfd4_proteina',candidates) if candidates else []
+        if receipt_path.is_file():
+            receipt=json.loads(receipt_path.read_text())
+            receipt['prediction_outputs']=len(normalized) if o.get('operation')=='structure_prediction' else 0
+            write_json(receipt_path,receipt)
         table=prepared['root']/'designs.csv'
         with table.open('w',newline='') as handle:
             writer=csv.DictWriter(handle,fieldnames=['candidate_id','task','binder_sequence','structure'])

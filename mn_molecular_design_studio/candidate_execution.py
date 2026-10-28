@@ -63,9 +63,10 @@ def supports(kind, source):
     from mn_molecular_design_studio.pipeline_graph import OPTIMIZED_PREDICTION_NODE_ENGINES
     from mn_molecular_design_studio.quality_tools import WORKFLOWS
     from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
+    from mn_molecular_design_studio.inverse_folding_input import ENGINES as INVERSE_ENGINES
     workflow = NODE_CATALOG[kind].get('workflow')
     return ((bool(source.get('candidates_jsonl')) and
-             (kind in COLLECTION_KINDS or kind in OPTIMIZED_PREDICTION_NODE_ENGINES or workflow in WORKFLOWS))
+             (kind in COLLECTION_KINDS or kind in OPTIMIZED_PREDICTION_NODE_ENGINES or kind in INVERSE_ENGINES or workflow in WORKFLOWS))
             or kind in GENERATION_KINDS)
 
 
@@ -351,16 +352,20 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
             attempt = batch['attempts'][-1]
             attempt.update(status=status, worker=remote_job.get('node_id'),
                            allocation=remote_job.get('metadata', {}).get('resource_allocation'))
+            if remote_job.get('native_execution'):
+                attempt['native_execution'] = remote_job['native_execution']
             if output is not None:
                 attempt['software'] = remote_job.get('metadata', {}).get('software_environment', {})
                 rows = collect(batch, output, read_rows=graph._absolute_candidates)
+                if status == 'partial':
+                    batch['status'] = 'partial'
                 path = Path(batch['manifest']).with_suffix('.results.json')
                 atomic_json(path, rows)
                 batch['rows_path'] = str(path)
                 batch['output_hashes'][str(path)] = file_digest(path)
             elif status in {'failed', 'lost'}:
                 attempt.update(error=remote_job.get('wait_reason') or 'Remote candidate job failed.', finished_at=utc_now())
-                if len(batch['attempts']) <= settings['retries']:
+                if not batch.get('quarantined') and len(batch['attempts']) <= settings['retries']:
                     batch.pop('cluster_job_id', None)
                     batch.pop('prepared_envelope', None)
                     batch.pop('transfers', None)
@@ -376,6 +381,9 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
             attempt.update(status=status, worker=metadata.get('execution_node_id') or socket.gethostname(),
                            allocation=metadata.get('resource_allocation'),
                            scheduler_job_id=metadata.get('scheduler_job_id'))
+            receipt = read_json(child / 'native_execution.json')
+            if receipt:
+                attempt['native_execution'] = receipt
             batch['status'] = status
             if status == 'completed':
                 result = read_json(child / 'result.json')
@@ -392,10 +400,37 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                     atomic_json(path, rows)
                     batch['rows_path'] = str(path)
                     batch['output_hashes'][str(path)] = file_digest(path)
-            if status in {'failed', 'lost'}:
+            if status in {'failed', 'lost', 'cancelled'}:
                 attempt.update(status=status, finished_at=utc_now(),
                                error=metadata.get('error') or metadata.get('scheduler_error') or 'Worker did not complete successfully.')
-                if len(batch['attempts']) <= settings['retries']:
+                # Retain completed native outputs from an interrupted/failed
+                # collection job. Never sample completed members again merely
+                # because another member failed. Missing members remain explicit.
+                result_rows = child / 'artifacts/normalized_candidates/candidates.jsonl'
+                if not result_rows.is_file() and receipt:
+                    from mn_molecular_design_studio.ligandmpnn_batching import recover
+                    recover(child)
+                    if not result_rows.is_file():
+                        from mn_molecular_design_studio.engine.workflow_engine.workflows.inverse_folding import recover as recover_inverse
+                        recover_inverse(child)
+                recoverable = result_rows.is_file() and result_rows.stat().st_size and any(
+                    (r.get('complex_pdb') or r.get('binder_pdb')) and Path(r.get('complex_pdb') or r.get('binder_pdb')).is_file()
+                    for r in graph._absolute_candidates(dict(run_dir=str(child), candidates_jsonl=str(result_rows))))
+                if recoverable:
+                    output = graph._child_output(child, source.get('target', {}))
+                    rows = collect(batch, output, read_rows=graph._absolute_candidates)
+                    path = Path(batch['manifest']).with_suffix('.results.json')
+                    atomic_json(path, rows)
+                    batch['rows_path'] = str(path)
+                    batch['output_hashes'][str(path)] = file_digest(path)
+                    batch['status'] = 'partial'
+                    batch['error'] = attempt['error']
+                elif status == 'cancelled':
+                    batch['error'] = 'Candidate batch was cancelled; its native artifacts are retained.'
+                elif (receipt and receipt.get('launch_count')) or read_json(child / 'command.json').get('mode') == 'docker':
+                    batch['quarantined'] = True
+                    batch['error'] = 'Interrupted native execution retained for reconciliation; no completed member was resampled.'
+                elif len(batch['attempts']) <= settings['retries']:
                     batch.pop('job_run_dir', None)
                     batch['status'] = 'retrying'
                 else:
@@ -457,6 +492,8 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
             batch.update(status='queued', job_run_dir=str(child))
             persist()
     current['candidate_progress'] = progress(batches)
+    from mn_molecular_design_studio.native_execution import execution_totals
+    current['native_execution'] = execution_totals(batches)
     current['candidate_count'] = sum(b.get('candidate_count', 0) for b in batches if b['status'] in {'completed', 'partial'})
     persist()
     if any(b['status'] not in TERMINAL for b in batches):
@@ -470,7 +507,8 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
         output = graph._local_source(parent, node['id'] + '_batches', aggregate(batches), source.get('target'))
     if not source.get('candidate_set_manifest') and graph.NODE_CATALOG[node['data']['kind']]['category'] == 'Structure prediction':
         output = graph._attach_refold_input_references(output, source, parent, node['id'])
-    output['candidate_execution'] = dict(policy=settings, progress=progress(batches), missing_batches=failures)
+    output['candidate_execution'] = dict(policy=settings, progress=progress(batches), missing_batches=failures,
+                                       native_execution=execution_totals(batches))
     current['partial'] = bool(failures)
     if failures:
         current['error'] = 'Unsuccessful candidate batches: ' + ', '.join(failures)

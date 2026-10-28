@@ -265,7 +265,7 @@ def designed_structure(original, destination, mapping, chain_sequences, mutable)
     return {r["chain"]: chain_sequences[r["engine_chain"]] for r in mapping}
 
 
-def normalize_outputs(engine, p, run, items):
+def normalize_outputs(engine, p, run, items, *, allow_partial=False):
     records = json.loads((run / "artifacts/inverse_folding/native_results.json").read_text())
     by_key = {v["key"]: v for v in items}
     outputs, table, fasta = [], [], []
@@ -296,7 +296,7 @@ def normalize_outputs(engine, p, run, items):
         table.append(dict(candidate_id=cid, source_candidate_id=parent["candidate_id"], sequence=sequence, **metrics))
         fasta += [f">{cid}\n{sequence}\n"]
     required = 1 if p["task"] == "score" else p["num_sequences"]
-    if any(n != required for n in counts.values()):
+    if any(n > required or not allow_partial and n != required for n in counts.values()):
         raise ValueError("The engine did not produce the requested number of sequences for every structure.")
     root = run / "artifacts/inverse_folding"
     (root / "sequences.fasta").write_text("".join(fasta))
@@ -306,6 +306,16 @@ def normalize_outputs(engine, p, run, items):
         writer.writeheader()
         writer.writerows(table)
     return write_candidates(run, engine, outputs)
+
+
+def recover(run):
+    """Normalize durable native sequence receipts; never initialize a model."""
+    root = Path(run) / 'artifacts/inverse_folding'
+    if not (root / 'native_request.json').is_file() or not (root / 'native_results.json').is_file():
+        return []
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+    request = read_json(root / 'native_request.json')
+    return normalize_outputs(request['engine'], request['parameters'], Path(run), request['items'], allow_partial=True)
 
 
 def _run(engine, parameters, existing_job=None):
@@ -345,8 +355,9 @@ def _run(engine, parameters, existing_job=None):
             "-e", "TORCH_HOME=/work/artifacts/inverse_folding/cache/torch", "-e", "XDG_CACHE_HOME=/work/artifacts/inverse_folding/cache",
             "-e", "WANDB_MODE=disabled", "-e", "BOLTZGEN_OPT=off", "-e", "OMP_NUM_THREADS=4",
             inputs.ENGINES[engine]["image"], _cp(run, runner), _cp(run, request)]
-        rc = _run_shell_steps(run, [dict(name=inputs.ENGINES[engine]["title"], command=command)])
-        candidates = normalize_outputs(engine, p, run, items) if rc == 0 else []
+        rc = _run_shell_steps(run, [dict(name=inputs.ENGINES[engine]["title"], command=command,
+            candidate_ids=[item['candidate']['candidate_id'] for item in items], native_invocations=1)])
+        candidates = normalize_outputs(engine, p, run, items, allow_partial=rc != 0) if (root / 'native_results.json').is_file() else []
         from mn_molecular_design_studio.engine.workflow_engine.core.artifacts import Artifact
         artifacts = [Artifact(path.stem, path, path.suffix.lstrip(".")).to_json(run)
                      for path in sorted(root.rglob("*")) if path.is_file() and "cache" not in path.relative_to(root).parts]

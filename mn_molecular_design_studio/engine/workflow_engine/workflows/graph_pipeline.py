@@ -600,6 +600,8 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
         return {"schema_version": 1, "workflow": workflow, "parameters": p}
     from mn_molecular_design_studio import inverse_folding_input
     if kind in inverse_folding_input.ENGINES:
+        p.pop('sequence_stage', None)
+        p.pop('optimization_enabled', None)
         if source.get("candidates_jsonl"):
             p.update(source_run_dir=source["run_dir"], candidates_jsonl=source["candidates_jsonl"])
         else:
@@ -833,7 +835,8 @@ def _child_output(child: Path, target: dict) -> dict:
     from mn_molecular_design_studio import candidate_sets
     candidates = list(candidate_sets.iter_candidates(dict(run_dir=str(child), candidates_jsonl=str(candidate_path))))
     provenance = dict(input=read_json(child / "input.json"), metadata=read_json(child / "metadata.json"),
-                      result_metrics=read_json(child / "result.json").get("metrics", {}))
+                      result_metrics=read_json(child / "result.json").get("metrics", {}),
+                      native_execution=read_json(child / 'native_execution.json'))
     params=read_json(child/'input.json').get('params',{})
     if params.get('generator_only') and not target.get('identity'):
         target=_generation_target(params)
@@ -1083,6 +1086,9 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
             **({'partial_pool': output['partial_pool']} if output.get('partial_pool') else {})}, []) if output.get("candidates_jsonl") else key
         outputs[node_id] = output
         node_states.setdefault(node_id, {}).update(status=status, output=output, fingerprint=key, candidate_count=output.get("candidate_count", 0), completed_at=utc_now())
+        receipt = output.get('source_provenance', {}).get('native_execution')
+        if receipt and status not in {'cached', 'skipped'}:
+            node_states[node_id]['native_execution'] = receipt
         if output.get("stage_counts"):
             node_states[node_id]["stage_counts"] = output["stage_counts"]
         if node_states[node_id].get("batches") is not None:
@@ -1186,7 +1192,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         else:
                             output = candidate_sets.write_collection(parent, node_id, candidate_sets.iter_candidates(source, review=True), source["target"])
                         complete(node_id, output, key); progressed = True; continue
-                    if kind in {"ligandmpnn", "foundry_mpnn"} and source.get("candidate_set_manifest"):
+                    if NODE_CATALOG[kind]['category'] == 'Sequence design' and source.get("candidate_set_manifest"):
                         original_source = source
                         source = candidate_sets.sequence_inputs(parent, node_id, source, params)
                         if source.get("candidate_count") == 0:
@@ -1279,6 +1285,11 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         from mn_molecular_design_studio import mimosa_motif
                         key_params["checkpoint_digest"] = file_digest(mpnn_input.checkpoint("ab_mpnn"))
                         key_params["mimosa_motif_adapter_digest"] = file_digest(Path(mimosa_motif.__file__))
+                    if kind in {'ligandmpnn', 'foundry_mpnn', 'abmpnn'}:
+                        from mn_molecular_design_studio import ligandmpnn_batching
+                        from mn_molecular_design_studio.engine.workflow_engine.workflows import sequence_design
+                        key_params['native_sequence_adapter_digest'] = file_digest(Path(sequence_design.__file__))
+                        key_params['native_batch_adapter_digest'] = file_digest(Path(ligandmpnn_batching.__file__))
                     if kind in {"af2", "boltz2"}:
                         from mn_molecular_design_studio import prediction_configuration
                         key_params["prediction_configuration_digest"] = file_digest(Path(prediction_configuration.__file__))

@@ -593,7 +593,13 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 st.caption('Collection chunks use the existing scheduler. Engine-native samples, sequence multiplicity and GPU microbatching remain in the tool controls. Per-step execution settings override the pipeline policy.')
     with st.expander('Collection execution plan', expanded=False):
         from mn_molecular_design_studio.candidate_pipeline import execution_plan
-        st.dataframe(execution_plan(graph), hide_index=True, use_container_width=True)
+        preview_count = int(st.number_input('Preview eligible candidates per processing tile', min_value=0, max_value=10000, value=5, key=prefix+'-execution-preview-count'))
+        counts = {n['id']: preview_count for n in graph['nodes'] if NODE_CATALOG[n['data']['kind']]['category'] in {'Structure prediction', 'Sequence design'}}
+        st.caption('Read-only forecast. Preview counts are independent inputs for each processing tile; generator yields and sequence eligibility remain unknown. Native invocations, containers and allocations are separate. Model initialization counts are source expectations, not timing measurements.')
+        st.dataframe(execution_plan(graph, counts), hide_index=True, use_container_width=True)
+        from mn_molecular_design_studio.native_execution import tool_inventory
+        st.caption('All registered generators, sequence-design tools, model variants and cofolders, including RFD4 operations. Unverified lifecycle entries do not claim native batching support.')
+        st.dataframe(tool_inventory(), hide_index=True, use_container_width=True)
     with st.expander("Saved pipelines & versions", expanded=False):
         if definitions:
             saved = st.selectbox("Saved draft", definitions, format_func=lambda d:f"{d['graph']['name']} · {d['versions']} saved versions", key=prefix+"-saved")
@@ -704,7 +710,9 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                     st.progress(completed / total if total else 0, text=f'{completed}/{total} candidate-stage inputs completed')
                     st.dataframe(batch_rows, hide_index=True, use_container_width=True)
                 if execution.get("nodes"):
-                    st.dataframe([{"Step": next((n["data"]["label"] for n in snapshot.get("nodes", []) if n["id"]==nid),nid), "Status": state.get("status"), "Job":state.get("job_code", ""), "Candidates":state.get("candidate_count"), "Detail":state.get("error", "")} for nid,state in execution["nodes"].items()], hide_index=True, use_container_width=True)
+                    st.dataframe([{"Step": next((n["data"]["label"] for n in snapshot.get("nodes", []) if n["id"]==nid),nid), "Status": state.get("status"), "Job":state.get("job_code", ""), "Candidates":state.get("candidate_count"),
+                        **{key: state.get('native_execution', {}).get(key) for key in ('collection_chunks', 'native_invocations', 'docker_processes', 'gpu_allocation_events', 'gpu_slots', 'prediction_outputs')},
+                        "Detail":state.get("error", "")} for nid,state in execution["nodes"].items()], hide_index=True, use_container_width=True)
                     stage_rows = [{'Step': nid, 'Stage count': name, 'Count': count} for nid, step in execution['nodes'].items()
                                   for name, count in step.get('stage_counts', {}).items()]
                     if stage_rows:
