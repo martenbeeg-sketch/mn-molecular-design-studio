@@ -167,6 +167,10 @@ def initialize(parent, node, source, params, key, settings, *, make_source, make
             if effective['seed'] is None:
                 effective.pop('seed')
         request = make_request(node['data']['kind'], effective, batch_source, f'{node["data"]["label"]} · {batch_id}')
+        # Bind the node's CPU choice before freezing the request. Prediction
+        # adapters may supply a default, which must agree with scheduler resources.
+        if 'cpu_cores' in request.get('parameters', {}):
+            request['parameters']['cpu_cores'] = settings['cpu_cores']
         manifest = dict(schema_version=1, pipeline=str(parent), node=node['id'], batch_id=batch_id,
                         scientific_key=key, offset=offset, input_candidate_ids=ids,
                         unit_count=count, request=request, input_hashes=data_hashes(request), policy=settings)

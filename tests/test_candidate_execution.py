@@ -269,3 +269,28 @@ def test_peer_batch_lifecycle_uses_durable_controller_identity(tmp_path, monkeyp
     assert ce.tick(tmp_path, node, current, {}, {}, 'a' * 64, settings, **arguments)[1] == 'failed'
     ce.cancel(tmp_path, {'nodes': {'predict': {'batches': [dict(status='queued', cluster_job_id='other')]}}})
     assert calls == [('submit', development), ('poll', development), ('cancel', development), ('cancel', development)]
+
+
+def test_prediction_manifest_binds_configured_cpu_resource_before_validation(tmp_path):
+    from mn_molecular_design_studio import candidate_pipeline as cp, pipeline_graph as pg
+    from test_prediction_configuration_gpu import small_complex
+    candidate = small_complex(tmp_path / 'cpu-fixture')
+    source = gp._local_source(tmp_path, 'cpu-source', [candidate],
+        dict(target_pdb=candidate['complex_pdb'], target_chains='T'))
+    graph = cp.new_pipeline(['rfd4'], mode='modular_design')
+    for node in graph['nodes']:
+        if not node['id'].startswith('predictor-'):
+            continue
+        params = node['data']['params']
+        params.update(target_use_msa=False, use_target_template=False)
+        settings = ce.policy(dict(cpu_cores=8, min_vram_gb=16, placement='auto'))
+        shards = ce.initialize(tmp_path, node, source, params, node['id'].ljust(64, '0'), settings,
+            make_source=gp._local_source, make_request=gp.node_request, read_rows=gp._absolute_candidates)
+        request = ce.read_manifest(shards[0])['request']
+        assert request['parameters']['cpu_cores'] == 8
+        request['resources'] = dict(cpu_cores=8, gpu_device='auto', min_vram_gb=16)
+        # The ordinary workflow validator must accept the exact frozen request.
+        from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import validate_workflow_request
+        path = tmp_path / (node['id'] + '-request.json')
+        path.write_text(json.dumps(request))
+        validate_workflow_request(path)
