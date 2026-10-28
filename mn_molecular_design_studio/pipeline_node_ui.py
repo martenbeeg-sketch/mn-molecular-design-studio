@@ -224,7 +224,7 @@ def _render_field(field, values, key):
                                min_value=convert(field["min"]) if "min" in field else None,
                                max_value=convert(field["max"]) if "max" in field else None,
                                disabled=name=="cfg_scale" and not values.get("classifier_free_guidance"), **kwargs)
-    if name in {"target_sequence", "target_protein_sequences", "partner_protein_sequences", "dna_sequences", "rna_sequences", "ligand_smiles", "options_json", "condition_spec"}:
+    if name in {"target_sequence", "target_protein_sequences", "partner_protein_sequences", "dna_sequences", "rna_sequences", "ligand_smiles", "options_json", "engine_overrides_json", "condition_spec"}:
         height = 170 if name == "options_json" else 220 if name == "condition_spec" else 110 if "sequence" in name else 85
         return st.text_area(label, value=str(value), height=height, **kwargs)
     return st.text_input(label, value=str(value), **kwargs)

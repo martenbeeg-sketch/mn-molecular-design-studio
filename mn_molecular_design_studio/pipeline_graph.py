@@ -309,6 +309,12 @@ _OPTIONAL_FIELDS = {
         field("use_deepspeed_evo_attention", "DeepSpeed Evo attention", False, kind="boolean"),
         field("prepare_target_msa", "Prepare target MSA", True, kind="boolean")],
     "bindcraft2": [field("campaign_seed", "Campaign seed (0 = random)", 0, minimum=0, maximum=2147483647),
+        field("max_trajectories", "Maximum native trajectory attempts (0 = design count)", 0, minimum=0, maximum=100000,
+              help="Independent native stopping cap. Zero preserves the saved graph's design-count cap."),
+        field("workers_per_gpu", "Native workers per GPU", "auto", kind="select", options=["auto", "1", "2", "3", "4"],
+              help="Native workers inside the whole invocation; separate from scheduler concurrency."),
+        field("engine_overrides_json", "Advanced native BindCraft2 settings (JSON object)", "{}", kind="text",
+              help="Existing native settings, including design stages and evaluation models. Trajectory limits and workflow mode remain controlled by the tile."),
         field("redesign_interface", "Redesign interface", False, kind="boolean"),
         field("coldspots", "Coldspot override", "", kind="text", help="Leave empty to inherit coldspots from the connected Target block.")],
     "boltzgen": [field("sampling_steps", "Sampling steps", 20, minimum=1, maximum=2000),
@@ -1303,6 +1309,26 @@ def migrate_template_graph(graph: dict[str, Any]) -> dict[str, Any]:
     return clean_graph(migrate_template_graph(migrated))
 
 
+def bindcraft2_native_overrides(params: dict) -> dict:
+    """Validate existing native settings without allowing budget/mode changes."""
+    def invalid_constant(value):
+        raise ValueError(f"Nonfinite native setting: {value}.")
+    try:
+        settings = json.loads(params.get("engine_overrides_json", "{}"), parse_constant=invalid_constant)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Advanced native BindCraft2 settings must be a finite JSON object.") from exc
+    if not isinstance(settings, dict):
+        raise ValueError("Advanced native BindCraft2 settings must be a JSON object.")
+    protected = {"max_trajectories", "number_of_final_designs", "workers_per_gpu", "trajectory_only"} & settings.keys()
+    if protected:
+        raise ValueError("Use the native tile controls for: " + ", ".join(sorted(protected)) + ".")
+    try:
+        json.dumps(settings, allow_nan=False)
+    except ValueError as exc:
+        raise ValueError("Advanced native BindCraft2 settings must be finite.") from exc
+    return settings
+
+
 def clean_graph(graph: dict) -> dict:
     """Discard render state so saved definitions never contain execution results."""
     if not isinstance(graph, dict):
@@ -1378,6 +1404,8 @@ def clean_graph(graph: dict) -> dict:
                 raise ValueError(f"{f['label']} must be a list.")
             if f["type"] == "select" and value not in f["options"]:
                 raise ValueError(f"Unsupported {f['label']}.")
+        if kind == "bindcraft2":
+            bindcraft2_native_overrides(params)
         pos = node.get("position") or {}
         position = {axis: float(pos.get(axis, 0)) for axis in ("x", "y")}
         if not all(math.isfinite(v) and abs(v) < 1e7 for v in position.values()):

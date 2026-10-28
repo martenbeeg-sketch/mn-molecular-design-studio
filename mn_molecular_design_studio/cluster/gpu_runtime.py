@@ -14,9 +14,15 @@ except (ImportError, AttributeError):
 
 
 @lru_cache(maxsize=64)
-def _probe(image_id):
+def _probe(image_id, protenix_v2=False):
     try:
-        result = subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'python', image_id, '-c', _PROBE],
+        # Match mn-predict's existing launcher: this image's Python bootstrap
+        # rejects the legacy mode variable before importing torch. The manifest
+        # still controls inference optimization; this probe loads no model/GPU.
+        entrypoint = '/usr/bin/env' if protenix_v2 else 'python'
+        arguments = ['-u', 'PROTENIX_OPT_MODE', 'python'] if protenix_v2 else []
+        result = subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', entrypoint,
+                                 image_id, *arguments, '-c', _PROBE],
                                 capture_output=True, text=True, check=True, timeout=30)
         return json.loads(result.stdout.strip().splitlines()[-1])
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
@@ -32,7 +38,7 @@ def profiles(images):
                 capture_output=True, text=True, check=True, timeout=5).stdout.strip()
         except (OSError, subprocess.SubprocessError):
             continue
-        profile = _probe(identity)
+        profile = _probe(identity, image.startswith('mn-protenix-opt:'))
         if profile.get('targets'):
             result[image] = profile
     return result

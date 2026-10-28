@@ -663,7 +663,16 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
         elif kind in {"pxdesign", "pxdesign_pipeline"}:
             p["run_mode"] = "generation_only" if kind == "pxdesign" else "pipeline"
         elif kind == "bindcraft2":
-            attempts = int(p.pop("num_designs")); p.update(number_of_final_designs=attempts, max_trajectories=attempts)
+            from mn_molecular_design_studio.pipeline_graph import bindcraft2_native_overrides
+            overrides = bindcraft2_native_overrides(p)
+            p.pop("engine_overrides_json", None)
+            if overrides:
+                p["engine_overrides"] = overrides
+            attempts = int(p.pop("num_designs"))
+            limit = int(p.pop("max_trajectories", 0)) or attempts
+            if p.get("workers_per_gpu") == "auto":
+                p.pop("workers_per_gpu")
+            p.update(number_of_final_designs=attempts, max_trajectories=limit)
             campaign=p.get("distributed_campaign")
             if campaign is not None:
                 campaign={**campaign,"generator_id":"bindcraft2"}
