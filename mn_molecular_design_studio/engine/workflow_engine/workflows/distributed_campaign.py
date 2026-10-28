@@ -245,6 +245,18 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _state_accepted_count(state: dict[str, Any]) -> int:
+    acceptance_field = {
+        "native": "native_acceptance",
+        "validated": "validated_acceptance",
+        "diversity_qualified": "diversity_acceptance",
+    }[state["config"]["acceptance_level"]]
+    return sum(
+        candidate.get(acceptance_field) == "accepted"
+        for candidate in state.get("candidates", {}).values()
+    )
+
+
 class CampaignLedger:
     """Atomic attempt reservations, idempotent result receipts, and global counts."""
 
@@ -268,6 +280,7 @@ class CampaignLedger:
                 "config": validated,
                 "status": "running",
                 "termination_reason": None,
+                "generation_budget_exhausted": False,
                 "created_at": now,
                 "updated_at": now,
                 "next_ordinal": 1,
@@ -380,6 +393,24 @@ class CampaignLedger:
             for attempt in self.snapshot()["attempts"].values()
             for seconds in (attempt.get("compute_runs") or {}).values()
         )
+
+    def mark_generation_budget_exhausted(self) -> dict[str, Any]:
+        """Persist that all generation attempts have been authorized, even if validation is pending."""
+        with _locked(self.path):
+            state = _read(self.path)
+            if len(state["attempts"]) < int(state["config"]["max_attempts"]):
+                return state
+            if state.get("generation_budget_exhausted"):
+                return state
+            now = utc_now()
+            state["generation_budget_exhausted"] = True
+            state["generation_budget_exhausted_at"] = now
+            state["updated_at"] = now
+            state["events"].append({
+                "type": "generation_budget_exhausted", "at": now,
+            })
+            _atomic_json(self.path, state)
+            return state
 
     @staticmethod
     def _seed(campaign_id: str, configured_seed: int, ordinal: int) -> int:
@@ -591,8 +622,15 @@ class CampaignLedger:
         with _locked(self.path):
             state = _read(self.path)
             existing = state.get("termination_reason")
-            if existing and existing != reason:
+            promotes_budget_outcome = (
+                existing == "budget_exhausted"
+                and reason == "target_reached"
+                and _state_accepted_count(state) >= int(state["config"]["accepted_target"])
+            )
+            if existing and existing != reason and not promotes_budget_outcome:
                 return state
+            if len(state["attempts"]) >= int(state["config"]["max_attempts"]):
+                state["generation_budget_exhausted"] = True
             state["status"] = "completed" if reason in {
                 "target_reached", "budget_exhausted", "runtime_exhausted", "compute_exhausted",
             } else reason
@@ -1544,6 +1582,10 @@ def _sync_parent_results(
         "acceptance_level": state["config"]["acceptance_level"],
         "accepted_target": state["config"]["accepted_target"],
         "termination_reason": state.get("termination_reason"),
+        "generation_budget_exhausted": bool(
+            state.get("generation_budget_exhausted")
+            or len(state["attempts"]) >= int(state["config"]["max_attempts"])
+        ),
         "counters": ledger.counters(),
         "gpu_compute_seconds": ledger.gpu_compute_seconds(),
         "attempts": attempts,
@@ -1554,6 +1596,7 @@ def _sync_parent_results(
     metadata["distributed_campaign_summary"] = {
         "campaign_id": state["campaign_id"],
         "termination_reason": state.get("termination_reason"),
+        "generation_budget_exhausted": summary["generation_budget_exhausted"],
         "counters": summary["counters"],
         "candidate_count": len(candidates),
     }
@@ -1572,12 +1615,17 @@ def _parent_progress(
     counters = ledger.counters()
     capability = generator_capabilities(str(config.get("generator_id") or "bindcraft2"))
     selected = _accepted_count(ledger, config)
+    state = ledger.snapshot()
+    attempts_remaining = max(0, int(config["max_attempts"]) - counters["attempts_authorized"])
+    validation_pending = _validation_pending_candidates(state, config)
     active_ids = [str(item.get("attempt_id") or "") for item in active]
     label = (
         f"{capability.label} · {selected}/{config['accepted_target']} accepted · "
         f"{counters['attempts_started']}/{config['max_attempts']} attempts started · "
         f"{len(active_ids)} active"
     )
+    if state.get("generation_budget_exhausted") and validation_pending:
+        label += f" · generation budget consumed · {validation_pending} awaiting validation"
     update_status(
         parent_run_dir,
         "running",
@@ -1588,10 +1636,13 @@ def _parent_progress(
             **counters,
             "accepted_target": config["accepted_target"],
             "acceptance_level": config["acceptance_level"],
-        "active_attempt_ids": active_ids,
-        "gpu_compute_seconds": _campaign_compute_seconds(
-            ledger, _attempt_child_paths(ledger), active,
-        ),
+            "attempts_remaining": attempts_remaining,
+            "generation_budget_exhausted": bool(state.get("generation_budget_exhausted")),
+            "validation_pending_candidates": validation_pending,
+            "active_attempt_ids": active_ids,
+            "gpu_compute_seconds": _campaign_compute_seconds(
+                ledger, _attempt_child_paths(ledger), active,
+            ),
         },
     )
 
@@ -1750,9 +1801,20 @@ def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: l
 
     state = ledger.snapshot()
     counters = ledger.counters()
-    reason = str(state.get("termination_reason") or "failed")
     accepted = _accepted_count(ledger, state["config"])
     target_met = accepted >= int(state["config"]["accepted_target"])
+    if target_met and state.get("termination_reason") == "budget_exhausted":
+        state = ledger.terminate(
+            "target_reached",
+            detail=f"Reached {accepted} {state['config']['acceptance_level']} accepted candidates.",
+        )
+    _sync_parent_results(parent_run_dir, ledger, _attempt_child_paths(ledger), candidates)
+    state = ledger.snapshot()
+    reason = str(state.get("termination_reason") or "failed")
+    generation_budget_exhausted = bool(
+        state.get("generation_budget_exhausted")
+        or len(state["attempts"]) >= int(state["config"]["max_attempts"])
+    )
     success = reason in {"target_reached", "budget_exhausted", "runtime_exhausted", "compute_exhausted"}
     result = {
         "outputs": {
@@ -1767,6 +1829,8 @@ def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: l
             "accepted_target": state["config"]["accepted_target"],
             "acceptance_level": state["config"]["acceptance_level"],
             "campaign_success": target_met,
+            "generation_budget_exhausted": generation_budget_exhausted,
+            "attempts_remaining": max(0, int(state["config"]["max_attempts"]) - counters["attempts_authorized"]),
             "termination_reason": reason,
             "target_met": target_met,
             "gpu_compute_seconds": ledger.gpu_compute_seconds(),
@@ -2473,6 +2537,8 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
         )
         while True:
             state = ledger.snapshot()
+            if len(state["attempts"]) >= int(config["max_attempts"]):
+                state = ledger.mark_generation_budget_exhausted()
             parent_metadata = read_json(parent_run_dir / "metadata.json")
             if state.get("termination_reason") == "failed":
                 raise RuntimeError(state.get("termination_detail") or "Campaign controller previously failed.")
@@ -2568,16 +2634,22 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
                 # them before deciding that the attempt budget is exhausted.
                 children, active, candidates = _reconcile_attempts(ledger, parent_run_dir, config)
                 _sync_parent_results(parent_run_dir, ledger, children, candidates)
+                candidates = _drive_validation(parent_run_dir, ledger, candidates, config)
+                _sync_parent_results(parent_run_dir, ledger, children, candidates)
                 state = ledger.snapshot()
+                if len(state["attempts"]) >= int(config["max_attempts"]):
+                    state = ledger.mark_generation_budget_exhausted()
                 if (
                     len(state["attempts"]) >= int(config["max_attempts"])
                     and not active
-                    and not _validation_pending_candidates(state, config)
                 ):
-                    ledger.terminate("budget_exhausted", detail=f"Attempt budget exhausted at {selected}/{config['accepted_target']} accepted.")
-                    _, _, candidates = _reconcile_attempts(ledger, parent_run_dir, config)
-                    _sync_parent_results(parent_run_dir, ledger, _attempt_child_paths(ledger), candidates)
-                    return _finish_campaign(parent_run_dir, ledger, candidates)
+                    pending_validation = _validation_pending_candidates(state, config)
+                    selected = _accepted_count(ledger, config)
+                    if not pending_validation and selected < int(config["accepted_target"]):
+                        ledger.terminate("budget_exhausted", detail=f"Attempt budget exhausted at {selected}/{config['accepted_target']} accepted.")
+                        _, _, candidates = _reconcile_attempts(ledger, parent_run_dir, config)
+                        _sync_parent_results(parent_run_dir, ledger, _attempt_child_paths(ledger), candidates)
+                        return _finish_campaign(parent_run_dir, ledger, candidates)
                 _parent_progress(parent_run_dir, ledger, config, active)
             time.sleep(float(config["poll_interval_seconds"]))
 

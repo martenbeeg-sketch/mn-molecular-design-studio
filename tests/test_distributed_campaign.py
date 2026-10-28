@@ -90,11 +90,14 @@ def test_budget_termination_is_explicit_and_stable(tmp_path):
     assert campaign.terminate("target_reached")["termination_reason"] == "budget_exhausted"
 
 
-def test_campaign_success_reflects_final_target_even_when_budget_was_the_termination_reason(tmp_path, monkeypatch):
+def test_campaign_finalization_promotes_budget_exhaustion_when_target_was_reached(tmp_path, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs
 
+    parent = tmp_path / "parent"
+    (parent / "artifacts/distributed_campaign").mkdir(parents=True)
+    jobs.write_json(parent / "metadata.json", {})
     campaign = CampaignLedger.create(
-        tmp_path / "campaign.json",
+        parent / "artifacts/distributed_campaign/ledger.json",
         {"accepted_target": 1, "max_attempts": 1, "acceptance_level": "native"},
         campaign_id="budget-target-campaign",
     )
@@ -108,12 +111,15 @@ def test_campaign_success_reflects_final_target_even_when_budget_was_the_termina
     captured = {}
     monkeypatch.setattr(jobs, "finish_job", lambda _path, success, result: captured.update(success=success, result=result))
 
-    distributed_campaign._finish_campaign(tmp_path, campaign, [candidate])
+    distributed_campaign._finish_campaign(parent, campaign, [candidate])
 
     metrics = captured["result"]["metrics"]
-    assert metrics["termination_reason"] == "budget_exhausted"
+    assert metrics["termination_reason"] == "target_reached"
     assert metrics["campaign_success"] is True
     assert metrics["target_met"] is True
+    assert metrics["generation_budget_exhausted"] is True
+    assert metrics["attempts_remaining"] == 0
+    assert campaign.snapshot()["termination_reason"] == "target_reached"
 
 
 @pytest.mark.parametrize(
@@ -414,6 +420,105 @@ def test_controller_can_stop_on_validated_global_acceptance(
     assert result["metrics"]["validated_accepted_candidates"] == 1
     final_candidate = read_candidates(parent / "artifacts/normalized_candidates/candidates.jsonl")[0]
     assert final_candidate["raw_metadata"]["evidence_candidates"][0]["candidate_id"] == "fake-prediction-1"
+
+
+def test_late_validation_recovery_promotes_budget_reason_after_target_is_met(
+    tmp_path, monkeypatch, design_source_factory
+):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates, write_candidates
+    from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation
+
+    config = {
+        "accepted_target": 1,
+        "acceptance_level": "validated",
+        "max_attempts": 1,
+        "batch_size": 1,
+        "max_concurrent_batches": 1,
+        "validation_stages": [{
+            "workflow": "refolding.optimized_prediction",
+            "parameters": {"engine": "boltz2"},
+            "required_metrics": ["iptm"],
+            "rules": [{"field": "iptm", "operator": ">=", "value": 0.5}],
+        }],
+        "poll_interval_seconds": 0.25,
+        "max_retries": 0,
+        "seed": 103,
+    }
+    root, parent = _parent_run(tmp_path, monkeypatch, config)
+    _controlled_workers(monkeypatch, root, design_source_factory, accepted={1})
+    _mock_finish(monkeypatch)
+    validation_run = root / "refolding-validation" / "late-validation"
+
+    def submit_validation(request_path):
+        request = json.loads(request_path.read_text())
+        source_id = request["parameters"]["tasks"][0]["source_candidate_id"]
+        source = next(
+            row for row in read_candidates(parent / "artifacts/normalized_candidates/candidates.jsonl")
+            if row["candidate_id"] == source_id
+        )
+        validation_run.mkdir(parents=True)
+        jobs.write_json(validation_run / "metadata.json", {
+            "run_id": validation_run.name, "task_group": "refolding-validation",
+            "job_type": "complex_refolding", "tool": "optimized_prediction_boltz2",
+            "status": "running", "resource_allocation": {"gpu_device": "none"},
+        })
+        jobs.write_json(validation_run / "result.json", {})
+        return {"job": {"run_dir": str(validation_run)}}
+
+    monkeypatch.setattr(workflow_automation, "submit_workflow_request", submit_validation)
+
+    class StopAfterPendingValidation(Exception):
+        pass
+
+    monkeypatch.setattr(distributed_campaign.time, "sleep", lambda _seconds: (_ for _ in ()).throw(StopAfterPendingValidation()))
+    with pytest.raises(StopAfterPendingValidation):
+        distributed_campaign._run_distributed_campaign(parent, "bindcraft2")
+
+    campaign = CampaignLedger(parent / "artifacts/distributed_campaign/ledger.json")
+    pending_state = campaign.snapshot()
+    assert pending_state["termination_reason"] is None
+    assert pending_state["generation_budget_exhausted"] is True
+    pending_progress = jobs.read_json(parent / "metadata.json")["campaign_progress"]
+    assert pending_progress["attempts_remaining"] == 0
+    assert pending_progress["generation_budget_exhausted"] is True
+    assert pending_progress["validation_pending_candidates"] == 1
+
+    # Simulate recovery from a legacy controller that finalized before validation settled.
+    campaign.terminate("budget_exhausted", detail="legacy premature finalization")
+    source = read_candidates(parent / "artifacts/normalized_candidates/candidates.jsonl")[0]
+    prediction = {
+        "candidate_id": "late-validation-prediction", "stage": "complex_refolding",
+        "source_tool": "optimized_prediction_boltz2", "binder_sequence": source["binder_sequence"],
+        "target_chains": source["target_chains"], "binder_chains": source["binder_chains"],
+        "complex_pdb": source["complex_pdb"], "parents": [source["candidate_id"]],
+        "metrics": {"iptm": 0.8},
+        "raw_metadata": {
+            "source_candidate": source, "measurement_status": {"status": "measured"},
+            "prediction_protocol": {"engine": "boltz2", "num_recycles": 6},
+            "identity_check": {"sequence_chain_identity": "pass"},
+        },
+    }
+    jobs.write_json(validation_run / "metadata.json", {
+        **jobs.read_json(validation_run / "metadata.json"), "status": "completed",
+    })
+    write_candidates(validation_run, "optimized_prediction_boltz2", [prediction])
+    jobs.write_json(validation_run / "result.json", {"success": True})
+    monkeypatch.setattr(distributed_campaign.time, "sleep", lambda _seconds: None)
+
+    distributed_campaign.run_bindcraft2_distributed_campaign(parent)
+
+    final_state = campaign.snapshot()
+    result = jobs.read_json(parent / "result.json")
+    assert final_state["termination_reason"] == "target_reached"
+    assert final_state["generation_budget_exhausted"] is True
+    assert result["metrics"]["termination_reason"] == "target_reached"
+    assert result["metrics"]["target_met"] is True
+    assert result["metrics"]["generation_budget_exhausted"] is True
+    assert result["metrics"]["validated_accepted_candidates"] == 1
+    summary = jobs.read_json(parent / "artifacts/distributed_campaign/summary.json")
+    assert summary["termination_reason"] == "target_reached"
+    assert summary["generation_budget_exhausted"] is True
 
 
 def _parent_run(tmp_path, monkeypatch, config):
@@ -790,6 +895,8 @@ def test_controller_continues_after_native_rejections_then_reports_budget_exhaus
     assert result["metrics"]["attempts_authorized"] == 2
     assert result["metrics"]["attempts_completed"] == 2
     assert result["metrics"]["rejected_candidates"] == 2
+    assert result["metrics"]["generation_budget_exhausted"] is True
+    assert result["metrics"]["attempts_remaining"] == 0
     assert len(made) == 2
 
 
