@@ -1,0 +1,434 @@
+{
+  "run_id": "20261028-152136-81e2ed87",
+  "run_dir": "/mnt/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261028-152136-81e2ed87",
+  "scope": "one ordinary diagnostic design request, not a campaign acceptance or downstream validation",
+  "source_starting_commit": "d8a1b69",
+  "source_reference_run": "20261028-124449-84e33f5e",
+  "native_attempts": 1,
+  "allocation": {
+    "allocated_at": "2026-10-28T14:21:38+00:00",
+    "cpu_cores": 8,
+    "cpu_slots": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "gpu_device": "0",
+    "gpu_devices": [
+      "0"
+    ],
+    "gpu_ids": [
+      0
+    ],
+    "ram_gb": 0.0,
+    "scheduler": "mn-compute-scheduler",
+    "scheduler_job_id": "a01f96704fd8422fb740e86d855af437",
+    "scratch_gb": 0.0
+  },
+  "worker_started_at": "2026-10-28T14:21:38+00:00",
+  "completed_at": "2026-10-28T14:23:38+00:00",
+  "image_id": "sha256:c34efb5afca78c0341cf996c9dadc8102a7fb3760e1792697a8779803e0e44f5",
+  "seed": 1185903269,
+  "diffusion_steps": 60,
+  "native_replicates": 1,
+  "native_batch_size": 1,
+  "compile_lengths": null,
+  "checkpoint_revision": "a06e2509c7033b010fc43614e9fd840303588502",
+  "checkpoint_hashes": {
+    "model.safetensors": "5b549dd61adb2f6c6b5cb95bda13f40f5e31556b4e6c755edc0ca6f011c68fb0",
+    "config.json": "154ea927ab8005b7eac2d047a792147fb4606ab4878e496aa8414b6b40dad368"
+  },
+  "effective_config_differences_from_retained_reference": [],
+  "normalized_candidates": 1,
+  "chain_sequence_hashes": {
+    "A": "c434254957dd7a7d80ce4ca859f9a6d101a1205f4ff822177dd0b3c31f02e968",
+    "B": "095f53b90308d4a13f338fbec087569f962b2b4bc9a0243bf2206d9fe1398e8e"
+  },
+  "binder_length": 116,
+  "native_structure_sha256": "3544780e8f0bf6db9668366008ddd813a022c6012ef932b8268221578ab8f3e8",
+  "normalized_sequence_matches_structure": true,
+  "native_timings": [
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:21:58.483435+00:00",
+      "pid": 1,
+      "phase": "native_subprocess_launch_through_exit",
+      "span_id": "be822410-4f19-464a-8959-fce51403cf7b",
+      "event": "started"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:21:58.511712+00:00",
+      "pid": 81,
+      "phase": "native_entrypoint_main",
+      "span_id": "fc7e336a-a97d-4371-b942-60fe31818014",
+      "event": "started"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:21:58.511802+00:00",
+      "pid": 81,
+      "phase": "native_entrypoint_imports",
+      "span_id": "505bfa9e-aa7d-495f-ad0c-113356c560bb",
+      "event": "started"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:10.152481+00:00",
+      "pid": 81,
+      "phase": "native_entrypoint_imports",
+      "span_id": "505bfa9e-aa7d-495f-ad0c-113356c560bb",
+      "event": "finished",
+      "elapsed_seconds": 11.640675101894885
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:10.153112+00:00",
+      "pid": 81,
+      "event": "hooks_installed",
+      "cuda_initialized_after_imports": false,
+      "source_hashes": {
+        "generate.py": "aba4eae926d62ddb22caa0f162224fc21e1e65e18175e5980c9b752f6bdcaa34",
+        "proteina.py": "74dae63c857e1e325546161ff1aa66367de191d7b1de9ec8e37312290d7dd716"
+      },
+      "gpu_timing": "host_wall_without_added_synchronization"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:10.457008+00:00",
+      "pid": 81,
+      "phase": "model_checkpoint_and_configuration",
+      "span_id": "5cef2f8c-e6ba-4d40-b455-4331e0436b90",
+      "event": "started"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:16.067320+00:00",
+      "pid": 81,
+      "phase": "model_checkpoint_and_configuration",
+      "span_id": "5cef2f8c-e6ba-4d40-b455-4331e0436b90",
+      "event": "finished",
+      "elapsed_seconds": 5.610311793861911
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:16.067419+00:00",
+      "pid": 81,
+      "phase": "dataset_preparation",
+      "span_id": "06b1ca22-9a99-47dc-bf97-1d4f365159fa",
+      "event": "started"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:32.527901+00:00",
+      "pid": 81,
+      "phase": "dataset_preparation",
+      "span_id": "06b1ca22-9a99-47dc-bf97-1d4f365159fa",
+      "event": "finished",
+      "elapsed_seconds": 16.4604775570333
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:32.528134+00:00",
+      "pid": 81,
+      "phase": "trainer_construction",
+      "span_id": "eb0c9d90-28ac-4eef-ab07-c3a7da4782a8",
+      "event": "started"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:32.542605+00:00",
+      "pid": 81,
+      "phase": "trainer_construction",
+      "span_id": "eb0c9d90-28ac-4eef-ab07-c3a7da4782a8",
+      "event": "finished",
+      "elapsed_seconds": 0.01447029085829854
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:32.542877+00:00",
+      "pid": 81,
+      "phase": "validation_loop_including_setup_inference_metrics_outputs",
+      "span_id": "6c7a958c-2c77-4dbe-83f5-13edda04a62e",
+      "event": "started"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:32.544393+00:00",
+      "pid": 81,
+      "phase": "cuda_lazy_initialization",
+      "span_id": "d73e70b4-76ad-4f38-9384-78d67be446b8",
+      "event": "started"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:32.561497+00:00",
+      "pid": 81,
+      "phase": "cuda_lazy_initialization",
+      "span_id": "626b0da1-5f92-4c28-9378-f10ac1d7b240",
+      "event": "started"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:32.561531+00:00",
+      "pid": 81,
+      "phase": "cuda_lazy_initialization",
+      "span_id": "626b0da1-5f92-4c28-9378-f10ac1d7b240",
+      "event": "finished",
+      "elapsed_seconds": 3.4735072404146194e-05
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:32.561620+00:00",
+      "pid": 81,
+      "phase": "cuda_lazy_initialization",
+      "span_id": "02775388-7833-498b-ad0b-b700fe829766",
+      "event": "started"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:32.561644+00:00",
+      "pid": 81,
+      "phase": "cuda_lazy_initialization",
+      "span_id": "02775388-7833-498b-ad0b-b700fe829766",
+      "event": "finished",
+      "elapsed_seconds": 2.3994827643036842e-05
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:32.561914+00:00",
+      "pid": 81,
+      "phase": "cuda_lazy_initialization",
+      "span_id": "d73e70b4-76ad-4f38-9384-78d67be446b8",
+      "event": "finished",
+      "elapsed_seconds": 0.01752033014781773
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:35.651067+00:00",
+      "pid": 81,
+      "phase": "native_predict_step_including_decoding",
+      "span_id": "10bbbe89-d9a7-47c3-9620-2301cc1d6276",
+      "event": "started"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:52.900788+00:00",
+      "pid": 81,
+      "phase": "native_predict_step_including_decoding",
+      "span_id": "10bbbe89-d9a7-47c3-9620-2301cc1d6276",
+      "event": "finished",
+      "elapsed_seconds": 17.24971845303662
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:22:52.958151+00:00",
+      "pid": 81,
+      "phase": "metrics_and_structure_output_drain",
+      "span_id": "9a2b71ec-b141-42c9-8f4a-e67826adcf2a",
+      "event": "started"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:23:23.637231+00:00",
+      "pid": 81,
+      "phase": "metrics_and_structure_output_drain",
+      "span_id": "9a2b71ec-b141-42c9-8f4a-e67826adcf2a",
+      "event": "finished",
+      "elapsed_seconds": 30.679072992876172
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:23:23.664828+00:00",
+      "pid": 81,
+      "phase": "final_metrics_csv_serialization",
+      "span_id": "b4e29518-44a6-4ce2-9ecf-9c1580de84ee",
+      "event": "started"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:23:23.682289+00:00",
+      "pid": 81,
+      "phase": "final_metrics_csv_serialization",
+      "span_id": "b4e29518-44a6-4ce2-9ecf-9c1580de84ee",
+      "event": "finished",
+      "elapsed_seconds": 0.0174609269015491
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:23:29.135287+00:00",
+      "pid": 81,
+      "phase": "validation_loop_including_setup_inference_metrics_outputs",
+      "span_id": "6c7a958c-2c77-4dbe-83f5-13edda04a62e",
+      "event": "finished",
+      "elapsed_seconds": 56.59239282901399
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:23:29.136524+00:00",
+      "pid": 81,
+      "phase": "native_entrypoint_main",
+      "span_id": "fc7e336a-a97d-4371-b942-60fe31818014",
+      "event": "finished",
+      "elapsed_seconds": 90.62482355511747
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:23:29.136567+00:00",
+      "pid": 81,
+      "event": "native_entrypoint_returned"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:23:33.915167+00:00",
+      "pid": 1,
+      "phase": "native_subprocess_launch_through_exit",
+      "span_id": "be822410-4f19-464a-8959-fce51403cf7b",
+      "event": "finished",
+      "elapsed_seconds": 95.43167705321684
+    }
+  ],
+  "host_timings": [
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:21:38.308611+00:00",
+      "pid": 459897,
+      "span_id": "0642b640-bd13-4d0b-b37a-7d02a930c6af",
+      "phase": "docker_command",
+      "event": "started"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:23:36.894240+00:00",
+      "pid": 459897,
+      "span_id": "0642b640-bd13-4d0b-b37a-7d02a930c6af",
+      "phase": "docker_command",
+      "return_code": 0,
+      "event": "finished",
+      "elapsed_seconds": 118.58562111994252
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:23:36.894498+00:00",
+      "pid": 459897,
+      "span_id": "3bd72e82-e077-4451-96b4-cab9fbcb4620",
+      "phase": "candidate_normalization",
+      "event": "started"
+    },
+    {
+      "schema_version": 1,
+      "at": "2026-10-28T14:23:38.595253+00:00",
+      "pid": 459897,
+      "span_id": "3bd72e82-e077-4451-96b4-cab9fbcb4620",
+      "phase": "candidate_normalization",
+      "event": "finished",
+      "elapsed_seconds": 1.70075245318003
+    }
+  ],
+  "native_command": [
+    {
+      "command": [
+        "rfd4-generate",
+        "--config-path",
+        "/work/artifacts/rfd4_proteina",
+        "--config-name",
+        "effective_config"
+      ],
+      "overrides": [
+        "rfd4-generate",
+        "inputs=/work/artifacts/rfd4_proteina/prepared",
+        "out_dir=/work/artifacts/rfd4_proteina/output",
+        "num_replicates=1",
+        "batch_size=1",
+        "seed=1185903269",
+        "prevalidate_inputs=true",
+        "skip_existing=false",
+        "num_workers=0",
+        "save_chain_of_interest=true",
+        "recycle_strategy=low/front_loaded",
+        "generation.n_recycle_schedule=[[10, 4], [10, 3], [10, 2], [30, 1]]",
+        "generation.args.nsteps=60",
+        "generation.model.bb_ca.simulation_step_params.sc_scale_noise=1.0",
+        "generation.model.bb_ca.simulation_step_params.tsr_k=16.0",
+        "generation.model.bb_ca.simulation_step_params.tsr_sigma=3.0",
+        "generation.model.bb_ca.gt.mode=ode",
+        "generation.model.local_latents.simulation_step_params.sc_scale_noise=1.0",
+        "generation.model.local_latents.simulation_step_params.tsr_k=4.0",
+        "generation.model.local_latents.simulation_step_params.tsr_sigma=12.0",
+        "generation.model.local_latents.gt.mode=ode",
+        "metrics/refolding_oracles=of3",
+        "metrics_tags=[\"design\", \"hotspot_conditioning\"]",
+        "delete_failing_pre_oracle=true",
+        "compile_lengths=null"
+      ],
+      "diagnostic_command": [
+        "/usr/local/bin/python",
+        "/work/artifacts/rfd4_proteina/runtime/rfd4_native_diagnostics.py",
+        "--config-path",
+        "/work/artifacts/rfd4_proteina",
+        "--config-name",
+        "effective_config"
+      ]
+    }
+  ],
+  "diagnostic_launcher_sha256": "6a425613a4e41bdff7553579e4318ce0156b4ec575704eeb888be614b7b1bc3b",
+  "retained_files": {
+    "metadata.json": "3ead8cc44c684878266efa79f977b2891cbb71dbaa71a6a206ca7492fe32c978",
+    "input.json": "886fb5520bf3322d1239b483b7ae59c08d98f477e808eaed48a21bf9488ab16e",
+    "result.json": "56e6c4dfb2bfd5d0bef49a33826b268566a910ccbd074a38136154a1918826e4",
+    "artifacts/rfd4_proteina/effective_config.yaml": "54074273c1485b9677f0d6c787fd329331701879b3524d8f33bb7fa7b346609a",
+    "artifacts/rfd4_proteina/native_lifecycle.jsonl": "c2f3e6361c4e5cfbd287ed4cefcf7b497f289a91ea5ac563bbee194445834278",
+    "artifacts/rfd4_proteina/native_command.json": "0a5d2ddf665b24e2ac3eb4e3a94869b9f6706a5e84cdcd2f3522b72a75f1b836",
+    "execution_lifecycle.jsonl": "7f3aeabc82963b1c5ce8501d3fe279c63eeeca7ef6c0866be2a830ea7def015e"
+  },
+  "excluded_setup_failure": {
+    "run_dir": "/home/user/.local/share/mn-molecular-design-studio/workdir/runs/design/20261028-152050-33730633",
+    "native_launches": 0,
+    "reason": "scheduler rejected default run root before native launch"
+  },
+  "scheduler_final_status": "completed",
+  "measurement_limits": [
+    "Host wall call boundaries; no added CUDA synchronization.",
+    "Inclusive/nested spans overlap and must not be summed. CUDA lazy-init has recursive calls.",
+    "Predict step includes decoding, not isolated GPU kernels.",
+    "Structure/metric drain is waiting plus asynchronous work, not isolated CIF serialization.",
+    "Interpreter startup/atexit not isolated; parent subprocess span covers completion.",
+    "One sample; no uninstrumented comparison or multi-attempt model reuse measurement.",
+    "Host CPU activity and filesystem cache warmth were not controlled; CPU regression work ran during the measurement session."
+  ],
+  "installed_console_entrypoint": {
+    "target": "script_utils.entrypoints:generate",
+    "script_sha256": "b49fa1cf195acbaabc14780db5f405bffe86e6cb0c31ae4d31bcb8335aa7d0b6",
+    "entrypoints_module_sha256": "07056de78487f3f73976abf2b30611379cf266d0cb280395b5c6e3d0ea56eb4e",
+    "inspected_warning_policy_matches": true
+  },
+  "retained_campaign_checks_after_measurement": [
+    {
+      "run_id": "20261028-101057-a07ef0a4",
+      "ledger_sha256": "0f575ca3e563181423524207c34ebc5fbcf1c6c9b6ff8c5bf71409ae10bc1460",
+      "config_compatible": true,
+      "retained_validation_identity": "pass"
+    },
+    {
+      "run_id": "20261028-124448-350f7294",
+      "ledger_sha256": "205efddd4c18cea8f8ca9d9ee22a9b5ad193964f5e059854631bf2465e891b39",
+      "config_compatible": true,
+      "retained_validation_identity": "pass"
+    }
+  ],
+  "scheduler_final_allocation": {
+    "cpu_slots": [],
+    "cpu_threads": 0,
+    "gpu": false,
+    "gpu_id": null,
+    "gpu_ids": [],
+    "ram_gb": 0.0,
+    "scratch_gb": 0.0
+  },
+  "reviewed_implementation_commit": "f4586b1b9362196566c9a73d386aca98f9d1c7de"
+}

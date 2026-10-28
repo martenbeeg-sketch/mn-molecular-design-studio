@@ -1,0 +1,601 @@
+{
+  "multiple_input_global_budget_plan": {
+    "campaign": {
+      "acceptance_level": "validated",
+      "accepted_target": 2,
+      "max_native_attempts": 7
+    },
+    "campaign_configuration_supported": false,
+    "engine": {
+      "attempt_budget_semantics": "one child requests one design; the child may return zero or one normalized candidate",
+      "attempt_unit": "one native design request",
+      "campaign_adapter": true,
+      "cancellation": "stop the scheduler-owned attempt child",
+      "candidate_output": "normalized co-designed sequence/structure candidate rows",
+      "deferred_reason": "",
+      "downstream_validation": [
+        "refolding.optimized_prediction",
+        "analysis.ipsae"
+      ],
+      "engine_id": "rfd4_proteina",
+      "gpu_required": true,
+      "independent_attempts": true,
+      "label": "RFD4-Proteina",
+      "minimum_vram_gb": 16.0,
+      "native_acceptance_available": false,
+      "native_acceptance_semantics": "RFD4's task-specific condition/evaluation outputs are not an authoritative campaign acceptance flag",
+      "native_execution": {
+        "evidence": "Installed 0.0.3-cu130: rfproteina/generate.py run_generation loads once before trainer.validate; wrapper chunks above 100.",
+        "max_measured_native_attempts_per_invocation": 1,
+        "max_verified_campaign_attempts_per_job": 1,
+        "model_reuse_runtime_measured": false,
+        "model_reuse_source_verified": true,
+        "multi_attempt_invocation": true,
+        "multiple_candidate_records": true,
+        "partial_recovery": "native_files_incremental; result_index_after_success_only",
+        "seed_provenance": "invocation_seed_and_replicate_id; independent_attempt_seeds_unverified",
+        "semantics": [
+          "replicates_per_input",
+          "vectorized_dataloader_batch"
+        ]
+      },
+      "output_normalization": "RFD4-Proteina result-index normalizer with chain-role and sequence verification",
+      "progress_reporting": "scheduler job status and RFD4 workflow phase",
+      "seed_assignment": "one persisted campaign seed mapped to the native RFD4 request",
+      "sequence_structure_mode": "co_design",
+      "supported_stopping_policies": [
+        "validated",
+        "diversity_qualified"
+      ]
+    },
+    "errors": [
+      "RFD4-Proteina verified campaign choices are [1]; 5 remains descriptive only.",
+      "Current campaign adapters require one input; multiple-input partitioning is hypothetical only."
+    ],
+    "execution": {
+      "generation_concurrency_source": "legacy batch_size * max_concurrent_batches",
+      "generation_resources": {
+        "cpu_cores": 8,
+        "min_vram_gb": 16.0,
+        "ram_gb": 0.0,
+        "scratch_gb": 0.0
+      },
+      "gpu_selection": "auto",
+      "gpus_per_generation_job": 1,
+      "max_concurrent_generation_jobs": 2,
+      "max_concurrent_validations": 2,
+      "requested_proposed_generation_jobs": null,
+      "validation_resources": [
+        {
+          "cpu_cores": 4,
+          "gpu_device": "auto",
+          "gpu_required": true,
+          "workflow": "refolding.optimized_prediction"
+        }
+      ],
+      "workstation_selection": "local"
+    },
+    "gpu_inventory": [],
+    "hypothetical_requested_plan": {
+      "base_attempts_per_input": 2,
+      "execution_jobs_if_budget_exhausted": 3,
+      "first_inputs_with_one_extra": 1,
+      "input_count": 3,
+      "job_groups": [
+        {
+          "execution_jobs": 2,
+          "native_attempts_requested_per_job": 2,
+          "native_count_semantics": {
+            "attempts_per_input": 2,
+            "exact_remainder_alternative": null,
+            "input_count": 1,
+            "loader_batches": 2,
+            "native_attempts": 2,
+            "native_batch_size": 1,
+            "native_python_invocations": 1,
+            "nominal_native_outputs": 2,
+            "notes": [
+              "Replicates multiply each input; dataloader final batches do not authorize extra designs. Search/oracle multiplicity is outside this simple no-search count."
+            ],
+            "requested_native_attempts": 2,
+            "rounding_extra_attempts": 0,
+            "wrapper_chunks": {
+              "full_chunk_replicates": 100,
+              "full_chunks": 0,
+              "remainder_replicates": 2
+            }
+          }
+        },
+        {
+          "execution_jobs": 1,
+          "native_attempts_requested_per_job": 3,
+          "native_count_semantics": {
+            "attempts_per_input": 3,
+            "exact_remainder_alternative": null,
+            "input_count": 1,
+            "loader_batches": 3,
+            "native_attempts": 3,
+            "native_batch_size": 1,
+            "native_python_invocations": 1,
+            "nominal_native_outputs": 3,
+            "notes": [
+              "Replicates multiply each input; dataloader final batches do not authorize extra designs. Search/oracle multiplicity is outside this simple no-search count."
+            ],
+            "requested_native_attempts": 3,
+            "rounding_extra_attempts": 0,
+            "wrapper_chunks": {
+              "full_chunk_replicates": 100,
+              "full_chunks": 0,
+              "remainder_replicates": 3
+            }
+          }
+        }
+      ],
+      "nominal_native_output_upper_bound": 7,
+      "total_native_attempts_including_rounding": 7,
+      "total_requested_attempts": 7
+    },
+    "inventory_status": "unknown_not_probed",
+    "native_attempts_per_job": {
+      "effective": null,
+      "proposed_descriptive_choices": [
+        1,
+        5,
+        10,
+        25,
+        50,
+        100
+      ],
+      "requested": 5,
+      "supported_campaign_choices": [
+        1
+      ]
+    },
+    "notes": [
+      "Job counts are upper bounds if the full attempt budget is consumed; acceptance stopping can reduce actual work.",
+      "Hypothetical groups use one input per job and partition the global attempt budget across inputs; this is not an execution adapter.",
+      "Nominal native outputs are not guaranteed normalized, accepted, validated or selected candidates.",
+      "GPU availability and all exact peer compatibility gates must be checked again by the existing authenticated scheduler at submission."
+    ],
+    "ordinary_native_count_example": {
+      "attempts_per_input": 1,
+      "exact_remainder_alternative": null,
+      "input_count": 3,
+      "loader_batches": 3,
+      "native_attempts": 3,
+      "native_batch_size": 1,
+      "native_python_invocations": 1,
+      "nominal_native_outputs": 3,
+      "notes": [
+        "Replicates multiply each input; dataloader final batches do not authorize extra designs. Search/oracle multiplicity is outside this simple no-search count."
+      ],
+      "requested_native_attempts": 3,
+      "rounding_extra_attempts": 0,
+      "wrapper_chunks": {
+        "full_chunk_replicates": 100,
+        "full_chunks": 0,
+        "remainder_replicates": 1
+      }
+    },
+    "read_only": true,
+    "schema_version": 1,
+    "submission_authorized": false,
+    "supported_execution_plan": null
+  },
+  "rfd3_ordinary_rounding": {
+    "attempts_per_input": 5,
+    "effective_diffusion_batch_size": 2,
+    "exact_remainder_alternative": {
+      "full_batch_size": 2,
+      "full_batches_per_input": 2,
+      "implemented": false,
+      "native_attempts": 15,
+      "native_python_invocations": 2,
+      "remainder_per_input": 1
+    },
+    "input_count": 3,
+    "n_batches": 3,
+    "native_attempts": 18,
+    "native_batch_size": 2,
+    "native_python_invocations": 1,
+    "nominal_native_outputs": 18,
+    "notes": [
+      "Current tile rounds native outputs up, then selects requested outputs. Campaign execution is disabled; no output may be omitted from future attempt accounting."
+    ],
+    "requested_native_attempts": 15,
+    "rounding_extra_attempts": 3
+  },
+  "supported_plan": {
+    "campaign": {
+      "acceptance_level": "validated",
+      "accepted_target": 2,
+      "max_native_attempts": 7
+    },
+    "campaign_configuration_supported": true,
+    "engine": {
+      "attempt_budget_semantics": "one child requests one design; the child may return zero or one normalized candidate",
+      "attempt_unit": "one native design request",
+      "campaign_adapter": true,
+      "cancellation": "stop the scheduler-owned attempt child",
+      "candidate_output": "normalized co-designed sequence/structure candidate rows",
+      "deferred_reason": "",
+      "downstream_validation": [
+        "refolding.optimized_prediction",
+        "analysis.ipsae"
+      ],
+      "engine_id": "rfd4_proteina",
+      "gpu_required": true,
+      "independent_attempts": true,
+      "label": "RFD4-Proteina",
+      "minimum_vram_gb": 16.0,
+      "native_acceptance_available": false,
+      "native_acceptance_semantics": "RFD4's task-specific condition/evaluation outputs are not an authoritative campaign acceptance flag",
+      "native_execution": {
+        "evidence": "Installed 0.0.3-cu130: rfproteina/generate.py run_generation loads once before trainer.validate; wrapper chunks above 100.",
+        "max_measured_native_attempts_per_invocation": 1,
+        "max_verified_campaign_attempts_per_job": 1,
+        "model_reuse_runtime_measured": false,
+        "model_reuse_source_verified": true,
+        "multi_attempt_invocation": true,
+        "multiple_candidate_records": true,
+        "partial_recovery": "native_files_incremental; result_index_after_success_only",
+        "seed_provenance": "invocation_seed_and_replicate_id; independent_attempt_seeds_unverified",
+        "semantics": [
+          "replicates_per_input",
+          "vectorized_dataloader_batch"
+        ]
+      },
+      "output_normalization": "RFD4-Proteina result-index normalizer with chain-role and sequence verification",
+      "progress_reporting": "scheduler job status and RFD4 workflow phase",
+      "seed_assignment": "one persisted campaign seed mapped to the native RFD4 request",
+      "sequence_structure_mode": "co_design",
+      "supported_stopping_policies": [
+        "validated",
+        "diversity_qualified"
+      ]
+    },
+    "errors": [],
+    "execution": {
+      "generation_concurrency_source": "legacy batch_size * max_concurrent_batches",
+      "generation_resources": {
+        "cpu_cores": 8,
+        "min_vram_gb": 16.0,
+        "ram_gb": 0.0,
+        "scratch_gb": 0.0
+      },
+      "gpu_selection": "auto",
+      "gpus_per_generation_job": 1,
+      "max_concurrent_generation_jobs": 2,
+      "max_concurrent_validations": 2,
+      "requested_proposed_generation_jobs": null,
+      "validation_resources": [
+        {
+          "cpu_cores": 4,
+          "gpu_device": "auto",
+          "gpu_required": true,
+          "workflow": "refolding.optimized_prediction"
+        }
+      ],
+      "workstation_selection": "local"
+    },
+    "gpu_inventory": [],
+    "hypothetical_requested_plan": {
+      "base_attempts_per_input": 7,
+      "execution_jobs_if_budget_exhausted": 7,
+      "first_inputs_with_one_extra": 0,
+      "input_count": 1,
+      "job_groups": [
+        {
+          "execution_jobs": 7,
+          "native_attempts_requested_per_job": 1,
+          "native_count_semantics": {
+            "attempts_per_input": 1,
+            "exact_remainder_alternative": null,
+            "input_count": 1,
+            "loader_batches": 1,
+            "native_attempts": 1,
+            "native_batch_size": 1,
+            "native_python_invocations": 1,
+            "nominal_native_outputs": 1,
+            "notes": [
+              "Replicates multiply each input; dataloader final batches do not authorize extra designs. Search/oracle multiplicity is outside this simple no-search count."
+            ],
+            "requested_native_attempts": 1,
+            "rounding_extra_attempts": 0,
+            "wrapper_chunks": {
+              "full_chunk_replicates": 100,
+              "full_chunks": 0,
+              "remainder_replicates": 1
+            }
+          }
+        }
+      ],
+      "nominal_native_output_upper_bound": 7,
+      "total_native_attempts_including_rounding": 7,
+      "total_requested_attempts": 7
+    },
+    "inventory_status": "unknown_not_probed",
+    "native_attempts_per_job": {
+      "effective": 1,
+      "proposed_descriptive_choices": [
+        1,
+        5,
+        10,
+        25,
+        50,
+        100
+      ],
+      "requested": 1,
+      "supported_campaign_choices": [
+        1
+      ]
+    },
+    "notes": [
+      "Job counts are upper bounds if the full attempt budget is consumed; acceptance stopping can reduce actual work.",
+      "Hypothetical groups use one input per job and partition the global attempt budget across inputs; this is not an execution adapter.",
+      "Nominal native outputs are not guaranteed normalized, accepted, validated or selected candidates.",
+      "GPU availability and all exact peer compatibility gates must be checked again by the existing authenticated scheduler at submission."
+    ],
+    "ordinary_native_count_example": {
+      "attempts_per_input": 1,
+      "exact_remainder_alternative": null,
+      "input_count": 1,
+      "loader_batches": 1,
+      "native_attempts": 1,
+      "native_batch_size": 1,
+      "native_python_invocations": 1,
+      "nominal_native_outputs": 1,
+      "notes": [
+        "Replicates multiply each input; dataloader final batches do not authorize extra designs. Search/oracle multiplicity is outside this simple no-search count."
+      ],
+      "requested_native_attempts": 1,
+      "rounding_extra_attempts": 0,
+      "wrapper_chunks": {
+        "full_chunk_replicates": 100,
+        "full_chunks": 0,
+        "remainder_replicates": 1
+      }
+    },
+    "read_only": true,
+    "schema_version": 1,
+    "submission_authorized": false,
+    "supported_execution_plan": {
+      "base_attempts_per_input": 7,
+      "execution_jobs_if_budget_exhausted": 7,
+      "first_inputs_with_one_extra": 0,
+      "job_groups": [
+        {
+          "execution_jobs": 7,
+          "native_attempts_requested_per_job": 1,
+          "native_count_semantics": {
+            "attempts_per_input": 1,
+            "exact_remainder_alternative": null,
+            "input_count": 1,
+            "loader_batches": 1,
+            "native_attempts": 1,
+            "native_batch_size": 1,
+            "native_python_invocations": 1,
+            "nominal_native_outputs": 1,
+            "notes": [
+              "Replicates multiply each input; dataloader final batches do not authorize extra designs. Search/oracle multiplicity is outside this simple no-search count."
+            ],
+            "requested_native_attempts": 1,
+            "rounding_extra_attempts": 0,
+            "wrapper_chunks": {
+              "full_chunk_replicates": 100,
+              "full_chunks": 0,
+              "remainder_replicates": 1
+            }
+          }
+        }
+      ],
+      "total_requested_attempts": 7
+    }
+  },
+  "supported_request": {
+    "campaign": {
+      "acceptance_level": "validated",
+      "accepted_target": 2,
+      "batch_size": 1,
+      "generator_id": "rfd4_proteina",
+      "max_attempts": 7,
+      "max_concurrent_batches": 2,
+      "max_concurrent_validations": 2,
+      "validation_stages": [
+        {
+          "parameters": {
+            "engine": "boltz2"
+          },
+          "required_metrics": [
+            "iptm",
+            "ptm",
+            "plddt_mean"
+          ],
+          "workflow": "refolding.optimized_prediction"
+        }
+      ]
+    }
+  },
+  "unsupported_requested_5_plan": {
+    "campaign": {
+      "acceptance_level": "validated",
+      "accepted_target": 2,
+      "max_native_attempts": 7
+    },
+    "campaign_configuration_supported": false,
+    "engine": {
+      "attempt_budget_semantics": "one child requests one design; the child may return zero or one normalized candidate",
+      "attempt_unit": "one native design request",
+      "campaign_adapter": true,
+      "cancellation": "stop the scheduler-owned attempt child",
+      "candidate_output": "normalized co-designed sequence/structure candidate rows",
+      "deferred_reason": "",
+      "downstream_validation": [
+        "refolding.optimized_prediction",
+        "analysis.ipsae"
+      ],
+      "engine_id": "rfd4_proteina",
+      "gpu_required": true,
+      "independent_attempts": true,
+      "label": "RFD4-Proteina",
+      "minimum_vram_gb": 16.0,
+      "native_acceptance_available": false,
+      "native_acceptance_semantics": "RFD4's task-specific condition/evaluation outputs are not an authoritative campaign acceptance flag",
+      "native_execution": {
+        "evidence": "Installed 0.0.3-cu130: rfproteina/generate.py run_generation loads once before trainer.validate; wrapper chunks above 100.",
+        "max_measured_native_attempts_per_invocation": 1,
+        "max_verified_campaign_attempts_per_job": 1,
+        "model_reuse_runtime_measured": false,
+        "model_reuse_source_verified": true,
+        "multi_attempt_invocation": true,
+        "multiple_candidate_records": true,
+        "partial_recovery": "native_files_incremental; result_index_after_success_only",
+        "seed_provenance": "invocation_seed_and_replicate_id; independent_attempt_seeds_unverified",
+        "semantics": [
+          "replicates_per_input",
+          "vectorized_dataloader_batch"
+        ]
+      },
+      "output_normalization": "RFD4-Proteina result-index normalizer with chain-role and sequence verification",
+      "progress_reporting": "scheduler job status and RFD4 workflow phase",
+      "seed_assignment": "one persisted campaign seed mapped to the native RFD4 request",
+      "sequence_structure_mode": "co_design",
+      "supported_stopping_policies": [
+        "validated",
+        "diversity_qualified"
+      ]
+    },
+    "errors": [
+      "RFD4-Proteina verified campaign choices are [1]; 5 remains descriptive only."
+    ],
+    "execution": {
+      "generation_concurrency_source": "legacy batch_size * max_concurrent_batches",
+      "generation_resources": {
+        "cpu_cores": 8,
+        "min_vram_gb": 16.0,
+        "ram_gb": 0.0,
+        "scratch_gb": 0.0
+      },
+      "gpu_selection": "auto",
+      "gpus_per_generation_job": 1,
+      "max_concurrent_generation_jobs": 2,
+      "max_concurrent_validations": 2,
+      "requested_proposed_generation_jobs": null,
+      "validation_resources": [
+        {
+          "cpu_cores": 4,
+          "gpu_device": "auto",
+          "gpu_required": true,
+          "workflow": "refolding.optimized_prediction"
+        }
+      ],
+      "workstation_selection": "local"
+    },
+    "gpu_inventory": [],
+    "hypothetical_requested_plan": {
+      "base_attempts_per_input": 7,
+      "execution_jobs_if_budget_exhausted": 2,
+      "first_inputs_with_one_extra": 0,
+      "input_count": 1,
+      "job_groups": [
+        {
+          "execution_jobs": 1,
+          "native_attempts_requested_per_job": 2,
+          "native_count_semantics": {
+            "attempts_per_input": 2,
+            "exact_remainder_alternative": null,
+            "input_count": 1,
+            "loader_batches": 2,
+            "native_attempts": 2,
+            "native_batch_size": 1,
+            "native_python_invocations": 1,
+            "nominal_native_outputs": 2,
+            "notes": [
+              "Replicates multiply each input; dataloader final batches do not authorize extra designs. Search/oracle multiplicity is outside this simple no-search count."
+            ],
+            "requested_native_attempts": 2,
+            "rounding_extra_attempts": 0,
+            "wrapper_chunks": {
+              "full_chunk_replicates": 100,
+              "full_chunks": 0,
+              "remainder_replicates": 2
+            }
+          }
+        },
+        {
+          "execution_jobs": 1,
+          "native_attempts_requested_per_job": 5,
+          "native_count_semantics": {
+            "attempts_per_input": 5,
+            "exact_remainder_alternative": null,
+            "input_count": 1,
+            "loader_batches": 5,
+            "native_attempts": 5,
+            "native_batch_size": 1,
+            "native_python_invocations": 1,
+            "nominal_native_outputs": 5,
+            "notes": [
+              "Replicates multiply each input; dataloader final batches do not authorize extra designs. Search/oracle multiplicity is outside this simple no-search count."
+            ],
+            "requested_native_attempts": 5,
+            "rounding_extra_attempts": 0,
+            "wrapper_chunks": {
+              "full_chunk_replicates": 100,
+              "full_chunks": 0,
+              "remainder_replicates": 5
+            }
+          }
+        }
+      ],
+      "nominal_native_output_upper_bound": 7,
+      "total_native_attempts_including_rounding": 7,
+      "total_requested_attempts": 7
+    },
+    "inventory_status": "unknown_not_probed",
+    "native_attempts_per_job": {
+      "effective": null,
+      "proposed_descriptive_choices": [
+        1,
+        5,
+        10,
+        25,
+        50,
+        100
+      ],
+      "requested": 5,
+      "supported_campaign_choices": [
+        1
+      ]
+    },
+    "notes": [
+      "Job counts are upper bounds if the full attempt budget is consumed; acceptance stopping can reduce actual work.",
+      "Hypothetical groups use one input per job and partition the global attempt budget across inputs; this is not an execution adapter.",
+      "Nominal native outputs are not guaranteed normalized, accepted, validated or selected candidates.",
+      "GPU availability and all exact peer compatibility gates must be checked again by the existing authenticated scheduler at submission."
+    ],
+    "ordinary_native_count_example": {
+      "attempts_per_input": 1,
+      "exact_remainder_alternative": null,
+      "input_count": 1,
+      "loader_batches": 1,
+      "native_attempts": 1,
+      "native_batch_size": 1,
+      "native_python_invocations": 1,
+      "nominal_native_outputs": 1,
+      "notes": [
+        "Replicates multiply each input; dataloader final batches do not authorize extra designs. Search/oracle multiplicity is outside this simple no-search count."
+      ],
+      "requested_native_attempts": 1,
+      "rounding_extra_attempts": 0,
+      "wrapper_chunks": {
+        "full_chunk_replicates": 100,
+        "full_chunks": 0,
+        "remainder_replicates": 1
+      }
+    },
+    "read_only": true,
+    "schema_version": 1,
+    "submission_authorized": false,
+    "supported_execution_plan": null
+  }
+}

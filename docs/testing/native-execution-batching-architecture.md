@@ -4,6 +4,11 @@ Date: 2026-10-28. Starting branch: `fix/scientific-pipeline-validation`, HEAD
 `a25a570` (after `726a9a4`). Evidence labels in this report distinguish **measured**,
 **verified in source**, and **proposed**. Source support is not throughput evidence.
 
+Sections 1–16 preserve the Phase 6C report. Sections 17–20 record Phase 6C.1,
+starting from `d8a1b69` (including `d88e8c1`), and supersede the RFD4 timing
+unknowns where measurements are now available. Phase 6C.1 ran one bounded native
+PD-L1 request; the earlier statement that Phase 6C ran no inference remains historical.
+
 ## 1. Result and scope
 
 **Verified in source:** the distributed BindCraft2 and RFD4 adapters create one
@@ -588,9 +593,306 @@ Documentation/evidence files:
 `d88e8c1` — `feat: describe native execution contracts and record lifecycle timings`
 contains the verified implementation and tests.
 
-The subsequent documentation/evidence commit is titled
-`docs: record native batching architecture and bounded timing evidence`; it contains
-this report and the two evidence JSON files. Its hash is discoverable with
-`git log -1 --format=%h -- docs/testing/native-execution-batching-architecture.md`
-and is reported in the task completion message.
+`d8a1b69` — `docs: record native batching architecture and bounded timing evidence`
+contains the original Phase 6C report and its two evidence JSON files.
 The unrelated `run_app.py` and `tool_references.py` are excluded from all commits.
+
+## 17. Phase 6C.1 — Opt-in native instrumentation
+
+The installed `rfd4-generate` console entrypoint is
+`script_utils.entrypoints:generate`. It captures import warnings, imports
+`rfproteina.generate.main_hydra`, queues those warnings and calls the Hydra entrypoint.
+The isolated `rfd4_native_diagnostics.py` launcher follows that same warning policy
+and entrypoint. It temporarily wraps known functions, forwarding the original
+arguments and return objects, and restores the hooks on return or exception.
+It does not edit the installed image, checkpoint, sampling code or filtering rules.
+
+Enable explicitly with `options.native_phase_timing=true` in an **ordinary local**
+RFD4 generation request. The existing workflow signature and default requests are
+unchanged. The launcher is staged only for opt-in runs. A container-local timing
+path activates it, preserving native Hydra argv; both the original and diagnostic
+commands are retained in `native_command.json`. Campaign/scoring requests with this
+option are rejected before job creation. The runtime also refuses to redirect an
+`rfd4-evaluate` command through a generator timing launcher. No peer source was
+updated, and diagnostics are not an enabled distributed campaign feature.
+
+The launcher verifies the installed `generate.py` and `proteina.py` SHA-256 values
+against the reviewed Phase 6C sources before invoking generation. An unreviewed
+engine revision fails diagnostics explicitly rather than silently applying stale
+hooks. A CPU-only `--help` invocation verified imports, source hashes and hook
+installation against the actual image without loading a model or generating a design.
+Optional CUDA-library warnings in that no-GPU check are retained in its logs; it
+exited successfully. Those CPU import timings are not used as GPU timing evidence.
+
+Native events are written to `artifacts/rfd4_proteina/native_lifecycle.jsonl`, with
+unique span IDs, UTC timestamps, PIDs, monotonic elapsed wall intervals and exception
+types. Writes are best-effort; a missing/truncated or unpaired record is incomplete
+telemetry, never a successful native attempt receipt. Native exceptions and return
+objects are preserved. No synchronization, Torch/NumPy RNG operations, worker-count
+changes or scientific parameter overrides are added. Timing inevitably adds small
+host overhead; this was not quantified by a paired inference comparison.
+
+| Hook / boundary | Interpretation |
+| --- | --- |
+| `native_entrypoint_imports` | Native package/import work after Python enters the diagnostic script; interpreter startup is outside this interval |
+| `load_ckpt_n_configure_inference` | Combined model/checkpoint loading and native inference configuration, including any work called by that function; not isolated disk-read time |
+| `get_dataset_from_cfg` | Native dataset/input preparation |
+| `Trainer.__init__` | Trainer object construction; not a complete GPU setup measurement |
+| `torch.cuda._lazy_init` | Existing PyTorch lazy-initialization calls, observed only while `is_initialized()` is false; includes recursive calls and does not represent every possible CUDA/library initialization path |
+| `setup_run_compile`, `reserve_shape_cache` | Compile configuration/cache setup if called; actual deferred compilation can remain inside prediction |
+| `Trainer.validate` | Inclusive framework setup, inference, metrics, output and drain work |
+| `Proteina.predict_step` | Native prediction plus strategy/decoding/atom-array work; not synchronized GPU-kernel time |
+| `MetricsPool.drain_generated_structure` | Waiting for already submitted metrics/structure work, potentially in other processes; not total worker CPU time or isolated CIF serialization |
+| `Proteina._save_and_log_csv` | Final metrics CSV serialization/logging call |
+| `native_entrypoint_main` | Script imports and native main until return; interpreter atexit/teardown is outside this interval |
+| `native_subprocess_launch_through_exit` | Adapter-side process launch/wait through actual native subprocess completion |
+
+Spans are inclusive and may nest or overlap. In particular, recursive CUDA-init
+spans must not be summed, and prediction/drain/serialization are already inside
+`Trainer.validate`. Process completion is established by the parent wait/exit status,
+not merely an entrypoint-return event. No timing event changes ledger accounting.
+
+### One bounded PD-L1 measurement
+
+Run `20261028-152136-81e2ed87` completed on `pc002975` GPU 0, RTX 4090 UUID
+`GPU-195a1966-1148-340e-5fe2-bac2d7a9821a`. The existing shared scheduler leased
+one GPU and eight CPU cores with a 16 GiB VRAM request; scheduler job
+`a01f96704fd8422fb740e86d855af437` completed and released its reservation.
+No worker service was restarted and no runtime source was deployed to peers.
+
+The run reused P5 attempt 1's retained PD-L1 chain-A target and configuration:
+one native replicate, dataloader batch 1, 60 steps, seed 1185903269, length range
+60–120, unchanged hotspots, deterministic mode and native condition filtering,
+refolding disabled, reward search off and compilation disabled. The complete
+resolved native YAML was equal to the retained reference YAML. The diagnostic
+option is not translated into a scientific Hydra setting. Target SHA-256 remained
+`7da1c888011cdbd0937e3ff6b73429aa069e4c496cfa0cb8d8b53cc06ca73b57`.
+
+The image remained `sha256:c34efb5afca78c0341cf996c9dadc8102a7fb3760e1792697a8779803e0e44f5`.
+HF checkpoint revision was `a06e2509c7033b010fc43614e9fd840303588502`;
+`model.safetensors` and `config.json` hashes matched P5's retained requirements:
+`5b549dd61adb2f6c6b5cb95bda13f40f5e31556b4e6c755edc0ca6f011c68fb0` and
+`154ea927ab8005b7eac2d047a792147fb4606ab4878e496aa8414b6b40dad368`.
+
+| Measured host wall scope | Seconds |
+| --- | ---: |
+| Whole worker, second-resolution metadata | about 120 |
+| Docker command through return/removal | 118.586 |
+| Native subprocess launch through exit | 95.432 |
+| Native entrypoint imports | 11.641 |
+| Model/checkpoint loading and configuration | 5.610 |
+| Dataset preparation | 16.460 |
+| Trainer construction | 0.014 |
+| Outermost observed CUDA lazy-init call | 0.018 |
+| Inclusive native validation loop | 56.592 |
+| Native prediction plus decoding | 17.250 |
+| Metrics/structure future drain | 30.679 |
+| Final metrics CSV serialization | 0.017 |
+| Native entrypoint through return | 90.625 |
+| Host candidate normalization/index writing | 1.701 |
+
+These values are **not additive**. Three CUDA-init call pairs were observed, with
+small recursive spans inside the outer call. `compile_lengths=null` disabled the
+requested Torch compile path; no compile-setup spans were expected or observed.
+Other lazy library/kernel work is not isolated. Detailed checkpoint disk I/O,
+model GPU transfer, CIF serialization in metrics workers, interpreter startup,
+atexit teardown, and pure GPU inference/compilation remain unmeasured separately.
+The gap between whole-container and native-process intervals also includes outer
+adapter imports, preparation and indexing; it is not isolated Docker startup.
+
+This run demonstrates nontrivial per-invocation import/model work distinct from
+prediction and whole-worker time. It does not establish the savings achievable by
+packing attempts. Dataset and metrics costs have different reuse/parallelism scopes;
+they must not be called model-loading time or assumed to amortize. Host CPU activity and filesystem-cache warmth were not controlled, and focused CPU
+test work ran during the measurement session. The single local
+4090 sample cannot be compared directly with P5's 5090 workers or used to predict
+multi-attempt throughput. No uninstrumented paired GPU repeat or batch-size benchmark
+was run. Runtime multi-attempt model reuse therefore remains unmeasured in capabilities.
+
+One 116-residue co-designed candidate was normalized. Its target sequence matches
+the retained 115-residue chain A; its designed chain B matches the normalized binder
+sequence. The new binder sequence differs from the original P5 worker's sequence;
+this was a separate execution on a different GPU. Current local and peer image IDs
+also differ, and no controlled bitwise-equivalence comparison was performed. Transparent hook tests verify forwarding of arguments,
+result identity and exceptions; this run verifies configuration and provenance, not
+numerical equivalence across platforms. The fresh candidate is a timing artifact,
+not a replacement P5 result or a new validated campaign acceptance. No Boltz run
+or downstream acceptance was added.
+
+An initial harness submission, `20261028-152050-33730633`, used the default run root
+outside configured Results. The scheduler rejected it before Docker/native launch.
+It is retained as an excluded setup failure with zero native attempts, and its local
+metadata was marked failed. The corrected submission above is the only new native
+generation attempt. Neither submission altered original campaign ledgers.
+
+Raw paired timings, allocation, config comparison, command records, checkpoint/output
+hashes and exclusions are in [Phase 6C.1 timing evidence](evidence/phase6c1-native-timing.json).
+Full logs, the staged diagnostic script, scientific outputs and CPU import check are
+retained under the run directory and
+`/mnt/data/RESULTS/mn-molecular-design-studio/verification/phase6c1-native-timing/`.
+The timing evidence identifies the exact staged launcher hash. A final defensive
+command-builder guard only adds rejection of evaluation commands; its generation
+argv equivalence is unit-tested without another inference run.
+
+## 18. Phase 6C.1 — Read-only execution planner
+
+`workflows.execution_planning.plan_campaign_execution()` is a deterministic data
+projection. It does not probe GPUs/peers, reserve attempts, create jobs/ledgers,
+transfer files, modify config, or dispatch work. Existing campaign validation is
+reused for acceptance/resource compatibility; count arithmetic does not bypass it.
+The result is never a submission request or authorization manifest.
+
+The planner is available in the generator campaign form's **Read-only native
+execution plan** preview and as a module CLI. Preview controls are separate from
+saved tile/API configuration. Selecting 5/10/25/50/100 only changes the hypothetical
+projection; it cannot change saved `distributed_campaign`, execution readiness or
+actual native job size. The actual campaign settings remain displayed above it.
+The existing APIs and workflow signatures require no schema migration or deployment.
+
+The plan reports:
+
+- Engine capabilities, provenance/recovery limitations and verified campaign choices.
+- Global accepted target and maximum authorized native-attempt budget.
+- Requested count, descriptive choices, supported choices and effective count.
+- Compact job-size histograms and job-count upper bounds if the entire budget is
+  used; actual acceptance-driven stopping and runtime/compute limits can reduce work.
+- Native counts, Python invocation counts, nominal output multiplicity, rounding
+  and proposed exact-remainder arithmetic.
+- Legacy dispatch-product generation concurrency and independent validation concurrency.
+- Resource defaults matching the existing adapters: BindCraft2 four CPU cores and
+  RFD4 eight unless the parent tile/campaign overrides them; RFD4 campaign minimum
+  VRAM 16 GiB. Validation defaults to four CPU cores unless its stage overrides them.
+- Workstation/GPU selectors, caller-supplied inventory eligibility explanations,
+  explicit exclusions, and unresolved freshness/identity/compatibility/resource data.
+- Unsupported configuration explanations with `supported_execution_plan=null` and
+  no effective native count. It never silently replaces an unsupported request by 1.
+
+`submission_authorized` is always false. A supported configuration is not proof of
+current resource availability or a guarantee of acceptance. Descriptive native
+choices remain `[1,5,10,25,50,100]`; only `[1]` is supported for current BindCraft2/RFD4
+campaigns. RFdiffusion/RFD3 and other deferred engines have no campaign choices.
+Auto remains unavailable. Proposed `max_concurrent_generation_jobs` is diagnosed as
+unsupported and cannot override the existing legacy dispatch product.
+
+### Global budget and exact remainders
+
+For a global budget of 12 and hypothetical size 5, the plan shows two jobs of 5
+and one remainder job of 2, totaling 12 attempts. This arithmetic does not enable
+those jobs. Unsupported requests have no runnable plan.
+
+For several inputs, the hypothetical planner distributes the **global** budget
+across input ordinals, with at most one extra attempt for earliest inputs, and
+uses one input per hypothetical job. For example, budget 7 across three inputs
+becomes input budgets 3/2/2, not seven replicates for each input. This convention is
+explicitly hypothetical: current campaign adapters reject multiple-input planning
+as an execution setting. Inputs with no budget receive no jobs. Job histograms are
+compact even for large budgets; no attempt records are materialized.
+
+The independent `describe_native_invocation()` helper describes ordinary native
+multiplicity without implying campaign support:
+
+- RFD4 with five replicates and three inputs requests 15 attempts. Dataloader batch
+  2 produces eight loader batches with an exact final partial batch, not 16 attempts.
+  Wrapper chunking above 100 replicates is counted separately from GPU batching.
+- RFdiffusion accepts one input per native invocation; multiple inputs require
+  separate invocations. Its design loop is sequential.
+- BindCraft2 trajectory count is an upper bound; early native target stopping and
+  sequence-level output multiplicity remain explicit, with unknown candidate bound.
+- RFD3 with five requested outputs, three inputs and diffusion batch 2 requests 18
+  native samples through the current rounded count. The proposed exact alternative
+  is two full batches of 2 plus a remainder of 1 per input, 15 samples total, requiring
+  a separate remainder invocation with the existing native interface. That alternative
+  is labeled `implemented=false`. If rounded hypothetical physical attempts exceed
+  the global budget, the planner reports the overrun and produces no supported plan.
+
+Nominal outputs are not guaranteed usable structures, normalized candidates,
+scientifically accepted candidates or validated candidates. Search/oracle count
+expansion is outside the simple no-search ordinary-count helper.
+
+### GPU inventory contract
+
+Inventory can be supplied through `eligible_gpus` records with workstation `node_id`,
+`gpu_id`, optional GPU UUID/model, local identity, online/compatibility status,
+`observed_at`, `snapshot_current`, capacity and free/allocated fields. The pure planner
+never invents missing evidence or derives exact peer compatibility from a GPU model.
+Freshness, exact image/checkpoint/runtime compatibility and required resources must
+be explicit for snapshot eligibility. A GPU can be eligible while allocated and
+therefore require queuing; immediate-start availability requires positive free-device
+and free-VRAM evidence. Missing inventory is `unknown_not_probed`, not an empty or
+verified available pool. The current tile preview has no supplied inventory and
+states that limitation; the existing authenticated placement/scheduler checks retain
+authority over real submissions and physical leases.
+
+A standalone JSON request contains `campaign` plus optional planner arguments such
+as `engine_id`, `native_attempts_per_job`, `input_count`, `native_batch_size`,
+`designs_per_input`, `generation_cpu_cores` and `eligible_gpus`. Run it with:
+
+```text
+python -m mn_molecular_design_studio.engine.workflow_engine.workflows.execution_planning request.json
+```
+
+The CLI reads the request and writes JSON to stdout. It performs no scientific or
+scheduler operation. Deterministic requests and resulting examples are committed in
+[planning evidence](evidence/phase6c1-planning-examples.json). The retained
+`planner_request.json` in the verification directory was exercised through the CLI.
+
+## 19. Phase 6C.1 — Compatibility and tests
+
+Campaign execution and the Phase 6B ledger are unchanged. Multi-attempt execution,
+new adapter support, persistent GPU workers, post-launch batched retry and new
+acceptance thresholds remain disabled. Native diagnostics are opt-in and isolated;
+ordinary default argv and sampling configuration retain their existing behavior.
+The scheduler lease, late-validation finalization, artifact transport and exact peer
+compatibility contracts are unchanged. No source was pushed or deployed and no
+additional Codex agents were used.
+
+The original P4/P5 ledger hashes and candidate evidence are checked again after
+measurement/planning. No original scientific file was edited, promoted or replaced.
+The unrelated modified `run_app.py` and untracked `tool_references.py` are excluded.
+
+Focused tests cover global budgets and exact remainder arithmetic across multiple
+inputs; native count multiplication versus GPU batching; RFD4 100-replicate wrapper
+chunks; RFD3 rounded counts and proposed exact alternatives; unsupported/unknown
+engines and choices; resource defaults and inventory uncertainty; legacy aliases and
+config immutability; explicit proof that planning cannot call create/enqueue/dispatch;
+preview controls leaving saved execution unchanged; transparent diagnostic return/
+argument/exception forwarding; source-drift refusal; write failures; opt-in type checks;
+and campaign/scoring diagnostics rejection before job creation. Existing controller,
+peer transfer, lineage, queue and late-validation regressions are included.
+
+The focused regression sweep passed **320 tests in 21.68 s**, covering the Phase 6C
+regression set in section 15 plus `tests/test_execution_planning.py` and
+`tests/test_rfd4_native_diagnostics.py`. Final planner/diagnostic checks, including an
+additional invalid-null-resource case, passed **40 tests in 1.00 s**. These sets overlap;
+they are not 360 distinct tests. Changed Python files passed syntax parsing,
+`git diff --check` passed, both evidence JSON files parsed, the saved supported plan
+matched the current pure planner exactly, and the CLI exercised that same request.
+No full broad suite or additional native/validation inference was run.
+
+The installed-image CPU import/source/hook check exited 0. The one GPU measurement
+returned exit code 0, one candidate, matching sequence/structure roles and unchanged
+resolved native config/checkpoint requirements. Both original P4/P5 ledger hashes,
+legacy config normalization and retained same-sequence validation identity checks
+remained unchanged after the measurement. The diagnostic scheduler allocation was
+empty after completion, independently confirming release of GPU 0.
+
+## 20. Phase 6C.1 — Files and commits
+
+Implementation changes:
+
+- New `workflows/execution_planning.py` and `workflows/rfd4_native_diagnostics.py`.
+- Scoped opt-in staging/launching in `workflows/rfd4_proteina.py` and `workflows/rfd4_runtime.py`.
+- Boolean diagnostic-option validation in `rfd4_proteina_input.py`.
+- Read-only preview in `distributed_campaign_config_ui.py`, with parent CPU context
+  from `pipeline_node_ui.py`.
+- New `tests/test_execution_planning.py` and `tests/test_rfd4_native_diagnostics.py`.
+- Updated architecture report and new timing/planning evidence JSON files.
+
+Paths under `workflows/` above are relative to
+`mn_molecular_design_studio/engine/workflow_engine/`. The standalone staged native
+launcher and measurement outputs remain recoverable in the diagnostic run.
+`f4586b1` — `feat: add native phase timing and read-only campaign planning`
+contains the reviewed implementation and tests. The following documentation commit,
+`docs: record native phase measurements and execution planning`, contains this updated
+report and the timing/planning evidence. Its actual hash is reported in the completion
+message. Only these scoped source, test, report and evidence files are committed.
