@@ -10,7 +10,7 @@ from mn_molecular_design_studio.scientific_tasks import (
 )
 
 
-def _prediction_sampling(kind, key):
+def _prediction_sampling(kind, key, *, seed_default=0):
     """Expose controls that the selected adapter actually submits."""
     fields = {field["name"]: field for field in NODE_CATALOG[kind]["fields"]}
     values = {}
@@ -20,7 +20,7 @@ def _prediction_sampling(kind, key):
         field = fields[name]
         values[name] = st.number_input(field["label"], min_value=int(field.get("min", 0)),
             max_value=int(field.get("max", 2147483647)),
-            value=0 if name == "seed" else max(1, int(field.get("min", 1))), key=key + "-" + name)
+            value=seed_default if name == "seed" else max(1, int(field.get("min", 1))), key=key + "-" + name)
     return values
 
 
@@ -142,20 +142,53 @@ def render_task_setup(prefix):
                 return graph
             except (ValueError, TypeError, KeyError) as exc:
                 st.error(str(exc))
-    with st.expander("Multi-Generator Binder Design & Evaluation"):
-        st.caption("Compose complete native generator workflows, conditional sequence preparation, shared filtering and independent predictor branches.")
-        generators = [kind for kind, spec in NODE_CATALOG.items() if spec["category"] in {"Design engine", "Design pipeline"} and not spec.get("hidden")
-                      and any("target" in socket["accepts"] for socket in spec["inputs"])]
-        predictors = [kind for kind, spec in NODE_CATALOG.items() if spec["category"] == "Structure prediction" and not spec.get("hidden")]
-        selected_generators = st.multiselect("Generator branches", generators, default=["rfd4", "bindcraft2"],
-            format_func=lambda kind: NODE_CATALOG[kind]["label"], key=prefix + "-multi-generators")
-        selected_predictors = st.multiselect("Independent predictor branches", predictors, default=["boltz2", "prediction_protenix_v2"],
-            format_func=lambda kind: NODE_CATALOG[kind]["label"], key=prefix + "-multi-predictors")
-        st.caption("The first predictor starts enabled. Enable additional branches and set each processing chunk/concurrency in Branch and processing settings.")
-        if st.button("Create multi-generator pipeline", key=prefix + "-create-multi"):
+    with st.expander("Binder design scientific workflow modes", expanded=True):
+        from mn_molecular_design_studio.workflow_modes import MODES, PREDICTORS, methods, capability
+        workflow_mode = st.selectbox("Scientific workflow mode", list(MODES), format_func=MODES.get,
+                                     key=prefix + "-workflow-mode")
+        choices = methods(workflow_mode)
+        default = ["rfd4"] if workflow_mode == "modular_design" else ["bindcraft2"]
+        selected_generators = st.multiselect("Generator operations", choices, default=default,
+            format_func=lambda kind: NODE_CATALOG[kind]["label"], key=prefix + "-mode-generators-" + workflow_mode)
+        for kind in selected_generators:
+            st.caption(NODE_CATALOG[kind]["label"] + ": " + capability(kind)["note"])
+        selected_predictors, common_prediction_settings = [], {}
+        if workflow_mode != "native_complete":
+            selected_predictors = st.multiselect("Independent co-folder branches", list(PREDICTORS), default=list(PREDICTORS),
+                format_func=lambda kind: NODE_CATALOG[kind]["label"], key=prefix + "-mode-predictors-" + workflow_mode)
+            for kind in selected_predictors:
+                with st.expander("Co-folder protocol · " + NODE_CATALOG[kind]['label']):
+                    common_prediction_settings[kind] = _prediction_sampling(kind, prefix + '-mode-protocol-' + kind, seed_default=42)
+                    st.caption("Applied to this co-folder across all selected generator branches. Other native prediction settings remain editable in its nodes.")
+            st.caption("The first co-folder starts enabled; enable additional branches in Branch and processing settings. Configure the same protocol per branch across candidates. Ranking requires explicit comparable measurements in Ranking and diversity.")
+        else:
+            st.caption("Whole native workflows run through their own evaluation and filters. Results preserve engine-specific measurements; no common numerical rank is inferred. Final native ranking is unavailable unless recorded by the source.")
+        redesign, redesign_sequences, interface_cutoff = False, 2, 4.0
+        if workflow_mode == "modular_design":
+            redesign = st.checkbox("Redesign existing sequences · fix interface amino acids", value=False,
+                key=prefix + "-mode-interface-redesign",
+                help="Optional SolubleMPNN child variants. Original sequences remain available. Target-contacting binder residues are fixed using the existing chain mapping and heavy-atom contact calculation.")
+            if redesign:
+                redesign_sequences = int(st.number_input("Redesigned sequences per eligible design", min_value=1, max_value=1000, value=2,
+                    key=prefix + "-mode-redesign-count"))
+                interface_cutoff = st.number_input("Fixed-interface heavy-atom distance (Å)", min_value=0.1, max_value=20.0, value=4.0,
+                    key=prefix + "-mode-redesign-cutoff")
+                st.caption("Fix mapped binder amino acids contacting the target within this distance, together with existing protected residues. Refold each child independently; original prediction scores are history only.")
+            st.caption("Initial sequence design handles backbone-only outputs and bypasses existing sequences. Optional redesign creates child variants and remains disabled until requested. RFD4 native refolding remains configurable in task options; it is not classified as a complete evaluated workflow.")
+        st.caption("Creates an editable graph using normal save, validate, run, monitor and export. Native counts, GPU microbatches, collection chunks and scheduler concurrency retain separate controls.")
+        if st.button("Create scientific workflow pipeline", key=prefix + "-create-mode"):
             from mn_molecular_design_studio.candidate_pipeline import new_pipeline
             try:
-                return new_pipeline(selected_generators, selected_predictors)
+                graph = new_pipeline(selected_generators, selected_predictors, mode=workflow_mode)
+                for node in graph['nodes']:
+                    if node['data']['kind'] in common_prediction_settings:
+                        node['data']['params'].update(common_prediction_settings[node['data']['kind']])
+                if redesign:
+                    for node in graph['nodes']:
+                        if node['data']['params'].get('sequence_stage') == 'soluble_optimization':
+                            node['data']['params'].update(optimization_enabled=True, model_type='soluble_mpnn',
+                                fix_interface_residues=True, interface_cutoff=interface_cutoff, sequences=redesign_sequences)
+                return graph
             except (ValueError, KeyError) as exc:
                 st.error(str(exc))
     with st.expander("Legacy recipes and continuation compatibility"):

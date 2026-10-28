@@ -142,8 +142,10 @@ def source_record(row, source, node_id, target):
         if metadata(row)["target_id"] != target["target_id"]:
             raise ValueError("Candidate collections refer to different targets.")
         return row
-    native_id = row["candidate_id"]
     raw = row.setdefault("raw_metadata", {})
+    invocation = raw.get("candidate_execution", {})
+    native_id = invocation.get("native_candidate_id") if invocation.get("unit_kind") == "native_invocation" else row["candidate_id"]
+    native_id = native_id or row["candidate_id"]
     campaign = raw.get("distributed_campaign", {})
     origin = raw.get("retained_origin", {})
     run_id = origin.get("run_id") or source.get("source_run_id") or Path(source["run_dir"]).name
@@ -157,11 +159,12 @@ def source_record(row, source, node_id, target):
         source_node=node_id, native_candidate_id=native_id,
         native_attempt_id=campaign.get("attempt_id") or raw.get("trajectory_id"),
         backbone_id=backbone, variant_id=variant, parent_variant_ids=[], record_kind="variant",
-        native_backbone_identity=backbone_native, native_parents=list(row.get("parents", [])),
+        native_backbone_identity=backbone_native, native_parents=invocation.get("native_parents", list(row.get("parents", []))),
         original_sequence=row.get("binder_sequence"), original_structure=row.get("complex_pdb") or row.get("binder_pdb"),
         native_filter=native_filter(row), sequence_state=sequence_state(row),
+        native_measurements=copy.deepcopy(row.get("metrics", {})),
         artifacts=artifact_evidence(row), source_provenance=origin or source.get("source_provenance", {}))
-    if source.get("review_candidates_jsonl") and row.get("metrics", {}).get("candidate_pool_level") != "native_pipeline":
+    if (source.get("review_candidates_jsonl") or row.get("metrics", {}).get("candidate_pool_level")) and row.get("metrics", {}).get("candidate_pool_level") != "native_pipeline":
         raw["candidate_set"]["native_output_role"] = "intermediate"
     return row
 
@@ -334,7 +337,8 @@ def sequence_inputs(parent, node_id, source, params):
             if info.get("native_filter") in {"failed", "invalid_metadata"} or info.get("native_output_role") == "intermediate":
                 continue
             state = sequence_state(row)
-            if state not in ({"backbone_only"} if initial else {"backbone_only", "sequence_ready"}):
+            allowed_states = {"backbone_only"} if initial else {"sequence_ready"} if params.get("sequence_stage") == "soluble_optimization" else {"backbone_only", "sequence_ready"}
+            if state not in allowed_states:
                 continue
             if not row.get("binder_chains") or not (row.get("complex_pdb") or row.get("binder_pdb")):
                 continue
@@ -425,8 +429,16 @@ def export_collection(parent, source, graph, node_states):
     write_json(destination / "graph.json", graph)
     write_json(destination / "execution.json", node_states)
     write_json(destination / "manifest.json", read_json(Path(source["candidate_set_manifest"])))
+    from mn_molecular_design_studio.workflow_modes import describe, observed_execution_plan
+    summary = describe(graph)
+    write_json(destination / "workflow_summary.json", dict(**summary,
+        stage_counts={key: value.get('stage_counts', {}) for key, value in node_states.items()},
+        execution_plan=observed_execution_plan(graph, node_states)))
+    # Keep empty native outcomes and rejection provenance in the export too.
+    write_json(destination / "native_sources.json", [dict(operation=operation,
+        output=node_states.get(operation['node'], {}).get('output', {})) for operation in summary['generator_operations']])
     selected_files = {}
-    with (destination / "candidate_index.csv").open("w") as handle, (destination / "predictions.jsonl").open("w") as predictions, (destination / "selected_sequences.fasta").open("w") as fasta:
+    with (destination / "candidate_index.csv").open("w") as handle, (destination / "predictions.jsonl").open("w") as predictions, (destination / "selected_sequences.fasta").open("w") as fasta, (destination / "native_sequences.fasta").open("w") as native_fasta:
         writer = csv.DictWriter(handle, fieldnames=["candidate_id", "generator", "source_run", "native_attempt_id", "backbone_id", "variant_id", "parent_variant_ids", "sequence_state", "native_filter", "shared_filter", "predictor_matrix", "rank", "selected"])
         writer.writeheader()
         for row in iter_candidates(source, review=True):
@@ -436,14 +448,17 @@ def export_collection(parent, source, graph, node_states):
                                  shared_filter=info.get("shared_filter", {}).get("status"), rank=selection.get("rank"), selected=selection.get("selected", False)))
             for prediction in info.get("predictions", []):
                 predictions.write(json.dumps(dict(variant_id=info["variant_id"], **prediction), sort_keys=True) + "\n")
-            if selection.get("selected"):
-                fasta.write(">" + row["candidate_id"] + "\n" + row["binder_sequence"] + "\n")
+            if selection.get("selected") or summary['effective_mode'] == 'native_complete':
+                if row.get('binder_sequence'):
+                    (native_fasta if summary["effective_mode"] == "native_complete" else fasta).write(">" + row["candidate_id"] + "\n" + row["binder_sequence"] + "\n")
                 structures = [row, *(p["candidate"] for p in info.get("predictions", []) if p["status"] == "completed")]
                 for structure in structures:
                     for key in ("complex_pdb", "binder_pdb", "target_pdb"):
                         if not structure.get(key):
                             continue
                         path = Path(structure[key])
+                        if not path.is_file() and summary["effective_mode"] == "native_complete":
+                            continue  # Missing native artifacts remain explicit evidence, never a new failure.
                         if not path.is_file():
                             raise ValueError("Selected artifact is unavailable: " + str(path))
                         digest = file_digest(path)
@@ -452,7 +467,7 @@ def export_collection(parent, source, graph, node_states):
                         if not local.exists():
                             shutil.copyfile(path, local)
                         selected_files[str(path)] = dict(path=str(local.relative_to(destination)), sha256=digest)
-    write_json(destination / "selected_artifacts.json", selected_files)
+    write_json(destination / ("native_artifacts.json" if summary["effective_mode"] == "native_complete" else "selected_artifacts.json"), selected_files)
     with (destination / "analysis_results.jsonl").open("w") as analyses:
         for row in iter_candidates(source, review=True):
             analyses.write(json.dumps(dict(candidate_id=row["candidate_id"], variant_id=metadata(row)["variant_id"],
@@ -462,7 +477,7 @@ def export_collection(parent, source, graph, node_states):
     return destination
 
 
-def attach_stage(parent, node_id, output, source, *, category, scientific_key, settings):
+def attach_stage(parent, node_id, output, source, *, category, scientific_key, settings, evidence_namespace=None):
     """Carry stable variant identities through existing MPNN/prediction adapters."""
     if not source.get("candidate_set_manifest") or output.get("candidate_set_manifest") and not output.get("collection_stage_pending"):
         return output
@@ -500,7 +515,8 @@ def attach_stage(parent, node_id, output, source, *, category, scientific_key, s
                     if row.get("binder_sequence") != original.get("binder_sequence"):
                         raise ValueError("Prediction changed the source sequence variant.")
                     info.update(record_kind="prediction", prediction_id=identity(node_id, scientific_key, info["variant_id"], native_id),
-                                predictor_node=node_id, predictor_settings=settings,
+                                predictor_execution_node=node_id,
+                                predictor_node=evidence_namespace or node_id, predictor_settings=settings,
                                 prediction_execution=output.get("source_provenance", {}))
                     row.setdefault("raw_metadata", {})["pipeline_refold_input"] = dict(
                         complex_pdb=original.get("complex_pdb") or original.get("binder_pdb"),

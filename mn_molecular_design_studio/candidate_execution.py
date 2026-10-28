@@ -123,8 +123,9 @@ def data_hashes(value):
 def initialize(parent, node, source, params, key, settings, *, make_source, make_request, read_rows):
     """Freeze ordered units and complete effective requests before submitting any work."""
     collection = bool(source.get('candidates_jsonl'))
-    generation = node['data']['kind'] in GENERATION_KINDS and not collection
-    total = int(params.get('num_designs', 1)) if generation else source.get('candidate_count')
+    native_invocation = node.get('native_invocation', False)
+    generation = (node['data']['kind'] in GENERATION_KINDS or native_invocation) and not collection
+    total = 1 if native_invocation else int(params.get('num_designs', 1)) if generation else source.get('candidate_count')
     if source.get('candidate_set_manifest'):
         from mn_molecular_design_studio.candidate_sets import iter_candidates
         iterator = iter_candidates(source)
@@ -155,13 +156,13 @@ def initialize(parent, node, source, params, key, settings, *, make_source, make
         seen.update(ids)
         batch_source = make_source(parent, f'{node["id"]}_{batch_id}_inputs', selected, source.get('target')) if collection else source
         effective = copy.deepcopy(params)
-        if generation:
+        if generation and not native_invocation:
             effective['num_designs'] = count
             # Never repeat the same trajectory seed on separate shards.
             effective['seed'] = (seed + offset) % 2147483646 or 1
             if 'batch_size' in effective:
                 effective['batch_size'] = min(int(effective['batch_size']), count)
-        else:
+        elif not native_invocation:
             effective['seed'] = seed if 'seed' in params else params.get('seed')
             if effective['seed'] is None:
                 effective.pop('seed')
@@ -169,6 +170,8 @@ def initialize(parent, node, source, params, key, settings, *, make_source, make
         manifest = dict(schema_version=1, pipeline=str(parent), node=node['id'], batch_id=batch_id,
                         scientific_key=key, offset=offset, input_candidate_ids=ids,
                         unit_count=count, request=request, input_hashes=data_hashes(request), policy=settings)
+        if native_invocation:
+            manifest['unit_kind'] = 'native_invocation'
         if request['workflow'] == 'refolding.optimized_prediction':
             prediction = request['parameters']
             manifest['expected_outputs_per_input'] = int(prediction.get('samples', 1)) * int(prediction.get('engine_options', {}).get('seed_count', 1))
@@ -209,7 +212,8 @@ def output_valid(batch):
 def collect(batch, output, *, read_rows):
     """Assign output identities once, independently of attempt/worker/native run IDs."""
     manifest = read_manifest(batch)
-    rows = read_rows(output)
+    rows = read_rows({**output, 'candidates_jsonl': output['review_candidates_jsonl']}
+                     if manifest.get('unit_kind') == 'native_invocation' and output.get('review_candidates_jsonl') else output)
     for row in rows:
         structure = row.get('complex_pdb') or row.get('binder_pdb')
         if structure and not Path(structure).is_file():
@@ -230,17 +234,21 @@ def collect(batch, output, *, read_rows):
             native_id.removeprefix(Path(output['run_dir']).name)]) for row, native_id in zip(rows, native_ids)}
     attempt = batch['attempts'][-1]
     for row, native_id in zip(rows, native_ids):
+        native_parents = list(row.get('parents') or [])
         row['candidate_id'] = mapping[native_id]
         row['parents'] = [mapping.get(v, v) for v in row.get('parents') or []]
         if inputs and native_id not in inputs and not (set(row['parents']) & inputs):
             raise ValueError('Worker result lost its input candidate lineage.')
         row.setdefault('raw_metadata', {})['candidate_execution'] = dict(
-            batch_id=batch['batch_id'], native_candidate_id=native_id,
+            batch_id=batch['batch_id'], native_candidate_id=native_id, native_parents=native_parents,
+            unit_kind=manifest.get('unit_kind', 'candidate_collection'),
             input_manifest_sha256=manifest['sha256'], scientific_key=manifest['scientific_key'],
             pipeline=manifest['pipeline'], node=manifest['node'],
             effective_request=manifest['request'], attempts=copy.deepcopy(batch['attempts']),
             worker=attempt.get('worker'), allocation=attempt.get('allocation'),
             software=attempt.get('software'), hardware=attempt.get('hardware'), output_hashes=data_hashes(row))
+    batch['source_provenance'] = output.get('source_provenance', {})
+    batch['source_run_id'] = output.get('source_run_id')
     batch['output_hashes'] = data_hashes(rows)
     accounted = {p for row in rows for p in row.get('parents', [])} | {row['candidate_id'] for row in rows}
     batch['missing_candidate_ids'] = sorted(inputs - accounted)
@@ -264,6 +272,8 @@ def collect(batch, output, *, read_rows):
     batch['returned_input_units'] = len(inputs & accounted) if inputs else batch['unit_count'] if rows else 0
     batch['completed_units'] = (sum(value['status'] == 'completed' for value in batch['candidate_states'].values())
                                 if expected is not None else batch['returned_input_units'])
+    if manifest.get('unit_kind') == 'native_invocation':
+        batch['completed_units'] = 1  # Completion of one job, never inferred scientific acceptance.
     batch['candidate_count'] = len(rows)
     batch['status'] = 'partial' if batch['missing_candidate_ids'] or batch.get('missing_output_count') else 'completed'
     batch['completed_at'] = utc_now()
@@ -509,6 +519,9 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
         output = graph._attach_refold_input_references(output, source, parent, node['id'])
     output['candidate_execution'] = dict(policy=settings, progress=progress(batches), missing_batches=failures,
                                        native_execution=execution_totals(batches))
+    if node.get('native_invocation') and len(batches) == 1:
+        output.update(source_provenance=batches[0].get('source_provenance', {}),
+                      source_run_id=batches[0].get('source_run_id'))
     current['partial'] = bool(failures)
     if failures:
         current['error'] = 'Unsuccessful candidate batches: ' + ', '.join(failures)

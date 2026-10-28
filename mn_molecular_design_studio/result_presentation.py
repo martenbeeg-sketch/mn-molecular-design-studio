@@ -9,6 +9,7 @@ import math
 
 def candidate_state_rows(candidates):
     from mn_molecular_design_studio.output_vocabulary import candidate_evidence
+    from mn_molecular_design_studio.workflow_modes import native_ranking
     rows = []
     for candidate in candidates:
         current = candidate_evidence(candidate)[0]
@@ -31,6 +32,10 @@ def candidate_state_rows(candidates):
                 'Native attempt': collection.get('native_attempt_id'), 'Backbone': collection.get('backbone_id'),
                 'Sequence variant': collection.get('variant_id'), 'Parent variants': ', '.join(collection.get('parent_variant_ids', [])),
                 'Original sequence': collection.get('original_sequence'), 'Original structure': collection.get('original_structure'),
+                'Native measurements (original source)': str(collection.get('native_measurements', {})),
+                'Native ranking': str(native_ranking(candidate)),
+                'Workflow mode': (candidate.get('raw_metadata') or {}).get('pipeline_workflow', {}).get('effective_label'),
+                'Comparative ranking measurement': selection.get('ranking_metric'),
                 'Native filter': collection.get('native_filter'), 'Shared filter': collection.get('shared_filter', {}).get('status', 'not_evaluated'),
                 'Predictor outcomes': str(collection.get('predictor_matrix', {})),
                 'Measurements': str(collection.get('analysis', {}).get('measurements', {})),
@@ -86,3 +91,20 @@ def render_report(rows, *, format, title, x="round", y="mean_score", series="top
         "td,th{padding:.5em;border-bottom:1px solid #ddd;text-align:left}table{border-collapse:collapse}</style></head><body><h1>" +
         html.escape(title) + "</h1>" + "<svg" + svg.decode().split("<svg", 1)[1] + table + "</tbody></table></body></html>")
     return content.encode(), "text/html", "html"
+
+
+def render_workflow_results_summary(run_dir):
+    """Normal Results panel, including successful runs with zero candidates."""
+    from pathlib import Path
+    import streamlit as st
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+    summary = read_json(Path(run_dir) / 'result.json').get('outputs', {}).get('workflow_summary')
+    if not summary or not summary.get('preset_mode'):
+        return
+    with st.expander('Scientific workflow outcomes', expanded=True):
+        st.write(summary['effective_label'])
+        st.caption('Starting preset: ' + summary['preset_label'] + ' · Candidates: ' + str(summary['candidate_count']))
+        st.caption(summary['ranking'])
+        st.dataframe(summary['generator_operations'], hide_index=True)
+        st.json(summary['stage_counts'])
+        st.dataframe(summary['execution_plan'], hide_index=True)

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from mn_molecular_design_studio.runtime import app_home
+from mn_molecular_design_studio.workflow_modes import MODES, capability as workflow_capability
 from mn_molecular_design_studio.docking_preparation_protocols import (
     DEFAULT_SCRUB_PROTOCOL, SCRUB_PROTOCOLS,
 )
@@ -714,6 +715,9 @@ ACTIVE_LEARNING_LAYOUT = {
 
 
 def new_graph(template="foundry") -> dict[str, Any]:
+    if template in MODES:
+        from mn_molecular_design_studio.candidate_pipeline import new_pipeline
+        return new_pipeline(mode=template)
     if template == "multi_generator_binder":
         from mn_molecular_design_studio.candidate_pipeline import new_pipeline
         return clean_graph(new_pipeline())
@@ -1388,6 +1392,10 @@ def clean_graph(graph: dict) -> dict:
             if type(data.get("enabled", True)) is not bool or not isinstance(data.get("retained_run_dir", ""), str):
                 raise ValueError("Branch enabled must be boolean and retained_run_dir must be a path string.")
             node_data.update(enabled=data.get("enabled", True), retained_run_dir=data.get("retained_run_dir", ""))
+        if 'evidence_namespace' in data:
+            if NODE_CATALOG[kind]['category'] != 'Structure prediction' or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', str(data['evidence_namespace'])):
+                raise ValueError('Prediction evidence namespace must be a valid identifier.')
+            node_data['evidence_namespace'] = data['evidence_namespace']
         if "execution" in data:
             from mn_molecular_design_studio.candidate_execution import policy
             node_data["execution"] = policy(data["execution"])
@@ -1407,6 +1415,7 @@ def clean_graph(graph: dict) -> dict:
                       ) else {})
                       for edge in edges if isinstance(edge, dict)],
             **({"candidate_execution": __import__("mn_molecular_design_studio.candidate_execution", fromlist=["policy"]).policy(graph["candidate_execution"])} if "candidate_execution" in graph else {}),
+            **({'workflow_mode': graph['workflow_mode']} if graph.get('workflow_mode') in MODES else {}),
             "viewport": viewport,**({'template_id':graph['template_id']} if graph.get('template_id') in SUPPORTED_TEMPLATE_IDS else {}),
             **({'task_configuration': copy.deepcopy(graph['task_configuration'])}
                if isinstance(graph.get('task_configuration'), dict) else {}),
@@ -1753,7 +1762,11 @@ LEGACY_STARTER_TEMPLATES = {"Active-learning docking": "unidock_active_learning"
 # Navigation changes do not migrate or reinterpret saved graphs. All former IDs,
 # hidden native recipes and generated-result handoffs remain constructible.
 from mn_molecular_design_studio.scientific_tasks import TASKS
-STARTER_TEMPLATES = {spec['label']: key for key, spec in TASKS.items()} | {"Multi-Generator Binder Design & Evaluation": "multi_generator_binder", "Blank canvas": "blank"}
+for _kind, _specification in NODE_CATALOG.items():
+    if _specification['category'] in {'Design engine', 'Design pipeline'}:
+        _specification['scientific_workflow'] = workflow_capability(_kind)
+
+STARTER_TEMPLATES = {label: mode for mode, label in MODES.items()} | {spec['label']: key for key, spec in TASKS.items()} | {"Multi-Generator Binder Design & Evaluation": "multi_generator_binder", "Blank canvas": "blank"}
 SUPPORTED_TEMPLATE_IDS = (set(LEGACY_STARTER_TEMPLATES.values()) | set(STARTER_TEMPLATES.values())
                           | {'bindcraft2', 'boltzgen', 'complexa', 'rfdiffusion_beta_pairing'}
                           | {key + '_generated' for key in ('complexa', 'rfdiffusion', 'genie3', 'pxdesign',

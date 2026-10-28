@@ -32,6 +32,8 @@ def collection_harness(tmp_path, monkeypatch):
     monkeypatch.setattr(cache_provenance, "execution_identity", lambda *a, **k: {"cpu_fixture_runtime": "v1"})
     monkeypatch.setattr(gp.time, "sleep", lambda *a: None)
     target = structure(tmp_path / "target.pdb")
+    from mn_molecular_design_studio.design_validation import read_structure, protein_chains, sequence
+    binder_sequence = sequence(protein_chains(read_structure(Path(target)))["B"])
     parents, submissions = [], []
     def create(*args, **kwargs):
         path = tmp_path / f"pipeline-{len(parents)}"
@@ -47,7 +49,7 @@ def collection_harness(tmp_path, monkeypatch):
         rows = []
         for i in range(size):
             rows.append(dict(candidate_id=f"{name}-{i}", stage="generation.backbone" if i in backbone else "generation.backbone_sequence",
-                source_tool=tool, binder_sequence=None if i in backbone else "GGG", complex_pdb=target, target_pdb=target,
+                source_tool=tool, binder_sequence=None if i in backbone else binder_sequence, complex_pdb=target, target_pdb=target,
                 binder_chains=["B"], target_chains=["A"], parents=[],
                 metrics={"native_pass_filters": i not in rejected, "native_score": i}, raw_metadata={"fixture": True}))
         normalized = path / "artifacts/normalized_candidates/candidates.jsonl"
@@ -81,13 +83,13 @@ def collection_harness(tmp_path, monkeypatch):
         if kind in {"ligandmpnn", "foundry_mpnn"}:
             src = dict(run_dir=params["source_run_dir"], candidates_jsonl=params["candidates_jsonl"])
             for row in cs.iter_candidates(src):
-                if row["stage"] != "generation.backbone":
+                if row["stage"] != "generation.backbone" and node["data"]["params"].get("sequence_stage") == "initial":
                     rows.append(row)
                     continue
                 for i in range(params.get("num_seq_per_target", 1)):
                     child = copy.deepcopy(row)
-                    child.update(candidate_id=row["candidate_id"] + f"_mpnn_{i}", parents=[row["candidate_id"]],
-                                 stage="sequence_design", source_tool="protein_mpnn", binder_sequence="GGG", metrics={"mpnn_nll": 1.0})
+                    child.update(candidate_id=row["candidate_id"] + f"_{node['id']}_mpnn_{i}", parents=[row["candidate_id"]],
+                                 stage="sequence_design", source_tool="protein_mpnn", binder_sequence=binder_sequence, metrics={"mpnn_nll": 1.0})
                     rows.append(child)
         else:
             for i, task in enumerate(params["tasks"]):
@@ -361,7 +363,7 @@ rows = list(iter_candidates({{'run_dir': {str(run)!r}, 'candidates_jsonl': {str(
 st.dataframe(candidate_state_rows(rows))
 ''').run(timeout=45)
     assert not app.exception
-    assert any(s.label == "Generator branches" for s in app.multiselect)
+    assert any(s.label == "Generator operations" for s in app.multiselect)
     assert any(s.label == "Enable branch" for s in app.checkbox)
     assert any("Native filter" in table.value.columns and len(table.value) == 3 for table in app.dataframe)
 

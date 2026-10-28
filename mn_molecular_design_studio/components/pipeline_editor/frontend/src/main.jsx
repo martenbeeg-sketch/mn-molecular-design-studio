@@ -9,7 +9,7 @@ const post=(type,data={})=>window.parent.postMessage({isStreamlitMessage:true,ty
 const copy=x=>JSON.parse(JSON.stringify(x));
 const uid=()=>crypto.randomUUID().replaceAll('-','');
 let catalog={};
-const authored=(nodes,edges,base,viewport)=>({...base,nodes:nodes.map(n=>({id:n.id,type:'studio',position:n.position,data:{kind:n.data.kind,label:n.data.label,...(n.data.description?{description:n.data.description}:{}),params:n.data.params}})),edges:edges.map(e=>({id:e.id,source:e.source,target:e.target,sourceHandle:'out',targetHandle:'in',...(e.loop_back?{loop_back:true}:{})})),viewport});
+const authored=(nodes,edges,base,viewport)=>({...base,nodes:nodes.map(n=>({id:n.id,type:'studio',position:n.position,data:{kind:n.data.kind,label:n.data.label,...(n.data.description?{description:n.data.description}:{}),params:n.data.params,...Object.fromEntries(['enabled','retained_run_dir','execution','evidence_namespace'].filter(k=>k in n.data).map(k=>[k,n.data[k]]))}})),edges:edges.map(e=>({id:e.id,source:e.source,target:e.target,sourceHandle:'out',targetHandle:'in',...(e.loop_back?{loop_back:true}:{})})),viewport});
 const statusLabels={completed:'Complete',cached:'Reused',running:'Running',queued:'Queued',failed:'Failed',blocked:'Blocked',pending:'Pending'};
 
 const StudioNode=memo(({id,data,selected})=>{

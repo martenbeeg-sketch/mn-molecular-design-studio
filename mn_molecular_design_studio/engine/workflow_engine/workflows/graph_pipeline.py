@@ -1064,7 +1064,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         has_stage = category in {"Sequence design", "Structure prediction"} or category == "Analysis" and NODE_CATALOG[nodes[node_id]["data"]["kind"]].get("workflow")
         if output.get("candidates_jsonl") and source_parents and has_stage and not output.get("disabled"):
             output = candidate_sets.attach_stage(parent, node_id, output, source_parents[0], category=category,
-                scientific_key=key, settings=nodes[node_id]["data"]["params"])
+                scientific_key=key, settings=nodes[node_id]["data"]["params"],
+                evidence_namespace=nodes[node_id]["data"].get("evidence_namespace"))
         from mn_molecular_design_studio.candidate_execution import inherit_partial_pool
         pool = inherit_partial_pool(output, [outputs[p] for p in plan['incoming'][node_id] if p in outputs],
                                     missing_branches=node_states.get(node_id, {}).get('missing_branches', []))
@@ -1165,13 +1166,14 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     if node["data"].get("retained_run_dir"):
                         retained = candidate_pipeline.retained_source(node, project_id)
                         key = fingerprint(kind, {"retained_run": retained, "retained_digest": file_digest(Path(retained["candidates_jsonl"])),
-                            "adapter_digest": file_digest(Path(candidate_pipeline.__file__))}, [o["fingerprint"] for o in upstream])
+                            "adapter_digest": file_digest(Path(candidate_pipeline.__file__)),
+                            "evidence_namespace": node["data"].get("evidence_namespace")}, [o["fingerprint"] for o in upstream])
                         cached = read_json(cache_root / f"{key}.json").get("output") if reuse_completed else None
                         output = cached if cached and _cache_valid(cached) else candidate_pipeline.replay(parent, node, source, retained, key)
                         complete(node_id, output, key, "cached" if output is cached else "completed")
                         progressed = True; continue
                     if kind in candidate_sets.KINDS or kind == "results" and source.get("candidate_set_manifest"):
-                        expected = {p: dict(kind=nodes[p]["data"]["kind"], enabled=nodes[p]["data"].get("enabled", True),
+                        expected = {nodes[p]["data"].get("evidence_namespace", p): dict(kind=nodes[p]["data"]["kind"], enabled=nodes[p]["data"].get("enabled", True),
                                              retained=bool(nodes[p]["data"].get("retained_run_dir")),
                                              status=node_states.get(p, {}).get("status"), params=nodes[p]["data"]["params"])
                                     for p in plan["incoming"][node_id] if NODE_CATALOG[nodes[p]["data"]["kind"]]["category"] == "Structure prediction"}
@@ -1222,6 +1224,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                 merged_rows.append(candidate)
                         source = _local_source(parent, f"{node_id}_fan_in", merged_rows, merged_target)
                     key_params = copy.deepcopy(params)
+                    if node["data"].get("evidence_namespace"):
+                        key_params["evidence_namespace"] = node["data"]["evidence_namespace"]
                     if settings["mode"] != "native":
                         key_params["candidate_execution"] = settings
                     if kind in {"filter", "results", "ipsae", "rosetta_metrics"} or NODE_CATALOG[kind]["workflow"] and NODE_CATALOG[kind]["workflow"].startswith("analysis."):
@@ -1324,7 +1328,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             key_params["effective_parameters"]["seed"] = resolved_seed
                         current["execution_specification"] = key_params
                     key = fingerprint(kind, key_params, [o["fingerprint"] for o in upstream])
-                    if settings['mode'] == 'sharded' and candidate_execution.supports(kind, source):
+                    native_invocation = (graph.get('workflow_mode') and settings['placement'] != 'local'
+                        and NODE_CATALOG[kind]['category'] in {'Design engine', 'Design pipeline'}
+                        and not params.get('distributed_campaign'))
+                    if native_invocation or settings['mode'] == 'sharded' and candidate_execution.supports(kind, source):
                         cached = read_json(cache_root / f'{key}.json').get('output') if reuse_completed and not current.get('batches') else None
                         if cached and _cache_valid(cached):
                             complete(node_id, cached, key, 'cached')
@@ -1333,7 +1340,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         if current.get('batches') and current.get('fingerprint') != key:
                             raise ValueError('Candidate inputs changed during execution. Submit a new pipeline.')
                         import sys
-                        result = candidate_execution.tick(parent, node, current, source, params, key, settings,
+                        result = candidate_execution.tick(parent, {**node, 'native_invocation': bool(native_invocation)}, current, source, params, key, settings,
                             graph=sys.modules[__name__], owner_id=owner_id, project_id=project_id,
                             gpu_device=gpu_device, persist=persist)
                         if result:
@@ -1578,6 +1585,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         for ancestor in sorted(ancestors)
                         if NODE_CATALOG[nodes[ancestor]["data"]["kind"]]["category"] in
                         {"Design engine", "Design pipeline", "Structure prediction", "Sequence design"}]
+                if graph.get('workflow_mode'):
+                    from mn_molecular_design_studio.workflow_modes import describe, native_ranking
+                    candidate['raw_metadata']['pipeline_workflow'] = describe(graph)
+                    candidate['raw_metadata']['native_ranking'] = native_ranking(candidate)
                 candidates.append(candidate)
             if output.get("candidate_set_manifest"):
                 from mn_molecular_design_studio.candidate_sets import export_collection
@@ -1601,7 +1612,11 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         state["status"] = "completed" if success else "failed"
         state["comparison_status"] = comparison_status
         persist()
-        finish_job(parent, success, {"outputs": {"candidates": candidates, "surface_analyses": surface_analyses, "pipeline_nodes": node_states,
+        from mn_molecular_design_studio.workflow_modes import describe, observed_execution_plan
+        workflow_summary = dict(**describe(graph), candidate_count=len(candidates),
+            stage_counts={key: value.get('stage_counts', {}) for key, value in node_states.items()},
+            execution_plan=observed_execution_plan(graph, node_states))
+        finish_job(parent, success, {"outputs": {"workflow_summary": workflow_summary, "candidates": candidates, "surface_analyses": surface_analyses, "pipeline_nodes": node_states,
                     "comparison_status": comparison_status, "successful_result_nodes": successful_results}, "metrics": {"candidate_count": len(candidates), "surface_analysis_count": len(surface_analyses), "node_count": len(nodes), "cached_steps": sum(v.get("status")=="cached" for v in node_states.values()), "failed_steps": len(failures)}, "downstream_artifacts": {"candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl", "graph_snapshot": "graph_snapshot.json", "graph_execution": "graph_execution.json"}})
         return parent
     except Exception:

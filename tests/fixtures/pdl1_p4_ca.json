@@ -1,0 +1,6 @@
+{
+  "source": "/home/user/.local/share/mn-molecular-design-studio/workdir/runs/design/20261028-101059-dc2accd7/artifacts/rfd4_proteina/output/inference_samples/protein_binder/protein_binder_generated.cif",
+  "source_sha256": "090e9b6110e23ad9ff63ba3e509fd02b3c09575b8ec1f12e60b7db8523a6f798",
+  "description": "CA-only deterministic routing fixture derived from retained P4. Original PD-L1 chain A (115 residues) and binder chain B (75 residues). No new design or prediction; CA-only fixture is not evaluation evidence. Missing binder B-factors remain NaN; trailing PDB padding is omitted.",
+  "fixture_sha256": "dfe7a062fe84b81043fb2786d839504a61205cd5ed63c21f6a7c7151517c7853"
+}

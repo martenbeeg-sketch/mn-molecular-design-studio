@@ -8038,10 +8038,12 @@ def _render_job_details() -> None:
             str(job.get("tool") or ""), run_dir, artifact_paths
         )
 
+        from mn_molecular_design_studio.result_presentation import render_workflow_results_summary
+        render_workflow_results_summary(run_dir)
         candidates_path = run_dir / "artifacts/normalized_candidates/candidates.jsonl"
         if candidates_path.is_file():
             result_candidates = read_candidates(candidates_path)
-            if any((row.get("raw_metadata") or {}).get(key) for row in result_candidates for key in ("measurement_status", "selection", "source_candidate")):
+            if any((row.get("raw_metadata") or {}).get(key) for row in result_candidates for key in ("measurement_status", "selection", "source_candidate", "candidate_set")):
                 from mn_molecular_design_studio.result_presentation import candidate_state_rows
                 with st.expander("Candidate measurement and selection outcomes", expanded=True):
                     st.caption("Computational completion, measurement validity and selection are separate outcomes. Selection refers to downstream evaluation; it does not establish experimental activity.")

@@ -502,6 +502,12 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
             for line in estimate["counts"]:
                 st.write(line)
             st.caption(estimate["note"])
+    if graph.get("workflow_mode"):
+        from mn_molecular_design_studio.workflow_modes import describe
+        summary = describe(graph)
+        st.caption("Workflow: " + summary['effective_label'] + " · Starting preset: " + summary['preset_label'])
+        with st.expander("Scientific workflow operations and stages"):
+            st.json(summary)
     from mn_molecular_design_studio.pipeline_graph import TEMPLATE_REFERENCES
     if graph.get('template_id') in TEMPLATE_REFERENCES:
         url,description=TEMPLATE_REFERENCES[graph['template_id']]
@@ -570,8 +576,9 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 data['retained_run_dir'] = st.text_input('Reuse retained run from this project (optional)', value=data.get('retained_run_dir', ''), key=node_key+'-retained',
                     help='Explicit read-only evidence reuse. Source native settings and hashes remain recorded; the tile controls apply to fresh execution.')
             current_policy = candidate_execution.policy(data.get('execution', graph.get('candidate_execution')))
-            if candidate_execution.supports(data['kind'], {'candidates_jsonl': 'preview'}):
-                distribute = st.checkbox('Partition this step into processing chunks', value=current_policy['mode'] == 'sharded', key=node_key+'-sharded')
+            can_partition = candidate_execution.supports(data['kind'], {'candidates_jsonl': 'preview'})
+            if can_partition or graph.get('workflow_mode') and category in {'Design engine', 'Design pipeline'}:
+                distribute = can_partition and st.checkbox('Partition this step into processing chunks', value=current_policy['mode'] == 'sharded', key=node_key+'-sharded')
                 if distribute:
                     current_policy['batch_size'] = int(st.number_input('Candidates per chunk for this step', min_value=1, max_value=10000, value=current_policy['batch_size'], key=node_key+'-size'))
                     current_policy['max_in_flight'] = int(st.number_input('Maximum concurrent jobs for this step', min_value=1, max_value=32, value=current_policy['max_in_flight'], key=node_key+'-concurrency'))
@@ -634,11 +641,13 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                     previous_node = next((n for n in graph["nodes"] if n["id"] == component_node["id"]), {})
                     if previous_node.get("data", {}).get("execution"):
                         component_node["data"]["execution"] = copy.deepcopy(previous_node["data"]["execution"])
-                    for branch_option in ('enabled', 'retained_run_dir'):
+                    for branch_option in ('enabled', 'retained_run_dir', 'evidence_namespace'):
                         if branch_option in previous_node.get('data', {}):
                             component_node['data'][branch_option] = copy.deepcopy(previous_node['data'][branch_option])
                 if graph.get("template_id") and not component_graph.get("template_id"):
                     component_graph["template_id"] = graph["template_id"]
+                if graph.get("workflow_mode"):
+                    component_graph["workflow_mode"] = graph["workflow_mode"]
                 if graph.get("task_configuration"):
                     component_graph["task_configuration"] = copy.deepcopy(graph["task_configuration"])
                 updated = clean_graph(component_graph)
@@ -680,6 +689,16 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         with st.expander("Pipeline runs", expanded=bool(last_job)):
             if st.button("Refresh run status", key=prefix+"-refresh"):
                 st.rerun()
+            from mn_molecular_design_studio.workflow_modes import gpu_monitor_rows
+            from mn_molecular_design_studio.cluster.capabilities import resources as scheduler_resources
+            online, local_resources = scheduler_resources()
+            inventory = list(nodes)
+            if not any(n['id'] == cluster_config.identity() for n in inventory):
+                inventory.append(dict(id=cluster_config.identity(), name='This workstation', availability='online' if online else 'unknown', snapshot={'resources': local_resources}))
+            gpu_rows = gpu_monitor_rows(inventory)
+            if gpu_rows:
+                st.caption('GPU availability from scheduler/heartbeat snapshots. Model, image, checkpoint and memory eligibility is checked separately for every job. Queued work has no GPU allocation until leased.')
+                st.dataframe(gpu_rows, hide_index=True)
             rows=search_jobs(project_id=project_id, task_group="campaign", tools=["visual_pipeline"], limit=25)["items"]
             if not rows:
                 st.caption("No runs yet. Editing and saving the canvas does not start any jobs.")
@@ -704,6 +723,9 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                             'GPU': str((attempt.get('allocation') or {}).get('gpu_device', '')),
                             'Completed inputs': batch.get('completed_units', 0), 'Total inputs': batch['unit_count'],
                             'Retries': max(0, len(batch.get('attempts', []))-1), 'Detail': batch.get('error') or batch.get('wait_reason', '')})
+                queued_steps = sum(step.get('status') in {'queued', 'pending'} for step in execution.get('nodes', {}).values())
+                queued_chunks = sum(batch['Status'] in {'queued', 'pending', 'retrying', 'submitting'} for batch in batch_rows)
+                st.caption(f'Queued/pending stages: {queued_steps} · Queued/pending processing jobs: {queued_chunks}')
                 if batch_rows:
                     completed = sum(b['Completed inputs'] for b in batch_rows)
                     total = sum(b['Total inputs'] for b in batch_rows)

@@ -315,7 +315,9 @@ def poll(batch, *, owner_id, project_id, allow_development=False):
     rebased.write_text(''.join(json.dumps(r) + '\n' for r in rewritten))
     batch['output_transfer_bytes'] = sum(t.get('bytes', 0) for t in batch.get('transfers', {}).values())
     return ('partial' if partial else 'completed'), {'run_dir': str(directory), 'candidates_jsonl': str(rebased),
-                         'candidate_count': len(rows)}, job | {'metadata': metadata, 'native_execution': receipt}
+                         'candidate_count': len(rows), 'source_run_id': metadata.get('run_id') or job.get('local_ref'),
+                         'source_provenance': dict(metadata=metadata, input=json.loads(paths['input.json'].read_text()),
+                             result_metrics=result.get('metrics', {}), native_execution=receipt)}, job | {'metadata': metadata, 'native_execution': receipt}
 
 
 def cancel(batch, *, owner_id, project_id, allow_development=False):

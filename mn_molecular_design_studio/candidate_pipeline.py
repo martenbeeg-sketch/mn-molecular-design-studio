@@ -13,11 +13,19 @@ from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_jso
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
 
 
-def new_pipeline(generators=None, predictors=None, sequence_designer="ligandmpnn"):
+def new_pipeline(generators=None, predictors=None, sequence_designer="ligandmpnn", *, mode=None):
     from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, SCHEMA
-    generators = ["rfd4", "bindcraft2"] if generators is None else generators
+    from mn_molecular_design_studio.workflow_modes import MODES, methods
+    if mode is not None and mode not in MODES:
+        raise ValueError("Unknown scientific workflow mode.")
+    defaults = ["rfd4", "rfdiffusion"] if mode == "modular_design" else ["bindcraft2"] if mode else ["rfd4", "bindcraft2"]
+    generators = defaults if generators is None else generators
+    if mode and any(kind not in methods(mode) for kind in generators):
+        raise ValueError("Selected operation is unsupported for this workflow mode.")
     predictors = ["boltz2", "prediction_protenix_v2"] if predictors is None else predictors
-    if not generators or not predictors:
+    if mode == "native_complete":
+        predictors = []
+    if not generators or (not predictors and mode != "native_complete"):
         raise ValueError("Choose at least one generator and predictor.")
     for kind in generators:
         if NODE_CATALOG[kind]["category"] not in {"Design engine", "Design pipeline"}:
@@ -25,10 +33,49 @@ def new_pipeline(generators=None, predictors=None, sequence_designer="ligandmpnn
         if not any("target" in socket["accepts"] for socket in NODE_CATALOG[kind]["inputs"]):
             raise ValueError(f"{NODE_CATALOG[kind]['label']} requires its own input workflow; it cannot receive a shared structure target.")
     for kind in predictors:
+        if mode and kind not in {"boltz2", "prediction_protenix_v2"}:
+            raise ValueError("Choose a reviewed independent co-folder for this preset.")
         if NODE_CATALOG[kind]["category"] != "Structure prediction":
             raise ValueError("Choose existing predictor tiles.")
     if NODE_CATALOG[sequence_designer]["category"] != "Sequence design":
         raise ValueError("Choose an existing sequence-design tile.")
+    if mode in {"native_comparative", "modular_design"} and len(generators) > 1:
+        # Each completed generator feeds its own stages immediately. Only final
+        # comparative selection waits for fan-in; no generator-wide barrier.
+        branches = [new_pipeline([kind], predictors, sequence_designer, mode=mode) for kind in generators]
+        graph = branches[0]
+        graph['nodes'] = [n for n in graph['nodes'] if n['id'] not in {'ranking', 'results'}]
+        graph['edges'] = [e for e in graph['edges'] if not {e['source'], e['target']} & {'ranking', 'results'}]
+        analyzers = ['analyzer']
+        for i, branch in enumerate(branches[1:], 1):
+            rename = {n['id']: n['id'] + '-g' + str(i) for n in branch['nodes']}
+            rename['target'] = 'target'
+            for node in branch['nodes']:
+                old = node['id']
+                if old in {'target', 'ranking', 'results'}:
+                    continue
+                if NODE_CATALOG[node['data']['kind']]['category'] == 'Structure prediction':
+                    node['data']['evidence_namespace'] = old
+                node['id'] = rename[old]
+                node['position']['y'] += i * 560
+                graph['nodes'].append(node)
+            for edge in branch['edges']:
+                if {edge['source'], edge['target']} & {'ranking', 'results'}:
+                    continue
+                edge.update(id=edge['id'] + '-g' + str(i), source=rename[edge['source']], target=rename[edge['target']])
+                graph['edges'].append(edge)
+            analyzers.append(rename['analyzer'])
+        def final_node(kind, identifier, x):
+            spec = NODE_CATALOG[kind]
+            graph['nodes'].append(dict(id=identifier, type='studio', position=dict(x=x, y=170),
+                data=dict(kind=kind, label=spec['label'], params={f['name']: copy.deepcopy(f['default']) for f in spec['fields']},
+                          execution=dict(failure_policy='partial'))))
+        final_node('candidate_merge', 'evaluated-collection', 2740)
+        final_node('candidate_rank', 'ranking', 3080)
+        final_node('results', 'results', 3420)
+        for source, target in [*((node, 'evaluated-collection') for node in analyzers), ('evaluated-collection', 'ranking'), ('ranking', 'results')]:
+            graph['edges'].append(dict(id=source+'--'+target, source=source, target=target, sourceHandle='out', targetHandle='in'))
+        return graph
     nodes, edges = [], []
     def add(kind, node_id, x, y, **params):
         spec = NODE_CATALOG[kind]
@@ -40,24 +87,37 @@ def new_pipeline(generators=None, predictors=None, sequence_designer="ligandmpnn
         edges.append(dict(id=source + "--" + target, source=source, target=target, sourceHandle="out", targetHandle="in"))
     add("target", "target", 0, 170)
     for i, kind in enumerate(generators):
-        add(kind, "generator-" + str(i), 340, i * 240)["execution"] = dict(mode="native")
+        add(kind, "generator-" + str(i), 340, i * 240)["execution"] = dict(mode="native", placement="auto", failure_policy="partial")
+        if mode and kind == 'rfd4':
+            nodes[-1]['data']['execution'].update(cpu_cores=8, min_vram_gb=16)
         connect("target", "generator-" + str(i))
         connect("generator-" + str(i), "collection")
-    add("candidate_merge", "collection", 700, 170)
+    add("candidate_merge", "collection", 700, 170)["execution"] = dict(failure_policy="partial")
+    if mode == "native_complete":
+        nodes[-1]["data"]["label"] = "Native outcomes"
+        add("results", "results", 1040, 170)["label"] = "Native Results"
+        connect("collection", "results")
+        return dict(schema_version=SCHEMA, id=uuid.uuid4().hex, name=MODES[mode],
+                    template_id=mode, workflow_mode=mode, nodes=nodes, edges=edges,
+                    viewport=dict(x=0, y=0, zoom=.65))
     from mn_molecular_design_studio.inverse_folding_input import ENGINES as INVERSE_ENGINES
     sequence_count = {'num_sequences': 1} if sequence_designer in INVERSE_ENGINES else {'sequences': 1}
     add(sequence_designer, "sequence-preparation", 1040, 170, sequence_stage="initial", **sequence_count)
     add("ligandmpnn", "optional-redesign", 1380, 170, sequence_stage="soluble_optimization", optimization_enabled=False)
+    if mode == 'modular_design':
+        nodes[-1]['data']['params'].update(model_type='soluble_mpnn', fix_interface_residues=True)
     add("shared_filter", "shared-filter", 1720, 170)
     connect("collection", "sequence-preparation")
     connect("sequence-preparation", "optional-redesign")
     connect("optional-redesign", "shared-filter")
     for i, kind in enumerate(predictors):
         data = add(kind, "predictor-" + str(i), 2060, i * 240)
-        data["execution"] = dict(mode="sharded", batch_size=5, max_in_flight=2, failure_policy="partial")
+        data["execution"] = dict(mode="sharded", batch_size=5, max_in_flight=2, failure_policy="partial", placement="auto")
         # A second compatible adapter is available for explicit opt-in; no
         # extra GPU work is implied by opening the template.
         data["enabled"] = i == 0
+        if mode and "seed" in data["params"]:
+            data["params"]["seed"] = 42  # Same explicit default protocol across generator branches.
         connect("shared-filter", "predictor-" + str(i))
         connect("predictor-" + str(i), "analyzer")
     add("candidate_analyzer", "analyzer", 2400, 170)["execution"] = dict(failure_policy="partial")
@@ -67,6 +127,21 @@ def new_pipeline(generators=None, predictors=None, sequence_designer="ligandmpnn
     add("results", "results", 3080, 170)
     connect("analyzer", "ranking")
     connect("ranking", "results")
+    if mode is None:
+        for node in nodes:
+            if 'execution' in node['data']:
+                node['data']['execution'].pop('placement', None)
+                if NODE_CATALOG[node['data']['kind']]['category'] in {'Design engine', 'Design pipeline'}:
+                    node['data']['execution'] = dict(mode='native')
+        next(n for n in nodes if n['id'] == 'collection')['data'].pop('execution', None)
+    if mode == "native_comparative":
+        nodes = [n for n in nodes if n["id"] not in {"sequence-preparation", "optional-redesign"}]
+        edges = [e for e in edges if not {e["source"], e["target"]} & {"sequence-preparation", "optional-redesign"}]
+        connect("collection", "shared-filter")
+    if mode:
+        return dict(schema_version=SCHEMA, id=uuid.uuid4().hex, name=MODES[mode],
+                    template_id=mode, workflow_mode=mode, nodes=nodes, edges=edges,
+                    viewport=dict(x=0, y=0, zoom=.45))
     return dict(schema_version=SCHEMA, id=uuid.uuid4().hex,
                 name="Multi-Generator Binder Design & Evaluation", template_id="multi_generator_binder",
                 nodes=nodes, edges=edges, viewport=dict(x=0, y=0, zoom=.45))
@@ -87,7 +162,8 @@ def retained_source(node, project_id):
     kind = node["data"]["kind"]
     workflow = NODE_CATALOG[kind]["workflow"]
     expected = {"rfd4": "rfd4_proteina", "rfd3": "rfdiffusion3", "complexa": "proteina_complexa",
-                "complexa_generator": "proteina_complexa_generate", "protpardelle": "protpardelle_1c"}.get(kind, kind)
+                "complexa_generator": "proteina_complexa_generate", "protpardelle": "protpardelle_1c",
+                "protpardelle_pipeline": "protpardelle_1c", "pxdesign_pipeline": "pxdesign", "genie3_pipeline": "genie3"}.get(kind, kind)
     params = request.get("params", {})
     predictor = NODE_CATALOG[kind]["category"] == "Structure prediction"
     candidate_path = path / "artifacts/normalized_candidates/candidates.jsonl"
@@ -229,7 +305,8 @@ def replay(parent, node, source, retained, scientific_key):
                     reference = json.loads(matches[0][0])
                     verify_target(row, target)
                     info = copy.deepcopy(cs.metadata(reference))
-                    info.update(record_kind="prediction", predictor_node=node_id,
+                    info.update(record_kind="prediction", predictor_node=node["data"].get("evidence_namespace", node_id),
+                                predictor_execution_node=node_id,
                                 prediction_id=cs.identity(node_id, retained["source_run_id"], row["candidate_id"], info["variant_id"]),
                                 predictor_settings=retained["source_provenance"]["input"].get("params", {}),
                                 retained_provenance=retained["source_provenance"])
@@ -270,7 +347,7 @@ def execution_plan(graph, candidate_counts=None):
             candidates=count, collection_chunks=chunks, expected_jobs=chunks,
             candidates_per_chunk=settings["batch_size"] if sharded else None,
             max_concurrent_jobs=settings["max_in_flight"] if sharded else 1,
-            placement=settings["placement"] if sharded else "local",
+            placement=settings["placement"] if sharded or spec["workflow"] else "local",
             native_invocations=None, docker_processes=None, gpu_allocation_events=None,
             gpu_slots=None, prediction_outputs=None, model_initializations=None,
             note="Input counts unknown until upstream outputs and sequence routing resolve.")
