@@ -12,15 +12,19 @@ import math
 import os
 import tempfile
 import time
+from copy import deepcopy
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import utc_now
+from .execution_job_ledger import (
+    ExecutionJobLedgerMixin, check_contract, reserve, observe_single_attempt,
+    record_lease, _execution, _result, _retry, _identity_update,
+)
 
-
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ATTEMPT_STATES = {
     "authorized", "queued", "running", "completed", "failed", "interrupted",
     "cancelled", "not_started",
@@ -35,6 +39,7 @@ class CampaignControllerAlreadyRunning(RuntimeError):
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    check_contract(payload)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temporary = Path(name)
@@ -71,8 +76,9 @@ def _read(path: Path) -> dict[str, Any]:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"Campaign ledger is missing or unreadable: {path}") from exc
-    if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
+    if not isinstance(value, dict) or value.get("schema_version") not in {1, 2}:
         raise RuntimeError(f"Unsupported campaign ledger schema: {path}")
+    check_contract(value)
     return value
 
 
@@ -268,14 +274,16 @@ def _state_accepted_count(state: dict[str, Any]) -> int:
     )
 
 
-class CampaignLedger:
+class CampaignLedger(ExecutionJobLedgerMixin):
     """Atomic attempt reservations, idempotent result receipts, and global counts."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
 
     @classmethod
-    def create(cls, path: Path, config: dict[str, Any], *, campaign_id: str | None = None) -> "CampaignLedger":
+    def create(cls, path: Path, config: dict[str, Any], *, campaign_id: str | None = None, schema_version: int = SCHEMA_VERSION) -> "CampaignLedger":
+        if type(schema_version) is not int or schema_version not in {1, 2}:
+            raise ValueError("Supported ledger schemas are 1 and 2.")
         ledger = cls(path)
         validated = validate_campaign_config(config)
         with _locked(ledger.path):
@@ -286,7 +294,8 @@ class CampaignLedger:
                 return ledger
             now = utc_now()
             _atomic_json(ledger.path, {
-                "schema_version": SCHEMA_VERSION,
+                "schema_version": schema_version,
+                **({"execution_jobs": {}} if schema_version == 2 else {}),
                 "campaign_id": campaign_id or str(uuid4()),
                 "config": validated,
                 "status": "running",
@@ -301,6 +310,60 @@ class CampaignLedger:
                 "events": [{"type": "campaign_created", "at": now}],
             })
         return ledger
+
+    def _job_transaction(self, mutation):
+        with _locked(self.path):
+            state = _read(self.path)
+            if state["schema_version"] != 2:
+                raise ValueError("Execution-job operations require schema v2; historical ledgers are not migrated.")
+            before = deepcopy(state)
+            result = mutation(state)
+            if state != before:
+                state["updated_at"] = utc_now()
+                state["events"].append({"type": "execution_accounting_updated", "at": state["updated_at"]})
+                _atomic_json(self.path, state)
+            return deepcopy(result)
+
+    def assert_production_jobs(self):
+        state = self.snapshot()
+        if state["schema_version"] == 2 and any(
+            j["mode"] != "single_attempt_adapter" or len(j["manifest"]) != 1
+            for j in state["execution_jobs"].values()
+        ):
+            raise ValueError("Accounting-only execution jobs cannot enter campaign dispatch.")
+
+    def retry_is_safe(self, attempt):
+        state = self.snapshot()
+        if state["schema_version"] == 1:
+            # Keep the old data interpretation, but never automatically replay
+            # missing or post-launch stochastic work during controller recovery.
+            child = Path(attempt["child_run_dir"]) if attempt.get("child_run_dir") else None
+            return bool(child and child.is_dir() and _rfd4_retry_safe(child))
+        job = state["execution_jobs"][attempt["execution_job_id"]]
+        if job["output_receipts"] or attempt.get("native_started") is True:
+            return False
+        if _execution(job)["launch_state"] in {"not_exposed", "not_started_confirmed"}:
+            return True
+        child = Path(attempt["child_run_dir"]) if attempt.get("child_run_dir") else None
+        # The worker replaces command.json with mode=docker before invoking native work.
+        return bool(child and child.is_dir() and _rfd4_retry_safe(child))
+
+    def observe_worker_metadata(self, attempt_id, metadata):
+        if self.snapshot()["schema_version"] == 1:
+            return
+        def change(state):
+            attempt = state["attempts"][attempt_id]
+            job = state["execution_jobs"][attempt["execution_job_id"]]
+            execution = _execution(job)
+            # Observations may gain detail (including lease release timestamps).
+            execution["resource_allocation"].update(deepcopy(metadata.get("resource_allocation") or {}))
+            _identity_update(execution, "worker_identity", {k: metadata[k] for k in
+                ("scheduler_worker_id", "execution_node_id", "worker_started_at") if metadata.get(k) is not None})
+            _identity_update(execution, "scheduler_identifiers", {k: metadata[k] for k in
+                ("scheduler_job_id", "cluster_job_id", "remote_submission_key") if metadata.get(k) is not None})
+            if metadata.get("resource_request"):
+                execution["resolved_resource_request"] = deepcopy(metadata["resource_request"])
+        self._job_transaction(change)
 
     def snapshot(self) -> dict[str, Any]:
         with _locked(self.path):
@@ -326,6 +389,19 @@ class CampaignLedger:
         attempts = list(state["attempts"].values())
         candidates = list(state["candidates"].values())
         return {
+            **({"execution_jobs_authorized": len(state["execution_jobs"]),
+                "execution_retries": sum(len(j["executions"]) - 1 for j in state["execution_jobs"].values()),
+                "native_attempts_authorized": len(attempts),
+                "native_attempts_pending": sum(a.get("native_status") == "authorized" for a in attempts),
+                "native_attempts_started": sum(a.get("native_started") is True for a in attempts),
+                "execution_jobs_submitted": sum(any(e.get("submission_intent_at") for e in j["executions"]) for j in state["execution_jobs"].values()),
+                "failed_interrupted_executions": sum(e["submission_state"] in {"failed", "interrupted"} for j in state["execution_jobs"].values() for e in j["executions"]),
+                "selected_candidates": sum(c.get("selection_state") == "selected" for c in candidates),
+                "returned_unselected_candidates": sum(c.get("selection_state") == "returned_unselected" for c in candidates),
+                "pending_validation_candidates": sum(c.get("validated_acceptance") == "pending" and c.get("native_acceptance") != "rejected" for c in candidates) if state["config"].get("validation_stages") else 0,
+                **{f"native_attempts_{status}": sum(a.get("native_status") == status for a in attempts)
+                   for status in ("running", "completed", "failed", "not_started", "cancelled", "unresolved")}}
+               if state["schema_version"] == 2 else {}),
             "attempts_authorized": len(attempts),
             "attempts_started": sum(bool(item.get("first_started_at")) for item in attempts),
             "attempts_completed": sum(item.get("status") == "completed" for item in attempts),
@@ -339,6 +415,7 @@ class CampaignLedger:
                 if item.get("status") == "completed"
                 and isinstance(item.get("native_state"), dict)
                 and (item.get("native_state") or {}).get("authoritative") is not False
+                and (state["schema_version"] == 1 or all(type(item["native_state"].get(k)) is int and item["native_state"][k] >= 0 for k in ("trajectories", "accepted")))
             ),
             "native_acceptance_unavailable_attempts": sum(
                 item.get("status") == "completed"
@@ -370,6 +447,12 @@ class CampaignLedger:
                 raise KeyError(f"Unknown campaign candidate: {candidate_id}")
             if all(candidate.get(key) == value for key, value in details.items()):
                 return
+            if state["schema_version"] == 2 and set(details) & {
+                "candidate_id", "attempt_id", "execution_job_id", "execution_id", "native_output_ids", "receipt_id", "candidate", "native_acceptance"
+            }:
+                raise ValueError("Verified candidate provenance cannot be changed.")
+            if "selection_state" in details and details["selection_state"] not in {"pending", "selected", "returned_unselected"}:
+                raise ValueError("Invalid candidate selection state.")
             candidate.update(details)
             state["updated_at"] = utc_now()
             state["events"].append({
@@ -378,7 +461,9 @@ class CampaignLedger:
             })
             _atomic_json(self.path, state)
 
-    def record_compute(self, attempt_id: str, run_id: str, gpu_seconds: float) -> bool:
+    def record_compute(self, attempt_id: str, run_id: str, gpu_seconds: float, *, scope: str = "native") -> bool:
+        if scope not in {"native", "validation"}:
+            raise ValueError("Compute scope must be native or validation.")
         if not math.isfinite(float(gpu_seconds)) or gpu_seconds < 0:
             raise ValueError("GPU compute duration must be finite and nonnegative.")
         with _locked(self.path):
@@ -386,6 +471,15 @@ class CampaignLedger:
             attempt = state["attempts"].get(attempt_id)
             if attempt is None:
                 raise KeyError(f"Unknown campaign attempt: {attempt_id}")
+            if state["schema_version"] == 2 and scope == "native":
+                job = state["execution_jobs"][attempt["execution_job_id"]]
+                if job["mode"] != "single_attempt_adapter":
+                    raise ValueError("Multi-member leases must be recorded once on the execution job.")
+                changed = record_lease(job, job["current_execution_id"], run_id, gpu_seconds)
+                if changed:
+                    state["updated_at"] = utc_now()
+                    _atomic_json(self.path, state)
+                return changed
             runs = attempt.setdefault("compute_runs", {})
             if run_id in runs:
                 return False
@@ -399,11 +493,12 @@ class CampaignLedger:
             return True
 
     def gpu_compute_seconds(self) -> float:
-        return sum(
-            float(seconds)
-            for attempt in self.snapshot()["attempts"].values()
-            for seconds in (attempt.get("compute_runs") or {}).values()
-        )
+        state = self.snapshot()
+        validation_and_legacy = sum(float(seconds) for attempt in state["attempts"].values()
+                                    for seconds in (attempt.get("compute_runs") or {}).values())
+        job_seconds = sum(float(seconds) for job in state.get("execution_jobs", {}).values()
+                          for execution in job["executions"] for seconds in execution["lease_receipts"].values())
+        return validation_and_legacy + job_seconds
 
     def mark_generation_budget_exhausted(self) -> dict[str, Any]:
         """Persist that all generation attempts have been authorized, even if validation is pending."""
@@ -428,7 +523,7 @@ class CampaignLedger:
         digest = hashlib.sha256(f"{campaign_id}:{configured_seed}:{ordinal}".encode()).digest()
         return int.from_bytes(digest[:4], "big") % 2_147_483_646 + 1
 
-    def authorize(self, requested: int, *, batch_id: str) -> list[dict[str, Any]]:
+    def authorize(self, requested: int, *, batch_id: str, source_input: dict[str, Any] | None = None, native_configuration: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         if type(requested) is not int or requested < 1 or not batch_id:
             raise ValueError("Attempt authorization needs a positive count and batch identity.")
         with _locked(self.path):
@@ -439,6 +534,13 @@ class CampaignLedger:
             count = min(requested, max(0, remaining))
             created = []
             for _ in range(count):
+                if state["schema_version"] == 2:
+                    job = reserve(state, f"adapter:{state['next_ordinal']}",
+                                  [source_input or {"identity": "unspecified_legacy_api_input", "verified": False}],
+                                  native_configuration or {}, state["config"].get("resources", {}),
+                                  mode="single_attempt_adapter", batch_id=batch_id)
+                    created.append(deepcopy(state["attempts"][job["manifest"][0]["attempt_id"]]))
+                    continue
                 ordinal = int(state["next_ordinal"])
                 state["next_ordinal"] = ordinal + 1
                 attempt_id = f"{state['campaign_id']}:a{ordinal:08d}"
@@ -474,6 +576,10 @@ class CampaignLedger:
             attempt = state["attempts"].get(attempt_id)
             if attempt is None:
                 raise KeyError(f"Unknown campaign attempt: {attempt_id}")
+            if state["schema_version"] == 2:
+                if set(details) & {"attempt_id", "ordinal", "seed", "execution_job_id", "job_position", "source_input", "native_rng_mapping", "authorized_at", "native_status", "native_started"}:
+                    raise ValueError("Attempt authorization and native provenance are immutable through worker transitions.")
+                observe_single_attempt(state, attempt, status, details)
             previous = attempt["status"]
             terminal = {"completed", "failed", "interrupted", "cancelled", "not_started"}
             if previous in terminal and status != previous:
@@ -503,6 +609,21 @@ class CampaignLedger:
                 raise KeyError(f"Unknown campaign attempt: {attempt_id}")
             if attempt["status"] not in {"failed", "interrupted", "queued"}:
                 raise ValueError("Only failed, interrupted, or queued attempts can be retried.")
+            if state["schema_version"] == 2:
+                job = state["execution_jobs"][attempt["execution_job_id"]]
+                if job["mode"] != "single_attempt_adapter":
+                    raise ValueError("Accounting-only retries require the execution-job API.")
+                execution = _execution(job)
+                child = Path(attempt["child_run_dir"]) if attempt.get("child_run_dir") else None
+                if execution["launch_state"] == "may_have_started" and child and child.is_dir() and _rfd4_retry_safe(child):
+                    execution["launch_state"] = "not_started_confirmed"
+                    command_path = child / "command.json"
+                    execution["retry_safety_evidence"] = {
+                        "kind": "existing_pre_native_command_guard", "child_run_dir": str(child),
+                        "command_sha256": hashlib.sha256(command_path.read_bytes()).hexdigest() if command_path.is_file() else None,
+                    }
+                execution["submission_state"] = "interrupted"
+                _retry(state, job, f"adapter-retry:{int(attempt.get('retry_count', 0)) + 1}")
             attempt["retry_count"] = int(attempt.get("retry_count", 0)) + 1
             attempt.setdefault("retry_history", []).append({
                 "at": utc_now(), "child_run_dir": child_run_dir or attempt.get("child_run_dir"),
@@ -531,6 +652,24 @@ class CampaignLedger:
             raise ValueError("A result receipt needs an identity and verified native state.")
         with _locked(self.path):
             state = _read(self.path)
+            if state["schema_version"] == 2:
+                attempt = state["attempts"][attempt_id]
+                job = state["execution_jobs"][attempt["execution_job_id"]]
+                if job["mode"] != "single_attempt_adapter":
+                    raise ValueError("Accounting-only receipts require the execution-job API.")
+                changed = _result(state, job, job["current_execution_id"], receipt_id, attempt_id,
+                                  job["manifest_digest"], "completed", native_state,
+                                  [str(c["raw_metadata"]["native_candidate_id"]) for c in candidates
+                                   if (c.get("raw_metadata") or {}).get("native_candidate_id")], candidates,
+                                  {"kind": "existing_single_attempt_adapter_verification", "child_run_dir": attempt.get("child_run_dir")})
+                if changed:
+                    execution = _execution(job)
+                    execution["submission_state"] = "completed"
+                    if attempt.get("child_run_dir"):
+                        record_lease(job, job["current_execution_id"], Path(attempt["child_run_dir"]).name, gpu_seconds)
+                    state["updated_at"] = utc_now()
+                    _atomic_json(self.path, state)
+                return changed
             if receipt_id in state["receipts"]:
                 return False
             attempt = state["attempts"].get(attempt_id)
@@ -1198,6 +1337,7 @@ def _create_rfd4_attempt_child(
     config: dict[str, Any],
 ) -> Path:
     """Queue one independently seeded, one-output RFD4 co-design request."""
+    ledger.assert_production_jobs()
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import (
         mark_internal_job,
         read_json,
@@ -1375,6 +1515,7 @@ def _create_attempt_child(
     attempt: dict[str, Any],
     config: dict[str, Any],
 ) -> Path:
+    ledger.assert_production_jobs()
     if str(config.get("generator_id") or "bindcraft2") == "rfd4_proteina":
         return _create_rfd4_attempt_child(parent_run_dir, ledger, attempt, config)
     import copy
@@ -1637,6 +1778,7 @@ def _reconcile_attempts(
     else:
         read_bindcraft2_campaign_state = None
 
+    ledger.assert_production_jobs()
     state = ledger.snapshot()
     children = _attempt_child_paths(ledger)
     for attempt_id, attempt in list(ledger.snapshot()["attempts"].items()):
@@ -1650,6 +1792,10 @@ def _reconcile_attempts(
                 ledger.transition(attempt_id, "failed", failure=f"{type(exc).__name__}: {exc}")
                 continue
             children[attempt_id] = child
+        elif not _rfd4_retry_safe(child):
+            # A recovered authorization is not permission to replay a native
+            # invocation already recorded on disk, even without scheduler metadata.
+            ledger.transition(attempt_id, "interrupted", child_run_dir=str(child), failure="Native launch evidence requires reconciliation before any resubmission.")
         elif not (child / "worker_request.json").is_file():
             _repair_attempt_child(parent_run_dir, child, attempt, config)
             ledger.transition(attempt_id, "queued", child_run_dir=str(child))
@@ -1673,6 +1819,7 @@ def _reconcile_attempts(
             if attempt["status"] in {"queued", "running"}:
                 retry_allowed = (
                     generator_id != "rfd4_proteina"
+                    and ledger.retry_is_safe(attempt)
                     and int(attempt.get("retry_count", 0)) < int(config["max_retries"])
                 )
                 if retry_allowed:
@@ -1739,6 +1886,7 @@ def _reconcile_attempts(
                 worker_started_at=remote_metadata.get("worker_started_at") or child_metadata.get("worker_started_at"),
                 scheduler_worker_id=remote_metadata.get("scheduler_worker_id") or peer.get("worker_node_id"),
             )
+            ledger.observe_worker_metadata(attempt_id, child_metadata)
             if peer_status == "completed" and peer_output is not None:
                 if not _materialize_rfd4_peer_output(
                     parent_run_dir, ledger, attempt, child, peer, peer_output, peer_job,
@@ -1770,6 +1918,7 @@ def _reconcile_attempts(
                 })
                 continue
         metadata = read_json(child / "metadata.json")
+        ledger.observe_worker_metadata(attempt_id, metadata)
         status = str(metadata.get("status") or "unknown")
         result = read_json(child / "result.json")
         if status in {"completed", "failed", "cancelled"}:
@@ -1829,12 +1978,20 @@ def _reconcile_attempts(
         if status in {"failed", "cancelled"}:
             retry_allowed = (
                 not attempt.get("cluster_submission")
+                and ledger.retry_is_safe(attempt)
                 and int(attempt.get("retry_count", 0)) < int(config["max_retries"])
             )
             if generator_id == "rfd4_proteina" and not _rfd4_retry_safe(child):
                 retry_allowed = False
             if status == "failed" and retry_allowed:
-                if attempt["status"] != "queued":
+                if state["schema_version"] == 2:
+                    if attempt["status"] not in {"failed", "interrupted", "queued"}:
+                        ledger.transition(attempt_id, "interrupted", child_run_dir=str(child), failure="Worker failed before native launch.")
+                    ledger.retry(attempt_id, child_run_dir=str(child))
+                    # Persist the new operational execution before resume_job can
+                    # expose it to the existing scheduler.
+                    ledger.transition(attempt_id, "queued", child_run_dir=str(child))
+                elif attempt["status"] != "queued":
                     ledger.retry(attempt_id, child_run_dir=str(child))
                 metadata = read_json(child / "metadata.json")
                 if metadata.get("status") in {"failed", "cancelled", "paused", "holding"}:
@@ -1931,6 +2088,7 @@ def _sync_parent_results(
         child_metadata = read_json(child / "metadata.json") if child else {}
         attempts.append({
             "attempt_id": attempt_id,
+            **({"execution_job_id": attempt["execution_job_id"], "native_status": attempt["native_status"]} if state["schema_version"] == 2 else {}),
             "batch_id": attempt["batch_id"],
             "seed": attempt["seed"],
             "status": attempt["status"],
@@ -1953,6 +2111,7 @@ def _sync_parent_results(
         "counters": ledger.counters(),
         "gpu_compute_seconds": ledger.gpu_compute_seconds(),
         "attempts": attempts,
+        **({"execution_job_accounting": ledger.execution_job_summary()} if state["schema_version"] == 2 else {}),
         "candidate_count": len(enriched),
         "candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl",
     }
@@ -2019,6 +2178,7 @@ def _dispatch_attempts(
     active_count: int,
     accepted_count: int,
 ) -> None:
+    ledger.assert_production_jobs()
     state = ledger.snapshot()
     max_concurrent = int(config["batch_size"]) * int(config["max_concurrent_batches"])
     slots = max(0, max_concurrent - active_count)
@@ -2031,7 +2191,11 @@ def _dispatch_attempts(
     for offset in range(requested):
         batch_number = batch_base + offset // int(config["batch_size"])
         batch_id = f"b{batch_number:06d}"
-        attempts = ledger.authorize(1, batch_id=batch_id)
+        parent_input = parent_run_dir / "input.json"
+        input_bytes = parent_input.read_bytes() if parent_input.is_file() else None
+        source_input = {"parent_run_dir": str(parent_run_dir), "input_sha256": hashlib.sha256(input_bytes).hexdigest()} if input_bytes is not None else None
+        native_configuration = json.loads(input_bytes) if input_bytes is not None else None
+        attempts = ledger.authorize(1, batch_id=batch_id, source_input=source_input, native_configuration=native_configuration)
         if not attempts:
             return
         attempt = attempts[0]
@@ -2575,7 +2739,7 @@ def _drive_validation(
                         ledger.record_compute(
                             str(ledger_candidate["attempt_id"]),
                             f"validation:{stage_index}:{run_dir.name}",
-                            _worker_gpu_seconds(metadata),
+                            _worker_gpu_seconds(metadata), scope="validation",
                         )
                         evidence = _validation_evidence_row(
                             run_dir, candidate_id, str(native.get("binder_sequence") or ""),
@@ -2665,7 +2829,7 @@ def _drive_validation(
                 ledger.record_compute(
                     str(ledger_candidate["attempt_id"]),
                     f"validation:{stage_index}:{run_dir.name}",
-                    _worker_gpu_seconds(metadata),
+                    _worker_gpu_seconds(metadata), scope="validation",
                 )
                 stage_results[key] = stage_result
                 ledger.update_candidate(candidate_id, validation_stages=stage_results)
@@ -2947,6 +3111,7 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
     capability = generator_capabilities(expected_generator_id)
     ledger = CampaignLedger.create(_campaign_ledger_path(parent_run_dir), config)
     with ledger.controller_lock():
+        ledger.assert_production_jobs()
         state = ledger.snapshot()
         update_status(
             parent_run_dir, "running",

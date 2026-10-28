@@ -140,6 +140,42 @@ def _gpu_snapshot(inventory, config):
     return rows
 
 
+def _manifest_preview(config, budget, inputs, size, resources):
+    """Bounded deterministic membership examples, with no durable authorization."""
+    from .execution_job_ledger import digest, manifest_entries
+    seed = config.get("seed", 0)
+    if type(seed) is not int or seed < 0:
+        return {"available": False, "reason": "Invalid campaign seed.", "authorization": False}
+    namespace = "preview-" + digest({"config": config, "inputs": inputs, "size": size})[:16]
+    base, extras = divmod(budget, inputs)
+    total_jobs = _partition_budget(budget, inputs, size)["execution_jobs_if_budget_exhausted"]
+    jobs, ordinal, shown = [], 1, 0
+    for input_index in range(min(inputs, budget)):
+        remaining = base + int(input_index < extras)
+        while remaining:
+            if len(jobs) >= 16 or shown >= 100:
+                return {"available": True, "authorization": False, "namespace": namespace, "jobs": jobs,
+                        "total_jobs": total_jobs, "total_attempts": budget, "shown_attempts": shown,
+                        "truncated": True, "omitted_jobs": total_jobs - len(jobs), "omitted_attempts": budget - shown}
+            count = min(size, remaining)
+            shown_count = min(count, 100 - shown)
+            entries = manifest_entries(namespace, seed, ordinal,
+                                       [{"input_index": input_index, "identity_verified": False}] * shown_count)
+            jobs.append({"execution_job_id": f"{namespace}:j{ordinal:08d}", "authorization": False,
+                         "proposed_attempt_count": count, "manifest": entries,
+                         "manifest_digest": digest(entries) if shown_count == count else None,
+                         "manifest_complete": shown_count == count, "omitted_members": count - shown_count,
+                         "configuration_digest": digest({"campaign": config, "native": {}, "resource_requirements": resources}),
+                         "native_configuration_resolved": False,
+                         "resource_requirements": deepcopy(resources)})
+            remaining -= count
+            ordinal += count
+            shown += shown_count
+    return {"available": True, "authorization": False, "namespace": namespace, "jobs": jobs,
+            "total_jobs": total_jobs, "total_attempts": budget, "shown_attempts": shown,
+            "truncated": shown < budget, "omitted_jobs": 0, "omitted_attempts": budget - shown}
+
+
 def plan_campaign_execution(campaign, *, engine_id=None, native_attempts_per_job=None,
                             input_count=1, native_batch_size=1, designs_per_input=1, eligible_gpus=None,
                             generation_cpu_cores=None):
@@ -239,6 +275,7 @@ def plan_campaign_execution(campaign, *, engine_id=None, native_attempts_per_job
         "native_attempts_per_job": {"requested": requested, "supported_campaign_choices": choices,
                                     "proposed_descriptive_choices": list(PROPOSED_NATIVE_CHOICES),
                                     "effective": requested if supported else None},
+        "execution_job_manifest_preview": _manifest_preview(normalized, budget, inputs, requested, generation_resources),
         "hypothetical_requested_plan": {**partition, "input_count": inputs,
                                         "total_native_attempts_including_rounding": physical,
                                         "nominal_native_output_upper_bound": nominal},
@@ -257,6 +294,7 @@ def plan_campaign_execution(campaign, *, engine_id=None, native_attempts_per_job
         "gpu_inventory": gpus,
         "inventory_status": "supplied_snapshot_only" if eligible_gpus is not None else "unknown_not_probed",
         "notes": ["Job counts are upper bounds if the full attempt budget is consumed; acceptance stopping can reduce actual work.",
+                  "Manifest previews use synthetic identities and unverified RNG/input mappings; they authorize no work. Multi-member jobs remain accounting-only.",
                   "Hypothetical groups use one input per job and partition the global attempt budget across inputs; this is not an execution adapter.",
                   "Nominal native outputs are not guaranteed normalized, accepted, validated or selected candidates.",
                   "GPU availability and all exact peer compatibility gates must be checked again by the existing authenticated scheduler at submission."]}

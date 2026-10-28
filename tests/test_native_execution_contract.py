@@ -47,9 +47,9 @@ def test_capabilities_do_not_promote_source_reuse_into_measured_batch_support():
 
 
 def test_simulated_shared_job_keeps_partial_attempt_results_and_surplus_candidates(tmp_path):
-    # execution_job_id is diagnostic fixture metadata, not a new runnable adapter.
+    # Historical schema-v1 diagnostic metadata is not a native job identity.
     config = {"max_attempts": 3, "accepted_target": 1, "seed": 91}
-    ledger = CampaignLedger.create(tmp_path / "ledger.json", config, campaign_id="simulated")
+    ledger = CampaignLedger.create(tmp_path / "ledger.json", config, campaign_id="simulated", schema_version=1)
     attempts = ledger.authorize(5, batch_id="dispatch-group")
     assert len(attempts) == 3
     for attempt in attempts:
