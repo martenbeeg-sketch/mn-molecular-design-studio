@@ -234,6 +234,55 @@ def test_rfd4_campaign_entry_accepts_native_condition_spec(tmp_path, monkeypatch
     assert distributed_campaign.validate_campaign_config(config)["generator_id"] == "rfd4_proteina"
 
 
+def test_rfd4_generator_runs_as_host_user_for_oracle_manifest_permissions(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import rfd4_proteina
+
+    run_dir = tmp_path / "runs" / "rfd4"
+    run_dir.mkdir(parents=True)
+    target = tmp_path / "target.cif"
+    target.write_text("test input")
+    artifact_root = run_dir / "artifacts" / "rfd4_proteina"
+    artifact_root.mkdir(parents=True)
+    request_path = artifact_root / "request.json"
+    request_path.write_text("{}")
+    references = tmp_path / "reference_files"
+    references.mkdir()
+    captured = {}
+
+    monkeypatch.setattr(rfd4_proteina, "create_job", lambda *_args, **_kwargs: SimpleNamespace(run_dir=run_dir))
+    monkeypatch.setattr(rfd4_proteina, "update_status", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(rfd4_proteina, "finish_job", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(rfd4_proteina, "reference_root", lambda: references)
+    monkeypatch.setattr(rfd4_proteina, "load_manifest", lambda _name: {"image": "mn-rfd4-proteina:test", "gpu": True})
+    monkeypatch.setattr(
+        rfd4_proteina.inputs,
+        "prepare_request",
+        lambda *_args, **_kwargs: {
+            "root": artifact_root,
+            "request_path": request_path,
+            "design_count": 1,
+        },
+    )
+
+    def fake_run_docker_job(*_args, **kwargs):
+        captured.update(kwargs)
+        # Force the ordinary error path before output normalization; this test
+        # only verifies the container ownership contract, not scientific output.
+        return 1
+
+    monkeypatch.setattr(rfd4_proteina, "run_docker_job", fake_run_docker_job)
+    result = rfd4_proteina.run_rfd4_proteina_design(
+        target_structure=target,
+        num_designs=1,
+        options={"refold": False, "filter_conditions": False},
+    )
+
+    assert result == run_dir
+    assert captured["use_host_user"] is True
+
+
 @pytest.mark.skipif(os.environ.get("MDS_RFD4_DOCKER_TESTS") != "1", reason="requires opt-in RFD4 Docker image")
 def test_idr_sequence_only_spec_fixes_sequence_but_leaves_target_coordinates_free(tmp_path):
     sequence = "ACDEFGHIKLMNPQRSTVWY"

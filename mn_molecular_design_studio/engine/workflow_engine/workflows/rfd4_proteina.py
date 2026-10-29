@@ -214,7 +214,11 @@ def run_rfd4_proteina_design(
             manifest={**load_manifest('rfd4_proteina'),'entrypoint':'python'}
             args=['/work/'+(runtime/'rfd4_runtime.py').relative_to(job.run_dir).as_posix(),
                   '/work/'+prepared['request_path'].relative_to(job.run_dir).as_posix()]
-            code=run_docker_job(job.run_dir,manifest,args,gpu_device=gpu_device,extra_mounts=mounts,environment=env)
+            # RFD4 creates temporary AF3 manifests inside /work and hands their
+            # paths to the host-side oracle bridge. Keep those files owned and
+            # traversable by the same host user that serves the oracle socket.
+            code=run_docker_job(job.run_dir,manifest,args,gpu_device=gpu_device,extra_mounts=mounts,
+                                environment=env,use_host_user=True)
         native_commands=prepared['root']/'native_command.json'
         receipt_path=job.run_dir/'native_execution.json'
         if receipt_path.is_file() and native_commands.is_file():
