@@ -157,6 +157,24 @@ def test_worker_start_time_is_observed_measurement_not_immutable_identity(tmp_pa
     ]
 
 
+def test_remote_worker_node_reassignment_is_recorded_without_failing_campaign(tmp_path):
+    campaign = ledger(tmp_path)
+    attempt = campaign.authorize(1, batch_id="dispatch")[0]
+    attempt_id = attempt["attempt_id"]
+    details = {"child_run_dir": "/runs/child-1", "cluster_job_id": "cluster-1"}
+    campaign.transition(attempt_id, "queued", **details, worker_node_id="node-a")
+    campaign.transition(attempt_id, "running", **details, worker_node_id="node-b")
+
+    snapshot = campaign.snapshot()
+    attempt = snapshot["attempts"][attempt_id]
+    saved = execution(snapshot["execution_jobs"][attempt["execution_job_id"]])
+    assert attempt["worker_node_id"] == "node-b"
+    assert saved["worker_identity"]["worker_node_id"] == "node-b"
+    assert [(row["worker_node_id"], row["status"]) for row in saved["worker_node_id_observations"]] == [
+        ("node-a", "queued"), ("node-b", "running"),
+    ]
+
+
 def test_exit_zero_does_not_complete_attempts_or_infer_acceptance(tmp_path):
     campaign = ledger(tmp_path)
     job = reserve(campaign)

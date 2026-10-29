@@ -141,6 +141,26 @@ def _identity_update(execution, field, values):
         execution[field][key] = deepcopy(value)
 
 
+def _observe_worker_node(execution, worker_node_id, status):
+    """Track scheduler reassignments without losing the observed node history.
+
+    A queued remote submission can be placed on one workstation and later
+    report the node that actually claimed it. Keep the latest node as the
+    execution identity and retain distinct observations for provenance.
+    """
+    if worker_node_id in (None, ""):
+        return
+    identity = execution.setdefault("worker_identity", {})
+    previous = identity.get("worker_node_id")
+    if previous == worker_node_id:
+        return
+    observations = execution.setdefault("worker_node_id_observations", [])
+    observation = {"worker_node_id": deepcopy(worker_node_id), "status": status, "observed_at": utc_now()}
+    if observation not in observations:
+        observations.append(observation)
+    identity["worker_node_id"] = deepcopy(worker_node_id)
+
+
 def _observe_worker_timing(execution, worker_started_at, worker_identity=None):
     """Keep scheduler start-time reports as measurements, separate from identity."""
     if worker_started_at in (None, ""):
@@ -260,7 +280,7 @@ def observe_single_attempt(state, attempt, status, details):
     if details.get("child_run_dir"):
         _identity_update(execution, "scheduler_identifiers", {"child_run_dir": details["child_run_dir"]})
     _identity_update(execution, "scheduler_identifiers", {k: details[k] for k in ("cluster_job_id", "remote_submission_key") if k in details})
-    _identity_update(execution, "worker_identity", {"worker_node_id": details.get("worker_node_id")})
+    _observe_worker_node(execution, details.get("worker_node_id"), status)
     if status in {"failed", "interrupted", "cancelled", "not_started"}:
         execution["submission_state"] = "cancelled" if status == "not_started" else status
         # A legacy worker cancellation/failure is not proof that native work never ran.
