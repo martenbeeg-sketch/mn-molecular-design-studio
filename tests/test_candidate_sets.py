@@ -429,3 +429,71 @@ def test_analyzer_recovers_target_identity_for_saved_design_source(collection_ha
     assert output['target']['identity']['target_id'] == cs.metadata(row)['target_id']
     assert len(cs.metadata(row)['predictions']) == 1
     assert 'identity' not in variants['target']
+
+
+def test_campaign_validation_is_projected_into_candidate_set_without_overwriting_native_measurements(collection_harness):
+    h = collection_harness
+    source = h.source("campaign-source", "rfd4_proteina", 1)
+    target_structure = h.target
+    native = next(json.loads(line) for line in (source / "artifacts/normalized_candidates/candidates.jsonl").read_text().splitlines())
+    native.update(candidate_id="native-candidate-1", metrics={"iptm": .22, "native_score": 3.0})
+    native["raw_metadata"] = {
+        "distributed_campaign": {
+            "campaign_id": "campaign-1", "attempt_id": "campaign-1:a00000001",
+            "attempt_seed": 1234, "generator_id": "rfd4_proteina", "objective_type": "accepted",
+            "native_acceptance": "unavailable", "validated_acceptance": "accepted",
+            "validation_decision_reason": "Boltz-2 iPTM 0.72 met the configured threshold.",
+        },
+        "evidence_candidates": [{
+            "candidate_id": "boltz2-result-1", "stage": "complex_refolding",
+            "source_tool": "optimized_prediction_boltz2", "binder_sequence": native["binder_sequence"],
+            "complex_pdb": target_structure, "target_pdb": target_structure,
+            "binder_chains": ["B"], "target_chains": ["A"], "metrics": {"iptm": .72},
+            "raw_metadata": {"distributed_campaign_validation": {
+                "campaign_id": "campaign-1", "attempt_id": "campaign-1:a00000001",
+                "stage_index": 0, "workflow": "refolding.optimized_prediction", "status": "completed",
+            }},
+        }, {
+            "candidate_id": "ipsae-result-1", "stage": "analysis",
+            "source_tool": "ipsae", "binder_sequence": native["binder_sequence"],
+            "complex_pdb": target_structure, "target_pdb": target_structure,
+            "binder_chains": ["B"], "target_chains": ["A"], "metrics": {"ipsae": .61},
+            "raw_metadata": {"distributed_campaign_validation": {
+                "campaign_id": "campaign-1", "attempt_id": "campaign-1:a00000001",
+                "stage_index": 1, "workflow": "analysis.ipsae", "status": "completed",
+            }},
+        }],
+    }
+    candidate_file = source / "artifacts/normalized_candidates/candidates.jsonl"
+    candidate_file.write_text(json.dumps(native) + "\n")
+    target = {"target_pdb": target_structure, "target_chains": ["A"]}
+    target["identity"] = cs.target_identity(target)
+    merged = cs.merge(h.tmp_path, "campaign-merged", [
+        ("campaign", dict(run_dir=str(source), candidates_jsonl=str(candidate_file), target=target)),
+    ], {"deduplication": "mark_duplicates"})
+    campaign_row = next(cs.iter_candidates(merged, review=True))
+    info = cs.metadata(campaign_row)
+    assert info["native_filter"] == "not_evaluated"
+    assert info["native_measurements"] == {"iptm": .22, "native_score": 3.0}
+    assert [(record["branch"], record["status"], record["measurements"]["iptm"]["value"])
+            for record in info["predictions"]] == [("campaign-validation-0", "completed", .72)]
+    assert [(record["branch"], record["status"], record["measurements"]["ipsae"]["value"])
+            for record in info["analysis_results"]] == [("campaign-validation-1", "completed", .61)]
+    assert cs.observation(campaign_row, "prediction/campaign-validation-0/iptm")["value"] == .72
+    assert cs.observation(campaign_row, "analysis/campaign-validation-1/ipsae")["value"] == .61
+
+    analyzed = cs.analyze(h.tmp_path, "campaign-analyzed", [("campaign", merged)], {}, {
+        "campaign-validation-0": {"enabled": True},
+        "campaign-validation-1": {"enabled": True},
+    })
+    result = next(cs.iter_candidates(analyzed, review=True))
+    assert result["metrics"]["iptm"] == .22
+    assert result["metrics"]["prediction/campaign-validation-0/iptm"] == .72
+    assert result["metrics"]["analysis/campaign-validation-1/ipsae"] == .61
+    assert len(cs.metadata(result)["predictions"]) == 1
+    assert len(cs.metadata(result)["analysis_results"]) == 1
+    from mn_molecular_design_studio.result_presentation import candidate_state_rows
+    visible = candidate_state_rows([result])[0]
+    assert visible["Campaign acceptance"] == "accepted"
+    assert visible["Campaign acceptance level"] == "validated"
+    assert visible["Selection"] == "not_evaluated" and visible["Selected"] is False

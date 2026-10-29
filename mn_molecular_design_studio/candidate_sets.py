@@ -124,7 +124,7 @@ def native_filter(row):
     value = campaign.get("native_acceptance")
     if value in {"accepted", "rejected"}:
         return "passed" if value == "accepted" else "failed"
-    return "not_evaluated" if value is None else "unresolved"
+    return "not_evaluated" if value in {None, "unavailable"} else "unresolved"
 
 
 def artifact_evidence(row):
@@ -137,10 +137,111 @@ def artifact_evidence(row):
     return result
 
 
+def _campaign_acceptance(row):
+    raw = row.get("raw_metadata") or {}
+    campaign = raw.get("distributed_campaign") or {}
+    if not campaign:
+        return None
+    validated = campaign.get("validated_acceptance")
+    native = campaign.get("native_acceptance")
+    level = campaign.get("acceptance_level")
+    if level not in {"native", "validated"}:
+        level = "validated" if validated not in {None, "pending", "unavailable"} else "native"
+    status = validated if level == "validated" else native
+    if status == "unavailable":
+        status = "not_evaluated"
+    return dict(
+        campaign_id=campaign.get("campaign_id"),
+        attempt_id=campaign.get("attempt_id"),
+        attempt_seed=campaign.get("attempt_seed"),
+        generator_id=campaign.get("generator_id"),
+        objective_type=campaign.get("objective_type"),
+        acceptance_level=level,
+        status=status or "pending",
+        reason=campaign.get("validation_decision_reason") or campaign.get("decision_reason", ""),
+    )
+
+
+def _campaign_predictions(row):
+    """Project completed controller validations into the existing CandidateSet prediction schema."""
+    raw = row.get("raw_metadata") or {}
+    campaign = raw.get("distributed_campaign") or {}
+    records = []
+    evidence_rows = raw.get("evidence_candidates")
+    if not isinstance(evidence_rows, list):
+        return records
+    for ordinal, evidence in enumerate(evidence_rows):
+        if not isinstance(evidence, dict) or evidence.get("stage") not in {"complex_refolding", "analysis"}:
+            continue
+        if not row.get("binder_sequence") or evidence.get("binder_sequence") != row.get("binder_sequence"):
+            continue
+        evidence_raw = evidence.get("raw_metadata") or {}
+        validation = evidence_raw.get("distributed_campaign_validation") or {}
+        stage_index = validation.get("stage_index", ordinal)
+        branch = f"campaign-validation-{stage_index}"
+        key = "analysis_results" if evidence.get("stage") == "analysis" else "predictions"
+        identity_field = "analysis_result_id" if key == "analysis_results" else "prediction_id"
+        record_id = identity(
+            "distributed-campaign-evidence", campaign.get("campaign_id"),
+            campaign.get("attempt_id"), stage_index, evidence.get("candidate_id"),
+        )
+        metrics = evidence.get("metrics") if isinstance(evidence.get("metrics"), dict) else {}
+        status = validation.get("status") or ("completed" if metrics else "missing_evidence")
+        if status not in {"completed", "failed", "missing_evidence", "unresolved"}:
+            status = "unresolved"
+        candidate = copy.deepcopy(evidence)
+        if key == "analysis_results":
+            analysis_info = candidate.setdefault("raw_metadata", {}).setdefault("candidate_set", {})
+            analysis_info.update(
+                schema_version=SCHEMA,
+                target_id=metadata(row).get("target_id"),
+                backbone_id=metadata(row).get("backbone_id"),
+                variant_id=metadata(row).get("variant_id"),
+                record_kind="measurement",
+                analysis_result_id=record_id,
+                measurement_node=branch,
+            )
+        records.append({
+            identity_field: record_id,
+            "branch": branch,
+            "predictor": evidence.get("source_tool") or evidence.get("tool"),
+            "status": status,
+            "candidate": candidate,
+            "measurements": {
+                metric: {"status": "valid", "value": value}
+                for metric, value in metrics.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+            },
+        })
+    return records
+
+
+def _attach_campaign_evidence(row):
+    info = metadata(row)
+    if not info:
+        return
+    acceptance = _campaign_acceptance(row)
+    if acceptance:
+        info["campaign_acceptance"] = acceptance
+    for record in _campaign_predictions(row):
+        key = "analysis_results" if "analysis_result_id" in record else "predictions"
+        entries = info.setdefault(key, [])
+        record_id = record.get("prediction_id") or record.get("analysis_result_id")
+        if not any((item.get("prediction_id") or item.get("analysis_result_id")) == record_id for item in entries):
+            entries.append(record)
+    if info.get("predictions"):
+        matrix = info.setdefault("predictor_matrix", {})
+        for record in info["predictions"]:
+            matrix.setdefault(record["branch"], []).append(record.get("status", "unresolved"))
+        for branch, statuses in matrix.items():
+            matrix[branch] = list(dict.fromkeys(statuses))
+
+
 def source_record(row, source, node_id, target):
     if metadata(row):
         if metadata(row)["target_id"] != target["target_id"]:
             raise ValueError("Candidate collections refer to different targets.")
+        _attach_campaign_evidence(row)
         return row
     raw = row.setdefault("raw_metadata", {})
     invocation = raw.get("candidate_execution", {})
@@ -164,6 +265,7 @@ def source_record(row, source, node_id, target):
         native_filter=native_filter(row), sequence_state=sequence_state(row),
         native_measurements=copy.deepcopy(row.get("metrics", {})),
         artifacts=artifact_evidence(row), source_provenance=origin or source.get("source_provenance", {}))
+    _attach_campaign_evidence(row)
     if (source.get("review_candidates_jsonl") or row.get("metrics", {}).get("candidate_pool_level")) and row.get("metrics", {}).get("candidate_pool_level") != "native_pipeline":
         raw["candidate_set"]["native_output_role"] = "intermediate"
     return row
@@ -270,6 +372,17 @@ def validate_settings(kind, params):
 def observation(row, field, output=None):
     from mn_molecular_design_studio.output_vocabulary import metric_value, candidate_output
     value = metric_value(row, field)
+    if value is None and str(field).startswith(("prediction/", "analysis/")):
+        parts = str(field).split("/")
+        if len(parts) not in {3, 4}:
+            raise ValueError("Use prediction/<branch>/<metric> or analysis/<branch>/<metric>, optionally naming a result ID.")
+        family, branch, *rest = parts
+        evidence_key = "predictions" if family == "prediction" else "analysis_results"
+        records = [item for item in metadata(row).get(evidence_key, [])
+                   if item.get("branch") == branch and item.get("status") == "completed"
+                   and (len(rest) == 1 or (item.get("prediction_id") or item.get("analysis_result_id")) == rest[0])]
+        if len(records) == 1:
+            value = (records[0].get("candidate") or {}).get("metrics", {}).get(rest[-1])
     if value is None:
         return dict(status="missing_evidence", value=None)
     output = candidate_output(row) if output is None else output
@@ -563,6 +676,24 @@ def analyze(parent, node_id, sources, params, expected_predictors):
                         raise ValueError("Conflicting sequences for one sequence variant identity.")
                     if not old or "shared_filter" in info:
                         db.execute("INSERT OR REPLACE INTO variants VALUES (?,?)", (info["variant_id"], json.dumps(row)))
+                    # Controller-run validation evidence is already a completed
+                    # prediction attached to the candidate. Make it available
+                    # to the same analyzer fan-in as graph prediction nodes.
+                    for evidence_key in ("predictions", "analysis_results"):
+                        for record in info.get(evidence_key, []):
+                            evidence_candidate = record.get("candidate")
+                            if not isinstance(evidence_candidate, dict):
+                                continue
+                            evidence_id = record.get("prediction_id") or record.get("analysis_result_id")
+                            if not evidence_id:
+                                continue
+                            prediction_payload = json.dumps(evidence_candidate, sort_keys=True)
+                            previous = db.execute("SELECT payload FROM predictions WHERE id=?", (evidence_id,)).fetchone()
+                            if previous and previous[0] != prediction_payload:
+                                raise ValueError("Conflicting attached controller evidence for one prediction identity.")
+                            db.execute("INSERT OR IGNORE INTO predictions VALUES (?,?,?,?)", (
+                                evidence_id, info["variant_id"], record.get("branch") or branch, prediction_payload,
+                            ))
         if db.execute("SELECT count(*) FROM predictions p LEFT JOIN variants v ON p.variant=v.id WHERE v.id IS NULL").fetchone()[0]:
             raise ValueError("Prediction has no matching sequence variant in the analyzer inputs.")
         db.execute("CREATE INDEX prediction_variants ON predictions(variant)")

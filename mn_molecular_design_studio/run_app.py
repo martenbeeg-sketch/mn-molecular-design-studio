@@ -8046,7 +8046,7 @@ def _render_job_details() -> None:
             if any((row.get("raw_metadata") or {}).get(key) for row in result_candidates for key in ("measurement_status", "selection", "source_candidate", "candidate_set")):
                 from mn_molecular_design_studio.result_presentation import candidate_state_rows
                 with st.expander("Candidate measurement and selection outcomes", expanded=True):
-                    st.caption("Computational completion, measurement validity and selection are separate outcomes. Selection refers to downstream evaluation; it does not establish experimental activity.")
+                    st.caption("Campaign acceptance is shown separately from ranking. Selection refers to an explicit downstream shortlist; none of these computational outcomes establishes experimental activity.")
                     st.dataframe(candidate_state_rows(result_candidates[:10000]), hide_index=True, use_container_width=True)
                     from mn_molecular_design_studio.output_vocabulary import evidence_rows
                     if st.checkbox("Show measurements with their source stages", key=f"job-evidence-{run_id}"):

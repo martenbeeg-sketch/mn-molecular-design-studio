@@ -885,6 +885,16 @@ def test_controller_continues_generation_after_validated_candidate_is_rejected(
     by_id = {row["candidate_id"]: row for row in rows}
     assert by_id[rejected["candidate_id"]]["raw_metadata"]["distributed_campaign"]["validated_acceptance"] == "rejected"
     assert by_id[accepted["candidate_id"]]["raw_metadata"]["distributed_campaign"]["validated_acceptance"] == "accepted"
+    for row in (by_id[rejected["candidate_id"]], by_id[accepted["candidate_id"]]):
+        evidence = row["raw_metadata"]["evidence_candidates"][0]
+        validation = evidence["raw_metadata"]["distributed_campaign_validation"]
+        assert validation == {
+            "campaign_id": state["campaign_id"],
+            "attempt_id": row["raw_metadata"]["distributed_campaign"]["attempt_id"],
+            "stage_index": 0,
+            "workflow": "refolding.optimized_prediction",
+            "status": "completed",
+        }
 
 
 def test_late_validation_recovery_promotes_budget_reason_after_target_is_met(

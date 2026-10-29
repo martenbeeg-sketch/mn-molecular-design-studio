@@ -2900,6 +2900,13 @@ def _drive_validation(
                         evidence = _validation_evidence_row(
                             run_dir, candidate_id, str(native.get("binder_sequence") or ""),
                         )
+                        evidence.setdefault("raw_metadata", {})["distributed_campaign_validation"] = {
+                            "campaign_id": state["campaign_id"],
+                            "attempt_id": ledger_candidate.get("attempt_id"),
+                            "stage_index": stage_index,
+                            "workflow": stage_config.get("workflow"),
+                            "status": "completed",
+                        }
                         selection = _stage_selectors(native, evidence, stage_config)
                         status = "accepted" if selection.get("status") == "pass" else (
                             "failed" if selection.get("status") in {"missing", "failed"}

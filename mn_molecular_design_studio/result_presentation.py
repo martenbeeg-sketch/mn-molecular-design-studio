@@ -20,6 +20,15 @@ def candidate_state_rows(candidates):
                      "Selection reasons": "; ".join(selection.get("reasons") or []),
                      "Sequence": candidate.get("binder_sequence"), "Structure": candidate.get("complex_pdb"),
                      "Parents": ", ".join(candidate.get("parents") or [])})
+        from mn_molecular_design_studio.candidate_sets import _campaign_acceptance
+        campaign = _campaign_acceptance(candidate)
+        if campaign:
+            rows[-1].update({
+                "Campaign acceptance": campaign["status"],
+                "Campaign acceptance level": campaign["acceptance_level"],
+                "Campaign decision": campaign["reason"],
+                "Campaign attempt": campaign["attempt_id"],
+            })
         collection = (candidate.get('raw_metadata') or {}).get('candidate_set')
         if collection:
             native_execution = (candidate.get('raw_metadata') or {}).get('distributed_campaign', {})
