@@ -60,7 +60,7 @@ def render_campaign_config_editor(
 
     existing = current if isinstance(current, dict) else {}
     enabled = st.checkbox(
-        "Use distributed acceptance campaign",
+        "Use distributed campaign",
         value=bool(existing.get("enabled", current is not None)),
         key=key + "-enabled",
         help="One controller tracks the global accepted target and attempt budget across eligible workers.",
@@ -73,23 +73,46 @@ def render_campaign_config_editor(
 
     capability = generator_capabilities(generator_id)
     default_level = "validated" if not capability.native_acceptance_available else "native"
+    objective_options = ["accepted", "generated"]
+    current_objective = str(existing.get("objective_type") or "accepted")
+    if current_objective not in objective_options:
+        current_objective = "accepted"
+    objective_type = st.selectbox(
+        "Campaign objective", objective_options, index=objective_options.index(current_objective),
+        format_func={"accepted": "Unique candidates passing criteria", "generated": "Generated designs"}.get,
+        key=key + "-objective-type",
+    )
     accepted_target = int(st.number_input(
-        "Global accepted target", min_value=1, value=int(existing.get("accepted_target") or 1),
+        "Target designs" if objective_type == "generated" else "Target unique passing designs",
+        min_value=1, value=int(existing.get("accepted_target") or 1),
         step=1, key=key + "-accepted-target",
     ))
     max_attempts = int(st.number_input(
         "Global maximum native attempts", min_value=1, value=int(existing.get("max_attempts") or max(2, accepted_target)),
         step=1, key=key + "-max-attempts",
     ))
+    budget_left, budget_right = st.columns(2)
+    runtime_seconds = float(budget_left.number_input(
+        "Maximum elapsed seconds (0 = no limit)", min_value=0.0,
+        value=float(existing.get("max_runtime_seconds") or 0), key=key + "-runtime-budget",
+    ))
+    compute_seconds = float(budget_right.number_input(
+        "Maximum GPU seconds (0 = no limit)", min_value=0.0,
+        value=float(existing.get("max_compute_seconds") or 0), key=key + "-compute-budget",
+    ))
     policy_options = list(capability.supported_stopping_policies)
     current_level = str(existing.get("acceptance_level") or default_level)
     if current_level not in policy_options:
         current_level = default_level
-    acceptance_level = st.selectbox(
-        "Scientific acceptance policy", policy_options,
-        index=policy_options.index(current_level), key=key + "-acceptance-level",
-        help="Validated acceptance requires explicit valid measurements or scientific rules. RFD4 has no authoritative native acceptance flag.",
-    )
+    if objective_type == "accepted":
+        acceptance_level = st.selectbox(
+            "Scientific acceptance policy", policy_options,
+            index=policy_options.index(current_level), key=key + "-acceptance-level",
+            help="Validated acceptance requires explicit valid measurements or scientific rules. RFD4 has no authoritative native acceptance flag.",
+        )
+    else:
+        acceptance_level = current_level
+        st.caption("Generated designs are counted from recorded candidate outputs, independent of native or comparative acceptance.")
 
     left, right = st.columns(2)
     controller_batch_size = int(left.number_input(
@@ -126,30 +149,35 @@ def render_campaign_config_editor(
 
     stages = existing.get("validation_stages")
     stages = stages if isinstance(stages, list) else []
-    if acceptance_level != "native" or not capability.native_acceptance_available:
+    if objective_type == "generated":
+        stages = []
+    if objective_type == "accepted" and (acceptance_level != "native" or not capability.native_acceptance_available):
         if not stages:
             stages = _default_validation_stages()
         stages, stage_error = _json_editor(
             st, "Validation stages (JSON)", stages, key=key + "-validation-stages", height=260,
         )
         st.caption("The default retained-evidence example accepts finite, valid iPTM, pTM and mean pLDDT measurements; it sets no score cutoffs. Add explicit rules here when the campaign needs score thresholds.")
+        st.caption("Each stage may set match to all or any for its threshold rules, and missing_data to reject, unresolved or ignore. Required metrics remain prerequisites. Different stages must all pass.")
     else:
         stage_error = None
 
-    diversity = existing.get("diversity") if isinstance(existing.get("diversity"), dict) else {}
-    if acceptance_level == "diversity_qualified":
+    diversity = existing.get("diversity") if isinstance(existing.get("diversity"), dict) and objective_type == "accepted" else {}
+    if objective_type == "accepted" and acceptance_level == "diversity_qualified":
         diversity, diversity_error = _json_editor(
             st, "Diversity rules (JSON)", diversity, key=key + "-diversity", height=130,
         )
         st.caption("An empty diversity object uses the controller defaults: exact-sequence deduplication and one candidate per diversity cluster.")
     else:
         diversity_error = None
-    if acceptance_level == "native":
+    if objective_type == "accepted" and acceptance_level == "native":
         st.caption("Global stopping counts the generator's authoritative native acceptance decisions. Prediction measurements remain separate evidence.")
 
     config = {
         "enabled": True,
         "generator_id": generator_id,
+        "objective_type": objective_type,
+        "unique_accepted": objective_type == "accepted",
         "accepted_target": accepted_target,
         "max_attempts": max_attempts,
         "acceptance_level": acceptance_level,
@@ -162,6 +190,10 @@ def render_campaign_config_editor(
         "diversity": diversity,
         "seed": int(existing.get("seed", seed) or 0),
     }
+    if runtime_seconds:
+        config["max_runtime_seconds"] = runtime_seconds
+    if compute_seconds:
+        config["max_compute_seconds"] = compute_seconds
     ready = True
     for error in (stage_error, diversity_error):
         if error:
@@ -185,7 +217,7 @@ def render_campaign_config_editor(
     st.code(json.dumps(config, indent=2, sort_keys=True), language="json")
     if node_kind == "rfd4":
         st.caption("Distributed RFD4 children request one native design with dataloader batch size 1. Controller dispatch size changes only how the campaign groups separate execution jobs.")
-    with st.expander("Read-only native execution plan"):
+    with st.expander("Native execution plan"):
         from mn_molecular_design_studio.engine.workflow_engine.workflows.execution_planning import (
             PROPOSED_NATIVE_CHOICES, plan_campaign_execution,
         )

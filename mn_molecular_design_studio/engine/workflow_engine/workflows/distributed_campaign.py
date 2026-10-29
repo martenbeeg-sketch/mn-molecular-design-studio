@@ -97,6 +97,12 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
         native_attempts = config.pop("native_attempts_per_job")
         if type(native_attempts) is not int or native_attempts != 1:
             raise ValueError("native_attempts_per_job supports only 1 in current campaign adapters.")
+    objective_type = str(config.get("objective_type", "accepted")).strip().lower()
+    if objective_type not in {"generated", "accepted"}:
+        raise ValueError("objective_type must be generated or accepted.")
+    unique_accepted = config.get("unique_accepted", False)
+    if type(unique_accepted) is not bool:
+        raise ValueError("unique_accepted must be a boolean.")
     acceptance_level = str(config.get("acceptance_level", "native")).strip().lower()
     if acceptance_level not in {"native", "validated", "diversity_qualified"}:
         raise ValueError("acceptance_level must be native, validated, or diversity_qualified.")
@@ -172,6 +178,10 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
         rules = stage.get("rules", [])
         if not isinstance(rules, list):
             raise ValueError(f"validation_stages[{index - 1}].rules must be a list.")
+        if stage.get("match", "all") not in {"all", "any"}:
+            raise ValueError(f"validation_stages[{index - 1}].match must be all or any.")
+        if stage.get("missing_data", "reject") not in {"reject", "unresolved", "ignore"}:
+            raise ValueError(f"validation_stages[{index - 1}].missing_data must be reject, unresolved, or ignore.")
         for rule in rules:
             if (
                 not isinstance(rule, dict) or not str(rule.get("field") or "").strip()
@@ -204,11 +214,14 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
     )
 
     capability = generator_capabilities(generator_id)
-    validate_stopping_policy(
-        generator_id, acceptance_level, requirements,
-        has_validation_criteria=has_validation_criteria,
-    )
-    if acceptance_level == "validated" and (not requirements or not has_validation_criteria):
+    if objective_type == "accepted":
+        validate_stopping_policy(
+            generator_id, acceptance_level, requirements,
+            has_validation_criteria=has_validation_criteria,
+        )
+    elif not capability.campaign_adapter:
+        raise ValueError(f"{capability.label} has no verified distributed-campaign adapter.")
+    if objective_type == "accepted" and acceptance_level == "validated" and (not requirements or not has_validation_criteria):
         raise ValueError("Validated acceptance requires downstream stages with explicit measurements or scientific rules.")
     if capability.minimum_vram_gb is not None:
         requested_minimum = float(resources.get("min_vram_gb", 0))
@@ -245,6 +258,8 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
     return {
         **config,
         "generator_id": generator_id,
+        "objective_type": objective_type,
+        "unique_accepted": unique_accepted,
         "acceptance_level": acceptance_level,
         "max_attempts": maximum,
         "accepted_target": target,
@@ -263,15 +278,23 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _state_accepted_count(state: dict[str, Any]) -> int:
+    if state["config"].get("objective_type", "accepted") == "generated":
+        return len(state.get("candidates", {}))
     acceptance_field = {
         "native": "native_acceptance",
         "validated": "validated_acceptance",
         "diversity_qualified": "diversity_acceptance",
     }[state["config"]["acceptance_level"]]
-    return sum(
-        candidate.get(acceptance_field) == "accepted"
-        for candidate in state.get("candidates", {}).values()
-    )
+    candidates = [candidate for candidate in state.get("candidates", {}).values()
+                  if candidate.get(acceptance_field) == "accepted"]
+    if state["config"].get("unique_accepted", False):
+        sequences = {
+            "".join(str((candidate.get("candidate") or {}).get("binder_sequence") or "").split()).upper()
+            for candidate in candidates
+        }
+        sequences.discard("")
+        return len(sequences)
+    return len(candidates)
 
 
 class CampaignLedger(ExecutionJobLedgerMixin):
@@ -289,7 +312,7 @@ class CampaignLedger(ExecutionJobLedgerMixin):
         with _locked(ledger.path):
             if ledger.path.exists():
                 existing = _read(ledger.path)
-                if existing.get("config") != validated:
+                if validate_campaign_config(existing.get("config", {})) != validated:
                     raise ValueError("A campaign ledger already exists with different scientific settings.")
                 return ledger
             now = utc_now()
@@ -405,6 +428,7 @@ class CampaignLedger(ExecutionJobLedgerMixin):
             "attempts_authorized": len(attempts),
             "attempts_started": sum(bool(item.get("first_started_at")) for item in attempts),
             "attempts_completed": sum(item.get("status") == "completed" for item in attempts),
+            "generated_candidates": len(candidates),
             "native_rejected_trajectories": sum(
                 max(
                     0,
@@ -843,18 +867,19 @@ def _submit_rfd4_peer_attempt(
     attempt: dict[str, Any],
     child_run_dir: Path,
 ) -> dict[str, Any]:
-    """Submit or recover one idempotent remote RFD4 attempt for its local proxy run."""
+    """Submit or recover an idempotent generator attempt for its local proxy run."""
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json
     from mn_molecular_design_studio.cluster import candidate_batches
 
     parent_run_dir, child_run_dir = Path(parent_run_dir), Path(child_run_dir)
     state = ledger.snapshot()
     campaign_id = state["campaign_id"]
+    generator_id = str(state["config"].get("generator_id") or "bindcraft2")
     peer = dict(attempt.get("cluster_submission") or {})
     peer.setdefault("manifest", str(child_run_dir / "artifacts" / "distributed_campaign" / "peer_submission.json"))
     peer.setdefault("transfers", {})
     peer.setdefault("submission_key", hashlib.sha256(
-        f"{campaign_id}:{attempt['attempt_id']}:rfd4".encode()
+        f"{campaign_id}:{attempt['attempt_id']}:{'rfd4' if generator_id == 'rfd4_proteina' else 'bindcraft2'}".encode()
     ).hexdigest())
     owner_id, project_id, development_mode = _campaign_actor(parent_run_dir)
     child_payload = read_json(child_run_dir / "input.json")
@@ -864,6 +889,24 @@ def _submit_rfd4_peer_attempt(
     # local child input, but it is not part of the public RFD4 request schema.
     parameters.pop("task_group", None)
     parameters.pop("distributed_campaign", None)
+    if generator_id == "bindcraft2":
+        import inspect
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import enqueue_bindcraft2_design
+        allowed = set(inspect.signature(enqueue_bindcraft2_design).parameters)
+        parameters = {key: value for key, value in parameters.items() if key in allowed and key != "distributed_campaign"}
+        raw = child_run_dir / "artifacts" / "raw" / "bindcraft2"
+        target_name = Path(str(child_payload.get("params", {}).get("target_file") or "target.pdb")).name
+        target_key = "target_fasta" if target_name == "target.fasta" else "target_pdb"
+        parameters[target_key] = str(raw / target_name)
+        if (raw / "second_target.pdb").is_file():
+            parameters["second_target_pdb"] = str(raw / "second_target.pdb")
+        # Carry the exact bounded native settings, including original filters,
+        # rather than reconstructing them from the smaller UI projection.
+        native_settings = json.loads((raw / "settings.json").read_text())
+        derived = {"targets", "project_folder", "campaign_name", "number_of_final_designs",
+                   "max_trajectories", "campaign_seed", "workers_per_gpu", "resume", "trajectory_only"}
+        parameters["engine_overrides"] = {key: value for key, value in native_settings.items() if key not in derived}
+        parameters["trajectory_only"] = False
     metadata = read_json(child_run_dir / "metadata.json")
     resources = dict(metadata.get("resource_request") or {})
     # The scheduler's boolean GPU reservation marker is internal metadata;
@@ -875,7 +918,7 @@ def _submit_rfd4_peer_attempt(
     if placement == "eligible":
         excluded_nodes = set()
         for other_id, other_attempt in state.get("attempts", {}).items():
-            if other_id == attempt["attempt_id"]:
+            if other_id == attempt["attempt_id"] or other_attempt.get("status") not in {"authorized", "queued", "running"}:
                 continue
             other_peer = other_attempt.get("cluster_submission") or {}
             prepared = other_peer.get("prepared_envelope") or {}
@@ -888,7 +931,7 @@ def _submit_rfd4_peer_attempt(
         )
     request = {
         "schema_version": 1,
-        "workflow": "design.rfd4_proteina",
+        "workflow": "design.rfd4_proteina" if generator_id == "rfd4_proteina" else "design.bindcraft2",
         "parameters": parameters,
         "resources": resources,
     }
@@ -1062,6 +1105,60 @@ def _materialize_rfd4_peer_output(
         worker_node_id=remote_job.get("node_id"), resource_allocation=allocation,
         remote_completed_at=remote_metadata.get("completed_at"),
     )
+    return True
+
+
+def _materialize_bindcraft2_peer_output(parent_run_dir, ledger, attempt, child_run_dir, peer, output, remote_job):
+    """Collect the authoritative native state and verified candidate artifacts."""
+    import shutil
+    from mn_molecular_design_studio.cluster import candidate_batches
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json
+
+    owner_id, project_id, development_mode = _campaign_actor(parent_run_dir)
+    collected = Path(peer["manifest"]).with_suffix(".collected")
+    user = candidate_batches.actor(owner_id, project_id, allow_development=development_mode)
+    relative = "artifacts/raw/bindcraft2/output/.campaign_state.json"
+    state_path = candidate_batches._artifact(peer, str(peer["cluster_job_id"]), relative, user, collected)
+    ledger.transition(attempt["attempt_id"], "running", cluster_submission=peer,
+                      child_run_dir=str(child_run_dir), worker_node_id=remote_job.get("node_id"))
+    if state_path is None:
+        return False
+    remote_metadata = read_json(collected / "metadata.json")
+    remote_result = read_json(collected / "result.json")
+    if remote_metadata.get("status") != "completed" or remote_result.get("success") is not True:
+        raise RuntimeError("Remote BindCraft2 completion disagrees with its transferred result.")
+    shutil.copytree(collected / "artifacts", child_run_dir / "artifacts", dirs_exist_ok=True)
+    rows_path = Path(output["candidates_jsonl"])
+    if not rows_path.is_file():
+        raise RuntimeError("Remote BindCraft2 completed without normalized candidates.")
+
+    def rebase(value):
+        if isinstance(value, dict):
+            return {key: rebase(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [rebase(item) for item in value]
+        if isinstance(value, str) and (value == str(collected) or value.startswith(str(collected) + os.sep)):
+            return str(child_run_dir) + value[len(str(collected)):]
+        return value
+
+    rows = [rebase(json.loads(line)) for line in rows_path.read_text().splitlines() if line.strip()]
+    normalized = child_run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+    normalized.parent.mkdir(parents=True, exist_ok=True)
+    normalized.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows))
+    write_json(child_run_dir / "result.json", remote_result)
+    if (collected / "native_execution.json").is_file():
+        shutil.copy2(collected / "native_execution.json", child_run_dir / "native_execution.json")
+    metadata = read_json(child_run_dir / "metadata.json")
+    allocation = remote_metadata.get("resource_allocation") or {}
+    metadata.update(status="completed", cluster_job_id=peer["cluster_job_id"],
+                    execution_node_id=remote_job.get("node_id"),
+                    scheduler_worker_id=remote_metadata.get("scheduler_worker_id") or remote_job.get("node_id"),
+                    resource_allocation=allocation, completed_at=remote_metadata.get("completed_at"),
+                    worker_started_at=remote_metadata.get("worker_started_at") or allocation.get("allocated_at"),
+                    remote_execution_node_id=remote_job.get("node_id"), remote_status="completed")
+    write_json(child_run_dir / "metadata.json", metadata)
+    ledger.transition(attempt["attempt_id"], "running", cluster_submission=peer,
+                      worker_node_id=remote_job.get("node_id"), resource_allocation=allocation)
     return True
 
 
@@ -1618,7 +1715,10 @@ def _create_attempt_child(
         attempt["attempt_id"], "queued", child_run_dir=str(child_run_dir),
         native_campaign_seed=int(attempt["seed"]), trajectory_index=1,
     )
-    spawn_worker_for_run(child_run_dir)
+    if _peer_campaign_mode(config):
+        _submit_rfd4_peer_attempt(parent_run_dir, ledger, attempt, child_run_dir)
+    else:
+        spawn_worker_for_run(child_run_dir)
     return child_run_dir
 
 
@@ -1698,7 +1798,10 @@ def _repair_attempt_child(
             },
         )
     if metadata.get("status") == "queued" and not metadata.get("scheduler_dispatch_requested"):
-        spawn_worker_for_run(child_run_dir)
+        if _peer_campaign_mode(config):
+            _submit_rfd4_peer_attempt(parent_run_dir, CampaignLedger(_campaign_ledger_path(parent_run_dir)), attempt, child_run_dir)
+        else:
+            spawn_worker_for_run(child_run_dir)
 
 
 def _find_unlinked_children(ledger: CampaignLedger) -> dict[str, Path]:
@@ -1745,13 +1848,7 @@ def _attempt_child_paths(ledger: CampaignLedger) -> dict[str, Path]:
 
 
 def _accepted_count(ledger: CampaignLedger, config: dict[str, Any]) -> int:
-    counters = ledger.counters()
-    key = {
-        "native": "native_accepted_candidates",
-        "validated": "validated_accepted_candidates",
-        "diversity_qualified": "diversity_qualified_accepted_candidates",
-    }[config["acceptance_level"]]
-    return counters[key]
+    return _state_accepted_count(ledger.snapshot())
 
 
 def _rfd4_retry_safe(child_run_dir: Path) -> bool:
@@ -1840,8 +1937,7 @@ def _reconcile_attempts(
         attempt = ledger.snapshot()["attempts"].get(attempt_id, attempt)
         child_metadata = read_json(child / "metadata.json")
         if (
-            generator_id == "rfd4_proteina"
-            and attempt.get("status") not in {"completed", "failed", "interrupted", "cancelled", "not_started"}
+            attempt.get("status") not in {"completed", "failed", "interrupted", "cancelled", "not_started"}
             and (attempt.get("cluster_submission") or child_metadata.get("cluster_remote"))
         ):
             from mn_molecular_design_studio.cluster import candidate_batches
@@ -1888,7 +1984,8 @@ def _reconcile_attempts(
             )
             ledger.observe_worker_metadata(attempt_id, child_metadata)
             if peer_status == "completed" and peer_output is not None:
-                if not _materialize_rfd4_peer_output(
+                materialize = _materialize_rfd4_peer_output if generator_id == "rfd4_proteina" else _materialize_bindcraft2_peer_output
+                if not materialize(
                     parent_run_dir, ledger, attempt, child, peer, peer_output, peer_job,
                 ):
                     latest = ledger.snapshot()["attempts"][attempt_id]
@@ -2143,7 +2240,8 @@ def _parent_progress(
     validation_pending = _validation_pending_candidates(state, config)
     active_ids = [str(item.get("attempt_id") or "") for item in active]
     label = (
-        f"{capability.label} · {selected}/{config['accepted_target']} accepted · "
+        f"{capability.label} · {selected}/{config['accepted_target']} "
+        f"{'generated' if config.get('objective_type') == 'generated' else 'accepted'} · "
         f"{counters['attempts_started']}/{config['max_attempts']} attempts started · "
         f"{len(active_ids)} active"
     )
@@ -2153,11 +2251,13 @@ def _parent_progress(
         parent_run_dir,
         "running",
         current_phase=label,
-        current_engine=f"{capability.label} acceptance-driven campaign",
+        current_engine=f"{capability.label} objective-driven campaign",
         progress_label=label,
         campaign_progress={
             **counters,
             "accepted_target": config["accepted_target"],
+            "objective_type": config.get("objective_type", "accepted"),
+            "objective_count": selected,
             "acceptance_level": config["acceptance_level"],
             "attempts_remaining": attempts_remaining,
             "generation_budget_exhausted": bool(state.get("generation_budget_exhausted")),
@@ -2389,7 +2489,7 @@ def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: l
     if target_met and state.get("termination_reason") == "budget_exhausted":
         state = ledger.terminate(
             "target_reached",
-            detail=f"Reached {accepted} {state['config']['acceptance_level']} accepted candidates.",
+            detail=f"Reached {accepted} {'generated' if state['config'].get('objective_type') == 'generated' else 'accepted'} candidates.",
         )
     _sync_parent_results(parent_run_dir, ledger, _attempt_child_paths(ledger), candidates)
     state = ledger.snapshot()
@@ -2410,6 +2510,8 @@ def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: l
             **counters,
             "generator_id": state["config"].get("generator_id") or "bindcraft2",
             "accepted_target": state["config"]["accepted_target"],
+            "objective_type": state["config"].get("objective_type", "accepted"),
+            "objective_count": accepted,
             "acceptance_level": state["config"]["acceptance_level"],
             "campaign_success": target_met,
             "generation_budget_exhausted": generation_budget_exhausted,
@@ -2655,6 +2757,42 @@ def _stage_selectors(candidate: dict[str, Any], stage_output: dict[str, Any], st
         rule["field"] = field if field.startswith("evidence/") else f"evidence/{stage_name}/{tool}/{output_id}/{field}"
     if not selectors and not rules:
         return {"status": "pass", "selected": False, "reasons": [], "measurements": {}, "policy": {}}
+    match = stage_config.get("match", "all")
+    missing_data = stage_config.get("missing_data", "reject")
+    if match != "all" or missing_data != "reject":
+        conditions = ([{"required_metrics": [selector]} for selector in selectors]
+                      + [{"rules": [rule]} for rule in rules])
+        decisions = [evaluate_selection([stage_output], condition)[0]["raw_metadata"]["selection"]
+                     for condition in conditions]
+        required_statuses = [decision["status"] for decision in decisions[:len(selectors)]]
+        rule_statuses = [decision["status"] for decision in decisions[len(selectors):]]
+        missing = {"missing", "failed"}
+        missing_required = any(value in missing for value in required_statuses)
+        available = [value for value in rule_statuses if value not in missing]
+        if missing_required and missing_data != "ignore":
+            status = "missing" if missing_data == "unresolved" else "reject"
+        elif not rule_statuses:
+            status = "pass" if "pass" in required_statuses else "missing"
+        elif match == "any" and "pass" in rule_statuses:
+            status = "pass"
+        elif match == "all" and "reject" in rule_statuses:
+            status = "reject"
+        elif any(value in missing for value in rule_statuses) and missing_data != "ignore":
+            status = "missing" if missing_data == "unresolved" else "reject"
+        elif not available:
+            status = "missing"
+        elif match == "any":
+            status = "reject"
+        else:
+            status = "pass"
+        return {
+            "status": status, "selected": False,
+            "reasons": [reason for decision in decisions for reason in decision["reasons"]],
+            "measurements": {key: value for decision in decisions for key, value in decision["measurements"].items()},
+            "policy": {"match": match, "missing_data": missing_data,
+                       "required_metrics": selectors, "rules": rules},
+            "condition_decisions": decisions,
+        }
     selection = evaluate_selection(
         [stage_output],
         {"required_metrics": selectors, "rules": rules},
@@ -2699,7 +2837,7 @@ def _drive_validation(
     dispatch: bool = True,
 ) -> list[dict[str, Any]]:
     if not config.get("validation_stages"):
-        if config["acceptance_level"] == "validated":
+        if config.get("objective_type", "accepted") == "accepted" and config["acceptance_level"] == "validated":
             raise ValueError("Validated acceptance has no configured downstream validation stage.")
         return candidates
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
@@ -2745,7 +2883,10 @@ def _drive_validation(
                             run_dir, candidate_id, str(native.get("binder_sequence") or ""),
                         )
                         selection = _stage_selectors(native, evidence, stage_config)
-                        status = "accepted" if selection.get("status") == "pass" else "rejected"
+                        status = "accepted" if selection.get("status") == "pass" else (
+                            "failed" if selection.get("status") in {"missing", "failed"}
+                            and stage_config.get("missing_data") == "unresolved" else "rejected"
+                        )
                         stage_result.update(
                             status="completed", run_dir=str(run_dir), output_candidate_id=evidence["candidate_id"],
                             evidence_candidate=evidence, selection=selection,
@@ -2766,10 +2907,10 @@ def _drive_validation(
                             validation_stages=stage_results,
                             validation_evidence=evidence_rows,
                         )
-                        if status == "rejected":
+                        if status in {"rejected", "failed"}:
                             failed_stage = True
                             ledger.set_candidate_acceptance(
-                                candidate_id, validated="rejected",
+                                candidate_id, validated=status,
                                 reason="; ".join(selection.get("reasons") or ["Validation criteria did not pass."]),
                             )
                             ledger.update_candidate(
@@ -3176,7 +3317,7 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
             compute_spent = _campaign_compute_seconds(ledger, children, active)
             compute_exhausted = compute_budget is not None and compute_spent >= float(compute_budget)
             if target_reached:
-                _cancel_queued_attempts(ledger, children, "Global accepted-design target reached")
+                _cancel_queued_attempts(ledger, children, "Global campaign objective reached")
                 children, active, candidates = _reconcile_attempts(ledger, parent_run_dir, config)
                 _sync_parent_results(parent_run_dir, ledger, children, candidates)
                 candidates = _drive_validation(parent_run_dir, ledger, candidates, config)
@@ -3189,7 +3330,7 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
                 pending_validation = _validation_pending_candidates(ledger.snapshot(), config)
                 selected = _accepted_count(ledger, config)
                 if not active and not pending_validation and selected >= int(config["accepted_target"]):
-                    ledger.terminate("target_reached", detail=f"Reached {selected} {config['acceptance_level']} accepted candidates.")
+                    ledger.terminate("target_reached", detail=f"Reached {selected} {'generated' if config.get('objective_type') == 'generated' else 'accepted'} candidates.")
                     return _finish_campaign(parent_run_dir, ledger, candidates)
             elif runtime_exhausted or compute_exhausted:
                 _cancel_queued_attempts(
@@ -3235,7 +3376,7 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
                     pending_validation = _validation_pending_candidates(state, config)
                     selected = _accepted_count(ledger, config)
                     if not pending_validation and selected < int(config["accepted_target"]):
-                        ledger.terminate("budget_exhausted", detail=f"Attempt budget exhausted at {selected}/{config['accepted_target']} accepted.")
+                        ledger.terminate("budget_exhausted", detail=f"Attempt budget exhausted at {selected}/{config['accepted_target']} {'generated' if config.get('objective_type') == 'generated' else 'accepted'}.")
                         _, _, candidates = _reconcile_attempts(ledger, parent_run_dir, config)
                         _sync_parent_results(parent_run_dir, ledger, _attempt_child_paths(ledger), candidates)
                         return _finish_campaign(parent_run_dir, ledger, candidates)

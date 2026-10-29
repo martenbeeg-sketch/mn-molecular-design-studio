@@ -328,6 +328,19 @@ def campaign_context_for_job(
         dispatch_capacity = dispatch_batch * concurrent_batches
 
     native_batch_size, native_source_run_id = _native_batch_size(current_dir, input_payload, candidates_raw, ledger_root)
+    objective_type = str(config.get("objective_type") or "accepted")
+    if objective_type == "generated":
+        objective_count = len(candidates_raw)
+    elif config.get("unique_accepted"):
+        field = f"{acceptance_level}_acceptance"
+        unique_sequences = {
+            "".join(str((record.get("candidate") or {}).get("binder_sequence") or "").split()).upper()
+            for record in candidates_raw.values() if isinstance(record, dict) and record.get(field) == "accepted"
+        }
+        unique_sequences.discard("")
+        objective_count = len(unique_sequences)
+    else:
+        objective_count = accepted_count
     validation_only = bool(source_campaign_ids) or any(
         "retained" in str(
             (attempt.get("native_state") if isinstance(attempt.get("native_state"), dict) else {}).get("attempt_unit") or ""
@@ -341,6 +354,8 @@ def campaign_context_for_job(
         "status": str(ledger.get("status") or "unknown"),
         "termination_reason": str(ledger.get("termination_reason") or ""),
         "accepted_target": accepted_target,
+        "objective_type": objective_type,
+        "objective_count": objective_count,
         "attempt_budget": attempt_budget,
         "attempts_authorized": len(attempts_raw),
         "attempts_completed": attempts_completed,
@@ -395,14 +410,15 @@ def render_campaign_context(st: Any, context: dict[str, Any] | None) -> None:
         accepted_target = context.get("accepted_target")
         attempt_budget = context.get("attempt_budget")
         if isinstance(accepted_target, int) and accepted_target > 0:
-            accepted = int(context.get("accepted_count") or 0)
+            accepted = int(context.get("objective_count", context.get("accepted_count")) or 0)
             attempt_text = ""
             if isinstance(attempt_budget, int) and attempt_budget > 0:
                 attempt_text = (
                     f" · {context.get('attempts_completed', 0)}/{attempt_budget} attempts completed"
                     f" · {context.get('active_attempts', 0)} active"
                 )
-            label = f"Global acceptance progress: {accepted}/{accepted_target}{attempt_text}"
+            objective_label = "generation" if context.get("objective_type") == "generated" else "acceptance"
+            label = f"Global {objective_label} progress: {accepted}/{accepted_target}{attempt_text}"
             if kind == "Validation-only follow-up":
                 label = "Validation-only · retained candidates · " + label
             st.caption(label)

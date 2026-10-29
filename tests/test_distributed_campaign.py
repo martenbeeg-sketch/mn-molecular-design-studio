@@ -1371,3 +1371,188 @@ def test_controller_waits_for_newly_dispatched_child_before_budget_exhaustion(
     assert CampaignLedger(parent / "artifacts/distributed_campaign/ledger.json").counters()[
         "native_rejected_trajectories"
     ] == 1
+
+
+def test_generated_objective_allows_rfd4_without_claiming_native_acceptance():
+    config = distributed_campaign.validate_campaign_config({
+        'generator_id': 'rfd4_proteina', 'objective_type': 'generated',
+        'accepted_target': 1000, 'max_attempts': 1100,
+    })
+    assert config['objective_type'] == 'generated'
+    assert config['validation_stages'] == []
+    assert config['accepted_target'] == 1000
+
+
+def test_large_objectives_count_generated_outputs_and_unique_accepted_sequences():
+    candidates = {
+        str(i): {'native_acceptance': 'accepted', 'candidate': {'binder_sequence': f'SEQ{i // 2}'}}
+        for i in range(2000)
+    }
+    candidates['missing'] = {'native_acceptance': 'accepted', 'candidate': {}}
+    state = {'config': {'objective_type': 'generated', 'acceptance_level': 'native'}, 'candidates': candidates}
+    assert distributed_campaign._state_accepted_count(state) == 2001
+    state['config'].update(objective_type='accepted', unique_accepted=True)
+    assert distributed_campaign._state_accepted_count(state) == 1000
+    candidates['0']['native_acceptance'] = 'rejected'
+    assert distributed_campaign._state_accepted_count(state) == 1000
+    candidates['1']['native_acceptance'] = 'rejected'
+    assert distributed_campaign._state_accepted_count(state) == 999
+
+
+def test_generated_controller_stops_on_actual_outputs_without_native_acceptance(tmp_path, monkeypatch, design_source_factory):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    config = {
+        'objective_type': 'generated', 'accepted_target': 2, 'max_attempts': 4,
+        'acceptance_level': 'native', 'batch_size': 1, 'max_concurrent_batches': 2,
+        'poll_interval_seconds': 0.25, 'max_retries': 0, 'seed': 21,
+    }
+    root, parent = _parent_run(tmp_path, monkeypatch, config)
+    made = _controlled_workers(monkeypatch, root, design_source_factory, accepted=set())
+    _mock_finish(monkeypatch)
+    distributed_campaign.run_bindcraft2_distributed_campaign(parent)
+    result = jobs.read_json(parent / 'result.json')
+    assert result['metrics']['termination_reason'] == 'target_reached'
+    assert result['metrics']['objective_type'] == 'generated'
+    assert result['metrics']['objective_count'] == 2
+    assert result['metrics']['generated_candidates'] == 2
+    assert result['metrics']['native_accepted_candidates'] == 0
+    assert len(made) == 2
+
+
+def test_existing_ledger_without_objective_fields_remains_resumable(tmp_path):
+    path = tmp_path / 'campaign.json'
+    config = {'accepted_target': 1, 'max_attempts': 1}
+    CampaignLedger.create(path, config, campaign_id='legacy')
+    state = json.loads(path.read_text())
+    state['config'].pop('objective_type')
+    state['config'].pop('unique_accepted')
+    path.write_text(json.dumps(state))
+    assert CampaignLedger.create(path, config).snapshot()['campaign_id'] == 'legacy'
+
+
+def test_validation_boolean_policy_records_each_rule_and_missing_data():
+    source = {'candidate_id': 'source', 'stage': 'generation.backbone_sequence',
+              'source_tool': 'rfd4_proteina', 'binder_sequence': 'ACDE', 'metrics': {}}
+    prediction = {'candidate_id': 'prediction', 'stage': 'complex_refolding',
+                  'source_tool': 'optimized_prediction_boltz2', 'binder_sequence': 'ACDE',
+                  'parents': ['source'], 'metrics': {'iptm': 0.4, 'ptm': 0.6},
+                  'raw_metadata': {'source_candidate': source, 'measurement_status': {'status': 'measured'},
+                                   'prediction_protocol': {'engine': 'boltz2'},
+                                   'identity_check': {'sequence_chain_identity': 'pass'}}}
+    rules = [{'field': 'iptm', 'operator': '>=', 'value': .7},
+             {'field': 'ptm', 'operator': '>=', 'value': .5}]
+    any_result = distributed_campaign._stage_selectors(source, prediction, {'match': 'any', 'rules': rules})
+    all_result = distributed_campaign._stage_selectors(source, prediction, {'match': 'all', 'rules': rules})
+    assert any_result['status'] == 'pass'
+    assert all_result['status'] == 'reject'
+    assert [item['status'] for item in any_result['condition_decisions']] == ['reject', 'pass']
+    required = {'match': 'any', 'required_metrics': ['plddt_mean'], 'rules': rules}
+    assert distributed_campaign._stage_selectors(source, prediction, required)['status'] == 'reject'
+    assert distributed_campaign._stage_selectors(source, prediction, {**required, 'missing_data': 'unresolved'})['status'] == 'missing'
+    assert distributed_campaign._stage_selectors(source, prediction, {**required, 'missing_data': 'ignore'})['status'] == 'pass'
+    no_data = {'match': 'any', 'missing_data': 'ignore', 'rules': [{'field': 'plddt_mean', 'operator': '>=', 'value': 70}]}
+    assert distributed_campaign._stage_selectors(source, prediction, no_data)['status'] == 'missing'
+
+
+def test_bindcraft_peer_submission_retains_full_native_settings_and_one_attempt(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.cluster import candidate_batches
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    parent = tmp_path / 'parent'; child = tmp_path / 'child'
+    raw = child / 'artifacts/raw/bindcraft2'; raw.mkdir(parents=True)
+    (raw / 'target.cif').write_text('data_target\n')
+    settings = {'targets': [{'target_path': 'target.cif', 'chains': 'A'}],
+                'max_trajectories': 1, 'number_of_final_designs': 1, 'campaign_seed': 19,
+                'trajectory_only': False, 'filters': {'i_pTM': {'threshold': .7, 'higher': True}},
+                'screen_steps': 50}
+    jobs.write_json(raw / 'settings.json', settings)
+    jobs.write_json(parent / 'metadata.json', {'studio_owner_id': 'owner', 'studio_project_id': 'project'})
+    jobs.write_json(child / 'input.json', {'params': {'target_file': 'target.cif', 'target_chains': ['A'],
+                    'target_type': 'structure', 'binder_length': '60', 'campaign_seed': 19,
+                    'max_trajectories': 1, 'number_of_final_designs': 1, 'workers_per_gpu': 1}})
+    jobs.write_json(child / 'metadata.json', {'status': 'queued', 'resource_request': {'gpu': True, 'cpu_cores': 4}})
+    config = {'generator_id': 'bindcraft2', 'workstation_selection': 'eligible',
+              'accepted_target': 1, 'max_attempts': 2}
+    ledger = CampaignLedger.create(parent / 'ledger.json', config, campaign_id='peer-bindcraft')
+    completed = ledger.authorize(1, batch_id='previous')[0]
+    ledger.transition(completed['attempt_id'], 'queued', cluster_submission={'placement_node_id': 'old-node'})
+    ledger.record_receipt(completed['attempt_id'], 'previous-result', candidates=[],
+                          native_state={'trajectories': 1, 'accepted': 0, 'rejections': {}})
+    attempt = ledger.authorize(1, batch_id='batch')[0]
+    captured = {}
+    def submit(request, manifest, submission_key, placement, **kwargs):
+        captured.update(request=request, placement=placement, submission_key=submission_key)
+        kwargs['persist']()
+        return {'cluster_job_id': 'peer-job', 'node_id': 'peer-node'}
+    monkeypatch.setattr(candidate_batches, 'submit', submit)
+    peer = distributed_campaign._submit_rfd4_peer_attempt(parent, ledger, attempt, child)
+    parameters = captured['request']['parameters']
+    assert captured['request']['workflow'] == 'design.bindcraft2'
+    assert captured['placement']['placement'] == 'eligible'
+    assert 'old-node' not in captured['placement']['exclude_node_ids']
+    assert parameters['target_pdb'] == str(raw / 'target.cif')
+    assert parameters['trajectory_only'] is False
+    assert parameters['max_trajectories'] == 1
+    assert parameters['engine_overrides']['filters'] == settings['filters']
+    assert parameters['engine_overrides']['screen_steps'] == 50
+    assert 'targets' not in parameters['engine_overrides']
+    assert peer['cluster_job_id'] == 'peer-job'
+    assert ledger.snapshot()['attempts'][attempt['attempt_id']]['cluster_submission']['cluster_job_id'] == 'peer-job'
+
+
+def test_bindcraft_peer_collection_requires_authoritative_native_state(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.cluster import candidate_batches
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    parent = tmp_path / 'parent'; child = tmp_path / 'child'; child.mkdir()
+    jobs.write_json(parent / 'metadata.json', {'studio_owner_id': 'owner', 'studio_project_id': 'project'})
+    jobs.write_json(child / 'metadata.json', {'status': 'queued'})
+    ledger = CampaignLedger.create(parent / 'ledger.json', {'accepted_target': 1, 'max_attempts': 1}, campaign_id='peer')
+    attempt = ledger.authorize(1, batch_id='batch')[0]
+    ledger.transition(attempt['attempt_id'], 'queued', child_run_dir=str(child))
+    peer = {'manifest': str(tmp_path / 'transfer.json'), 'cluster_job_id': 'remote-job'}
+    collected = Path(peer['manifest']).with_suffix('.collected')
+    normalized = collected / 'artifacts/normalized_candidates/collected.jsonl'; normalized.parent.mkdir(parents=True)
+    normalized.write_text('')
+    jobs.write_json(collected / 'metadata.json', {'status': 'completed', 'resource_allocation': {'gpu_id': 0}})
+    jobs.write_json(collected / 'result.json', {'success': True})
+    native = collected / 'artifacts/raw/bindcraft2/output/.campaign_state.json'
+    jobs.write_json(native, {'trajectories': 1, 'accepted': 0, 'rejections': {'screen': 1}})
+    monkeypatch.setattr(candidate_batches, 'actor', lambda *_a, **_k: {'id': 'owner'})
+    monkeypatch.setattr(candidate_batches, '_artifact', lambda *_a, **_k: None)
+    assert not distributed_campaign._materialize_bindcraft2_peer_output(parent, ledger, attempt, child, peer, {'candidates_jsonl': str(normalized)}, {'node_id': 'remote'})
+    monkeypatch.setattr(candidate_batches, '_artifact', lambda *_a, **_k: native)
+    assert distributed_campaign._materialize_bindcraft2_peer_output(parent, ledger, attempt, child, peer, {'candidates_jsonl': str(normalized)}, {'node_id': 'remote'})
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import read_bindcraft2_campaign_state
+    assert read_bindcraft2_campaign_state(child)['trajectories'] == 1
+    assert read_bindcraft2_campaign_state(child)['accepted'] == 0
+    assert jobs.read_json(child / 'metadata.json')['execution_node_id'] == 'remote'
+
+
+def test_thousand_design_dispatch_stays_bounded_and_never_reuses_attempt_identity(tmp_path, monkeypatch):
+    class SimulatedLedger:
+        def __init__(self):
+            self.state = {'next_ordinal': 1, 'attempts': {}}
+        def assert_production_jobs(self):
+            pass
+        def snapshot(self):
+            return self.state
+        def authorize(self, requested, *, batch_id, **_kwargs):
+            assert requested == 1
+            ordinal = self.state['next_ordinal']
+            attempt = {'attempt_id': f'a{ordinal:04d}', 'ordinal': ordinal, 'seed': 10000 + ordinal, 'batch_id': batch_id}
+            self.state['attempts'][attempt['attempt_id']] = attempt
+            self.state['next_ordinal'] += 1
+            return [attempt]
+    ledger = SimulatedLedger()
+    launched = []
+    monkeypatch.setattr(distributed_campaign, '_create_attempt_child',
+                        lambda _parent, _ledger, attempt, _config: launched.append(attempt))
+    config = {'accepted_target': 1000, 'max_attempts': 1100, 'batch_size': 2, 'max_concurrent_batches': 2}
+    for completed in range(0, 1000, 4):
+        before = len(launched)
+        distributed_campaign._dispatch_attempts(tmp_path, ledger, config, active_count=0, accepted_count=completed)
+        assert len(launched) - before <= 4
+    assert len(launched) == 1000
+    assert len({a['attempt_id'] for a in launched}) == 1000
+    assert len({a['seed'] for a in launched}) == 1000
+    distributed_campaign._dispatch_attempts(tmp_path, ledger, config, active_count=0, accepted_count=1000)
+    assert len(launched) == 1000
