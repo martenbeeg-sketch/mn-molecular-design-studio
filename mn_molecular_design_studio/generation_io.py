@@ -16,11 +16,16 @@ def generated_candidates(run_dir, *, stage=None):
         'peptide_trap',
         'proteina_complexa_generator',
         'bindcraft2_generator',
+        'rfd4_proteina',
         'boltzgen_generator',
         *TOOLS.values(),
     }
+    campaign = params.get('distributed_campaign')
+    rfd4_campaign = (metadata.get('tool') == 'rfd4_proteina'
+                     and isinstance(campaign, dict) and campaign.get('enabled') is True)
     generator_mode = bool(
-        params.get('generator_only')
+        rfd4_campaign
+        or params.get('generator_only')
         or params.get('generator_only_tile')
         or params.get('trajectory_only')
         # Earlier Kejia jobs predate the shared generator flag.
@@ -34,6 +39,7 @@ def generated_candidates(run_dir, *, stage=None):
     return [c for c in read_candidates(run_dir)
             if c.get('stage') in ({stage} if stage else {'generation.backbone_sequence','generation.backbone'})
             and (c.get('metrics',{}).get('result_kind')=='generated'
+                 or rfd4_campaign and c.get('metrics',{}).get('result_kind') == 'sequence_structure_codesign'
                  or metadata.get('tool')=='kejia_idr' and c.get('metrics',{}).get('result_kind')=='generation_only')]
 
 
