@@ -149,6 +149,54 @@ def test_capability_selection_and_legacy_graphs():
     assert wm.native_ranking({'metrics': {'native_rank': 2}})['rank'] == 2
 
 
+@pytest.mark.parametrize(
+    ("mode", "kind", "generator_id", "acceptance_level", "stages"),
+    [
+        ("native_complete", "bindcraft2", "bindcraft2", "native", []),
+        ("native_comparative", "bindcraft2", "bindcraft2", "validated", [
+            {"workflow": "refolding.optimized_prediction", "parameters": {"engine": "boltz2"},
+             "required_metrics": ["iptm"]},
+            {"workflow": "analysis.ipsae", "required_metrics": ["ipsae"]},
+        ]),
+        ("modular_design", "rfd4", "rfd4_proteina", "validated", [
+            {"workflow": "refolding.optimized_prediction", "parameters": {"engine": "boltz2"},
+             "required_metrics": ["iptm"]},
+            {"workflow": "refolding.optimized_prediction", "parameters": {"engine": "protenix_v2"},
+             "required_metrics": ["iptm"]},
+        ]),
+    ],
+)
+def test_supported_campaign_objectives_flow_through_all_three_workflow_modes(
+    mode, kind, generator_id, acceptance_level, stages,
+):
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import validate_campaign_config
+
+    graph = cp.new_pipeline([kind], mode=mode)
+    generator = next(node for node in graph["nodes"] if node["id"] == "generator-0")
+    campaign = validate_campaign_config({
+        "generator_id": generator_id,
+        "objective_type": "accepted",
+        "accepted_target": 3,
+        "max_attempts": 7,
+        "max_concurrent_generation_jobs": 2,
+        "acceptance_level": acceptance_level,
+        "validation_stages": stages,
+    })
+    params = {**generator["data"]["params"], "distributed_campaign": campaign}
+    request = gp.node_request(
+        kind, params,
+        {"target": {"target_pdb": "/tmp/pdl1.pdb", "target_chains": ["A"]}},
+        "PD-L1 campaign",
+    )
+
+    configured = request["parameters"]["distributed_campaign"]
+    assert request["workflow"] == ("design.rfd4_proteina" if kind == "rfd4" else "design.bindcraft2")
+    assert configured["generator_id"] == generator_id
+    assert configured["accepted_target"] == 3 and configured["max_attempts"] == 7
+    assert configured["max_concurrent_generation_jobs"] == 2
+    assert configured["validation_stages"] == stages
+
+
 @pytest.mark.parametrize('mode', wm.MODES)
 def test_modes_through_setup_ui_and_results(pdl1_harness, mode):
     from streamlit.testing.v1 import AppTest

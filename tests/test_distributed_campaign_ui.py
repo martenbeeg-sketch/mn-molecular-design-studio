@@ -240,16 +240,14 @@ def test_rfd4_tile_campaign_controls_expose_independent_settings_before_submit()
     assert any(widget.label == "Target unique passing designs" for widget in app.number_input)
     assert any(widget.label == "Global maximum native attempts" for widget in app.number_input)
     assert any(widget.label == "Scientific acceptance policy" for widget in app.selectbox)
-    assert any(widget.label == "Controller dispatch batch size" for widget in app.number_input)
-    assert any(widget.label == "Concurrent generation batches" for widget in app.number_input)
+    assert any(widget.label == "Maximum concurrent generation jobs" for widget in app.number_input)
     assert any(widget.label == "Concurrent downstream validations" for widget in app.number_input)
     assert any(widget.label == "Worker workstation placement" for widget in app.selectbox)
     assert any("Effective campaign settings before submission" in item.value for item in app.markdown)
 
     app.number_input(key="tile-campaign-accepted-target").set_value(3)
     app.number_input(key="tile-campaign-max-attempts").set_value(7)
-    app.number_input(key="tile-campaign-controller-batch-size").set_value(1)
-    app.number_input(key="tile-campaign-generation-concurrency").set_value(2)
+    app.number_input(key="tile-campaign-generation-job-concurrency").set_value(2)
     app.number_input(key="tile-campaign-validation-concurrency").set_value(4)
     app.selectbox(key="tile-campaign-workstation-placement").set_value("eligible")
     app.run()
@@ -258,8 +256,9 @@ def test_rfd4_tile_campaign_controls_expose_independent_settings_before_submit()
     assert config["accepted_target"] == 3
     assert config["max_attempts"] == 7
     assert config["acceptance_level"] == "validated"
+    assert config["max_concurrent_generation_jobs"] == 2
     assert config["batch_size"] == 1
-    assert config["max_concurrent_batches"] == 2
+    assert config["max_concurrent_batches"] == 1
     assert config["max_concurrent_validations"] == 4
     assert config["workstation_selection"] == "eligible"
     assert config["seed"] == 17

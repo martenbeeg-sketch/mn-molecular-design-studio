@@ -246,12 +246,9 @@ def plan_campaign_execution(campaign, *, engine_id=None, native_attempts_per_job
         errors.append(f"Native rounding would request {physical} physical attempts against a global budget of {budget}.")
     legacy_batch = _positive(normalized.get("batch_size", normalized.get("dispatch_batch_size", 1)), "dispatch_batch_size")
     legacy_concurrency = _positive(normalized.get("max_concurrent_batches", 1), "max_concurrent_batches")
-    generation = legacy_batch * legacy_concurrency
-    if "max_concurrent_generation_jobs" in raw:
-        explicit = _positive(raw["max_concurrent_generation_jobs"], "max_concurrent_generation_jobs")
-        errors.append("max_concurrent_generation_jobs is a proposed API field; execution still uses the legacy dispatch product.")
-    else:
-        explicit = None
+    generation = _positive(normalized.get("max_concurrent_generation_jobs", legacy_batch * legacy_concurrency),
+                            "max_concurrent_generation_jobs")
+    explicit = generation if "max_concurrent_generation_jobs" in raw else None
     validations = _positive(normalized.get("max_concurrent_validations", 2), "max_concurrent_validations")
     generation_resources = deepcopy(normalized.get("resources", {}))
     if capability.campaign_adapter:
@@ -283,8 +280,7 @@ def plan_campaign_execution(campaign, *, engine_id=None, native_attempts_per_job
         "ordinary_native_count_example": describe_native_invocation(engine, attempts_per_input=designs_per_input,
                                                                     input_count=inputs, native_batch_size=batch),
         "execution": {"max_concurrent_generation_jobs": generation,
-                      "requested_proposed_generation_jobs": explicit,
-                      "generation_concurrency_source": "legacy batch_size * max_concurrent_batches",
+                      "generation_concurrency_source": "explicit max_concurrent_generation_jobs" if explicit is not None else "legacy batch_size * max_concurrent_batches",
                       "max_concurrent_validations": validations,
                       "gpus_per_generation_job": 1 if capability.campaign_adapter else None,
                       "generation_resources": generation_resources,

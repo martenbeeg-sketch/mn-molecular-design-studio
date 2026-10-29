@@ -117,11 +117,19 @@ def test_invalid_plan_shapes_raise_without_dispatch(kwargs):
         plan_campaign_execution({}, **kwargs)
 
 
-def test_proposed_concurrency_cannot_silently_override_execution():
+def test_explicit_generation_job_cap_overrides_legacy_dispatch_product():
     p = plan_campaign_execution({'batch_size':2,'max_concurrent_batches':3,'max_concurrent_generation_jobs':4})
-    assert p['execution']['max_concurrent_generation_jobs'] == 6
-    assert p['execution']['requested_proposed_generation_jobs'] == 4
-    assert p['supported_execution_plan'] is None
+    assert p['execution']['max_concurrent_generation_jobs'] == 4
+    assert p['execution']['generation_concurrency_source'] == 'explicit max_concurrent_generation_jobs'
+    assert p['supported_execution_plan'] is not None
+    assert validate_campaign_config({'batch_size':2,'max_concurrent_batches':3,
+                                     'max_concurrent_generation_jobs':4})['max_concurrent_generation_jobs'] == 4
+
+
+@pytest.mark.parametrize('value', [0, -1, True, 1.5])
+def test_invalid_generation_job_cap_is_rejected(value):
+    with pytest.raises(ValueError, match='max_concurrent_generation_jobs'):
+        validate_campaign_config({'max_concurrent_generation_jobs': value})
 
 
 def test_preview_controls_cannot_change_saved_campaign_or_dispatch():

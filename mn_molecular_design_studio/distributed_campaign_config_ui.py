@@ -114,17 +114,24 @@ def render_campaign_config_editor(
         acceptance_level = current_level
         st.caption("Generated designs are counted from recorded candidate outputs, independent of native or comparative acceptance.")
 
-    left, right = st.columns(2)
-    controller_batch_size = int(left.number_input(
-        "Controller dispatch batch size", min_value=1,
-        value=int(existing.get("batch_size") or 1), step=1,
-        key=key + "-controller-batch-size",
-        help="Legacy dispatch grouping. Each attempt currently launches a separate execution job and container.",
-    ))
-    max_concurrent_batches = int(right.number_input(
-        "Concurrent generation batches", min_value=1,
-        value=int(existing.get("max_concurrent_batches") or 1), step=1,
-        key=key + "-generation-concurrency",
+    try:
+        legacy_batch_size = max(1, int(existing.get("batch_size") or 1))
+    except (TypeError, ValueError):
+        legacy_batch_size = 1
+    try:
+        legacy_concurrent_batches = max(1, int(existing.get("max_concurrent_batches") or 1))
+    except (TypeError, ValueError):
+        legacy_concurrent_batches = 1
+    legacy_concurrency = legacy_batch_size * legacy_concurrent_batches
+    try:
+        generation_job_default = max(1, int(existing.get("max_concurrent_generation_jobs") or legacy_concurrency))
+    except (TypeError, ValueError):
+        generation_job_default = legacy_concurrency
+    max_concurrent_generation_jobs = int(st.number_input(
+        "Maximum concurrent generation jobs", min_value=1,
+        value=generation_job_default, step=1,
+        key=key + "-generation-job-concurrency",
+        help="Caps scheduler-owned one-attempt jobs across compatible workstations. Each attempt keeps its own seed, receipt and recovery record.",
     ))
     max_concurrent_validations = int(st.number_input(
         "Concurrent downstream validations", min_value=1,
@@ -181,8 +188,11 @@ def render_campaign_config_editor(
         "accepted_target": accepted_target,
         "max_attempts": max_attempts,
         "acceptance_level": acceptance_level,
-        "batch_size": controller_batch_size,
-        "max_concurrent_batches": max_concurrent_batches,
+        # Keep legacy dispatch grouping values intact for persisted configs;
+        # the explicit job cap now controls actual campaign parallelism.
+        "batch_size": legacy_batch_size,
+        "max_concurrent_batches": legacy_concurrent_batches,
+        "max_concurrent_generation_jobs": max_concurrent_generation_jobs,
         "max_concurrent_validations": max_concurrent_validations,
         "workstation_selection": workstation_selection,
         "gpu_selection": gpu_selection,
@@ -209,9 +219,9 @@ def render_campaign_config_editor(
     st.caption("Available GPUs are candidates for scheduling; allocated GPUs are selected only when each attempt or validation starts. Validation concurrency is independent of generation concurrency.")
     st.caption(
         f"Native attempts per execution job: 1 (the only verified campaign choice). "
-        f"Maximum concurrent generation jobs: {controller_batch_size * max_concurrent_batches}; "
+        f"Maximum concurrent generation jobs: {max_concurrent_generation_jobs}; "
         f"maximum concurrent validation jobs: {max_concurrent_validations}. "
-        "Generation capacity is the product of the two legacy dispatch controls, subject to the global target, attempt budget and available resources."
+        "Each generation job retains its own seed, native receipt and recovery state; actual placement remains subject to scheduler resource checks."
     )
     st.markdown("**Effective campaign settings before submission**")
     st.code(json.dumps(config, indent=2, sort_keys=True), language="json")

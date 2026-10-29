@@ -117,6 +117,9 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
     target = positive_int("accepted_target", 1)
     batch = positive_int("batch_size", 1)
     concurrency = positive_int("max_concurrent_batches", 1)
+    generation_jobs = positive_int(
+        "max_concurrent_generation_jobs", batch * concurrency,
+    )
     if target > maximum:
         raise ValueError("accepted_target cannot exceed max_attempts.")
     seed = config.get("seed", 0)
@@ -265,6 +268,7 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
         "accepted_target": target,
         "batch_size": batch,
         "max_concurrent_batches": concurrency,
+        "max_concurrent_generation_jobs": generation_jobs,
         "seed": seed,
         "validation_stages": requirements,
         "diversity": diversity,
@@ -2293,7 +2297,7 @@ def _dispatch_attempts(
 ) -> None:
     ledger.assert_production_jobs()
     state = ledger.snapshot()
-    max_concurrent = int(config["batch_size"]) * int(config["max_concurrent_batches"])
+    max_concurrent = int(config["max_concurrent_generation_jobs"])
     slots = max(0, max_concurrent - active_count)
     target_remaining = max(0, int(config["accepted_target"]) - accepted_count - active_count)
     authorized_remaining = max(0, int(config["max_attempts"]) - len(state["attempts"]))

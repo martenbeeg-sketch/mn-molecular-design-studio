@@ -801,6 +801,92 @@ def test_controller_can_stop_on_validated_global_acceptance(
     assert final_candidate["raw_metadata"]["evidence_candidates"][0]["candidate_id"] == "fake-prediction-1"
 
 
+def test_controller_continues_generation_after_validated_candidate_is_rejected(
+    tmp_path, monkeypatch, design_source_factory
+):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates, write_candidates
+    from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation
+
+    config = {
+        "accepted_target": 1,
+        "acceptance_level": "validated",
+        "max_attempts": 2,
+        "batch_size": 1,
+        "max_concurrent_batches": 1,
+        "validation_stages": [{
+            "workflow": "refolding.optimized_prediction",
+            "parameters": {"engine": "boltz2"},
+            "required_metrics": ["iptm"],
+            "rules": [{"field": "iptm", "operator": ">=", "value": 0.5}],
+        }],
+        "poll_interval_seconds": 0.25,
+        "max_retries": 0,
+        "seed": 104,
+    }
+    root, parent = _parent_run(tmp_path, monkeypatch, config)
+    made = _controlled_workers(monkeypatch, root, design_source_factory, accepted={1, 2})
+    _mock_finish(monkeypatch)
+    validation_attempts = []
+
+    def submit_validation(request_path):
+        request = json.loads(request_path.read_text())
+        source_id = request["parameters"]["tasks"][0]["source_candidate_id"]
+        source = next(
+            row for row in read_candidates(parent / "artifacts/normalized_candidates/candidates.jsonl")
+            if row["candidate_id"] == source_id
+        )
+        attempt_id = source["raw_metadata"]["distributed_campaign"]["attempt_id"]
+        validation_attempts.append(attempt_id)
+        ordinal = int(attempt_id.rsplit("a", 1)[1])
+        run_dir = root / "refolding-validation" / f"validation-{ordinal}"
+        run_dir.mkdir(parents=True)
+        jobs.write_json(run_dir / "metadata.json", {
+            "run_id": run_dir.name, "task_group": "refolding-validation",
+            "job_type": "complex_refolding", "tool": "optimized_prediction_boltz2",
+            "status": "completed", "resource_allocation": {"gpu_device": "none"},
+        })
+        prediction = {
+            "candidate_id": f"prediction-{ordinal}", "stage": "complex_refolding",
+            "source_tool": "optimized_prediction_boltz2", "binder_sequence": source["binder_sequence"],
+            "target_chains": source["target_chains"], "binder_chains": source["binder_chains"],
+            "complex_pdb": source["complex_pdb"], "parents": [source_id],
+            "metrics": {"iptm": 0.2 if ordinal == 1 else 0.8},
+            "raw_metadata": {
+                "source_candidate": source, "measurement_status": {"status": "measured"},
+                "prediction_protocol": {"engine": "boltz2", "num_recycles": 6},
+                "identity_check": {"sequence_chain_identity": "pass"},
+            },
+        }
+        write_candidates(run_dir, "optimized_prediction_boltz2", [prediction])
+        jobs.write_json(run_dir / "result.json", {"success": True})
+        return {"job": {"run_dir": str(run_dir)}}
+
+    monkeypatch.setattr(workflow_automation, "submit_workflow_request", submit_validation)
+    distributed_campaign.run_bindcraft2_distributed_campaign(parent)
+
+    result = jobs.read_json(parent / "result.json")
+    campaign = CampaignLedger(parent / "artifacts/distributed_campaign/ledger.json")
+    state = campaign.snapshot()
+    rows = read_candidates(parent / "artifacts/normalized_candidates/candidates.jsonl")
+    assert result["metrics"]["termination_reason"] == "target_reached"
+    assert result["metrics"]["validated_accepted_candidates"] == 1
+    assert result["metrics"]["attempts_authorized"] == 2
+    assert result["metrics"]["rejected_candidates"] == 1
+    assert len(made) == 2
+    assert validation_attempts == [made[0][0], made[1][0]]
+    candidates = state["candidates"]
+    rejected = next(candidate for candidate in candidates.values() if candidate["validated_acceptance"] == "rejected")
+    accepted = next(candidate for candidate in candidates.values() if candidate["validated_acceptance"] == "accepted")
+    assert rejected["validation_stages"]["0"]["selection"]["status"] == "reject"
+    assert rejected["validation_stages"]["0"]["evidence_candidate"]["metrics"]["iptm"] == 0.2
+    assert accepted["validation_stages"]["0"]["selection"]["status"] == "pass"
+    assert accepted["validation_stages"]["0"]["evidence_candidate"]["metrics"]["iptm"] == 0.8
+    by_id = {row["candidate_id"]: row for row in rows}
+    assert by_id[rejected["candidate_id"]]["raw_metadata"]["distributed_campaign"]["validated_acceptance"] == "rejected"
+    assert by_id[accepted["candidate_id"]]["raw_metadata"]["distributed_campaign"]["validated_acceptance"] == "accepted"
+
+
 def test_late_validation_recovery_promotes_budget_reason_after_target_is_met(
     tmp_path, monkeypatch, design_source_factory
 ):
@@ -1245,6 +1331,40 @@ def test_controller_reaches_one_global_target_and_keeps_unique_seed_and_gpu_line
     assert all(row["native_acceptance"] == "accepted" for row in campaign_lineage)
 
 
+def test_explicit_generation_job_cap_bounds_dispatched_attempts(tmp_path, monkeypatch):
+    config = {
+        "accepted_target": 6,
+        "max_attempts": 6,
+        "batch_size": 2,
+        "max_concurrent_batches": 3,
+        "max_concurrent_generation_jobs": 2,
+        "poll_interval_seconds": 0.25,
+        "max_retries": 0,
+    }
+    root, parent = _parent_run(tmp_path, monkeypatch, config)
+    normalized = distributed_campaign.validate_campaign_config(config)
+    campaign = CampaignLedger.create(
+        parent / "artifacts/distributed_campaign/ledger.json", normalized,
+    )
+    children = []
+
+    def create_child(_parent, ledger, attempt, _config):
+        child = root / "design" / f"capped-{attempt['ordinal']:08d}"
+        child.mkdir(parents=True)
+        ledger.transition(attempt["attempt_id"], "queued", child_run_dir=str(child))
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(distributed_campaign, "_create_attempt_child", create_child)
+    distributed_campaign._dispatch_attempts(
+        parent, campaign, normalized, active_count=0, accepted_count=0,
+    )
+
+    attempts = campaign.snapshot()["attempts"]
+    assert len(attempts) == len(children) == 2
+    assert {attempt["batch_id"] for attempt in attempts.values()} == {"b000001"}
+
+
 def test_controller_continues_after_native_rejections_then_reports_budget_exhausted(
     tmp_path, monkeypatch, design_source_factory
 ):
@@ -1554,7 +1674,10 @@ def test_thousand_design_dispatch_stays_bounded_and_never_reuses_attempt_identit
     launched = []
     monkeypatch.setattr(distributed_campaign, '_create_attempt_child',
                         lambda _parent, _ledger, attempt, _config: launched.append(attempt))
-    config = {'accepted_target': 1000, 'max_attempts': 1100, 'batch_size': 2, 'max_concurrent_batches': 2}
+    config = distributed_campaign.validate_campaign_config({
+        'accepted_target': 1000, 'max_attempts': 1100,
+        'batch_size': 2, 'max_concurrent_batches': 2,
+    })
     for completed in range(0, 1000, 4):
         before = len(launched)
         distributed_campaign._dispatch_attempts(tmp_path, ledger, config, active_count=0, accepted_count=completed)
