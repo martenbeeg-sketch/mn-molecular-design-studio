@@ -1071,26 +1071,30 @@ def _materialize_rfd4_peer_output(
         return result_path
 
     # These files are needed by the campaign's existing target/parameter
-    # identity checks. Candidate structures and normalized rows are fetched by
+    # identity checks. Start every transfer with a known path in the same poll
+    # so slow provenance downloads do not serialize behind request.json.
+    # Candidate structures and normalized rows are fetched by
     # candidate_batches.poll() from their own artifact references.
     request_relative = "artifacts/rfd4_proteina/request.json"
-    if artifact(request_relative) is None:
+    request_path = artifact(request_relative)
+    static_relatives = (
+        "artifacts/rfd4_proteina/native_command.json",
+        "artifacts/rfd4_proteina/effective_config.yaml",
+        "artifacts/rfd4_proteina/prepared_inputs.json",
+    )
+    static_paths = {relative: artifact(relative) for relative in static_relatives}
+    if request_path is None:
         return False
-    remote_request = read_json(collected / request_relative)
+    remote_request = read_json(request_path)
     target_value = remote_request.get("target_structure")
     if not target_value and isinstance(remote_request.get("parameters"), dict):
         target_value = remote_request["parameters"].get("target_structure")
     target_name = Path(str(target_value or "")).name
     if not target_name or target_name in {".", ".."}:
         raise RuntimeError("Remote RFD4 request is missing its staged target identity.")
-    for relative in (
-        f"artifacts/rfd4_proteina/input/{target_name}",
-        "artifacts/rfd4_proteina/native_command.json",
-        "artifacts/rfd4_proteina/effective_config.yaml",
-        "artifacts/rfd4_proteina/prepared_inputs.json",
-    ):
-        if artifact(relative) is None:
-            return False
+    target_path = artifact(f"artifacts/rfd4_proteina/input/{target_name}")
+    if target_path is None or any(path is None for path in static_paths.values()):
+        return False
 
     source_artifacts = collected / "artifacts"
     if not source_artifacts.is_dir():
@@ -1154,6 +1158,7 @@ def _materialize_rfd4_peer_output(
         remote_execution_node_id=remote_job.get("node_id"),
         remote_status="completed",
     )
+    local_metadata.pop("result_collection_pending", None)
     write_json(child_run_dir / "metadata.json", local_metadata)
     attempt_state = ledger.snapshot()["attempts"].get(attempt["attempt_id"], {})
     peer_state = dict(attempt_state.get("cluster_submission") or peer)
@@ -1216,6 +1221,7 @@ def _materialize_bindcraft2_peer_output(parent_run_dir, ledger, attempt, child_r
                     resource_allocation=allocation, completed_at=remote_metadata.get("completed_at"),
                     worker_started_at=remote_metadata.get("worker_started_at") or allocation.get("allocated_at"),
                     remote_execution_node_id=remote_job.get("node_id"), remote_status="completed")
+    metadata.pop("result_collection_pending", None)
     write_json(child_run_dir / "metadata.json", metadata)
     ledger.transition(attempt["attempt_id"], "running", cluster_submission=peer,
                       worker_node_id=remote_job.get("node_id"), resource_allocation=allocation)
@@ -1909,6 +1915,16 @@ def _accepted_count(ledger: CampaignLedger, config: dict[str, Any]) -> int:
     return _state_accepted_count(ledger.snapshot())
 
 
+def _collecting_attempt_count(active: list[dict[str, Any]]) -> int:
+    """Count completed remote jobs whose outputs are still being collected."""
+    return sum(item.get("worker_status") == "collecting" for item in active)
+
+
+def _generation_slot_count(active: list[dict[str, Any]]) -> int:
+    """Count attempts that may still consume a generation worker/GPU slot."""
+    return sum(item.get("worker_status") != "collecting" for item in active)
+
+
 def _rfd4_retry_safe(child_run_dir: Path) -> bool:
     """Only retry an RFD4 child if its native Docker process was never launched."""
     command_path = Path(child_run_dir) / "command.json"
@@ -2047,6 +2063,9 @@ def _reconcile_attempts(
                     parent_run_dir, ledger, attempt, child, peer, peer_output, peer_job,
                 ):
                     latest = ledger.snapshot()["attempts"][attempt_id]
+                    child_metadata.update(status="collecting", result_collection_pending=True)
+                    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json
+                    write_json(child / "metadata.json", child_metadata)
                     active.append({**latest, "worker_status": "collecting", "worker_node_id": peer.get("worker_node_id")})
                     continue
                 attempt = ledger.snapshot()["attempts"][attempt_id]
@@ -2061,7 +2080,11 @@ def _reconcile_attempts(
                 )
                 continue
             else:
-                child_metadata["status"] = "running" if peer_status == "running" else "queued"
+                collecting = peer_status == "collecting"
+                child_metadata["status"] = (
+                    "collecting" if collecting else "running" if peer_status == "running" else "queued"
+                )
+                child_metadata["result_collection_pending"] = collecting
                 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json
                 write_json(child / "metadata.json", child_metadata)
                 latest = ledger.snapshot()["attempts"][attempt_id]
@@ -2310,12 +2333,14 @@ def _parent_progress(
     state = ledger.snapshot()
     attempts_remaining = max(0, int(config["max_attempts"]) - counters["attempts_authorized"])
     validation_pending = _validation_pending_candidates(state, config)
+    collecting = _collecting_attempt_count(active)
+    generating = _generation_slot_count(active)
     active_ids = [str(item.get("attempt_id") or "") for item in active]
     label = (
         f"{capability.label} · {selected}/{config['accepted_target']} "
         f"{'generated' if config.get('objective_type') == 'generated' else 'accepted'} · "
         f"{counters['attempts_started']}/{config['max_attempts']} attempts started · "
-        f"{len(active_ids)} active"
+        f"{generating} generation slots reserved · {collecting} collecting"
     )
     if state.get("generation_budget_exhausted") and validation_pending:
         label += f" · generation budget consumed · {validation_pending} awaiting validation"
@@ -2332,6 +2357,8 @@ def _parent_progress(
             "objective_count": selected,
             "acceptance_level": config["acceptance_level"],
             "attempts_remaining": attempts_remaining,
+            "generation_slots_reserved": generating,
+            "collecting_attempts": collecting,
             "generation_budget_exhausted": bool(state.get("generation_budget_exhausted")),
             "validation_pending_candidates": validation_pending,
             "active_attempt_ids": active_ids,
@@ -2349,12 +2376,20 @@ def _dispatch_attempts(
     *,
     active_count: int,
     accepted_count: int,
+    objective_reserved_count: int = 0,
 ) -> None:
     ledger.assert_production_jobs()
     state = ledger.snapshot()
     max_concurrent = int(config["max_concurrent_generation_jobs"])
     slots = max(0, max_concurrent - active_count)
-    target_remaining = max(0, int(config["accepted_target"]) - accepted_count - active_count)
+    # active_count limits generation concurrency. Collection-only attempts do
+    # not hold a GPU slot, but reserve one possible objective result until the
+    # candidate receipt arrives. This keeps the objective bounded without
+    # making artifact-transfer latency a generation barrier.
+    target_remaining = max(
+        0,
+        int(config["accepted_target"]) - accepted_count - active_count - objective_reserved_count,
+    )
     authorized_remaining = max(0, int(config["max_attempts"]) - len(state["attempts"]))
     requested = min(slots, target_remaining, authorized_remaining)
     if requested <= 0:
@@ -2457,6 +2492,8 @@ def _campaign_compute_seconds(
 ) -> float:
     total = ledger.gpu_compute_seconds()
     for attempt in active:
+        if attempt.get("worker_status") == "collecting":
+            continue
         child = children.get(str(attempt.get("attempt_id") or ""))
         if child is None:
             continue
@@ -2508,6 +2545,10 @@ def _cancel_queued_attempts(ledger: CampaignLedger, children: dict[str, Path], r
         child = children.get(attempt_id)
         if child is not None:
             metadata = read_json(child / "metadata.json")
+            if metadata.get("result_collection_pending") or metadata.get("status") == "collecting":
+                # The native worker has finished. Keep draining verified output
+                # after the generation deadline instead of cancelling the proxy.
+                continue
             if attempt.get("cluster_submission"):
                 _cancel_campaign_attempt(ledger, attempt, child, reason)
             elif metadata.get("status") in {"queued", "preparing"}:
@@ -3563,8 +3604,12 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
             else:
                 _dispatch_attempts(
                     parent_run_dir, ledger, config,
-                    active_count=len(active) + _validation_pending_candidates(ledger.snapshot(), config),
+                    active_count=(
+                        _generation_slot_count(active)
+                        + _validation_pending_candidates(ledger.snapshot(), config)
+                    ),
                     accepted_count=selected,
+                    objective_reserved_count=_collecting_attempt_count(active),
                 )
                 # Newly created child jobs are scheduler-owned immediately,
                 # even before the scheduler records their first status. Reconcile

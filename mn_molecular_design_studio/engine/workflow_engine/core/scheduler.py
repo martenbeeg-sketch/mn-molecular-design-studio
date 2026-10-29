@@ -317,6 +317,11 @@ def queued_worker_runs(root: Path | None = None) -> list[Path]:
             continue
         metadata = read_json(run_dir / "metadata.json")
         status = str(metadata.get("status") or "")
+        if metadata.get("cluster_remote") is True:
+            # Distributed campaign proxies are executed by the cluster peer
+            # scheduler. A local worker service must not pick them up as
+            # ordinary queued runs, which can launch duplicate executions.
+            continue
         if str(metadata.get("scheduler_backend") or "") == "mn-compute-scheduler":
             continue
         if status != "queued" and not (

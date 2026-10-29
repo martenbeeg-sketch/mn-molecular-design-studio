@@ -372,7 +372,10 @@ def test_rfd4_remote_completion_materializes_verified_artifacts_and_provenance(t
     collected_normalized.write_text(normalized.read_text())
 
     monkeypatch.setattr(candidate_batches, "actor", lambda *_args, **_kwargs: {"id": "owner"})
-    monkeypatch.setattr(candidate_batches, "_artifact", lambda *_args: tmp_path / "unused")
+    monkeypatch.setattr(
+        candidate_batches, "_artifact",
+        lambda _peer, _job, relative, _actor, directory: Path(directory) / relative,
+    )
     peer = {
         "manifest": str(manifest), "cluster_job_id": "cluster-job", "input_transfer_bytes": 42,
         "output_transfer_bytes": 84, "transfers": {"result.json": {"sha256": "abc", "bytes": 10}},
@@ -440,7 +443,81 @@ def test_rfd4_pending_artifact_command_is_persisted_and_reused(tmp_path, monkeyp
     stored = campaign.snapshot()["attempts"][attempt["attempt_id"]]["cluster_submission"]
     relative = "artifacts/rfd4_proteina/request.json"
     assert stored["transfers"][relative]["command_id"] == "transfer-1"
-    assert requests == [relative]
+    assert requests == [
+        relative,
+        "artifacts/rfd4_proteina/native_command.json",
+        "artifacts/rfd4_proteina/effective_config.yaml",
+        "artifacts/rfd4_proteina/prepared_inputs.json",
+    ]
+
+
+def test_collection_does_not_hold_generation_slot_but_reserves_objective_result(tmp_path, monkeypatch):
+    config = distributed_campaign.validate_campaign_config({
+        "generator_id": "rfd4_proteina", "objective_type": "generated",
+        "accepted_target": 10, "max_attempts": 20, "batch_size": 4,
+        "max_concurrent_batches": 1, "max_concurrent_generation_jobs": 4,
+    })
+    campaign = CampaignLedger.create(tmp_path / "campaign.json", config, campaign_id="refill-campaign")
+    launched = []
+    monkeypatch.setattr(
+        distributed_campaign, "_create_attempt_child",
+        lambda _parent, _ledger, attempt, _config: launched.append(attempt),
+    )
+
+    active = [
+        {"attempt_id": "a1", "worker_status": "running"},
+        {"attempt_id": "a2", "worker_status": "running"},
+        {"attempt_id": "a3", "worker_status": "queued"},
+        {"attempt_id": "a4", "worker_status": "collecting"},
+    ]
+    assert distributed_campaign._generation_slot_count(active) == 3
+    assert distributed_campaign._collecting_attempt_count(active) == 1
+    distributed_campaign._dispatch_attempts(
+        tmp_path, campaign, config,
+        active_count=distributed_campaign._generation_slot_count(active),
+        accepted_count=0,
+        objective_reserved_count=distributed_campaign._collecting_attempt_count(active),
+    )
+    assert len(launched) == 1
+
+    # The pending result still reserves the last generated objective unit.
+    before = len(launched)
+    distributed_campaign._dispatch_attempts(
+        tmp_path, campaign, config, active_count=0, accepted_count=9,
+        objective_reserved_count=1,
+    )
+    assert len(launched) == before
+
+
+def test_runtime_cancellation_drains_completed_remote_result_collection(tmp_path):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    campaign = CampaignLedger.create(
+        tmp_path / "campaign.json", {"accepted_target": 2, "max_attempts": 4},
+        campaign_id="deadline-collection-campaign",
+    )
+    attempt = campaign.authorize(1, batch_id="batch")[0]
+    child = tmp_path / "child"
+    child.mkdir()
+    jobs.write_json(child / "metadata.json", {
+        "status": "queued", "cluster_remote": True, "result_collection_pending": True,
+        "worker_started_at": "2026-10-29T00:00:00Z",
+        "resource_allocation": {"gpu_ids": ["GPU-test"]},
+    })
+    campaign.transition(
+        attempt["attempt_id"], "queued", child_run_dir=str(child),
+        cluster_submission={"cluster_job_id": "already-completed"},
+    )
+
+    distributed_campaign._cancel_queued_attempts(
+        campaign, {attempt["attempt_id"]: child}, "runtime budget reached",
+    )
+
+    assert campaign.snapshot()["attempts"][attempt["attempt_id"]]["status"] == "queued"
+    assert distributed_campaign._campaign_compute_seconds(
+        campaign, {attempt["attempt_id"]: child},
+        [{**attempt, "worker_status": "collecting"}],
+    ) == 0
 
 
 def test_campaign_cancellation_uses_parent_ledger_and_preserves_completed_peer_job(tmp_path, monkeypatch):
