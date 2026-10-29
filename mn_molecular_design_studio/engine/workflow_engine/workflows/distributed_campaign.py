@@ -893,7 +893,8 @@ def _submit_rfd4_peer_attempt(
         import inspect
         from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import enqueue_bindcraft2_design
         allowed = set(inspect.signature(enqueue_bindcraft2_design).parameters)
-        parameters = {key: value for key, value in parameters.items() if key in allowed and key != "distributed_campaign"}
+        parameters = {key: value for key, value in parameters.items()
+                      if key in allowed and key not in {"distributed_campaign", "trajectory_only"}}
         raw = child_run_dir / "artifacts" / "raw" / "bindcraft2"
         target_name = Path(str(child_payload.get("params", {}).get("target_file") or "target.pdb")).name
         target_key = "target_fasta" if target_name == "target.fasta" else "target_pdb"
@@ -906,7 +907,6 @@ def _submit_rfd4_peer_attempt(
         derived = {"targets", "project_folder", "campaign_name", "number_of_final_designs",
                    "max_trajectories", "campaign_seed", "workers_per_gpu", "resume", "trajectory_only"}
         parameters["engine_overrides"] = {key: value for key, value in native_settings.items() if key not in derived}
-        parameters["trajectory_only"] = False
     metadata = read_json(child_run_dir / "metadata.json")
     resources = dict(metadata.get("resource_request") or {})
     # The scheduler's boolean GPU reservation marker is internal metadata;

@@ -1486,11 +1486,14 @@ def test_bindcraft_peer_submission_retains_full_native_settings_and_one_attempt(
     monkeypatch.setattr(candidate_batches, 'submit', submit)
     peer = distributed_campaign._submit_rfd4_peer_attempt(parent, ledger, attempt, child)
     parameters = captured['request']['parameters']
+    from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation
+    allowed = workflow_automation._parameters_for(workflow_automation.WORKFLOWS['design.bindcraft2'])
+    assert set(parameters) <= set(allowed)
     assert captured['request']['workflow'] == 'design.bindcraft2'
     assert captured['placement']['placement'] == 'eligible'
     assert 'old-node' not in captured['placement']['exclude_node_ids']
     assert parameters['target_pdb'] == str(raw / 'target.cif')
-    assert parameters['trajectory_only'] is False
+    assert 'trajectory_only' not in parameters  # Public full-workflow API defaults to the complete native pipeline.
     assert parameters['max_trajectories'] == 1
     assert parameters['engine_overrides']['filters'] == settings['filters']
     assert parameters['engine_overrides']['screen_steps'] == 50
