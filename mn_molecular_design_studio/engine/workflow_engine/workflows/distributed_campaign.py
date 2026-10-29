@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import tempfile
 import time
 from copy import deepcopy
@@ -30,7 +31,8 @@ ATTEMPT_STATES = {
     "cancelled", "not_started",
 }
 TERMINATION_REASONS = {
-    "target_reached", "budget_exhausted", "runtime_exhausted", "compute_exhausted", "cancelled", "failed",
+    "target_reached", "shared_target_reached", "budget_exhausted", "runtime_exhausted",
+    "compute_exhausted", "cancelled", "failed",
 }
 
 
@@ -97,6 +99,14 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
         native_attempts = config.pop("native_attempts_per_job")
         if type(native_attempts) is not int or native_attempts != 1:
             raise ValueError("native_attempts_per_job supports only 1 in current campaign adapters.")
+    shared_objective = config.get("_shared_objective")
+    if shared_objective is not None:
+        if (not isinstance(shared_objective, dict)
+                or set(shared_objective) != {"ledger_path", "generator_node"}
+                or not isinstance(shared_objective.get("ledger_path"), str)
+                or not Path(shared_objective["ledger_path"]).is_absolute()
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", str(shared_objective.get("generator_node") or ""))):
+            raise ValueError("Internal shared-objective campaign context is invalid.")
     objective_type = str(config.get("objective_type", "accepted")).strip().lower()
     if objective_type not in {"generated", "accepted"}:
         raise ValueError("objective_type must be generated or accepted.")
@@ -279,6 +289,30 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
         "resources": resources,
         "max_concurrent_validations": validation_concurrency,
     }
+
+
+def _shared_objective_runtime(parent_run_dir: Path, config: dict[str, Any]):
+    """Resolve graph-injected shared state only from this child’s graph parent."""
+    scope = config.get("_shared_objective")
+    if not scope:
+        return None, None
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.shared_campaign import SharedCampaignLedger
+
+    metadata = read_json(parent_run_dir / "metadata.json")
+    graph_parent = Path(str(metadata.get("pipeline_parent_run_dir") or "")).expanduser()
+    if not graph_parent.is_absolute() or not graph_parent.is_dir():
+        raise ValueError("Shared objectives can run only as a child of a Studio graph campaign.")
+    expected_path = (graph_parent / "artifacts" / "shared_campaign" / "ledger.json").resolve()
+    ledger_path = Path(scope["ledger_path"]).expanduser().resolve()
+    generator_node = str(scope["generator_node"])
+    if ledger_path != expected_path or metadata.get("graph_node_id") != generator_node:
+        raise ValueError("Shared-objective context does not match this graph branch.")
+    shared = SharedCampaignLedger(ledger_path)
+    shared_state = shared.snapshot()
+    if generator_node not in shared_state.get("config", {}).get("generator_nodes", []):
+        raise ValueError("This generator branch is not selected for the shared objective.")
+    return shared, generator_node
 
 
 def _state_accepted_count(state: dict[str, Any]) -> int:
@@ -2167,6 +2201,7 @@ def _sync_parent_results(
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json
 
     state = ledger.snapshot()
+    shared, _generator_node = _shared_objective_runtime(parent_run_dir, state.get("config", {}))
     metadata = read_json(parent_run_dir / "metadata.json")
     old_ids = metadata.get("distributed_candidate_ids") or []
     candidate_ids = [str(row.get("candidate_id") or "") for row in candidates]
@@ -2186,6 +2221,17 @@ def _sync_parent_results(
                 "diversity_decision_reason": record.get("diversity_decision_reason", ""),
                 "attempt_id": record.get("attempt_id"),
             })
+        if shared:
+            participant = shared.participant(state["campaign_id"], str(row.get("candidate_id") or ""))
+            if participant:
+                row.setdefault("raw_metadata", {})["shared_campaign"] = {
+                    "role": participant.get("role"),
+                    "status": participant.get("status"),
+                    "decision": participant.get("decision"),
+                    "decision_reason": participant.get("decision_reason", ""),
+                    "duplicate_of": participant.get("duplicate_of"),
+                    "sequence_identity": participant.get("sequence_identity"),
+                }
         enriched.append(row)
     candidate_digest = hashlib.sha256(json.dumps(enriched, sort_keys=True, default=str).encode()).hexdigest()
     if (
@@ -2228,6 +2274,7 @@ def _sync_parent_results(
         **({"execution_job_accounting": ledger.execution_job_summary()} if state["schema_version"] == 2 else {}),
         "candidate_count": len(enriched),
         "candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl",
+        **({"shared_campaign": shared.summary()} if shared else {}),
     }
     write_json(parent_run_dir / "artifacts" / "distributed_campaign" / "summary.json", summary)
     metadata["distributed_campaign_summary"] = {
@@ -2236,6 +2283,7 @@ def _sync_parent_results(
         "generation_budget_exhausted": summary["generation_budget_exhausted"],
         "counters": summary["counters"],
         "candidate_count": len(candidates),
+        **({"shared_campaign": shared.summary()} if shared else {}),
     }
     write_json(parent_run_dir / "metadata.json", metadata)
 
@@ -2304,6 +2352,7 @@ def _dispatch_attempts(
     requested = min(slots, target_remaining, authorized_remaining)
     if requested <= 0:
         return
+    shared, generator_node = _shared_objective_runtime(parent_run_dir, config)
     batch_base = (int(state["next_ordinal"]) - 1) // int(config["batch_size"]) + 1
     for offset in range(requested):
         batch_number = batch_base + offset // int(config["batch_size"])
@@ -2312,10 +2361,24 @@ def _dispatch_attempts(
         input_bytes = parent_input.read_bytes() if parent_input.is_file() else None
         source_input = {"parent_run_dir": str(parent_run_dir), "input_sha256": hashlib.sha256(input_bytes).hexdigest()} if input_bytes is not None else None
         native_configuration = json.loads(input_bytes) if input_bytes is not None else None
+        predicted_attempt_id = None
+        if shared:
+            ordinal = int(ledger.snapshot()["next_ordinal"])
+            predicted_attempt_id = f"{state['campaign_id']}:a{ordinal:08d}"
+            if not shared.reserve_attempt(
+                state["campaign_id"], predicted_attempt_id, generator_node,
+                str(config.get("generator_id") or "bindcraft2"),
+            ):
+                return
         attempts = ledger.authorize(1, batch_id=batch_id, source_input=source_input, native_configuration=native_configuration)
         if not attempts:
+            if shared and predicted_attempt_id:
+                shared.release_attempt(state["campaign_id"], predicted_attempt_id, "Local campaign authorization did not create an attempt.")
             return
         attempt = attempts[0]
+        if shared and attempt["attempt_id"] != predicted_attempt_id:
+            shared.release_attempt(state["campaign_id"], predicted_attempt_id, "Local attempt identity did not match its shared reservation.")
+            raise RuntimeError("Shared attempt reservation lost synchronization with the local campaign ledger.")
         try:
             _create_attempt_child(parent_run_dir, ledger, attempt, config)
         except Exception as exc:
@@ -2333,6 +2396,8 @@ def _dispatch_attempts(
                 if metadata.get("status") in {"queued", "preparing"}:
                     metadata.update(status="failed", worker_error=failure, completed_at=utc_now())
                     write_json(child / "metadata.json", metadata)
+        if shared:
+            shared.sync_campaign(state["campaign_id"], generator_node, ledger.snapshot(), ledger.gpu_compute_seconds())
 
 
 def _campaign_elapsed_seconds(state: dict[str, Any]) -> float:
@@ -2408,6 +2473,21 @@ def _campaign_compute_seconds(
             metadata = read_json(run_dir / "metadata.json")
             if metadata.get("status") in {"queued", "preparing", "running"}:
                 total += _worker_gpu_seconds(metadata, include_active=True)
+    return total
+
+
+def _shared_campaign_compute_seconds(
+    ledger: CampaignLedger, children: dict[str, Path], active: list[dict[str, Any]],
+) -> float:
+    total = _campaign_compute_seconds(ledger, children, active)
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+    state = ledger.snapshot()
+    for candidate in state.get("candidates", {}).values():
+        for stage in (candidate.get("validation_stages") or {}).values():
+            if stage.get("status") not in {"queued", "preparing", "running", "submitting"} or not stage.get("run_dir"):
+                continue
+            metadata = read_json(Path(stage["run_dir"]) / "metadata.json")
+            total += _worker_gpu_seconds(metadata, include_active=True)
     return total
 
 
@@ -2503,6 +2583,8 @@ def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: l
     counters = ledger.counters()
     accepted = _accepted_count(ledger, state["config"])
     target_met = accepted >= int(state["config"]["accepted_target"])
+    shared, _shared_node = _shared_objective_runtime(parent_run_dir, state.get("config", {}))
+    shared_summary = shared.summary() if shared else None
     if target_met and state.get("termination_reason") == "budget_exhausted":
         state = ledger.terminate(
             "target_reached",
@@ -2515,7 +2597,8 @@ def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: l
         state.get("generation_budget_exhausted")
         or len(state["attempts"]) >= int(state["config"]["max_attempts"])
     )
-    success = reason in {"target_reached", "budget_exhausted", "runtime_exhausted", "compute_exhausted"}
+    success = reason in {"target_reached", "budget_exhausted", "runtime_exhausted", "compute_exhausted",
+                         "shared_target_reached", "shared_budget_exhausted", "shared_branch_budget_exhausted"}
     result = {
         "outputs": {
             "candidates": candidates,
@@ -2528,14 +2611,16 @@ def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: l
             "generator_id": state["config"].get("generator_id") or "bindcraft2",
             "accepted_target": state["config"]["accepted_target"],
             "objective_type": state["config"].get("objective_type", "accepted"),
-            "objective_count": accepted,
+            "objective_count": shared_summary["unique_accepted"] if shared_summary else accepted,
             "acceptance_level": state["config"]["acceptance_level"],
-            "campaign_success": target_met,
+            "campaign_success": (shared_summary["unique_accepted"] >= shared_summary["accepted_target"]
+                                  if shared_summary else target_met),
             "generation_budget_exhausted": generation_budget_exhausted,
             "attempts_remaining": max(0, int(state["config"]["max_attempts"]) - counters["attempts_authorized"]),
             "termination_reason": reason,
             "target_met": target_met,
             "gpu_compute_seconds": ledger.gpu_compute_seconds(),
+            **({"shared_campaign": shared_summary} if shared_summary else {}),
         },
         "downstream_artifacts": {
             "campaign_ledger": "artifacts/distributed_campaign/ledger.json",
@@ -2832,6 +2917,9 @@ def _validation_pending_candidates(state: dict[str, Any], config: dict[str, Any]
         return 0
     pending = 0
     for candidate in state["candidates"].values():
+        shared_state = candidate.get("shared_objective") or {}
+        if shared_state.get("role") in {"duplicate", "native_rejected", "not_evaluated"}:
+            continue
         if candidate.get("native_acceptance") not in {"accepted", "unavailable"}:
             continue
         if candidate.get("validated_acceptance") in {"accepted", "rejected", "failed"}:
@@ -2860,6 +2948,9 @@ def _drive_validation(
         return candidates
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
 
+    shared, generator_node = _shared_objective_runtime(parent_run_dir, config)
+    campaign_id = ledger.snapshot()["campaign_id"]
+
     candidate_rows = {str(row["candidate_id"]): row for row in candidates}
     state = ledger.snapshot()
     stage_specs = config["validation_stages"]
@@ -2869,7 +2960,17 @@ def _drive_validation(
         key=lambda item: (state["attempts"][item[1]["attempt_id"]]["ordinal"], item[0]),
     ):
         native = candidate_rows.get(candidate_id)
-        if native is None or ledger_candidate.get("native_acceptance") not in {"accepted", "unavailable"}:
+        if native is None:
+            continue
+        if shared:
+            participant = shared.claim_candidate(
+                campaign_id, str(generator_node), native,
+                native_acceptance=str(ledger_candidate.get("native_acceptance") or "unavailable"),
+            )
+            ledger.update_candidate(candidate_id, shared_objective=participant)
+            if participant.get("role") in {"duplicate", "native_rejected", "not_evaluated"}:
+                continue
+        if ledger_candidate.get("native_acceptance") not in {"accepted", "unavailable"}:
             continue
         stage_results = dict(ledger_candidate.get("validation_stages") or {})
         previous_run: Path | None = None
@@ -3022,6 +3123,10 @@ def _drive_validation(
                 break
             if not dispatch:
                 break
+            if shared and not shared.reserve_validation(
+                campaign_id, str(generator_node), candidate_id, stage_index,
+            ):
+                break
             stage_result.update(status="submitting", workflow=stage_config["workflow"])
             stage_results[key] = stage_result
             ledger.update_candidate(candidate_id, validation_stages=stage_results)
@@ -3036,6 +3141,8 @@ def _drive_validation(
                 active_count += 1
                 previous_run = run_dir
             except Exception as exc:
+                if shared:
+                    shared.release_validation(campaign_id, candidate_id, stage_index)
                 stage_result.update(status="failed", error=f"{type(exc).__name__}: {exc}")
                 stage_results[key] = stage_result
                 ledger.update_candidate(candidate_id, validation_stages=stage_results)
@@ -3055,6 +3162,17 @@ def _drive_validation(
         ):
             ledger.set_candidate_acceptance(candidate_id, validated="accepted", reason="All configured validation stages and criteria passed.")
             ledger.update_candidate(candidate_id, validation_decision_reason="All configured validation stages and criteria passed.")
+    if shared:
+        final_state = ledger.snapshot()
+        for candidate_id, record in final_state["candidates"].items():
+            if record.get("native_acceptance") not in {"accepted", "unavailable"}:
+                continue
+            acceptance = record.get("validated_acceptance")
+            if acceptance in {"accepted", "rejected", "failed"}:
+                shared.finish_candidate(
+                    campaign_id, candidate_id, acceptance,
+                    str(record.get("validation_decision_reason") or record.get("decision_reason") or ""),
+                )
     updated = ledger.snapshot()
     by_id = {row.get("candidate_id"): row for row in candidates}
     for candidate_id, row in by_id.items():
@@ -3275,6 +3393,7 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
         )
     config = validate_campaign_config(raw_config)
     capability = generator_capabilities(expected_generator_id)
+    shared, generator_node = _shared_objective_runtime(parent_run_dir, config)
     ledger = CampaignLedger.create(_campaign_ledger_path(parent_run_dir), config)
     with ledger.controller_lock():
         ledger.assert_production_jobs()
@@ -3285,6 +3404,11 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
             distributed_campaign_acceptance_level=config["acceptance_level"],
             distributed_campaign_generator=config["generator_id"],
         )
+        if shared:
+            shared.sync_campaign(
+                state["campaign_id"], str(generator_node), ledger.snapshot(),
+                _shared_campaign_compute_seconds(ledger, {}, []),
+            )
         while True:
             state = ledger.snapshot()
             if len(state["attempts"]) >= int(config["max_attempts"]):
@@ -3310,6 +3434,11 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
                 return parent_run_dir
 
             children, active, candidates = _reconcile_attempts(ledger, parent_run_dir, config)
+            if shared:
+                shared.sync_campaign(
+                    state["campaign_id"], str(generator_node), ledger.snapshot(),
+                    _shared_campaign_compute_seconds(ledger, children, active),
+                )
             # Downstream prediction workers resolve source_candidate_id from the
             # parent's normalized collection, so publish native receipts first.
             _sync_parent_results(parent_run_dir, ledger, children, candidates)
@@ -3335,6 +3464,52 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
             _sync_parent_results(parent_run_dir, ledger, children, candidates)
             counters = ledger.counters()
             selected = _accepted_count(ledger, config)
+            if shared:
+                shared_state = shared.sync_campaign(
+                    state["campaign_id"], str(generator_node), ledger.snapshot(),
+                    _shared_campaign_compute_seconds(ledger, children, active),
+                )
+                shared_summary = shared.summary()
+                if shared_state.get("status") in {"target_reached", "budget_exhausted", "compute_exhausted"}:
+                    _cancel_queued_attempts(
+                        ledger, children,
+                        "Shared acceptance objective reached" if shared_state.get("status") == "target_reached"
+                        else "Shared campaign budget exhausted",
+                    )
+                    children, active, candidates = _reconcile_attempts(ledger, parent_run_dir, config)
+                    _sync_parent_results(parent_run_dir, ledger, children, candidates)
+                    candidates = _drive_validation(
+                        parent_run_dir, ledger, candidates, config,
+                        dispatch=False,
+                    )
+                    _sync_parent_results(parent_run_dir, ledger, children, candidates)
+                    if shared:
+                        shared.sync_campaign(
+                            state["campaign_id"], str(generator_node), ledger.snapshot(),
+                            _shared_campaign_compute_seconds(ledger, children, active),
+                        )
+                    if not active and not _validation_active_count(ledger.snapshot()):
+                        reason = {
+                            "target_reached": "shared_target_reached",
+                            "budget_exhausted": "budget_exhausted",
+                            "compute_exhausted": "compute_exhausted",
+                        }[shared_state["status"]]
+                        ledger.terminate(reason, detail=(
+                            f"Shared objective reached {shared_summary['unique_accepted']}/{shared_summary['accepted_target']} unique passing designs."
+                            if reason == "shared_target_reached" else
+                            f"Shared campaign stopped at {shared_summary['unique_accepted']}/{shared_summary['accepted_target']} unique passing designs."
+                        ))
+                        return _finish_campaign(parent_run_dir, ledger, candidates)
+                    _parent_progress(parent_run_dir, ledger, config, active)
+                    time.sleep(float(config["poll_interval_seconds"]))
+                    continue
+                local_pending = _validation_pending_candidates(ledger.snapshot(), config)
+                if shared.branch_budget_exhausted(str(generator_node)) and not active and not local_pending and not _validation_active_count(ledger.snapshot()):
+                    ledger.terminate(
+                        "budget_exhausted",
+                        detail=f"Generator branch {generator_node} reached its shared attempt limit.",
+                    )
+                    return _finish_campaign(parent_run_dir, ledger, candidates)
             target_reached = selected >= int(config["accepted_target"])
             runtime_budget = config.get("max_runtime_seconds")
             runtime_exhausted = runtime_budget is not None and _campaign_elapsed_seconds(state) >= float(runtime_budget)

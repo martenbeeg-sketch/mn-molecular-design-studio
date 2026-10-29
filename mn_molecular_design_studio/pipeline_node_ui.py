@@ -733,18 +733,22 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
             if kind == "filter":
                 st.caption("Choose native fields, common fields, or evidence/<stage>/<tool>/<metric>. Add a candidate ID before the metric to resolve repeated stages. Missing, failed and nonfinite required measurements cannot pass. Ranking and limits apply within recorded comparable protocols. All decisions and selected sequence/structure exports remain in this step's selection files.")
             if kind in {"bindcraft2", "rfd4"}:
-                with st.expander("Distributed acceptance campaign", expanded=bool(values.get("distributed_campaign"))):
-                    from mn_molecular_design_studio.distributed_campaign_config_ui import render_campaign_config_editor
-                    campaign, campaign_ready = render_campaign_config_editor(
-                        st, kind, values.get("distributed_campaign"), key=key + "-campaign",
-                        seed=int(values.get("campaign_seed", values.get("seed", 0)) or 0),
-                        generation_cpu_cores=values.get("cpu_cores"),
-                    )
-                    if campaign is None:
-                        values.pop("distributed_campaign", None)
-                    else:
-                        values["distributed_campaign"] = campaign
-                    ready = ready and campaign_ready
+                shared_campaign = graph.get("shared_campaign") if isinstance(graph.get("shared_campaign"), dict) else {}
+                if shared_campaign.get("enabled") and node["id"] in shared_campaign.get("generator_nodes", []):
+                    st.info("This branch uses the graph’s shared acceptance target, common downstream criteria, and distributed budgets. Configure them in the Shared campaign panel.")
+                else:
+                    with st.expander("Distributed acceptance campaign", expanded=bool(values.get("distributed_campaign"))):
+                        from mn_molecular_design_studio.distributed_campaign_config_ui import render_campaign_config_editor
+                        campaign, campaign_ready = render_campaign_config_editor(
+                            st, kind, values.get("distributed_campaign"), key=key + "-campaign",
+                            seed=int(values.get("campaign_seed", values.get("seed", 0)) or 0),
+                            generation_cpu_cores=values.get("cpu_cores"),
+                        )
+                        if campaign is None:
+                            values.pop("distributed_campaign", None)
+                        else:
+                            values["distributed_campaign"] = campaign
+                        ready = ready and campaign_ready
         st.caption("Apply saves this step to the draft. The pipeline runs only when you choose Run pipeline on the canvas.")
         a,b,c = st.columns([1.3,1,1.3])
         if a.button("Reset to tool defaults", key=key+"-defaults", disabled=kind in {"target","binder_context","design_source","generation_source","backbone_source","project_design_source","results"}, use_container_width=True):

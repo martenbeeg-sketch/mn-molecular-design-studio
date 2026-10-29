@@ -557,10 +557,106 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 'Free GPUs': len(n['snapshot'].get('resources', {}).get('free_gpus', [])),
                 'Running allocations': n['snapshot'].get('resources', {}).get('reservations', 0),
                 'Free CPU threads': n['snapshot'].get('resources', {}).get('cpu_free', 0)} for n in nodes], hide_index=True)
-        if devices:
-            st.dataframe([{'GPU': i, 'Model': g.get('name', ''), 'Free VRAM GiB': g.get('free_vram_gb'),
+    if devices:
+        st.dataframe([{'GPU': i, 'Model': g.get('name', ''), 'Free VRAM GiB': g.get('free_vram_gb'),
                            'Compute capability': g.get('compute_capability'), 'Utilization %': g.get('utilization_percent')}
                           for i, g in devices.items()], hide_index=True)
+    eligible_campaign_nodes = [n for n in graph['nodes'] if n['data']['kind'] in {'bindcraft2', 'rfd4'}]
+    shared_existing = graph.get('shared_campaign') if isinstance(graph.get('shared_campaign'), dict) else None
+    shared_enabled = st.checkbox(
+        'Use one shared acceptance target across generator branches',
+        value=bool(shared_existing), key=prefix + '-shared-campaign-enabled-' + graph['id'],
+        help='Selected BindCraft2 and guided RFD4 branches contribute unique accepted sequences to one target and share attempt, compute, and scheduler concurrency limits.',
+    )
+    if shared_enabled:
+        from mn_molecular_design_studio.distributed_campaign_config_ui import _default_validation_stages
+        existing_shared = shared_existing or {}
+        branch_ids = [n['id'] for n in eligible_campaign_nodes]
+        selected_branches = st.multiselect(
+            'Generator branches in the shared objective', branch_ids,
+            default=[node for node in existing_shared.get('generator_nodes', []) if node in branch_ids],
+            format_func=lambda value: next(n['data']['label'] + ' · ' + value for n in eligible_campaign_nodes if n['id'] == value),
+            key=prefix + '-shared-campaign-generators-' + graph['id'],
+        )
+        controls = st.columns(4)
+        accepted_target = int(controls[0].number_input(
+            'Unique passing designs', min_value=1, value=int(existing_shared.get('accepted_target') or 1),
+            step=1, key=prefix + '-shared-target-' + graph['id'],
+        ))
+        max_attempts = int(controls[1].number_input(
+            'Total native attempts', min_value=1, value=int(existing_shared.get('max_attempts') or max(2, accepted_target)),
+            step=1, key=prefix + '-shared-attempts-' + graph['id'],
+        ))
+        max_jobs = int(controls[2].number_input(
+            'Overall concurrent jobs', min_value=1, value=int(existing_shared.get('max_concurrent_jobs') or 2),
+            step=1, key=prefix + '-shared-jobs-' + graph['id'],
+        ))
+        max_generation_jobs = int(controls[3].number_input(
+            'Concurrent generation jobs', min_value=1,
+            value=int(existing_shared.get('max_concurrent_generation_jobs') or min(max_jobs, 2)),
+            step=1, key=prefix + '-shared-generation-jobs-' + graph['id'],
+        ))
+        validation_left, validation_right = st.columns(2)
+        max_validations = int(validation_left.number_input(
+            'Concurrent downstream validations', min_value=1,
+            value=int(existing_shared.get('max_concurrent_validations') or min(max_jobs, 2)),
+            step=1, key=prefix + '-shared-validation-jobs-' + graph['id'],
+        ))
+        max_compute = float(validation_right.number_input(
+            'Maximum shared GPU seconds (0 = no limit)', min_value=0.0,
+            value=float(existing_shared.get('max_compute_seconds') or 0),
+            key=prefix + '-shared-compute-' + graph['id'],
+        ))
+        limits = copy.deepcopy(existing_shared.get('generator_limits') or {})
+        with st.expander('Optional per-generator limits', expanded=False):
+            for branch_id in selected_branches:
+                old_limit = limits.get(branch_id, {})
+                left, right = st.columns(2)
+                attempt_limit = int(left.number_input(
+                    f'{branch_id} maximum attempts (0 = shared budget)', min_value=0,
+                    value=int(old_limit.get('max_attempts') or 0), step=1,
+                    key=prefix + '-shared-limit-attempts-' + graph['id'] + '-' + branch_id,
+                ))
+                concurrency_limit = int(right.number_input(
+                    f'{branch_id} concurrent generation jobs (0 = shared cap)', min_value=0,
+                    value=int(old_limit.get('max_concurrent_generation_jobs') or 0), step=1,
+                    key=prefix + '-shared-limit-jobs-' + graph['id'] + '-' + branch_id,
+                ))
+                if attempt_limit or concurrency_limit:
+                    limits[branch_id] = {
+                        **({'max_attempts': attempt_limit} if attempt_limit else {}),
+                        **({'max_concurrent_generation_jobs': concurrency_limit} if concurrency_limit else {}),
+                    }
+                else:
+                    limits.pop(branch_id, None)
+        stages = existing_shared.get('validation_stages') or _default_validation_stages()
+        stages_text = st.text_area(
+            'Common downstream prediction and acceptance criteria (JSON)',
+            value=json.dumps(stages, indent=2), height=240,
+            key=prefix + '-shared-validation-stages-' + graph['id'],
+        )
+        try:
+            stages = json.loads(stages_text)
+            stage_error = None
+        except json.JSONDecodeError as exc:
+            stages = None
+            stage_error = f'Common validation stages must be valid JSON (line {exc.lineno}, column {exc.colno}).'
+        graph['shared_campaign'] = {
+            'enabled': True, 'generator_nodes': selected_branches,
+            'accepted_target': accepted_target, 'max_attempts': max_attempts,
+            'max_concurrent_jobs': max_jobs,
+            'max_concurrent_generation_jobs': max_generation_jobs,
+            'max_concurrent_validations': max_validations,
+            'generator_limits': limits, 'validation_stages': stages,
+            **({'max_compute_seconds': max_compute} if max_compute else {}),
+        }
+        if stage_error:
+            st.error(stage_error)
+        st.caption('The shared target counts unique binder sequences that pass the same configured predictor and downstream metrics. Native acceptance and each generator’s native ranking remain separate; native rejection, downstream rejection, duplicates and unresolved budget outcomes are retained.')
+        if len(selected_branches) < 2:
+            st.info('Choose at least two BindCraft2 or guided RFD4 branches to enable a shared objective.')
+    else:
+        graph.pop('shared_campaign', None)
     with st.expander("Branch and processing settings", expanded=False):
         configurable = [n for n in graph['nodes'] if NODE_CATALOG[n['data']['kind']]['category'] in {'Design engine', 'Design pipeline', 'Structure prediction', 'Sequence design'}]
         if configurable:
@@ -650,6 +746,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                     component_graph["workflow_mode"] = graph["workflow_mode"]
                 if graph.get("task_configuration"):
                     component_graph["task_configuration"] = copy.deepcopy(graph["task_configuration"])
+                if graph.get("shared_campaign"):
+                    component_graph["shared_campaign"] = copy.deepcopy(graph["shared_campaign"])
                 updated = clean_graph(component_graph)
                 # Input paths are authored through the trusted upload/project
                 # controls, rather than accepted from component messages.
@@ -714,6 +812,24 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 execution=read_json(run_dir/"graph_execution.json")
                 if execution.get("comparison_status") == "partial":
                     st.warning("Comparison partially completed: successful branches are available in Results. Failed branches and their errors are listed below.")
+                shared_progress = execution.get('shared_campaign')
+                if isinstance(shared_progress, dict):
+                    target = max(1, int(shared_progress.get('accepted_target') or 1))
+                    accepted = int(shared_progress.get('unique_accepted') or 0)
+                    st.progress(min(1.0, accepted / target), text=f"Shared objective · {accepted}/{target} unique accepted designs · {shared_progress.get('status', 'running')}")
+                    st.caption(
+                        f"Attempts {shared_progress.get('attempts_authorized', 0)}/{shared_progress.get('max_attempts', 0)} · "
+                        f"active {shared_progress.get('attempts_active', 0)} generation and {shared_progress.get('validations_active', 0)} validation jobs · "
+                        f"unique rejections {shared_progress.get('unique_rejected', 0)} · "
+                        f"native rejections {shared_progress.get('native_rejected_unique', 0)} · "
+                        f"duplicate sequences {shared_progress.get('duplicate_candidates', 0)} · "
+                        f"GPU compute {float(shared_progress.get('compute_seconds') or 0):.1f}s"
+                    )
+                    if shared_progress.get('per_generator'):
+                        st.dataframe([
+                            {'Generator branch': branch, **counts}
+                            for branch, counts in shared_progress['per_generator'].items()
+                        ], hide_index=True, use_container_width=True)
                 batch_rows = []
                 for node_id, step in execution.get('nodes', {}).items():
                     for batch in step.get('batches', []):

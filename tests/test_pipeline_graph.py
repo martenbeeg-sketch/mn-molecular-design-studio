@@ -101,6 +101,134 @@ def test_bindcraft2_campaign_tile_keeps_authoritative_native_policy():
     assert request["parameters"]["distributed_campaign"]["acceptance_level"] == "native"
 
 
+@pytest.mark.parametrize("mode", ["native_complete", "native_comparative", "modular_design"])
+def test_shared_objective_normalizes_two_generator_branches_with_common_target_and_metrics(mode):
+    from mn_molecular_design_studio.distributed_campaign_config_ui import _default_validation_stages
+
+    target = node("target", "target")
+    bindcraft = node("bindcraft2", "bindcraft")
+    rfd4 = node("rfd4", "rfd4")
+    results = node("results", "results")
+    saved = graph.validate_graph({
+        "schema_version": graph.SCHEMA, "id": "d" * 32, "name": "Shared objective",
+        "workflow_mode": mode, "nodes": [target, bindcraft, rfd4, results],
+        "edges": [edge("target", "bindcraft"), edge("target", "rfd4"),
+                  edge("bindcraft", "results"), edge("rfd4", "results")],
+        "shared_campaign": {
+            "enabled": True, "generator_nodes": ["bindcraft", "rfd4"],
+            "accepted_target": 3, "max_attempts": 12,
+            "max_concurrent_jobs": 4, "max_concurrent_generation_jobs": 3,
+            "max_concurrent_validations": 2,
+            "validation_stages": _default_validation_stages(),
+            "generator_limits": {"rfd4": {"max_attempts": 5, "max_concurrent_generation_jobs": 1}},
+        },
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    })["graph"]
+    shared = saved["shared_campaign"]
+    assert shared["accepted_target"] == 3
+    assert shared["generator_nodes"] == ["bindcraft", "rfd4"]
+    assert shared["generator_limits"]["rfd4"]["max_attempts"] == 5
+    assert "bindcraft" not in shared["generator_limits"]
+    assert shared["validation_stages"][0]["parameters"]["engine"] == "boltz2"
+    edited = copy.deepcopy(saved)
+    edited["shared_campaign"]["max_concurrent_generation_jobs"] = 1
+    edited["shared_campaign"]["generator_limits"] = {}
+    assert graph.validate_graph(edited)["graph"]["shared_campaign"]["generator_limits"] == {}
+
+
+def test_shared_objective_rejects_different_target_and_incompatible_downstream_policy():
+    from mn_molecular_design_studio.distributed_campaign_config_ui import _default_validation_stages
+
+    target_a, target_b = node("target", "target-a"), node("target", "target-b")
+    bindcraft, rfd4, results = node("bindcraft2", "bindcraft"), node("rfd4", "rfd4"), node("results", "results")
+    common = {"enabled": True, "generator_nodes": ["bindcraft", "rfd4"], "accepted_target": 1,
+              "max_attempts": 3, "max_concurrent_jobs": 2, "max_concurrent_generation_jobs": 2,
+              "max_concurrent_validations": 2, "validation_stages": _default_validation_stages()}
+    graph_data = {"schema_version": graph.SCHEMA, "id": "e" * 32, "name": "Incompatible shared objective",
+                  "nodes": [target_a, target_b, bindcraft, rfd4, results],
+                  "edges": [edge("target-a", "bindcraft"), edge("target-b", "rfd4"),
+                            edge("bindcraft", "results"), edge("rfd4", "results")],
+                  "shared_campaign": common, "viewport": {"x": 0, "y": 0, "zoom": 1}}
+    with pytest.raises(ValueError, match="same target structure"):
+        graph.validate_graph(graph_data)
+
+    incompatible = copy.deepcopy(graph_data)
+    incompatible["nodes"] = [item for item in incompatible["nodes"] if item["id"] != "target-b"]
+    incompatible["edges"] = [edge("target-a", "bindcraft"), edge("target-a", "rfd4"),
+                              edge("bindcraft", "results"), edge("rfd4", "results")]
+    branch_stages = _default_validation_stages()
+    branch_stages[0]["rules"] = [{"field": "iptm", "operator": ">=", "value": 0.75}]
+    bindcraft = next(item for item in incompatible["nodes"] if item["id"] == "bindcraft")
+    bindcraft["data"]["params"]["distributed_campaign"] = {
+        "enabled": True, "accepted_target": 1, "max_attempts": 3,
+        "acceptance_level": "validated", "validation_stages": branch_stages,
+    }
+    with pytest.raises(ValueError, match="differ from the shared"):
+        graph.validate_graph(incompatible)
+
+
+def test_graph_runner_injects_one_shared_campaign_context_into_normal_branch_requests(tmp_path, monkeypatch, design_source_factory):
+    from mn_molecular_design_studio import workspace
+    from mn_molecular_design_studio.distributed_campaign_config_ui import _default_validation_stages
+
+    source, template_candidate = design_source_factory()
+    monkeypatch.setattr(workspace, "mark_studio_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(graph, "app_home", lambda: tmp_path / "studio-home")
+    parent = tmp_path / "graph-parent"
+    parent.mkdir()
+    (parent / "metadata.json").write_text(json.dumps({"status": "queued", "job_type": "visual_pipeline"}))
+    (parent / "input.json").write_text(json.dumps({"params": {"pipeline_name": "Shared graph"}}))
+    monkeypatch.setattr(runner, "create_job", lambda *args, **kwargs: SimpleNamespace(run_dir=parent))
+
+    target = node("target", "target")
+    target["data"]["params"].update(target_pdb=str(source / "designed.cif"), target_chains="A")
+    bindcraft, rfd4, results = node("bindcraft2", "bindcraft"), node("rfd4", "rfd4"), node("results", "results")
+    graph_data = {
+        "schema_version": graph.SCHEMA, "id": "9" * 32, "name": "Shared graph",
+        "workflow_mode": "native_comparative",
+        "nodes": [target, bindcraft, rfd4, results],
+        "edges": [edge("target", "bindcraft"), edge("target", "rfd4"),
+                  edge("bindcraft", "results"), edge("rfd4", "results")],
+        "shared_campaign": {
+            "enabled": True, "generator_nodes": ["bindcraft", "rfd4"],
+            "accepted_target": 1, "max_attempts": 4,
+            "max_concurrent_jobs": 2, "max_concurrent_generation_jobs": 2,
+            "max_concurrent_validations": 1, "validation_stages": _default_validation_stages(),
+        },
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+    requests = []
+    children = []
+
+    def submit(request, graph_parent, current_node, **kwargs):
+        requests.append(copy.deepcopy(request))
+        child = tmp_path / f"child-{current_node['id']}"
+        child.mkdir()
+        candidate = copy.deepcopy(template_candidate)
+        candidate.update(candidate_id=f"{current_node['id']}-candidate", binder_sequence=(
+            "ACDEFGHIKLMNPQRSTVWY" if current_node["id"] == "bindcraft" else "MNPQRSTVWYACDEFGHIKL"
+        ))
+        normalized = child / "artifacts/normalized_candidates"
+        normalized.mkdir(parents=True)
+        (normalized / "candidates.jsonl").write_text(json.dumps(candidate) + "\n")
+        (child / "input.json").write_text(json.dumps({"params": request.get("parameters", {})}))
+        (child / "metadata.json").write_text(json.dumps({"status": "completed", "job_code": child.name}))
+        (child / "result.json").write_text(json.dumps({"success": True, "metrics": {}}))
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(runner, "_submit", submit)
+    result = runner.run_graph_pipeline(graph_data, "shared-graph", "owner", "project", reuse_completed=False)
+
+    assert [request["parameters"]["distributed_campaign"]["_shared_objective"]["generator_node"]
+            for request in requests] == ["bindcraft", "rfd4"]
+    assert all(request["parameters"]["distributed_campaign"]["accepted_target"] == 1 for request in requests)
+    shared_path = result / "artifacts/shared_campaign/ledger.json"
+    assert shared_path.is_file()
+    state = json.loads(shared_path.read_text())
+    assert state["config"]["generator_nodes"] == ["bindcraft", "rfd4"]
+
+
 @pytest.mark.parametrize("workflow", ["design.bindcraft2", "design.rfd4_proteina"])
 def test_distributed_tile_submission_uses_cpu_controller_and_normal_workflow_api(tmp_path, monkeypatch, workflow):
     monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))

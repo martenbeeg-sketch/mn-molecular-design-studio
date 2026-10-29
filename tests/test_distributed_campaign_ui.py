@@ -294,6 +294,28 @@ def test_rfd4_tile_campaign_controls_expose_independent_settings_before_submit()
     assert bindcraft.session_state["effective_config"]["acceptance_level"] == "native"
 
 
+def test_selected_shared_branch_uses_graph_objective_instead_of_independent_campaign_form():
+    from streamlit.testing.v1 import AppTest
+
+    app = AppTest.from_string(
+        "import streamlit as st\n"
+        "from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG\n"
+        "from mn_molecular_design_studio.pipeline_node_ui import render_node_form\n"
+        "def make_node(kind, identifier):\n"
+        "    spec = NODE_CATALOG[kind]\n"
+        "    return {'id':identifier,'type':'studio','position':{'x':0,'y':0},'data':{'kind':kind,'label':spec['label'],'params':{f['name']:f['default'] for f in spec['fields']}}}\n"
+        "target = make_node('target','target')\n"
+        "rfd4 = make_node('rfd4','rfd4')\n"
+        "bindcraft = make_node('bindcraft2','bindcraft')\n"
+        "graph = {'nodes':[target,rfd4,bindcraft],'edges':[{'id':'e1','source':'target','target':'rfd4'},{'id':'e2','source':'target','target':'bindcraft'}], 'shared_campaign':{'enabled':True,'generator_nodes':['rfd4','bindcraft']}}\n"
+        "render_node_form(rfd4, graph, key='tile', render_input=lambda: {}, owner_id='fixture')\n"
+    ).run()
+
+    assert not app.exception
+    assert any("graph’s shared acceptance target" in item.value for item in app.info)
+    assert not any(widget.label == "Use distributed campaign" for widget in app.checkbox)
+
+
 def test_campaign_lifecycle_controls_offer_pause_resume_and_cancel_only_in_valid_states(tmp_path, monkeypatch):
     from streamlit.testing.v1 import AppTest
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs

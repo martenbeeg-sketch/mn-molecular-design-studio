@@ -1074,11 +1074,21 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
     nodes = {n["id"]: n for n in graph["nodes"]}
     cache_root = scope_root(owner_id, project_id) / "cache"
     cache_root.mkdir(parents=True, exist_ok=True)
+    shared_campaign = graph.get("shared_campaign")
+    shared_ledger = None
+    shared_ledger_path = None
+    if shared_campaign:
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.shared_campaign import SharedCampaignLedger
+        shared_ledger_path = parent / "artifacts" / "shared_campaign" / "ledger.json"
+        shared_ledger = SharedCampaignLedger.create(shared_ledger_path, shared_campaign)
+        state["shared_campaign"] = shared_ledger.summary()
     cancelled = [False]
     runtime_identities = {}
     old_handler = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGTERM, lambda *_: cancelled.__setitem__(0, True))
     def persist():
+        if shared_ledger:
+            state["shared_campaign"] = shared_ledger.summary()
         state["updated_at"] = utc_now(); write_json(parent / "graph_execution.json", state)
     def ancestors_of(node_id):
         pending, ancestors = list(plan["incoming"][node_id]), set()
@@ -1576,6 +1586,27 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     if source.get("candidates_jsonl") and not source.get("candidate_count"):
                         complete(node_id, _local_source(parent, node_id, [], source.get("target")), key, "skipped");progressed=True;continue
                     request = node_request(kind, params, source, f"{pipeline_name} · {node['data']['label']}")
+                    if shared_campaign and node_id in shared_campaign["generator_nodes"]:
+                        campaign = copy.deepcopy(request.get("parameters", {}).get("distributed_campaign") or {})
+                        limit = shared_campaign.get("generator_limits", {}).get(node_id, {})
+                        campaign.update({
+                            "enabled": True,
+                            "generator_id": "bindcraft2" if kind == "bindcraft2" else "rfd4_proteina",
+                            "objective_type": "accepted",
+                            "unique_accepted": True,
+                            "acceptance_level": "validated",
+                            "accepted_target": shared_campaign["accepted_target"],
+                            "max_attempts": int(limit.get("max_attempts", shared_campaign["max_attempts"])),
+                            "max_concurrent_generation_jobs": int(limit.get(
+                                "max_concurrent_generation_jobs", shared_campaign["max_concurrent_generation_jobs"],
+                            )),
+                            "max_concurrent_validations": shared_campaign["max_concurrent_validations"],
+                            "validation_stages": copy.deepcopy(shared_campaign["validation_stages"]),
+                            "_shared_objective": {"ledger_path": str(shared_ledger_path), "generator_node": node_id},
+                        })
+                        campaign.pop("max_runtime_seconds", None)
+                        campaign.pop("max_compute_seconds", None)
+                        request.setdefault("parameters", {})["distributed_campaign"] = campaign
                     child = _submit(request, parent, node, owner_id=owner_id, project_id=project_id, gpu_device=settings.get('gpu_device', gpu_device))
                     metadata = read_json(child / "metadata.json")
                     current.update(status="queued", job_run_dir=str(child), job_code=metadata.get("job_code"), fingerprint=key, started_at=utc_now())
@@ -1648,8 +1679,16 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         workflow_summary = dict(**describe(graph), candidate_count=len(candidates),
             stage_counts={key: value.get('stage_counts', {}) for key, value in node_states.items()},
             execution_plan=observed_execution_plan(graph, node_states))
+        shared_summary = shared_ledger.summary() if shared_ledger else None
+        if shared_summary:
+            workflow_summary["shared_campaign"] = shared_summary
+            state["shared_campaign"] = shared_summary
+            persist()
         finish_job(parent, success, {"outputs": {"workflow_summary": workflow_summary, "candidates": candidates, "surface_analyses": surface_analyses, "pipeline_nodes": node_states,
-                    "comparison_status": comparison_status, "successful_result_nodes": successful_results}, "metrics": {"candidate_count": len(candidates), "surface_analysis_count": len(surface_analyses), "node_count": len(nodes), "cached_steps": sum(v.get("status")=="cached" for v in node_states.values()), "failed_steps": len(failures)}, "downstream_artifacts": {"candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl", "graph_snapshot": "graph_snapshot.json", "graph_execution": "graph_execution.json"}})
+                    "comparison_status": comparison_status, "successful_result_nodes": successful_results,
+                    **({"shared_campaign": shared_summary} if shared_summary else {})}, "metrics": {"candidate_count": len(candidates), "surface_analysis_count": len(surface_analyses), "node_count": len(nodes), "cached_steps": sum(v.get("status")=="cached" for v in node_states.values()), "failed_steps": len(failures),
+                    **({"shared_unique_accepted": shared_summary["unique_accepted"], "shared_accepted_target": shared_summary["accepted_target"]} if shared_summary else {})}, "downstream_artifacts": {"candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl", "graph_snapshot": "graph_snapshot.json", "graph_execution": "graph_execution.json",
+                    **({"shared_campaign_ledger": "artifacts/shared_campaign/ledger.json"} if shared_summary else {})}})
         return parent
     except Exception:
         cancel_graph_children(parent)

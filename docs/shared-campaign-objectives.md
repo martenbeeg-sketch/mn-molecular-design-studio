@@ -1,0 +1,9 @@
+# Shared campaign objectives
+
+In a saved Studio graph, enable **Use one shared acceptance target across generator branches**, select at least two fresh BindCraft2 or guided RFD4 protein-binder branches, and set one target count. The branches must resolve to the same Target Structure node. Configure one common set of downstream prediction stages and explicit scientific metrics; graph validation rejects mismatched predictors, criteria, or target mappings.
+
+The graph-level ledger counts unique binder sequences that pass those common criteria. Each branch still runs through its normal campaign controller, native workflow, scheduler jobs, seeds, attempt ledger, receipts, and recovery. Native acceptance, shared downstream acceptance, prediction provenance, duplicate sequences, and rejection reasons remain separate in candidate Results. The shared panel reports unique accepted and rejected sequences, native rejects, duplicate candidates, GPU compute, attempts, and per-branch progress.
+
+The shared controls bound total attempts, overall concurrent jobs, generation and validation concurrency, optional per-branch attempts/concurrency, and optional total GPU compute. Generation remains one native attempt per execution job. Reaching the target or a shared budget prevents further dispatch; already active work is allowed to reconcile so its receipts and partial Results are retained.
+
+Independent per-generator objectives remain available when the graph-level shared objective is disabled. Shared objectives currently require the verified BindCraft2 or guided RFD4 campaign adapters and common downstream acceptance criteria; other generators are rejected until their native attempt, seed, and recovery semantics have a verified campaign adapter. Native multi-attempt packing and shared structural diversity objectives are not implemented.

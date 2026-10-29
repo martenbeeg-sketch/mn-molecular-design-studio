@@ -521,3 +521,72 @@ def test_pipeline_campaign_tile_submits_through_normal_api_without_dispatching_i
     assert config["max_concurrent_batches"] == 2
     assert config["max_concurrent_validations"] == 3
     assert captured["gpu_device"] == "all"
+
+
+def test_shared_generator_objective_validates_and_runs_through_normal_pipeline_api(api_data, tmp_path, monkeypatch):
+    from mn_molecular_design_studio import api
+    from mn_molecular_design_studio.auth import user_input_root
+    from mn_molecular_design_studio.distributed_campaign_config_ui import _default_validation_stages
+    from mn_molecular_design_studio.engine.workflow_engine.services import local_automation
+    from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, SCHEMA
+
+    data, client = api_data, api_data["client"]
+    target_path = user_input_root(data["admin"]["id"]) / "shared-campaign-target.pdb"
+    write_structure(target_path, chains=(("A", 4),))
+
+    def pipeline_node(kind, identifier):
+        spec = NODE_CATALOG[kind]
+        params = {field["name"]: field["default"] for field in spec["fields"]}
+        return {"id": identifier, "type": "studio", "position": {"x": 0, "y": 0},
+                "data": {"kind": kind, "label": spec["label"], "params": params}}
+
+    target = pipeline_node("target", "target")
+    target["data"]["params"].update(target_pdb=str(target_path), target_chains="A")
+    bindcraft, rfd4, results = (pipeline_node(kind, identifier) for kind, identifier in (
+        ("bindcraft2", "bindcraft"), ("rfd4", "rfd4"), ("results", "results"),
+    ))
+    graph = {
+        "schema_version": SCHEMA, "id": "f" * 32, "name": "Shared PD-L1 objective",
+        "workflow_mode": "native_comparative",
+        "nodes": [target, bindcraft, rfd4, results],
+        "edges": [
+            {"id": "target-bindcraft", "source": "target", "sourceHandle": "out", "target": "bindcraft", "targetHandle": "in"},
+            {"id": "target-rfd4", "source": "target", "sourceHandle": "out", "target": "rfd4", "targetHandle": "in"},
+            {"id": "bindcraft-results", "source": "bindcraft", "sourceHandle": "out", "target": "results", "targetHandle": "in"},
+            {"id": "rfd4-results", "source": "rfd4", "sourceHandle": "out", "target": "results", "targetHandle": "in"},
+        ],
+        "shared_campaign": {
+            "enabled": True, "generator_nodes": ["bindcraft", "rfd4"],
+            "accepted_target": 1, "max_attempts": 4,
+            "max_concurrent_jobs": 2, "max_concurrent_generation_jobs": 2,
+            "max_concurrent_validations": 1,
+            "validation_stages": _default_validation_stages(),
+        },
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+    validate_response = client.post("/api/v1/pipelines/validate", json={
+        "project_id": data["project"]["id"], "graph": graph,
+    })
+    assert validate_response.status_code == 200, validate_response.text
+    assert validate_response.json()["valid"] is True
+
+    target_run = tmp_path / "enqueued-shared-pipeline"
+    target_run.mkdir()
+    captured = {}
+    original_call = api._call
+
+    def call(function, *args, **kwargs):
+        if getattr(function, "__name__", "") == "enqueue_graph_pipeline":
+            captured["graph"] = args[0]
+            return target_run
+        return original_call(function, *args, **kwargs)
+
+    monkeypatch.setattr(api, "_call", call)
+    monkeypatch.setattr(api, "mark_studio_job", lambda result, **kwargs: result)
+    monkeypatch.setattr(local_automation, "job_reference", lambda run_dir: {"run_id": "shared-run", "run_dir": str(run_dir)})
+    run_response = client.post("/api/v1/pipelines/run", json={
+        "project_id": data["project"]["id"], "graph": graph,
+    })
+    assert run_response.status_code == 202, run_response.text
+    assert captured["graph"]["shared_campaign"]["accepted_target"] == 1
+    assert captured["graph"]["shared_campaign"]["generator_nodes"] == ["bindcraft", "rfd4"]
