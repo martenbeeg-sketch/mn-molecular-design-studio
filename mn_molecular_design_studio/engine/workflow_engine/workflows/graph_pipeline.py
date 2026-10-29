@@ -99,6 +99,21 @@ def source_designs(source_run_dir: str, project_id: str, selected_ids=None) -> t
     return run_dir, candidates
 
 
+def _candidate_sources_with_target_identity(sources):
+    """Derive the target identity for saved collections without changing receipts."""
+    from mn_molecular_design_studio import candidate_sets
+
+    result = []
+    for branch, source in sources:
+        target = source.get("target") or {}
+        if target and not target.get("identity"):
+            target = copy.deepcopy(target)
+            target["identity"] = candidate_sets.target_identity(target)
+            source = {**source, "target": target}
+        result.append((branch, source))
+    return result
+
+
 def source_generations(source_run_dir: str, project_id: str, selected_ids=None, *, stage=None) -> tuple[Path, list[dict]]:
     from mn_molecular_design_studio.generation_io import generated_candidates
     run_dir=_path(source_run_dir)
@@ -1204,7 +1219,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         elif kind == "shared_filter":
                             output = candidate_sets.shared_filter(parent, node_id, source, params)
                         elif kind == "candidate_analyzer":
-                            output = candidate_sets.analyze(parent, node_id, sources, params, expected)
+                            output = candidate_sets.analyze(parent, node_id,
+                                _candidate_sources_with_target_identity(sources), params, expected)
                         elif kind == "candidate_rank":
                             output = candidate_sets.rank(parent, node_id, source, params)
                         else:

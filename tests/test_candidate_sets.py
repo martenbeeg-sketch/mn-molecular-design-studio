@@ -413,3 +413,19 @@ def test_existing_scientific_selector_retains_collection_and_review_export(colle
     assert len(result['outputs']['candidates']) == 3
     assert sum(row['raw_metadata']['selection']['selected'] for row in result['outputs']['candidates']) == 1
     assert (run/'artifacts/candidate_set/manifest.json').is_file()
+
+
+def test_analyzer_recovers_target_identity_for_saved_design_source(collection_harness):
+    h = collection_harness
+    run = gp.run_graph_pipeline(h.graph(1, 0), 'saved source', 'owner', 'project', reuse_completed=False)
+    state = read_json(run / 'graph_execution.json')['nodes']
+    variants = copy.deepcopy(state['shared-filter']['output'])
+    prediction = copy.deepcopy(state['predictor-0']['output'])
+    variants['target'].pop('identity')
+    prediction['target'].pop('identity')
+    sources = gp._candidate_sources_with_target_identity([('variants', variants), ('predictor-0', prediction)])
+    output = cs.analyze(h.tmp_path, 'saved-source-join', sources, {}, {})
+    row = next(cs.iter_candidates(output))
+    assert output['target']['identity']['target_id'] == cs.metadata(row)['target_id']
+    assert len(cs.metadata(row)['predictions']) == 1
+    assert 'identity' not in variants['target']
