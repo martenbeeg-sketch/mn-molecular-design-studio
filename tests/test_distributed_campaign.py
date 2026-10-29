@@ -1555,6 +1555,54 @@ def test_existing_ledger_without_objective_fields_remains_resumable(tmp_path):
     assert CampaignLedger.create(path, config).snapshot()['campaign_id'] == 'legacy'
 
 
+def test_resumed_legacy_campaign_normalizes_config_before_dispatch(tmp_path, monkeypatch):
+    """Old parent inputs and ledgers acquire current defaults before scheduling."""
+    config = {
+        'accepted_target': 1,
+        'max_attempts': 3,
+        'batch_size': 2,
+        'max_concurrent_batches': 2,
+        'poll_interval_seconds': 0.25,
+        'max_retries': 0,
+    }
+    _root, parent = _parent_run(tmp_path, monkeypatch, config)
+    ledger_path = parent / 'artifacts/distributed_campaign/ledger.json'
+    legacy_config = {**config, 'enabled': True, 'generator_id': 'bindcraft2'}
+    campaign = CampaignLedger.create(ledger_path, legacy_config, campaign_id='legacy-resume')
+    legacy_state = campaign.snapshot()
+    legacy_state['config'].pop('max_concurrent_generation_jobs')
+    legacy_state['config'].pop('objective_type')
+    legacy_state['config'].pop('unique_accepted')
+    ledger_path.write_text(json.dumps(legacy_state))
+
+    dispatched = []
+    monkeypatch.setattr(
+        distributed_campaign,
+        '_dispatch_attempts',
+        lambda _parent, _ledger, normalized, **kwargs: dispatched.append((normalized, kwargs)),
+    )
+
+    class StopAfterDispatch(Exception):
+        pass
+
+    monkeypatch.setattr(
+        distributed_campaign.time,
+        'sleep',
+        lambda _seconds: (_ for _ in ()).throw(StopAfterDispatch()),
+    )
+    with pytest.raises(StopAfterDispatch):
+        distributed_campaign._run_distributed_campaign(parent, 'bindcraft2')
+
+    assert len(dispatched) == 1
+    normalized, _kwargs = dispatched[0]
+    assert normalized['max_concurrent_generation_jobs'] == 4
+    assert normalized['objective_type'] == 'accepted'
+    assert normalized['unique_accepted'] is False
+    assert distributed_campaign.validate_campaign_config(
+        CampaignLedger(ledger_path).snapshot()['config']
+    ) == normalized
+
+
 def test_validation_boolean_policy_records_each_rule_and_missing_data():
     source = {'candidate_id': 'source', 'stage': 'generation.backbone_sequence',
               'source_tool': 'rfd4_proteina', 'binder_sequence': 'ACDE', 'metrics': {}}
