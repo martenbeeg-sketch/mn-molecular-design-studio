@@ -217,8 +217,10 @@ def run_rfd4_proteina_design(
             # RFD4 creates temporary AF3 manifests inside /work and hands their
             # paths to the host-side oracle bridge. Keep those files owned and
             # traversable by the same host user that serves the oracle socket.
+            # RFD4's default Hydra output directory is relative to cwd, so use
+            # the writable mounted run directory after dropping container root.
             code=run_docker_job(job.run_dir,manifest,args,gpu_device=gpu_device,extra_mounts=mounts,
-                                environment=env,use_host_user=True)
+                                environment=env,use_host_user=True,working_dir='/work')
         native_commands=prepared['root']/'native_command.json'
         receipt_path=job.run_dir/'native_execution.json'
         if receipt_path.is_file() and native_commands.is_file():

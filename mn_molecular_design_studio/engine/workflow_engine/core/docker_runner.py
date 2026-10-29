@@ -30,6 +30,7 @@ def build_docker_command(
     extra_mounts: Sequence[tuple[Path, str, bool]] | None = None,
     environment: Mapping[str, str] | None = None,
     use_host_user: bool = False,
+    working_dir: str | None = None,
 ) -> list[str]:
     command = ["docker", "run", "--rm"]
     if manifest.get("gpu"):
@@ -37,6 +38,12 @@ def build_docker_command(
     host_user = use_host_user and hasattr(os, "getuid") and not _docker_is_rootless()
     if host_user:
         command.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
+    if working_dir is not None:
+        container_working_dir = str(working_dir).strip()
+        if (not container_working_dir.startswith("/") or ":" in container_working_dir
+                or "\n" in container_working_dir or "\r" in container_working_dir):
+            raise ValueError(f"Docker working directory must be an absolute container path: {working_dir!r}")
+        command.extend(["--workdir", container_working_dir])
     command.extend(["-v", f"{run_dir}:/work"])
     reference_path = reference_root_path or reference_root()
     if reference_path.exists():
@@ -75,6 +82,7 @@ def run_docker_job(
     extra_mounts: Sequence[tuple[Path, str, bool]] | None = None,
     environment: Mapping[str, str] | None = None,
     use_host_user: bool = False,
+    working_dir: str | None = None,
 ) -> int:
     command = build_docker_command(
         manifest,
@@ -84,6 +92,7 @@ def run_docker_job(
         extra_mounts=extra_mounts,
         environment=environment,
         use_host_user=use_host_user,
+        working_dir=working_dir,
     )
     write_json(run_dir / "command.json", {"mode": "docker", "command": command, "image": manifest.get("image")})
     update_status(run_dir, "running")

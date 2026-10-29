@@ -281,6 +281,7 @@ def test_rfd4_generator_runs_as_host_user_for_oracle_manifest_permissions(tmp_pa
 
     assert result == run_dir
     assert captured["use_host_user"] is True
+    assert captured["working_dir"] == "/work"
 
 
 @pytest.mark.skipif(os.environ.get("MDS_RFD4_DOCKER_TESTS") != "1", reason="requires opt-in RFD4 Docker image")

@@ -1637,10 +1637,11 @@ def test_docker_runner_can_write_outputs_as_host_user(tmp_path, monkeypatch):
 
     command = build_docker_command(
         {"image": "test-image", "gpu": True}, run_dir, ["bash", "-lc", "touch output"],
-        gpu_device="0", use_host_user=True,
+        gpu_device="0", use_host_user=True, working_dir="/work",
     )
 
     assert command[command.index("--user") + 1] == "1234:2345"
+    assert command[command.index("--workdir") + 1] == "/work"
     assert "HOME=/tmp" in command
 
 
