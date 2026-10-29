@@ -141,6 +141,23 @@ def _identity_update(execution, field, values):
         execution[field][key] = deepcopy(value)
 
 
+def _observe_worker_timing(execution, worker_started_at, worker_identity=None):
+    """Keep scheduler start-time reports as measurements, separate from identity."""
+    if worker_started_at in (None, ""):
+        return
+    identity = worker_identity if isinstance(worker_identity, dict) else {}
+    timing = execution.setdefault("worker_timing", {})
+    observations = timing.setdefault("worker_started_at_observations", [])
+    observation = {
+        "worker_started_at": deepcopy(worker_started_at),
+        "scheduler_worker_id": identity.get("scheduler_worker_id"),
+        "execution_node_id": identity.get("execution_node_id"),
+    }
+    if observation not in observations:
+        observations.append(observation)
+    timing["latest_worker_started_at"] = deepcopy(worker_started_at)
+
+
 def _prepare(job):
     execution = _execution(job)
     if execution["submission_state"] == "reserved":
@@ -290,7 +307,14 @@ class ExecutionJobLedgerMixin:
             if execution["submission_state"] == "running" and status == "queued":
                 raise ValueError("An execution cannot move backwards from running to queued.")
             _identity_update(execution, "scheduler_identifiers", scheduler_identifiers or {})
-            _identity_update(execution, "worker_identity", worker_identity or {})
+            reported_worker_identity = worker_identity or {}
+            _identity_update(execution, "worker_identity", {
+                key: value for key, value in reported_worker_identity.items()
+                if key != "worker_started_at"
+            })
+            _observe_worker_timing(
+                execution, reported_worker_identity.get("worker_started_at"), reported_worker_identity
+            )
             _identity_update(execution, "resource_allocation", resource_allocation or {})
             execution.update(submission_state=status, contact_state=contact_state, launch_state="may_have_started")
             return deepcopy(execution)

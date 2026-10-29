@@ -22,7 +22,7 @@ from uuid import uuid4
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import utc_now
 from .execution_job_ledger import (
     ExecutionJobLedgerMixin, check_contract, reserve, observe_single_attempt,
-    record_lease, _execution, _result, _retry, _identity_update,
+    record_lease, _execution, _result, _retry, _identity_update, _observe_worker_timing,
 )
 
 SCHEMA_VERSION = 2
@@ -419,7 +419,16 @@ class CampaignLedger(ExecutionJobLedgerMixin):
             # Observations may gain detail (including lease release timestamps).
             execution["resource_allocation"].update(deepcopy(metadata.get("resource_allocation") or {}))
             _identity_update(execution, "worker_identity", {k: metadata[k] for k in
-                ("scheduler_worker_id", "execution_node_id", "worker_started_at") if metadata.get(k) is not None})
+                ("scheduler_worker_id", "execution_node_id") if metadata.get(k) is not None})
+            # A start timestamp is a measurement, not an identity. Local proxy
+            # metadata and the remote scheduler can report different timestamps
+            # for the same worker (for example, dispatch time vs. actual start).
+            # Preserve each distinct observation for diagnosis without letting
+            # timing disagreement invalidate otherwise consistent execution
+            # accounting.
+            _observe_worker_timing(
+                execution, metadata.get("worker_started_at"), metadata
+            )
             _identity_update(execution, "scheduler_identifiers", {k: metadata[k] for k in
                 ("scheduler_job_id", "cluster_job_id", "remote_submission_key") if metadata.get(k) is not None})
             if metadata.get("resource_request"):

@@ -123,6 +123,40 @@ def test_partial_completion_missing_receipts_and_late_reconnection(tmp_path):
         recovered.retry_execution_job(job["execution_job_id"], retry_key="unsafe-replay")
 
 
+def test_worker_start_time_is_observed_measurement_not_immutable_identity(tmp_path):
+    campaign = ledger(tmp_path)
+    job = reserve(campaign, count=1)
+    intent = campaign.prepare_execution_submission(job["execution_job_id"])
+    campaign.observe_execution(
+        job["execution_job_id"], intent["execution_id"],
+        submission_key=intent["submission_key"], status="running",
+        worker_identity={"scheduler_worker_id": "worker-A", "execution_node_id": "node-A",
+                         "worker_started_at": "2026-10-29T20:10:24+00:00"},
+    )
+    campaign.observe_execution(
+        job["execution_job_id"], intent["execution_id"],
+        submission_key=intent["submission_key"], status="running",
+        worker_identity={"scheduler_worker_id": "worker-A", "execution_node_id": "node-A",
+                         "worker_started_at": "2026-10-29T20:27:35+00:00"},
+    )
+    campaign.observe_worker_metadata(job["manifest"][0]["attempt_id"], {
+        "scheduler_worker_id": "worker-A", "execution_node_id": "node-A",
+        "worker_started_at": "2026-10-29T20:10:24+00:00",
+    })
+    campaign.observe_worker_metadata(job["manifest"][0]["attempt_id"], {
+        "scheduler_worker_id": "worker-A", "execution_node_id": "node-A",
+        "worker_started_at": "2026-10-29T20:27:35+00:00",
+    })
+    saved = execution(campaign.snapshot()["execution_jobs"][job["execution_job_id"]])
+    assert saved["worker_identity"] == {
+        "scheduler_worker_id": "worker-A", "execution_node_id": "node-A",
+    }
+    assert saved["worker_timing"]["latest_worker_started_at"] == "2026-10-29T20:27:35+00:00"
+    assert [row["worker_started_at"] for row in saved["worker_timing"]["worker_started_at_observations"]] == [
+        "2026-10-29T20:10:24+00:00", "2026-10-29T20:27:35+00:00",
+    ]
+
+
 def test_exit_zero_does_not_complete_attempts_or_infer_acceptance(tmp_path):
     campaign = ledger(tmp_path)
     job = reserve(campaign)
