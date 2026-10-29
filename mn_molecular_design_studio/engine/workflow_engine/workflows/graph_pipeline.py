@@ -825,7 +825,14 @@ def _submit(request: dict, parent: Path, node: dict, *, owner_id: str, project_i
     # with their absolute/portable input paths intact.
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(request, indent=2, sort_keys=True) + "\n")
-    result = submit_workflow_request(path)
+    # The queued worker can start before mark_studio_job writes its marker.
+    # Persist the owner and project in the job metadata before dispatch so a
+    # nested distributed campaign can authorize peer submissions immediately.
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import submission_tags
+    parent_metadata = read_json(parent / "metadata.json")
+    with submission_tags(studio_owner_id=owner_id, studio_project_id=project_id,
+                         studio_development_mode=bool(parent_metadata.get("studio_development_mode"))):
+        result = submit_workflow_request(path)
     mark_studio_job(result, owner_id=owner_id, project_id=project_id)
     child = _path(result["job"]["run_dir"])
     metadata = read_json(child / "metadata.json")

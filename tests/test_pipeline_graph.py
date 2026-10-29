@@ -109,10 +109,14 @@ def test_distributed_tile_submission_uses_cpu_controller_and_normal_workflow_api
     parent.mkdir()
     child.mkdir()
     (parent / "input.json").write_text(json.dumps({"params": {"pipeline_name": "Fixture"}}))
+    (parent / "metadata.json").write_text(json.dumps({"studio_development_mode": True}))
     (child / "metadata.json").write_text(json.dumps({"status": "queued", "tool": workflow.rsplit(".", 1)[-1]}))
     submitted = []
+    submission_context = []
 
     def submit_workflow_request(path):
+        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import _SUBMISSION_TAGS
+        submission_context.append(dict(_SUBMISSION_TAGS.get()))
         submitted.append(json.loads(Path(path).read_text()))
         return {"job": {"run_dir": str(child)}}
 
@@ -128,6 +132,7 @@ def test_distributed_tile_submission_uses_cpu_controller_and_normal_workflow_api
     runner._submit(request, parent, {"id": "tile-1"}, owner_id="owner", project_id="project", gpu_device="all")
 
     assert len(submitted) == 1
+    assert submission_context == [{"studio_owner_id": "owner", "studio_project_id": "project", "studio_development_mode": True}]
     assert submitted[0]["parameters"]["distributed_campaign"]["enabled"] is True
     assert submitted[0]["parameters"]["distributed_campaign"]["workstation_selection"] == "eligible"
     assert submitted[0]["resources"]["gpu_device"] == "none"
