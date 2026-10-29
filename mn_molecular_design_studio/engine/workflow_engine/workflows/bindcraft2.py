@@ -768,6 +768,7 @@ def enqueue_bindcraft2_design(
     distributed_campaign: dict[str, Any] | None = None,
     cpu_cores: int = 4,
     gpu_device: object = "0",
+    dispatch_worker: bool = True,
 ) -> Path:
     campaign_config = dict(distributed_campaign or {})
     selected_gpu = normalize_gpu_device(gpu_device)
@@ -817,7 +818,7 @@ def enqueue_bindcraft2_design(
         distributed_campaign=campaign_config,
         cpu_cores=cpu_cores,
         gpu_device=gpu_device,
-        dispatch_worker=True,
+        dispatch_worker=dispatch_worker,
     )
 
 

@@ -1187,7 +1187,15 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         continue
                 failed_parents = [p for p in parents if node_states.get(p, {}).get("status") in {"failed", "blocked"}
                                   and (p not in outputs or node_states.get(p, {}).get("batches"))]
-                partial_fan_in = bool(failed_parents and settings['failure_policy'] == 'partial')
+                # A shared objective can finish with qualifying candidates from
+                # one branch even when another generator branch fails. Keep the
+                # existing successful branches available to Results and record
+                # the missing generator as partial provenance.
+                shared_results_fan_in = bool(shared_campaign and node["data"]["kind"] == "results")
+                partial_fan_in = bool(
+                    failed_parents
+                    and (settings['failure_policy'] == 'partial' or shared_results_fan_in)
+                )
                 if failed_parents and not partial_fan_in:
                     current.update(status="blocked", error="An upstream step failed."); persist(); progressed=True; continue
                 if not all(p in outputs or partial_fan_in and p in failed_parents for p in parents):

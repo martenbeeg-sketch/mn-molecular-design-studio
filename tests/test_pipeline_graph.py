@@ -236,6 +236,69 @@ def test_graph_runner_injects_one_shared_campaign_context_into_normal_branch_req
     assert state["config"]["generator_nodes"] == ["bindcraft", "rfd4"]
 
 
+def test_shared_objective_results_preserve_successful_branch_when_other_generator_fails(
+    tmp_path, monkeypatch, design_source_factory,
+):
+    from mn_molecular_design_studio import workspace
+    from mn_molecular_design_studio.distributed_campaign_config_ui import _default_validation_stages
+
+    source, template_candidate = design_source_factory()
+    monkeypatch.setattr(workspace, "mark_studio_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(graph, "app_home", lambda: tmp_path / "studio-home")
+    parent = tmp_path / "graph-parent"
+    parent.mkdir()
+    (parent / "metadata.json").write_text(json.dumps({"status": "queued", "job_type": "visual_pipeline"}))
+    (parent / "input.json").write_text(json.dumps({"params": {"pipeline_name": "Shared partial Results"}}))
+    monkeypatch.setattr(runner, "create_job", lambda *args, **kwargs: SimpleNamespace(run_dir=parent))
+
+    target = node("target", "target")
+    target["data"]["params"].update(target_pdb=str(source / "designed.cif"), target_chains="A")
+    bindcraft, rfd4, results = node("bindcraft2", "bindcraft"), node("rfd4", "rfd4"), node("results", "results")
+    graph_data = {
+        "schema_version": graph.SCHEMA, "id": "8" * 32, "name": "Shared partial Results",
+        "workflow_mode": "native_comparative",
+        "nodes": [target, bindcraft, rfd4, results],
+        "edges": [edge("target", "bindcraft"), edge("target", "rfd4"),
+                  edge("bindcraft", "results"), edge("rfd4", "results")],
+        "shared_campaign": {
+            "enabled": True, "generator_nodes": ["bindcraft", "rfd4"],
+            "accepted_target": 1, "max_attempts": 2,
+            "max_concurrent_jobs": 1, "max_concurrent_generation_jobs": 1,
+            "max_concurrent_validations": 1,
+            "validation_stages": _default_validation_stages(),
+        },
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+
+    def submit(_request, _parent, current_node, **_kwargs):
+        if current_node["id"] == "bindcraft":
+            raise RuntimeError("simulated BindCraft branch startup failure")
+        child = tmp_path / "child-rfd4"
+        child.mkdir()
+        candidate = copy.deepcopy(template_candidate)
+        candidate["candidate_id"] = "rfd4-candidate"
+        normalized = child / "artifacts/normalized_candidates"
+        normalized.mkdir(parents=True)
+        (normalized / "candidates.jsonl").write_text(json.dumps(candidate) + "\n")
+        (child / "input.json").write_text(json.dumps({"params": {}}))
+        (child / "metadata.json").write_text(json.dumps({"status": "completed", "job_code": "RFD4"}))
+        (child / "result.json").write_text(json.dumps({"success": True, "metrics": {}}))
+        return child
+
+    monkeypatch.setattr(runner, "_submit", submit)
+    result_dir = runner.run_graph_pipeline(graph_data, "shared-partial-results", "owner", "project", reuse_completed=False)
+
+    result = json.loads((result_dir / "result.json").read_text())
+    results_node = result["outputs"]["pipeline_nodes"]["results"]
+    assert result["success"] is True
+    assert result["metrics"]["candidate_count"] == 1
+    assert result["outputs"]["comparison_status"] == "partial"
+    assert results_node["status"] == "completed"
+    assert results_node["partial"] is True
+    assert results_node["output"]["candidate_count"] == 1
+    assert results_node["output"]["partial_pool"]["missing_branches"] == ["bindcraft"]
+
+
 def test_shared_campaign_child_is_started_after_graph_lineage_is_persisted(tmp_path, monkeypatch):
     from mn_molecular_design_studio import workspace
     from mn_molecular_design_studio.engine.workflow_engine.core import local_worker

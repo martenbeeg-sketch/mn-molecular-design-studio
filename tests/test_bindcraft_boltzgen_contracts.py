@@ -121,6 +121,48 @@ def test_bindcraft2_distributed_tile_creates_a_cpu_controller_parent(monkeypatch
     assert dispatched == [run_dir]
 
 
+def test_deferred_graph_bindcraft_submission_prepares_without_starting_worker(monkeypatch, tmp_path):
+    from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import submit_workflow_request
+
+    target = tmp_path / "target.pdb"
+    target.write_text(
+        "ATOM      1  CA  ALA A   1      10.000  11.000  12.000  1.00 20.00           C\nEND\n",
+        encoding="utf-8",
+    )
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps({
+        "schema_version": 1,
+        "workflow": "design.bindcraft2",
+        "parameters": {
+            "target_pdb": str(target),
+            "target_chains": ["A"],
+            "binder_length": "60",
+            "distributed_campaign": {
+                "enabled": True,
+                "accepted_target": 1,
+                "max_attempts": 1,
+                "batch_size": 1,
+                "max_concurrent_batches": 1,
+            },
+        },
+        "resources": {"cpu_cores": 4, "gpu_device": "auto"},
+    }))
+    monkeypatch.setattr(jobs, "runs_root", lambda: tmp_path / "runs")
+    monkeypatch.setattr(bindcraft2, "missing_bindcraft2_parameters", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(bindcraft2, "bindcraft2_image_available", lambda *_args, **_kwargs: True)
+    dispatched = []
+    monkeypatch.setattr(bindcraft2, "spawn_worker_for_run", lambda path: dispatched.append(path))
+
+    submitted = submit_workflow_request(request_path, defer_dispatch=True)
+    run_dir = Path(submitted["job"]["run_dir"])
+
+    assert submitted["workflow"] == "design.bindcraft2"
+    assert jobs.read_json(run_dir / "command.json")["mode"] == "embedded_campaign"
+    assert jobs.read_json(run_dir / "metadata.json")["status"] == "queued"
+    assert not (run_dir / "worker_request.json").exists()
+    assert dispatched == []
+
+
 def test_bindcraft_stages_job_name_and_settings_without_running_docker(monkeypatch, tmp_path: Path):
     runs_root = tmp_path / "runs"
     target_pdb = tmp_path / "target.pdb"
