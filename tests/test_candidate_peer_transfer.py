@@ -183,9 +183,11 @@ def test_peer_prediction_does_not_require_or_transfer_upstream_models(tmp_path, 
     structure = tmp_path / 'candidate.pdb'; structure.write_text('ATOM')
     old_collection = tmp_path / 'prior-full-collection.jsonl'; old_collection.write_text('{}\n')
     provenance = {'checkpoint_provenance': {'path': str(weights), 'sha256': bundles.digest_file(weights)},
-                  'candidate_execution': {'effective_request': {'candidates_jsonl': str(old_collection)}}}
+                  'candidate_execution': {'effective_request': {'candidates_jsonl': str(old_collection)}},
+                  'candidate_set': {'native_measurements': {'ckpt_path': '/worker/old/checkpoint'},
+                                    'source_provenance': {'uri': 'cluster://old-node/design/run/result.json'}}}
     collection = tmp_path / 'selected.jsonl'
-    collection.write_text(json.dumps({'candidate_id': 'selected', 'complex_pdb': str(structure), 'raw_metadata': provenance})+'\n')
+    collection.write_text(json.dumps({'candidate_id': 'selected', 'complex_pdb': str(structure), 'raw_metadata': provenance, 'metrics': {'ckpt_path': 'runs:///design/remote/nvidia/RFD4-Proteina', 'iptm': 0.7}})+'\n')
     request = {'workflow': 'mock', 'parameters': {'source_run_dir': str(tmp_path), 'candidates_jsonl': str(collection)}}
     archive = tmp_path / 'inputs.zip'
     prepared, checksum, refs, size = cb.pack_request(request, archive)
@@ -196,8 +198,10 @@ def test_peer_prediction_does_not_require_or_transfer_upstream_models(tmp_path, 
     bundles.unpack(archive, destination, expected_digest=checksum)
     restored = bundles.restore(prepared, staging=destination, node_id='worker')
     row = json.loads(Path(restored['parameters']['candidates_jsonl']).read_text())
-    for key, original in provenance.items():
-        assert json.loads(row['raw_metadata'][key]['record']) == original
+    for key in ('checkpoint_provenance', 'candidate_execution'):
+        assert json.loads(row['raw_metadata'][key]['record']) == provenance[key]
+    assert row['raw_metadata']['candidate_set'] == provenance['candidate_set']
+    assert row['metrics'] == {'ckpt_path': 'runs:///design/remote/nvidia/RFD4-Proteina', 'iptm': 0.7}
 
 
 @pytest.mark.parametrize('status', ['completed', 'failed', 'lost'])

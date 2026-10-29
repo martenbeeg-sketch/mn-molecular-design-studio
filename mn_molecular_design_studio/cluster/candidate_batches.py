@@ -30,6 +30,10 @@ def actor(owner_id, project_id, *, allow_development=False):
     return user_record(user)
 
 
+class NoEligiblePeerAvailable(ValueError):
+    """No currently available distinct peer; a scheduler queue may still accept work."""
+
+
 def select_eligible_peer(needs, *, origin_node, ordinal=1, exclude_node_ids=()):
     """Choose an available peer, allowing only exact reference hashes to await probing."""
     store = Store()
@@ -51,7 +55,7 @@ def select_eligible_peer(needs, *, origin_node, ordinal=1, exclude_node_ids=()):
         options = peer_options(probe_needs)
         reference_probe_pending = bool(options)
     if not options:
-        raise ValueError(
+        raise NoEligiblePeerAvailable(
             "No distinct compatible peer workstation is currently available for eligible execution."
         )
     index = (max(1, int(ordinal)) - 1) % len(options)
@@ -100,6 +104,10 @@ def pack_request(request, destination):
 
     def transform(value, base, key=''):
         if isinstance(value, dict):
+            # Measurements are historical data, including native checkpoint labels;
+            # they are not operational paths for the downstream worker.
+            if key in {'metrics', 'native_measurements', 'source_provenance'}:
+                return copy.deepcopy(value)
             # Upstream execution/checkpoint records describe history, not
             # files required by this new task. Preserve them as opaque origin
             # records rather than installing upstream models or transferring

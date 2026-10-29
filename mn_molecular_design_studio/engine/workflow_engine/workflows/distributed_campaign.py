@@ -942,11 +942,24 @@ def _submit_rfd4_peer_attempt(
             cluster_submission=peer, remote_submission_key=peer["submission_key"],
         )
 
-    result = candidate_batches.submit(
-        request, peer["manifest"], peer["submission_key"], settings,
-        owner_id=owner_id, project_id=project_id, state=peer, persist=persist,
-        allow_development=development_mode,
-    )
+    try:
+        result = candidate_batches.submit(
+            request, peer["manifest"], peer["submission_key"], settings,
+            owner_id=owner_id, project_id=project_id, state=peer, persist=persist,
+            allow_development=development_mode,
+        )
+    except candidate_batches.NoEligiblePeerAvailable:
+        # Distinct peers can all be busy. Preserve the authorized attempt and
+        # queue it for any compatible workstation rather than spending budget
+        # on a failed placement. The scheduler still enforces all requirements.
+        if placement != "eligible" or "prepared_envelope" in peer:
+            raise
+        peer["placement_fallback"] = "auto_queue"
+        result = candidate_batches.submit(
+            request, peer["manifest"], peer["submission_key"], {"placement": "auto"},
+            owner_id=owner_id, project_id=project_id, state=peer, persist=persist,
+            allow_development=development_mode,
+        )
     peer["cluster_job_id"] = result["cluster_job_id"]
     peer["origin_node_id"] = result.get("origin_node_id")
     peer["placement_node_id"] = peer.get("placement_node_id") or (peer.get("prepared_envelope") or {}).get("placement") or result.get("node_id")

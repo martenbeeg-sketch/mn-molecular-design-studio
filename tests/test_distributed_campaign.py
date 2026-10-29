@@ -148,9 +148,9 @@ def test_validated_acceptance_requires_explicit_stage_measurements(tmp_path):
         )
 
 
-@pytest.mark.parametrize("workstation_selection", ["auto", "eligible"])
+@pytest.mark.parametrize("workstation_selection, busy", [("auto", False), ("eligible", False), ("eligible", True)])
 def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worker(
-    tmp_path, monkeypatch, workstation_selection,
+    tmp_path, monkeypatch, workstation_selection, busy,
 ):
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs, workflow_queue, local_worker
 
@@ -209,8 +209,11 @@ def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worke
         assert "task_group" not in request["parameters"]
         assert request["resources"]["gpu_device"] == "auto"
         assert "gpu" not in request["resources"]
-        assert settings["placement"] == workstation_selection
-        if workstation_selection == "eligible":
+        if busy and settings["placement"] == "eligible":
+            from mn_molecular_design_studio.cluster.candidate_batches import NoEligiblePeerAvailable
+            raise NoEligiblePeerAvailable("peers busy")
+        assert settings["placement"] == ("auto" if busy else workstation_selection)
+        if workstation_selection == "eligible" and not busy:
             assert settings["placement_ordinal"] == 1
             assert settings["exclude_node_ids"] == []
         assert owner_id == "owner" and project_id == "project"
@@ -229,6 +232,8 @@ def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worke
     latest = ledger.snapshot()["attempts"][attempt["attempt_id"]]
     assert latest["status"] == "queued"
     assert latest["cluster_job_id"] == "cluster-job"
+    if busy:
+        assert latest["cluster_submission"]["placement_fallback"] == "auto_queue"
     assert latest["cluster_submission"]["prepared_envelope"]["idempotency_key"] == latest["remote_submission_key"]
     assert submissions and submissions[0][2]["cluster_submission"]["prepared_envelope"]
     metadata = jobs.read_json(child / "metadata.json")

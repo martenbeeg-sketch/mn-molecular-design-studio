@@ -170,7 +170,11 @@ def unpack(path, destination, *, expected_digest=None):
 
 def restore(payload, *, staging, node_id):
     if isinstance(payload, dict):
-        return {k: restore(v, staging=staging, node_id=node_id) for k, v in payload.items()}
+        # Historical evidence may contain origin-only paths and cluster URIs.
+        # It describes prior work and is never an input to restore on this node.
+        return {k: (copy.deepcopy(v) if k in {'metrics', 'native_measurements', 'source_provenance'}
+                    else restore(v, staging=staging, node_id=node_id))
+                for k, v in payload.items()}
     if isinstance(payload, list):
         return [restore(v, staging=staging, node_id=node_id) for v in payload]
     if isinstance(payload, str) and payload.startswith("cluster://"):
