@@ -516,17 +516,19 @@ def create_job(task_group: str, job_type: str, tool: str, inputs: dict, params: 
     parent_run_text = submission_metadata.get("parent_campaign_run_dir")
     if submission_metadata.get("distributed_campaign_id") and parent_run_text:
         parent_run = Path(str(parent_run_text)).expanduser().resolve()
+        generator = str(submission_metadata.get("distributed_generator_id") or "bindcraft2")
+        role_generator = "rfd4" if generator == "rfd4_proteina" else generator
         metadata.update(
             hidden=True,
             parent_task_group=parent_run.parent.name,
             parent_run_id=parent_run.name,
             parent_run_dir=str(parent_run),
             parent_role=(
-                "distributed_bindcraft2_validation"
+                f"distributed_{role_generator}_validation"
                 if submission_metadata.get("distributed_validation_stage") is not None
-                else "distributed_bindcraft2_attempt"
+                else f"distributed_{role_generator}_attempt"
             ),
-            benchmark_engine="bindcraft2",
+            benchmark_engine=generator,
         )
     write_json(run_dir / "metadata.json", metadata)
     write_json(run_dir / "command.json", {"mode": "internal", "command": []})

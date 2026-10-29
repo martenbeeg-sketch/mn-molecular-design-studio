@@ -1564,3 +1564,21 @@ def test_thousand_design_dispatch_stays_bounded_and_never_reuses_attempt_identit
     assert len({a['seed'] for a in launched}) == 1000
     distributed_campaign._dispatch_attempts(tmp_path, ledger, config, active_count=0, accepted_count=1000)
     assert len(launched) == 1000
+
+
+def test_validation_job_metadata_tracks_actual_campaign_generator(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    monkeypatch.setattr(jobs, 'runs_root', lambda: tmp_path)
+    parent = tmp_path / 'design' / 'campaign-parent'
+    for generator, expected_role in [('rfd4_proteina', 'distributed_rfd4_validation'),
+                                     ('bindcraft2', 'distributed_bindcraft2_validation')]:
+        with jobs.submission_tags(distributed_campaign_id='campaign',
+                                  distributed_generator_id=generator,
+                                  distributed_validation_stage=0,
+                                  parent_campaign_run_dir=str(parent)):
+            child = jobs.create_job('refolding-validation', 'complex_refolding',
+                                    'optimized_prediction', {}, {})
+        metadata = jobs.read_json(child.run_dir / 'metadata.json')
+        assert metadata['benchmark_engine'] == generator
+        assert metadata['parent_role'] == expected_role

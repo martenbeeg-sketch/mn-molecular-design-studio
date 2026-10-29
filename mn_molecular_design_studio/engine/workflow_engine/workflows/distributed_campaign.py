@@ -2709,6 +2709,7 @@ def _submit_validation_stage(
     request_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     with submission_tags(
         distributed_campaign_id=campaign_id,
+        distributed_generator_id=str(state["config"].get("generator_id") or "bindcraft2"),
         distributed_candidate_id=candidate_id,
         distributed_validation_stage=stage_index,
         parent_campaign_run_dir=str(parent_run_dir),
