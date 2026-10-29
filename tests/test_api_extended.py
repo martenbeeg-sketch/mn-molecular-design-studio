@@ -590,3 +590,4 @@ def test_shared_generator_objective_validates_and_runs_through_normal_pipeline_a
     assert run_response.status_code == 202, run_response.text
     assert captured["graph"]["shared_campaign"]["accepted_target"] == 1
     assert captured["graph"]["shared_campaign"]["generator_nodes"] == ["bindcraft", "rfd4"]
+    assert captured["graph"]["shared_campaign"]["workstation_selection"] == "auto"

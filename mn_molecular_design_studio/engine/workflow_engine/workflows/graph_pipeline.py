@@ -840,14 +840,16 @@ def _submit(request: dict, parent: Path, node: dict, *, owner_id: str, project_i
     # with their absolute/portable input paths intact.
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(request, indent=2, sort_keys=True) + "\n")
-    # The queued worker can start before mark_studio_job writes its marker.
-    # Persist the owner and project in the job metadata before dispatch so a
-    # nested distributed campaign can authorize peer submissions immediately.
+    shared_campaign_child = bool(
+        isinstance(distributed_campaign, dict) and distributed_campaign.get("_shared_objective")
+    )
+    # Shared controllers verify their graph parent and branch before opening
+    # the shared ledger, so persist lineage before launching those workers.
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import submission_tags
     parent_metadata = read_json(parent / "metadata.json")
     with submission_tags(studio_owner_id=owner_id, studio_project_id=project_id,
                          studio_development_mode=bool(parent_metadata.get("studio_development_mode"))):
-        result = submit_workflow_request(path)
+        result = submit_workflow_request(path, defer_dispatch=True) if shared_campaign_child else submit_workflow_request(path)
     mark_studio_job(result, owner_id=owner_id, project_id=project_id)
     child = _path(result["job"]["run_dir"])
     metadata = read_json(child / "metadata.json")
@@ -855,6 +857,9 @@ def _submit(request: dict, parent: Path, node: dict, *, owner_id: str, project_i
     metadata["pipeline_parent_node_id"] = cluster_config.identity()
     metadata.update(pipeline_parent_run_dir=str(parent), campaign_id=parent.name, campaign_name=read_json(parent / "input.json").get("params", {}).get("pipeline_name", "Pipeline"), graph_node_id=node["id"])
     write_json(child / "metadata.json", metadata)
+    if shared_campaign_child:
+        from mn_molecular_design_studio.engine.workflow_engine.core.local_worker import spawn_worker_for_run
+        spawn_worker_for_run(child)
     return child
 
 
@@ -1592,6 +1597,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         campaign.update({
                             "enabled": True,
                             "generator_id": "bindcraft2" if kind == "bindcraft2" else "rfd4_proteina",
+                            "workstation_selection": shared_campaign.get("workstation_selection", "auto"),
                             "objective_type": "accepted",
                             "unique_accepted": True,
                             "acceptance_level": "validated",

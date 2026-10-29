@@ -129,11 +129,17 @@ def test_shared_objective_normalizes_two_generator_branches_with_common_target_a
     assert shared["generator_nodes"] == ["bindcraft", "rfd4"]
     assert shared["generator_limits"]["rfd4"]["max_attempts"] == 5
     assert "bindcraft" not in shared["generator_limits"]
+    assert shared["workstation_selection"] == "auto"
     assert shared["validation_stages"][0]["parameters"]["engine"] == "boltz2"
     edited = copy.deepcopy(saved)
     edited["shared_campaign"]["max_concurrent_generation_jobs"] = 1
     edited["shared_campaign"]["generator_limits"] = {}
     assert graph.validate_graph(edited)["graph"]["shared_campaign"]["generator_limits"] == {}
+    edited["shared_campaign"]["workstation_selection"] = "local"
+    assert graph.validate_graph(edited)["graph"]["shared_campaign"]["workstation_selection"] == "local"
+    edited["shared_campaign"]["workstation_selection"] = "unsupported"
+    with pytest.raises(ValueError, match="workstation_selection"):
+        graph.validate_graph(edited)
 
 
 def test_shared_objective_rejects_different_target_and_incompatible_downstream_policy():
@@ -223,10 +229,49 @@ def test_graph_runner_injects_one_shared_campaign_context_into_normal_branch_req
     assert [request["parameters"]["distributed_campaign"]["_shared_objective"]["generator_node"]
             for request in requests] == ["bindcraft", "rfd4"]
     assert all(request["parameters"]["distributed_campaign"]["accepted_target"] == 1 for request in requests)
+    assert all(request["parameters"]["distributed_campaign"]["workstation_selection"] == "auto" for request in requests)
     shared_path = result / "artifacts/shared_campaign/ledger.json"
     assert shared_path.is_file()
     state = json.loads(shared_path.read_text())
     assert state["config"]["generator_nodes"] == ["bindcraft", "rfd4"]
+
+
+def test_shared_campaign_child_is_started_after_graph_lineage_is_persisted(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import workspace
+    from mn_molecular_design_studio.engine.workflow_engine.core import local_worker
+    from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation
+
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
+    parent, child = tmp_path / "graph-parent", tmp_path / "shared-child"
+    parent.mkdir(); child.mkdir()
+    (parent / "input.json").write_text(json.dumps({"params": {"pipeline_name": "Shared graph"}}))
+    (parent / "metadata.json").write_text(json.dumps({"studio_development_mode": True}))
+    (child / "metadata.json").write_text(json.dumps({"status": "queued", "job_code": "child"}))
+    submitted, started = [], []
+
+    def submit(path, *, defer_dispatch=False):
+        submitted.append((json.loads(Path(path).read_text()), defer_dispatch))
+        return {"job": {"run_dir": str(child)}}
+
+    def start(run_dir):
+        metadata = json.loads((Path(run_dir) / "metadata.json").read_text())
+        started.append(metadata)
+
+    monkeypatch.setattr(workflow_automation, "submit_workflow_request", submit)
+    monkeypatch.setattr(workspace, "mark_studio_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(local_worker, "spawn_worker_for_run", start)
+    request = {"workflow": "design.bindcraft2", "parameters": {"distributed_campaign": {
+        "enabled": True,
+        "_shared_objective": {"ledger_path": str(parent / "artifacts/shared_campaign/ledger.json"), "generator_node": "bindcraft"},
+    }}}
+
+    assert runner._submit(
+        request, parent, {"id": "bindcraft"}, owner_id="owner", project_id="project", gpu_device="all",
+    ) == child
+    assert len(submitted) == 1 and submitted[0][1] is True
+    assert len(started) == 1
+    assert started[0]["pipeline_parent_run_dir"] == str(parent)
+    assert started[0]["graph_node_id"] == "bindcraft"
 
 
 @pytest.mark.parametrize("workflow", ["design.bindcraft2", "design.rfd4_proteina"])

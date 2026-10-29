@@ -1500,6 +1500,7 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
         "max_concurrent_jobs", "max_concurrent_generation_jobs",
         "max_concurrent_validations", "max_compute_seconds", "validation_stages",
         "generator_limits", "target_node", "objective_type", "unique_accepted",
+        "workstation_selection",
     }
     if set(raw) - allowed:
         raise ValueError("Shared campaign has unsupported setting(s): " + ", ".join(sorted(set(raw) - allowed)) + ".")
@@ -1524,6 +1525,9 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
     max_validations = positive("max_concurrent_validations", max_jobs)
     if max_generation > max_jobs or max_validations > max_jobs:
         raise ValueError("Shared generation and validation concurrency must each fit within max_concurrent_jobs.")
+    workstation_selection = str(raw.get("workstation_selection", "auto")).strip().lower()
+    if workstation_selection not in {"auto", "eligible", "local"}:
+        raise ValueError("Shared workstation_selection must be auto, eligible, or local.")
     compute = raw.get("max_compute_seconds")
     if compute is not None and (type(compute) not in {int, float} or not math.isfinite(float(compute)) or compute <= 0):
         raise ValueError("Shared max_compute_seconds must be finite and positive when provided.")
@@ -1586,6 +1590,7 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
             "max_attempts": raw["max_attempts"],
             "max_concurrent_generation_jobs": min(max_generation, branch_jobs),
             "max_concurrent_validations": max_validations,
+            "workstation_selection": workstation_selection,
             "validation_stages": stages,
         })
         branch_configs.append((node_id, validated))
@@ -1612,6 +1617,7 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
         "max_concurrent_jobs": max_jobs,
         "max_concurrent_generation_jobs": max_generation,
         "max_concurrent_validations": max_validations,
+        "workstation_selection": workstation_selection,
         "generator_limits": normalized_limits,
         "validation_stages": normalized_stages,
         **({"max_compute_seconds": float(compute)} if compute is not None else {}),

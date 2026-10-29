@@ -1053,7 +1053,7 @@ def _prepare_selection(spec, payload, request_path):
     return normalized, function, cpu, gpu
 
 
-def submit_workflow_request(request_file: str | Path) -> dict[str, Any]:
+def submit_workflow_request(request_file: str | Path, *, defer_dispatch: bool = False) -> dict[str, Any]:
     # Admission requirements must be recorded before spawn_worker_for_run;
     # changing metadata after submission races the scheduler's first claim.
     from mn_molecular_design_studio.engine.workflow_engine.core.workflow_queue import execution_resources
@@ -1066,10 +1066,10 @@ def submit_workflow_request(request_file: str | Path) -> dict[str, Any]:
         raise AutomationError('Workflow request must be a JSON object.')
     _validate_resources(payload.get('resources'))
     with execution_resources(payload.get('resources')):
-        return _submit_workflow_request(request_path)
+        return _submit_workflow_request(request_path, defer_dispatch=defer_dispatch)
 
 
-def _submit_workflow_request(request_file: str | Path) -> dict[str, Any]:
+def _submit_workflow_request(request_file: str | Path, *, defer_dispatch: bool = False) -> dict[str, Any]:
     """Validate and submit one allowlisted workflow request."""
     request_path = Path(request_file).expanduser().resolve()
     try:
@@ -1102,14 +1102,19 @@ def _submit_workflow_request(request_file: str | Path) -> dict[str, Any]:
                 run_input_batch, task_group=spec.task_group, tool=spec.tool, job_type=spec.job_type,
                 kwargs={"workflow_id": workflow_id, "items": parameters, "cpu_cores": cpu_cores,
                         "gpu_device": resource_gpu, "job_name": parameters[0].get("job_name") or "Selected inputs"},
-                cpu_cores=cpu_cores, gpu_device=resource_gpu,
+                cpu_cores=cpu_cores, gpu_device=resource_gpu, dispatch=not defer_dispatch,
             )
             related = {}
         elif spec.mode != "queued":
+            if defer_dispatch and spec.workflow_id == "design.bindcraft2":
+                # The graph must persist the child lineage before BindCraft's
+                # worker can inspect the shared campaign scope.
+                parameters = {**parameters, "dispatch_worker": False}
             run_dir, related = _direct_result(spec, function, parameters)
             if spec.mode in {"target_prepare", "target_refolding_evaluation", "sequence_pipeline", "candidate_refolding", "enqueue"}:
                 _apply_custom_resource_request(run_dir, cpu_cores=cpu_cores, gpu_device=resource_gpu)
-                spawn_worker_for_run(run_dir)
+                if not defer_dispatch:
+                    spawn_worker_for_run(run_dir)
         else:
             run_dir = enqueue_workflow_call(
                 function,
@@ -1119,6 +1124,7 @@ def _submit_workflow_request(request_file: str | Path) -> dict[str, Any]:
                 kwargs=parameters,
                 cpu_cores=cpu_cores,
                 gpu_device=resource_gpu,
+                dispatch=not defer_dispatch,
             )
             related = {}
     return {"workflow": workflow_id, "job": job_reference(run_dir), **related}

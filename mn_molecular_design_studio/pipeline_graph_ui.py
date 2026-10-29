@@ -607,6 +607,15 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
             value=float(existing_shared.get('max_compute_seconds') or 0),
             key=prefix + '-shared-compute-' + graph['id'],
         ))
+        previous_placement = existing_shared.get('workstation_selection', 'auto')
+        workstation_selection = st.selectbox(
+            'Generator workstations', ['auto', 'local'],
+            index=['auto', 'local'].index(previous_placement)
+            if previous_placement in ('auto', 'local') else 0,
+            format_func=lambda value: 'Automatic · compatible workstations' if value == 'auto' else 'This workstation',
+            key=prefix + '-shared-workstation-selection-' + graph['id'],
+            help='Automatic placement sends attempts to available workstations with compatible GPU runtime, images, and model files.',
+        )
         limits = copy.deepcopy(existing_shared.get('generator_limits') or {})
         with st.expander('Optional per-generator limits', expanded=False):
             for branch_id in selected_branches:
@@ -647,6 +656,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
             'max_concurrent_jobs': max_jobs,
             'max_concurrent_generation_jobs': max_generation_jobs,
             'max_concurrent_validations': max_validations,
+            'workstation_selection': workstation_selection,
             'generator_limits': limits, 'validation_stages': stages,
             **({'max_compute_seconds': max_compute} if max_compute else {}),
         }
