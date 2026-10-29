@@ -7,9 +7,26 @@ from functools import lru_cache
 _PROBE = '''import json
 try:
  import torch
- print(json.dumps({'cuda':torch.version.cuda, 'targets':str(torch._C._cuda_getArchFlags() or '').split()}))
+ inventory = {'cuda':torch.version.cuda, 'targets':str(torch._C._cuda_getArchFlags() or '').split()}
 except (ImportError, AttributeError):
- print(json.dumps({'cuda':None,'targets':[]}))
+ inventory = {'cuda':None,'targets':[]}
+'''
+
+_PROTENIX_KERNEL_PROBE = '''
+# Stock Protenix loads a separate CUDA extension. PyTorch targets alone do not
+# establish its compatibility (the old image omitted SM120 in this binary).
+import re, subprocess
+from pathlib import Path
+binary = Path('/opt/Protenix/protenix/model/layer_norm/fast_layer_norm_cuda_v2.so')
+targets = []
+try:
+ listing = subprocess.check_output(['cuobjdump', '--list-elf', str(binary)], text=True, stderr=subprocess.DEVNULL)
+ targets.extend('sm_' + value for value in sorted(set(re.findall(r'\\.sm_(\\d+)\\.cubin', listing)), key=int))
+ ptx = subprocess.check_output(['cuobjdump', '--dump-ptx', str(binary)], text=True, stderr=subprocess.DEVNULL)
+ targets.extend('compute_' + value for value in sorted(set(re.findall(r'\\.target\\s+sm_(\\d+)(?![0-9A-Za-z_])', ptx)), key=int))
+except (OSError, subprocess.SubprocessError):
+ pass
+inventory['required_cuda_targets'] = {'protenix_fused_layer_norm': targets}
 '''
 
 
@@ -22,11 +39,11 @@ def _probe(image_id, protenix_v2=False):
         entrypoint = '/usr/bin/env' if protenix_v2 else 'python'
         arguments = ['-u', 'PROTENIX_OPT_MODE', 'python'] if protenix_v2 else []
         result = subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', entrypoint,
-                                 image_id, *arguments, '-c', _PROBE],
+                                 image_id, *arguments, '-c', _PROBE + (_PROTENIX_KERNEL_PROBE if protenix_v2 else '') + '\nprint(json.dumps(inventory))'],
                                 capture_output=True, text=True, check=True, timeout=30)
         return json.loads(result.stdout.strip().splitlines()[-1])
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
-        return {'cuda': None, 'targets': []}
+        return {'cuda': None, 'targets': [], **({'required_cuda_targets': {'protenix_fused_layer_norm': []}} if protenix_v2 else {})}
 
 
 def profiles(images):
@@ -39,7 +56,7 @@ def profiles(images):
         except (OSError, subprocess.SubprocessError):
             continue
         profile = _probe(identity, image.startswith('mn-protenix-opt:'))
-        if profile.get('targets'):
+        if profile.get('targets') or image.startswith('mn-protenix-opt:'):
             result[image] = profile
     return result
 
@@ -64,11 +81,12 @@ def compatible(gpu, profiles):
                     return False
             except (ValueError, TypeError):
                 return False
-        targets = profile.get('targets') or []
-        cubins = [int(v.split('_')[1]) for v in targets if v.startswith('sm_') and v.split('_')[1].isdigit()]
-        ptx = [int(v.split('_')[1]) for v in targets if v.startswith('compute_') and v.split('_')[1].isdigit()]
-        if not (any(v // 10 == capability // 10 and v <= capability for v in cubins) or any(v <= capability for v in ptx)):
-            return False
+        inventories = [profile.get('targets') or [], *profile.get('required_cuda_targets', {}).values()]
+        for targets in inventories:
+            cubins = [int(v.split('_')[1]) for v in targets if v.startswith('sm_') and v.split('_')[1].isdigit()]
+            ptx = [int(v.split('_')[1]) for v in targets if v.startswith('compute_') and v.split('_')[1].isdigit()]
+            if not (any(v // 10 == capability // 10 and v <= capability for v in cubins) or any(v <= capability for v in ptx)):
+                return False
     return True
 
 

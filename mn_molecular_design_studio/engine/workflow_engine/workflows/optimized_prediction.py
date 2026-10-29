@@ -173,7 +173,7 @@ ENGINE_PROFILES: dict[str, dict[str, Any]] = {
         "label": "Protenix V2",
         "code_version": "Protenix 2.0.0",
         "optimized": True,
-        "image": "mn-protenix-opt:2.0.0-cu128-batch2",
+        "image": "mn-protenix-opt:2.0.0-cu128-sm89-sm120-batch3",
         "api_engine": "protenix_v2_opt",
         "modes": ("off", "fast"),
         "gpu_count": {},
