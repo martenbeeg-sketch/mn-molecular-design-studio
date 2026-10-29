@@ -361,6 +361,13 @@ def validate_settings(kind, params):
         for rule in params.get("rules", []):
             if not isinstance(rule, dict) or set(rule) != {"field", "operator", "value"} or not isinstance(rule["field"], str) or not rule["field"] or rule["operator"] not in COMPARISONS or finite_number(rule["value"]) is None:
                 raise ValueError("Each scientific rule needs a field, comparison operator and finite value.")
+    if kind == "shared_filter":
+        from mn_molecular_design_studio.validation_acceptance import normalize_policy
+        normalize_policy({"binder_format": params.get("binder_format", "miniprotein"),
+                          "target_type": params.get("target_type", "structured"),
+                          "mandatory_filters": params.get("rules", []),
+                          "informational_scores": params.get("informational_scores", []),
+                          "ranking_metric": params.get("ranking_metric", "")})
     if kind == "candidate_rank":
         if len(params.get("ranking_rules", [])) > 16:
             raise ValueError("At most sixteen ordered ranking measurements are supported.")
@@ -398,6 +405,13 @@ def observation(row, field, output=None):
 
 
 def shared_filter(parent, node_id, source, params):
+    from mn_molecular_design_studio.validation_acceptance import evaluate_candidate, normalize_policy
+    policy = normalize_policy({"binder_format": params.get("binder_format", "miniprotein"),
+                               "target_type": params.get("target_type", "structured"),
+                               "mandatory_filters": params.get("rules", []),
+                               "informational_scores": params.get("informational_scores", []),
+                               "ranking_metric": params.get("ranking_metric", "")})
+    acceptance_enabled = bool(policy["mandatory_filters"] or policy["informational_scores"] or policy["ranking_metric"])
     review_path = Path(parent) / "artifacts/pipeline_nodes" / node_id / "artifacts/candidate_set/all_candidates.jsonl"
     review_path.parent.mkdir(parents=True, exist_ok=True)
     counts = Counter()
@@ -408,12 +422,13 @@ def shared_filter(parent, node_id, source, params):
                 if not info:
                     raise ValueError("Shared filters require a CandidateSet merge first.")
                 decisions = []
-                for rule in params["rules"]:
-                    observed = observation(row, rule["field"])
-                    status = observed["status"]
-                    if status == "valid":
-                        status = "passed" if COMPARISONS[rule["operator"]](observed["value"], rule["value"]) else "failed"
-                    decisions.append(dict(rule=rule, observation=observed, status=status))
+                acceptance = evaluate_candidate(row, policy) if acceptance_enabled else None
+                if acceptance:
+                    row.setdefault("raw_metadata", {})["validation_acceptance"] = acceptance
+                    for rule in policy["mandatory_filters"]:
+                        measured = acceptance["measurements"][rule["field"]]
+                        status = ("passed" if measured["passed"] else "failed") if measured["status"] == "measured" else measured["status"]
+                        decisions.append(dict(rule=rule, observation=measured, status=status))
                 if not (row.get("complex_pdb") or row.get("binder_pdb")) or any(a.get("status") != "present" for a in artifact_evidence(row).values()):
                     status = "missing_evidence"
                 elif info.get("native_output_role") == "intermediate":
@@ -424,9 +439,16 @@ def shared_filter(parent, node_id, source, params):
                     status = "invalid_metadata"
                 elif sequence_state(row) != "sequence_ready":
                     status = "unresolved"
+                elif acceptance and acceptance["status"] == "rejected":
+                    status = "failed"
+                elif acceptance and acceptance["status"] == "unresolved":
+                    status = "unresolved"
+                elif acceptance and acceptance["status"] == "accepted":
+                    status = "passed"
                 else:
                     status = next((v for v in ("invalid_metadata", "missing_evidence", "failed") if any(d["status"] == v for d in decisions)), "passed" if decisions else "not_evaluated")
-                info["shared_filter"] = dict(status=status, decisions=decisions, policy=copy.deepcopy(params))
+                info["shared_filter"] = dict(status=status, decisions=decisions, policy=copy.deepcopy(params),
+                                              acceptance_status=acceptance["status"] if acceptance else "not_evaluated")
                 info["eligible_for_prediction"] = status in {"passed", "not_evaluated"} and info.get("native_output_role") != "intermediate"
                 counts[status] += 1
                 review.write(json.dumps(row, sort_keys=True) + "\n")
@@ -552,13 +574,22 @@ def export_collection(parent, source, graph, node_states):
         output=node_states.get(operation['node'], {}).get('output', {})) for operation in summary['generator_operations']])
     selected_files = {}
     with (destination / "candidate_index.csv").open("w") as handle, (destination / "predictions.jsonl").open("w") as predictions, (destination / "selected_sequences.fasta").open("w") as fasta, (destination / "native_sequences.fasta").open("w") as native_fasta:
-        writer = csv.DictWriter(handle, fieldnames=["candidate_id", "generator", "source_run", "native_attempt_id", "backbone_id", "variant_id", "parent_variant_ids", "sequence_state", "native_filter", "shared_filter", "predictor_matrix", "rank", "selected"])
+        writer = csv.DictWriter(handle, fieldnames=["candidate_id", "generator", "source_run", "native_attempt_id", "backbone_id", "variant_id", "parent_variant_ids", "sequence_state", "native_filter", "shared_filter", "validation_acceptance", "acceptance_reasons", "predictor_matrix", "rank", "selected"])
         writer.writeheader()
         for row in iter_candidates(source, review=True):
             info = metadata(row)
             selection = row.get("raw_metadata", {}).get("selection", {})
-            writer.writerow(dict(candidate_id=row["candidate_id"], **{k: info.get(k) for k in writer.fieldnames if k not in {"candidate_id", "shared_filter", "rank", "selected"}},
-                                 shared_filter=info.get("shared_filter", {}).get("status"), rank=selection.get("rank"), selected=selection.get("selected", False)))
+            index_row = {key: info.get(key) for key in writer.fieldnames
+                         if key not in {"candidate_id", "shared_filter", "validation_acceptance",
+                                        "acceptance_reasons", "rank", "selected"}}
+            index_row.update(
+                candidate_id=row["candidate_id"],
+                shared_filter=info.get("shared_filter", {}).get("status"),
+                validation_acceptance=(row.get("raw_metadata", {}).get("validation_acceptance") or {}).get("status"),
+                acceptance_reasons="; ".join((row.get("raw_metadata", {}).get("validation_acceptance") or {}).get("reasons", [])),
+                rank=selection.get("rank"), selected=selection.get("selected", False),
+            )
+            writer.writerow(index_row)
             for prediction in info.get("predictions", []):
                 predictions.write(json.dumps(dict(variant_id=info["variant_id"], **prediction), sort_keys=True) + "\n")
             if selection.get("selected") or summary['effective_mode'] == 'native_complete':

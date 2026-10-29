@@ -43,6 +43,63 @@ def sequence(residues: list) -> str:
     return "".join(seq1(r.resname, undef_code="X") for r in residues)
 
 
+def interface_filter_measurements(structure_path: Path, binder_chains: list[str],
+                                  target_chains: list[str]) -> dict[str, int]:
+    """Measure the two geometry filters shared with BindCraft2.
+
+    Interface size is the number of binder residues with any heavy atom within
+    4 Å of any target heavy atom. Backbone clashes count interchain Cα pairs
+    within 2.5 Å. Missing chain roles or coordinates raise instead of silently
+    manufacturing a passing zero.
+    """
+    from Bio.PDB import NeighborSearch
+
+    chains = protein_chains(read_structure(Path(structure_path)))
+    binder_chains = [str(chain) for chain in binder_chains]
+    target_chains = [str(chain) for chain in target_chains]
+    if not binder_chains or not target_chains:
+        raise ValueError("Interface measurements require identified binder and target chains.")
+    if any(chain not in chains for chain in (*binder_chains, *target_chains)):
+        raise ValueError("Interface measurement chain roles do not match the predicted structure.")
+
+    def heavy(atom):
+        element = str(atom.element or "").strip().upper()
+        return element not in {"H", "D"} and not atom.get_name().strip().upper().startswith(("H", "D"))
+
+    target_atoms = [atom for chain in target_chains for residue in chains[chain]
+                    for atom in residue if heavy(atom)]
+    binder_residues = [residue for chain in binder_chains for residue in chains[chain]]
+    if not target_atoms:
+        raise ValueError("The predicted target has no heavy atoms for interface measurement.")
+    target_search = NeighborSearch(target_atoms)
+    interface_residues = 0
+    for residue in binder_residues:
+        atoms = [atom for atom in residue if heavy(atom)]
+        if any(any(float(np.linalg.norm(atom.coord - target.coord)) <= 4.0
+                   for target in target_search.search(atom.coord, 4.000001, level="A"))
+               for atom in atoms):
+            interface_residues += 1
+
+    ca_by_chain = {chain: [residue["CA"] for residue in rows if "CA" in residue]
+                   for chain, rows in chains.items()}
+    chain_ids = list(ca_by_chain)
+    clashes = 0
+    for index, left_chain in enumerate(chain_ids):
+        left_atoms = ca_by_chain[left_chain]
+        if not left_atoms:
+            continue
+        for right_chain in chain_ids[index + 1:]:
+            right_atoms = ca_by_chain[right_chain]
+            if not right_atoms:
+                continue
+            right_search = NeighborSearch(right_atoms)
+            for atom in left_atoms:
+                clashes += sum(float(np.linalg.norm(atom.coord - other.coord)) <= 2.5
+                               for other in right_search.search(atom.coord, 2.500001, level="A"))
+    return {"validation_interface_residue_count_4a": interface_residues,
+            "validation_backbone_ca_clashes_2_5a": clashes}
+
+
 def residue_pairs(reference: str, predicted: str) -> list[tuple[int, int]]:
     aligner = PairwiseAligner(mode="global", match_score=2, mismatch_score=-1,
                               open_gap_score=-8, extend_gap_score=-.5)
@@ -99,15 +156,33 @@ def candidate_passes_filters(candidate: dict) -> bool:
             and raw.get("bindcraft_output_kind") == "Accepted")
 
 
-def design_candidates(run_dir: Path) -> list[dict]:
-    """Only filter-passing designs from a successfully completed design job."""
+def design_candidates(run_dir: Path, *, require_passing: bool = True) -> list[dict]:
+    """Read designs from a successful design job, optionally requiring native pass.
+
+    Ordinary cofolding selection remains restricted to affirmative native-pass
+    evidence. The standalone acceptance tool sets ``require_passing=False`` so
+    its independent prediction can evaluate rejected or unfiltered designs too.
+    """
     metadata = read_json(run_dir / "metadata.json")
     result = read_json(run_dir / "result.json")
     if (metadata.get("task_group") != "design"
             or metadata.get("status") not in {"completed", "succeeded"}
             or result.get("success") is not True):
         return []
-    return [c for c in read_candidates(run_dir) if candidate_passes_filters(c)]
+    candidates = read_candidates(run_dir)
+    if require_passing:
+        return [candidate for candidate in candidates if candidate_passes_filters(candidate)]
+    eligible = []
+    for candidate in candidates:
+        raw = candidate.get("raw_metadata") or {}
+        if raw.get("candidate_pool_level") == "prefilter_generated" or raw.get("result_kind") in {
+            "generation_only", "generator_trajectory",
+        }:
+            continue
+        if candidate.get("stage") in {"generation.backbone", "generation_backbone", "generator_trajectory"}:
+            continue
+        eligible.append(candidate)
+    return eligible
 
 
 def candidate_description(run_dir: Path, candidate: dict) -> dict:
@@ -136,13 +211,19 @@ def candidate_description(run_dir: Path, candidate: dict) -> dict:
 
 
 def build_tasks(sources: list[dict], *, mode: str, profile: dict, target_use_msa: bool,
-                use_target_template: bool) -> list[dict]:
+                use_target_template: bool, target_type: str = "structured",
+                binder_format: str | None = None, require_passing: bool = True) -> list[dict]:
     if mode not in {"complex", "binder"}:
         raise ValueError("Choose complex refolding or binder-only prediction.")
+    if target_type not in {"structured", "fasta_idr"}:
+        raise ValueError("Choose a structured or FASTA / IDR target.")
+    if target_type == "fasta_idr" and profile["input_kind"] == "boltzgen":
+        raise ValueError("BoltzGen Fold validation uses target coordinates as structural input; use a sequence-only-capable co-folding engine for FASTA / IDR targets.")
     if not isinstance(sources, list) or not sources or len(sources) > 128:
         raise ValueError("Select between 1 and 128 design runs.")
     if mode == "binder" and profile["input_kind"] == "boltzgen":
         raise ValueError("BoltzGen Fold requires a target; choose another engine for binder-only prediction.")
+    from mn_molecular_design_studio.validation_acceptance import infer_binder_format
     tasks, seen = [], set()
     for source in sources:
         if not isinstance(source, dict):
@@ -150,7 +231,18 @@ def build_tasks(sources: list[dict], *, mode: str, profile: dict, target_use_msa
         run_dir = resolve_stored_path(source.get("source_run_dir"), must_exist=True)
         if not run_dir or not run_dir.is_dir():
             raise ValueError("A selected design run is unavailable.")
-        rows = {c["candidate_id"]: c for c in design_candidates(run_dir)}
+        rows = {c["candidate_id"]: c for c in design_candidates(run_dir, require_passing=require_passing)}
+        try:
+            workflow_parameters = read_json(run_dir / "input.json").get("params", {})
+        except (OSError, ValueError, TypeError):
+            workflow_parameters = {}
+        native_settings = run_dir / "artifacts/raw/bindcraft2/settings.json"
+        if native_settings.is_file():
+            try:
+                workflow_parameters = {"input_params": workflow_parameters,
+                                       "bindcraft2_settings": read_json(native_settings)}
+            except (OSError, ValueError, TypeError):
+                pass
         ids = source.get("candidate_ids")
         if not isinstance(ids, list) or not ids:
             raise ValueError("Select at least one design from every selected run.")
@@ -160,8 +252,17 @@ def build_tasks(sources: list[dict], *, mode: str, profile: dict, target_use_msa
                 continue
             seen.add(key)
             if identifier not in rows:
-                raise ValueError(f"Design {identifier!r} is not a filter-passing design from a successful design job in {run_dir.name}.")
+                eligibility = "filter-passing output" if require_passing else "eligible output from a successful design job"
+                raise ValueError(f"Design {identifier!r} is not an {eligibility} in {run_dir.name}.")
             candidate = rows[identifier]
+            inferred_format = infer_binder_format(candidate, workflow_parameters)
+            selected_format = binder_format or inferred_format
+            cyclic = selected_format == "cyclic_peptide" or inferred_format == "cyclic_peptide" or bool(
+                (candidate.get("metrics") or {}).get("cyclic")
+                or (candidate.get("raw_metadata") or {}).get("cyclic")
+            )
+            if cyclic and not profile.get("supports_cyclic"):
+                raise ValueError(f"The selected co-folding engine {profile['label']} does not preserve cyclic peptide input topology; choose an engine with cyclic-chain support.")
             try:
                 info = candidate_description(run_dir, candidate)
             except ValueError as exc:
@@ -173,9 +274,11 @@ def build_tasks(sources: list[dict], *, mode: str, profile: dict, target_use_msa
             if len(ordered) > len(CHAIN_IDS):
                 raise ValueError("The selected complex has too many protein chains.")
             chain_map = {chain: CHAIN_IDS[i] for i, chain in enumerate(ordered)}
-            options = [{"id": chain_map[c], "use_msa": bool(target_use_msa and c in target_ids)} for c in ordered]
+            options = [{"id": chain_map[c], "use_msa": bool(target_use_msa and c in target_ids),
+                        **({"cyclic": True} if cyclic and c in info["binder_chains"] else {})}
+                       for c in ordered]
             templates = []
-            if use_target_template and target_ids and profile.get("supports_templates"):
+            if target_type == "structured" and use_target_template and target_ids and profile.get("supports_templates"):
                 for c in target_ids:
                     class TargetChain(Select):
                         def accept_chain(self, chain):
@@ -194,6 +297,8 @@ def build_tasks(sources: list[dict], *, mode: str, profile: dict, target_use_msa
                 "validation_reference": {
                     "source_run_dir": str(run_dir), "candidate_id": identifier,
                     "reference_structure_path": str(info["structure_path"]), "mode": mode,
+                    "target_type": target_type,
+                    "binder_format": selected_format, "cyclic": cyclic,
                     "chain_map": chain_map, "target_chains": target_ids,
                     "binder_chains": info["binder_chains"],
                 },
@@ -269,7 +374,8 @@ def compare_prediction(run_dir: Path, item_id: str, sample_index: int, predictio
     if len(binder_ref) < 3:
         raise ValueError("At least three matched binder C-alpha atoms are needed for RMSD.")
     complex_mode = reference["mode"] == "complex"
-    fit_ref, fit_pred, fit_total = coordinates(reference["target_chains"]) if complex_mode else (binder_ref, binder_pred, binder_total)
+    target_pose_comparable = complex_mode and reference.get("target_type", "structured") != "fasta_idr"
+    fit_ref, fit_pred, fit_total = coordinates(reference["target_chains"]) if target_pose_comparable else (binder_ref, binder_pred, binder_total)
     if not all(np.isfinite(array).all() for array in (fit_ref, fit_pred, binder_ref, binder_pred)):
         raise ValueError("Non-finite coordinates prevent structure comparison.")
     if len(fit_ref) < 3 or any(np.linalg.matrix_rank(array - array.mean(axis=0)) < 2 for array in (fit_ref, fit_pred)):
@@ -280,16 +386,30 @@ def compare_prediction(run_dir: Path, item_id: str, sample_index: int, predictio
     rotation = u @ correction @ vt
     translation = ref_center - pred_center @ rotation
     rmsd = lambda a, b: float(np.sqrt(np.mean(np.sum((a - b) ** 2, axis=1))))
+    binder_rmsd = rmsd(binder_ref, binder_pred @ rotation + translation)
     metrics = {
         "validation_mode": reference["mode"], "validation_status": "completed",
-        "binder_rmsd_target_aligned" if complex_mode else "binder_rmsd_fitted": rmsd(binder_ref, binder_pred @ rotation + translation),
+        "binder_rmsd_target_aligned" if target_pose_comparable else "binder_rmsd_fitted": binder_rmsd,
         "binder_rmsd_ca_count": len(binder_ref), "binder_rmsd_coverage": len(binder_ref) / binder_total,
     }
-    if complex_mode:
+    if target_pose_comparable:
         metrics.update(target_alignment_rmsd=rmsd(fit_ref, fit_pred @ rotation + translation),
                        target_alignment_ca_count=len(fit_ref), target_alignment_coverage=len(fit_ref) / fit_total)
+    elif complex_mode:
+        metrics.update(binder_self_consistency_rmsd=binder_rmsd,
+                       target_pose_comparison_status="unavailable_unconstrained_target")
     else:
         metrics.update(monomer_refolding_success=True, monomer_refolding_rmsd=metrics["binder_rmsd_fitted"])
+    if reference.get("cyclic") and len(reference.get("binder_chains") or []) == 1:
+        predicted_binder = pred_chains[mapped[reference["binder_chains"][0]]]
+        ordered_residues = list(predicted_binder)
+        if ordered_residues and "N" in ordered_residues[0] and "C" in ordered_residues[-1]:
+            metrics["cyclic_closure_distance"] = float(np.linalg.norm(
+                ordered_residues[0]["N"].coord - ordered_residues[-1]["C"].coord
+            ))
+            metrics["cyclic_closure_status"] = "measured"
+        else:
+            metrics["cyclic_closure_status"] = "unavailable_terminal_atoms"
     fitted = copy.deepcopy(predicted)
     for atom in fitted.get_atoms():
         atom.coord = atom.coord @ rotation + translation
@@ -309,7 +429,7 @@ def write_report(run_dir: Path, candidates: list[dict]) -> Path:
             rows.append({"candidate_id": candidate["candidate_id"], "source_run_dir": reference["source_run_dir"],
                          "source_candidate_id": reference["candidate_id"],
                          **{k: v for k, v in candidate.get("metrics", {}).items()
-                            if k.startswith(("binder_rmsd", "target_alignment", "validation_"))}})
+                            if k.startswith(("binder_rmsd", "target_alignment", "validation_", "cyclic_closure"))}})
     path = run_dir / "artifacts/validation/comparisons.csv"
     path.parent.mkdir(parents=True, exist_ok=True)
     fields = list(dict.fromkeys(key for row in rows for key in row))

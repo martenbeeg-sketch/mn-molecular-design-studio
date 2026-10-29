@@ -34,8 +34,8 @@ pd_l1_binder:
 
 PREVIEW_TASKS = {
     "idr_peptide_binder": {
-        "label": "IDR Peptide Binder (preview)",
-        "description": "Plan a binder against an intrinsically disordered region.",
+        "label": "IDR Peptide Binder (experimental)",
+        "description": "Co-generate a binder and a sequence-fixed, coordinate-unconditioned IDR target.",
     },
     "cyclic_peptide_binder": {
         "label": "Cyclic Peptide Binder (preview)",
@@ -290,7 +290,7 @@ def _residues(title,path,chains,key):
     return value
 
 
-def _optional(task,o,p,path,chains,folding):
+def _optional(task,o,p,path,chains,folding,*,condition_spec=False):
     antibody=task in ('nanobody','antibody','tcr')
     design_type=o.get('score_design_type',task)
     if task=='score_structures':
@@ -298,10 +298,10 @@ def _optional(task,o,p,path,chains,folding):
     else:
         if task in ('protein_binder','small_molecule_binder','dna_binder','unconditional'):o['cath']=st.text_input('Fold Class (CATH)',placeholder='e.g. 2.60.40',key='rfd4-cath-'+task)
         if antibody:o['cdr_lengths']=_objects('CDR Lengths','rfd4-cdr-lengths-'+task)
-        if task in ('protein_binder','nanobody','antibody','tcr'):
+        if task in ('protein_binder','nanobody','antibody','tcr') and not condition_spec:
             o['hotspot_atoms']=_pills('Hotspot Atoms',['whole','sidechain','tip','single'],'whole',key='rfd4-hotspot-atoms-'+task,labels={'whole':'Whole residue','sidechain':'Side chain','tip':'Side-chain tip','single':'Single atom'})
             st.caption({'whole':'Mark all resolved atoms in each chosen residue.','sidechain':'Mark side-chain atoms; use CA for glycine.','tip':'Mark atoms beyond CB; use CB for alanine and CA for glycine.','single':'Mark the resolved side-chain atom farthest from CA.'}[o['hotspot_atoms']])
-        if task in ('protein_binder','nanobody','antibody','tcr','small_molecule_binder','dna_binder'):
+        if task in ('protein_binder','nanobody','antibody','tcr','small_molecule_binder','dna_binder') and not condition_spec:
             o['repack_target']=st.checkbox('Repack Target Side Chains',value=True,key='rfd4-repack-'+task)
         if antibody:
             o['framework_atoms']=_pills('Framework Atoms To Hold',['backbone','all'],'backbone',key='rfd4-framework-atoms-'+task,labels={'backbone':'Backbone only','all':'All atoms'})
@@ -399,24 +399,45 @@ def _render_content(schema:dict,*,owner_id,project_selector,submit,folding=False
     preview_task=task in PREVIEW_TASKS
     if not folding:
         st.markdown(PREVIEW_TASKS[task]['description'] if preview_task else inputs.TASK_HELP[task])
-    p={'task':task,'input_mode':'guided','job_name':job_name,'target_chains':[],'input_files':[],'hotspots':''};o={};p['options']=o
+    p={'task':'protein_binder' if task=='idr_peptide_binder' else task,'input_mode':'guided','job_name':job_name,'target_chains':[],'input_files':[],'hotspots':''};o={};p['options']=o
     ready=True;path=None;chains=[]
     if task=='existing_structure':
         o['operation']='structure_prediction' if folding else _pills('Operation',list(inputs.OPERATIONS),'diversify',key='rfd4-operation',labels=inputs.OPERATIONS)
     if task=='custom_conditions':
         p['input_mode']=_pills('Conditions Input',['condition_spec','annotated_cif'],'condition_spec',key='rfd4-custom-mode',labels={'condition_spec':'Condition File','annotated_cif':'Annotated CIF'})
     sequence_input=folding and st.radio('Input',['Protein sequence','Structure'],horizontal=True)=='Protein sequence'
-    if preview_task:
-        if task=='idr_peptide_binder':
-            st.text_area('Target FASTA',placeholder='>target_idr\nPaste one protein sequence',disabled=True,key='rfd4-idr-preview-fasta')
-            st.text_input('Optional hotspot residues',placeholder='e.g. A25, A30-35',disabled=True,key='rfd4-idr-preview-hotspots')
-            st.caption('The paper reports IDR binder experiments, but the Studio input path for a sequence-only IDR target has not been validated.')
-        else:
-            st.file_uploader('Target structure (PDB or mmCIF)',type=['pdb','ent','cif','mmcif'],disabled=True,key='rfd4-cyclic-preview-structure')
-            st.multiselect('Target Chains',[],disabled=True,key='rfd4-cyclic-preview-chains')
-            st.text_input('Optional hotspot residues',placeholder='e.g. A25, A30-35',disabled=True,key='rfd4-cyclic-preview-hotspots')
-            st.number_input('Cyclic peptide length',min_value=6,max_value=24,value=12,disabled=True,key='rfd4-cyclic-preview-length')
-            st.markdown('RFD4 has a [cyclic peptide binder preset](https://github.com/RosettaCommons/RFD4-Proteina/blob/main/configs/design_tasks/presets/cyclic_peptide_binder.yaml) and [tests for head-to-tail ring topology](https://github.com/RosettaCommons/RFD4-Proteina/blob/main/tests/pipeline/test_canonical_polymer_ordering.py). Studio still needs a ring-aware input and output path.')
+    if task=='idr_peptide_binder':
+        p['input_mode']='condition_spec'
+        fasta_text=st.text_area('Target FASTA (IDR region)',placeholder='>target_idr\nPaste one IDR sequence',key='rfd4-idr-preview-fasta')
+        hotspot_text=st.text_input('Optional hotspot residues',placeholder='e.g. A5, A8-12',key='rfd4-idr-preview-hotspots')
+        p['length_min']=st.number_input('Minimum Binder Length',20,1024,70,key='rfd4-idr-min-length')
+        p['length_max']=st.number_input('Maximum Binder Length',20,1024,110,key='rfd4-idr-max-length')
+        p['target_chains']=['A']
+        p['hotspots']=hotspot_text
+        ready=False
+        if fasta_text.strip():
+            try:
+                target_sequence=inputs.parse_idr_fasta(fasta_text)
+                target_path=inputs.store_idr_sequence_carrier(target_sequence,user_input_root(owner_id))
+                p['target_structure']=str(target_path)
+                p['input_files']=[str(target_path)]
+                p['condition_spec']=inputs.idr_binder_condition_spec(
+                    target_sequence,target_filename=target_path.name,
+                    binder_length_min=p['length_min'],binder_length_max=p['length_max'],hotspots=hotspot_text,
+                )
+                ready=p['length_min']<=p['length_max']
+                with st.expander('RFD4 condition specification'):
+                    st.code(p['condition_spec'],language='yaml')
+            except ValueError as exc:
+                st.error(str(exc))
+        st.info('Experimental sequence-only target mode: the CIF contains an ideal extended backbone only to carry residue identity. C_SEQ fixes the target sequence; no C_CRD or C_CRDGRP condition is added, so target coordinates are free. Hotspots add C_HOT contact guidance without fixing coordinates. This does not predict or validate the IDR ensemble.')
+        st.caption('Hotspot positions are 1-based positions in the pasted FASTA sequence. The native RFD4 protein-binder workflow and its configured Results are used.')
+    elif preview_task:
+        st.file_uploader('Target structure (PDB or mmCIF)',type=['pdb','ent','cif','mmcif'],disabled=True,key='rfd4-cyclic-preview-structure')
+        st.multiselect('Target Chains',[],disabled=True,key='rfd4-cyclic-preview-chains')
+        st.text_input('Optional hotspot residues',placeholder='e.g. A25, A30-35',disabled=True,key='rfd4-cyclic-preview-hotspots')
+        st.number_input('Cyclic peptide length',min_value=6,max_value=24,value=12,disabled=True,key='rfd4-cyclic-preview-length')
+        st.markdown('RFD4 has a [cyclic peptide binder preset](https://github.com/RosettaCommons/RFD4-Proteina/blob/main/configs/design_tasks/presets/cyclic_peptide_binder.yaml) and [tests for head-to-tail ring topology](https://github.com/RosettaCommons/RFD4-Proteina/blob/main/tests/pipeline/test_canonical_polymer_ordering.py). Studio still needs a ring-aware input and output path.')
         st.info('Preview only: job submission is disabled until Studio can validate these inputs and preserve the intended design topology in its outputs.')
         ready=False
     elif sequence_input:
@@ -483,7 +504,9 @@ def _render_content(schema:dict,*,owner_id,project_selector,submit,folding=False
     if task=='protein_binder':
         p['avoid_structures']=_source(owner_id,key='rfd4-avoid',label='Structures to Avoid',multiple=True)
         p['also_bind_structures']=_source(owner_id,key='rfd4-alsobind',label='Structures to Also Bind',multiple=True)
-    if not preview_task:
+    if task=='idr_peptide_binder':
+        with st.expander('View Optional Settings'):_optional('protein_binder',o,p,path,chains,folding,condition_spec=True)
+    elif not preview_task:
         with st.expander('View Optional Settings'):_optional(task,o,p,path,chains,folding)
     if folding:o.update(refold=False,filter_conditions=False)
     with st.popover('Compute settings'):
@@ -493,8 +516,9 @@ def _render_content(schema:dict,*,owner_id,project_selector,submit,folding=False
         prioritize=st.checkbox('Prioritize in Scheduler Queue',key='rfd4-prioritize')
     if not folding:st.button('Load example inputs',on_click=_load_example_inputs,args=('pd_l1_binder',owner_id),key='rfd4-load-example')
     validate_clicked, submit_column, _ = st.columns([1.25,1,1])
-    validate_clicked=validate_clicked.button('Validate / Prepare',disabled=preview_task or not ready,key='rfd4-validate-prepare')
-    clicked=submit_column.button('Submit',type='primary',disabled=preview_task or not ready or not project_id,key='rfd4-submit')
+    placeholder_preview=task=='cyclic_peptide_binder'
+    validate_clicked=validate_clicked.button('Validate / Prepare',disabled=placeholder_preview or not ready,key='rfd4-validate-prepare')
+    clicked=submit_column.button('Submit',type='primary',disabled=placeholder_preview or not ready or not project_id,key='rfd4-submit')
     st.caption('Validate / Prepare checks the inputs in the RFD4 container. It does not create a job or run inference.')
     if validate_clicked:
         try:

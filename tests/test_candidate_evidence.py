@@ -75,6 +75,18 @@ def test_optimized_prediction_engine_has_scoped_common_metrics():
     assert metric_value(row, "common.confidence.validation.complex.iptm") == .8
 
 
+def test_optimized_prediction_stage_uses_molecule_component_count():
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import _prediction_stage
+
+    monomer = {"proteins": [{"id": "A", "sequence": "ACDE"}], "dna": [], "rna": [],
+               "ligand_ccd_codes": [], "ligand_smiles": []}
+    complex_task = {**monomer, "proteins": [*monomer["proteins"], {"id": "B", "sequence": "FGHI"}]}
+    ligand_complex = {**monomer, "ligand_smiles": [{"id": "B", "smiles": "CCO"}]}
+    assert _prediction_stage(monomer, None) == "monomer_refolding"
+    assert _prediction_stage(complex_task, None) == "complex_refolding"
+    assert _prediction_stage(ligand_complex, None) == "complex_refolding"
+
+
 def test_real_analysis_adapter_does_not_relabel_inherited_scores(tmp_path, monkeypatch, design_source_factory):
     import json
     from mn_molecular_design_studio.engine.workflow_engine.workflows import analysis

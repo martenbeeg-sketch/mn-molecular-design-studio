@@ -30,7 +30,10 @@ def collection_harness(tmp_path, monkeypatch):
     monkeypatch.setattr(pg, "app_home", lambda: tmp_path / "home")
     monkeypatch.setattr(runtime, "runs_root", lambda: tmp_path / "children")
     monkeypatch.setattr(cache_provenance, "execution_identity", lambda *a, **k: {"cpu_fixture_runtime": "v1"})
-    monkeypatch.setattr(gp.time, "sleep", lambda *a: None)
+    # graph_pipeline only uses time.sleep. Replace its module-local time
+    # reference so the fixture does not monkeypatch Python's process-wide
+    # time.sleep and interfere with Streamlit AppTest's runner waits.
+    monkeypatch.setattr(gp, "time", SimpleNamespace(sleep=lambda *a, **k: None))
     target = structure(tmp_path / "target.pdb")
     from mn_molecular_design_studio.design_validation import read_structure, protein_chains, sequence
     binder_sequence = sequence(protein_chains(read_structure(Path(target)))["B"])

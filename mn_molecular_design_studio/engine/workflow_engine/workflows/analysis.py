@@ -649,7 +649,7 @@ def _pae_matrix_from_json(path: Path) -> list[list[float]] | None:
         payload = json.loads(path.read_text())
     except Exception:
         return None
-    matrix = payload.get("predicted_aligned_error") or payload.get("pae")
+    matrix = payload.get("predicted_aligned_error") or payload.get("pae") or payload.get("token_pair_pae")
     if not isinstance(matrix, list) or not matrix:
         return None
     rows: list[list[float]] = []

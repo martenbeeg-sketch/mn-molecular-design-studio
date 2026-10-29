@@ -36,6 +36,12 @@ Studio's own navigation. It is not a pixel-identical copy of Tamarind's applicat
   apo checks, interface energy, developability, trajectory output and clustering.
 - Annotated CIFs, native condition files, and batch structure scoring. Author
   chain/residue IDs are mapped separately for each uploaded structure.
+- The experimental IDR peptide-binder form accepts one IDR FASTA sequence and
+  creates an ideal extended backbone CIF as a sequence/atom carrier. Its native
+  condition spec fixes `C_SEQ`, adds optional residue-indexed `C_HOT`, and omits
+  `C_CRD` and `C_CRDGRP`; the target coordinates remain free. This is a flexible
+  co-generation hypothesis, not an IDR ensemble prediction or validated binder
+  campaign. Hotspot positions are 1-based in the pasted FASTA.
 - Structure scoring can select the matching protein binder, nanobody, antibody,
   TCR, motif, enzyme, small-molecule, DNA, or single-protein criteria. Enzyme
   scoring now selects RFD4's no-ligand pass criteria when all inputs lack a

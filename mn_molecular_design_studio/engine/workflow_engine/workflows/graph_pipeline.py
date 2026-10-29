@@ -806,11 +806,17 @@ def _submit(request: dict, parent: Path, node: dict, *, owner_id: str, project_i
     if cpu_analysis:
         request["resources"]["min_vram_gb"] = 0
     distributed_campaign = request.get("parameters", {}).get("distributed_campaign")
-    if (
-        workflow in {"design.bindcraft2", "design.rfd4_proteina"}
-        and isinstance(distributed_campaign, dict)
-        and distributed_campaign.get("enabled")
-    ):
+    campaign_capability = None
+    if isinstance(distributed_campaign, dict) and distributed_campaign.get("enabled"):
+        from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.generator_capabilities import generator_capabilities
+        registered = WORKFLOWS.get(workflow)
+        if registered:
+            try:
+                campaign_capability = generator_capabilities(registered.tool)
+            except ValueError:
+                campaign_capability = None
+    if campaign_capability and campaign_capability.campaign_adapter:
         distributed_campaign.setdefault("gpu_selection", str(gpu_device))
         request["parameters"]["distributed_campaign"] = distributed_campaign
         request["resources"]["gpu_device"] = "none"
@@ -1133,6 +1139,40 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
             **({'partial_pool': output['partial_pool']} if output.get('partial_pool') else {})}, []) if output.get("candidates_jsonl") else key
         outputs[node_id] = output
         node_states.setdefault(node_id, {}).update(status=status, output=output, fingerprint=key, candidate_count=output.get("candidate_count", 0), completed_at=utc_now())
+        if (shared_ledger and shared_campaign.get('objective_type') == 'generated'
+                and node_id in shared_campaign.get('generator_nodes', [])
+                and output.get('candidates_jsonl') and status not in {'failed', 'blocked', 'skipped'}):
+            from mn_molecular_design_studio.workflow_modes import capability
+            route = capability(nodes[node_id]['data']['kind'])
+            rows = candidate_sets.iter_candidates(output)
+            shared_ledger.record_generated_batch(node_id, route.get('tool') or route.get('workflow') or 'unknown', list(rows))
+        if (shared_ledger and shared_campaign.get('objective_type') == 'generated'
+                and nodes[node_id]['data']['kind'] == 'shared_filter'
+                and output.get('candidates_jsonl') and status not in {'failed', 'blocked', 'skipped'}):
+            branches = sorted(set(ancestors_of(node_id)) & set(shared_campaign.get('generator_nodes', [])))
+            evaluations_by_branch = {branch_id: [] for branch_id in branches}
+            for row in candidate_sets.iter_candidates(output, review=True):
+                info = candidate_sets.metadata(row)
+                branch_id = info.get('source_node')
+                if branch_id not in evaluations_by_branch:
+                    continue
+                decision = info.get('shared_filter') or {}
+                evaluations_by_branch[branch_id].append({
+                    'candidate_id': row.get('candidate_id'),
+                    'native_candidate_id': info.get('native_candidate_id'),
+                    'variant_id': info.get('variant_id'),
+                    'status': decision.get('status', 'not_evaluated'),
+                    'reasons': [item.get('status') for item in decision.get('decisions', [])
+                                if item.get('status') not in {'passed', 'not_evaluated'}],
+                })
+            for branch_id in branches:
+                shared_ledger.record_scientific_evaluations(
+                    branch_id, node_id, evaluations_by_branch[branch_id],
+                )
+        shared_job_id = node_states[node_id].pop('shared_job_id', None)
+        if shared_ledger and shared_job_id:
+            terminal_job_status = 'partial' if status == 'partial' else 'failed' if status in {'failed', 'blocked'} else 'completed'
+            shared_ledger.finish_job(shared_job_id, terminal_job_status)
         receipt = output.get('source_provenance', {}).get('native_execution')
         if receipt and status not in {'cached', 'skipped'}:
             node_states[node_id]['native_execution'] = receipt
@@ -1149,6 +1189,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         while len(outputs) < len(nodes):
             if cancelled[0] or read_json(parent / "metadata.json").get("status") == "cancelled":
                 cancel_graph_children(parent)
+                if shared_ledger and shared_campaign.get('objective_type') == 'generated':
+                    shared_ledger.finish_graph(interrupted=True)
                 update_status(parent, "cancelled", progress_label="Pipeline cancelled; completed results preserved")
                 return parent
             progressed = False
@@ -1397,7 +1439,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         import sys
                         result = candidate_execution.tick(parent, {**node, 'native_invocation': bool(native_invocation)}, current, source, params, key, settings,
                             graph=sys.modules[__name__], owner_id=owner_id, project_id=project_id,
-                            gpu_device=gpu_device, persist=persist)
+                            gpu_device=gpu_device, persist=persist,
+                            shared_campaign_ledger=(shared_ledger if shared_ledger and shared_campaign.get('objective_type') == 'generated'
+                                and node_id in shared_campaign.get('generator_nodes', []) else None),
+                            generator_node=node_id)
                         if result:
                             output, batch_status = result
                             complete(node_id, output, key, batch_status)
@@ -1442,6 +1487,9 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             node_states[node_id]["error"] = "No valid required measurements; per-candidate causes are retained."
                             persist(); progressed = True
                         elif current["status"] in {"failed", "cancelled"}:
+                            shared_job_id = current.pop('shared_job_id', None)
+                            if shared_ledger and shared_job_id:
+                                shared_ledger.finish_job(shared_job_id, 'failed')
                             current.update(status="failed", error=f"Child job {current.get('job_code') or child.name} did not complete successfully.");persist();progressed=True
                         continue
                     cached = read_json(cache_root / f"{key}.json").get("output") if reuse_completed else None
@@ -1599,17 +1647,20 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     if source.get("candidates_jsonl") and not source.get("candidate_count"):
                         complete(node_id, _local_source(parent, node_id, [], source.get("target")), key, "skipped");progressed=True;continue
                     request = node_request(kind, params, source, f"{pipeline_name} · {node['data']['label']}")
-                    if shared_campaign and node_id in shared_campaign["generator_nodes"]:
+                    if (shared_campaign and shared_campaign.get('objective_type') == 'accepted'
+                            and node_id in shared_campaign["generator_nodes"]):
+                        from mn_molecular_design_studio.workflow_modes import capability
+                        route = capability(kind)
                         campaign = copy.deepcopy(request.get("parameters", {}).get("distributed_campaign") or {})
                         limit = shared_campaign.get("generator_limits", {}).get(node_id, {})
                         campaign.update({
                             "enabled": True,
-                            "generator_id": "bindcraft2" if kind == "bindcraft2" else "rfd4_proteina",
+                            "generator_id": route.get('tool'),
                             "workstation_selection": shared_campaign.get("workstation_selection", "auto"),
                             "objective_type": "accepted",
                             "unique_accepted": True,
                             "acceptance_level": "validated",
-                            "accepted_target": shared_campaign["accepted_target"],
+                            "accepted_target": int(limit.get('target_count', shared_campaign["accepted_target"])),
                             "max_attempts": int(limit.get("max_attempts", shared_campaign["max_attempts"])),
                             "max_concurrent_generation_jobs": int(limit.get(
                                 "max_concurrent_generation_jobs", shared_campaign["max_concurrent_generation_jobs"],
@@ -1621,6 +1672,13 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         campaign.pop("max_runtime_seconds", None)
                         campaign.pop("max_compute_seconds", None)
                         request.setdefault("parameters", {})["distributed_campaign"] = campaign
+                    if (shared_ledger and shared_campaign.get('objective_type') == 'generated'
+                            and node_id in shared_campaign.get('generator_nodes', [])):
+                        shared_job_id = f"graph:{parent.name}:{node_id}"
+                        if not shared_ledger.reserve_job(shared_job_id, node_id):
+                            current.update(status='pending', shared_campaign_wait='Shared native-generation concurrency is full.')
+                            persist();continue
+                        current['shared_job_id'] = shared_job_id
                     child = _submit(request, parent, node, owner_id=owner_id, project_id=project_id, gpu_device=settings.get('gpu_device', gpu_device))
                     metadata = read_json(child / "metadata.json")
                     current.update(status="queued", job_run_dir=str(child), job_code=metadata.get("job_code"), fingerprint=key, started_at=utc_now())
@@ -1628,6 +1686,15 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                 except Exception as exc:
                     if current.get('batches'):
                         candidate_execution.cancel(parent, {'nodes': {node_id: current}})
+                        if shared_ledger:
+                            for batch in current.get('batches', []):
+                                attempt = (batch.get('attempts') or [{}])[-1]
+                                shared_id = batch.pop('shared_job_id', None) or attempt.get('shared_job_id')
+                                if shared_id:
+                                    shared_ledger.finish_job(shared_id, 'failed')
+                    shared_job_id = current.pop('shared_job_id', None)
+                    if shared_ledger and shared_job_id:
+                        shared_ledger.finish_job(shared_job_id, 'failed')
                     current.update(status="failed", error=str(exc));persist();progressed=True
             unresolved = [n for n in nodes if n not in outputs and node_states.get(n, {}).get("status") not in {"failed", "blocked"}]
             if not unresolved:
@@ -1688,6 +1755,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         comparison_status = "partial" if (failures or any(n.get('partial') for n in node_states.values())) and success else "failed" if failures else "completed"
         state["status"] = "completed" if success else "failed"
         state["comparison_status"] = comparison_status
+        if shared_ledger and shared_campaign.get('objective_type') == 'generated':
+            shared_ledger.finish_graph()
         persist()
         from mn_molecular_design_studio.workflow_modes import describe, observed_execution_plan
         workflow_summary = dict(**describe(graph), candidate_count=len(candidates),
@@ -1701,11 +1770,14 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         finish_job(parent, success, {"outputs": {"workflow_summary": workflow_summary, "candidates": candidates, "surface_analyses": surface_analyses, "pipeline_nodes": node_states,
                     "comparison_status": comparison_status, "successful_result_nodes": successful_results,
                     **({"shared_campaign": shared_summary} if shared_summary else {})}, "metrics": {"candidate_count": len(candidates), "surface_analysis_count": len(surface_analyses), "node_count": len(nodes), "cached_steps": sum(v.get("status")=="cached" for v in node_states.values()), "failed_steps": len(failures),
-                    **({"shared_unique_accepted": shared_summary["unique_accepted"], "shared_accepted_target": shared_summary["accepted_target"]} if shared_summary else {})}, "downstream_artifacts": {"candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl", "graph_snapshot": "graph_snapshot.json", "graph_execution": "graph_execution.json",
+                    **({"shared_unique_accepted": shared_summary["unique_accepted"], "shared_accepted_target": shared_summary["accepted_target"]} if shared_summary and shared_summary.get('objective_type') == 'accepted' else {}),
+                    **({"shared_generated_designs": shared_summary["generated_designs"], "shared_generated_target": shared_summary["generated_target"]} if shared_summary and shared_summary.get('objective_type') == 'generated' else {})}, "downstream_artifacts": {"candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl", "graph_snapshot": "graph_snapshot.json", "graph_execution": "graph_execution.json",
                     **({"shared_campaign_ledger": "artifacts/shared_campaign/ledger.json"} if shared_summary else {})}})
         return parent
     except Exception:
         cancel_graph_children(parent)
+        if shared_ledger and shared_campaign.get('objective_type') == 'generated':
+            shared_ledger.finish_graph(interrupted=True)
         raise
     finally:
         signal.signal(signal.SIGTERM, old_handler)

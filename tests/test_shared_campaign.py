@@ -75,12 +75,53 @@ def test_two_generators_share_unique_acceptance_after_rejection_and_stop_at_targ
         "bc-a1": {"status": "completed"}}}, 4.0)
     shared.sync_campaign("rfd-campaign", "rfd4", {"config": {"generator_id": "rfd4_proteina"}, "attempts": {
         "rf-a1": {"status": "completed"}}}, 5.0)
+    assert shared.summary()["compute_seconds"] == 9.0
     assert shared.reserve_attempt("bc-campaign", "bc-a2", "bindcraft", "bindcraft2")
     third = candidate("bindcraft-three", "MNPQRSTVWYACDEFGHIKL")
     assert shared.claim_candidate("bc-campaign", "bindcraft", third, native_acceptance="accepted")["role"] == "owner"
     shared.finish_candidate("bc-campaign", third["candidate_id"], "accepted", "common predictor criteria passed")
     assert shared.summary()["status"] == "target_reached"
     assert not shared.reserve_attempt("rfd-campaign", "rf-a2", "rfd4", "rfd4_proteina")
+
+
+def test_generated_objective_records_fixed_native_outputs_and_filter_availability(tmp_path):
+    shared = SharedCampaignLedger.create(tmp_path / "generated.json", shared_config(
+        objective_type="generated", accepted_target=None, generated_target=2,
+    ))
+    outputs = [
+        {"candidate_id": "backbone-1", "stage": "generation.backbone", "metrics": {"native_pass_filters": True}},
+        {"candidate_id": "backbone-2", "stage": "generation.backbone", "metrics": {"native_pass_filters": False}},
+        {"candidate_id": "sequence-1", "binder_sequence": "ACDEFGHIKLMNPQRSTVWY"},
+    ]
+    first = shared.record_generated_batch("rfd3", "rfdiffusion3", outputs)
+    replay = shared.record_generated_batch("rfd3", "rfdiffusion3", outputs)
+    assert len(first) == 3 and len(replay) == 3
+    summary = shared.summary()
+    assert summary["objective_type"] == "generated"
+    assert summary["generated_designs"] == 3
+    assert summary["generated_target"] == 2
+    assert summary["generated_native_pass"] == 1
+    assert summary["generated_native_rejected"] == 1
+    assert summary["generated_native_filter_unavailable"] == 1
+    assert summary["per_generator"]["rfd3"]["candidates_generated"] == 3
+    assert summary["compute_seconds"] is None
+    assert summary["compute_seconds_status"] == "unavailable for this native route"
+    shared.record_scientific_evaluations("rfd3", "filter-a", [
+        {"candidate_id": "sequence-1", "native_candidate_id": "sequence-1", "status": "passed"},
+    ])
+    shared.record_scientific_evaluations("rfd3", "filter-b", [
+        {"candidate_id": "sequence-1", "native_candidate_id": "sequence-1", "status": "passed"},
+    ])
+    summary = shared.summary()
+    assert summary["scientifically_evaluated_designs"] == 1
+    assert summary["scientifically_passing_designs"] == 1
+    shared.record_scientific_evaluations("rfd3", "filter-b", [
+        {"candidate_id": "sequence-1", "native_candidate_id": "sequence-1", "status": "failed"},
+    ])
+    # A durable scientific decision is immutable; a resumed idempotent receipt
+    # cannot turn a final rejection back into a pass.
+    assert shared.summary()["scientifically_passing_designs"] == 1
+    assert shared.finish_graph()["status"] == "target_reached"
 
 
 def test_shared_attempt_budget_and_interrupted_reservation_recovery(tmp_path):

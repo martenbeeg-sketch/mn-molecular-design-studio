@@ -13,9 +13,9 @@ from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_jso
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
 
 
-def new_pipeline(generators=None, predictors=None, sequence_designer="ligandmpnn", *, mode=None):
+def new_pipeline(generators=None, predictors=None, sequence_designer="ligandmpnn", *, mode=None, analyses=None, redesign_engine="ligandmpnn"):
     from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, SCHEMA
-    from mn_molecular_design_studio.workflow_modes import MODES, methods
+    from mn_molecular_design_studio.workflow_modes import MODES, capability, cofolder_methods, methods, sequence_count_field, sequence_methods
     if mode is not None and mode not in MODES:
         raise ValueError("Unknown scientific workflow mode.")
     defaults = ["rfd4", "rfdiffusion"] if mode == "modular_design" else ["bindcraft2"] if mode else ["rfd4", "bindcraft2"]
@@ -28,25 +28,41 @@ def new_pipeline(generators=None, predictors=None, sequence_designer="ligandmpnn
     if not generators or (not predictors and mode != "native_complete"):
         raise ValueError("Choose at least one generator and predictor.")
     for kind in generators:
-        if NODE_CATALOG[kind]["category"] not in {"Design engine", "Design pipeline"}:
+        if kind not in NODE_CATALOG or NODE_CATALOG[kind]["category"] not in {"Design engine", "Design pipeline"}:
             raise ValueError("Choose existing generator tiles.")
-        if not any("target" in socket["accepts"] for socket in NODE_CATALOG[kind]["inputs"]):
+        operation = capability(kind)
+        if not operation['target_connected'] or not operation['modular_source']:
             raise ValueError(f"{NODE_CATALOG[kind]['label']} requires its own input workflow; it cannot receive a shared structure target.")
+    if mode == 'native_complete' and analyses:
+        raise ValueError('Complete Native preserves the selected workflows unchanged; add independent analyses in Native + Comparative or Modular mode.')
     for kind in predictors:
-        if mode and kind not in {"boltz2", "prediction_protenix_v2"}:
-            raise ValueError("Choose a reviewed independent co-folder for this preset.")
-        if NODE_CATALOG[kind]["category"] != "Structure prediction":
+        if kind not in NODE_CATALOG or NODE_CATALOG[kind]["category"] != "Structure prediction":
             raise ValueError("Choose existing predictor tiles.")
+        if mode and kind not in cofolder_methods('protein_protein'):
+            raise ValueError(f"{NODE_CATALOG[kind]['label']} does not declare compatible protein–protein co-folding inputs.")
+    analyses = list(analyses or [])
+    for kind in analyses:
+        if kind not in NODE_CATALOG or NODE_CATALOG[kind]['category'] != 'Analysis' or not NODE_CATALOG[kind].get('workflow'):
+            raise ValueError('Choose registered Analysis operations.')
     if NODE_CATALOG[sequence_designer]["category"] != "Sequence design":
         raise ValueError("Choose an existing sequence-design tile.")
+    if mode == 'modular_design' and sequence_designer not in sequence_methods():
+        raise ValueError('Choose a registered sequence designer compatible with normalized candidate inputs.')
+    if NODE_CATALOG[redesign_engine]['category'] != 'Sequence design':
+        raise ValueError('Choose an existing sequence-design tile for optional redesign.')
+    if mode == 'modular_design' and redesign_engine not in sequence_methods():
+        raise ValueError('Choose a registered sequence designer compatible with optional candidate redesign.')
     if mode in {"native_comparative", "modular_design"} and len(generators) > 1:
         # Each completed generator feeds its own stages immediately. Only final
         # comparative selection waits for fan-in; no generator-wide barrier.
-        branches = [new_pipeline([kind], predictors, sequence_designer, mode=mode) for kind in generators]
+        branches = [new_pipeline([kind], predictors, sequence_designer, mode=mode, analyses=analyses,
+                                 redesign_engine=redesign_engine) for kind in generators]
+        branch_outputs = [next(edge['source'] for edge in branch['edges'] if edge['target'] == 'ranking')
+                          for branch in branches]
         graph = branches[0]
         graph['nodes'] = [n for n in graph['nodes'] if n['id'] not in {'ranking', 'results'}]
         graph['edges'] = [e for e in graph['edges'] if not {e['source'], e['target']} & {'ranking', 'results'}]
-        analyzers = ['analyzer']
+        analyzers = [branch_outputs[0]]
         for i, branch in enumerate(branches[1:], 1):
             rename = {n['id']: n['id'] + '-g' + str(i) for n in branch['nodes']}
             rename['target'] = 'target'
@@ -64,7 +80,7 @@ def new_pipeline(generators=None, predictors=None, sequence_designer="ligandmpnn
                     continue
                 edge.update(id=edge['id'] + '-g' + str(i), source=rename[edge['source']], target=rename[edge['target']])
                 graph['edges'].append(edge)
-            analyzers.append(rename['analyzer'])
+            analyzers.append(rename[branch_outputs[i]])
         def final_node(kind, identifier, x):
             spec = NODE_CATALOG[kind]
             graph['nodes'].append(dict(id=identifier, type='studio', position=dict(x=x, y=170),
@@ -100,11 +116,12 @@ def new_pipeline(generators=None, predictors=None, sequence_designer="ligandmpnn
         return dict(schema_version=SCHEMA, id=uuid.uuid4().hex, name=MODES[mode],
                     template_id=mode, workflow_mode=mode, nodes=nodes, edges=edges,
                     viewport=dict(x=0, y=0, zoom=.65))
-    from mn_molecular_design_studio.inverse_folding_input import ENGINES as INVERSE_ENGINES
-    sequence_count = {'num_sequences': 1} if sequence_designer in INVERSE_ENGINES else {'sequences': 1}
-    add(sequence_designer, "sequence-preparation", 1040, 170, sequence_stage="initial", **sequence_count)
-    add("ligandmpnn", "optional-redesign", 1380, 170, sequence_stage="soluble_optimization", optimization_enabled=False)
-    if mode == 'modular_design':
+    initial_count = {sequence_count_field(sequence_designer): 1}
+    redesign_count = {sequence_count_field(redesign_engine): 1}
+    add(sequence_designer, "sequence-preparation", 1040, 170, sequence_stage="initial", **initial_count)
+    add(redesign_engine, "optional-redesign", 1380, 170, sequence_stage="soluble_optimization",
+        optimization_enabled=False, **redesign_count)
+    if mode == 'modular_design' and redesign_engine == 'ligandmpnn':
         nodes[-1]['data']['params'].update(model_type='soluble_mpnn', fix_interface_residues=True)
     add("shared_filter", "shared-filter", 1720, 170)
     connect("collection", "sequence-preparation")
@@ -123,9 +140,23 @@ def new_pipeline(generators=None, predictors=None, sequence_designer="ligandmpnn
     add("candidate_analyzer", "analyzer", 2400, 170)["execution"] = dict(failure_policy="partial")
     connect("collection", "analyzer")
     connect("shared-filter", "analyzer")
-    add("candidate_rank", "ranking", 2740, 170)
-    add("results", "results", 3080, 170)
-    connect("analyzer", "ranking")
+    analysis_nodes = []
+    for index, kind in enumerate(analyses):
+        node_id = f'analysis-{index}'
+        add(kind, node_id, 2580 + index * 320, 170)
+        connect('analyzer', node_id)
+        analysis_nodes.append(node_id)
+    final_source = 'analyzer'
+    rank_x = 2740
+    if analysis_nodes:
+        add('candidate_analyzer', 'analysis-analyzer', 2580 + len(analysis_nodes) * 320, 170)['execution'] = dict(failure_policy='partial')
+        for source in ['analyzer', *analysis_nodes]:
+            connect(source, 'analysis-analyzer')
+        final_source = 'analysis-analyzer'
+        rank_x = 2940 + len(analysis_nodes) * 320
+    add("candidate_rank", "ranking", rank_x, 170)
+    add("results", "results", rank_x + 340, 170)
+    connect(final_source, "ranking")
     connect("ranking", "results")
     if mode is None:
         for node in nodes:
@@ -161,9 +192,11 @@ def retained_source(node, project_id):
         raise ValueError("Choose a completed retained run with successful execution; native rejections remain valid evidence.")
     kind = node["data"]["kind"]
     workflow = NODE_CATALOG[kind]["workflow"]
-    expected = {"rfd4": "rfd4_proteina", "rfd3": "rfdiffusion3", "complexa": "proteina_complexa",
-                "complexa_generator": "proteina_complexa_generate", "protpardelle": "protpardelle_1c",
-                "protpardelle_pipeline": "protpardelle_1c", "pxdesign_pipeline": "pxdesign", "genie3_pipeline": "genie3"}.get(kind, kind)
+    from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS
+    workflow_spec = WORKFLOWS.get(workflow)
+    if workflow_spec is None:
+        raise ValueError(f"The {NODE_CATALOG[kind]['label']} tile has no registered native workflow route.")
+    expected_tool = workflow_spec.tool
     params = request.get("params", {})
     predictor = NODE_CATALOG[kind]["category"] == "Structure prediction"
     candidate_path = path / "artifacts/normalized_candidates/candidates.jsonl"
@@ -173,9 +206,10 @@ def retained_source(node, project_id):
     embedded = predictor and tool in {"rfd4_proteina", "bindcraft2", "distributed_campaign"}
     engine = OPTIMIZED_PREDICTION_NODE_ENGINES.get(kind, kind)
     if predictor and not embedded:
-        if params.get("engine") != engine and tool not in {expected, "optimized_prediction_" + engine}:
+        from mn_molecular_design_studio.output_vocabulary import engine_name
+        if params.get("engine") != engine and engine_name(tool) != engine:
             raise ValueError("Retained evidence does not match the predictor tile.")
-    elif not predictor and tool != expected:
+    elif not predictor and tool != expected_tool:
         raise ValueError("Retained evidence does not match the generator tile.")
     provenance = dict(run_id=path.name, workflow=workflow, retained=True,
         input=request, metadata=meta, result_metrics=result.get("metrics", {}),

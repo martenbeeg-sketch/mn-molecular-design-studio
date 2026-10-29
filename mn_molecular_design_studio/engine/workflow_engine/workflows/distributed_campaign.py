@@ -1498,14 +1498,11 @@ def _create_rfd4_attempt_child(
         execution_resources,
     )
     from mn_molecular_design_studio.engine.workflow_engine.workflows import rfd4_proteina
+    from mn_molecular_design_studio import rfd4_proteina_input as rfd4_inputs
 
     parent_run_dir = Path(parent_run_dir)
     parent_payload = read_json(parent_run_dir / "input.json")
     parent_params = parent_payload.get("params") if isinstance(parent_payload.get("params"), dict) else {}
-    if parent_params.get("task") != "protein_binder" or parent_params.get("input_mode") not in {"guided", "guided_binder"}:
-        raise ValueError("RFD4 campaign attempts support the guided protein-binder workflow only.")
-    if parent_params.get("input_files") or parent_params.get("avoid_structures") or parent_params.get("also_bind_structures"):
-        raise ValueError("RFD4 campaign attempts currently require one target structure without secondary specificity files.")
     request_path = parent_run_dir / "artifacts" / "rfd4_proteina" / "request.json"
     request = read_json(request_path)
     staged_target = rfd4_proteina.local_path(parent_run_dir, request.get("target_structure"))
@@ -1516,7 +1513,7 @@ def _create_rfd4_attempt_child(
     child_kwargs = dict(parent_params)
     child_kwargs.update(
         target_structure=str(staged_target),
-        input_files=[],
+        input_files=[str(staged_target)] if parent_params.get("input_mode") == "condition_spec" else [],
         avoid_structures=[],
         also_bind_structures=[],
         num_designs=1,
@@ -1528,6 +1525,7 @@ def _create_rfd4_attempt_child(
         distributed_campaign=None,
         task_group="design",
     )
+    rfd4_inputs.validate_campaign_inputs(child_kwargs)
     resource_options = config.get("resources") if isinstance(config.get("resources"), dict) else {}
     resource_request = {
         "gpu": True,

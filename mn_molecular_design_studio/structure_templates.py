@@ -13,7 +13,7 @@ from mn_molecular_design_studio.design_validation import protein_chains, read_st
 # These formats were checked against the pinned native parsers and batch runners.
 TEMPLATE_ENGINES = {
     "alphafold3", "openfold3_jax", "af3_torch", "boltz2", "colabfold",
-    "protenix_v2", "openfold3_ob0", "rf3_foundry", "boltzgen_fold", "chai1",
+    "protenix_v2", "openfold3_ob0", "rf3_foundry", "boltzgen_fold", "chai1", "mol1",
 }
 
 
@@ -119,6 +119,14 @@ def stage_templates(run_dir: Path, path: Path, *, item_id: str, profile: dict,
             if protein and protein["id"][0] in matched:
                 template_path = root / f"templates_{protein['id'][0]}.json"
                 template_path.write_text(json.dumps([entry["template"] for entry in matched[protein["id"][0]]]))
+                protein["templatesPath"] = native(template_path)
+    elif kind == "mol1_json":
+        for row in payload["sequences"]:
+            protein = row.get("proteinChain")
+            chain_id = protein.get("id", [None])[0] if isinstance(protein, dict) else None
+            if chain_id in matched:
+                template_path = root / f"templates_{chain_id}.json"
+                template_path.write_text(json.dumps([entry["template"] for entry in matched[chain_id]], indent=2))
                 protein["templatesPath"] = native(template_path)
     elif kind == "openfold3_ob0_json":
         for query in payload["queries"].values():

@@ -558,7 +558,21 @@ def prepare(request):
                 from rfproteina.utils.chain import get_chain_of_interest
                 chain, unambiguous = get_chain_of_interest(aa)
                 if not unambiguous: raise ValueError('Native input has ambiguous designed chains. Set Design chains explicitly.')
-                designed = [str(chain)]
+                chain = str(chain)
+                # AtomWorks' chain-of-interest helper may return the unique
+                # chain-instance ID (for example ``B_1``), while the native
+                # result inventory and chain_id selectors use ``B``. Resolve
+                # that identity before applying task conditions or recording
+                # target/design roles.
+                chain_iids = aa.get_annotation('chain_iid') if 'chain_iid' in aa.get_annotation_categories() else None
+                if chain_iids is not None and np.any(chain_iids == chain):
+                    mapped = [str(value) for value in np.unique(aa.chain_id[chain_iids == chain])]
+                    if len(mapped) != 1:
+                        raise ValueError('Could not map the native chain of interest to one chain ID.')
+                    chain = mapped[0]
+                elif chain not in {str(value) for value in np.unique(aa.chain_id)}:
+                    raise ValueError(f'Native chain of interest {chain!r} is not a chain ID in the assembled input.')
+                designed = [chain]
             tasks.append((name,aa,designed))
     inventory = []
     for name, aa, designed in tasks:

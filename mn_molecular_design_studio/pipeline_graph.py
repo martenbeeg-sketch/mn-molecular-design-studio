@@ -496,6 +496,11 @@ NODE_CATALOG['protenix_cli']=_spec(
         field('diffusion_steps','Diffusion steps',200,minimum=1,maximum=1000),
         field('samples','Samples per candidate',1,minimum=1,maximum=100,section='basic'),
         field('seeds','Random seeds', '101',kind='text')])
+# Keep the legacy/direct Protenix adapters on the canvas for saved graphs and
+# explicit use, while the comparative co-folder picker presents the two
+# versioned optimized profiles as the canonical Protenix choices.
+for _kind in ('protenix', 'protenix_cli'):
+    NODE_CATALOG[_kind]['cofolder_selector_visible'] = False
 NODE_CATALOG['boltzgen_fold_batch']=_spec(
     'boltzgen_fold_batch','BoltzGen Fold · candidate refolding','Structure prediction',
     'Run the standalone BoltzGen target-template folding workflow on connected candidate complexes.',
@@ -536,7 +541,8 @@ def _prediction_profile_fields(engine: str, profile: dict[str, Any]) -> list[dic
                             help='Uses the target chain MSA. Newly designed binder chains stay single-sequence.'))
     if profile.get('supports_templates'):
         fields.append(field('use_target_template', 'Use target structure as template', True,
-                            kind='boolean', section='basic'))
+                            kind='boolean', section='basic',
+                            help='Uses the PDB supplied on the connected Target node as a template.'))
     if profile.get('requires_target_template'):
         fields.extend([
             field('target_pdb', 'Target PDB path', '', kind='text', section='basic',
@@ -638,7 +644,11 @@ NODE_CATALOG.update({
             field("deduplication", "Sequence deduplication", "mark_duplicates", kind="select", options=["keep_all", "mark_duplicates"], section="basic")]),
     "shared_filter": _spec("shared_filter", "Shared scientific filters", "Collection", "Keep every decision; route sequence-ready, eligible variants to prediction.",
         accepts=["candidates", "sequence", "prediction"], output="sequence", fields=[
+            field("binder_format", "Binder format", "miniprotein", kind="select", options=["miniprotein", "large_protein", "peptide", "cyclic_peptide", "vhh", "scfv", "fab", "arp", "other"], section="basic"),
+            field("target_type", "Target type", "structured", kind="select", options=["structured", "fasta_idr"], section="basic"),
             field("rules", "Scientific threshold rules", [], kind="json", section="basic"),
+            field("informational_scores", "Informational measurements (no rejection gate)", [], kind="json", section="basic"),
+            field("ranking_metric", "Optional acceptance ranking field", "", kind="text", section="basic"),
             field("exclude_native_rejected", "Exclude native-rejected designs from independent prediction", True, kind="boolean", section="basic")]),
     "candidate_analyzer": _spec("candidate_analyzer", "Unified candidate analyzer", "Collection", "Join independent predictor evidence to exact sequence variants, with explicit missing measurements.",
         accepts=["candidates", "sequence", "prediction"], output="candidates", fields=[
@@ -659,7 +669,18 @@ for _kind, _specification in NODE_CATALOG.items():
                 _socket["accepts"].append("candidates")
     if _specification['category'] == 'Sequence design' and not any(f['name'] == 'sequence_stage' for f in _specification['fields']):
         _specification['fields'].append(field('sequence_stage', 'Sequence-design stage', 'redesign', kind='select',
-            options=['redesign', 'initial'], help='Initial designs backbone-only inputs and preserves existing native sequences. Redesign explicitly creates additional variants.'))
+            options=['redesign', 'initial', 'soluble_optimization'], help='Initial designs backbone-only inputs and preserves existing native sequences. Soluble optimization is an optional conditional redesign stage.'))
+    if _specification['category'] == 'Sequence design' and not any(f['name'] == 'optimization_enabled' for f in _specification['fields']):
+        _specification['fields'].append(field('optimization_enabled', 'Enable optional redesign', False, kind='boolean'))
+
+# Candidate-aware Analysis routes keep their existing prediction output while
+# accepting a normalized collection. The graph runner maps their measured rows
+# back to stable CandidateSet variants before Results or ranking.
+for _kind in ('ipsae', 'rosetta_metrics'):
+    if 'candidates' not in NODE_CATALOG[_kind]['inputs'][0]['accepts']:
+        NODE_CATALOG[_kind]['inputs'][0]['accepts'].append('candidates')
+if 'prediction' not in NODE_CATALOG['candidate_rank']['inputs'][0]['accepts']:
+    NODE_CATALOG['candidate_rank']['inputs'][0]['accepts'].append('prediction')
 
 TEMPLATE_REFERENCES={
     'multi_generator_binder': ('https://www.anthropic.com/research/claude-scorpion-toxin-binder-design', 'General composition inspired by Figure 2: complete native generators, conditional initial ProteinMPNN, independent predictors and consolidated scientific evidence. No paper-specific target, campaign, thresholds or autonomous agent is reproduced.'),
@@ -1493,10 +1514,14 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
         return None
     if not isinstance(raw, dict) or raw.get("enabled") is not True:
         raise ValueError("shared_campaign must be an enabled shared objective configuration.")
-    if raw.get("objective_type", "accepted") != "accepted" or raw.get("unique_accepted", True) is not True:
-        raise ValueError("Shared objectives count unique candidates passing validated downstream acceptance.")
+    objective_type = str(raw.get('objective_type', 'accepted')).strip().lower()
+    if objective_type not in {'accepted', 'generated'}:
+        raise ValueError('Shared objective_type must be accepted or generated.')
+    unique_accepted = raw.get('unique_accepted', True)
+    if type(unique_accepted) is not bool or objective_type == 'accepted' and not unique_accepted:
+        raise ValueError('Passing-design objectives count unique sequences; generated-design objectives retain every candidate.')
     allowed = {
-        "enabled", "generator_nodes", "accepted_target", "max_attempts",
+        "enabled", "generator_nodes", "accepted_target", "generated_target", "max_attempts",
         "max_concurrent_jobs", "max_concurrent_generation_jobs",
         "max_concurrent_validations", "max_compute_seconds", "validation_stages",
         "generator_limits", "target_node", "objective_type", "unique_accepted",
@@ -1505,14 +1530,16 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
     if set(raw) - allowed:
         raise ValueError("Shared campaign has unsupported setting(s): " + ", ".join(sorted(set(raw) - allowed)) + ".")
     branches = raw.get("generator_nodes")
-    if (not isinstance(branches, list) or len(branches) < 2
+    if (not isinstance(branches, list) or not branches
             or any(not isinstance(value, str) or value not in nodes for value in branches)
             or len(set(branches)) != len(branches)):
-        raise ValueError("Select at least two distinct existing generator branches for a shared objective.")
-    if type(raw.get("accepted_target")) is not int or raw["accepted_target"] < 1:
-        raise ValueError("Shared accepted_target must be a positive integer.")
-    if type(raw.get("max_attempts")) is not int or raw["max_attempts"] < raw["accepted_target"]:
-        raise ValueError("Shared max_attempts must be at least the accepted target.")
+        raise ValueError("Select one or more distinct existing design branches for the campaign objective.")
+    target_field = 'accepted_target' if objective_type == 'accepted' else 'generated_target'
+    target_count = raw.get(target_field, raw.get('accepted_target') if objective_type == 'generated' else None)
+    if type(target_count) is not int or target_count < 1:
+        raise ValueError(f"Shared {target_field} must be a positive integer.")
+    if type(raw.get("max_attempts")) is not int or raw["max_attempts"] < target_count:
+        raise ValueError("Shared max_attempts must be at least the campaign objective target.")
 
     def positive(name: str, default: int) -> int:
         value = raw.get(name, default)
@@ -1531,21 +1558,46 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
     compute = raw.get("max_compute_seconds")
     if compute is not None and (type(compute) not in {int, float} or not math.isfinite(float(compute)) or compute <= 0):
         raise ValueError("Shared max_compute_seconds must be finite and positive when provided.")
+    if objective_type == 'generated' and compute is not None:
+        raise ValueError('This generated-design route does not provide comparable measured GPU seconds; use the native design-count budget.')
     limits = raw.get("generator_limits", {})
     if not isinstance(limits, dict) or set(limits) - set(branches):
         raise ValueError("Shared generator_limits may only name selected generator branches.")
 
     common_target = None
     branch_configs = []
+    planned_designs = 0
+    planned_branch_targets = 0
     for node_id in branches:
         node = nodes[node_id]
         kind = node["data"]["kind"]
-        if kind not in {"bindcraft2", "rfd4"} or node["data"].get("enabled") is False or node["data"].get("retained_run_dir"):
-            raise ValueError("Shared objectives currently require enabled, fresh BindCraft2 or guided RFD4 campaign branches.")
-        if kind == "rfd4":
-            params = node["data"]["params"]
-            if params.get("task") != "protein_binder" or params.get("input_mode") not in {"guided", "guided_binder"}:
-                raise ValueError("Shared RFD4 objectives support guided protein-binder branches only.")
+        route = workflow_capability(kind)
+        if (NODE_CATALOG[kind]['category'] not in {'Design engine', 'Design pipeline'}
+                or not route.get('modular_source') or not route.get('route_registered')
+                or node["data"].get("enabled") is False or node["data"].get("retained_run_dir")):
+            raise ValueError(f"Campaign branch {node_id} must be an enabled fresh registered design workflow.")
+        tool_id = route.get('tool')
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.generator_capabilities import generator_capabilities
+        try:
+            tool_campaign = generator_capabilities(tool_id)
+        except ValueError:
+            tool_campaign = None
+        if objective_type == 'accepted':
+            if tool_campaign is None or not tool_campaign.campaign_adapter:
+                raise ValueError(f"{NODE_CATALOG[kind]['label']} can report generated designs but has no verified passing-design campaign adapter.")
+            for parameter, allowed_values in tool_campaign.graph_campaign_constraints:
+                if node['data']['params'].get(parameter) not in allowed_values:
+                    raise ValueError(f"{NODE_CATALOG[kind]['label']} campaign requires {parameter} in {', '.join(allowed_values)}.")
+            for parameter in tool_campaign.graph_campaign_exclusions:
+                if node['data']['params'].get(parameter):
+                    raise ValueError(f"{NODE_CATALOG[kind]['label']} campaigns do not support {parameter}.")
+        count_field = route.get('design_count_field')
+        if not count_field:
+            raise ValueError(f"{NODE_CATALOG[kind]['label']} has no registered native design-count control.")
+        requested_designs = int(node['data']['params'].get(count_field, 1))
+        if requested_designs < 1:
+            raise ValueError(f"{NODE_CATALOG[kind]['label']} needs a positive native design count.")
+        planned_designs += requested_designs
         ancestors, pending = set(), list(incoming[node_id])
         while pending:
             ancestor = pending.pop()
@@ -1562,39 +1614,53 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
             raise ValueError("Shared generator branches must use the same target structure and chain mapping.")
 
         branch_limits = limits.get(node_id, {})
-        if not isinstance(branch_limits, dict) or set(branch_limits) - {"max_attempts", "max_concurrent_generation_jobs"}:
-            raise ValueError(f"generator_limits.{node_id} supports max_attempts and max_concurrent_generation_jobs only.")
+        if not isinstance(branch_limits, dict) or set(branch_limits) - {"max_attempts", "max_concurrent_generation_jobs", "target_count"}:
+            raise ValueError(f"generator_limits.{node_id} supports target_count, max_attempts and max_concurrent_generation_jobs only.")
         branch_attempts = branch_limits.get("max_attempts", raw["max_attempts"])
         branch_jobs = branch_limits.get("max_concurrent_generation_jobs", max_generation)
+        branch_target = branch_limits.get(
+            'target_count', min(requested_designs, target_count) if objective_type == 'generated' else target_count,
+        )
         if type(branch_attempts) is not int or not 1 <= branch_attempts <= raw["max_attempts"]:
             raise ValueError(f"generator_limits.{node_id}.max_attempts must be within the shared attempt budget.")
         if type(branch_jobs) is not int or not 1 <= branch_jobs <= max_generation:
             raise ValueError(f"generator_limits.{node_id}.max_concurrent_generation_jobs must fit within shared generation concurrency.")
+        if type(branch_target) is not int or not 1 <= branch_target <= target_count or branch_target > branch_attempts:
+            raise ValueError(f"generator_limits.{node_id}.target_count must be within the shared target and branch attempt budget.")
+        if objective_type == 'generated' and branch_target > requested_designs:
+            raise ValueError(f"generator_limits.{node_id}.target_count cannot exceed that native workflow's requested design count.")
+        planned_branch_targets += branch_target
+        if objective_type == 'generated' and not (tool_campaign and tool_campaign.campaign_adapter) and requested_designs > branch_attempts:
+            raise ValueError(f"{NODE_CATALOG[kind]['label']} native design count exceeds its branch generation budget.")
 
         existing = node["data"]["params"].get("distributed_campaign") or {}
         existing_stages = existing.get("validation_stages") if isinstance(existing, dict) else None
         stages = raw.get("validation_stages")
-        if existing_stages and existing_stages != stages:
+        if objective_type == 'accepted' and existing_stages and existing_stages != stages:
             raise ValueError(f"Generator {node_id} has downstream criteria that differ from the shared scientific acceptance criteria.")
-        generator_id = "bindcraft2" if kind == "bindcraft2" else "rfd4_proteina"
-        from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import validate_campaign_config
-        validated = validate_campaign_config({
-            **{key: value for key, value in existing.items() if key in {
-                "seed", "batch_size", "max_concurrent_batches", "max_retries", "poll_interval_seconds",
-                "workstation_selection", "gpu_selection", "resources", "max_concurrent_validations",
-            }},
-            "enabled": True, "generator_id": generator_id,
-            "objective_type": "accepted", "unique_accepted": True,
-            "acceptance_level": "validated",
-            "accepted_target": raw["accepted_target"],
-            "max_attempts": raw["max_attempts"],
-            "max_concurrent_generation_jobs": min(max_generation, branch_jobs),
-            "max_concurrent_validations": max_validations,
-            "workstation_selection": workstation_selection,
-            "validation_stages": stages,
-        })
-        branch_configs.append((node_id, validated))
-    normalized_stages = branch_configs[0][1]["validation_stages"]
+        if objective_type == 'accepted':
+            from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import validate_campaign_config
+            validated = validate_campaign_config({
+                **{key: value for key, value in existing.items() if key in {
+                    "seed", "batch_size", "max_concurrent_batches", "max_retries", "poll_interval_seconds",
+                    "workstation_selection", "gpu_selection", "resources", "max_concurrent_validations",
+                }},
+                "enabled": True, "generator_id": tool_id,
+                "objective_type": "accepted", "unique_accepted": True,
+                "acceptance_level": "validated",
+                "accepted_target": branch_target,
+                "max_attempts": branch_attempts,
+                "max_concurrent_generation_jobs": min(max_generation, branch_jobs),
+                "max_concurrent_validations": max_validations,
+                "workstation_selection": workstation_selection,
+                "validation_stages": stages,
+            })
+            branch_configs.append((node_id, validated))
+    if objective_type == 'generated' and planned_designs > raw['max_attempts']:
+        raise ValueError('The sum of selected native design counts exceeds the shared generated-design budget.')
+    if objective_type == 'generated' and target_count > planned_branch_targets:
+        raise ValueError('The shared generated-design target exceeds the sum of selected per-branch design targets.')
+    normalized_stages = branch_configs[0][1]["validation_stages"] if branch_configs else []
     if any(config["validation_stages"] != normalized_stages for _node_id, config in branch_configs[1:]):
         raise ValueError("Shared generators must use the same downstream predictor and configured metric meanings.")
     if raw.get("target_node") is not None and raw.get("target_node") != common_target:
@@ -1610,16 +1676,17 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
         "enabled": True,
         "generator_nodes": list(branches),
         "target_node": common_target,
-        "objective_type": "accepted",
-        "unique_accepted": True,
-        "accepted_target": raw["accepted_target"],
+        "objective_type": objective_type,
+        "unique_accepted": unique_accepted,
+        "accepted_target": target_count if objective_type == 'accepted' else None,
+        "generated_target": target_count if objective_type == 'generated' else None,
         "max_attempts": raw["max_attempts"],
         "max_concurrent_jobs": max_jobs,
         "max_concurrent_generation_jobs": max_generation,
         "max_concurrent_validations": max_validations,
         "workstation_selection": workstation_selection,
         "generator_limits": normalized_limits,
-        "validation_stages": normalized_stages,
+        "validation_stages": normalized_stages if objective_type == 'accepted' else list(stages or []),
         **({"max_compute_seconds": float(compute)} if compute is not None else {}),
     }
 

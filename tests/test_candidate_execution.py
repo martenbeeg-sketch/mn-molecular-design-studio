@@ -112,6 +112,122 @@ def test_tick_runs_bounded_batches_retries_once_and_replays_without_duplicates(t
     assert gp._absolute_candidates(replay) == original
 
 
+def test_shared_campaign_ledger_accounts_for_candidate_scheduler_batches(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.shared_campaign import SharedCampaignLedger
+    source = gp._local_source(tmp_path, 'shared-source', [
+        dict(candidate_id='input-1', binder_sequence='ACDEFGHIKLMNPQRSTVWY'),
+        dict(candidate_id='input-2', binder_sequence='YYYYVVVVTTTTSSSSRRRR'),
+    ])
+    ledger = SharedCampaignLedger.create(tmp_path / 'shared-ledger.json', {
+        'objective_type': 'generated', 'generated_target': 2,
+        'generator_nodes': ['generator'], 'max_attempts': 2,
+        'max_concurrent_jobs': 1, 'max_concurrent_generation_jobs': 1,
+        'max_concurrent_validations': 1,
+        'generator_limits': {'generator': {'max_concurrent_generation_jobs': 1}},
+    })
+    node = dict(id='generator', data=dict(kind='boltz2', label='Generator'))
+    submitted = []
+
+    def submit(request, parent, _node, **_kwargs):
+        child = tmp_path / f'child-{len(submitted)}'
+        (child / 'artifacts/normalized_candidates').mkdir(parents=True)
+        inputs = gp._absolute_candidates({'run_dir': source['run_dir'],
+            'candidates_jsonl': request['parameters']['candidates_jsonl']})
+        rows = [dict(candidate_id='output-' + row['candidate_id'],
+                     parents=[row['candidate_id']], binder_sequence=row['binder_sequence']) for row in inputs]
+        (child / 'artifacts/normalized_candidates/candidates.jsonl').write_text(
+            ''.join(json.dumps(row) + '\n' for row in rows))
+        write_json(child / 'metadata.json', {'status': 'completed', 'tool': 'boltz2'})
+        write_json(child / 'result.json', {'success': True})
+        write_json(child / 'input.json', {'params': request['parameters']})
+        submitted.append(child)
+        return child
+
+    monkeypatch.setattr(gp, '_submit', submit)
+    monkeypatch.setattr(gp, 'node_request', lambda kind, params, batch_source, name: {
+        'workflow': 'mock.candidate_batch',
+        'parameters': {**params, 'source_run_dir': batch_source['run_dir'],
+                       'candidates_jsonl': batch_source['candidates_jsonl']},
+    })
+    current = {}
+    settings = ce.policy({'mode': 'sharded', 'batch_size': 1, 'max_in_flight': 1})
+    arguments = dict(graph=gp, owner_id='owner', project_id='project', gpu_device='all', persist=lambda: None,
+                     shared_campaign_ledger=ledger, generator_node='generator')
+    result = None
+    for _ in range(8):
+        result = ce.tick(tmp_path, node, current, source, {}, 'b' * 64, settings, **arguments)
+        summary = ledger.summary()
+        assert summary['scheduler_jobs_active'] <= 1
+        if result:
+            break
+    assert result and result[1] == 'completed'
+    assert len(submitted) == 2
+    summary = ledger.summary()
+    assert summary['scheduler_jobs'] == 2
+    assert summary['scheduler_jobs_active'] == 0
+    assert all(row['status'] == 'completed' for row in ledger.snapshot()['jobs'].values())
+
+
+def test_interrupted_submitting_state_reconciles_the_existing_shared_reservation(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import runtime
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.shared_campaign import SharedCampaignLedger
+
+    source = gp._local_source(tmp_path, 'recovery-source', [
+        dict(candidate_id='input-1', binder_sequence='ACDEFGHIKLMNPQRSTVWY'),
+    ])
+    ledger = SharedCampaignLedger.create(tmp_path / 'recovery-ledger.json', {
+        'objective_type': 'generated', 'generated_target': 1,
+        'generator_nodes': ['generator'], 'max_attempts': 1,
+        'max_concurrent_jobs': 1, 'max_concurrent_generation_jobs': 1,
+        'max_concurrent_validations': 1,
+    })
+    node = dict(id='generator', data=dict(kind='boltz2', label='Generator'))
+    settings = ce.policy({'mode': 'sharded', 'batch_size': 1, 'max_in_flight': 1})
+    key = 'c' * 64
+    monkeypatch.setattr(gp, 'node_request', lambda kind, params, batch_source, name: {
+        'workflow': 'mock.candidate_batch',
+        'parameters': {**params, 'source_run_dir': batch_source['run_dir'],
+                       'candidates_jsonl': batch_source['candidates_jsonl']},
+    })
+    batches = ce.initialize(tmp_path, node, source, {}, key, settings,
+        make_source=gp._local_source, make_request=gp.node_request, read_rows=gp._absolute_candidates)
+    submission_key = ce.digest([str(tmp_path), node['id'], key, batches[0]['batch_id'], 0])
+    assert ledger.reserve_job(submission_key, 'generator')
+    batches[0].update(status='submitting', shared_job_id=submission_key, submission_key=submission_key)
+    current = {'batches': batches, 'fingerprint': key}
+    monkeypatch.setattr(runtime, 'runs_root', lambda: tmp_path / 'runs')
+    submitted = []
+
+    def submit(request, _parent, _node, **_kwargs):
+        child = tmp_path / 'recovered-child'
+        (child / 'artifacts/normalized_candidates').mkdir(parents=True)
+        inputs = gp._absolute_candidates({'run_dir': source['run_dir'],
+            'candidates_jsonl': request['parameters']['candidates_jsonl']})
+        output_rows = [dict(candidate_id='predicted-' + row['candidate_id'],
+                            parents=[row['candidate_id']], binder_sequence=row['binder_sequence']) for row in inputs]
+        (child / 'artifacts/normalized_candidates/candidates.jsonl').write_text(
+            ''.join(json.dumps(row) + '\n' for row in output_rows))
+        write_json(child / 'metadata.json', {'status': 'completed'})
+        write_json(child / 'result.json', {'success': True})
+        write_json(child / 'input.json', {'params': request['parameters']})
+        submitted.append(child)
+        return child
+
+    monkeypatch.setattr(gp, '_submit', submit)
+    arguments = dict(graph=gp, owner_id='owner', project_id='project', gpu_device='all', persist=lambda: None,
+                     shared_campaign_ledger=ledger, generator_node='generator')
+    assert ce.tick(tmp_path, node, current, source, {}, key, settings, **arguments) is None
+    assert current['batches'][0]['status'] == 'queued'
+    assert current['batches'][0]['submission_key'] == submission_key
+    assert ledger.summary()['scheduler_jobs'] == 1
+    result = ce.tick(tmp_path, node, current, source, {}, key, settings, **arguments)
+    assert result and result[1] == 'completed'
+    assert len(submitted) == 1
+    assert ledger.summary()['scheduler_jobs_active'] == 0
+
+
 def test_scheduler_preserves_auto_and_admits_single_gpu(tmp_path):
     from mn_molecular_design_studio.engine.workflow_engine.core import scheduler, central_scheduler
     path = tmp_path / 'job'; path.mkdir()

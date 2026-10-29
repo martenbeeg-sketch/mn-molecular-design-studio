@@ -141,12 +141,75 @@ def test_capability_selection_and_legacy_graphs():
         for invalid in ('rfd4', 'rfdiffusion', 'esm_binder', 'bindcraft2_generator'):
             with pytest.raises(ValueError, match='unsupported'):
                 cp.new_pipeline([invalid], mode=mode)
-    with pytest.raises(ValueError, match='unsupported'):
-        cp.new_pipeline(['bindcraft2'], mode='modular_design')
+    composed = cp.new_pipeline(['bindcraft2'], mode='modular_design')
+    assert any(node['data']['kind'] == 'bindcraft2' for node in composed['nodes'])
     assert wm.capability('rfd4')['complete_native_workflow'] is False
     assert 'workflow_mode' not in pg.clean_graph(cp.new_pipeline())
     assert wm.native_ranking({'metrics': {'native_rank': float('nan')}})['rank'] is None
     assert wm.native_ranking({'metrics': {'native_rank': 2}})['rank'] == 2
+
+
+@pytest.mark.parametrize(('mode', 'kinds'), [
+    ('native_complete', ['bindcraft2', 'boltzgen']),
+    ('native_comparative', ['bindcraft2', 'complexa']),
+    ('modular_design', ['rfdiffusion', 'esm_binder']),
+])
+def test_heterogeneous_modes_build_valid_interchangeable_graphs(mode, kinds):
+    predictors = [] if mode == 'native_complete' else ['boltz2', 'prediction_protenix_v2']
+    analyses = [] if mode == 'native_complete' else ['ipsae']
+    graph = cp.new_pipeline(kinds, predictors, mode=mode, analyses=analyses)
+    validated = pg.validate_graph(graph)['graph']
+    assert validated['workflow_mode'] == mode
+    assert {node['data']['kind'] for node in validated['nodes']} >= set(kinds)
+    if mode == 'native_complete':
+        assert not {node['data']['kind'] for node in validated['nodes']} & {'ligandmpnn', 'boltz2', 'ipsae'}
+    else:
+        assert sum(node['data']['kind'] == 'boltz2' for node in validated['nodes']) == len(kinds)
+        assert sum(node['data']['kind'] == 'ipsae' for node in validated['nodes']) == len(kinds)
+        assert 'candidate_merge' in {node['data']['kind'] for node in validated['nodes']}
+
+
+def test_retained_design_sources_resolve_the_registered_native_tool(tmp_path):
+    from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS
+
+    design_nodes = {kind: spec for kind, spec in pg.NODE_CATALOG.items()
+                    if spec.get('category') in {'Design engine', 'Design pipeline'} and spec.get('workflow')}
+    for index, (kind, spec) in enumerate(design_nodes.items()):
+        workflow_spec = WORKFLOWS[spec['workflow']]
+        source = tmp_path / f'{kind}-{index}'
+        (source / 'artifacts/normalized_candidates').mkdir(parents=True)
+        (source / 'artifacts/normalized_candidates/candidates.jsonl').write_text('')
+        write_json(source / 'molecular_design_studio.json', {'project_id': 'project'})
+        write_json(source / 'metadata.json', {'status': 'completed', 'tool': workflow_spec.tool})
+        write_json(source / 'input.json', {'workflow': spec['workflow'], 'params': {}})
+        write_json(source / 'result.json', {'success': True, 'metrics': {}})
+        result = cp.retained_source({'data': {'kind': kind, 'retained_run_dir': str(source)}}, 'project')
+        assert result['source_provenance']['workflow'] == spec['workflow']
+        assert result['source_provenance']['metadata']['tool'] == workflow_spec.tool
+
+
+def test_design_compatibility_catalog_covers_registry_and_measurement_routes():
+    catalog = wm.compatibility_catalog()
+    assert len(catalog['workflows']) >= 20
+    assert {row['workflow'] for row in catalog['complete_native_workflows']} >= {
+        'design.bindcraft2', 'design.boltzgen', 'design.pxdesign', 'design.genie3',
+        'design.protpardelle_1c', 'design.proteina_complexa',
+    }
+    assert {'design.bindcraft', 'design.rfantibody', 'design.rfpeptides'} <= {
+        row['workflow'] for row in catalog['standalone_registered_routes']
+    }
+    graph_rows = {kind: spec['scientific_workflow'] for kind, spec in pg.NODE_CATALOG.items()
+                  if spec.get('category') in {'Design engine', 'Design pipeline'}}
+    assert graph_rows['rfd4']['tool'] == 'rfd4_proteina'
+    assert graph_rows['esm_binder']['tool'] == 'esmfold2_binder_design'
+    assert any('interface.contacts' in {m['key'] for m in route['measurements']}
+               for route in catalog['shared_analysis_routes'])
+    assert any('interface.ipsae.minimum' in {m['key'] for m in route['measurements']}
+               for route in catalog['shared_analysis_routes'])
+    assert any('geometry.validation.binder.target_aligned_rmsd' in {m['key'] for m in route['measurements']}
+               for route in catalog['shared_analysis_routes'])
+    assert any('confidence.validation.interface.mean_pae' in {m['key'] for m in route['measurements']}
+               for route in catalog['shared_analysis_routes'])
 
 
 @pytest.mark.parametrize(
@@ -251,6 +314,9 @@ def test_modes_through_normal_api_save_validate(pdl1_harness, monkeypatch, mode)
             assert response.json()['valid'] is True
             catalog = client.get('/api/v1/pipelines/catalog').json()
             assert catalog['rfd4']['scientific_workflow']['complete_native_workflow'] is False
+            compatibility = client.get('/api/v1/pipelines/compatibility')
+            assert compatibility.status_code == 200, compatibility.text
+            assert any(row['workflow'] == 'design.esmfold2_binder' for row in compatibility.json()['composable_generators'])
             assert h.parents == [] and h.submissions == []
     finally:
         api.app.dependency_overrides.clear()
@@ -372,7 +438,7 @@ def test_failed_generator_keeps_other_branch_results(pdl1_harness, monkeypatch, 
 def test_native_distributed_manifest_preserves_one_whole_invocation(pdl1_harness, kind):
     from mn_molecular_design_studio import candidate_execution as ce
     h=pdl1_harness
-    graph=cp.new_pipeline([kind],mode='native_complete' if kind in wm.COMPLETE else 'modular_design')
+    graph=cp.new_pipeline([kind],mode='native_complete' if kind in wm.methods('native_complete') else 'modular_design')
     node=graph['nodes'][1]
     node['native_invocation']=True
     node['data']['params']['num_designs']=7
@@ -407,3 +473,51 @@ if graph is not None:
     graph=pg.validate_graph(app.session_state['created'])['graph']
     params=[n['data']['params'] for n in graph['nodes'] if n['data']['params'].get('sequence_stage')=='soluble_optimization']
     assert params and all(p['optimization_enabled'] and p['fix_interface_residues'] and p['interface_cutoff']==5.0 for p in params)
+
+
+def test_modular_setup_uses_each_selected_designers_native_count_field():
+    from streamlit.testing.v1 import AppTest
+    app = AppTest.from_string("""
+import streamlit as st
+from mn_molecular_design_studio.scientific_tasks_ui import render_task_setup
+graph = render_task_setup('sequence-count-test')
+if graph is not None:
+    st.session_state['created-sequence-graph'] = graph
+""").run(timeout=45)
+    app.selectbox(key='sequence-count-test-workflow-mode').select('modular_design').run()
+    app.selectbox(key='sequence-count-test-mode-sequence-engine').select('esm_if1').run()
+    app.checkbox(key='sequence-count-test-mode-interface-redesign').check().run()
+    app.selectbox(key='sequence-count-test-mode-redesign-engine').select('caliby').run()
+    app.number_input(key='sequence-count-test-mode-redesign-count').set_value(3).run()
+    app.button(key='sequence-count-test-create-mode').click().run()
+    assert not app.exception
+    graph = pg.validate_graph(app.session_state['created-sequence-graph'])['graph']
+    initial = next(node for node in graph['nodes'] if node['id'] == 'sequence-preparation')
+    redesign = next(node for node in graph['nodes'] if node['id'] == 'optional-redesign')
+    assert initial['data']['kind'] == 'esm_if1'
+    assert initial['data']['params']['num_sequences'] == 1
+    assert redesign['data']['kind'] == 'caliby'
+    assert redesign['data']['params']['num_sequences'] == 3
+    assert 'sequences' not in redesign['data']['params']
+
+
+def test_protenix_comparison_picker_exposes_v1_v2_msa_and_supported_pdb_template():
+    assert {'prediction_protenix_v1', 'prediction_protenix_v2'} <= set(wm.cofolder_methods())
+    assert 'protenix' not in wm.cofolder_methods()
+    assert 'protenix_cli' not in wm.cofolder_methods()
+
+    from streamlit.testing.v1 import AppTest
+    app = AppTest.from_string("""
+import streamlit as st
+from mn_molecular_design_studio.scientific_tasks_ui import render_task_setup
+render_task_setup('protenix-test')
+""").run(timeout=45)
+    app.selectbox(key='protenix-test-workflow-mode').select('modular_design').run()
+    app.multiselect(key='protenix-test-mode-predictors-modular_design').set_value(
+        ['prediction_protenix_v1', 'prediction_protenix_v2']).run()
+    assert not app.exception
+    assert app.checkbox(key='protenix-test-mode-protocol-prediction_protenix_v1-target_use_msa').value
+    assert app.checkbox(key='protenix-test-mode-protocol-prediction_protenix_v2-target_use_msa').value
+    assert app.checkbox(key='protenix-test-mode-protocol-prediction_protenix_v2-use_target_template').value
+    assert not any(widget.key == 'protenix-test-mode-protocol-prediction_protenix_v1-use_target_template'
+                   for widget in app.checkbox)

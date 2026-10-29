@@ -143,12 +143,42 @@ def test_selected_design_has_target_only_template_and_no_binder_msa(design_sourc
         assert task["target_protein_ids"] == []
 
 
+def test_cyclic_acceptance_validation_preserves_topology_only_on_supported_engine(design_source_factory):
+    run, candidate = design_source_factory()
+    source = [{"source_run_dir": str(run), "candidate_ids": [candidate["candidate_id"]]}]
+    prepared = prediction._prepare_prediction(
+        "boltz2", validation_sources=source, validation_mode="complex",
+        validation_binder_format="cyclic_peptide", samples=1, resolve_random_seed=False,
+    )
+    binder = prepared.normalized_tasks[0]["binder_protein_ids"][0]
+    assert prepared.normalized_tasks[0]["molecule_chain_options"][binder]["cyclic"] is True
+    with pytest.raises(ValueError, match="does not preserve cyclic peptide"):
+        prediction._prepare_prediction(
+            "alphafold3", validation_sources=source, validation_mode="complex",
+            validation_binder_format="cyclic_peptide", samples=1,
+            accept_alphafold3_terms=True, resolve_random_seed=False,
+        )
+
+
 def test_failed_filter_candidate_cannot_be_selected_by_id(design_source_factory):
     run, candidate = design_source_factory(passed=False)
     with pytest.raises(ValueError, match="filter-passing"):
         validation.build_tasks([{"source_run_dir": str(run), "candidate_ids": [candidate["candidate_id"]]}],
                                mode="complex", profile=prediction.ENGINE_PROFILES["boltz2"],
                                target_use_msa=True, use_target_template=True)
+
+
+def test_standalone_acceptance_can_repredict_native_rejections(design_source_factory):
+    run, candidate = design_source_factory(passed=False)
+    source = [{"source_run_dir": str(run), "candidate_ids": [candidate["candidate_id"]]}]
+    with pytest.raises(ValueError, match="filter-passing"):
+        prediction._prepare_prediction(
+            "boltz2", validation_sources=source, validation_mode="complex", samples=1,
+            resolve_random_seed=False)
+    prepared = prediction._prepare_prediction(
+        "boltz2", validation_sources=source, validation_mode="complex", samples=1,
+        validation_require_passing=False, resolve_random_seed=False)
+    assert prepared.normalized_tasks[0]["validation_reference"]["candidate_id"] == candidate["candidate_id"]
 
 
 @pytest.mark.parametrize("engine", [name for name, profile in prediction.ENGINE_PROFILES.items()

@@ -83,6 +83,202 @@ def _as_safe_yaml(payload: object) -> str:
     return yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, width=1000)
 
 
+def parse_idr_fasta(text: str) -> str:
+    """Return one standard-amino-acid IDR sequence from FASTA or plain text."""
+    value = str(text or "").strip()
+    if not value:
+        raise ValueError("Paste one IDR sequence in FASTA format.")
+    if any(line.lstrip().startswith(">") for line in value.splitlines()):
+        from Bio import SeqIO
+        from io import StringIO
+
+        records = list(SeqIO.parse(StringIO(value), "fasta"))
+        if len(records) != 1:
+            raise ValueError("Provide exactly one FASTA record for the IDR target.")
+        sequence_value = str(records[0].seq)
+    else:
+        sequence_value = value
+    normalized = re.sub(r"\s+", "", sequence_value).upper()
+    if not 4 <= len(normalized) <= 1024 or not re.fullmatch(r"[ACDEFGHIKLMNPQRSTVWY]+", normalized):
+        raise ValueError("The IDR target must contain 4–1024 standard amino acids (no gaps or ambiguous residues).")
+    return normalized
+
+
+def _nerf_atom(a, b, c, bond_length: float, bond_angle: float, dihedral: float):
+    """Place an atom from three predecessors using ideal peptide geometry."""
+    import numpy as np
+
+    theta, phi = np.deg2rad([bond_angle, dihedral])
+    bc = c - b
+    bc /= np.linalg.norm(bc)
+    normal = np.cross(b - a, bc)
+    normal /= np.linalg.norm(normal)
+    tangent = np.cross(normal, bc)
+    return c + bond_length * (
+        -np.cos(theta) * bc
+        + np.sin(theta) * (np.cos(phi) * tangent + np.sin(phi) * normal)
+    )
+
+
+def write_idr_sequence_carrier(sequence_value: str, destination: Path) -> Path:
+    """Write an ideal extended backbone CIF used only to carry sequence identity.
+
+    Its coordinates are deliberately left without C_CRD/C_CRDGRP conditions in
+    the IDR condition spec. They are not an IDR structure prediction or a target
+    conformation supplied to the generator.
+    """
+    import numpy as np
+    from Bio.PDB import Atom, Chain, MMCIFIO, Model, Residue, Structure
+    from Bio.SeqUtils import seq3
+
+    sequence_value = parse_idr_fasta(sequence_value)
+    nitrogen = [np.array([0.0, 0.0, 0.0])]
+    alpha_carbon = [np.array([1.458, 0.0, 0.0])]
+    angle = np.deg2rad(68.8)
+    carbon = [alpha_carbon[0] + 1.525 * np.array([np.cos(angle), np.sin(angle), 0.0])]
+    for index in range(len(sequence_value) - 1):
+        nitrogen.append(_nerf_atom(nitrogen[index], alpha_carbon[index], carbon[index], 1.329, 116.2, 130.0))
+        alpha_carbon.append(_nerf_atom(alpha_carbon[index], carbon[index], nitrogen[index + 1], 1.458, 121.7, 180.0))
+        phi = -75.0 if sequence_value[index + 1] == "P" else -120.0
+        carbon.append(_nerf_atom(carbon[index], nitrogen[index + 1], alpha_carbon[index + 1], 1.525, 111.2, phi))
+
+    structure = Structure.Structure("idr_sequence_carrier")
+    model = Model.Model(0)
+    chain = Chain.Chain("A")
+    structure.add(model)
+    model.add(chain)
+    serial = 1
+    for index, letter in enumerate(sequence_value):
+        residue = Residue.Residue((" ", index + 1, " "), seq3(letter).upper(), " ")
+        chain.add(residue)
+        oxygen = _nerf_atom(nitrogen[index], alpha_carbon[index], carbon[index], 1.231, 120.8, 310.0)
+        coords = {"N": nitrogen[index], "CA": alpha_carbon[index], "C": carbon[index], "O": oxygen}
+        for atom_name, coordinate in coords.items():
+            element = atom_name[0]
+            residue.add(Atom.Atom(atom_name, coordinate, 0.0, 1.0, " ", atom_name, serial, element=element))
+            serial += 1
+
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    writer = MMCIFIO()
+    writer.set_structure(structure)
+    writer.save(str(destination))
+    return destination
+
+
+def store_idr_sequence_carrier(sequence_value: str, input_root: Path) -> Path:
+    """Cache the synthetic sequence carrier under the user's managed inputs."""
+    normalized = parse_idr_fasta(sequence_value)
+    digest = hashlib.sha256(normalized.encode("ascii")).hexdigest()[:16]
+    destination = Path(input_root) / "rfd4-proteina" / "idr-sequences" / digest / "idr_sequence_carrier.cif"
+    if not destination.is_file():
+        write_idr_sequence_carrier(normalized, destination)
+    return destination
+
+
+def idr_binder_condition_spec(
+    sequence_value: str,
+    *,
+    target_filename: str = "target.cif",
+    binder_length_min: int = 70,
+    binder_length_max: int = 110,
+    hotspots: str = "",
+) -> str:
+    """Build the experimental sequence-fixed, coordinate-free IDR binder spec."""
+    sequence_value = parse_idr_fasta(sequence_value)
+    if type(binder_length_min) is not int or type(binder_length_max) is not int or not 20 <= binder_length_min <= binder_length_max <= 1024:
+        raise ValueError("Binder length must be an ordered range from 20 to 1024 residues.")
+    conditions: dict[str, Any] = {"C_SEQ": {True: [{"select": "sel('A')"}]}}
+    selected_positions: list[int] = []
+    for token in (part.strip() for part in re.split(r"[,;\s]+", str(hotspots or ""))):
+        if not token:
+            continue
+        match = re.fullmatch(r"(?:([A-Za-z]):?)?(\d+)(?:-(?:([A-Za-z]):?)?(\d+))?", token)
+        if not match:
+            raise ValueError(f"Could not parse hotspot {token!r}; use sequence positions such as A5 or A8-12.")
+        if any(chain and chain.upper() != "A" for chain in (match.group(1), match.group(3))):
+            raise ValueError("Sequence-only IDR hotspot selectors use the synthetic target chain A.")
+        start, end = int(match.group(2)), int(match.group(4) or match.group(2))
+        if start < 1 or end < start or end > len(sequence_value):
+            raise ValueError(f"Hotspot {token!r} falls outside target sequence positions 1–{len(sequence_value)}.")
+        selected_positions.extend(range(start, end + 1))
+    if selected_positions:
+        positions = sorted(set(selected_positions))
+        selectors = []
+        index = 0
+        while index < len(positions):
+            start = end = positions[index]
+            index += 1
+            while index < len(positions) and positions[index] == end + 1:
+                end = positions[index]
+                index += 1
+            residue_selector = f"[{start}-{end}]" if start != end else str(start)
+            selectors.append({"select": f"sel('A/*/{residue_selector}')"})
+        conditions["C_HOT"] = {True: selectors}
+
+    spec = {
+        "idr_peptide_binder": {
+            "input": Path(target_filename).name,
+            "contig": f"{binder_length_min}-{binder_length_max}, /0, A1-{len(sequence_value)}",
+            "conditions": conditions,
+        }
+    }
+    return _as_safe_yaml(spec)
+
+
+def validate_campaign_inputs(parameters: dict[str, Any]) -> int:
+    """Validate one RFD4 protein-binder input for attempt-based campaigns.
+
+    Guided and condition-spec inputs are two native RFD4 input forms. A campaign
+    attempt can carry either form, but must describe exactly one binder design
+    against one staged target so candidate and retry accounting stays one-to-one.
+    """
+    task = str(parameters.get("task") or "protein_binder")
+    mode = str(parameters.get("input_mode") or "guided")
+    if task != "protein_binder" or mode not in {"guided", "guided_binder", "condition_spec"}:
+        raise ValueError("RFD4 campaigns require one protein-binder design using a guided or condition-spec input.")
+    target_value = parameters.get("target_structure")
+    if not target_value:
+        raise ValueError("RFD4 campaigns require one target structure.")
+    target_path = Path(str(target_value)).expanduser()
+    target_name = target_path.name
+    if not target_name:
+        raise ValueError("RFD4 campaigns require a named target structure file.")
+    if not parameters.get("target_chains"):
+        raise ValueError("RFD4 campaigns require explicit target-chain identities for candidate verification.")
+    if parameters.get("avoid_structures") or parameters.get("also_bind_structures") or parameters.get("protein_sequences"):
+        raise ValueError("RFD4 campaigns currently support one target without secondary inputs.")
+
+    input_files = [Path(str(value)).expanduser() for value in parameters.get("input_files") or []]
+    if mode in {"guided", "guided_binder"}:
+        if input_files:
+            raise ValueError("Guided RFD4 campaigns accept the target through target_structure only.")
+        return 1
+
+    # Condition-spec RFD4 uses files named in YAML. For campaign attempts, all
+    # references must resolve to the same target carried by target_structure.
+    if any(path.name != target_name for path in input_files):
+        raise ValueError("RFD4 condition-spec campaigns require one target structure and no secondary input files.")
+    try:
+        spec = yaml.safe_load(str(parameters.get("condition_spec") or ""))
+    except yaml.YAMLError as exc:
+        raise ValueError("RFD4 campaign condition specification is invalid YAML/JSON.") from exc
+    if not isinstance(spec, dict) or not spec:
+        raise ValueError("RFD4 condition-spec campaigns require a nonempty condition specification.")
+    design_names = [name for name in spec if name != "global_args"]
+    if len(design_names) != 1:
+        raise ValueError("Each RFD4 campaign attempt must contain exactly one named condition-spec design.")
+    global_args = spec.get("global_args") or {}
+    design = spec[design_names[0]]
+    if not isinstance(global_args, dict) or not isinstance(design, dict):
+        raise ValueError("RFD4 campaign condition-spec entries must be mappings.")
+    input_value = design.get("input", global_args.get("input"))
+    references = input_value if isinstance(input_value, list) else [input_value]
+    if not references or any(not isinstance(value, str) or Path(value).name != target_name for value in references):
+        raise ValueError("RFD4 campaign condition specifications must reference only the selected target structure.")
+    return 1
+
+
 def _cif_label_mapping(path: Path) -> tuple[dict[str, str], dict[tuple[str, int], int]]:
     """Map author chain/residue IDs to the label IDs RFD4 selectors consume."""
     import gemmi

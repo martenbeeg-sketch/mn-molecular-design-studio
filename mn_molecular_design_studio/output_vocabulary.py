@@ -57,10 +57,32 @@ def fasta_metrics(header):
 
 def recovered_metrics(metrics, raw, tool):
     result = dict(metrics or {})
+    if engine_name(tool) == "mol1":
+        confidence = (raw or {}).get("confidence_outputs")
+        if isinstance(confidence, dict):
+            plddt = confidence.get("plddt_mean", confidence.get("plddt"))
+            if plddt is not None:
+                result.setdefault("mol1_model_plddt_mean", plddt)
     if engine_name(tool) in MPNN_ENGINES:
         for key, value in fasta_metrics((raw or {}).get("fasta_header")).items():
             result.setdefault(key, value)
     return result
+
+
+def _candidate_stage(candidate):
+    """Use molecular input composition to correct legacy monomer result labels."""
+    stage = candidate.get("stage")
+    if stage != "complex_refolding":
+        return stage
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    chains = raw.get("protein_chains") or raw.get("chain_sequences") or []
+    count = len(chains) if isinstance(chains, (list, dict)) else 0
+    for key in ("dna_chains", "rna_chains", "ligand_ccd_codes", "ligand_smiles"):
+        values = raw.get(key) or []
+        count += len(values) if isinstance(values, (list, dict)) else 0
+    if raw.get("has_target_structure"):
+        count += 1
+    return "monomer_refolding" if count == 1 else stage
 
 
 @dataclass(frozen=True)
@@ -117,6 +139,8 @@ for role, stages in (("generator", ("generation.backbone_sequence",)),
         ("boltzgen", (("ptm", "ptm"), ("iptm", "iptm")), "BoltzGen native predictor"),
         ("rfdiffusion3", (("ptm", "ptm"), ("iptm", "iptm")), "RFdiffusion3 native refolding"),
         ("genie3", (("ptm", "ptm"), ("iptm", "iptm")), "Genie3 native refolding"),
+        ("pxdesign", (("ptm", "af2_ptm"), ("iptm", "iptm")), "PXDesign native AF2-IG"),
+        ("proteina_complexa", (("ptm", "ptm"), ("iptm", "iptm")), "Proteina-Complexa native evaluator"),
     ):
         for canonical, alias in aliases:
             MEASURES.append(Measure(f"confidence.{role}.complex.{canonical}", f"{role.title()} complex {canonical}", "0–1", "complex" if canonical == "ptm" else "complex interfaces", method, (alias,), "higher", maximum=1, engines=(engine,), stages=stages))
@@ -163,12 +187,90 @@ MEASURES.extend([
 ])
 # Evaluation descriptors are defined here as well, so ranking and UI use the
 # same conversions and cannot substitute confidence for an unrelated measure.
-for engine in ("af2_initial_guess", "boltz2_initial_guess", "boltz2", "af3_jax_cofolding", "optimized_prediction", "openfold3", "protenix", "protenix_v1"):
+for engine in ("af2_initial_guess", "boltz2_initial_guess", "boltz2", "alphafold3", "af3_jax_cofolding", "optimized_prediction", "openfold3", "openfold3_jax", "af3_torch", "rf3_foundry", "protenix", "protenix_v1", "protenix_v2", "mol1", "colabfold"):
     for quantity in ("ptm", "iptm"):
         MEASURES.append(Measure(f"confidence.validation.complex.{quantity}", f"Validation complex {quantity}", "0–1", "complex interfaces" if quantity == "iptm" else "complex", engine,
             (quantity,), "higher", maximum=1, engines=(engine,), stages=("complex_refolding",)))
-MEASURES.append(Measure("confidence.validation.bound_binder.plddt", "Validation bound binder pLDDT", "0–100", "binder in complex", "AF2 binder confidence",
-    ("af2_binder_plddt", "af2_average_binder_plddt"), "higher", maximum=100))
+    MEASURES.append(Measure("confidence.validation.monomer.ptm", "Validation monomer pTM", "0–1", "single modeled component", engine,
+        ("ptm",), "higher", maximum=1, engines=(engine,), stages=("monomer_refolding",)))
+MEASURES.append(Measure("confidence.validation.structure.mean_ca_plddt", "Mean structure Cα pLDDT", "0–100", "all protein Cα atoms", "Studio mean Cα B-factor read from output PDB/mmCIF",
+    ("plddt_mean", "complex_plddt"), "higher", maximum=100, stages=("complex_refolding", "monomer_refolding")))
+MEASURES.extend([
+    Measure("confidence.validation.structure.binder_ca_plddt", "Bound binder mean Cα B-factor pLDDT", "0–100", "binder Cα atoms in predicted complex", "Studio mean Cα B-factor read from output PDB/mmCIF and binder chain roles",
+        ("binder_structure_ca_plddt",), "higher", maximum=100, stages=("complex_refolding",)),
+    Measure("confidence.validation.structure.target_ca_plddt", "Target mean Cα B-factor pLDDT", "0–100", "target Cα atoms in predicted complex", "Studio mean Cα B-factor read from output PDB/mmCIF and target chain roles",
+        ("target_structure_ca_plddt",), "higher", maximum=100, stages=("complex_refolding",)),
+])
+MEASURES.append(Measure("confidence.validation.model.mol1_plddt_mean", "Mol-1 model summary pLDDT", "0–100", "all modeled protein chains", "Mol-1 native summary_confidence_sample plddt",
+    ("mol1_model_plddt_mean",), "higher", maximum=100, engines=("mol1",), stages=("complex_refolding", "monomer_refolding")))
+MEASURES.append(Measure("confidence.validation.bound_binder.plddt", "Validation bound binder pLDDT", "0–100", "binder in complex", "Producer model bound-binder confidence; source tool and protocol retained",
+    ("binder_plddt", "af2_binder_plddt", "af2_average_binder_plddt"), "higher", maximum=100,
+    stages=("complex_refolding",)))
+MEASURES.extend([
+    Measure("confidence.validation.interface.mean_pae", "Validation interface PAE", "Å", "binder–target interface", "Producer-reported interface PAE; source method and cutoff retained",
+        ("ipae", "i_pae", "binder_pae", "boltz2_ipae"), "lower", minimum=0, stages=("complex_refolding",)),
+    Measure("geometry.validation.binder.target_aligned_rmsd", "Target-aligned binder RMSD", "Å", "binder backbone in target frame", "Studio matched target Cα alignment and binder Cα RMSD",
+        ("target_aligned_binder_rmsd", "binder_rmsd_target_aligned"), "lower", minimum=0, stages=("complex_refolding",)),
+    Measure("geometry.validation.binder.self_consistency_rmsd", "Binder self-consistency RMSD", "Å", "binder backbone after binder-only alignment", "Studio matched binder Cα alignment; target pose is not assessed",
+        ("binder_self_consistency_rmsd",), "lower", minimum=0, stages=("complex_refolding", "monomer_refolding")),
+    Measure("geometry.validation.cyclic_peptide.closure_distance", "Cyclic peptide head-to-tail closure distance", "Å", "terminal backbone C–N atoms", "Studio output structure distance from the first binder N to the final binder C atom",
+        ("cyclic_closure_distance",), "lower", minimum=0, engines=("boltz2",), stages=("complex_refolding", "monomer_refolding")),
+    Measure("interface.validation.binder_residue_count_4a", "Binder residues contacting target within 4 Å", "residues", "binder–target interface", "Studio heavy-atom distances; count each binder residue once if any heavy atom is within 4 Å of any target heavy atom",
+        ("validation_interface_residue_count_4a",), minimum=0, stages=("complex_refolding",)),
+    Measure("geometry.validation.interface.backbone_ca_clashes_2_5a", "Interchain Cα clashes within 2.5 Å", "atom pairs", "predicted multichain structure", "Studio interchain Cα pair count at ≤2.5 Å; same distance definition as BindCraft2 Backbone_Clashes",
+        ("validation_backbone_ca_clashes_2_5a",), minimum=0, stages=("complex_refolding",)),
+            Measure("confidence.native_design.esmfold2.critic.iptm", "ESMFold2 native design critic iPTM", "0–1", "complex interfaces", "ESMFold2 gradient-design critic; native objective, not independent validation",
+        ("iptm",), "higher", maximum=1, engines=("esmfold2_binder",), stages=("complex_refolding",)),
+])
+MEASURES.extend([
+    Measure("confidence.native.bindcraft2.interface.ipdae", "BindCraft2 i_pDAE", "0–1", "contact-focused binder–target interface", "BindCraft2 PAE-derived score over Cα contacts within 8 Å; maximum over contacting residues and directions",
+        ("i_pDAE", "ipdae"), "higher", minimum=0, maximum=1, engines=("bindcraft2",)),
+    Measure("confidence.native.bindcraft2.interface.ipae_normalized", "BindCraft2 normalized i_pAE", "0–1", "binder–target symmetric mean", "BindCraft2 mean interface PAE normalized by 31 Å; distinct from raw PAE in Å",
+        ("i_pAE",), "lower", minimum=0, maximum=1, engines=("bindcraft2",)),
+    Measure("geometry.native.bindcraft2.bound_unbound_rmsd", "BindCraft2 Binder_RMSD", "Å", "binder backbone between bound and unbound predictions", "BindCraft2 matched binder Cα RMSD; distinct from target-aligned pose RMSD",
+        ("Binder_RMSD",), "lower", minimum=0, engines=("bindcraft2",)),
+    Measure("sequence.native.bindcraft2.scaffold_sequence_retained_fraction", "BindCraft2 scaffold sequence retained fraction", "fraction", "held scaffold framework", "BindCraft2 exact sequence identity at non-edited scaffold positions",
+        ("Scaffold_Sequence_Retained_Fraction",), "higher", minimum=0, maximum=1, engines=("bindcraft2",)),
+    Measure("geometry.native.bindcraft2.scaffold_framework_rmsd", "BindCraft2 scaffold framework RMSD", "Å", "held scaffold framework", "BindCraft2 framework Cα RMSD after scaffold alignment",
+        ("Scaffold_Framework_RMSD",), "lower", minimum=0, engines=("bindcraft2",)),
+    Measure("interface.native.bindcraft2.off_paratope_contact_fraction", "BindCraft2 off-paratope contact fraction", "fraction", "binder residues contacting outside the paratope", "BindCraft2 flagged-paratope contact residue fraction",
+        ("Off_Paratope_Contact_Fraction",), "lower", minimum=0, maximum=1, engines=("bindcraft2",)),
+    Measure("structure.native.bindcraft2.framework_packing_fraction", "BindCraft2 framework packing fraction", "fraction", "framework residues packed against paratope", "BindCraft2 framework-to-paratope heavy-atom packing fraction",
+        ("Framework_Packing_Fraction",), "higher", minimum=0, maximum=1, engines=("bindcraft2",)),
+    Measure("geometry.native.bindcraft2.induced_fit_interface_rmsd", "BindCraft2 induced-fit interface RMSD", "Å", "interface residues between free and bound states", "BindCraft2 interface Cα displacement after core alignment",
+        ("Induced_Fit_Interface_RMSD",), "higher", minimum=0, engines=("bindcraft2",)),
+    Measure("confidence.native.bindcraft2.induced_fit_tm", "BindCraft2 induced-fit TM score", "0–1", "whole binder between free and bound states", "BindCraft2 structural TM score",
+        ("Induced_Fit_TM",), "lower", minimum=0, maximum=1, engines=("bindcraft2",)),
+    Measure("geometry.native.bindcraft2.interdomain_contact_fraction", "BindCraft2 interdomain contact fraction", "fraction", "binder domain interfaces", "BindCraft2 interdomain contacts divided by total contacts",
+        ("Interdomain_Contact_Fraction",), "lower", minimum=0, maximum=1, engines=("bindcraft2",)),
+    Measure("geometry.native.bindcraft2.domain_separation_ratio", "BindCraft2 domain separation ratio", "ratio", "binder domains", "BindCraft2 domain separation relative to domain size",
+        ("Domain_Separation_Ratio",), "higher", minimum=0, engines=("bindcraft2",)),
+    Measure("interface.native.bindcraft2.binder_residue_count_4a", "BindCraft2 binder interface residue count", "residues", "binder–target interface", "BindCraft2 binder residues with any atom within 4 Å of the target",
+        ("Interface_Residues",), "higher", minimum=0, engines=("bindcraft2",)),
+    Measure("geometry.native.bindcraft2.backbone_ca_clashes_2_5a", "BindCraft2 backbone Cα clash count", "atom pairs", "multichain structure", "BindCraft2 interchain Cα pairs within 2.5 Å",
+        ("Backbone_Clashes",), "lower", minimum=0, engines=("bindcraft2",)),
+])
+for engine, method, rmsd_key, rmsd_label, rmsd_alias in (
+    ("pxdesign", "PXDesign native AF2-IG", "geometry.native.pxdesign.bound_unbound_rmsd", "PXDesign bound–unbound binder RMSD", "binder_rmsd"),
+    ("genie3", "Genie3 native evaluation", "geometry.native.genie3.binder_self_consistency_rmsd", "Genie3 binder self-consistency RMSD", "binder_rmsd"),
+    ("protpardelle", "Protpardelle native ESMFold evaluation", "geometry.native.protpardelle.binder_scaffold_rmsd", "Protpardelle binder scaffold RMSD", "binder_rmsd"),
+    ("proteina_complexa", "Proteina-Complexa native evaluation", "geometry.native.proteina_complexa.binder_scaffold_rmsd", "Proteina-Complexa binder scaffold RMSD", "binder_rmsd"),
+):
+    for key, label, aliases, unit, direction, maximum in (
+        ("confidence.validation.bound_binder.plddt", "Validation bound binder pLDDT", ("binder_plddt",), "0–100", "higher", 100),
+        ("confidence.validation.interface.mean_pae", "Validation interface PAE", ("ipae",), "Å", "lower", None),
+    ):
+        MEASURES.append(Measure(key, label, unit, "binder in complex" if key.endswith("plddt") else "binder–target interface",
+            method, aliases, direction, minimum=0, maximum=maximum, engines=(engine,), stages=("complex_refolding",)))
+    MEASURES.append(Measure(rmsd_key, rmsd_label, "Å", "native evaluator binder RMSD", method,
+        (rmsd_alias,), "lower", minimum=0, engines=(engine,), stages=("complex_refolding",)))
+for key, label, aliases in (
+    ("interface.ipsae.minimum", "Minimum directional ipSAE", ("ipsae_min",)),
+    ("interface.ipsae.maximum", "Maximum directional ipSAE", ("ipsae_max",)),
+    ("interface.ipsae.mean", "Mean directional ipSAE", ("ipsae_avg",)),
+):
+    MEASURES.append(Measure(key, label, "0–1", "native selected chain pair", "Proteina-Complexa native evaluation",
+        aliases, "higher", minimum=0, maximum=1, engines=("proteina_complexa",), stages=("complex_refolding",)))
 for key, label, unit, scope, method, aliases, direction, minimum, maximum in (
     ("interface.ipsae.minimum", "Minimum directional ipSAE", "0–1", "selected chain pair", "ipSAE", ("ipsae_min", "ipSAE_min"), "higher", 0, 1),
     ("interface.ipsae.maximum", "Maximum directional ipSAE", "0–1", "selected chain pair", "ipSAE", ("ipsae_max", "ipSAE_max"), "higher", 0, 1),
@@ -211,9 +313,43 @@ def vocabulary():
             "generator_workflows": dict(GENERATOR_WORKFLOWS),
             "measures": [{"field": PREFIX + key, "key": key,
                           **{name: getattr(definition, name) for name in ("label", "unit", "scope", "direction", "minimum", "maximum", "description", "value_type", "prerequisites", "aggregation")},
+                          "range_semantics": "Physical/value-domain validation only; these limits are not quality thresholds.",
                           "group": key.split(".", 1)[0],
                           "rules": [asdict(rule) for rule in MEASURES if rule.key == key]}
                          for key, definition in DEFINITIONS.items()]}
+
+
+def measure_capabilities(tool, *, stages=None):
+    """Return only engine-scoped measurements whose exact source aliases match.
+
+    This is a description of output normalization, not a claim that a given
+    run or candidate produced a value. Generic analysis measurements are
+    advertised by the analysis route that computes them.
+    """
+    engine = engine_name(tool)
+    stage_set = set(stages or ())
+    rows = []
+    for measure in MEASURES:
+        if not measure.engines or engine not in measure.engines:
+            continue
+        if stage_set and measure.stages and not stage_set.intersection(measure.stages):
+            continue
+        rows.append({
+            "field": PREFIX + measure.key,
+            "key": measure.key,
+            "label": measure.label,
+            "unit": measure.unit,
+            "scope": measure.scope,
+            "method": measure.method,
+            "direction": measure.direction,
+            "recognized_aliases": list(measure.aliases),
+            "stages": list(measure.stages),
+            "prerequisites": list(measure.prerequisites),
+            "value_domain": {"minimum": measure.minimum, "maximum": measure.maximum},
+            "quality_threshold": "not set; configure explicitly in native filters or Shared scientific filters",
+            "availability": "recognized when the source field is emitted; missing values remain missing",
+        })
+    return rows
 
 
 def normalize_metrics(metrics, tool="", context=None):
@@ -223,6 +359,7 @@ def normalize_metrics(metrics, tool="", context=None):
     raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
     tool = candidate.get("source_tool") or tool
     engine = engine_name(tool)
+    stage = _candidate_stage(candidate)
     original = metrics or {}
     values = recovered_metrics(original, raw, tool)
     sequence = candidate.get("binder_sequence")
@@ -235,7 +372,7 @@ def normalize_metrics(metrics, tool="", context=None):
     for measure in MEASURES:
         if measure.engines and engine not in measure.engines:
             continue
-        if measure.stages and candidate.get("stage") not in measure.stages:
+        if measure.stages and stage not in measure.stages:
             continue
         if any(values.get(key, candidate.get(key)) != expected for key, expected in measure.requires):
             continue
@@ -247,7 +384,7 @@ def normalize_metrics(metrics, tool="", context=None):
                 if not isinstance(value, str) or not value:
                     issues.append({"field": alias, "reason": "not a non-empty string"})
                     continue
-                matches.setdefault(measure.key, []).append({"source_field": alias, "raw_value": value, "value": value, "conversion": "identity", "method": measure.method})
+                matches.setdefault(measure.key, []).append({"source_field": alias, "raw_value": value, "value": value, "conversion": "identity", "method": measure.method, "_engine_scoped": bool(measure.engines)})
                 continue
             if measure.transform == "bool_to_indicator" and isinstance(value, bool):
                 value = float(value)
@@ -279,7 +416,7 @@ def normalize_metrics(metrics, tool="", context=None):
                 issues.append({"field": alias, "reason": "outside declared range"})
                 continue
             source = "binder_sequence" if alias == "$sequence_length" else alias if alias in original else "fasta_header." + alias
-            matches.setdefault(measure.key, []).append({"source_field": source, "raw_value": value, "value": number, "conversion": measure.transform, "method": measure.method})
+            matches.setdefault(measure.key, []).append({"source_field": source, "raw_value": value, "value": number, "conversion": measure.transform, "method": measure.method, "_engine_scoped": bool(measure.engines)})
     normalized, provenance, conflicts = {}, {}, {}
     for key, entries in matches.items():
         # Native FASTA values are often rounded to four decimal places.
@@ -288,10 +425,12 @@ def normalize_metrics(metrics, tool="", context=None):
             conflicts[key] = entries
             continue
         definition = DEFINITIONS[key]
-        normalized[key] = entries[0]["value"]
-        provenance[key] = {"unit": definition.unit, "scope": definition.scope, "method": entries[0]["method"],
-                           "direction": definition.direction, "source_tool": tool, "aliases": entries,
-                           "stage": candidate.get("stage"), "engine_version": raw.get("engine_version"),
+        preferred = next((entry for entry in entries if entry["_engine_scoped"]), entries[0])
+        public_entries = [{name: value for name, value in entry.items() if name != "_engine_scoped"} for entry in entries]
+        normalized[key] = preferred["value"]
+        provenance[key] = {"unit": definition.unit, "scope": definition.scope, "method": preferred["method"],
+                           "direction": definition.direction, "source_tool": tool, "aliases": public_entries,
+                           "stage": stage, "engine_version": raw.get("engine_version"),
                            "conditioning_mode": raw.get("conditioning_mode"),
                            "settings": context.get("settings") or raw.get("prediction_protocol") or {}}
     return {"version": VERSION, "metrics": normalized, "provenance": provenance, "conflicts": conflicts, "issues": issues}
@@ -299,7 +438,7 @@ def normalize_metrics(metrics, tool="", context=None):
 
 def candidate_output(candidate):
     result = normalize_metrics(candidate.get("metrics") or {}, candidate.get("source_tool"), candidate)
-    stage = candidate.get("stage")
+    stage = _candidate_stage(candidate)
     result.update(engine=engine_name(candidate.get("source_tool")), stage=stage,
                   kind={"generation.backbone": "backbone_proposal", "generation.backbone_sequence": "designed_structure", "sequence_design": "sequence_design", "complex_refolding": "refolded_complex", "monomer_refolding": "refolded_monomer"}.get(stage, stage),
                   designed_sequence=candidate.get("binder_sequence") if stage != "generation.backbone" else None,

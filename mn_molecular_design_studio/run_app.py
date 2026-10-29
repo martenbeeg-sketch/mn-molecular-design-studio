@@ -35,6 +35,7 @@ importlib.reload(complexa_input)
 WORKFLOW_ROLES = pipeline_graph.WORKFLOW_ROLES
 from mn_molecular_design_studio.design_validation_ui import render_batch_controls, render_comparison
 from mn_molecular_design_studio.tool_catalog_history import tool_discovery_category
+from mn_molecular_design_studio.tool_references import references_for_tool
 
 from mn_molecular_design_studio.workspace import (
     ensure_studio_workspace,
@@ -997,6 +998,19 @@ def _render_tool_catalog() -> None:
             font-style: normal;
             font-weight: 600;
         }
+        .tool-paper-links {
+            margin: 0.22rem 0.4rem 0.45rem;
+            color: #68766e;
+            font-size: 0.74rem;
+            line-height: 1.4;
+            overflow-wrap: anywhere;
+        }
+        .tool-paper-links a {
+            color: #397355 !important;
+            font-weight: 600;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
         [class*="st-key-workflow-card-"]:not([class*="st-key-workflow-card-engine-"]) button [data-testid="stMarkdownContainer"] p:nth-of-type(4),
         [class*="st-key-workflow-card-engine-"] button [data-testid="stMarkdownContainer"] p:nth-of-type(5) {
             color: #68766e;
@@ -1042,6 +1056,10 @@ def _render_tool_catalog() -> None:
                 "mode_count": len(modes),
                 "engine_version": group.get("engine_version"),
                 "engine_optimized": group.get("engine_optimized", False),
+                "references": references_for_tool(
+                    list(modes.values()),
+                    optimized_engine=next(iter(group.get("engine_profiles", {}).values()), None),
+                ),
             }
         )
         grouped_workflow_ids.update(modes.values())
@@ -1069,6 +1087,7 @@ def _render_tool_catalog() -> None:
                 "engine_optimized": (
                     TOOL_WORKFLOW_CODE_VERSIONS.get(workflow_id, (None, False))[1]
                 ),
+                "references": references_for_tool([workflow_id]),
             }
         )
 
@@ -1090,6 +1109,9 @@ def _render_tool_catalog() -> None:
                 "engine_optimized": profile.get("optimized", False),
                 "workflow_ids": ["refolding.optimized_prediction"],
                 "workflow_rows": [optimized_row],
+                "references": references_for_tool(
+                    ["refolding.optimized_prediction"], optimized_engine=engine_id
+                ),
                 "tags": {
                     "functions": ["Cofolding & Structure Prediction"],
                     "modalities": ["Protein", *(["DNA"] if "dna_sequences" in supported else []),
@@ -1098,6 +1120,27 @@ def _render_tool_catalog() -> None:
                     "input_types": ["Molecule Fields" if supported else "Protein Sequences"],
                 },
             })
+
+        # Acceptance is a standalone Studio tool backed by the existing
+        # optimized-prediction job and shared policy evaluator. It is not a
+        # control repeated across every co-folding engine tile.
+        tool_rows.append({
+            "key": "studio.validation-acceptance",
+            "group_id": None,
+            "workflow": "studio.validation_acceptance",
+            "title": "Validation & Acceptance",
+            "description": "Independently re-predict completed designs, apply explicit format-aware acceptance criteria, and retain every measured value and rejection reason.",
+            "workflow_ids": ["studio.validation_acceptance"],
+            "workflow_rows": [optimized_row],
+            "engine_version": None,
+            "engine_optimized": False,
+            "references": [],
+            "tags": {
+                "functions": ["Validation & Acceptance"],
+                "modalities": ["Protein", "Antibody", "Peptide"],
+                "input_types": ["Existing Results"],
+            },
+        })
 
     tool_rows.sort(key=lambda row: row["title"].casefold())
     settings = load_settings(STUDIO_WORKSPACE)
@@ -1182,6 +1225,8 @@ def _render_tool_catalog() -> None:
                 setup_note = "Complex + selected ligand + MD settings · Set up →"
             elif row.get("workflow") in {"design.proteina_complexa", "design.proteina_complexa_generate"}:
                 setup_note = "3 design tasks · Set up →" if row["workflow"].endswith("_generate") else "3 pipeline tasks · Set up →"
+            elif row.get("workflow") == "studio.validation_acceptance":
+                setup_note = "Completed designs + explicit acceptance criteria · Set up →"
             elif row.get('workflow') in generator_input.WORKFLOWS.values():
                 engine=next(k for k,v in generator_input.WORKFLOWS.items() if v==row['workflow'])
                 count=len(generator_input.ENGINES[engine]['tasks'])
@@ -1229,6 +1274,21 @@ def _render_tool_catalog() -> None:
                             st.session_state.pop("selected_workflow_engine", None)
                         st.session_state["page"] = "Workflow setup"
                         st.rerun()
+                    references = row.get("references", [])
+                    if references:
+                        links = " · ".join(
+                            '<a href="{}" target="_blank" rel="noopener noreferrer" title="Open {} paper reference in a new tab">{}</a>'.format(
+                                escape(reference["url"], quote=True),
+                                escape(reference["short"], quote=True),
+                                escape(reference["short"]),
+                            )
+                            for reference in references
+                        )
+                        heading = "Papers" if len(references) > 1 else "Paper"
+                        st.markdown(
+                            f'<div class="tool-paper-links">{heading}: {links}</div>',
+                            unsafe_allow_html=True,
+                        )
 
 
 def _parameter_label(parameter: dict) -> str:
@@ -4115,6 +4175,47 @@ def _render_optimized_prediction_setup(engine_id: str) -> None:
         st.error(f"Could not start the prediction: {exc}")
 
 
+def _render_validation_acceptance_setup() -> None:
+    """Standalone design re-prediction and acceptance tool.
+
+    It submits the same optimized-prediction workflow used by the engine tiles;
+    acceptance policy is attached to that job and evaluated by the shared
+    backend also used by graph Shared scientific filters.
+    """
+    if st.button("← Back to All tools", key="back-to-validation-acceptance"):
+        st.session_state["page"] = "All tools"
+        st.session_state.pop("selected_workflow", None)
+        st.rerun()
+    _render_cofolding_header(
+        "Validation & Acceptance",
+        "Independently re-predict completed binder designs, then apply explicit, format-aware acceptance criteria.",
+    )
+    st.caption(
+        "Native workflow decisions remain attached to the source design. This tool records independent prediction measurements, "
+        "configured pass/fail rules, and unresolved measurements separately."
+    )
+    engine_ids = list(optimized_prediction.ENGINE_PROFILES)
+    engine_id = st.selectbox(
+        "Independent co-folding engine", engine_ids,
+        format_func=lambda engine: optimized_prediction.ENGINE_PROFILES[engine]["label"],
+        key="validation-acceptance-engine",
+    )
+    profile = {**optimized_prediction.ENGINE_PROFILES[engine_id], "form_key": f"acceptance-{engine_id}"}
+    schema = workflow_schema("refolding.optimized_prediction")
+    name_col, project_col = st.columns([1.25, 1.25])
+    with name_col:
+        job_name = st.text_input(
+            "Job name", value=f"{engine_id}-acceptance", key="validation-acceptance-job-name"
+        ).strip()
+    with project_col:
+        project_id = _render_project_selector("validation-acceptance")
+    render_batch_controls(
+        engine_id, profile, project_id, job_name, schema,
+        search_jobs=search_jobs, submit=_submit_cofolding_job,
+        allow_new_batch=False, include_acceptance=True, existing_designs_only=True,
+    )
+
+
 def _render_workflow_setup() -> None:
     group_id = st.session_state.get("selected_workflow_group")
     if group_id in TOOL_CATALOG_GROUPS:
@@ -4137,6 +4238,10 @@ def _render_workflow_setup() -> None:
     if not workflow_id:
         st.session_state["page"] = "All tools"
         st.rerun()
+
+    if workflow_id == "studio.validation_acceptance":
+        _render_validation_acceptance_setup()
+        return
 
     # Keep previously selected ESMFold entries on the common cofolding form.
     # The old workflow remains available to queued/API consumers, but its
@@ -7034,6 +7139,20 @@ def _render_cofolding_prediction_results(
     if comparison_report:
         st.download_button("Download design comparisons", comparison_report.read_bytes(),
                            file_name=f"{run_id}_design_comparisons.csv", mime="text/csv", key=f"validation-report-{run_id}")
+    acceptance_summary = (result.get("metrics") or {}).get("validation_acceptance")
+    if acceptance_summary:
+        columns = st.columns(5)
+        for column, label, key in zip(
+            columns, ("Candidates", "Accepted", "Rejected", "Unresolved", "Not evaluated"),
+            ("candidate_count", "accepted", "rejected", "unresolved", "not_evaluated"),
+        ):
+            column.metric(label, acceptance_summary.get(key, 0))
+        acceptance_report = cofolding_results.local_artifact(
+            run_dir, (result.get("outputs") or {}).get("acceptance_report"))
+        if acceptance_report:
+            st.download_button(
+                "Download acceptance decisions and measurements", acceptance_report.read_bytes(),
+                file_name=f"{run_id}_acceptance.csv", mime="text/csv", key=f"acceptance-report-{run_id}")
     if not candidates:
         st.info("No predictions have been saved yet. Refresh after the job finishes, or check Logs for progress.")
     else:
@@ -7125,10 +7244,24 @@ def _render_cofolding_prediction_results(
         metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
         raw_metadata = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
         confidence = raw_metadata.get("confidence_outputs") if isinstance(raw_metadata.get("confidence_outputs"), dict) else {}
+
+        def candidate_has_interchain_interface(item: dict) -> bool | None:
+            item_raw = item.get("raw_metadata") if isinstance(item.get("raw_metadata"), dict) else {}
+            protein_chains = item_raw.get("protein_chains") or item_raw.get("chain_sequences") or []
+            count = len(protein_chains) if isinstance(protein_chains, (list, dict)) else 0
+            for key in ("dna_chains", "rna_chains", "ligand_ccd_codes", "ligand_smiles"):
+                values = item_raw.get(key) or []
+                count += len(values) if isinstance(values, (list, dict)) else 0
+            if item_raw.get("has_target_structure"):
+                count += 1
+            return count > 1 if count else None
+
         structure_path = structure_path_for(candidate)
         pae_path = _cofolding_candidate_pae_path(run_dir, candidate, structure_path)
 
         def confidence_metric(*names: str) -> object:
+            if "iptm" in {name.casefold() for name in names} and candidate_has_interchain_interface(candidate) is False:
+                return None
             normalized = {str(key).casefold(): value for key, value in confidence.items()}
             normalized_metrics = {str(key).casefold(): value for key, value in metrics.items()}
             for name in names:
@@ -7141,11 +7274,16 @@ def _render_cofolding_prediction_results(
             return None
 
         top_cards: list[tuple[str, object, bool]] = [
-            ("Mean pLDDT", metrics.get("plddt_mean"), True),
+            ("Structure mean Cα pLDDT", metrics.get("plddt_mean"), True),
             ("Confidence score", confidence_metric("confidence_score", "ranking_score"), False),
             ("pTM", confidence_metric("ptm"), False),
             ("ipTM", confidence_metric("iptm"), False),
         ]
+        mol1_model_plddt = metrics.get("mol1_model_plddt_mean")
+        if mol1_model_plddt is None and raw_metadata.get("api_engine") == "mol1":
+            mol1_model_plddt = confidence.get("plddt_mean", confidence.get("plddt"))
+        if mol1_model_plddt is not None:
+            top_cards.append(("Mol-1 model summary pLDDT", mol1_model_plddt, True))
         affinity_value = confidence_metric("affinity_pred_value", "affinity_prediction", "pic50_binding_affinity")
         affinity_probability = confidence_metric("affinity_probability_binary", "binding_probability")
         if affinity_value is not None:
@@ -7238,11 +7376,17 @@ def _render_cofolding_prediction_results(
         display_keys = [
             ("confidence_score", "Confidence score", False), ("ranking_score", "Ranking score", False),
             ("ptm", "pTM", False), ("iptm", "ipTM", False),
-            ("complex_plddt", "Complex pLDDT", True), ("ligand_iptm", "Ligand ipTM", False),
+            ("mol1_model_plddt_mean", "Mol-1 model summary pLDDT", True),
+            ("complex_plddt", "Mol-1 structure Cα pLDDT (legacy field)", True), ("ligand_iptm", "Ligand ipTM", False),
             ("protein_iptm", "Protein ipTM", False), ("complex_pde", "Complex PDE", False),
             ("complex_ipde", "Complex iPDE", False), ("ipsae", "ipSAE", False),
         ]
         known_metric_keys = {key for key, _label, _percent in display_keys} | {"plddt_mean", "prediction_sample"}
+        for item in candidates:
+            item_raw = item.get("raw_metadata") if isinstance(item.get("raw_metadata"), dict) else {}
+            item_confidence = item_raw.get("confidence_outputs") if isinstance(item_raw.get("confidence_outputs"), dict) else {}
+            if item_raw.get("api_engine") == "mol1" and any(key in item_confidence for key in ("plddt_mean", "plddt")):
+                candidate_keys.add("mol1_model_plddt_mean")
         extra_metric_keys = []
         for key in sorted(candidate_keys - known_metric_keys):
             if key.startswith("affinity_") or key == "binding_probability":
@@ -7281,7 +7425,7 @@ def _render_cofolding_prediction_results(
                 row["Sequence"] = sequence or input_sequence
             row.update({
                 "Model": prediction_label(index),
-                "Mean pLDDT": _af3_metric_label(item_metrics.get("plddt_mean"), percent=True),
+                "Structure mean Cα pLDDT": _af3_metric_label(item_metrics.get("plddt_mean"), percent=True),
             })
             sources = ({str(key).casefold(): value for key, value in item_metrics.items()},
                        {str(key).casefold(): value for key, value in item_confidence.items()})
@@ -7289,6 +7433,10 @@ def _render_cofolding_prediction_results(
                 if key not in candidate_keys or (key == "confidence_score" and "ranking_score" in candidate_keys):
                     continue
                 value = next((source[key] for source in sources if key in source and source[key] is not None), None)
+                if key == "iptm" and candidate_has_interchain_interface(item) is False:
+                    value = None
+                if key == "mol1_model_plddt_mean" and value is None:
+                    value = item_confidence.get("plddt_mean", item_confidence.get("plddt"))
                 row[label] = _af3_metric_label(value, percent=percent)
             for key in extra_metric_keys:
                 value = next((source[key] for source in sources if key in source and source[key] is not None), None)

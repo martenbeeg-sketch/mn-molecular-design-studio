@@ -389,6 +389,33 @@ ENGINE_PROFILES: dict[str, dict[str, Any]] = {
              "help": "Maximum rows used per target or binder MSA. The full alignment is retained in the reference cache."},
         ),
     },
+    "mol1": {
+        "label": "Mol-1",
+        "code_version": "Mol-1 1.0.0",
+        "optimized": True,
+        "image": "mn-mol1:1.0.0-cu132-batch2",
+        "api_engine": "mol1",
+        "modes": ("off",),
+        "gpu_count": {},
+        "input_kind": "mol1_json",
+        "molecule_inputs": ("dna_sequences", "rna_sequences", "ligand_ccd_codes", "ligand_smiles"),
+        "default_recycles": 20,
+        "default_samples": 5,
+        "max_samples": 5,
+        "input_summary": "Protein complexes, DNA, RNA and ligands; per-chain A3M MSAs and optional local or searched structure templates.",
+        "supports_modifications": True,
+        "supports_msa_upload": True,
+        "settings": (
+            {"key": "step", "label": "Diffusion steps", "default": 200,
+             "min": 1, "max": 1000, "step": 10,
+             "help": "Mol-1 diffusion sampling steps."},
+            {"key": "use_template", "type": "bool", "label": "Search structure templates", "default": False,
+             "help": "Search Mol-1's configured PDB sequence database. Uploaded matched templates are used when available."},
+            {"key": "need_atom_confidence", "type": "bool", "label": "Save full PAE and atom confidence", "default": True,
+             "help": "Writes token-pair PAE and contact probabilities for downstream interface analysis; uses additional memory and disk."},
+        ),
+        "fixed_settings": ("Model: mol-1-base", "Inference dtype: bf16", "MSA search server: ColabFold MMseqs2"),
+    },
 }
 
 
@@ -430,7 +457,7 @@ for _engine, _profile in ENGINE_PROFILES.items():
 PredictionEngine = Literal[
     "alphafold3", "af3_torch", "openfold3_jax", "boltz2", "protenix_v2",
     "rf3_foundry", "esmfold", "esmfold2", "esmfold2_fast", "chai1", "atlasfold",
-    "openfold3_ob0", "opendde_native", "protenix_v1", "colabfold", "boltzgen_fold",
+    "openfold3_ob0", "opendde_native", "protenix_v1", "colabfold", "boltzgen_fold", "mol1",
 ]
 OptimizationMode = Literal["off", "exact", "fast", "big"]
 _AA = frozenset("ACDEFGHIKLMNPQRSTVWYBXZJUO")
@@ -1390,6 +1417,27 @@ def _stage_native_input_without_msa(
         path = input_dir / f"{item_id}.json"
         _write_json(path, _af3_json(job_name, proteins, dna, rna, ligand_ccd_codes, ligand_smiles, seed))
         return path, {}
+    if kind == "mol1_json":
+        path = input_dir / f"{item_id}.json"
+        sequences: list[dict[str, Any]] = []
+        for chain in proteins:
+            chain_options = (molecule_chain_options or {}).get(chain["id"], {})
+            protein: dict[str, Any] = {
+                "sequence": chain["sequence"], "count": 1, "id": [chain["id"]],
+            }
+            if chain_options.get("modifications"):
+                protein["modifications"] = chain_options["modifications"]
+            sequences.append({"proteinChain": protein})
+        sequences.extend({"dnaSequence": {"sequence": chain["sequence"], "count": 1, "id": [chain["id"]]}}
+                         for chain in dna)
+        sequences.extend({"rnaSequence": {"sequence": chain["sequence"], "count": 1, "id": [chain["id"]]}}
+                         for chain in rna)
+        sequences.extend({"ligand": {"ligand": f"CCD_{ligand['code']}", "count": 1, "id": [ligand["id"]]}}
+                         for ligand in ligand_ccd_codes)
+        sequences.extend({"ligand": {"ligand": ligand["smiles"], "count": 1, "id": [ligand["id"]]}}
+                         for ligand in ligand_smiles)
+        _write_json(path, {"name": job_name, "sequences": sequences, "modelSeeds": [seed]})
+        return path, {}
     if kind == "esmfold2_json":
         path = input_dir / f"{item_id}.json"
         _write_json(path, {
@@ -1608,6 +1656,18 @@ def _stage_native_input(run_dir: Path, *, prepare_msas: bool = False, msa_depth:
     elif kind == "esmfold2_json":
         for chain in payload["sequences"]:
             chain["msa"] = native[chain["id"]]
+    elif kind == "mol1_json":
+        for row in payload["sequences"]:
+            protein = row.get("proteinChain")
+            if not protein:
+                continue
+            chain_id = protein["id"][0] if isinstance(protein.get("id"), list) else protein.get("id")
+            if chain_id not in msas:
+                continue
+            protein["unpairedMsaPath"] = native[chain_id]
+            paired = msas[chain_id].with_name(msas[chain_id].stem + "_query_only_paired.a3m")
+            paired.write_text(f">query\n{protein['sequence']}\n", encoding="utf-8")
+            protein["pairedMsaPath"] = f"/work/{paired.relative_to(run_dir).as_posix()}"
     elif kind == "chai1_json":
         payload["msa_dir"] = str(Path(next(iter(native.values()))).parent) if native else ''
     elif kind == "multimer_fasta":
@@ -1728,6 +1788,17 @@ def _batch_options(
         if method:
             options["method"] = method
         return options
+    if engine == "mol1":
+        return {
+            "model_name": "mol-1-base",
+            "checkpoint": "/reference/mol1/checkpoint/mol-1-base.pt",
+            "cycle": recycle_count,
+            "step": int(settings.get("step", 200)),
+            "dtype": "bf16",
+            "use_msa": use_msa,
+            "use_template": bool(settings.get("use_template", False)),
+            "need_atom_confidence": bool(settings.get("need_atom_confidence", True)),
+        }
     if engine == "rf3_foundry":
         return {"checkpoint": "/reference/foundry/rf3_foundry_01_24_latest_remapped.ckpt",
                 "n_recycles": recycle_count, "num_steps": int(settings.get("num_steps", 50))}
@@ -1744,17 +1815,38 @@ def _batch_options(
     return {}
 
 
-def _mean_plddt(path: Path) -> float | None:
+def _mean_plddt(path: Path, chain_ids: list[str] | None = None) -> float | None:
     try:
         from Bio.PDB import MMCIFParser, PDBParser
 
         parser = PDBParser(QUIET=True) if path.suffix.lower() == ".pdb" else MMCIFParser(QUIET=True)
         structure = parser.get_structure("optimized_prediction", str(path))
-        values = [float(atom.get_bfactor()) for atom in structure.get_atoms()
+        selected = set(map(str, chain_ids or []))
+        values = [float(atom.get_bfactor()) for chain in structure.get_chains()
+                  if not selected or str(chain.id) in selected
+                  for atom in chain.get_atoms()
                   if atom.get_name().strip() == "CA" and float(atom.get_bfactor()) >= 0]
         return round(sum(values) / len(values), 3) if values else None
     except Exception:
         return None
+
+
+def _task_component_count(task: dict[str, Any]) -> int:
+    """Count independently modeled molecular components in one prediction task."""
+    count = sum(len(task.get(key) or ()) for key in (
+        "proteins", "dna", "rna", "ligand_ccd_codes", "ligand_smiles",
+    ))
+    # BoltzGen's target is supplied as a structure alongside the protein
+    # binder, rather than in the normalized molecule-chain lists.
+    if task.get("target_pdb_text"):
+        count += 1
+    return count
+
+
+def _prediction_stage(task: dict[str, Any], validation_mode: str | None) -> str:
+    if validation_mode == "binder" or _task_component_count(task) == 1:
+        return STAGE_MONOMER_REFOLDING
+    return STAGE_COMPLEX_REFOLDING
 
 
 def _confidence_sidecar(path: Path) -> dict[str, Any]:
@@ -1768,6 +1860,54 @@ def _confidence_sidecar(path: Path) -> dict[str, Any]:
         )) or 'fold_out_npz' in sidecar.parts:
             scores.update(summary_metrics(sample_payload(path, sidecar, read_payload(sidecar))))
     return scores
+
+
+def _mol1_pae_path(structure_path: Path, task: dict[str, Any]) -> Path | None:
+    """Return Mol-1's native token PAE when its axes match this protein complex."""
+    if task.get("dna") or task.get("rna") or task.get("ligand_ccd_codes") or task.get("ligand_smiles"):
+        return None
+    if any(option.get("modifications") for option in (task.get("molecule_chain_options") or {}).values()):
+        return None
+    sample = re.search(r"_sample_(\d+)$", structure_path.stem)
+    if not sample:
+        return None
+    full_data = structure_path.with_name(
+        f"{structure_path.stem[:sample.start()]}_full_data_sample_{sample.group(1)}.json"
+    )
+    if not full_data.is_file():
+        return None
+    try:
+        payload = json.loads(full_data.read_text(encoding="utf-8"))
+        matrix = payload.get("token_pair_pae") if isinstance(payload, dict) else None
+        asym_ids = payload.get("token_asym_id") if isinstance(payload, dict) else None
+        if not isinstance(matrix, list) or not matrix or any(not isinstance(row, list) for row in matrix):
+            return None
+        if any(len(row) != len(matrix) for row in matrix):
+            return None
+        if not isinstance(asym_ids, list) or len(asym_ids) != len(matrix):
+            return None
+        numeric = [[float(value) for value in row] for row in matrix]
+        if any(not math.isfinite(value) for row in numeric for value in row):
+            return None
+        token_counts: dict[str, int] = {}
+        for asym_id in asym_ids:
+            key = str(asym_id)
+            token_counts[key] = token_counts.get(key, 0) + 1
+        from Bio.PDB import MMCIFParser, PDBParser
+        parser = PDBParser(QUIET=True) if structure_path.suffix.lower() in {".pdb", ".ent"} else MMCIFParser(QUIET=True)
+        model = parser.get_structure("mol1-pae-check", str(structure_path))[0]
+        coordinate_counts = [sum(atom.get_name().strip() == "CA" for atom in chain.get_atoms()) for chain in model]
+        expected_chains = [str(row["id"]) for row in task.get("proteins", [])]
+        coordinate_chain_ids = [str(chain.id) for chain in model]
+        if (list(token_counts.values()) != coordinate_counts
+                or coordinate_chain_ids != expected_chains):
+            return None
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    path = structure_path.with_name(f"{structure_path.stem}_pae.json")
+    write_json(path, {"predicted_aligned_error": numeric, "source": "Mol-1 token_pair_pae",
+                      "token_pair_axis": "Mol-1 token order; protein chain order verified against the output structure"})
+    return path
 
 
 def _metric_float(value: Any) -> float | None:
@@ -1913,6 +2053,9 @@ def _prepare_prediction(
     engine_options: dict[str, Any] | None = None,
     validation_sources: list[dict[str, Any]] | None = None,
     validation_mode: Literal["complex", "binder"] | None = None,
+    validation_target_type: str = "structured",
+    validation_binder_format: str | None = None,
+    validation_require_passing: bool = True,
     use_target_template: bool = True,
     target_use_msa: bool = True,
     compound_set_file: Path | None = None,
@@ -1967,6 +2110,8 @@ def _prepare_prediction(
         tasks = design_validation.build_tasks(
             validation_sources, mode=validation_mode or "complex", profile=profile,
             target_use_msa=target_use_msa, use_target_template=use_target_template,
+            target_type=validation_target_type, binder_format=validation_binder_format,
+            require_passing=validation_require_passing,
         )
         if profile.get("supports_msa"):
             selected_options["use_msa"] = bool(target_use_msa and validation_mode != "binder")
@@ -2243,6 +2388,13 @@ def _prepare_prediction(
 def validate_prediction_request(parameters: dict[str, Any]) -> None:
     """Apply worker input checks before queueing, without jobs, searches, or seed generation."""
     prepared = dict(parameters)
+    acceptance_policy = prepared.pop("acceptance_policy", None)
+    if acceptance_policy is not None:
+        from mn_molecular_design_studio.validation_acceptance import normalize_policy
+        prepared["validation_binder_format"] = normalize_policy(acceptance_policy)["binder_format"]
+        prepared["validation_require_passing"] = False
+    if prepared.get("validation_target_type", "structured") not in {"structured", "fasta_idr"}:
+        raise ValueError("Target type must be structured or FASTA / IDR.")
     if str(prepared.get('gpu_device', '')).lower() in {'auto', 'any', 'all'}:
         profile = ENGINE_PROFILES[prepared['engine']]
         required = _profile_gpu_count(profile, prepared.get('optimization_mode', 'off'))
@@ -2307,12 +2459,19 @@ def run_optimized_prediction(
     engine_options: dict[str, Any] | None = None,
     validation_sources: list[dict[str, Any]] | None = None,
     validation_mode: Literal["complex", "binder"] | None = None,
+    validation_target_type: str = "structured",
+    validation_binder_format: str | None = None,
+    acceptance_policy: dict[str, Any] | None = None,
     use_target_template: bool = True,
     target_use_msa: bool = True,
     compound_set_file: Path | None = None,
     sequence_file: Path | None = None,
 ) -> Path:
     """Run one engine using the same input checks as API preflight validation."""
+    if acceptance_policy is not None:
+        from mn_molecular_design_studio.validation_acceptance import normalize_policy
+        acceptance_policy = normalize_policy(acceptance_policy)
+        validation_binder_format = acceptance_policy["binder_format"]
     prepared = _prepare_prediction(
         engine=engine, protein_sequences=protein_sequences,
         optimization_mode=optimization_mode, job_name=job_name, seed=seed,
@@ -2325,6 +2484,8 @@ def run_optimized_prediction(
         compound_id=compound_id, compound_name=compound_name,
         tasks=tasks, engine_options=engine_options,
         validation_sources=validation_sources, validation_mode=validation_mode,
+        validation_target_type=validation_target_type, validation_binder_format=validation_binder_format,
+        validation_require_passing=acceptance_policy is None,
         use_target_template=use_target_template, target_use_msa=target_use_msa,
         compound_set_file=compound_set_file, sequence_file=sequence_file,
     )
@@ -2382,7 +2543,10 @@ def run_optimized_prediction(
             "queue_resource": gpu_queue_resource(gpu_text),
             "accept_alphafold3_terms": bool(accept_alphafold3_terms),
             "validation_mode": validation_mode,
+            "validation_target_type": validation_target_type,
+            "validation_binder_format": validation_binder_format,
             "validation_sources": validation_sources,
+            "acceptance_policy": acceptance_policy,
         },
     )
     # My Results displays the user-facing job name from campaign_name, matching
@@ -2525,6 +2689,11 @@ def run_optimized_prediction(
                 missing = [str(path) for path in required_cache if not path.is_file()]
                 if missing:
                     raise FileNotFoundError("BoltzGen Fold cache is missing: " + ", ".join(missing))
+            mol1_checkpoint = reference / "mol1/checkpoint/mol-1-base.pt"
+            if profile["api_engine"] == "mol1" and not mol1_checkpoint.is_file():
+                raise FileNotFoundError(
+                    f"Mol-1 checkpoint is missing: {mol1_checkpoint}. Install the pinned checkpoint under reference_files/mol1/checkpoint."
+                )
             cache.mkdir(parents=True, exist_ok=True)
             command.extend((
                 "--mount", f"type=bind,src={cache},dst=/cache",
@@ -2585,7 +2754,12 @@ def run_optimized_prediction(
         from mn_molecular_design_studio.prediction_provenance import image_identity, file_identity
         installed_engine = image_identity(profile["image"])
         prediction_inputs = [file_identity(path) for path in (raw_root / "inputs").rglob("*") if path.is_file()]
-        checkpoint_provenance = [file_identity(boltz_cache / name) for name in ("boltz2_conf.ckpt", "boltz2_aff.ckpt", "ccd.pkl")] if profile["api_engine"] == "boltz2" else []
+        if profile["api_engine"] == "boltz2":
+            checkpoint_provenance = [file_identity(boltz_cache / name) for name in ("boltz2_conf.ckpt", "boltz2_aff.ckpt", "ccd.pkl")]
+        elif profile["api_engine"] == "mol1":
+            checkpoint_provenance = [file_identity(reference / "mol1/checkpoint/mol-1-base.pt")]
+        else:
+            checkpoint_provenance = []
         write_json(raw_root / "execution_inputs.json", {**installed_engine, "input_files": prediction_inputs, "checkpoints": checkpoint_provenance})
         write_json(job.run_dir / "command.json", {
             "mode": "docker", "command": command, "image": profile["image"],
@@ -2651,6 +2825,8 @@ def run_optimized_prediction(
             if isinstance(value, dict)
         }
         candidates = []
+        acceptance_summary = None
+        acceptance_report = None
         structures: list[Path] = []
         item_results = []
         failures = []
@@ -2685,10 +2861,13 @@ def run_optimized_prediction(
                 failures.append({"item_id": task["id"], "task_name": task["name"], "errors": task_errors})
             target_chains = list(task["target_protein_ids"])
             binder_chains = list(task["binder_protein_ids"])
+            has_interchain_interface = _task_component_count(task) > 1
+            candidate_stage = _prediction_stage(task, validation_mode)
             for sample_index, structure_path in enumerate(task_structures, start=1):
                 from mn_molecular_design_studio.scientific_contracts import verify_prediction_structure, restore_prediction_ccd_names
                 native_structure_path = structure_path
                 confidence = _confidence_sidecar(native_structure_path)
+                mol1_pae_path = _mol1_pae_path(native_structure_path, task) if profile["api_engine"] == "mol1" else None
                 structure_path = restore_prediction_ccd_names(native_structure_path, task)
                 identity_check = verify_prediction_structure(structure_path, task)
                 structures.append(structure_path)
@@ -2697,11 +2876,21 @@ def run_optimized_prediction(
                     native_structure_path.with_name(f"{native_structure_path.stem}_pae.npz"),
                     native_structure_path.with_name(f"{native_structure_path.stem}_pae.json"),
                     native_structure_path.with_name(f"pae_{native_structure_path.stem}.json"),
-                ) if value.is_file()), None)
+                ) if value.is_file()), mol1_pae_path)
                 metrics = {
                     "plddt_mean": _mean_plddt(structure_path),
+                    "binder_plddt": _mean_plddt(structure_path, binder_chains) if profile["api_engine"] == "mol1" and binder_chains else None,
+                    "binder_structure_ca_plddt": _mean_plddt(structure_path, binder_chains) if binder_chains and target_chains else None,
+                    "target_structure_ca_plddt": _mean_plddt(structure_path, target_chains) if target_chains else None,
                     "ptm": _metric_float(confidence.get("ptm")),
-                    "iptm": _metric_float(confidence.get("iptm")),
+                    # Mol-1 emits 0 for ipTM on single-component inputs. That
+                    # sentinel is not an interface measurement, so retain it
+                    # only in native confidence_outputs and omit it here.
+                    "iptm": _metric_float(confidence.get("iptm")) if has_interchain_interface else None,
+                    "mol1_model_plddt_mean": (
+                        _metric_float(confidence.get("plddt_mean", confidence.get("plddt")))
+                        if profile["api_engine"] == "mol1" else None
+                    ),
                     "ranking_score": _metric_float(confidence.get("ranking_score", confidence.get("confidence_score"))),
                     "affinity_pred_value": _metric_float(confidence.get("affinity_pred_value")),
                     "affinity_probability_binary": _metric_float(confidence.get("affinity_probability_binary")),
@@ -2709,10 +2898,16 @@ def run_optimized_prediction(
                     "optimization_mode": selected_mode,
                     "engine": engine,
                 }
+                if candidate_stage == "complex_refolding" and binder_chains and target_chains:
+                    try:
+                        metrics.update(design_validation.interface_filter_measurements(
+                            structure_path, binder_chains, target_chains))
+                    except (OSError, ValueError, KeyError, StopIteration) as exc:
+                        metrics["interface_filter_measurement_error"] = str(exc)
                 metrics = {key: value for key, value in metrics.items() if value is not None}
                 candidates.append({
                     "candidate_id": f"{job.run_id}_{engine}_{task['index']:02d}_{sample_index:03d}",
-                    "stage": STAGE_MONOMER_REFOLDING if validation_mode == "binder" else STAGE_COMPLEX_REFOLDING,
+                    "stage": candidate_stage,
                     "source_tool": "optimized_prediction_" + str(engine),
                     "complex_pdb": str(structure_path),
                     "binder_sequence": task["binder_sequence"] if is_boltzgen or binder_chains else None,
@@ -2733,12 +2928,14 @@ def run_optimized_prediction(
                         "checkpoint_provenance": checkpoint_provenance,
                         "engine_version": profile.get("code_version"),
                         "conditioning_mode": "target_template" if (task.get("structure_templates") or task.get("boltz_templates") or task.get("target_pdb_text")) else "sequence_only",
-                        "effective_settings": {"samples_per_item": int(samples), "seed": int(seed), **options} if profile["api_engine"] == "boltz2" else {},
-                        "execution_manifest": str(manifest_path) if profile["api_engine"] == "boltz2" else None,
+                        "effective_settings": {"samples_per_item": int(samples), "seed": int(seed), **options} if profile["api_engine"] in {"boltz2", "mol1"} else {},
+                        "execution_manifest": str(manifest_path) if profile["api_engine"] in {"boltz2", "mol1"} else None,
                         "native_execution": batch_result.get("execution", {}),
                         "prediction_protocol": {"engine": engine, "image": profile["image"], "optimization_mode": selected_mode,
                             "samples": int(samples), "seed": int(seed),
                             "num_recycles": recycle_count, "engine_options": selected_options, "validation_mode": validation_mode,
+                            "validation_target_type": validation_target_type,
+                            "validation_binder_format": validation_binder_format,
                             "target_use_msa": bool(target_use_msa), "use_target_template": bool(use_target_template),
                             "molecule_chain_options": task["molecule_chain_options"], "restraints": task["restraints"]},
                         "target_sequences": [chain["sequence"] for chain in task["proteins"] if chain["id"] in target_chains],
@@ -2805,6 +3002,11 @@ def run_optimized_prediction(
             update_status(job.run_dir, "running", current_phase="Calculating protein interface ipSAE metrics")
             _add_boltz_interface_metrics(job.run_dir, candidates, workers=int(cpu_cores))
         if candidates:
+            if acceptance_policy is not None:
+                from mn_molecular_design_studio.validation_acceptance import apply_acceptance, normalize_policy, write_report
+                normalized_policy = normalize_policy(acceptance_policy)
+                candidates, acceptance_summary = apply_acceptance(candidates, normalized_policy)
+                acceptance_report = write_report(job.run_dir, candidates, acceptance_summary)
             write_candidates(job.run_dir, "optimized_prediction_" + str(engine), candidates)
         receipt["prediction_outputs"] = len(structures)
         write_json(job.run_dir / "native_execution.json", receipt)
@@ -2820,6 +3022,7 @@ def run_optimized_prediction(
                 "candidates": candidates,
                 "items": item_results,
                 "validation_report": str(validation_report) if validation_report else None,
+                "acceptance_report": str(acceptance_report) if acceptance_report else None,
             },
             "metrics": {
                 "engine": engine, "image": profile["image"], "optimization_mode": selected_mode,
@@ -2831,6 +3034,7 @@ def run_optimized_prediction(
                 "comparison_failure_count": sum(failure.get("scope") == "validation" for failure in failures),
                 "sample_count": len(structures),
                 "candidate_count": len(candidates), "engine_options": selected_options,
+                "validation_acceptance": acceptance_summary,
             },
             "downstream_artifacts": {"candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl"},
             **({"error": failure_text} if not success else {}),

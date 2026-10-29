@@ -22,7 +22,6 @@ COLLECTION_KINDS = {
     'ligandmpnn', 'foundry_mpnn', 'abmpnn', 'af2', 'af3', 'rf3', 'boltz2',
     'protenix', 'ipsae', 'rosetta_metrics',
 }
-GENERATION_KINDS = {'rfdiffusion', 'rfd3', 'genie3', 'pxdesign', 'rfd4'}
 TERMINAL = {'completed', 'partial', 'failed', 'cancelled', 'lost'}
 
 
@@ -65,9 +64,11 @@ def supports(kind, source):
     from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
     from mn_molecular_design_studio.inverse_folding_input import ENGINES as INVERSE_ENGINES
     workflow = NODE_CATALOG[kind].get('workflow')
+    from mn_molecular_design_studio.workflow_modes import capability
+    generator = capability(kind)
     return ((bool(source.get('candidates_jsonl')) and
              (kind in COLLECTION_KINDS or kind in OPTIMIZED_PREDICTION_NODE_ENGINES or kind in INVERSE_ENGINES or workflow in WORKFLOWS))
-            or kind in GENERATION_KINDS)
+            or generator.get('generator_only', False))
 
 
 def digest(value):
@@ -124,8 +125,11 @@ def initialize(parent, node, source, params, key, settings, *, make_source, make
     """Freeze ordered units and complete effective requests before submitting any work."""
     collection = bool(source.get('candidates_jsonl'))
     native_invocation = node.get('native_invocation', False)
-    generation = (node['data']['kind'] in GENERATION_KINDS or native_invocation) and not collection
-    total = 1 if native_invocation else int(params.get('num_designs', 1)) if generation else source.get('candidate_count')
+    from mn_molecular_design_studio.workflow_modes import capability
+    route = capability(node['data']['kind'])
+    generation = (route.get('generator_only', False) or native_invocation) and not collection
+    count_field = route.get('design_count_field') or 'num_designs'
+    total = 1 if native_invocation else int(params.get(count_field, 1)) if generation else source.get('candidate_count')
     if source.get('candidate_set_manifest'):
         from mn_molecular_design_studio.candidate_sets import iter_candidates
         iterator = iter_candidates(source)
@@ -157,7 +161,7 @@ def initialize(parent, node, source, params, key, settings, *, make_source, make
         batch_source = make_source(parent, f'{node["id"]}_{batch_id}_inputs', selected, source.get('target')) if collection else source
         effective = copy.deepcopy(params)
         if generation and not native_invocation:
-            effective['num_designs'] = count
+            effective[count_field] = count
             # Never repeat the same trajectory seed on separate shards.
             effective['seed'] = (seed + offset) % 2147483646 or 1
             if 'batch_size' in effective:
@@ -334,7 +338,8 @@ def execution_status(metadata):
     return status
 
 
-def tick(parent, node, current, source, params, key, settings, *, graph, owner_id, project_id, gpu_device, persist):
+def tick(parent, node, current, source, params, key, settings, *, graph, owner_id, project_id, gpu_device, persist,
+         shared_campaign_ledger=None, generator_node=None):
     """Advance bounded ordinary scheduler jobs; called by the graph's existing loop."""
     import socket
     import time
@@ -347,8 +352,22 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
         persist()
     batches = current['batches']
     for batch in batches:
-        if batch['status'] in {'completed', 'partial'} or batch.get('quarantined'):
+        # The controller can stop after persisting the reservation but before
+        # recording the child path. Re-enter the existing stable-submission-key
+        # reconciliation path; it will attach a created child or submit once.
+        if batch.get('status') == 'submitting' and not batch.get('job_run_dir') and not batch.get('cluster_job_id'):
+            batch['status'] = 'retrying'
+            batch['recovery_reason'] = 'Reconciled an interrupted scheduler submission reservation.'
+        if batch['status'] in {'completed', 'partial'}:
+            if shared_campaign_ledger:
+                attempt = (batch.get('attempts') or [{}])[-1]
+                shared_id = batch.pop('shared_job_id', None) or attempt.get('shared_job_id')
+                if shared_id:
+                    shared_campaign_ledger.finish_job(shared_id, batch['status'])
             continue
+        if batch.get('quarantined'):
+            continue
+        status = None
         if batch.get('cluster_job_id'):
             from mn_molecular_design_studio.cluster import candidate_batches
             status, output, remote_job = candidate_batches.poll(batch, owner_id=owner_id, project_id=project_id,
@@ -387,6 +406,11 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                     batch.pop('prepared_envelope', None)
                     batch.pop('transfers', None)
                     batch['status'] = 'retrying'
+            if status in {'completed', 'partial', 'failed', 'lost', 'cancelled'} and shared_campaign_ledger:
+                attempt = (batch.get('attempts') or [{}])[-1]
+                shared_id = batch.pop('shared_job_id', None) or attempt.get('shared_job_id')
+                if shared_id:
+                    shared_campaign_ledger.finish_job(shared_id, status)
         if batch.get('job_run_dir'):
             child = Path(batch['job_run_dir'])
             metadata = read_json(child / 'metadata.json')
@@ -454,6 +478,13 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                     batch['error'] = attempt['error']
             elif status == 'cancelled':
                 batch['error'] = 'Candidate batch was cancelled.'
+        terminal_batch_status = batch['status'] if batch['status'] in {'completed', 'partial', 'failed', 'lost', 'cancelled'} else (
+            status if status in {'completed', 'partial', 'failed', 'lost', 'cancelled'} else None)
+        if terminal_batch_status and shared_campaign_ledger:
+            attempt = (batch.get('attempts') or [{}])[-1]
+            shared_id = batch.pop('shared_job_id', None) or attempt.get('shared_job_id')
+            if shared_id:
+                shared_campaign_ledger.finish_job(shared_id, terminal_batch_status)
         if batch['status'] in {'pending', 'retrying'}:
             active = sum(b['status'] not in TERMINAL | {'pending', 'retrying'} for b in batches)
             if active >= settings['max_in_flight']:
@@ -461,6 +492,13 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
             manifest = read_manifest(batch)
             attempt_index = len(batch['attempts'])
             submission_key = digest([str(parent), node['id'], key, batch['batch_id'], attempt_index])
+            if shared_campaign_ledger and not shared_campaign_ledger.reserve_job(
+                    submission_key, str(generator_node or node['id'])):
+                batch['wait_reason'] = 'Shared campaign generation concurrency is full.'
+                continue
+            if shared_campaign_ledger:
+                batch['shared_job_id'] = submission_key
+            batch['submission_key'] = submission_key
             # A durable creation tag closes the submission-response crash window.
             from mn_molecular_design_studio.runtime import runs_root
             matches = [p.parent for p in runs_root().glob('*/*/metadata.json')
@@ -488,7 +526,8 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                         owner_id=owner_id, project_id=project_id, state=batch,
                         allow_development=allow_development)
                     batch['attempts'].append(dict(index=attempt_index, cluster_job_id=result['cluster_job_id'],
-                        status='queued', started_at=utc_now(), submission_key=submission_key))
+                        status='queued', started_at=utc_now(), submission_key=submission_key,
+                        **({'shared_job_id': submission_key} if shared_campaign_ledger else {})))
                     batch.update(status='queued', cluster_job_id=result['cluster_job_id'])
                     persist()
                     continue
@@ -506,7 +545,8 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                                           owner_id=owner_id, project_id=project_id, gpu_device=selected_gpu)
             batch['attempts'].append(dict(index=attempt_index, run_dir=str(child), status='queued',
                                           started_at=utc_now(), submission_key=submission_key,
-                                          scheduler_overhead_seconds=time.monotonic() - started))
+                                          scheduler_overhead_seconds=time.monotonic() - started,
+                                          **({'shared_job_id': submission_key} if shared_campaign_ledger else {})))
             batch.update(status='queued', job_run_dir=str(child))
             persist()
     current['candidate_progress'] = progress(batches)

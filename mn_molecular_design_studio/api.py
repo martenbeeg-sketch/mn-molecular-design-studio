@@ -682,6 +682,13 @@ def pipeline_node_catalog(user: dict[str, Any] = Depends(_current_user)):
     return NODE_CATALOG
 
 
+@app.get("/api/v1/pipelines/compatibility")
+def pipeline_workflow_compatibility(user: dict[str, Any] = Depends(_current_user)):
+    """Return registered design routes grouped by graph workflow capability."""
+    from mn_molecular_design_studio.workflow_modes import compatibility_catalog
+    return _call(compatibility_catalog)
+
+
 @app.post("/api/v1/pipelines/save")
 def save_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any] = Depends(_current_user)):
     from mn_molecular_design_studio.pipeline_graph import save_definition

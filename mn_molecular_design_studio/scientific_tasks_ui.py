@@ -21,6 +21,14 @@ def _prediction_sampling(kind, key, *, seed_default=0):
         values[name] = st.number_input(field["label"], min_value=int(field.get("min", 0)),
             max_value=int(field.get("max", 2147483647)),
             value=seed_default if name == "seed" else max(1, int(field.get("min", 1))), key=key + "-" + name)
+    # Expose supported basic input toggles from the adapter schema too. This
+    # includes target MSA use and target-PDB templates where declared, without
+    # adding controls to engines that do not support those inputs.
+    for name, field in fields.items():
+        if field.get("type") != "boolean" or field.get("section") != "basic":
+            continue
+        values[name] = st.checkbox(field["label"], value=bool(field.get("default")),
+                                   key=key + "-" + name, help=field.get("help"))
     return values
 
 
@@ -143,7 +151,7 @@ def render_task_setup(prefix):
             except (ValueError, TypeError, KeyError) as exc:
                 st.error(str(exc))
     with st.expander("Binder design scientific workflow modes", expanded=True):
-        from mn_molecular_design_studio.workflow_modes import MODES, PREDICTORS, methods, capability
+        from mn_molecular_design_studio.workflow_modes import MODES, methods, cofolder_methods, analysis_methods, sequence_methods, sequence_count_field, capability
         workflow_mode = st.selectbox("Scientific workflow mode", list(MODES), format_func=MODES.get,
                                      key=prefix + "-workflow-mode")
         choices = methods(workflow_mode)
@@ -151,43 +159,91 @@ def render_task_setup(prefix):
         selected_generators = st.multiselect("Generator operations", choices, default=default,
             format_func=lambda kind: NODE_CATALOG[kind]["label"], key=prefix + "-mode-generators-" + workflow_mode)
         for kind in selected_generators:
-            st.caption(NODE_CATALOG[kind]["label"] + ": " + capability(kind)["note"])
+            details = capability(kind)
+            st.caption(NODE_CATALOG[kind]["label"] + ": " + details["note"])
+            with st.expander("Recognized native measurements · " + NODE_CATALOG[kind]["label"]):
+                if details["native_measurements"]:
+                    st.dataframe([{
+                        "Measurement": row["label"], "Field": row["field"],
+                        "Unit": row["unit"], "Scope": row["scope"],
+                        "Method": row["method"], "Direction": row["direction"],
+                        "Recognized source fields": ", ".join(row["recognized_aliases"]),
+                    } for row in details["native_measurements"]], hide_index=True, use_container_width=True)
+                else:
+                    st.caption("No tool-scoped common measurement aliases are registered for this route. Native fields are still retained and shown in Results.")
+                st.caption(details["native_measurement_contract"])
         selected_predictors, common_prediction_settings = [], {}
+        selected_analyses = []
         if workflow_mode != "native_complete":
-            selected_predictors = st.multiselect("Independent co-folder branches", list(PREDICTORS), default=list(PREDICTORS),
+            predictors = cofolder_methods('protein_protein')
+            predictor_default = [kind for kind in ('boltz2', 'prediction_protenix_v2') if kind in predictors]
+            selected_predictors = st.multiselect("Independent co-folder branches", predictors, default=predictor_default,
                 format_func=lambda kind: NODE_CATALOG[kind]["label"], key=prefix + "-mode-predictors-" + workflow_mode)
             for kind in selected_predictors:
                 with st.expander("Co-folder protocol · " + NODE_CATALOG[kind]['label']):
                     common_prediction_settings[kind] = _prediction_sampling(kind, prefix + '-mode-protocol-' + kind, seed_default=42)
                     st.caption("Applied to this co-folder across all selected generator branches. Other native prediction settings remain editable in its nodes.")
             st.caption("The first co-folder starts enabled; enable additional branches in Branch and processing settings. Configure the same protocol per branch across candidates. Ranking requires explicit comparable measurements in Ranking and diversity.")
+            analysis_choices = analysis_methods()
+            selected_analyses = st.multiselect('Candidate Analysis operations', analysis_choices, default=[],
+                format_func=lambda kind: NODE_CATALOG[kind]['label'], key=prefix + '-mode-analyses-' + workflow_mode)
+            from mn_molecular_design_studio.workflow_modes import _shared_analysis_routes
+            visible_routes = set(selected_predictors) | set(selected_analyses)
+            measurement_routes = [route for route in _shared_analysis_routes() if route['kind'] in visible_routes]
+            with st.expander("Independent measurements and analysis routes"):
+                st.dataframe([{
+                    'Route': route['label'],
+                    'Measured fields': ', '.join(measure['field'] for measure in route['measurements']) or 'No common fields registered',
+                    'Methods / scope': '; '.join(dict.fromkeys(measure['method'] for measure in route['measurements'])),
+                } for route in measurement_routes], hide_index=True, use_container_width=True)
+                st.caption("Results report measured values, units, source stages and missing/error status. Set quality cutoffs explicitly in Shared scientific filters. iPTM, iPAE, ipSAE, RMSD, pLDDT and contact counts remain separate measurements.")
         else:
             st.caption("Whole native workflows run through their own evaluation and filters. Results preserve engine-specific measurements; no common numerical rank is inferred. Final native ranking is unavailable unless recorded by the source.")
         redesign, redesign_sequences, interface_cutoff = False, 2, 4.0
+        sequence_designer = 'ligandmpnn'
+        redesign_engine = 'ligandmpnn'
         if workflow_mode == "modular_design":
-            redesign = st.checkbox("Redesign existing sequences · fix interface amino acids", value=False,
+            sequence_choices = sequence_methods()
+            default_sequence = 'ligandmpnn' if 'ligandmpnn' in sequence_choices else sequence_choices[0]
+            sequence_designer = st.selectbox('Conditional initial sequence-design engine', sequence_choices,
+                index=sequence_choices.index(default_sequence), format_func=lambda kind: NODE_CATALOG[kind]['label'],
+                key=prefix + '-mode-sequence-engine')
+            st.caption('Initial sequence design runs on compatible backbone-only candidates. Sequence-complete native outputs keep their sequence and bypass this step.')
+            redesign = st.checkbox("Optional sequence redesign", value=False,
                 key=prefix + "-mode-interface-redesign",
-                help="Optional SolubleMPNN child variants. Original sequences remain available. Target-contacting binder residues are fixed using the existing chain mapping and heavy-atom contact calculation.")
+                help="Generate conditional child sequences from eligible sequence-complete structures. The original candidate and its evidence remain in Results.")
             if redesign:
+                redesign_engine = st.selectbox('Optional conditional redesign engine', sequence_choices,
+                    index=sequence_choices.index('ligandmpnn' if 'ligandmpnn' in sequence_choices else sequence_choices[0]),
+                    format_func=lambda kind: NODE_CATALOG[kind]['label'], key=prefix + '-mode-redesign-engine')
                 redesign_sequences = int(st.number_input("Redesigned sequences per eligible design", min_value=1, max_value=1000, value=2,
                     key=prefix + "-mode-redesign-count"))
-                interface_cutoff = st.number_input("Fixed-interface heavy-atom distance (Å)", min_value=0.1, max_value=20.0, value=4.0,
-                    key=prefix + "-mode-redesign-cutoff")
-                st.caption("Fix mapped binder amino acids contacting the target within this distance, together with existing protected residues. Refold each child independently; original prediction scores are history only.")
+                if redesign_engine == 'ligandmpnn':
+                    interface_cutoff = st.number_input("Fixed-interface heavy-atom distance (Å)", min_value=0.1, max_value=20.0, value=4.0,
+                        key=prefix + "-mode-redesign-cutoff")
+                    st.caption("Fix mapped binder amino acids contacting the target within this distance, together with existing protected residues. Refold each child independently; original prediction scores are history only.")
+                else:
+                    st.caption('Original candidate sequences remain in Results; the selected registered sequence designer creates conditional child variants for eligible sequence-ready structures.')
             st.caption("Initial sequence design handles backbone-only outputs and bypasses existing sequences. Optional redesign creates child variants and remains disabled until requested. RFD4 native refolding remains configurable in task options; it is not classified as a complete evaluated workflow.")
         st.caption("Creates an editable graph using normal save, validate, run, monitor and export. Native counts, GPU microbatches, collection chunks and scheduler concurrency retain separate controls.")
+        st.info("For a fixed-size screening batch, set the finite design count on each generator and run once. Results show native filters, rejected candidates and measured values; a later graph run is a researcher decision after review. The separately configured acceptance campaign keeps its own explicit bounded attempt budget.")
         if st.button("Create scientific workflow pipeline", key=prefix + "-create-mode"):
             from mn_molecular_design_studio.candidate_pipeline import new_pipeline
             try:
-                graph = new_pipeline(selected_generators, selected_predictors, mode=workflow_mode)
+                graph = new_pipeline(selected_generators, selected_predictors, sequence_designer,
+                                     mode=workflow_mode, analyses=selected_analyses,
+                                     redesign_engine=redesign_engine)
                 for node in graph['nodes']:
                     if node['data']['kind'] in common_prediction_settings:
                         node['data']['params'].update(common_prediction_settings[node['data']['kind']])
                 if redesign:
                     for node in graph['nodes']:
                         if node['data']['params'].get('sequence_stage') == 'soluble_optimization':
-                            node['data']['params'].update(optimization_enabled=True, model_type='soluble_mpnn',
-                                fix_interface_residues=True, interface_cutoff=interface_cutoff, sequences=redesign_sequences)
+                            count_field = sequence_count_field(node['data']['kind'])
+                            node['data']['params'].update(optimization_enabled=True, **{count_field: redesign_sequences})
+                            if node['data']['kind'] == 'ligandmpnn':
+                                node['data']['params'].update(model_type='soluble_mpnn', fix_interface_residues=True,
+                                    interface_cutoff=interface_cutoff)
                 return graph
             except (ValueError, KeyError) as exc:
                 st.error(str(exc))

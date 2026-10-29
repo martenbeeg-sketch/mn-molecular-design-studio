@@ -51,6 +51,8 @@ class GeneratorCapabilities:
     supported_stopping_policies: tuple[str, ...]
     deferred_reason: str = ""
     native_execution: NativeExecutionCapabilities = NativeExecutionCapabilities()
+    graph_campaign_constraints: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    graph_campaign_exclusions: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         value = asdict(self)
@@ -104,6 +106,11 @@ _CAPABILITIES = {
         downstream_validation=("refolding.optimized_prediction", "analysis.ipsae"),
         gpu_required=True, minimum_vram_gb=16.0,
         supported_stopping_policies=("validated", "diversity_qualified"),
+        graph_campaign_constraints=(
+            ("task", ("protein_binder",)),
+            ("input_mode", ("guided", "guided_binder")),
+        ),
+        graph_campaign_exclusions=("input_files", "avoid_structures", "also_bind_structures"),
         native_execution=NativeExecutionCapabilities(
             multi_attempt_invocation=True, semantics=("replicates_per_input", "vectorized_dataloader_batch"),
             max_verified_campaign_attempts_per_job=1, max_measured_native_attempts_per_invocation=1,

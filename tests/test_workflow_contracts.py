@@ -29,6 +29,25 @@ def test_boltz2_workflow_is_registered_with_seed_and_job_name_fields():
     assert parameters["seed"]["type"] == "int"
 
 
+def test_mol1_appears_in_the_normal_studio_workflow_api(tmp_path: Path):
+    schema = workflow_schema("refolding.optimized_prediction")
+    parameters = {row["name"]: row for row in schema["parameters"]}
+    assert "mol1" in parameters["engine"]["type"]
+    assert parameters["engine_options"]["type"] == "dict[str, Any] | None"
+    assert any(row["workflow"] == "refolding.optimized_prediction" for row in workflow_catalog())
+
+    request_path = tmp_path / "mol1-preflight-request.json"
+    request_path.write_text(json.dumps({
+        "schema_version": 1, "workflow": "refolding.optimized_prediction",
+        "parameters": {"engine": "mol1", "optimization_mode": "off", "job_name": "mol1-api-check",
+                       "seed": 11, "samples": 1, "tasks": [{"protein_sequences": "ACDEFGHIK:VVVVVVVVV"}],
+                       "engine_options": {"use_msa": True, "step": 40, "need_atom_confidence": True}},
+    }), encoding="utf-8")
+    validated = validate_workflow_request(request_path)
+    assert validated["valid"] is True
+    assert validated["parameters"]["engine"] == "mol1"
+
+
 def test_boltz2_validation_preserves_user_job_name_random_seed_and_normal_priority(tmp_path: Path):
     request = {
         "schema_version": 1,

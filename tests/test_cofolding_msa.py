@@ -122,6 +122,11 @@ def test_every_native_adapter_consumes_job_local_alignment_when_capable(tmp_path
         assert chain['unpairedMsaPath'] == native_path
         assert (run / chain['pairedMsaPath'].removeprefix('/work/')).is_file()
         assert workflow._batch_options(profile, seed=1, num_recycles=3)['use_msa'] is True
+    elif kind == 'mol1_json':
+        chain = payload['sequences'][0]['proteinChain']
+        assert chain['unpairedMsaPath'] == native_path
+        assert (run / chain['pairedMsaPath'].removeprefix('/work/')).is_file()
+        assert workflow._batch_options(profile, seed=1, num_recycles=3)['use_msa'] is True
     elif kind == 'rf3_json':
         assert payload['msa_paths']['A'] == native_path
     elif kind == 'openfold3_ob0_json':
@@ -153,6 +158,57 @@ def test_colabfold_homomer_and_heteromer_preserve_unique_lengths_and_cardinality
     text = msa.complex_a3m(chains, {'A': one, 'B': one, 'C': two})
     assert text.startswith(f'#9,3\t2,1\n>query\n{SEQUENCE}VVV\n')
     assert all(len(__import__('re').sub('[a-z.]', '', row)) == 12 for _, row in msa.records(text))
+
+
+def test_mol1_stages_native_input_controls_and_capability_graph_node(tmp_path):
+    from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, OPTIMIZED_PREDICTION_NODE_ENGINES
+
+    profile = workflow.ENGINE_PROFILES['mol1']
+    path, _ = workflow._stage_native_input(
+        tmp_path / 'job', **native_args('mol1'), prepare_msas=False,
+        molecule_chain_options={'A': {'modifications': [{'ptmType': 'CCD_HY3', 'ptmPosition': 2}]}},
+    )
+    payload = json.loads(path.read_text())
+    protein = payload['sequences'][0]['proteinChain']
+    assert protein['id'] == ['A']
+    assert protein['modifications'] == [{'ptmType': 'CCD_HY3', 'ptmPosition': 2}]
+    options = workflow._batch_options(profile, seed=7, num_recycles=12,
+                                      engine_options={'use_msa': True, 'step': 64, 'use_template': True,
+                                                      'need_atom_confidence': True})
+    assert options == {
+        'model_name': 'mol-1-base', 'checkpoint': '/reference/mol1/checkpoint/mol-1-base.pt',
+        'cycle': 12, 'step': 64, 'dtype': 'bf16', 'use_msa': True, 'use_template': True,
+        'need_atom_confidence': True,
+    }
+    kind = next(kind for kind, engine in OPTIMIZED_PREDICTION_NODE_ENGINES.items() if engine == 'mol1')
+    assert kind == 'prediction_mol1'
+    assert NODE_CATALOG[kind]['workflow'] == 'refolding.optimized_prediction'
+    assert NODE_CATALOG[kind]['formats'] == ['pdb', 'cif']
+    assert profile['supports_templates'] is True
+
+
+def test_mol1_native_confidence_and_pae_are_preserved_as_measured(tmp_path):
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.analysis import _pae_matrix_from_json
+
+    structure = tmp_path / 'complex_sample_0.pdb'
+    structure.write_text(
+        'ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 81.00           C\n'
+        'ATOM      2  CA  CYS B   1       5.000   0.000   0.000  1.00 72.00           C\n'
+        'END\n'
+    )
+    full_data = structure.with_name('complex_full_data_sample_0.json')
+    full_data.write_text(json.dumps({
+        'token_pair_pae': [[0.1, 4.0], [6.0, 0.2]], 'token_asym_id': [0, 1],
+    }))
+    task = {'proteins': [{'id': 'A'}, {'id': 'B'}], 'molecule_chain_options': {}}
+    pae_path = workflow._mol1_pae_path(structure, task)
+    assert pae_path == tmp_path / 'complex_sample_0_pae.json'
+    payload = json.loads(pae_path.read_text())
+    assert payload['source'] == 'Mol-1 token_pair_pae'
+    assert _pae_matrix_from_json(pae_path) == [[0.1, 4.0], [6.0, 0.2]]
+    assert workflow._mean_plddt(structure) == pytest.approx(76.5)
+    assert workflow._mean_plddt(structure, ['B']) == pytest.approx(72.0)
+    assert workflow._mol1_pae_path(structure, {'proteins': [{'id': 'B'}, {'id': 'A'}]}) is None
 
 
 def test_historical_single_sequence_job_explains_why_there_is_no_alignment(tmp_path):

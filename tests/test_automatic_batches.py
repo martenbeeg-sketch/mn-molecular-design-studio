@@ -231,3 +231,37 @@ render_batch_controls('boltz2', ENGINE_PROFILES['boltz2'], 'project', 'predictio
     assert len(parameters['tasks']) == 3
     assert all(task['molecule_chain_options'] == [{"id": "A", "use_msa": True}] for task in parameters['tasks'])
     assert not any(element.label == "Batch mode" for element in app.expander)
+
+
+def test_acceptance_tile_lists_native_rejected_designs_by_their_recorded_format(monkeypatch, design_source_factory):
+    import json
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import design_validation_ui
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
+
+    run, _ = design_source_factory(passed=False)
+    input_path = run / "input.json"
+    input_data = json.loads(input_path.read_text())
+    input_data["params"] = {"modality": "VHH", "target_type": "structured"}
+    input_path.write_text(json.dumps(input_data))
+    monkeypatch.setattr(design_validation_ui, "render_molecule_editor", lambda *args, **kwargs: ({}, {
+        "optimization_mode": "off", "samples": 1, "cpu_cores": 4, "seed": 1,
+    }, False))
+    app = AppTest.from_string(f'''
+import streamlit as st
+from mn_molecular_design_studio.design_validation_ui import render_batch_controls
+from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
+def search_jobs(**kwargs):
+    return {{"items": [{{"run_id": "source-run", "run_dir": {str(run)!r}, "tool": "bindcraft2", "campaign_name": "VHH campaign", "job_code": "VHH-1"}}], "next_cursor": None}}
+render_batch_controls("boltz2", {{**ENGINE_PROFILES["boltz2"], "form_key": "acceptance-boltz2"}},
+    "project", "validation", {{}}, search_jobs=search_jobs, submit=lambda *args: None,
+    include_acceptance=True, existing_designs_only=True)
+''').run()
+    assert not app.exception
+    campaigns = next(widget for widget in app.multiselect if widget.label == "Design campaigns")
+    campaigns.set_value(["source-run"]).run()
+    candidates = next(widget for widget in app.multiselect if widget.label == "Designs · VHH-1")
+    assert candidates.value == ["passing-design"]
+    assert any("native no pass recorded" in str(option) for option in candidates.options)
+    binder_format = next(widget for widget in app.selectbox if widget.label == "Binder format")
+    assert binder_format.value == "vhh"

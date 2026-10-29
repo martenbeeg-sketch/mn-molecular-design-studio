@@ -148,3 +148,152 @@ assert not np.any((groups == 1) & np.char.startswith(aa.atom_name.astype(str), "
     command = build_docker_command(manifest, tmp_path, args, environment={"PYTHONUNBUFFERED": "1"})
     result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=300)
     assert result.returncode == 0, (result.stdout + "\n" + result.stderr)[-6000:]
+
+
+def test_idr_condition_spec_is_a_single_native_campaign_input(tmp_path):
+    sequence = "ACDEFGHIKLMNPQRSTVWY"
+    target = inputs.write_idr_sequence_carrier(sequence, tmp_path / "inputs" / "target.cif")
+    parameters = {
+        "task": "protein_binder",
+        "input_mode": "condition_spec",
+        "target_structure": str(target),
+        "target_chains": ["A"],
+        "input_files": [str(target)],
+        "condition_spec": inputs.idr_binder_condition_spec(
+            sequence, target_filename=target.name, binder_length_min=20, binder_length_max=30,
+        ),
+        "num_designs": 1,
+        "batch_size": 1,
+        "nsteps": 60,
+        "length_min": 20,
+        "length_max": 30,
+        "options": {"filter_conditions": False, "refold": False},
+    }
+
+    assert inputs.validate_campaign_inputs(parameters) == 1
+    prepared = inputs.prepare_request(parameters, run_dir=tmp_path / "campaign-parent")
+    assert prepared["design_count"] == 1
+    staged_target = prepared["target_structure"]
+    assert staged_target and Path(staged_target).is_file()
+    assert Path(prepared["spec_path"]).read_text().find(Path(staged_target).name) >= 0
+
+    parameters["condition_spec"] += """\nsecond_design:
+  input: target.cif
+  contig: \"20-30, /0, A1-20\"
+"""
+    with pytest.raises(ValueError, match="exactly one named"):
+        inputs.validate_campaign_inputs(parameters)
+
+
+def test_rfd4_campaign_entry_accepts_native_condition_spec(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import distributed_campaign, rfd4_proteina
+
+    sequence = "ACDEFGHIKLMNPQRSTVWY"
+    target = inputs.write_idr_sequence_carrier(sequence, tmp_path / "inputs" / "target.cif")
+    run_dir = tmp_path / "campaign"
+    run_dir.mkdir()
+    monkeypatch.setattr(rfd4_proteina, "create_job", lambda *_args, **_kwargs: SimpleNamespace(run_dir=run_dir))
+    monkeypatch.setattr(rfd4_proteina, "update_status", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(inputs, "prepare_request", lambda *_args, **_kwargs: {"design_count": 1})
+    monkeypatch.setattr(
+        distributed_campaign,
+        "run_rfd4_proteina_distributed_campaign",
+        lambda path: path,
+        raising=False,
+    )
+
+    config = {
+        "enabled": True,
+        "generator_id": "rfd4_proteina",
+        "accepted_target": 1,
+        "max_attempts": 1,
+        "acceptance_level": "validated",
+        "validation_stages": [{
+            "workflow": "refolding.optimized_prediction",
+            "required_metrics": ["iptm"],
+        }],
+    }
+    result = rfd4_proteina.run_rfd4_proteina_design(
+        task="protein_binder",
+        input_mode="condition_spec",
+        target_structure=target,
+        target_chains=["A"],
+        input_files=[target],
+        condition_spec=inputs.idr_binder_condition_spec(
+            sequence, target_filename=target.name, binder_length_min=20, binder_length_max=30,
+        ),
+        length_min=20,
+        length_max=30,
+        options={"filter_conditions": False, "refold": False},
+        distributed_campaign=config,
+    )
+
+    assert result == run_dir
+    assert distributed_campaign.validate_campaign_config(config)["generator_id"] == "rfd4_proteina"
+
+
+@pytest.mark.skipif(os.environ.get("MDS_RFD4_DOCKER_TESTS") != "1", reason="requires opt-in RFD4 Docker image")
+def test_idr_sequence_only_spec_fixes_sequence_but_leaves_target_coordinates_free(tmp_path):
+    sequence = "ACDEFGHIKLMNPQRSTVWY"
+    target = inputs.write_idr_sequence_carrier(sequence, tmp_path / "inputs" / "target.cif")
+    parameters = {
+        "task": "protein_binder",
+        "input_mode": "condition_spec",
+        "target_structure": str(target),
+        "target_chains": ["A"],
+        "input_files": [str(target)],
+        "condition_spec": inputs.idr_binder_condition_spec(
+            sequence, binder_length_min=70, binder_length_max=110, hotspots="A5,A8-12"
+        ),
+        "hotspots": "A5,A8-12",
+        "num_designs": 1,
+        "batch_size": 1,
+        "nsteps": 60,
+        "length_min": 70,
+        "length_max": 110,
+        "seed": 0,
+        "options": {"filter_conditions": False, "refold": False},
+    }
+    prepared = inputs.prepare_request(parameters, run_dir=tmp_path)
+    runtime_dir = prepared["root"] / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    runtime_source = Path(__file__).parents[1] / "mn_molecular_design_studio/engine/workflow_engine/workflows/rfd4_runtime.py"
+    shutil.copy2(runtime_source, runtime_dir / runtime_source.name)
+
+    check_script = runtime_dir / "assert_idr_prepare.py"
+    check_script.write_text(
+        '''import json, sys
+from pathlib import Path
+import numpy as np
+import rfd4_runtime as runtime
+from atomworks.ml.conditions import C_CRD, C_SEQ
+from rfproteina.conditions import C_CRDGRP
+from rfproteina.utils.condition_resolution import resolve_standard_annotation
+
+request = json.loads(Path(sys.argv[1]).read_text())
+runtime.run(request, prepare_only=True)
+inventory = json.loads((Path(request["root"]) / "prepared_inputs.json").read_text())
+assert len(inventory) == 1, inventory
+item = inventory[0]
+assert item["designed_chains"] == ["B"], item
+assert item["target_chains"] == ["A"], item
+aa = runtime.load(item["path"], annotated=True)
+target = aa.chain_id == "A"
+assert target.any(), "IDR target chain A was lost"
+assert np.all(C_SEQ.mask(aa, default="generate")[target]), "target sequence is not fixed"
+assert not C_CRD.mask(aa, default="generate")[target].any(), "target absolute coordinates are fixed"
+groups = C_CRDGRP.annotation(aa, default="generate")
+assert not np.any(groups[target] > 0), "target internal coordinate groups were added"
+hotspots = resolve_standard_annotation("C_HOT").mask(aa, default="generate")
+assert set(aa.res_id[hotspots & target]) == {5, 8, 9, 10, 11, 12}, "C_HOT residue mapping changed"
+'''
+    )
+
+    manifest = {**load_manifest("rfd4_proteina"), "entrypoint": "python", "gpu": False}
+    args = ["/work/" + check_script.relative_to(tmp_path).as_posix(),
+            "/work/" + prepared["request_path"].relative_to(tmp_path).as_posix()]
+    command = build_docker_command(manifest, tmp_path, args, environment={"PYTHONUNBUFFERED": "1"})
+    result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=300)
+    assert result.returncode == 0, (result.stdout + "\n" + result.stderr)[-6000:]

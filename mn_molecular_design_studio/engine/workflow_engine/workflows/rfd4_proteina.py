@@ -151,10 +151,9 @@ def run_rfd4_proteina_design(
         campaign_config=dict(distributed_campaign or {})
         distributed_enabled=bool(campaign_config.get('enabled'))
         if distributed_enabled:
-            if task_group!='design' or task!='protein_binder' or input_mode not in {'guided','guided_binder'}:
-                raise ValueError('RFD4 acceptance-driven campaigns currently support guided protein-binder co-design only.')
-            if not target_structure or not target_chains or input_files or avoid_structures or also_bind_structures or protein_sequences:
-                raise ValueError('RFD4 campaigns require one selected target structure and chain set without secondary inputs.')
+            if task_group!='design':
+                raise ValueError('RFD4 campaigns require a native design workflow.')
+            inputs.validate_campaign_inputs(parameters)
             campaign_config['generator_id']='rfd4_proteina'
             campaign_config.setdefault('seed',int(parameters['seed']))
             campaign_resources=dict(campaign_config.get('resources') or {})
@@ -177,6 +176,8 @@ def run_rfd4_proteina_design(
         design_parameters={key:value for key,value in parameters.items() if key!='distributed_campaign'}
         prepared=inputs.prepare_request(design_parameters,run_dir=job.run_dir)
         if distributed_enabled:
+            if prepared.get('design_count') != 1:
+                raise ValueError('Each RFD4 campaign attempt must prepare exactly one native design input.')
             write_json(job.run_dir/'parameters.json',{**parameters,'engine_version':inputs.UPSTREAM_VERSION,
                        'upstream_commit':inputs.UPSTREAM_COMMIT,'checkpoint_revision':inputs.HF_REVISION,'image':inputs.IMAGE})
             from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import run_rfd4_proteina_distributed_campaign

@@ -149,8 +149,9 @@ def test_validated_acceptance_requires_explicit_stage_measurements(tmp_path):
 
 
 @pytest.mark.parametrize("workstation_selection, busy", [("auto", False), ("eligible", False), ("eligible", True)])
+@pytest.mark.parametrize("input_mode", ["guided_binder", "condition_spec"])
 def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worker(
-    tmp_path, monkeypatch, workstation_selection, busy,
+    tmp_path, monkeypatch, workstation_selection, busy, input_mode,
 ):
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs, workflow_queue, local_worker
 
@@ -158,14 +159,28 @@ def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worke
     target = parent / "artifacts/rfd4_proteina/input/PD-L1.pdb.cif"
     target.parent.mkdir(parents=True)
     target.write_text("data_target\n")
-    jobs.write_json(parent / "input.json", {"params": {
-        "task": "protein_binder", "input_mode": "guided_binder", "target_structure": str(target),
+    params = {
+        "task": "protein_binder", "input_mode": input_mode, "target_structure": str(target),
         "target_chains": ["A"], "num_designs": 1, "batch_size": 1, "nsteps": 60,
+        "length_min": 20, "length_max": 30,
         "options": {"deterministic": True, "filter_conditions": True, "refold": False},
-    }})
-    jobs.write_json(parent / "artifacts/rfd4_proteina/request.json", {
-        "target_structure": "/work/artifacts/rfd4_proteina/input/PD-L1.pdb.cif",
-    })
+    }
+    request = {"target_structure": "/work/artifacts/rfd4_proteina/input/PD-L1.pdb.cif"}
+    if input_mode == "condition_spec":
+        params.update(
+            input_files=[str(target)],
+            condition_spec="""idr_binder:
+  input: PD-L1.pdb.cif
+  contig: \"20-30, /0, A1-20\"
+  conditions:
+    C_SEQ:
+      true:
+        - select: \"sel('A')\"
+""",
+        )
+        request["input_files"] = ["/work/artifacts/rfd4_proteina/input/PD-L1.pdb.cif"]
+    jobs.write_json(parent / "input.json", {"params": params})
+    jobs.write_json(parent / "artifacts/rfd4_proteina/request.json", request)
     jobs.write_json(parent / "metadata.json", {
         "studio_owner_id": "owner", "studio_project_id": "project", "studio_development_mode": True,
     })
@@ -206,6 +221,12 @@ def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worke
     def submit(request, manifest, submission_key, settings, *, owner_id, project_id, state, persist, allow_development):
         assert request["workflow"] == "design.rfd4_proteina"
         assert request["parameters"]["gpu_device"] == "auto"
+        assert request["parameters"]["input_mode"] == input_mode
+        if input_mode == "condition_spec":
+            assert request["parameters"]["condition_spec"].startswith("idr_binder:")
+            assert request["parameters"]["input_files"] == [str(target)]
+        else:
+            assert request["parameters"]["input_files"] == []
         assert "task_group" not in request["parameters"]
         assert request["resources"]["gpu_device"] == "auto"
         assert "gpu" not in request["resources"]
@@ -236,6 +257,9 @@ def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worke
         assert latest["cluster_submission"]["placement_fallback"] == "auto_queue"
     assert latest["cluster_submission"]["prepared_envelope"]["idempotency_key"] == latest["remote_submission_key"]
     assert submissions and submissions[0][2]["cluster_submission"]["prepared_envelope"]
+    child_params = jobs.read_json(child / "input.json")["params"]
+    assert child_params["input_mode"] == input_mode
+    assert child_params["target_structure"] == str(target)
     metadata = jobs.read_json(child / "metadata.json")
     assert metadata["cluster_remote"] is True
     assert metadata["cluster_job_id"] == "cluster-job"

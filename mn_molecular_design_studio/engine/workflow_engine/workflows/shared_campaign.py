@@ -90,12 +90,26 @@ class SharedCampaignLedger:
                 "created_at": now,
                 "updated_at": now,
                 "attempts": {},
+                "jobs": {},
                 "campaigns": {},
                 "sequences": {},
                 "participants": {},
+                "evaluations": {},
                 "events": [{"type": "shared_campaign_created", "at": now}],
             })
         return ledger
+
+    @staticmethod
+    def _target_count(config: dict[str, Any]) -> int:
+        if config.get("objective_type", "accepted") == "generated":
+            return int(config.get("generated_target", config.get("accepted_target", 1)))
+        return int(config.get("accepted_target", 1))
+
+    @classmethod
+    def _objective_count(cls, state: dict[str, Any]) -> int:
+        if state.get("config", {}).get("objective_type", "accepted") == "generated":
+            return sum(row.get("status") != "not_evaluated" for row in state.get("participants", {}).values())
+        return sum(row.get("status") == "accepted" for row in state.get("sequences", {}).values())
 
     def snapshot(self) -> dict[str, Any]:
         with _locked(self.path):
@@ -129,7 +143,7 @@ class SharedCampaignLedger:
                     or len(generator_attempts) >= max_generator_attempts
                     or len(generator_active) >= max_generator_active
                     or compute_limit is not None and reported_compute >= float(compute_limit)
-                    or self._accepted_count(state) >= int(config["accepted_target"])
+                    or self._objective_count(state) >= self._target_count(config)
             ):
                 self._refresh_terminal(state)
                 state["updated_at"] = _now()
@@ -146,6 +160,52 @@ class SharedCampaignLedger:
             state["updated_at"] = now
             _atomic_write(self.path, state)
             return True
+
+    def reserve_job(self, job_id: str, generator_node: str) -> bool:
+        """Reserve one scheduler submission under the shared generation caps."""
+        with _locked(self.path):
+            state = _read(self.path)
+            if state.get('status') != 'running':
+                return False
+            jobs = state.setdefault('jobs', {})
+            existing = jobs.get(job_id)
+            if existing:
+                return existing.get('status') in ACTIVE_ATTEMPT_STATES
+            active_jobs = [row for row in jobs.values() if row.get('status') in ACTIVE_ATTEMPT_STATES]
+            active_generators = [row for row in active_jobs if row.get('job_type') == 'generation']
+            branch = [row for row in active_generators if row.get('generator_node') == generator_node]
+            limits = state.get('config', {}).get('generator_limits', {}).get(generator_node, {})
+            compute_limit = state.get('config', {}).get('max_compute_seconds')
+            compute = sum(float(row.get('compute_seconds', 0) or 0) for row in state.get('campaigns', {}).values())
+            if (len(active_jobs) >= int(state['config']['max_concurrent_jobs'])
+                    or len(active_generators) >= int(state['config']['max_concurrent_generation_jobs'])
+                    or len(branch) >= int(limits.get('max_concurrent_generation_jobs', state['config']['max_concurrent_generation_jobs']))
+                    or compute_limit is not None and compute >= float(compute_limit)):
+                return False
+            now = _now()
+            jobs[job_id] = {'job_id': job_id, 'generator_node': generator_node,
+                            'job_type': 'generation', 'status': 'submitting', 'reserved_at': now}
+            state.setdefault('events', []).append({'type': 'shared_job_reserved', 'job_id': job_id,
+                                                  'generator_node': generator_node, 'at': now})
+            state['updated_at'] = now
+            _atomic_write(self.path, state)
+            return True
+
+    def finish_job(self, job_id: str, status: str, compute_seconds: float | None = None) -> None:
+        if status not in {'completed', 'partial', 'failed', 'cancelled', 'interrupted', 'released'}:
+            raise ValueError('Invalid shared scheduler-job terminal status.')
+        with _locked(self.path):
+            state = _read(self.path)
+            job = state.get('jobs', {}).get(job_id)
+            if not job or job.get('status') not in ACTIVE_ATTEMPT_STATES:
+                return
+            job.update(status=status, completed_at=_now(), compute_seconds=(
+                max(0.0, float(compute_seconds)) if compute_seconds is not None else None))
+            state.setdefault('events', []).append({'type': 'shared_job_finished', 'job_id': job_id,
+                                                  'status': status, 'at': _now()})
+            state['updated_at'] = _now()
+            self._refresh_terminal(state)
+            _atomic_write(self.path, state)
 
     def release_attempt(self, campaign_id: str, attempt_id: str, reason: str) -> None:
         key = f"{campaign_id}:{attempt_id}"
@@ -313,6 +373,113 @@ class SharedCampaignLedger:
             _atomic_write(self.path, state)
             return copy.deepcopy(row)
 
+    def record_generated_batch(self, generator_node: str, generator_id: str,
+                               candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Idempotently record every native output without requiring a sequence.
+
+        A fixed native invocation is an indivisible unit. This receipt counts
+        emitted designs (including native rejects) and retains the source IDs;
+        it does not invent downstream validation or acceptance.
+        """
+        claims = []
+        with _locked(self.path):
+            state = _read(self.path)
+            if state.get("config", {}).get("objective_type", "accepted") != "generated":
+                raise ValueError("Generated batch receipts require a generated-design objective.")
+            participants = state.setdefault("participants", {})
+            now = _now()
+            for candidate in candidates:
+                candidate_id = str(candidate.get("candidate_id") or "").strip()
+                if not candidate_id:
+                    raise ValueError("Generated candidates need stable native candidate IDs.")
+                participant_id = f"generated:{generator_node}:{candidate_id}"
+                existing = participants.get(participant_id)
+                if existing:
+                    claims.append(copy.deepcopy(existing))
+                    continue
+                from mn_molecular_design_studio.candidate_sets import native_filter as candidate_native_filter
+                filter_status = candidate_native_filter(candidate)
+                native_status = "native_pass" if filter_status == "passed" else (
+                    "native_rejected" if filter_status == "failed" else "unavailable")
+                row = {
+                    "participant_id": participant_id,
+                    "campaign_id": "graph-native",
+                    "generator_node": generator_node,
+                    "generator_id": generator_id,
+                    "candidate_id": candidate_id,
+                    "role": "generated",
+                    "status": "generated",
+                    "native_filter_status": native_status,
+                    "created_at": now,
+                }
+                participants[participant_id] = row
+                claims.append(copy.deepcopy(row))
+                state.setdefault("events", []).append({
+                    "type": "native_candidate_recorded", "participant_id": participant_id,
+                    "generator_node": generator_node, "generator_id": generator_id, "at": now,
+                })
+            state["updated_at"] = now
+            _atomic_write(self.path, state)
+        return claims
+
+    def finish_graph(self, *, interrupted: bool = False) -> dict[str, Any]:
+        """Close a generated-count objective after all selected branches settle."""
+        with _locked(self.path):
+            state = _read(self.path)
+            if state.get("status") == "running":
+                config = state.get("config", {})
+                count = self._objective_count(state)
+                target = self._target_count(config)
+                if interrupted:
+                    status, reason = "interrupted", "interrupted"
+                    for job in state.get('jobs', {}).values():
+                        if job.get('status') in ACTIVE_ATTEMPT_STATES:
+                            job.update(status='interrupted', completed_at=_now())
+                elif count >= target:
+                    status, reason = "target_reached", "target_reached"
+                else:
+                    status, reason = "budget_exhausted", "budget_exhausted"
+                state.update(status=status, termination_reason=reason, completed_at=_now(), updated_at=_now())
+                state.setdefault("events", []).append({
+                    "type": "shared_objective_finished", "count": count, "target": target,
+                    "reason": reason, "at": _now(),
+                })
+                _atomic_write(self.path, state)
+        return self.summary()
+
+    def record_scientific_evaluations(self, generator_node: str, stage_node: str,
+                                     evaluations: list[dict[str, Any]]) -> None:
+        """Retain configured candidate-filter decisions with their own status."""
+        allowed = {'passed', 'failed', 'missing_evidence', 'invalid_metadata', 'unresolved', 'not_evaluated'}
+        with _locked(self.path):
+            state = _read(self.path)
+            if state.get('config', {}).get('objective_type', 'accepted') != 'generated':
+                return
+            rows = state.setdefault('evaluations', {})
+            for item in evaluations:
+                candidate_id = str(item.get('candidate_id') or '').strip()
+                if not candidate_id:
+                    continue
+                status = str(item.get('status') or 'not_evaluated')
+                if status not in allowed:
+                    status = 'not_evaluated'
+                identity = f"{generator_node}:{stage_node}:{candidate_id}"
+                current = rows.get(identity)
+                incoming = {
+                    'generator_node': generator_node, 'stage_node': stage_node,
+                    'candidate_id': candidate_id,
+                    'native_candidate_id': str(item.get('native_candidate_id') or ''),
+                    'variant_id': str(item.get('variant_id') or ''),
+                    'status': status,
+                    'reasons': copy.deepcopy(item.get('reasons') or []),
+                    'created_at': current.get('created_at', _now()) if current else _now(),
+                    'updated_at': _now(),
+                }
+                if current is None or current.get('status') == 'not_evaluated' and status != 'not_evaluated':
+                    rows[identity] = incoming
+            state['updated_at'] = _now()
+            _atomic_write(self.path, state)
+
     def reserve_validation(
         self, campaign_id: str, generator_node: str, candidate_id: str, stage_index: int,
     ) -> bool:
@@ -409,14 +576,80 @@ class SharedCampaignLedger:
             counters = per_generator.setdefault(row["generator_node"], {"attempts": 0, "active_attempts": 0})
             counters["attempts"] += 1
             counters["active_attempts"] += row.get("status") in ACTIVE_ATTEMPT_STATES
+        jobs = list(state.get('jobs', {}).values())
+        for row in jobs:
+            counters = per_generator.setdefault(row['generator_node'], {"attempts": 0, "active_attempts": 0})
+            counters['scheduler_jobs'] = counters.get('scheduler_jobs', 0) + 1
+            counters['active_jobs'] = counters.get('active_jobs', 0) + (row.get('status') in ACTIVE_ATTEMPT_STATES)
         for row in state.get("participants", {}).values():
             counters = per_generator.setdefault(row["generator_node"], {"attempts": 0, "active_attempts": 0})
             counters[f"candidates_{row.get('status', 'pending')}"] = counters.get(f"candidates_{row.get('status', 'pending')}", 0) + 1
+            native_status = row.get('native_filter_status')
+            if native_status:
+                counters[native_status] = counters.get(native_status, 0) + 1
         sequences = list(state.get("sequences", {}).values())
+        config = state.get("config", {})
+        generated = [row for row in state.get("participants", {}).values() if row.get("role") == "generated"]
+        evaluations = list(state.get('evaluations', {}).values())
+        objective_type = config.get("objective_type", "accepted")
+        compute_rows = [float(row.get("compute_seconds", 0) or 0) for row in state.get("campaigns", {}).values()]
+        job_compute_rows = [row.get('compute_seconds') for row in jobs]
+        compute_is_measured = (
+            bool(job_compute_rows) and all(value is not None for value in job_compute_rows)
+            if objective_type == 'generated'
+            else all(value is not None for value in job_compute_rows)
+        )
+        compute_seconds = (
+            sum(compute_rows) + sum(float(value or 0) for value in job_compute_rows)
+            if compute_is_measured else None
+        )
+        evaluations_by_design: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        for row in evaluations:
+            identity = (
+                str(row.get('generator_node') or ''),
+                str(row.get('native_candidate_id') or row.get('candidate_id') or ''),
+                str(row.get('variant_id') or ''),
+            )
+            evaluations_by_design.setdefault(identity, []).append(row)
+        design_outcomes = []
+        for identity, rows in evaluations_by_design.items():
+            statuses = {str(row.get('status') or 'not_evaluated') for row in rows}
+            if 'failed' in statuses:
+                status = 'failed'
+            elif 'invalid_metadata' in statuses:
+                status = 'invalid_metadata'
+            elif 'unresolved' in statuses:
+                status = 'unresolved'
+            elif 'missing_evidence' in statuses:
+                status = 'missing_evidence'
+            elif statuses and statuses == {'passed'}:
+                status = 'passed'
+            else:
+                status = 'not_evaluated'
+            design_outcomes.append(status)
+            counters = per_generator.setdefault(identity[0], {"attempts": 0, "active_attempts": 0})
+            counters['scientifically_evaluated_designs'] = counters.get('scientifically_evaluated_designs', 0) + (status != 'not_evaluated')
+            counters['scientifically_passing_designs'] = counters.get('scientifically_passing_designs', 0) + (status == 'passed')
+            counters['scientifically_rejected_designs'] = counters.get('scientifically_rejected_designs', 0) + (status == 'failed')
+            counters['scientifically_unresolved_designs'] = counters.get('scientifically_unresolved_designs', 0) + (
+                status in {'invalid_metadata', 'unresolved', 'missing_evidence'}
+            )
         return {
             "status": state.get("status", "running"),
             "termination_reason": state.get("termination_reason"),
-            "accepted_target": state["config"]["accepted_target"],
+            "objective_type": objective_type,
+            "objective_target": self._target_count(config),
+            "accepted_target": config.get("accepted_target") if objective_type == "accepted" else None,
+            "generated_target": config.get("generated_target") if objective_type == "generated" else None,
+            "generated_designs": len(generated),
+            "generated_native_pass": sum(row.get("native_filter_status") == "native_pass" for row in generated),
+            "generated_native_rejected": sum(row.get("native_filter_status") == "native_rejected" for row in generated),
+            "generated_native_filter_unavailable": sum(row.get("native_filter_status") == "unavailable" for row in generated),
+            "scientifically_evaluated_designs": sum(status != 'not_evaluated' for status in design_outcomes),
+            "scientifically_passing_designs": sum(status == 'passed' for status in design_outcomes),
+            "scientifically_rejected_designs": sum(status == 'failed' for status in design_outcomes),
+            "scientifically_unresolved_designs": sum(status in {'invalid_metadata', 'unresolved', 'missing_evidence'}
+                                                       for status in design_outcomes),
             "unique_accepted": sum(row.get("status") == "accepted" for row in sequences),
             "unique_rejected": sum(row.get("status") == "rejected" for row in sequences),
             "unique_validation_failed": sum(row.get("status") == "failed" for row in sequences),
@@ -426,8 +659,12 @@ class SharedCampaignLedger:
             "attempts_active": sum(row.get("status") in ACTIVE_ATTEMPT_STATES for row in attempts),
             "validations_active": sum(row.get("status") in ACTIVE_ATTEMPT_STATES for row in state.get("validations", {}).values()),
             "max_attempts": state["config"]["max_attempts"],
+            "max_concurrent_jobs": config.get('max_concurrent_jobs', 0),
             "max_concurrent_generation_jobs": state["config"]["max_concurrent_generation_jobs"],
-            "compute_seconds": sum(float(row.get("compute_seconds", 0) or 0) for row in state.get("campaigns", {}).values()),
+            "scheduler_jobs": len(jobs),
+            "scheduler_jobs_active": sum(row.get('status') in ACTIVE_ATTEMPT_STATES for row in jobs),
+            "compute_seconds": compute_seconds,
+            "compute_seconds_status": 'measured' if compute_seconds is not None else 'unavailable for this native route',
             "per_generator": per_generator,
             "updated_at": state.get("updated_at"),
         }
@@ -449,7 +686,8 @@ class SharedCampaignLedger:
     def _refresh_terminal(self, state: dict[str, Any]) -> None:
         if state.get("status") != "running":
             return
-        if self._accepted_count(state) >= int(state["config"]["accepted_target"]):
+        if (state.get("config", {}).get("objective_type", "accepted") == "accepted"
+                and self._accepted_count(state) >= self._target_count(state["config"])):
             state.update(status="target_reached", termination_reason="target_reached", completed_at=_now())
             state["events"].append({"type": "shared_target_reached", "at": _now()})
             return

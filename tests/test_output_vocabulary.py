@@ -90,6 +90,133 @@ def test_rf_boltzgen_and_bindcraft_validation_tm_scores_share_family_not_method(
     assert len({row["provenance"]["confidence.validation.complex.iptm"]["method"] for row in result}) == 3
 
 
+def test_mol1_native_measurements_keep_complex_and_binder_scopes_distinct():
+    result = candidate_output({
+        "source_tool": "optimized_prediction_mol1", "stage": "complex_refolding",
+        "target_chains": ["A"], "binder_chains": ["B"],
+        "metrics": {"ptm": .81, "iptm": .72, "plddt_mean": 79.0, "complex_plddt": 79.0,
+                    "binder_plddt": 84.0, "mol1_model_plddt_mean": 80.0},
+    })
+    assert result["metrics"]["confidence.validation.complex.ptm"] == .81
+    assert result["metrics"]["confidence.validation.complex.iptm"] == .72
+    assert result["metrics"]["confidence.validation.structure.mean_ca_plddt"] == 79.0
+    assert result["metrics"]["confidence.validation.bound_binder.plddt"] == 84.0
+    assert result["metrics"]["confidence.validation.model.mol1_plddt_mean"] == 80.0
+
+
+def test_mol1_monomer_does_not_report_complex_or_interface_measurements():
+    result = candidate_output({
+        "candidate_id": "minisog-monomer", "source_tool": "optimized_prediction_mol1",
+        "stage": "complex_refolding", "metrics": {
+            "ptm": .83376, "iptm": 0.0, "plddt_mean": 88.314, "complex_plddt": 88.314,
+        },
+        "raw_metadata": {
+            "api_engine": "mol1", "protein_chains": [{"id": "A", "sequence": "ACDE"}],
+            "confidence_outputs": {"plddt": 84.976, "plddt_mean": 84.976, "iptm": 0.0},
+        },
+    })
+    assert result["stage"] == "monomer_refolding"
+    assert result["kind"] == "refolded_monomer"
+    assert result["metrics"]["confidence.validation.structure.mean_ca_plddt"] == 88.314
+    assert result["metrics"]["confidence.validation.model.mol1_plddt_mean"] == 84.976
+    assert result["metrics"]["confidence.validation.monomer.ptm"] == .83376
+    assert "confidence.validation.complex.iptm" not in result["metrics"]
+    assert "confidence.validation.complex.ptm" not in result["metrics"]
+    assert "confidence.validation.bound_binder.plddt" not in result["metrics"]
+
+
+def test_bindcraft2_scaffold_and_induced_fit_metrics_keep_their_native_meaning():
+    result = candidate_output({
+        "source_tool": "BindCraft2", "stage": "complex_refolding",
+        "metrics": {
+            "Scaffold_Sequence_Retained_Fraction": 1.0,
+            "Scaffold_Framework_RMSD": 1.8,
+            "Off_Paratope_Contact_Fraction": 0.1,
+            "Framework_Packing_Fraction": 0.4,
+            "Induced_Fit_Interface_RMSD": 5.2,
+            "Induced_Fit_TM": 0.55,
+            "Interface_Residues": 11,
+            "Backbone_Clashes": 0,
+            "i_pAE": 0.33,
+        },
+    })
+    metrics = result["metrics"]
+    assert metrics["sequence.native.bindcraft2.scaffold_sequence_retained_fraction"] == 1.0
+    assert metrics["geometry.native.bindcraft2.scaffold_framework_rmsd"] == 1.8
+    assert metrics["interface.native.bindcraft2.off_paratope_contact_fraction"] == 0.1
+    assert metrics["structure.native.bindcraft2.framework_packing_fraction"] == 0.4
+    assert metrics["geometry.native.bindcraft2.induced_fit_interface_rmsd"] == 5.2
+    assert metrics["confidence.native.bindcraft2.induced_fit_tm"] == 0.55
+    assert metrics["interface.native.bindcraft2.binder_residue_count_4a"] == 11
+    assert metrics["geometry.native.bindcraft2.backbone_ca_clashes_2_5a"] == 0
+    assert metrics["confidence.native.bindcraft2.interface.ipae_normalized"] == 0.33
+
+
+def test_cofold_metrics_keep_measured_values_units_and_separate_analysis_sources():
+    from mn_molecular_design_studio.output_vocabulary import metric_value, vocabulary
+
+    prediction = candidate_output({
+        "candidate_id": "pdl1-fixture", "source_tool": "optimized_prediction_boltz2",
+        "stage": "complex_refolding", "binder_sequence": "ACDE",
+        "metrics": {"iptm": .67, "ipae": 4.8, "binder_plddt": 81.5,
+                    "target_aligned_binder_rmsd": 2.1},
+        "raw_metadata": {"prediction_protocol": {"engine": "boltz2", "samples": 1}},
+    })
+    assert prediction["metrics"]["confidence.validation.complex.iptm"] == .67
+    assert prediction["metrics"]["confidence.validation.interface.mean_pae"] == 4.8
+    assert prediction["metrics"]["confidence.validation.bound_binder.plddt"] == 81.5
+    assert prediction["metrics"]["geometry.validation.binder.target_aligned_rmsd"] == 2.1
+    assert prediction["provenance"]["confidence.validation.interface.mean_pae"]["unit"] == "Å"
+    assert prediction["provenance"]["geometry.validation.binder.target_aligned_rmsd"]["method"].startswith("Studio matched target Cα")
+    assert metric_value({"source_tool": "optimized_prediction_boltz2", "stage": "complex_refolding",
+                         "metrics": {"iptm": .67, "ipae": 4.8}}, "common.confidence.validation.interface.mean_pae") == 4.8
+    assert metric_value({"source_tool": "optimized_prediction_boltz2", "stage": "complex_refolding",
+                         "metrics": {"iptm": .67, "ipae": 4.8}}, "common.confidence.validation.complex.iptm") == .67
+
+    ipsae = candidate_output({"source_tool": "ipsae", "stage": "analysis", "metrics": {"ipsae_min": .42}})
+    contacts = candidate_output({"source_tool": "biotite_interface", "stage": "analysis",
+                                 "metrics": {"qc_interface_contact_pairs": 57}})
+    assert ipsae["metrics"]["interface.ipsae.minimum"] == .42
+    assert contacts["metrics"]["interface.contacts"] == 57
+    definitions = {row["key"]: row for row in vocabulary()["measures"]}
+    assert definitions["confidence.validation.interface.mean_pae"]["range_semantics"].startswith("Physical/value-domain")
+    assert definitions["interface.ipsae.minimum"]["direction"] == "higher"
+
+    native_routes = [
+        ("pxdesign", "geometry.native.pxdesign.bound_unbound_rmsd", True),
+        ("genie3", "geometry.native.genie3.binder_self_consistency_rmsd", True),
+        ("protpardelle_1c", "geometry.native.protpardelle.binder_scaffold_rmsd", False),
+        ("proteina_complexa", "geometry.native.proteina_complexa.binder_scaffold_rmsd", True),
+    ]
+    for tool, rmsd_field, has_iptm in native_routes:
+        metrics = {"binder_plddt": 82.0, "ipae": 5.2, "binder_rmsd": 2.3}
+        if has_iptm:
+            metrics["iptm"] = .72
+        if tool == "proteina_complexa":
+            metrics.update(ipsae_min=.41, ipsae_max=.57, ipsae_avg=.49)
+        native = candidate_output({"source_tool": tool, "stage": "complex_refolding", "metrics": metrics})
+        assert native["metrics"]["confidence.validation.bound_binder.plddt"] == 82.0
+        assert native["metrics"]["confidence.validation.interface.mean_pae"] == 5.2
+        assert native["metrics"][rmsd_field] == 2.3
+        assert native["provenance"]["confidence.validation.interface.mean_pae"]["method"]
+        if has_iptm:
+            assert native["metrics"]["confidence.validation.complex.iptm"] == .72
+        if tool == "proteina_complexa":
+            assert native["metrics"]["interface.ipsae.minimum"] == .41
+
+
+def test_tool_scoped_measurement_value_wins_when_equivalent_aliases_are_present():
+    row = candidate_output({
+        "source_tool": "pxdesign", "stage": "complex_refolding",
+        # PXDesign's engine-scoped interface PAE takes precedence over the
+        # generic binder_pae alias when the source values agree within rounding.
+        "metrics": {"binder_pae": 5.2, "ipae": 5.200000005},
+    })
+    field = "confidence.validation.interface.mean_pae"
+    assert row["metrics"][field] == 5.200000005
+    assert row["provenance"][field]["method"] == "PXDesign native AF2-IG"
+
+
 def test_rfd4_oracle_aliases_preserve_native_scale_and_require_rfd4_generation():
     native = {"oracle.overall_plddt": 83.5, "oracle.overall_pae": 3.4178,
               "oracle.overall_ptm": 45.0, "oracle.plddt_coi": 83.5,

@@ -142,6 +142,134 @@ def test_shared_objective_normalizes_two_generator_branches_with_common_target_a
         graph.validate_graph(edited)
 
 
+@pytest.mark.parametrize("mode,kinds", [
+    ("native_complete", ("bindcraft2", "boltzgen")),
+    ("native_comparative", ("bindcraft2", "pxdesign_pipeline")),
+    ("modular_design", ("rfd3", "genie3")),
+])
+def test_generated_shared_objective_accepts_registered_fixed_size_native_branches(mode, kinds):
+    target = node("target", "target")
+    branches = [node(kind, f"design-{index}") for index, kind in enumerate(kinds)]
+    results = node("results", "results")
+    data = {
+        "schema_version": graph.SCHEMA, "id": "f" * 32, "name": "Generated objective",
+        "workflow_mode": mode, "nodes": [target, *branches, results],
+        "edges": [edge("target", branch["id"]) for branch in branches]
+                + [edge(branch["id"], "results") for branch in branches],
+        "shared_campaign": {
+            "enabled": True, "objective_type": "generated",
+            "generator_nodes": [branch["id"] for branch in branches],
+            "generated_target": 2, "max_attempts": 20,
+            "max_concurrent_jobs": 4, "max_concurrent_generation_jobs": 3,
+            "max_concurrent_validations": 2, "validation_stages": [],
+        },
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+    validated = graph.validate_graph(data)["graph"]
+    assert validated["shared_campaign"]["objective_type"] == "generated"
+    assert validated["shared_campaign"]["generated_target"] == 2
+    assert validated["shared_campaign"]["accepted_target"] is None
+    assert validated["shared_campaign"]["generator_nodes"] == [branch["id"] for branch in branches]
+
+
+def test_generated_campaign_runs_filters_reviews_and_exports_through_graph_results(
+    tmp_path, monkeypatch, design_source_factory,
+):
+    from mn_molecular_design_studio import candidate_pipeline, candidate_sets
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json
+    from mn_molecular_design_studio.workflow_modes import capability
+    from mn_molecular_design_studio import workspace
+
+    target_run, _ = design_source_factory(tmp_path / 'target-source')
+    parent = tmp_path / 'generated-campaign'
+    parent.mkdir()
+    write_json(parent / 'metadata.json', {'status': 'queued', 'job_type': 'visual_pipeline'})
+    write_json(parent / 'input.json', {'params': {'pipeline_name': 'Generated PD-L1 fixture'}})
+    monkeypatch.setattr(graph, 'app_home', lambda: tmp_path / 'studio-home')
+    monkeypatch.setattr(workspace, 'mark_studio_job', lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, 'create_job', lambda *args, **kwargs: SimpleNamespace(run_dir=parent))
+    monkeypatch.setattr(candidate_pipeline, 'preflight', lambda *args, **kwargs: None)
+
+    target = node('target', 'target')
+    target['data']['params'].update(target_pdb=str(target_run / 'designed.cif'), target_chains='A')
+    generators = [node(kind, identifier) for kind, identifier in (
+        ('rfd3', 'generator-rfd3'), ('genie3', 'generator-genie3'),
+    )]
+    for generator in generators:
+        count_field = capability(generator['data']['kind'])['design_count_field']
+        generator['data']['params'][count_field] = 2
+    collection = node('candidate_merge', 'collection')
+    scientific_filter = node('shared_filter', 'scientific-filter')
+    scientific_filter['data']['params']['rules'] = [{
+        'field': 'common.confidence.generator.complex.iptm', 'operator': '>=', 'value': 0.6,
+    }]
+    results = node('results', 'results')
+    graph_data = {
+        'schema_version': graph.SCHEMA, 'id': 'a' * 32, 'name': 'Generated PD-L1 fixture',
+        'workflow_mode': 'modular_design',
+        'nodes': [target, *generators, collection, scientific_filter, results],
+        'edges': [*(edge('target', generator['id']) for generator in generators),
+                  *(edge(generator['id'], 'collection') for generator in generators),
+                  edge('collection', 'scientific-filter'), edge('scientific-filter', 'results')],
+        'shared_campaign': {
+            'enabled': True, 'objective_type': 'generated',
+            'generator_nodes': [generator['id'] for generator in generators],
+            'generated_target': 4, 'max_attempts': 4,
+            'max_concurrent_jobs': 2, 'max_concurrent_generation_jobs': 2,
+            'max_concurrent_validations': 1, 'validation_stages': [],
+            'generator_limits': {generator['id']: {'target_count': 2} for generator in generators},
+        },
+        'viewport': {'x': 0, 'y': 0, 'zoom': 1},
+    }
+    submissions = []
+
+    def submit(request, graph_parent, branch, **kwargs):
+        kind = branch['data']['kind']
+        outputs = target_run / ('native-output-' + branch['id'])
+        (outputs / 'artifacts/normalized_candidates').mkdir(parents=True)
+        native_rows = [{
+            'candidate_id': f"{branch['id']}-native-{index}", 'source_tool': capability(kind)['tool'],
+            'stage': 'generation.backbone_sequence', 'binder_sequence': 'KLMNP',
+            'complex_pdb': str(target_run / 'designed.cif'), 'target_pdb': str(target_run / 'designed.cif'),
+            'target_chains': ['A'], 'binder_chains': ['B'],
+            'metrics': {'native_pass_filters': True, 'iptm': iptm}, 'raw_metadata': {},
+        } for index, iptm in enumerate((0.85, 0.35))]
+        (outputs / 'artifacts/normalized_candidates/candidates.jsonl').write_text(
+            ''.join(json.dumps(row) + '\n' for row in native_rows))
+        write_json(outputs / 'metadata.json', {'status': 'completed', 'tool': capability(kind)['tool'],
+            'job_code': f'{kind}-1', 'pipeline_parent_run_dir': str(graph_parent)})
+        write_json(outputs / 'input.json', {'params': request['parameters']})
+        write_json(outputs / 'result.json', {'success': True, 'metrics': {'candidate_count': 2}})
+        submissions.append(branch['id'])
+        return outputs
+
+    monkeypatch.setattr(runner, '_submit', submit)
+
+    run = runner.run_graph_pipeline(graph_data, 'Generated PD-L1 fixture', 'owner', 'project', reuse_completed=False)
+    result = read_json(run / 'result.json')
+    ledger = read_json(run / 'artifacts/shared_campaign/ledger.json')
+    summary = result['outputs']['workflow_summary']['shared_campaign']
+    rows = result['outputs']['candidates']
+    assert result['success'] is True
+    assert len(rows) == 4  # Failed candidates remain in review Results.
+    assert set(submissions) == {generator['id'] for generator in generators}
+    assert summary['generated_designs'] == 4 and summary['status'] == 'target_reached'
+    assert summary['generated_native_pass'] == 4
+    assert summary['scientifically_passing_designs'] == 2
+    assert summary['scientifically_rejected_designs'] == 2
+    assert summary['scheduler_jobs'] == 2 and summary['scheduler_jobs_active'] == 0
+    assert summary['compute_seconds'] is None
+    assert len(ledger['participants']) == 4 and len(ledger['evaluations']) == 4
+    for generator in generators:
+        branch_summary = summary['per_generator'][generator['id']]
+        assert branch_summary['candidates_generated'] == 2
+        assert branch_summary['scientifically_passing_designs'] == 1
+        assert branch_summary['scientifically_rejected_designs'] == 1
+    assert all(candidate_sets.metadata(row)['shared_filter']['status'] in {'passed', 'failed'} for row in rows)
+    assert (run / 'artifacts/normalized_candidates/final_evidence.csv').is_file()
+    assert (run / 'artifacts/candidate_set/manifest.json').is_file()
+
+
 def test_shared_objective_rejects_different_target_and_incompatible_downstream_policy():
     from mn_molecular_design_studio.distributed_campaign_config_ui import _default_validation_stages
 
@@ -795,6 +923,26 @@ render_pipeline_builder(owner_id="test-user",project_selector=lambda _:None,
 ''').run()
     assert not app.exception
     assert any("Choose a project" in c.value for c in app.info)
+
+
+def test_canvas_edits_preserve_trusted_parameters_for_every_tool_kind():
+    from mn_molecular_design_studio import candidate_pipeline, pipeline_graph_ui
+
+    cases = [
+        (candidate_pipeline.new_pipeline(['rfd3'], mode='modular_design'), 'rfd3', 'seed', 11, 99),
+        (candidate_pipeline.new_pipeline(['boltzgen'], mode='native_complete'), 'boltzgen', 'num_designs', 3, 77),
+    ]
+    for graph_data, kind, field_name, trusted_value, component_value in cases:
+        target = next(node for node in graph_data['nodes'] if node['data']['kind'] == 'target')
+        target['data']['params']['target_pdb'] = '/tmp/trusted-pdl1-target.pdb'
+        design = next(node for node in graph_data['nodes'] if node['data']['kind'] == kind)
+        design['data']['params'][field_name] = trusted_value
+        component_graph = copy.deepcopy(graph_data)
+        next(node for node in component_graph['nodes'] if node['data']['kind'] == 'target')['data']['params']['target_pdb'] = '/etc/passwd'
+        next(node for node in component_graph['nodes'] if node['data']['kind'] == kind)['data']['params'][field_name] = component_value
+        restored = pipeline_graph_ui._restore_component_parameters(component_graph, graph_data)
+        assert next(node for node in restored['nodes'] if node['data']['kind'] == 'target')['data']['params']['target_pdb'] == '/tmp/trusted-pdl1-target.pdb'
+        assert next(node for node in restored['nodes'] if node['data']['kind'] == kind)['data']['params'][field_name] == trusted_value
 
 
 def test_api_address_persists_when_saving_other_workspace_settings(tmp_path):

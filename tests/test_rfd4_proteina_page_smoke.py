@@ -26,8 +26,8 @@ ui.user_input_root=lambda owner:Path('/tmp/rfd4-proteina-page-smoke')/owner
 
 
 def pills(app, key: str):
-    """Find a Streamlit pill group through AppTest's generic element query."""
-    for element in app.get("pills"):
+    """Find a Streamlit pill group through AppTest's button-group query."""
+    for element in app.get("button_group"):
         if element.key == key:
             return element
     raise AssertionError(f"No pills widget found with key {key!r}")
@@ -48,6 +48,71 @@ def test_each_design_task_page_renders(task):
         # Tasks that need an uploaded structure, sequence, or motif should
         # still render their controls while keeping actions disabled.
         assert isinstance(validate.disabled, bool)
+
+
+def test_idr_sequence_only_form_submits_native_condition_spec(tmp_path):
+    source = f'''from pathlib import Path
+import streamlit as st
+from mn_molecular_design_studio import rfd4_proteina_ui as ui
+ui.user_input_root=lambda owner:Path({str(tmp_path)!r})/owner/'inputs'
+st.session_state['submitted']=[]
+def capture(*args): st.session_state['submitted'].append(args)
+ui.render_setup({{}},owner_id='idr-page-user',project_selector=lambda _: 'project-idr',submit=capture)
+'''
+    app = AppTest.from_string(source).run()
+    pills(app, "rfd4-task-pills").set_value("idr_peptide_binder").run()
+    app.text_area(key="rfd4-idr-preview-fasta").set_value(">target_idr\nACDEFGHIKLMNPQRSTVWY").run()
+    app.text_input(key="rfd4-idr-preview-hotspots").set_value("A5, A8-12").run()
+    assert not app.exception
+    assert not app.button(key="rfd4-validate-prepare").disabled
+    assert not app.button(key="rfd4-submit").disabled
+    app.button(key="rfd4-submit").click().run()
+    assert not app.exception
+    _schema, workflow, parameters, project, _options, _title = app.session_state["submitted"][0]
+    assert workflow == "design.rfd4_proteina"
+    assert project == "project-idr"
+    assert parameters["task"] == "protein_binder"
+    assert parameters["input_mode"] == "condition_spec"
+    assert parameters["target_chains"] == ["A"]
+    assert parameters["target_structure"] == parameters["input_files"][0]
+    assert "C_SEQ" in parameters["condition_spec"]
+    assert "C_HOT" in parameters["condition_spec"]
+    assert "C_CRD:" not in parameters["condition_spec"]
+    assert "C_CRDGRP:" not in parameters["condition_spec"]
+
+
+def test_idr_condition_spec_builder_keeps_sequence_and_hotspots_without_coordinate_conditions():
+    import yaml
+
+    from mn_molecular_design_studio import rfd4_proteina_input as idr_inputs
+
+    sequence = idr_inputs.parse_idr_fasta(">idR target\nACDEFGHIKLMNPQRSTVWY")
+    spec = yaml.safe_load(idr_inputs.idr_binder_condition_spec(
+        sequence, binder_length_min=70, binder_length_max=110, hotspots="A5,A8-12"
+    ))["idr_peptide_binder"]
+    assert spec["input"] == "target.cif"
+    assert spec["contig"] == "70-110, /0, A1-20"
+    assert spec["conditions"]["C_SEQ"][True] == [{"select": "sel('A')"}]
+    assert spec["conditions"]["C_HOT"][True] == [
+        {"select": "sel('A/*/5')"}, {"select": "sel('A/*/[8-12]')"}
+    ]
+    assert not ({"C_CRD", "C_CRDGRP"} & set(spec["conditions"]))
+
+
+def test_idr_sequence_carrier_uses_extended_backbone_geometry(tmp_path):
+    import numpy as np
+
+    from mn_molecular_design_studio import rfd4_proteina_input as idr_inputs
+    from mn_molecular_design_studio.design_validation import protein_chains, read_structure, sequence
+
+    path = idr_inputs.write_idr_sequence_carrier("ACDEFGHIKL", tmp_path / "target.cif")
+    structure = read_structure(path)
+    chains = protein_chains(structure)
+    assert sequence(chains["A"]) == "ACDEFGHIKL"
+    residues = list(chains["A"])
+    assert len(residues) == 10
+    for left, right in zip(residues, residues[1:]):
+        assert np.linalg.norm(left["C"].coord - right["N"].coord) == pytest.approx(1.329, abs=0.01)
 
 
 @pytest.mark.parametrize("operation", list(inputs.OPERATIONS))
