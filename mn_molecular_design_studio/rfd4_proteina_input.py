@@ -83,6 +83,57 @@ def _as_safe_yaml(payload: object) -> str:
     return yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, width=1000)
 
 
+def validate_campaign_inputs(parameters: dict[str, Any]) -> int:
+    """Validate one RFD4 protein-binder input for attempt-based campaigns.
+
+    Guided and condition-spec inputs are native RFD4 modes. Each campaign
+    attempt must carry exactly one named condition-spec design against the
+    selected target so retry and candidate accounting stay one-to-one.
+    """
+    task = str(parameters.get("task") or "protein_binder")
+    mode = str(parameters.get("input_mode") or "guided")
+    if task != "protein_binder" or mode not in {"guided", "guided_binder", "condition_spec"}:
+        raise ValueError("RFD4 campaigns require one protein-binder design using a guided or condition-spec input.")
+    target_value = parameters.get("target_structure")
+    if not target_value:
+        raise ValueError("RFD4 campaigns require one target structure.")
+    target_name = Path(str(target_value)).expanduser().name
+    if not target_name:
+        raise ValueError("RFD4 campaigns require a named target structure file.")
+    if not parameters.get("target_chains"):
+        raise ValueError("RFD4 campaigns require explicit target-chain identities for candidate verification.")
+    if parameters.get("avoid_structures") or parameters.get("also_bind_structures") or parameters.get("protein_sequences"):
+        raise ValueError("RFD4 campaigns currently support one target without secondary inputs.")
+
+    input_files = [Path(str(value)).expanduser() for value in parameters.get("input_files") or []]
+    if mode in {"guided", "guided_binder"}:
+        if input_files:
+            raise ValueError("Guided RFD4 campaigns accept the target through target_structure only.")
+        return 1
+
+    # Condition-spec references resolve by basename from staged native inputs.
+    if any(path.name != target_name for path in input_files):
+        raise ValueError("RFD4 condition-spec campaigns require one target structure and no secondary input files.")
+    try:
+        spec = yaml.safe_load(str(parameters.get("condition_spec") or ""))
+    except yaml.YAMLError as exc:
+        raise ValueError("RFD4 campaign condition specification is invalid YAML/JSON.") from exc
+    if not isinstance(spec, dict) or not spec:
+        raise ValueError("RFD4 condition-spec campaigns require a nonempty condition specification.")
+    design_names = [name for name in spec if name != "global_args"]
+    if len(design_names) != 1:
+        raise ValueError("Each RFD4 campaign attempt must contain exactly one named condition-spec design.")
+    global_args = spec.get("global_args") or {}
+    design = spec[design_names[0]]
+    if not isinstance(global_args, dict) or not isinstance(design, dict):
+        raise ValueError("RFD4 campaign condition-spec entries must be mappings.")
+    input_value = design.get("input", global_args.get("input"))
+    references = input_value if isinstance(input_value, list) else [input_value]
+    if not references or any(not isinstance(value, str) or Path(value).name != target_name for value in references):
+        raise ValueError("RFD4 campaign condition specifications must reference only the selected target structure.")
+    return 1
+
+
 def _cif_label_mapping(path: Path) -> tuple[dict[str, str], dict[tuple[str, int], int]]:
     """Map author chain/residue IDs to the label IDs RFD4 selectors consume."""
     import gemmi
