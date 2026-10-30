@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
-from mn_molecular_design_studio.engine.workflow_engine.core.jobs import utc_now
+from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json_raw, utc_now
 from .execution_job_ledger import (
     ExecutionJobLedgerMixin, check_contract, reserve, observe_single_attempt,
     record_lease, _execution, _result, _retry, _identity_update, _observe_worker_timing,
@@ -307,10 +307,9 @@ def _shared_objective_runtime(parent_run_dir: Path, config: dict[str, Any]):
     scope = config.get("_shared_objective")
     if not scope:
         return None, None
-    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
     from mn_molecular_design_studio.engine.workflow_engine.workflows.shared_campaign import SharedCampaignLedger
 
-    metadata = read_json(parent_run_dir / "metadata.json")
+    metadata = read_json_raw(parent_run_dir / "metadata.json")
     graph_parent = Path(str(metadata.get("pipeline_parent_run_dir") or "")).expanduser()
     if not graph_parent.is_absolute() or not graph_parent.is_dir():
         raise ValueError("Shared objectives can run only as a child of a Studio graph campaign.")
@@ -989,10 +988,8 @@ def _peer_campaign_mode(config: dict[str, Any]) -> bool:
 
 def _campaign_actor(parent_run_dir: Path) -> tuple[str, str, bool]:
     """Resolve the campaign owner/project from durable metadata or its API marker."""
-    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
-
-    metadata = read_json(Path(parent_run_dir) / "metadata.json")
-    marker = read_json(Path(parent_run_dir) / "molecular_design_studio.json")
+    metadata = read_json_raw(Path(parent_run_dir) / "metadata.json")
+    marker = read_json_raw(Path(parent_run_dir) / "molecular_design_studio.json")
     owner_id = str(metadata.get("studio_owner_id") or marker.get("studio_owner_id") or "")
     project_id = str(metadata.get("studio_project_id") or metadata.get("project_id") or marker.get("project_id") or "")
     if not owner_id or not project_id:
@@ -1047,7 +1044,7 @@ def _submit_rfd4_peer_attempt(
         derived = {"targets", "project_folder", "campaign_name", "number_of_final_designs",
                    "max_trajectories", "campaign_seed", "workers_per_gpu", "resume", "trajectory_only"}
         parameters["engine_overrides"] = {key: value for key, value in native_settings.items() if key not in derived}
-    metadata = read_json(child_run_dir / "metadata.json")
+    metadata = read_json_raw(child_run_dir / "metadata.json")
     resources = dict(metadata.get("resource_request") or {})
     # The scheduler's boolean GPU reservation marker is internal metadata;
     # the remote workflow API infers GPU use from the workflow and device.
@@ -1214,7 +1211,7 @@ def _materialize_rfd4_peer_output(
     normalized = child_run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl"
     normalized.parent.mkdir(parents=True, exist_ok=True)
     normalized.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
-    remote_metadata = read_json(collected / "metadata.json")
+    remote_metadata = read_json_raw(collected / "metadata.json")
     remote_result = read_json(collected / "result.json")
     if remote_metadata.get("status") != "completed" or remote_result.get("success") is not True:
         raise RuntimeError("Remote completion disagrees with the transferred RFD4 result.")
@@ -1243,7 +1240,7 @@ def _materialize_rfd4_peer_output(
         "output_transfer_bytes": peer.get("output_transfer_bytes", 0),
         "transfers": peer.get("transfers", {}),
     })
-    local_metadata = read_json(child_run_dir / "metadata.json")
+    local_metadata = read_json_raw(child_run_dir / "metadata.json")
     local_metadata.update(
         status="completed",
         cluster_job_id=job_id,
@@ -1285,7 +1282,7 @@ def _materialize_bindcraft2_peer_output(parent_run_dir, ledger, attempt, child_r
                       child_run_dir=str(child_run_dir), worker_node_id=remote_job.get("node_id"))
     if state_path is None:
         return False
-    remote_metadata = read_json(collected / "metadata.json")
+    remote_metadata = read_json_raw(collected / "metadata.json")
     remote_result = read_json(collected / "result.json")
     if remote_metadata.get("status") != "completed" or remote_result.get("success") is not True:
         raise RuntimeError("Remote BindCraft2 completion disagrees with its transferred result.")
@@ -1310,7 +1307,7 @@ def _materialize_bindcraft2_peer_output(parent_run_dir, ledger, attempt, child_r
     write_json(child_run_dir / "result.json", remote_result)
     if (collected / "native_execution.json").is_file():
         shutil.copy2(collected / "native_execution.json", child_run_dir / "native_execution.json")
-    metadata = read_json(child_run_dir / "metadata.json")
+    metadata = read_json_raw(child_run_dir / "metadata.json")
     allocation = remote_metadata.get("resource_allocation") or {}
     metadata.update(status="completed", cluster_job_id=peer["cluster_job_id"],
                     execution_node_id=remote_job.get("node_id"),
@@ -1397,7 +1394,7 @@ def _native_candidate_rows(
             "BindCraft2 native acceptance does not reconcile with normalized candidates "
             f"for {child_run_dir.name}: state={native_state.get('accepted')} candidates={len(passing)}."
         )
-    metadata = read_json(child_run_dir / "metadata.json")
+    metadata = read_json_raw(child_run_dir / "metadata.json")
     allocation = metadata.get("resource_allocation") if isinstance(metadata.get("resource_allocation"), dict) else {}
     params = read_json(child_run_dir / "input.json").get("params") or {}
     expected_target_chains = [str(value) for value in params.get("target_chains") or []]
@@ -1506,7 +1503,7 @@ def _rfd4_candidate_rows(
         if not label_id or label_id in selected_target_sequences:
             raise RuntimeError(f"RFD4 attempt {attempt['attempt_id']} has an ambiguous source-to-label target-chain mapping.")
         selected_target_sequences[label_id] = (source_id, sequence(target_chains[source_id]))
-    metadata = read_json(child_run_dir / "metadata.json")
+    metadata = read_json_raw(child_run_dir / "metadata.json")
     allocation = metadata.get("resource_allocation") if isinstance(metadata.get("resource_allocation"), dict) else {}
     result: list[dict[str, Any]] = []
     seen_native_ids: set[str] = set()
@@ -1685,7 +1682,7 @@ def _create_rfd4_attempt_child(
     if config.get("remote_artifact_policy") == "defer_generated":
         from mn_molecular_design_studio.collection_policy import set_run_policy
         set_run_policy(child_run_dir, "manual")
-    metadata = read_json(child_run_dir / "metadata.json")
+    metadata = read_json_raw(child_run_dir / "metadata.json")
     metadata.update(
         distributed_campaign_id=campaign_id,
         distributed_attempt_id=attempt["attempt_id"],
@@ -1738,7 +1735,7 @@ def _repair_rfd4_attempt_child(
     )
     child_payload["params"] = params
     write_json(child_run_dir / "input.json", child_payload)
-    metadata = read_json(child_run_dir / "metadata.json")
+    metadata = read_json_raw(child_run_dir / "metadata.json")
     resource_request = metadata.get("resource_request") if isinstance(metadata.get("resource_request"), dict) else {}
     campaign_id = CampaignLedger(_campaign_ledger_path(parent_run_dir)).snapshot()["campaign_id"]
     mark_internal_job(
@@ -1746,7 +1743,7 @@ def _repair_rfd4_attempt_child(
         parent_task_group=parent_run_dir.parent.name,
         role="distributed_rfd4_attempt", engine="rfd4_proteina",
     )
-    metadata = read_json(child_run_dir / "metadata.json")
+    metadata = read_json_raw(child_run_dir / "metadata.json")
     metadata.update(
         distributed_campaign_id=campaign_id,
         distributed_attempt_id=attempt["attempt_id"],
@@ -1865,7 +1862,7 @@ def _create_attempt_child(
             shutil.copyfile(source, child_raw / filename)
     settings = _bounded_child_settings(parent_raw, child_params, attempt)
     write_json(child_raw / "settings.json", settings)
-    metadata = read_json(child_run_dir / "metadata.json")
+    metadata = read_json_raw(child_run_dir / "metadata.json")
     metadata.update(
         distributed_campaign_id=campaign_id,
         distributed_attempt_id=attempt["attempt_id"],
@@ -1948,7 +1945,7 @@ def _repair_attempt_child(
         parent_task_group=parent_run_dir.parent.name,
         role="distributed_bindcraft2_attempt", engine="bindcraft2",
     )
-    metadata = read_json(child_run_dir / "metadata.json")
+    metadata = read_json_raw(child_run_dir / "metadata.json")
     metadata.update(
         distributed_campaign_id=campaign_id,
         distributed_attempt_id=attempt["attempt_id"],
@@ -1982,7 +1979,6 @@ def _repair_attempt_child(
 
 
 def _find_unlinked_children(ledger: CampaignLedger) -> dict[str, Path]:
-    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
     from mn_molecular_design_studio.engine.workflow_engine.runtime import runs_root
 
     state = ledger.snapshot()
@@ -1999,7 +1995,7 @@ def _find_unlinked_children(ledger: CampaignLedger) -> dict[str, Path]:
     for child in design_root.iterdir():
         if not child.is_dir():
             continue
-        metadata = read_json(child / "metadata.json")
+        metadata = read_json_raw(child / "metadata.json")
         if metadata.get("distributed_campaign_id") != state["campaign_id"]:
             continue
         attempt_id = str(metadata.get("distributed_attempt_id") or "")
@@ -2083,8 +2079,8 @@ def _reconcile_attempts(
         elif not (child / "worker_request.json").is_file():
             _repair_attempt_child(parent_run_dir, child, attempt, config)
             ledger.transition(attempt_id, "queued", child_run_dir=str(child))
-        elif str(read_json(child / "metadata.json").get("status") or "") == "queued":
-            dispatch_meta = read_json(child / "metadata.json")
+        elif str(read_json_raw(child / "metadata.json").get("status") or "") == "queued":
+            dispatch_meta = read_json_raw(child / "metadata.json")
             if not dispatch_meta.get("scheduler_dispatch_requested") and not dispatch_meta.get("scheduler_job_id"):
                 if dispatch_meta.get("cluster_remote"):
                     _submit_rfd4_peer_attempt(parent_run_dir, ledger, attempt, child)
@@ -2122,7 +2118,7 @@ def _reconcile_attempts(
                 active.append(latest_attempt)
             continue
         attempt = ledger.snapshot()["attempts"].get(attempt_id, attempt)
-        child_metadata = read_json(child / "metadata.json")
+        child_metadata = read_json_raw(child / "metadata.json")
         if (
             attempt.get("status") not in {"completed", "failed", "interrupted", "cancelled", "not_started"}
             and (attempt.get("cluster_submission") or child_metadata.get("cluster_remote"))
@@ -2282,11 +2278,11 @@ def _reconcile_attempts(
                     "wait_reason": peer.get("wait_reason"),
                 })
                 continue
-        metadata = read_json(child / "metadata.json")
+        metadata = read_json_raw(child / "metadata.json")
         ledger.observe_worker_metadata(attempt_id, metadata)
         status = str(metadata.get("status") or "unknown")
-        result = read_json(child / "result.json")
-        if status in {"completed", "failed", "cancelled"}:
+        result = read_json_raw(child / "result.json")
+        if status in {"completed", "failed", "cancelled"} and attempt.get("status") != "completed":
             ledger.record_compute(attempt_id, child.name, _worker_gpu_seconds(metadata))
         if status in {"queued", "preparing", "running"}:
             if attempt["status"] != status and attempt["status"] in {"authorized", "queued", "running"}:
@@ -2358,7 +2354,7 @@ def _reconcile_attempts(
                     ledger.transition(attempt_id, "queued", child_run_dir=str(child))
                 elif attempt["status"] != "queued":
                     ledger.retry(attempt_id, child_run_dir=str(child))
-                metadata = read_json(child / "metadata.json")
+                metadata = read_json_raw(child / "metadata.json")
                 if metadata.get("status") in {"failed", "cancelled", "paused", "holding"}:
                     resume_job(child, gpu_device=_gpu_for_attempt(config, int(attempt["ordinal"])))
                 active.append({**attempt, "worker_status": "queued", "retrying": True})
@@ -2419,7 +2415,7 @@ def _sync_parent_results(
 
     state = ledger.snapshot()
     shared, _generator_node = _shared_objective_runtime(parent_run_dir, state.get("config", {}))
-    metadata = read_json(parent_run_dir / "metadata.json")
+    metadata = read_json_raw(parent_run_dir / "metadata.json")
     old_ids = metadata.get("distributed_candidate_ids") or []
     candidate_ids = [str(row.get("candidate_id") or "") for row in candidates]
     enriched = []
@@ -2643,10 +2639,10 @@ def _dispatch_attempts(
             )
             child_text = ledger.snapshot()["attempts"][attempt["attempt_id"]].get("child_run_dir")
             if child_text:
-                from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json
+                from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json
 
                 child = Path(child_text)
-                metadata = read_json(child / "metadata.json")
+                metadata = read_json_raw(child / "metadata.json")
                 if metadata.get("status") in {"queued", "preparing"}:
                     metadata.update(status="failed", worker_error=failure, completed_at=utc_now())
                     write_json(child / "metadata.json", metadata)
@@ -2709,9 +2705,7 @@ def _campaign_compute_seconds(
         child = children.get(str(attempt.get("attempt_id") or ""))
         if child is None:
             continue
-        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
-
-        metadata = read_json(child / "metadata.json")
+        metadata = read_json_raw(child / "metadata.json")
         if metadata.get("status") in {"queued", "preparing", "running"}:
             total += _worker_gpu_seconds(metadata, include_active=True)
     state = ledger.snapshot()
@@ -2724,9 +2718,7 @@ def _campaign_compute_seconds(
             run_dir = Path(run_text).expanduser()
             if not run_dir.is_dir():
                 continue
-            from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
-
-            metadata = read_json(run_dir / "metadata.json")
+            metadata = read_json_raw(run_dir / "metadata.json")
             if metadata.get("status") in {"queued", "preparing", "running"}:
                 total += _worker_gpu_seconds(metadata, include_active=True)
     return total
@@ -2736,19 +2728,18 @@ def _shared_campaign_compute_seconds(
     ledger: CampaignLedger, children: dict[str, Path], active: list[dict[str, Any]],
 ) -> float:
     total = _campaign_compute_seconds(ledger, children, active)
-    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
     state = ledger.snapshot()
     for candidate in state.get("candidates", {}).values():
         for stage in (candidate.get("validation_stages") or {}).values():
             if stage.get("status") not in {"queued", "preparing", "running", "submitting"} or not stage.get("run_dir"):
                 continue
-            metadata = read_json(Path(stage["run_dir"]) / "metadata.json")
+            metadata = read_json_raw(Path(stage["run_dir"]) / "metadata.json")
             total += _worker_gpu_seconds(metadata, include_active=True)
     return total
 
 
 def _cancel_queued_attempts(ledger: CampaignLedger, children: dict[str, Path], reason: str) -> None:
-    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, stop_job
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import stop_job
 
     state = ledger.snapshot()
     for attempt_id, attempt in state["attempts"].items():
@@ -2756,7 +2747,7 @@ def _cancel_queued_attempts(ledger: CampaignLedger, children: dict[str, Path], r
             continue
         child = children.get(attempt_id)
         if child is not None:
-            metadata = read_json(child / "metadata.json")
+            metadata = read_json_raw(child / "metadata.json")
             if metadata.get("result_collection_pending") or metadata.get("status") == "collecting":
                 # The native worker has finished. Keep draining verified output
                 # after the generation deadline instead of cancelling the proxy.
@@ -2775,7 +2766,7 @@ def _cancel_campaign_attempt(
     reason: str,
 ) -> None:
     """Cancel the originating peer job when an attempt has been dispatched remotely."""
-    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json, stop_job
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json, stop_job
 
     peer = attempt.get("cluster_submission") if isinstance(attempt.get("cluster_submission"), dict) else {}
     if peer.get("cluster_job_id"):
@@ -2784,7 +2775,7 @@ def _cancel_campaign_attempt(
         parent = Path(child).parent
         # Attempt runs live below the same results root as their campaign
         # parent, recorded durably in their own metadata.
-        metadata = read_json(child / "metadata.json")
+        metadata = read_json_raw(child / "metadata.json")
         parent_text = str(metadata.get("parent_run_dir") or "")
         if parent_text:
             parent = Path(parent_text)
@@ -2802,17 +2793,17 @@ def _cancel_campaign_attempt(
                 peer, owner_id=owner_id, project_id=project_id,
                 allow_development=development_mode,
             )
-        current = read_json(child / "metadata.json")
+        current = read_json_raw(child / "metadata.json")
         current.update(status="cancelled", cancel_reason=reason, completed_at=utc_now())
         write_json(child / "metadata.json", current)
         return
-    metadata = read_json(child / "metadata.json")
+    metadata = read_json_raw(child / "metadata.json")
     if metadata.get("status") in {"queued", "preparing", "running"}:
         stop_job(child, reason)
 
 
 def _cancel_validation_runs(ledger: CampaignLedger, reason: str) -> None:
-    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, stop_job
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import stop_job
 
     state = ledger.snapshot()
     for candidate_id, candidate in state["candidates"].items():
@@ -2825,7 +2816,7 @@ def _cancel_validation_runs(ledger: CampaignLedger, reason: str) -> None:
             run_dir = Path(run_text).expanduser()
             if not run_dir.is_dir():
                 continue
-            status = str(read_json(run_dir / "metadata.json").get("status") or "")
+            status = str(read_json_raw(run_dir / "metadata.json").get("status") or "")
             if status in {"queued", "preparing", "running"}:
                 stop_job(run_dir, reason)
             if stage.get("status") in {"submitting", "queued", "preparing", "running"}:
@@ -3242,7 +3233,7 @@ def _drive_validation(
             if run_dir is None or not run_dir.exists():
                 run_dir = _validation_tagged_run(state["campaign_id"], candidate_id, stage_index)
             if run_dir is not None:
-                metadata = read_json(run_dir / "metadata.json")
+                metadata = read_json_raw(run_dir / "metadata.json")
                 worker_status = str(metadata.get("status") or "unknown")
                 if worker_status in {"queued", "preparing", "running"}:
                     _mark_validation_pending(ledger, candidate_id)
@@ -3673,7 +3664,7 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
             state = ledger.snapshot()
             if len(state["attempts"]) >= int(config["max_attempts"]):
                 state = ledger.mark_generation_budget_exhausted()
-            parent_metadata = read_json(parent_run_dir / "metadata.json")
+            parent_metadata = read_json_raw(parent_run_dir / "metadata.json")
             if state.get("termination_reason") == "failed":
                 raise RuntimeError(state.get("termination_detail") or "Campaign controller previously failed.")
             if parent_metadata.get("status") == "cancelled" or state.get("termination_reason") == "cancelled":
@@ -3884,7 +3875,7 @@ def cancel_distributed_campaign(parent_run_dir: Path, reason: str = "Campaign ca
     children = _attempt_child_paths(ledger)
     for attempt_id, child in children.items():
         attempt = ledger.snapshot()["attempts"].get(attempt_id, {})
-        status = str(read_json(child / "metadata.json").get("status") or "")
+        status = str(read_json_raw(child / "metadata.json").get("status") or "")
         if status in {"queued", "preparing", "running"}:
             _cancel_campaign_attempt(ledger, attempt, child, reason)
         if attempt.get("status") in {"authorized", "queued", "running"}:

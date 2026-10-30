@@ -1184,6 +1184,156 @@ def test_campaign_summary_reads_remote_child_metadata_without_resolving_cluster_
     assert summary["attempts"][0]["resource_allocation"] == {"gpu_device": "0"}
 
 
+def test_unlinked_child_discovery_keeps_peer_metadata_uris_opaque(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    root, _parent = _parent_run(tmp_path, monkeypatch, {})
+    campaign = CampaignLedger.create(
+        tmp_path / "campaign.json", {"accepted_target": 1, "max_attempts": 1},
+        campaign_id="unlinked-uri-campaign",
+    )
+    attempt = campaign.authorize(1, batch_id="batch")[0]
+    child = root / "design" / "recovered-child"
+    child.mkdir(parents=True)
+    jobs.write_json(child / "metadata.json", {
+        "distributed_campaign_id": "unlinked-uri-campaign",
+        "distributed_attempt_id": attempt["attempt_id"],
+        "run_dir": "cluster://remote-node/design/remote-run",
+        "result_path": "cluster://remote-node/design/remote-run/result.json",
+    })
+
+    assert distributed_campaign._find_unlinked_children(campaign) == {
+        attempt["attempt_id"]: child,
+    }
+
+
+def test_deferred_worker_reconciliation_keeps_peer_metadata_and_result_uris_opaque(
+    tmp_path, monkeypatch,
+):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    from mn_molecular_design_studio.cluster import candidate_batches
+
+    root, parent = _parent_run(tmp_path, monkeypatch, {
+        "generator_id": "rfd4_proteina", "accepted_target": 2, "max_attempts": 4,
+        "objective_type": "generated", "acceptance_level": "native",
+        "remote_artifact_policy": "defer_generated",
+    })
+    jobs.write_json(parent / "metadata.json", {
+        "studio_owner_id": "owner", "studio_project_id": "project",
+        "studio_development_mode": True,
+    })
+    config = distributed_campaign.validate_campaign_config({
+        "generator_id": "rfd4_proteina", "accepted_target": 2, "max_attempts": 4,
+        "objective_type": "generated", "acceptance_level": "native",
+        "remote_artifact_policy": "defer_generated",
+    })
+    campaign = CampaignLedger.create(
+        parent / "artifacts/distributed_campaign/ledger.json", config,
+        campaign_id="deferred-uri-campaign",
+    )
+    attempt = campaign.authorize(1, batch_id="remote-batch")[0]
+    child = root / "design" / "remote-child"
+    child.mkdir(parents=True)
+    jobs.write_json(child / "metadata.json", {
+        "status": "running", "cluster_remote": True,
+        "distributed_campaign_id": "deferred-uri-campaign",
+        "distributed_attempt_id": attempt["attempt_id"],
+        "resource_allocation": {"gpu_device": "0"},
+        "run_dir": "cluster://remote-node/design/remote-run",
+        "result_path": "cluster://remote-node/design/remote-run/result.json",
+    })
+    jobs.write_json(child / "result.json", {
+        "success": True,
+        "outputs": {"source_job": "cluster://remote-node/design/remote-run"},
+    })
+    peer = {
+        "cluster_job_id": "peer-job", "node_id": "remote-node",
+        "local_reference": "design/remote-run",
+        "candidate_summary": {
+            "candidate_count": 2, "eligible_count": 2,
+            "native_filter_counts": {"generated": 2},
+        },
+        "worker_metadata": {
+            "status": "completed", "gpu_seconds": 17,
+            "resource_allocation": {"gpu_device": "0"},
+        },
+    }
+    campaign.transition(
+        attempt["attempt_id"], "queued", child_run_dir=str(child),
+        cluster_submission={"cluster_job_id": "peer-job", "manifest": str(child / "peer.json")},
+    )
+    monkeypatch.setattr(candidate_batches, "poll_summary", lambda *_args, **_kwargs: ("completed", peer))
+
+    children, active, candidates = distributed_campaign._reconcile_attempts(campaign, parent, config)
+
+    assert children[attempt["attempt_id"]] == child
+    assert active == [] and candidates == []
+    assert campaign.counters()["generated_candidates"] == 2
+    receipt = next(iter(campaign.snapshot()["deferred_outputs"].values()))
+    assert receipt["evidence"]["transferred_candidate_data"] is False
+    assert receipt["evidence"]["candidate_count"] == 2
+
+    # A later controller pass reads the completed local proxy's count-only
+    # result, whose source reference deliberately remains a cluster:// URI.
+    _, active_again, candidates_again = distributed_campaign._reconcile_attempts(
+        campaign, parent, config,
+    )
+    assert active_again == [] and candidates_again == []
+
+
+def test_distributed_campaign_cancellation_handles_peer_uris_in_proxy_metadata(
+    tmp_path, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    from mn_molecular_design_studio.cluster import candidate_batches
+
+    root, parent = _parent_run(tmp_path, monkeypatch, {
+        "generator_id": "rfd4_proteina", "accepted_target": 1, "max_attempts": 1,
+        "objective_type": "generated", "acceptance_level": "native",
+        "remote_artifact_policy": "defer_generated",
+    })
+    jobs.write_json(parent / "metadata.json", {
+        "studio_owner_id": "owner", "studio_project_id": "project",
+        "studio_development_mode": True,
+    })
+    config = distributed_campaign.validate_campaign_config({
+        "generator_id": "rfd4_proteina", "accepted_target": 1, "max_attempts": 1,
+        "objective_type": "generated", "acceptance_level": "native",
+        "remote_artifact_policy": "defer_generated",
+    })
+    campaign = CampaignLedger.create(
+        parent / "artifacts/distributed_campaign/ledger.json", config,
+        campaign_id="cancel-uri-campaign",
+    )
+    attempt = campaign.authorize(1, batch_id="remote-batch")[0]
+    child = root / "design" / "remote-child"
+    child.mkdir(parents=True)
+    jobs.write_json(child / "metadata.json", {
+        "status": "running", "cluster_remote": True,
+        "parent_run_dir": str(parent),
+        "run_dir": "cluster://remote-node/design/remote-run",
+        "source_job": "cluster://remote-node/design/remote-run",
+    })
+    campaign.transition(
+        attempt["attempt_id"], "queued", child_run_dir=str(child),
+        cluster_submission={"cluster_job_id": "peer-job"},
+    )
+    cancelled = []
+    monkeypatch.setattr(candidate_batches, "actor", lambda *_args, **_kwargs: {"id": "owner"})
+    monkeypatch.setattr(candidate_batches, "Store", lambda: SimpleNamespace(
+        job=lambda *_args, **_kwargs: {"status": "running"},
+    ))
+    monkeypatch.setattr(candidate_batches, "cancel", lambda *args, **kwargs: cancelled.append((args, kwargs)))
+
+    distributed_campaign.cancel_distributed_campaign(parent, "test cancellation")
+
+    assert len(cancelled) == 1
+    assert jobs.read_json_raw(child / "metadata.json")["status"] == "cancelled"
+    assert campaign.snapshot()["attempts"][attempt["attempt_id"]]["status"] == "cancelled"
+
+
 def _controlled_workers(monkeypatch, root, design_source_factory, *, accepted):
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs
 
