@@ -62,6 +62,13 @@ def test_liveness_pulse_refreshes_node_without_running_catalog_dispatch(cluster,
     assert dispatches == []
 
 
+def test_agent_heartbeat_interval_stays_below_unreachable_threshold(monkeypatch):
+    agent = Agent()
+    monkeypatch.setattr(config, "load", lambda: {"heartbeat_seconds": 300})
+
+    assert agent._heartbeat_interval() == 15
+
+
 def test_worker_heartbeat_publishes_counts_without_candidate_identities_or_structures(tmp_path):
     run = tmp_path / "design" / "run-1"
     candidates = run / "artifacts/normalized_candidates"

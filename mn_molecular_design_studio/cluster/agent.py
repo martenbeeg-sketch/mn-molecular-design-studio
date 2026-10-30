@@ -276,7 +276,9 @@ class Agent:
 
     def _heartbeat_interval(self):
         try:
-            return max(5, min(300, int(config.load().get("heartbeat_seconds", 15))))
+            # Keep direct pulses comfortably below the 45-second unreachable
+            # threshold even if an older config requests a slower interval.
+            return max(5, min(15, int(config.load().get("heartbeat_seconds", 15))))
         except (TypeError, ValueError):
             return 15
 
