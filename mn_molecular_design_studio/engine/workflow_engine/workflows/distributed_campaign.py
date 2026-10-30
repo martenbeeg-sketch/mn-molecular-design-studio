@@ -2462,7 +2462,17 @@ def _sync_parent_results(
     attempts = []
     for attempt_id, attempt in sorted(state["attempts"].items(), key=lambda item: item[1]["ordinal"]):
         child = children.get(attempt_id)
-        child_metadata = read_json(child / "metadata.json") if child else {}
+        # Campaign child metadata may contain cluster:// paths belonging to a
+        # different workstation. This summary only needs scalar scheduling
+        # provenance, so read the stored JSON without resolving managed paths.
+        child_metadata = {}
+        if child:
+            try:
+                raw_metadata = json.loads((child / "metadata.json").read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                raw_metadata = {}
+            if isinstance(raw_metadata, dict):
+                child_metadata = raw_metadata
         attempts.append({
             "attempt_id": attempt_id,
             **({"execution_job_id": attempt["execution_job_id"], "native_status": attempt["native_status"]} if state["schema_version"] == 2 else {}),

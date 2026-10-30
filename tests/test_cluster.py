@@ -301,13 +301,13 @@ def test_missing_results_are_unavailable_without_erasing_completed_status(cluste
     assert store.job(jid, user)["availability"] == "online"
 
 
-def test_reference_probes_remain_until_agent_has_accepted_submission(cluster):
+def test_reference_probes_remain_after_submission_command_finishes(cluster):
     store, nodes, user, needs, _, request, _ = cluster
     store.submit(request, needs, user, origin_node=nodes[0]["node_id"], placement="local")
     command = store.claim(nodes[0]["node_id"])
     assert store.reference_probes() == needs["references"]
     store.finish(nodes[0]["node_id"], command["id"], command["lease_token"], error="Missing input")
-    assert store.reference_probes() == []
+    assert store.reference_probes() == needs["references"]
 
 
 def test_reference_probe_handles_symlinked_reference_directories(monkeypatch, tmp_path):
@@ -360,6 +360,24 @@ def test_lost_command_reply_is_reclaimed_only_by_original_node_with_fencing(clus
     store.finish(nodes[0]["node_id"], retry["id"], retry["lease_token"], {"job": {"task_group": "design", "run_id": "actual", "status": "queued", "run_dir": "/remote/results/actual"}})
     job = store.job(result["job"]["cluster_job_id"], user)
     assert job["node_id"] == nodes[0]["node_id"] and job["local_reference"] == "design/actual"
+
+
+def test_reference_probes_remain_available_after_a_workflow_is_accepted(cluster):
+    store, nodes, user, needs, _snapshot, request, _clock = cluster
+    submitted = store.submit(
+        request, needs, user, origin_node=nodes[0]["node_id"], placement="local",
+    )["job"]
+    command = store.claim(nodes[0]["node_id"])
+    assert store.reference_probes() == ["weights/model.pt"]
+
+    store.finish(
+        nodes[0]["node_id"], command["id"], command["lease_token"],
+        {"job": {"task_group": "design", "run_id": "accepted", "status": "queued",
+                 "run_dir": "/remote/results/design/accepted"}},
+    )
+
+    assert store.job(submitted["cluster_job_id"], user)["status"] == "queued"
+    assert store.reference_probes() == ["weights/model.pt"]
 
 
 def test_agent_receipt_prevents_duplicate_inference_after_lost_reply(cluster, monkeypatch):

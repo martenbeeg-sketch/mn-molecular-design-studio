@@ -1146,6 +1146,44 @@ def _parent_run(tmp_path, monkeypatch, config):
     return root, parent
 
 
+def test_campaign_summary_reads_remote_child_metadata_without_resolving_cluster_paths(
+    tmp_path, monkeypatch,
+):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    root, parent = _parent_run(tmp_path, monkeypatch, {
+        "generator_id": "rfd4_proteina", "accepted_target": 1, "max_attempts": 1,
+        "objective_type": "generated", "acceptance_level": "native",
+        "remote_artifact_policy": "defer_generated",
+    })
+    config = distributed_campaign.validate_campaign_config({
+        "generator_id": "rfd4_proteina", "accepted_target": 1, "max_attempts": 1,
+        "objective_type": "generated", "acceptance_level": "native",
+        "remote_artifact_policy": "defer_generated",
+    })
+    campaign = CampaignLedger.create(
+        parent / "artifacts/distributed_campaign/ledger.json", config,
+    )
+    attempt = campaign.authorize(1, batch_id="remote-batch")[0]
+    child = root / "design" / "remote-child"
+    child.mkdir(parents=True)
+    (child / "metadata.json").write_text(json.dumps({
+        "status": "completed", "scheduler_worker_id": "worker:0",
+        "resource_allocation": {"gpu_device": "0"},
+        "run_dir": "cluster://remote-node/design/remote-run",
+    }))
+    campaign.transition(
+        attempt["attempt_id"], "completed", child_run_dir=str(child),
+        worker_node_id="remote-node", resource_allocation={"gpu_device": "0"},
+    )
+
+    distributed_campaign._sync_parent_results(parent, campaign, {attempt["attempt_id"]: child}, [])
+
+    summary = jobs.read_json(parent / "artifacts/distributed_campaign/summary.json")
+    assert summary["attempts"][0]["worker"] == "worker:0"
+    assert summary["attempts"][0]["resource_allocation"] == {"gpu_device": "0"}
+
+
 def _controlled_workers(monkeypatch, root, design_source_factory, *, accepted):
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs
 

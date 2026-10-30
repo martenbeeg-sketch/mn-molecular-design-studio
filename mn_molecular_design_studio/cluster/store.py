@@ -857,5 +857,15 @@ class Store:
 
     def reference_probes(self):
         with self.connect() as db:
-            rows = db.execute("SELECT s.requirements FROM submissions s LEFT JOIN commands c ON c.id=s.command_id WHERE s.cancelled=0 AND (s.command_id IS NULL OR c.status IN ('queued','claimed'))").fetchall()
-        return sorted({p for row in rows for p in json.loads(row["requirements"]).get("references", [])})[:10000]
+            # A campaign submits follow-up workflows after prior commands have
+            # been accepted. Keep their checkpoint probes available so worker
+            # inventories do not forget those references between batches.
+            rows = db.execute(
+                "SELECT requirements FROM submissions WHERE cancelled=0 ORDER BY rowid DESC"
+            )
+            probes = set()
+            for row in rows:
+                probes.update(json.loads(row["requirements"]).get("references", []))
+                if len(probes) >= 10000:
+                    break
+        return sorted(probes)[:10000]
