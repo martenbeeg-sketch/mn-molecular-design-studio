@@ -301,13 +301,13 @@ def test_missing_results_are_unavailable_without_erasing_completed_status(cluste
     assert store.job(jid, user)["availability"] == "online"
 
 
-def test_reference_probes_remain_after_submission_command_finishes(cluster):
+def test_reference_probes_drop_after_a_submission_is_rejected(cluster):
     store, nodes, user, needs, _, request, _ = cluster
     store.submit(request, needs, user, origin_node=nodes[0]["node_id"], placement="local")
     command = store.claim(nodes[0]["node_id"])
     assert store.reference_probes() == needs["references"]
     store.finish(nodes[0]["node_id"], command["id"], command["lease_token"], error="Missing input")
-    assert store.reference_probes() == needs["references"]
+    assert store.reference_probes() == []
 
 
 def test_reference_probe_handles_symlinked_reference_directories(monkeypatch, tmp_path):
@@ -378,6 +378,42 @@ def test_reference_probes_remain_available_after_a_workflow_is_accepted(cluster)
 
     assert store.job(submitted["cluster_job_id"], user)["status"] == "queued"
     assert store.reference_probes() == ["weights/model.pt"]
+
+    store.heartbeat(nodes[0]["node_id"], _snapshot, [{
+        "cluster_job_id": submitted["cluster_job_id"], "task_group": "design", "run_id": "accepted",
+        "owner_id": user["id"], "project_id": "project-a", "status": "completed",
+    }])
+
+    assert store.reference_probes() == []
+
+
+def test_reference_fingerprint_cache_skips_unchanged_weights_and_refreshes_changes(
+    monkeypatch, tmp_path,
+):
+    from mn_molecular_design_studio import cache_provenance, runtime
+    from mn_molecular_design_studio.cluster import capabilities
+
+    root = tmp_path / "reference_files"
+    weight = root / "weights/model.pt"
+    weight.parent.mkdir(parents=True)
+    weight.write_bytes(b"checkpoint-v1")
+    monkeypatch.setattr(runtime, "reference_root", lambda: root)
+    original_digest = cache_provenance.file_digest
+    digests = []
+
+    def counted_digest(path):
+        digests.append(Path(path))
+        return original_digest(path)
+
+    monkeypatch.setattr(cache_provenance, "file_digest", counted_digest)
+    cache = {}
+    first = capabilities.reference_fingerprints(["weights/model.pt"], cache)
+    second = capabilities.reference_fingerprints(["weights/model.pt"], cache)
+    assert first == second and len(digests) == 1
+
+    weight.write_bytes(b"checkpoint-v2-with-new-size")
+    refreshed = capabilities.reference_fingerprints(["weights/model.pt"], cache)
+    assert refreshed != first and len(digests) == 2
 
 
 def test_agent_receipt_prevents_duplicate_inference_after_lost_reply(cluster, monkeypatch):

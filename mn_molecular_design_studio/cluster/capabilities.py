@@ -280,15 +280,33 @@ def gpu_details():
         return {}
 
 
-def reference_fingerprints(probes):
-    """Hash explicitly required files, without walking model/reference databases."""
+def reference_fingerprints(probes, cache=None):
+    """Hash required files, reusing fingerprints while the local file is unchanged."""
     from mn_molecular_design_studio.cache_provenance import file_digest
     from mn_molecular_design_studio.runtime import reference_root
     root = reference_root().resolve()
+    cache = cache if isinstance(cache, dict) else None
     result = {}
     for relative in probes:
-        path = (root / str(relative)).resolve()
-        if not path.is_relative_to(root) or not path.is_file():
+        key = str(relative)
+        try:
+            path = (root / key).resolve()
+            if not path.is_relative_to(root) or not path.is_file():
+                if cache is not None:
+                    cache.pop(key, None)
+                continue
+            stat = path.stat()
+        except OSError:
+            if cache is not None:
+                cache.pop(key, None)
             continue
-        result[str(relative)] = file_digest(path)
+        signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        cached = cache.get(key) if cache is not None else None
+        if cached and cached[0] == signature:
+            digest = cached[1]
+        else:
+            digest = file_digest(path)
+            if cache is not None:
+                cache[key] = (signature, digest)
+        result[key] = digest
     return result

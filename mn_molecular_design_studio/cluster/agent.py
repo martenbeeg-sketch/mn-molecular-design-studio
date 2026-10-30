@@ -78,6 +78,7 @@ class Agent:
         self._published = {}
         self._artifact_signatures = {}
         self._artifact_manifests = {}
+        self._reference_hash_cache = {}
         self._known_references = set()
         self._reference_probes = []
         self._stop = threading.Event()
@@ -95,7 +96,9 @@ class Agent:
         storage_online = self.storage_online()
         return self._inventory | {"scheduler_online": online, "resources": resources,
                                   "references": capabilities.reference_inventory(self._reference_probes),
-                                  "reference_hashes": capabilities.reference_fingerprints(self._reference_probes),
+                                  "reference_hashes": capabilities.reference_fingerprints(
+                                      self._reference_probes, self._reference_hash_cache,
+                                  ),
                                   "accept_jobs": config.load()["accept_jobs"] and storage_online,
                                   "storage_available": storage_online}
 

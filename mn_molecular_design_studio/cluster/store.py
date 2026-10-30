@@ -857,14 +857,23 @@ class Store:
 
     def reference_probes(self):
         with self.connect() as db:
-            # A campaign submits follow-up workflows after prior commands have
-            # been accepted. Keep their checkpoint probes available so worker
-            # inventories do not forget those references between batches.
             rows = db.execute(
-                "SELECT requirements FROM submissions WHERE cancelled=0 ORDER BY rowid DESC"
+                "SELECT s.requirements,c.status AS command_status,j.payload AS job_payload "
+                "FROM submissions s "
+                "LEFT JOIN commands c ON c.id=s.command_id "
+                "LEFT JOIN jobs j ON j.id=s.job_id "
+                "WHERE s.cancelled=0 ORDER BY s.rowid DESC"
             )
             probes = set()
             for row in rows:
+                job_status = ""
+                try:
+                    job_status = str(json.loads(row["job_payload"] or "{}").get("status") or "").casefold()
+                except (TypeError, ValueError, AttributeError):
+                    pass
+                command_pending = row["command_status"] in {None, "queued", "claimed"}
+                if not command_pending and job_status not in ACTIVE_RESOURCE_STATUSES:
+                    continue
                 probes.update(json.loads(row["requirements"]).get("references", []))
                 if len(probes) >= 10000:
                     break
