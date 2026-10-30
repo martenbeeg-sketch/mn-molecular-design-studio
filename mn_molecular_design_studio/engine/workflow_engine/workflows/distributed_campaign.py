@@ -424,13 +424,51 @@ class CampaignLedger(ExecutionJobLedgerMixin):
         # The worker replaces command.json with mode=docker before invoking native work.
         return bool(child and child.is_dir() and _rfd4_retry_safe(child))
 
-    def observe_worker_metadata(self, attempt_id, metadata):
-        if self.snapshot()["schema_version"] == 1:
-            return
+    def observe_worker_metadata(self, attempt_id, metadata, *, known_state=None):
+        """Persist only new worker evidence, optionally comparing a caller snapshot first."""
+        if known_state is not None:
+            if known_state.get("schema_version") == 1:
+                return
+            attempt = known_state["attempts"][attempt_id]
+            execution = _execution(known_state["execution_jobs"][attempt["execution_job_id"]])
+            allocation = metadata.get("resource_allocation") or {}
+            allocation_changed = any(
+                execution["resource_allocation"].get(key) != value
+                for key, value in allocation.items()
+            )
+            worker_identity = {key: metadata[key] for key in
+                ("scheduler_worker_id", "execution_node_id") if metadata.get(key) is not None}
+            scheduler_identifiers = {key: metadata[key] for key in
+                ("scheduler_job_id", "cluster_job_id", "remote_submission_key") if metadata.get(key) is not None}
+            identity_changed = any(
+                execution[field].get(key) != value
+                for field, values in (("worker_identity", worker_identity),
+                                      ("scheduler_identifiers", scheduler_identifiers))
+                for key, value in values.items()
+            )
+            worker_started_at = metadata.get("worker_started_at")
+            timing = execution.get("worker_timing") or {}
+            timing_observation = {
+                "worker_started_at": deepcopy(worker_started_at),
+                "scheduler_worker_id": metadata.get("scheduler_worker_id"),
+                "execution_node_id": metadata.get("execution_node_id"),
+            }
+            timing_changed = worker_started_at not in (None, "") and (
+                timing.get("latest_worker_started_at") != worker_started_at
+                or timing_observation not in timing.get("worker_started_at_observations", [])
+            )
+            resource_request = metadata.get("resource_request")
+            request_changed = bool(resource_request) and execution.get("resolved_resource_request") != resource_request
+            if not (allocation_changed or identity_changed or timing_changed or request_changed):
+                return
+
         def change(state):
+            if state["schema_version"] == 1:
+                return
             attempt = state["attempts"][attempt_id]
             job = state["execution_jobs"][attempt["execution_job_id"]]
             execution = _execution(job)
+            before = deepcopy(execution)
             # Observations may gain detail (including lease release timestamps).
             execution["resource_allocation"].update(deepcopy(metadata.get("resource_allocation") or {}))
             _identity_update(execution, "worker_identity", {k: metadata[k] for k in
@@ -448,7 +486,20 @@ class CampaignLedger(ExecutionJobLedgerMixin):
                 ("scheduler_job_id", "cluster_job_id", "remote_submission_key") if metadata.get(k) is not None})
             if metadata.get("resource_request"):
                 execution["resolved_resource_request"] = deepcopy(metadata["resource_request"])
-        self._job_transaction(change)
+            return execution != before
+
+        # Avoid a second snapshot plus a full-ledger deepcopy/equality check for
+        # routine worker polls. Only serialize the ledger when execution facts
+        # actually changed.
+        with _locked(self.path):
+            state = _read(self.path)
+            if state["schema_version"] == 1:
+                return
+            changed = change(state)
+            if changed:
+                state["updated_at"] = utc_now()
+                state["events"].append({"type": "execution_accounting_updated", "at": state["updated_at"]})
+                _atomic_json(self.path, state)
 
     def snapshot(self) -> dict[str, Any]:
         with _locked(self.path):
@@ -739,9 +790,13 @@ class CampaignLedger(ExecutionJobLedgerMixin):
             attempt = state["attempts"].get(attempt_id)
             if attempt is None:
                 raise KeyError(f"Unknown campaign attempt: {attempt_id}")
+            before_attempt = deepcopy(attempt)
+            before_job = None
             if state["schema_version"] == 2:
                 if set(details) & {"attempt_id", "ordinal", "seed", "execution_job_id", "job_position", "source_input", "native_rng_mapping", "authorized_at", "native_status", "native_started"}:
                     raise ValueError("Attempt authorization and native provenance are immutable through worker transitions.")
+                job = state["execution_jobs"][attempt["execution_job_id"]]
+                before_job = deepcopy(job)
                 observe_single_attempt(state, attempt, status, details)
             previous = attempt["status"]
             terminal = {"completed", "failed", "interrupted", "cancelled", "not_started"}
@@ -750,12 +805,14 @@ class CampaignLedger(ExecutionJobLedgerMixin):
             if status == "running" and not attempt.get("started_at"):
                 attempt["started_at"] = utc_now()
                 attempt.setdefault("first_started_at", attempt["started_at"])
-            if status in terminal:
+            if status in terminal and not attempt.get("completed_at"):
                 attempt["completed_at"] = utc_now()
             if status == "authorized" and previous != "authorized":
                 raise ValueError("An existing attempt cannot be reset to authorized.")
             attempt.update(details)
             attempt["status"] = status
+            if attempt == before_attempt and (before_job is None or job == before_job):
+                return dict(attempt)
             state["updated_at"] = utc_now()
             state["events"].append({
                 "type": "attempt_transition", "attempt_id": attempt_id,
@@ -1978,10 +2035,13 @@ def _repair_attempt_child(
             spawn_worker_for_run(child_run_dir)
 
 
-def _find_unlinked_children(ledger: CampaignLedger) -> dict[str, Path]:
+def _find_unlinked_children(
+    ledger: CampaignLedger,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Path]:
     from mn_molecular_design_studio.engine.workflow_engine.runtime import runs_root
 
-    state = ledger.snapshot()
+    state = state if state is not None else ledger.snapshot()
     unlinked = {
         attempt_id for attempt_id, item in state["attempts"].items()
         if not item.get("child_run_dir") and item.get("status") not in {"completed", "failed", "interrupted", "cancelled", "not_started"}
@@ -2006,11 +2066,14 @@ def _find_unlinked_children(ledger: CampaignLedger) -> dict[str, Path]:
     return found
 
 
-def _attempt_child_paths(ledger: CampaignLedger) -> dict[str, Path]:
+def _attempt_child_paths(
+    ledger: CampaignLedger,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Path]:
     from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
 
-    state = ledger.snapshot()
-    found = _find_unlinked_children(ledger)
+    state = state if state is not None else ledger.snapshot()
+    found = _find_unlinked_children(ledger, state)
     children: dict[str, Path] = {}
     for attempt_id, attempt in state["attempts"].items():
         child_text = str(attempt.get("child_run_dir") or "")
@@ -2027,6 +2090,13 @@ def _accepted_count(ledger: CampaignLedger, config: dict[str, Any]) -> int:
 def _collecting_attempt_count(active: list[dict[str, Any]]) -> int:
     """Count completed remote jobs whose outputs are still being collected."""
     return sum(item.get("worker_status") == "collecting" for item in active)
+
+
+def _attempt_transition_needed(attempt: dict[str, Any], status: str, details: dict[str, Any]) -> bool:
+    """Skip an unchanged scheduler poll without reopening the full campaign ledger."""
+    return attempt.get("status") != status or any(
+        attempt.get(key) != value for key, value in details.items()
+    )
 
 
 def _generation_slot_count(active: list[dict[str, Any]]) -> int:
@@ -2060,8 +2130,8 @@ def _reconcile_attempts(
 
     ledger.assert_production_jobs()
     state = ledger.snapshot()
-    children = _attempt_child_paths(ledger)
-    for attempt_id, attempt in list(ledger.snapshot()["attempts"].items()):
+    children = _attempt_child_paths(ledger, state)
+    for attempt_id, attempt in list(state["attempts"].items()):
         if attempt.get("status") != "authorized":
             continue
         child = children.get(attempt_id)
@@ -2089,13 +2159,24 @@ def _reconcile_attempts(
 
                     spawn_worker_for_run(child)
                 ledger.transition(attempt_id, "queued", child_run_dir=str(child))
+    # Authorization recovery above can create or update child submissions.
+    # Refresh once before reconciliation, rather than re-reading the entire
+    # growing ledger for every attempt below.
+    state = ledger.snapshot()
     active: list[dict[str, Any]] = []
     candidate_rows: list[dict[str, Any]] = []
     for attempt_id, attempt in state["attempts"].items():
+        # A completed attempt already has a durable receipt in the ledger.
+        # Re-reading its child metadata and observing it on every poll adds
+        # work proportional to the entire campaign history without changing
+        # its execution record.
+        if attempt.get("status") == "completed":
+            continue
         child = children.get(attempt_id)
         if child is None:
             if attempt["status"] == "authorized":
                 continue
+            latest_attempt = attempt
             if attempt["status"] in {"queued", "running"}:
                 retry_allowed = (
                     generator_id != "rfd4_proteina"
@@ -2104,20 +2185,27 @@ def _reconcile_attempts(
                 )
                 if retry_allowed:
                     if attempt["status"] != "interrupted":
-                        ledger.transition(attempt_id, "interrupted", failure="Origin child run is unavailable for reconciliation.")
+                        latest_attempt = ledger.transition(
+                            attempt_id, "interrupted",
+                            failure="Origin child run is unavailable for reconciliation.",
+                        )
                     retried = ledger.retry(attempt_id)
+                    latest_attempt = retried
                     try:
                         child = _create_attempt_child(parent_run_dir, ledger, retried, config)
                         children[attempt_id] = child
                     except Exception as exc:
-                        ledger.transition(attempt_id, "failed", failure=f"{type(exc).__name__}: {exc}")
+                        latest_attempt = ledger.transition(
+                            attempt_id, "failed", failure=f"{type(exc).__name__}: {exc}",
+                        )
                 else:
-                    ledger.transition(attempt_id, "interrupted", failure="Origin child run is unavailable for reconciliation.")
-            latest_attempt = ledger.snapshot()["attempts"].get(attempt_id, {})
+                    latest_attempt = ledger.transition(
+                        attempt_id, "interrupted",
+                        failure="Origin child run is unavailable for reconciliation.",
+                    )
             if latest_attempt.get("status") in {"authorized", "queued", "running"}:
                 active.append(latest_attempt)
             continue
-        attempt = ledger.snapshot()["attempts"].get(attempt_id, attempt)
         child_metadata = read_json_raw(child / "metadata.json")
         if (
             attempt.get("status") not in {"completed", "failed", "interrupted", "cancelled", "not_started"}
@@ -2129,7 +2217,8 @@ def _reconcile_attempts(
             try:
                 if not peer.get("cluster_job_id"):
                     peer = _submit_rfd4_peer_attempt(parent_run_dir, ledger, attempt, child)
-                    attempt = ledger.snapshot()["attempts"][attempt_id]
+                    state = ledger.snapshot()
+                    attempt = state["attempts"][attempt_id]
                     peer = dict(attempt.get("cluster_submission") or peer)
                 owner_id, project_id, development_mode = _campaign_actor(parent_run_dir)
                 defer_remote_artifacts = config.get("remote_artifact_policy") == "defer_generated"
@@ -2165,14 +2254,15 @@ def _reconcile_attempts(
             remote_metadata = peer_job.get("worker_metadata") if isinstance(peer_job.get("worker_metadata"), dict) else (
                 peer_job.get("metadata") if isinstance(peer_job.get("metadata"), dict) else {}
             )
-            ledger.transition(
-                attempt_id,
-                "running" if peer_status == "running" else "queued",
-                cluster_submission=peer,
-                cluster_job_id=peer.get("cluster_job_id"),
-                worker_node_id=peer.get("worker_node_id"),
-                wait_reason=peer.get("wait_reason"),
-            )
+            transition_status = "running" if peer_status == "running" else "queued"
+            transition_details = {
+                "cluster_submission": peer,
+                "cluster_job_id": peer.get("cluster_job_id"),
+                "worker_node_id": peer.get("worker_node_id"),
+                "wait_reason": peer.get("wait_reason"),
+            }
+            if _attempt_transition_needed(attempt, transition_status, transition_details):
+                ledger.transition(attempt_id, transition_status, **transition_details)
             child_metadata.update(
                 cluster_remote=True,
                 cluster_job_id=peer.get("cluster_job_id"),
@@ -2183,7 +2273,7 @@ def _reconcile_attempts(
                 worker_started_at=remote_metadata.get("worker_started_at") or child_metadata.get("worker_started_at"),
                 scheduler_worker_id=remote_metadata.get("scheduler_worker_id") or peer.get("worker_node_id"),
             )
-            ledger.observe_worker_metadata(attempt_id, child_metadata)
+            ledger.observe_worker_metadata(attempt_id, child_metadata, known_state=state)
             if peer_status == "completed" and peer_output is None and defer_remote_artifacts:
                 summary = peer.get("candidate_summary") or peer_job.get("candidate_summary")
                 if not isinstance(summary, dict):
@@ -2279,7 +2369,7 @@ def _reconcile_attempts(
                 })
                 continue
         metadata = read_json_raw(child / "metadata.json")
-        ledger.observe_worker_metadata(attempt_id, metadata)
+        ledger.observe_worker_metadata(attempt_id, metadata, known_state=state)
         status = str(metadata.get("status") or "unknown")
         result = read_json_raw(child / "result.json")
         if status in {"completed", "failed", "cancelled"} and attempt.get("status") != "completed":
@@ -2367,8 +2457,8 @@ def _reconcile_attempts(
                     )
         elif attempt["status"] not in {"failed", "interrupted", "cancelled", "not_started"}:
             ledger.transition(attempt_id, "interrupted", child_run_dir=str(child), failure=f"Unexpected child status {status}")
-    children = _attempt_child_paths(ledger)
     state = ledger.snapshot()
+    children = _attempt_child_paths(ledger, state)
     attempt_order = {
         attempt_id: attempt["ordinal"]
         for attempt_id, attempt in state["attempts"].items()

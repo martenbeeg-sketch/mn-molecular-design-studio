@@ -175,6 +175,44 @@ def test_remote_worker_node_reassignment_is_recorded_without_failing_campaign(tm
     ]
 
 
+def test_repeated_attempt_transition_is_a_noop(tmp_path):
+    campaign = ledger(tmp_path, budget=1)
+    attempt = campaign.authorize(1, batch_id="dispatch")[0]
+    details = {"child_run_dir": "/runs/child-1", "cluster_job_id": "cluster-1", "worker_node_id": "node-a"}
+
+    campaign.transition(attempt["attempt_id"], "queued", **details)
+    before = campaign.path.read_bytes()
+    event_count = len(campaign.snapshot()["events"])
+
+    campaign.transition(attempt["attempt_id"], "queued", **details)
+
+    assert campaign.path.read_bytes() == before
+    assert len(campaign.snapshot()["events"]) == event_count
+
+
+def test_worker_metadata_snapshot_skips_reloading_unchanged_ledger(tmp_path, monkeypatch):
+    campaign = ledger(tmp_path, budget=1)
+    attempt = campaign.authorize(1, batch_id="dispatch")[0]
+    metadata = {
+        "scheduler_worker_id": "worker-A",
+        "execution_node_id": "node-A",
+        "worker_started_at": "2026-10-29T20:10:24+00:00",
+        "scheduler_job_id": "scheduler-A",
+        "cluster_job_id": "cluster-A",
+        "remote_submission_key": "submission-A",
+        "resource_allocation": {"gpu_device": "0", "gpu_ids": [0]},
+        "resource_request": {"gpu": True},
+    }
+    campaign.observe_worker_metadata(attempt["attempt_id"], metadata)
+    known_state = campaign.snapshot()
+
+    def unexpected_read(_path):
+        raise AssertionError("unchanged worker metadata should not reload the ledger")
+
+    monkeypatch.setattr(dc, "_read", unexpected_read)
+    campaign.observe_worker_metadata(attempt["attempt_id"], metadata, known_state=known_state)
+
+
 def test_exit_zero_does_not_complete_attempts_or_infer_acceptance(tmp_path):
     campaign = ledger(tmp_path)
     job = reserve(campaign)
@@ -478,7 +516,7 @@ def test_prelaunch_production_recovery_records_execution_retry_before_resuming(t
     jobs.write_json(child / "result.json", {"success": False})
     attempt = campaign.authorize(1, batch_id="b1")[0]
     campaign.transition(attempt["attempt_id"], "running", child_run_dir=str(child))
-    monkeypatch.setattr(dc, "_attempt_child_paths", lambda _: {attempt["attempt_id"]: child})
+    monkeypatch.setattr(dc, "_attempt_child_paths", lambda _, state=None: {attempt["attempt_id"]: child})
     resumed = []
     def resume(path, **kwargs):
         state = campaign.snapshot()
