@@ -3644,6 +3644,9 @@ def _render_af2_initial_guess_setup(schema: dict) -> None:
             "msa_max_depth": parameters["engine_options"]["max_msa_seqs"],
             "cpu_cores": parameters["cpu_cores"], "gpu_device": parameters["gpu_device"],
         }
+        for key in ("validation_candidate_ids", "source_job", "_database_collection_policy"):
+            if key in parameters:
+                values[key] = parameters[key]
         _submit_cofolding_job(workflow_schema("refolding.af2_design_validation"), "refolding.af2_design_validation",
                               values, selected_project, settings, label)
     handled, _ = render_batch_controls(
@@ -4066,11 +4069,18 @@ def _render_cofolding_header(title: str, description: str) -> None:
 
 
 def _submit_cofolding_job(schema: dict, workflow_id: str, parameters: dict, project_id: str, settings: dict, label: str) -> None:
+    parameters = dict(parameters)
+    source_job = parameters.pop("source_job", None)
+    collection_policy = parameters.pop("_database_collection_policy", None)
     payload = {
         "schema_version": schema["schema_version"], "workflow": workflow_id,
         "parameters": parameters, "project_id": project_id,
         "priority": 1000 if settings.get("prioritize") else 0,
     }
+    if source_job:
+        payload["source_job"] = source_job
+    if collection_policy:
+        payload["database_collection_policy"] = collection_policy
     if workflow_id in {"library.prepare", "library.centroids", "design.kejia_idr", "design.peptide_trap"}:
         # These are CPU workflows. Pin their scheduler request explicitly so
         # a default GPU allocation cannot be inferred from a generic request.

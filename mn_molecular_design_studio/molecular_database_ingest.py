@@ -143,6 +143,16 @@ def _record(candidate, run_dir):
         files = [{"path": str(path), "label": key.replace("_", " ").title(), "dimensions": 3}]
         break
     raw_components = (candidate.get("raw_metadata") or {}).get("components")
+    validation_path = _path((candidate.get("raw_metadata") or {}).get("validation_complex_pdb"), run_dir)
+    if validation_path and validation_path.is_file() and all(row.get("path") != str(validation_path) for row in files):
+        try:
+            validation_components = imports.parse_structure(validation_path.read_bytes(), validation_path.name)[0]["components"]
+        except ValueError:
+            validation_components = None
+        if validation_components:
+            if components is None:
+                components = validation_components
+            files.append({"path": str(validation_path), "label": "Independent validation complex", "dimensions": 3})
     if components is None and isinstance(raw_components, list):
         try:
             components = imports.canonical_components(raw_components)[0]
@@ -622,8 +632,10 @@ def _candidate_structure_signature(run_dir):
             continue
         if not isinstance(candidate, dict):
             continue
-        for field in ("complex_pdb", "binder_pdb", "target_pdb"):
-            reference = candidate.get(field)
+        references = [(field, candidate.get(field)) for field in ("complex_pdb", "binder_pdb", "target_pdb")]
+        raw_metadata = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+        references.append(("validation_complex_pdb", raw_metadata.get("validation_complex_pdb")))
+        for field, reference in references:
             if not reference:
                 continue
             path = _path(reference, Path(run_dir))
@@ -896,7 +908,10 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             # them for provenance (for example, heavy-atom geometry status).
             if (candidate.get("metrics") or {}).get("binder_geometry_status") is not None:
                 candidate_context["binder_geometry_status"] = candidate["metrics"]["binder_geometry_status"]
-            candidate_context["raw_metadata"] = {key: raw[key] for key in ("fasta_header", "engine_version", "operation", "structure_kind", "image_digest") if key in raw}
+            candidate_context["raw_metadata"] = {key: raw[key] for key in (
+                "fasta_header", "engine_version", "operation", "structure_kind", "image_digest",
+                "validation_acceptance", "validation_measurements", "validation_provenance",
+            ) if key in raw}
             settings = inputs.get("params") or {}
             from mn_molecular_design_studio.evaluations import file_digest
             target_source = _path(candidate.get("target_pdb"), run_dir)

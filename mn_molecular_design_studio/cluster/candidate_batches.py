@@ -231,6 +231,58 @@ def _artifact(state, job_id, relative, user, directory):
     return path
 
 
+def poll_summary(batch, *, owner_id, project_id, allow_development=False):
+    """Poll remote execution without requesting or copying any result artifacts.
+
+    The worker publishes a bounded identity/count summary in its ordinary job
+    heartbeat. Full normalized rows and structures remain at the source run.
+    """
+    user = actor(owner_id, project_id, allow_development=allow_development)
+    job = Store().job(batch["cluster_job_id"], user)
+    batch["worker"] = job.get("node_id")
+    batch["wait_reason"] = job.get("wait_reason") or ""
+    status = str(job.get("status") or "queued").casefold()
+    if status in {"succeeded"}:
+        status = "completed"
+    if status == "completed":
+        summary = job.get("candidate_summary")
+        if not isinstance(summary, dict) or summary.get("status") != "complete":
+            metrics = job.get("metrics") if isinstance(job.get("metrics"), dict) else {}
+            count = metrics.get("candidate_count")
+            if type(count) is not int or count < 0:
+                return "summary_unavailable", job
+            summary = {
+                "schema_version": 1, "status": "complete", "candidate_count": count,
+                "eligible_count": count,
+                "native_filter_counts": {"passed": 0, "failed": 0, "unavailable": count},
+                "acceptance_counts": {"accepted": 0, "rejected": 0, "unresolved": 0, "not_evaluated": count},
+                "summary_source": "completed_job_metrics",
+            }
+        count = summary.get("candidate_count")
+        eligible_count = summary.get("eligible_count")
+        native_counts = summary.get("native_filter_counts")
+        acceptance_counts = summary.get("acceptance_counts")
+        if (type(count) is not int or count < 0 or type(eligible_count) is not int or not 0 <= eligible_count <= count
+                or not isinstance(native_counts, dict)
+                or not isinstance(acceptance_counts, dict)
+                or sum(int(native_counts.get(key, -1)) for key in ("passed", "failed", "unavailable")) != eligible_count
+                or any(type(native_counts.get(key)) is not int or native_counts[key] < 0
+                       for key in ("passed", "failed", "unavailable"))
+                or any(type(acceptance_counts.get(key)) is not int or acceptance_counts[key] < 0
+                       for key in ("accepted", "rejected", "unresolved", "not_evaluated"))
+                or sum(acceptance_counts[key] for key in ("accepted", "rejected", "unresolved", "not_evaluated")) != count):
+            return "summary_unavailable", job
+        batch["candidate_summary"] = copy.deepcopy(summary)
+        return "completed", job
+    if status in {"failed", "cancelled", "lost"}:
+        return status, job
+    node = next((n for n in Store().nodes() if n["id"] == job.get("node_id")), None)
+    if node and node["availability"] != "online":
+        batch["wait_reason"] = "Execution workstation disconnected; retaining its job identity until reconciliation."
+        return "disconnected", job
+    return status, job
+
+
 def poll(batch, *, owner_id, project_id, allow_development=False):
     """Return a local verified snapshot only after every candidate file arrives."""
     user = actor(owner_id, project_id, allow_development=allow_development)

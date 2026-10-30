@@ -27,6 +27,69 @@ def test_md_source_action_requires_visibility_and_keeps_requesting_actor(monkeyp
     assert json.loads(row['payload'])['local_reference'] == 'ligand-md/md-1'
 
 
+def test_accepted_design_collection_action_requires_an_explicit_acceptance(monkeypatch, tmp_path):
+    monkeypatch.setenv('MDS_CLUSTER_HOME', str(tmp_path / 'cluster'))
+    store = Store()
+    node = store.enroll('design workstation')
+    owner = {'id': 'actor', 'role': 'user', 'project_ids': ['project']}
+    job = {
+        'task_group': 'refolding-validation', 'run_id': 'accepted-validation',
+        'owner_id': 'actor', 'project_id': 'project', 'status': 'completed',
+        'tool': 'optimized_prediction_boltz2',
+        'candidate_summary': {'acceptance_counts': {'accepted': 1, 'rejected': 2, 'unresolved': 0, 'not_evaluated': 0}},
+    }
+    store.heartbeat(node['node_id'], {}, [job])
+    jid = config.job_id(node['node_id'], 'refolding-validation/accepted-validation')
+
+    operation = store.action(jid, 'collect_accepted_designs', {}, owner)
+    with store.connect() as db:
+        command = db.execute('SELECT * FROM commands WHERE id=?', (operation['command_id'],)).fetchone()
+    assert command['kind'] == 'collect_accepted_designs'
+    assert json.loads(command['payload'])['local_reference'] == 'refolding-validation/accepted-validation'
+
+    no_acceptance = {**job, 'run_id': 'no-acceptance',
+                     'candidate_summary': {'acceptance_counts': {'accepted': 0}}}
+    store.heartbeat(node['node_id'], {}, [no_acceptance])
+    no_acceptance_id = config.job_id(node['node_id'], 'refolding-validation/no-acceptance')
+    with pytest.raises(ValueError, match='no explicitly accepted'):
+        store.action(no_acceptance_id, 'collect_accepted_designs', {}, owner)
+
+
+def test_agent_packages_only_accepted_results_and_replays_collection_receipt(monkeypatch, tmp_path):
+    import hashlib
+    from mn_molecular_design_studio import accepted_design_import
+    from mn_molecular_design_studio.engine.workflow_engine.services import local_automation
+
+    monkeypatch.setenv('MDS_CLUSTER_HOME', str(tmp_path / 'agent-cluster'))
+    agent = object.__new__(Agent)
+    agent.node_id = 'worker-node'
+    payload = b'accepted-only-archive'
+    calls = []
+    monkeypatch.setattr(
+        local_automation, 'resolve_job',
+        lambda reference: calls.append(('resolve', reference)) or {'run_dir': str(tmp_path / 'validation'), 'run_id': 'validation'},
+    )
+    monkeypatch.setattr(
+        accepted_design_import, 'build_accepted_design_bundle',
+        lambda run_dir, **kwargs: (payload, {'candidate_count': 1, 'accepted_candidate_ids': ['accepted-1']}),
+    )
+    monkeypatch.setattr(
+        'mn_molecular_design_studio.cluster.transport.node_request',
+        lambda path, **kwargs: {'blob_id': hashlib.sha256(payload).hexdigest(), 'size_bytes': len(payload)},
+    )
+    command = {
+        'id': 'accepted-collection-command', 'kind': 'collect_accepted_designs',
+        'job_id': 'validation-job', 'payload': {'local_reference': 'refolding-validation/validation'},
+    }
+
+    first = agent.execute(command)
+    second = agent.execute(command)
+
+    assert first == second and first[1] is None
+    assert first[0]['candidate_count'] == 1
+    assert calls == [('resolve', 'refolding-validation/validation')]
+
+
 def test_md_source_metadata_receipt_is_replayed_without_repeating_work(monkeypatch, tmp_path):
     from mn_molecular_design_studio import auth, md_analysis_ui
     from mn_molecular_design_studio.engine.workflow_engine.services import local_automation

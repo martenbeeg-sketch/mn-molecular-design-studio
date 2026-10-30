@@ -2458,6 +2458,10 @@ def run_optimized_prediction(
     tasks: list[dict[str, Any]] | None = None,
     engine_options: dict[str, Any] | None = None,
     validation_sources: list[dict[str, Any]] | None = None,
+    validation_candidate_ids: list[str] | None = None,
+    validation_candidate_limit: int | None = None,
+    source_run_dir: Path | None = None,
+    candidates_jsonl: Path | None = None,
     validation_mode: Literal["complex", "binder"] | None = None,
     validation_target_type: str = "structured",
     validation_binder_format: str | None = None,
@@ -2468,6 +2472,30 @@ def run_optimized_prediction(
     sequence_file: Path | None = None,
 ) -> Path:
     """Run one engine using the same input checks as API preflight validation."""
+    if validation_candidate_ids is not None:
+        if validation_sources is not None or validation_candidate_limit is not None:
+            raise ValueError("Use one validation source selection: explicit IDs, a count limit, or validation_sources.")
+        if source_run_dir is None or candidates_jsonl is None:
+            raise ValueError("Remote candidate validation requires an owning source_job and its normalized candidate index.")
+        if not isinstance(validation_candidate_ids, list) or not validation_candidate_ids:
+            raise ValueError("Select at least one remote candidate to validate.")
+        validation_sources = [{
+            "source_run_dir": str(source_run_dir),
+            "candidates_jsonl": str(candidates_jsonl),
+            "candidate_ids": [str(value) for value in validation_candidate_ids],
+        }]
+    if validation_candidate_limit is not None:
+        if validation_sources is not None:
+            raise ValueError("Use validation_sources or a source_job with validation_candidate_limit, not both.")
+        if source_run_dir is None or candidates_jsonl is None:
+            raise ValueError("Remote candidate batches require an owning source_job and its normalized candidate index.")
+        if type(validation_candidate_limit) is not int or not 1 <= validation_candidate_limit <= 1024:
+            raise ValueError("validation_candidate_limit must be an integer between 1 and 1024.")
+        validation_sources = [{
+            "source_run_dir": str(source_run_dir),
+            "candidates_jsonl": str(candidates_jsonl),
+            "candidate_limit": validation_candidate_limit,
+        }]
     if acceptance_policy is not None:
         from mn_molecular_design_studio.validation_acceptance import normalize_policy
         acceptance_policy = normalize_policy(acceptance_policy)

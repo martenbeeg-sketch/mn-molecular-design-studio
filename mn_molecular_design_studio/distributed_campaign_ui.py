@@ -185,6 +185,31 @@ def campaign_context_for_job(
     config = ledger.get("config") if isinstance(ledger.get("config"), dict) else {}
     attempts_raw = ledger.get("attempts") if isinstance(ledger.get("attempts"), dict) else {}
     candidates_raw = ledger.get("candidates") if isinstance(ledger.get("candidates"), dict) else {}
+    deferred_raw = ledger.get("deferred_outputs") if isinstance(ledger.get("deferred_outputs"), dict) else {}
+    deferred_candidates = [
+        {**candidate, "attempt_id": output.get("attempt_id"), "receipt_id": output.get("receipt_id"),
+         "storage_status": output.get("status") or candidate.get("storage_status") or "deferred"}
+        for output in deferred_raw.values() if isinstance(output, dict)
+        and output.get("status") == "deferred"
+        for candidate in output.get("candidates", []) if isinstance(candidate, dict)
+    ]
+    deferred_batches = [
+        {
+            "candidate_count": int(output.get("candidate_count") or 0),
+            "attempt_id": output.get("attempt_id"),
+            "receipt_id": output.get("receipt_id"),
+            "source_job": (output.get("evidence") or {}).get("source_job"),
+            "worker_node_id": (output.get("evidence") or {}).get("worker_node_id"),
+            "worker_run_id": (output.get("evidence") or {}).get("worker_run_id"),
+            "native_filter_counts": (output.get("evidence") or {}).get("native_filter_counts", {}),
+            "acceptance_counts": (output.get("evidence") or {}).get("acceptance_counts", {}),
+        }
+        for output in deferred_raw.values() if isinstance(output, dict)
+        and output.get("status") == "deferred" and not output.get("candidates")
+    ]
+    deferred_candidate_count = sum(int(output.get("candidate_count") or 0)
+                                   for output in deferred_raw.values() if isinstance(output, dict)
+                                   and output.get("status") == "deferred")
     attempt_statuses = [str(value.get("status") or "unknown").casefold() for value in attempts_raw.values() if isinstance(value, dict)]
     attempts_completed = sum(status == "completed" for status in attempt_statuses)
     active_attempts = sum(status in {"authorized", "queued", "running", "retrying", "submitted"} for status in attempt_statuses)
@@ -306,7 +331,11 @@ def campaign_context_for_job(
             "Attempt": str(attempt.get("ordinal") or attempt_id),
             "Batch": str(attempt.get("batch_id") or "—"),
             "Status": str(attempt.get("status") or "unknown").replace("_", " ").title(),
-            "Candidate(s)": ", ".join(str(value) for value in attempt.get("candidate_ids", [])) or "—",
+            "Candidate(s)": (
+                ", ".join(str(value) for value in attempt.get("candidate_ids", []))
+                or (f"{int(attempt.get('deferred_candidate_count') or 0)} retained remotely"
+                    if attempt.get("deferred_candidate_count") is not None else "—")
+            ),
             "Worker": str(attempt.get("worker") or native_state.get("source_worker") or matching.get("worker") or "—"),
             "Worker run": str(attempt.get("worker_run_id") or native_state.get("source_worker_run_id") or matching.get("worker_run_id") or "—"),
             "GPU device(s)": _gpu_devices(allocation),
@@ -330,7 +359,7 @@ def campaign_context_for_job(
     native_batch_size, native_source_run_id = _native_batch_size(current_dir, input_payload, candidates_raw, ledger_root)
     objective_type = str(config.get("objective_type") or "accepted")
     if objective_type == "generated":
-        objective_count = len(candidates_raw)
+        objective_count = len(candidates_raw) + deferred_candidate_count
     elif config.get("unique_accepted"):
         field = f"{acceptance_level}_acceptance"
         unique_sequences = {
@@ -371,7 +400,11 @@ def campaign_context_for_job(
         "native_inference_batch_size": native_batch_size,
         "native_inference_source_run_id": native_source_run_id,
         "validation_stage_count": len(validation_stage_configs),
-        "candidate_count": len(candidates),
+        "candidate_count": len(candidates) + deferred_candidate_count,
+        "deferred_candidate_count": deferred_candidate_count,
+        "deferred_candidates": deferred_candidates,
+        "deferred_batches": deferred_batches,
+        "remote_artifact_policy": config.get("remote_artifact_policy", "eager"),
         "accepted_count": accepted_count,
         "rejected_count": rejected_count,
         "unresolved_count": unresolved_count,
@@ -459,6 +492,40 @@ def render_campaign_context(st: Any, context: dict[str, Any] | None) -> None:
         })
         if candidate_rows:
             st.dataframe(candidate_rows, hide_index=True, width="stretch")
+        deferred = context.get("deferred_candidates") or []
+        deferred_batches = context.get("deferred_batches") or []
+        if deferred_batches:
+            st.info(
+                f"{context.get('deferred_candidate_count', 0):,} generated design(s) remain on their source workstations. "
+                "Only batch counts and source-job references were synchronized. Structures move to the shared Database only after explicit acceptance."
+            )
+            st.dataframe([{
+                "Design count": row.get("candidate_count"),
+                "Native filter counts": row.get("native_filter_counts") or {},
+                "Acceptance counts": row.get("acceptance_counts") or {},
+                "Worker · run": f"{row.get('worker_node_id') or '—'} · {row.get('worker_run_id') or '—'}",
+                "Source job": row.get("source_job") or "—",
+            } for row in deferred_batches], hide_index=True, width="stretch")
+        elif deferred:
+            st.info(
+                f"{len(deferred):,} candidate structure(s) remain on their source workstations. "
+                "This older campaign recorded a compact candidate index; no structures were transferred."
+            )
+            st.dataframe([{
+                "Candidate ID": row.get("candidate_id"),
+                "Source-native filter": row.get("native_filter_status") or "unavailable",
+                "Worker": row.get("worker_node_id") or "—",
+                "Source run": row.get("worker_run_id") or "—",
+                "Source job": row.get("source_job") or "—",
+                "Candidate file": row.get("artifact_path") or "—",
+                "SHA-256": row.get("artifact_sha256") or "—",
+                "Storage": row.get("storage_status") or "deferred",
+            } for row in deferred], hide_index=True, width="stretch")
+        elif context.get("remote_artifact_policy") == "defer_generated" and int(context.get("deferred_candidate_count") or 0):
+            st.warning(
+                f"{context['deferred_candidate_count']} candidate(s) are retained remotely, but their compact identity index is unavailable. "
+                "They are not counted as scientifically accepted."
+            )
         if not context.get("index_file_present"):
             st.warning("The normalized candidate index file is missing. This is a candidate identity/lineage metadata gap, not a scientific candidate rejection.")
 

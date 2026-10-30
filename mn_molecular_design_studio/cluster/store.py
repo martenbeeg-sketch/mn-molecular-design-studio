@@ -576,9 +576,15 @@ class Store:
                 db.execute("UPDATE jobs SET node_id=?,payload=? WHERE id=?", (node_id, encoded(job), row["job_id"]))
 
     def action(self, jid, kind, payload, user):
-        if kind not in {"inspect", "artifact", "cancel", "hide", "restore", "retry", "change_gpu", "purge", "md_source_options"}:
+        if kind not in {"inspect", "artifact", "cancel", "hide", "restore", "retry", "change_gpu", "purge", "md_source_options", "collect_accepted_designs"}:
             raise ValueError("Unsupported workstation action.")
         job = self.job(jid, user)
+        if kind == "collect_accepted_designs":
+            if job.get("status") not in {"completed", "succeeded"}:
+                raise ValueError("Only completed validation results can be promoted to the shared Database.")
+            counts = (job.get("candidate_summary") or {}).get("acceptance_counts") or {}
+            if int(counts.get("accepted") or 0) < 1:
+                raise ValueError("This validation job has no explicitly accepted designs to promote.")
         if kind == "purge" and job.get("status") not in TERMINAL:
             raise ValueError("Only finished jobs can be permanently removed.")
         if kind == "change_gpu":

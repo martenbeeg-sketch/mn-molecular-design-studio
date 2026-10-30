@@ -168,6 +168,21 @@ def test_failed_filter_candidate_cannot_be_selected_by_id(design_source_factory)
                                target_use_msa=True, use_target_template=True)
 
 
+def test_worker_local_remote_validation_selects_a_bounded_candidate_count(design_source_factory):
+    run, candidate = design_source_factory()
+    prepared = prediction._prepare_prediction(
+        "boltz2", validation_sources=[{"source_run_dir": str(run), "candidate_limit": 1}],
+        validation_mode="complex", samples=1, resolve_random_seed=False,
+    )
+    assert len(prepared.normalized_tasks) == 1
+    assert prepared.normalized_tasks[0]["source_candidate_id"] == candidate["candidate_id"]
+    with pytest.raises(ValueError, match="Only 1 eligible design"):
+        prediction._prepare_prediction(
+            "boltz2", validation_sources=[{"source_run_dir": str(run), "candidate_limit": 2}],
+            validation_mode="complex", samples=1, resolve_random_seed=False,
+        )
+
+
 def test_standalone_acceptance_can_repredict_native_rejections(design_source_factory):
     run, candidate = design_source_factory(passed=False)
     source = [{"source_run_dir": str(run), "candidate_ids": [candidate["candidate_id"]]}]

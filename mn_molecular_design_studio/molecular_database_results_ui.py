@@ -167,6 +167,43 @@ def _project_picker(projects: list[dict], run_key: str, default_project: str = "
     )
 
 
+def _render_accepted_design_promotion(run_path: Path, user: dict) -> bool:
+    """Offer an explicit accepted-only import for manually collected validation runs."""
+    from mn_molecular_design_studio.collection_policy import policy_for_run
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+
+    try:
+        if policy_for_run(run_path) != "manual":
+            return False
+        metadata = read_json(run_path / "metadata.json")
+        result = read_json(run_path / "result.json")
+        summary = (result.get("metrics") or {}).get("validation_acceptance") or {}
+        accepted_count = int(summary.get("accepted") or 0)
+        if result.get("success") is not True or accepted_count <= 0:
+            return False
+        from mn_molecular_design_studio.cluster import config as cluster_config
+        from mn_molecular_design_studio.accepted_design_import import (
+            build_accepted_design_bundle, promote_accepted_design_bundle,
+        )
+        project_id = str((read_json(run_path / "molecular_design_studio.json") or {}).get("project_id") or "")
+        job_reference = f"{run_path.parent.name}/{run_path.name}"
+        st.info(
+            f"Validation explicitly accepted {accepted_count:,} design(s). They remain out of the shared "
+            "Database until you save the accepted results."
+        )
+        if st.button("Save accepted designs to Database", type="primary", key="local-accepted-save-" + run_path.name):
+            bundle, _manifest = build_accepted_design_bundle(
+                run_path, node_id=cluster_config.identity(), validation_job=job_reference,
+            )
+            imported = promote_accepted_design_bundle(bundle, user=user, project_id=project_id)
+            duplicate = " (already saved)" if imported.get("already_imported") else ""
+            st.success(f"Saved {imported['candidate_count']:,} accepted design(s) to the Database{duplicate}.")
+        return True
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        st.warning(f"Accepted-design Database controls are unavailable: {exc}")
+        return True
+
+
 def render_run_database_actions(run_dir, user: dict, projects: list[dict]) -> None:
     """Render selective promotion and database navigation for a local run."""
     run_path = Path(run_dir).expanduser().resolve()
@@ -185,6 +222,8 @@ def render_run_database_actions(run_dir, user: dict, projects: list[dict]) -> No
         log.exception("Molecular Database actions could not load for run %s", run_path)
         st.caption("Molecular Database actions could not load for this run. Refresh the result page to try again.")
         return
+
+    _render_accepted_design_promotion(run_path, user)
 
     if not isinstance(records, list):
         return

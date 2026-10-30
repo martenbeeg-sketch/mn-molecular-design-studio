@@ -103,6 +103,40 @@ def test_follow_up_projection_separates_dispatch_inference_measurements_and_acce
     assert candidate["attempt_id"] == "attempt-1"
 
 
+def test_campaign_context_projects_deferred_worker_batches_as_counts_and_references(tmp_path):
+    root = _campaign_fixture(tmp_path / "deferred", with_index=False)
+    ledger_path = root / "artifacts/distributed_campaign/ledger.json"
+    ledger = json.loads(ledger_path.read_text())
+    ledger["config"]["remote_artifact_policy"] = "defer_generated"
+    ledger["attempts"] = {
+        "attempt-remote": {
+            "attempt_id": "attempt-remote", "ordinal": 1, "status": "completed",
+            "deferred_candidate_count": 4, "native_state": {"output_storage": "worker_local"},
+        }
+    }
+    ledger["candidates"] = {}
+    ledger["deferred_outputs"] = {
+        "receipt": {
+            "receipt_id": "receipt", "attempt_id": "attempt-remote", "candidate_count": 4,
+            "candidates": [], "status": "deferred",
+            "evidence": {
+                "source_job": "cluster://worker/design/attempt", "worker_node_id": "worker",
+                "worker_run_id": "design/attempt", "native_filter_counts": {"passed": 2, "failed": 1, "unavailable": 1},
+            },
+        }
+    }
+    ledger_path.write_text(json.dumps(ledger))
+
+    context = campaign_context_for_job(root)
+
+    assert context["candidate_count"] == 4
+    assert context["deferred_candidate_count"] == 4
+    assert len(context["deferred_batches"]) == 1
+    assert context["deferred_batches"][0]["candidate_count"] == 4
+    assert context["deferred_batches"][0]["source_job"] == "cluster://worker/design/attempt"
+    assert context["deferred_candidates"] == []
+
+
 def test_missing_candidate_index_and_lineage_are_unresolved_not_scientific_rejection(tmp_path):
     root = _campaign_fixture(
         tmp_path / "missing-index",

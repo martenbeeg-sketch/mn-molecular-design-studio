@@ -49,6 +49,25 @@ def test_result_receipts_are_idempotent_and_acceptance_levels_are_independent(tm
     assert counters["diversity_qualified_accepted_candidates"] == 0
 
 
+def test_deferred_worker_receipt_counts_designs_without_recording_candidate_payloads(tmp_path):
+    campaign = ledger(tmp_path, max_attempts=6, target=5)
+    attempt = campaign.authorize(1, batch_id="remote-batch")[0]
+    campaign.transition(attempt["attempt_id"], "running")
+    assert campaign.record_deferred_receipt(
+        attempt["attempt_id"], "deferred-receipt",
+        native_state={"output_storage": "worker_local", "output_candidates": 3},
+        native_output_ids=[], candidate_records=[], candidate_count=3,
+        evidence={"kind": "worker_published_candidate_count", "source_job": "cluster://worker/design/run"},
+    )
+    counters = campaign.counters()
+    receipt = campaign.snapshot()["deferred_outputs"]["deferred-receipt"]
+    assert counters["generated_candidates"] == 3
+    assert counters["deferred_candidates"] == 3
+    assert counters["attempts_completed"] == 1
+    assert counters["native_accepted_candidates"] == 0
+    assert receipt["candidate_count"] == 3 and receipt["candidates"] == []
+
+
 def test_retry_preserves_attempt_identity_and_seed(tmp_path):
     campaign = ledger(tmp_path)
     attempt = campaign.authorize(1, batch_id="b1")[0]

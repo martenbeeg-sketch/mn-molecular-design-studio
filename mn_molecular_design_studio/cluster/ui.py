@@ -9,6 +9,7 @@ import uuid
 import csv
 import io
 import time
+import zipfile
 from pathlib import Path, PurePosixPath
 
 import pandas as pd
@@ -1917,6 +1918,57 @@ def render_job(reference, user, token, submit):
             st.success("Cancellation requested. The workstation will confirm when execution has stopped.")
     if row.get("metrics"):
         st.json(row.get("metrics", {}), expanded=False)
+    acceptance_counts = (row.get("candidate_summary") or {}).get("acceptance_counts") or {}
+    accepted_count = int(acceptance_counts.get("accepted") or 0)
+    if accepted_count and row.get("local_reference") and row.get("availability") == "online":
+        st.info(
+            f"Validation explicitly accepted {accepted_count:,} design(s). Their structures remain on "
+            f"{config.display_name(row.get('node_name') or 'the source workstation')} until you collect them."
+        )
+        if st.button("Collect accepted designs into shared Database", type="primary", key="cluster-collect-accepted-" + jid):
+            try:
+                operation = _request(
+                    "/jobs/" + jid + "/actions", token,
+                    {"action": "collect_accepted_designs"}, method="POST",
+                )
+                st.session_state["cluster-accepted-collect-op-" + jid] = operation["command_id"]
+            except (ValueError, transport.ClusterUnavailable) as exc:
+                st.error(f"Could not request accepted-design collection: {exc}")
+
+        @st.fragment(run_every=2)
+        def accepted_collection_operation():
+            command_id = st.session_state.get("cluster-accepted-collect-op-" + jid)
+            if not command_id:
+                return
+            try:
+                operation = _request("/commands/" + command_id, token)
+                if operation["status"] == "failed":
+                    st.error(operation.get("error") or "Accepted-design collection failed.")
+                    return
+                if operation["status"] != "completed":
+                    st.info("The source workstation is packaging accepted designs and their structures.")
+                    return
+                response = operation.get("response") or {}
+                bytes_key = "cluster-accepted-bundle-" + command_id
+                if bytes_key not in st.session_state:
+                    st.session_state[bytes_key] = _request(
+                        "/commands/" + command_id + "/file", token, raw=True, timeout=180,
+                    )
+                if "cluster-accepted-promotion-" + command_id not in st.session_state:
+                    from mn_molecular_design_studio.accepted_design_import import promote_accepted_design_bundle
+                    promoted = promote_accepted_design_bundle(
+                        st.session_state[bytes_key], user=user, project_id=str(row.get("project_id") or ""),
+                    )
+                    st.session_state["cluster-accepted-promotion-" + command_id] = promoted
+                promoted = st.session_state["cluster-accepted-promotion-" + command_id]
+                duplicate = " (already collected)" if promoted.get("already_imported") else ""
+                st.success(
+                    f"Collected {promoted['candidate_count']:,} accepted design(s) into the shared Database{duplicate}."
+                )
+            except (ValueError, OSError, zipfile.BadZipFile, transport.ClusterUnavailable) as exc:
+                st.error(f"Could not finish accepted-design collection: {exc}")
+
+        accepted_collection_operation()
     if str(row.get("task_group") or "") in {"ligand-md", "ligand-mmgbsa", "md-analysis"} and row.get("availability") == "online":
         from mn_molecular_design_studio.md_remote_ui import render_remote_md_results
         render_remote_md_results(st, jid, row, token, _fetch_remote_artifact_text)

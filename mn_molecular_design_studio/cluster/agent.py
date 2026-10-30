@@ -18,6 +18,57 @@ from . import bundles, capabilities, config, context, progress as job_progress, 
 log = logging.getLogger(__name__)
 
 
+def _candidate_summary(run: Path, job: dict) -> dict:
+    """Publish campaign counts only; full candidate records stay on this worker."""
+    path = Path(run) / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+    if not path.is_file():
+        return {"schema_version": 1, "status": "unavailable", "candidate_count": None}
+    counts = {"passed": 0, "failed": 0, "unavailable": 0}
+    acceptance = {"accepted": 0, "rejected": 0, "unresolved": 0, "not_evaluated": 0}
+    candidate_count = 0
+    eligible_count = 0
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if not isinstance(row, dict) or not str(row.get("candidate_id") or "").strip():
+                    raise ValueError("Normalized candidate row has no stable identity.")
+                metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+                raw = row.get("raw_metadata") if isinstance(row.get("raw_metadata"), dict) else {}
+                decision = (raw.get("validation_acceptance")
+                            if isinstance(raw.get("validation_acceptance"), dict) else {})
+                eligible = (
+                    raw.get("candidate_pool_level") != "prefilter_generated"
+                    and raw.get("result_kind") not in {"generation_only", "generator_trajectory"}
+                    and str(row.get("stage") or "") not in {"generation.backbone", "generation_backbone", "generator_trajectory"}
+                )
+                if eligible:
+                    eligible_count += 1
+                    filter_value = metrics.get("native_pass_filters", metrics.get("pass_filters"))
+                    if filter_value is None and str(row.get("source_tool") or job.get("tool") or "") == "bindcraft":
+                        kind = str(raw.get("bindcraft_output_kind") or "").casefold()
+                        filter_value = True if kind == "accepted" else False if kind in {"rejected", "filtered"} else None
+                    if isinstance(filter_value, str):
+                        filter_value = {"true": True, "1": True, "pass": True, "passed": True,
+                                        "false": False, "0": False, "fail": False, "failed": False}.get(filter_value.casefold())
+                    counts["passed" if filter_value is True else "failed" if filter_value is False else "unavailable"] += 1
+                decision_status = str(decision.get("status") or "not_evaluated")
+                acceptance[decision_status if decision_status in acceptance else "not_evaluated"] += 1
+                candidate_count += 1
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        return {"schema_version": 1, "status": "invalid", "candidate_count": None, "error": str(exc)}
+    return {
+        "schema_version": 1,
+        "status": "complete",
+        "candidate_count": candidate_count,
+        "eligible_count": eligible_count,
+        "native_filter_counts": counts,
+        "acceptance_counts": acceptance,
+    }
+
+
 class Agent:
     def __init__(self):
         self.settings = config.load()
@@ -88,6 +139,7 @@ class Agent:
                 marker = read_json(run / "molecular_design_studio.json")
                 result_data = read_json(run / "result.json")
                 metrics = result_data.get("metrics", {})
+                compact_candidates = _candidate_summary(run, row) if row.get("status") in {"completed", "succeeded"} else None
                 jid = (
                     metadata.get("cluster_job_id")
                     or marker.get("cluster_job_id")
@@ -103,6 +155,15 @@ class Agent:
                 item = dict(row, cluster_job_id=jid, metrics=metrics, progress=progress,
                             artifacts=self._artifact_manifests.get(reference, []),
                             location=str(run), last_reported_at=time.time(), _signature=list(signature))
+                if compact_candidates is not None:
+                    item["candidate_summary"] = compact_candidates
+                item["worker_metadata"] = {
+                    "resource_allocation": metadata.get("resource_allocation") or {},
+                    "scheduler_worker_id": metadata.get("scheduler_worker_id") or metadata.get("worker_id"),
+                    "worker_started_at": metadata.get("worker_started_at"),
+                    "completed_at": metadata.get("completed_at"),
+                    "software_environment": metadata.get("software_environment") or {},
+                }
                 if self.settings.get("mode") == "worker":
                     outputs = result_data.get("outputs")
                     library_id = outputs.get("library_id") if isinstance(outputs, dict) else None
@@ -344,6 +405,8 @@ class Agent:
                 response = {"job": cancel_job(command["payload"]["local_reference"], reason="Cancelled through the shared workstation catalog")}
             elif command["kind"] == "artifact":
                 response = self.artifact(command)
+            elif command["kind"] == "collect_accepted_designs":
+                response = self.collect_accepted_designs(command)
             elif command["kind"] == "purge":
                 response = self.purge(command)
             else:
@@ -558,6 +621,26 @@ class Agent:
         if response["blob_id"] != bundles.digest_file(path):
             raise ValueError("The downloaded artifact failed its integrity check.")
         return response | {"name": path.name}
+
+    def collect_accepted_designs(self, command):
+        """Transfer only explicitly accepted candidates and their structures."""
+        from mn_molecular_design_studio.accepted_design_import import build_accepted_design_bundle
+        from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import resolve_job
+
+        reference = command["payload"]["local_reference"]
+        job = resolve_job(reference)
+        run_dir = Path(job["run_dir"]).resolve()
+        payload, manifest = build_accepted_design_bundle(
+            run_dir, node_id=self.node_id, validation_job=command["job_id"],
+        )
+        response = transport.node_request("/blobs", binary=payload, method="POST", timeout=180)
+        if response.get("blob_id") != hashlib.sha256(payload).hexdigest():
+            raise ValueError("The accepted-design export failed its SHA-256 integrity check.")
+        return response | {
+            "name": f"accepted-designs-{job.get('run_id') or run_dir.name}.zip",
+            "candidate_count": manifest["candidate_count"],
+            "accepted_candidate_ids": manifest["accepted_candidate_ids"],
+        }
 
     def _poll_server(self, timeout=15, expected=None):
         reply = transport.node_request("/claim", method="POST", timeout=timeout)

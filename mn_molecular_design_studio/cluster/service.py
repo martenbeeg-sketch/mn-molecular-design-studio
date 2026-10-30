@@ -31,12 +31,14 @@ def schema_check(payload, kind, request_dir):
         graph = clean_graph(payload.get("graph"))
         validate_graph(graph, require_inputs=False)
         return
-    allowed = {"schema_version", "workflow", "parameters", "resources", "source_job", "priority"}
+    allowed = {"schema_version", "workflow", "parameters", "resources", "source_job", "priority", "database_collection_policy"}
     if set(payload) - allowed or payload.get("schema_version") != 1 or type(payload.get("schema_version")) is not int:
         raise ValueError("Unsupported workflow request fields or schema version.")
     spec = workflows.WORKFLOWS.get(payload.get("workflow"))
     if spec is None:
         raise ValueError("Unknown workflow.")
+    from mn_molecular_design_studio.collection_policy import validate_policy
+    validate_policy(payload.get("database_collection_policy", "automatic"))
     with workflows.deferred_path_validation():
         from mn_molecular_design_studio.batching import parameter_items
         for item in parameter_items(payload.get("parameters", {})):

@@ -1078,7 +1078,7 @@ def _submit_workflow_request(request_file: str | Path, *, defer_dispatch: bool =
         raise AutomationError(f"Could not read workflow request JSON {request_path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise AutomationError("Workflow request must be a JSON object.")
-    allowed_fields = {"schema_version", "workflow", "parameters", "resources", "source_job", "priority"}
+    allowed_fields = {"schema_version", "workflow", "parameters", "resources", "source_job", "priority", "database_collection_policy"}
     unknown = sorted(set(payload) - allowed_fields)
     if unknown:
         raise AutomationError(f"Unsupported workflow request field(s): {', '.join(unknown)}")
@@ -1091,11 +1091,13 @@ def _submit_workflow_request(request_file: str | Path, *, defer_dispatch: bool =
     spec = WORKFLOWS[workflow_id]
     parameters, function, cpu_cores, resource_gpu = _prepare_selection(spec, payload, request_path)
 
-    from mn_molecular_design_studio.collection_policy import collection_scope
+    from mn_molecular_design_studio.collection_policy import collection_scope, validate_policy
     items = parameters if isinstance(parameters, list) else [parameters]
     external_only = workflow_id in {"library.prepare", "library.centroids", "library.seed_dock"} or any(
         item.get("import_to_database") is False for item in items)
-    with submission_priority(priority), collection_scope("manual" if external_only else "automatic"):
+    requested_collection_policy = validate_policy(payload.get("database_collection_policy", "automatic"))
+    collection_mode = "manual" if external_only else requested_collection_policy
+    with submission_priority(priority), collection_scope(collection_mode):
         if isinstance(parameters, list):
             from mn_molecular_design_studio.engine.workflow_engine.workflows.input_batch import run_input_batch
             run_dir = enqueue_workflow_call(
@@ -1171,10 +1173,12 @@ def validate_workflow_request(request_file: str | Path) -> dict[str, Any]:
     if not isinstance(workflow_id, str) or workflow_id not in WORKFLOWS:
         raise AutomationError(f"Unknown workflow '{workflow_id}'. Use 'workflow list' to see supported IDs.")
     spec = WORKFLOWS[workflow_id]
-    allowed_fields = {"schema_version", "workflow", "parameters", "resources", "source_job", "priority"}
+    allowed_fields = {"schema_version", "workflow", "parameters", "resources", "source_job", "priority", "database_collection_policy"}
     unknown = sorted(set(payload) - allowed_fields)
     if unknown:
         raise AutomationError(f"Unsupported workflow request field(s): {', '.join(unknown)}")
+    from mn_molecular_design_studio.collection_policy import validate_policy
+    validate_policy(payload.get("database_collection_policy", "automatic"))
     priority = _request_priority(payload)
     parameters, function, cpu_cores, gpu_device = _prepare_selection(spec, payload, request_path)
     return {

@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mn_molecular_design_studio.cluster import bundles, config, service
-from mn_molecular_design_studio.cluster.agent import Agent
+from mn_molecular_design_studio.cluster.agent import Agent, _candidate_summary
 from mn_molecular_design_studio.cluster.store import Store
 
 
@@ -46,6 +46,33 @@ def test_identity_is_stable_and_node_ids_do_not_depend_on_storage_paths(monkeypa
     second = config.identity()
     assert first != second
     assert config.job_id(first, "design/same-run") != config.job_id(second, "design/same-run")
+
+
+def test_worker_heartbeat_publishes_counts_without_candidate_identities_or_structures(tmp_path):
+    run = tmp_path / "design" / "run-1"
+    candidates = run / "artifacts/normalized_candidates"
+    candidates.mkdir(parents=True)
+    (run / "design.pdb").write_text("private coordinates")
+    rows = [
+        {"candidate_id": "private-design-1", "source_tool": "rfd4", "stage": "complex_refolding",
+         "binder_sequence": "ACDE", "metrics": {"native_pass_filters": True}, "raw_metadata": {}},
+        {"candidate_id": "private-design-2", "source_tool": "rfd4", "stage": "complex_refolding",
+         "metrics": {"native_pass_filters": False}, "raw_metadata": {}},
+        {"candidate_id": "private-design-3", "source_tool": "rfd4", "stage": "complex_refolding",
+         "metrics": {}, "raw_metadata": {"validation_acceptance": {"status": "accepted"}}},
+    ]
+    (candidates / "candidates.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    summary = _candidate_summary(run, {"tool": "rfd4"})
+
+    assert summary["candidate_count"] == 3
+    assert summary["eligible_count"] == 3
+    assert summary["native_filter_counts"] == {"passed": 1, "failed": 1, "unavailable": 1}
+    assert summary["acceptance_counts"]["accepted"] == 1
+    assert not ({"candidates", "artifact_sha256", "artifact_path"} & set(summary))
+    assert "private-design-1" not in json.dumps(summary)
+    assert "ACDE" not in json.dumps(summary)
+    assert "private coordinates" not in json.dumps(summary)
 
 
 def test_automatic_placement_uses_other_ready_workstation_when_origin_is_busy(cluster):

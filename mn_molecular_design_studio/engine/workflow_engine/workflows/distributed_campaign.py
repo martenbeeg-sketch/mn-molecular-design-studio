@@ -227,6 +227,16 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
     )
 
     capability = generator_capabilities(generator_id)
+    remote_artifact_policy = str(config.get("remote_artifact_policy") or "auto").strip().lower()
+    if remote_artifact_policy not in {"auto", "eager", "defer_generated"}:
+        raise ValueError("remote_artifact_policy must be auto, eager, or defer_generated.")
+    can_defer_artifacts = (
+        objective_type == "generated" and not requirements and shared_objective is None
+    )
+    if remote_artifact_policy == "auto":
+        remote_artifact_policy = "defer_generated" if can_defer_artifacts else "eager"
+    if remote_artifact_policy == "defer_generated" and not can_defer_artifacts:
+        raise ValueError("Deferred remote artifacts require a generated objective without in-campaign validation or a shared objective.")
     if objective_type == "accepted":
         validate_stopping_policy(
             generator_id, acceptance_level, requirements,
@@ -281,6 +291,7 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
         "max_concurrent_generation_jobs": generation_jobs,
         "seed": seed,
         "validation_stages": requirements,
+        "remote_artifact_policy": remote_artifact_policy,
         "diversity": diversity,
         "max_retries": max_retries,
         "poll_interval_seconds": float(poll_interval),
@@ -317,7 +328,11 @@ def _shared_objective_runtime(parent_run_dir: Path, config: dict[str, Any]):
 
 def _state_accepted_count(state: dict[str, Any]) -> int:
     if state["config"].get("objective_type", "accepted") == "generated":
-        return len(state.get("candidates", {}))
+        return len(state.get("candidates", {})) + sum(
+            int(row.get("candidate_count") or 0)
+            for row in state.get("deferred_outputs", {}).values()
+            if row.get("status") == "deferred"
+        )
     acceptance_field = {
         "native": "native_acceptance",
         "validated": "validated_acceptance",
@@ -368,6 +383,7 @@ class CampaignLedger(ExecutionJobLedgerMixin):
                 "attempts": {},
                 "receipts": {},
                 "candidates": {},
+                "deferred_outputs": {},
                 "events": [{"type": "campaign_created", "at": now}],
             })
         return ledger
@@ -475,7 +491,16 @@ class CampaignLedger(ExecutionJobLedgerMixin):
             "attempts_authorized": len(attempts),
             "attempts_started": sum(bool(item.get("first_started_at")) for item in attempts),
             "attempts_completed": sum(item.get("status") == "completed" for item in attempts),
-            "generated_candidates": len(candidates),
+            "generated_candidates": len(candidates) + sum(
+                int(row.get("candidate_count") or 0)
+                for row in state.get("deferred_outputs", {}).values()
+                if row.get("status") == "deferred"
+            ),
+            "deferred_candidates": sum(
+                int(row.get("candidate_count") or 0)
+                for row in state.get("deferred_outputs", {}).values()
+                if row.get("status") == "deferred"
+            ),
             "native_rejected_trajectories": sum(
                 max(
                     0,
@@ -509,6 +534,74 @@ class CampaignLedger(ExecutionJobLedgerMixin):
                 for item in attempts
             ),
         }
+
+    def record_deferred_receipt(
+        self, attempt_id: str, receipt_id: str, *, native_state: dict[str, Any],
+        native_output_ids: list[str], candidate_records: list[dict[str, Any]],
+        evidence: dict[str, Any], candidate_count: int | None = None, gpu_seconds: float = 0.0,
+    ) -> bool:
+        """Record a remote design count and job reference without candidate payloads."""
+        if (not receipt_id or not isinstance(native_state, dict) or not isinstance(evidence, dict)
+                or not isinstance(native_output_ids, list) or not isinstance(candidate_records, list)):
+            raise ValueError("A deferred output receipt needs a verified identity summary and evidence.")
+        output_ids = [str(value) for value in native_output_ids]
+        if any(not value for value in output_ids) or len(set(output_ids)) != len(output_ids):
+            raise ValueError("Deferred native output identities must be unique and nonempty.")
+        rows = [deepcopy(row) for row in candidate_records]
+        count = len(rows) if candidate_count is None else candidate_count
+        if type(count) is not int or count < 0 or (rows and len(rows) != count):
+            raise ValueError("Deferred candidate count must match any included candidate records.")
+        if any(not row.get("candidate_id") for row in rows):
+            raise ValueError("Deferred candidate records need stable candidate identities.")
+        with _locked(self.path):
+            state = _read(self.path)
+            attempt = state["attempts"].get(attempt_id)
+            if attempt is None:
+                raise KeyError(f"Unknown campaign attempt: {attempt_id}")
+            if state["schema_version"] == 2:
+                job = state["execution_jobs"][attempt["execution_job_id"]]
+                if job["mode"] != "single_attempt_adapter":
+                    raise ValueError("Deferred receipts require the single-attempt campaign adapter.")
+                execution = _execution(job)
+                changed = _result(
+                    state, job, execution["execution_id"], receipt_id, attempt_id,
+                    job["manifest_digest"], "completed", native_state, output_ids, [], evidence,
+                )
+                if not changed:
+                    return False
+                execution["submission_state"] = "completed"
+                record_lease(job, execution["execution_id"], Path(str(attempt.get("child_run_dir") or attempt_id)).name, gpu_seconds)
+            else:
+                if receipt_id in state["receipts"] or attempt.get("status") == "completed":
+                    return False
+                attempt["native_state"] = deepcopy(native_state)
+                attempt.setdefault("compute_runs", {})
+                if attempt.get("child_run_dir"):
+                    attempt["compute_runs"][Path(str(attempt["child_run_dir"])).name] = max(0.0, float(gpu_seconds))
+                attempt["native_output_ids"] = output_ids
+                attempt["status"] = "completed"
+                attempt["completed_at"] = utc_now()
+                attempt["receipts"] = [*attempt.get("receipts", []), receipt_id]
+                state["receipts"][receipt_id] = {"attempt_id": attempt_id, "at": utc_now(), "deferred": True}
+            deferred = state.setdefault("deferred_outputs", {})
+            if receipt_id in deferred:
+                raise ValueError("Deferred receipt identity was already used.")
+            record = {
+                "receipt_id": receipt_id, "attempt_id": attempt_id,
+                "candidate_count": count, "native_output_ids": output_ids,
+                "candidates": rows, "evidence": deepcopy(evidence),
+                "status": "deferred", "at": utc_now(),
+            }
+            deferred[receipt_id] = record
+            attempt["deferred_receipt_id"] = receipt_id
+            attempt["deferred_candidate_count"] = count
+            state["updated_at"] = utc_now()
+            state["events"].append({
+                "type": "remote_outputs_deferred", "attempt_id": attempt_id,
+                "receipt_id": receipt_id, "candidate_count": count, "at": state["updated_at"],
+            })
+            _atomic_json(self.path, state)
+            return True
 
     def update_candidate(self, candidate_id: str, **details: Any) -> None:
         with _locked(self.path):
@@ -982,6 +1075,10 @@ def _submit_rfd4_peer_attempt(
         "parameters": parameters,
         "resources": resources,
     }
+    if state["config"].get("remote_artifact_policy") == "defer_generated":
+        # The worker retains all output files and does not auto-ingest an
+        # unfiltered batch into its Database. Promotion happens after review.
+        request["database_collection_policy"] = "manual"
 
     def persist() -> None:
         ledger.transition(
@@ -1493,6 +1590,19 @@ def _rfd4_candidate_rows(
     return result
 
 
+def _deferred_remote_candidate_records(
+    campaign_id: str, attempt: dict[str, Any], job: dict[str, Any], summary: dict[str, Any],
+) -> tuple[list[str], list[dict[str, Any]], int]:
+    """Keep only a batch count and source reference in the coordinator ledger."""
+    local_reference = str(job.get("local_reference") or job.get("local_ref") or "")
+    node_id = str(job.get("node_id") or "")
+    count = summary.get("candidate_count")
+    if not local_reference or not node_id or type(count) is not int or count < 0:
+        raise RuntimeError("Remote candidate summary is missing its worker identity or design count.")
+    source_job = f"cluster://{node_id}/{local_reference}"
+    return [], [], count
+
+
 def _create_rfd4_attempt_child(
     parent_run_dir: Path,
     ledger: CampaignLedger,
@@ -1572,6 +1682,9 @@ def _create_rfd4_attempt_child(
         parent_task_group=parent_run_dir.parent.name,
         role="distributed_rfd4_attempt", engine="rfd4_proteina",
     )
+    if config.get("remote_artifact_policy") == "defer_generated":
+        from mn_molecular_design_studio.collection_policy import set_run_policy
+        set_run_policy(child_run_dir, "manual")
     metadata = read_json(child_run_dir / "metadata.json")
     metadata.update(
         distributed_campaign_id=campaign_id,
@@ -2023,10 +2136,26 @@ def _reconcile_attempts(
                     attempt = ledger.snapshot()["attempts"][attempt_id]
                     peer = dict(attempt.get("cluster_submission") or peer)
                 owner_id, project_id, development_mode = _campaign_actor(parent_run_dir)
-                peer_status, peer_output, peer_job = candidate_batches.poll(
-                    peer, owner_id=owner_id, project_id=project_id,
-                    allow_development=development_mode,
-                )
+                defer_remote_artifacts = config.get("remote_artifact_policy") == "defer_generated"
+                if defer_remote_artifacts:
+                    peer_status, peer_job = candidate_batches.poll_summary(
+                        peer, owner_id=owner_id, project_id=project_id,
+                        allow_development=development_mode,
+                    )
+                    if peer_status == "summary_unavailable":
+                        peer_job = dict(peer_job, wait_reason=(
+                            "Worker completed without publishing a design count; artifacts remain on the worker. "
+                            "Update that worker or inspect the native Results before retrying."
+                        ))
+                        peer_status = "failed"
+                        peer_output = None
+                    else:
+                        peer_output = None
+                else:
+                    peer_status, peer_output, peer_job = candidate_batches.poll(
+                        peer, owner_id=owner_id, project_id=project_id,
+                        allow_development=development_mode,
+                    )
             except Exception as exc:
                 failure = f"{type(exc).__name__}: {exc}"
                 child_metadata.update(status="failed", worker_error=failure, completed_at=utc_now())
@@ -2037,7 +2166,9 @@ def _reconcile_attempts(
             peer["cluster_job_id"] = peer.get("cluster_job_id") or peer_job.get("cluster_job_id")
             peer["worker_node_id"] = peer_job.get("node_id")
             peer["wait_reason"] = peer_job.get("wait_reason") or peer.get("wait_reason") or ""
-            remote_metadata = peer_job.get("metadata") if isinstance(peer_job.get("metadata"), dict) else {}
+            remote_metadata = peer_job.get("worker_metadata") if isinstance(peer_job.get("worker_metadata"), dict) else (
+                peer_job.get("metadata") if isinstance(peer_job.get("metadata"), dict) else {}
+            )
             ledger.transition(
                 attempt_id,
                 "running" if peer_status == "running" else "queued",
@@ -2057,6 +2188,62 @@ def _reconcile_attempts(
                 scheduler_worker_id=remote_metadata.get("scheduler_worker_id") or peer.get("worker_node_id"),
             )
             ledger.observe_worker_metadata(attempt_id, child_metadata)
+            if peer_status == "completed" and peer_output is None and defer_remote_artifacts:
+                summary = peer.get("candidate_summary") or peer_job.get("candidate_summary")
+                if not isinstance(summary, dict):
+                    raise RuntimeError("Completed worker result is missing its compact candidate summary.")
+                output_ids, deferred_candidates, deferred_count = _deferred_remote_candidate_records(
+                    state["campaign_id"], attempt, peer_job, summary,
+                )
+                source_job = f"cluster://{peer_job.get('node_id')}/{peer_job.get('local_reference') or peer_job.get('local_ref')}"
+                native_state = {
+                    "engine": generator_id,
+                    "authoritative": False,
+                    "attempt_unit": "one native design request",
+                    "requested_designs": 1,
+                    "output_candidates": deferred_count,
+                    "seed": int(attempt["seed"]),
+                    "output_storage": "worker_local",
+                }
+                receipt_id = hashlib.sha256(
+                    f"{peer.get('cluster_job_id')}:{attempt_id}".encode()
+                ).hexdigest()
+                ledger.record_deferred_receipt(
+                    attempt_id, receipt_id, native_state=native_state,
+                    native_output_ids=output_ids, candidate_records=deferred_candidates,
+                    candidate_count=deferred_count,
+                    evidence={
+                        "kind": "worker_published_candidate_count",
+                        "cluster_job_id": peer.get("cluster_job_id"),
+                        "source_job": source_job,
+                        "worker_node_id": peer_job.get("node_id"),
+                        "worker_run_id": peer_job.get("local_reference") or peer_job.get("local_ref"),
+                        "candidate_count": deferred_count,
+                        "eligible_count": int(summary.get("eligible_count") or 0),
+                        "native_filter_counts": summary.get("native_filter_counts", {}),
+                        "acceptance_counts": summary.get("acceptance_counts", {}),
+                        "transferred_candidate_data": False,
+                    },
+                    gpu_seconds=float(remote_metadata.get("gpu_seconds") or 0),
+                )
+                child_metadata.update(
+                    status="completed", completed_at=remote_metadata.get("completed_at") or utc_now(),
+                    remote_status="completed", deferred_output=True,
+                    deferred_candidate_count=deferred_count,
+                    deferred_source_job=source_job,
+                    result_collection_pending=False,
+                )
+                from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json
+                write_json(child / "metadata.json", child_metadata)
+                write_json(child / "result.json", {
+                    "success": True,
+                    "outputs": {"candidate_count": deferred_count, "source_job": source_job,
+                                "structures_transferred": 0},
+                    "metrics": {"candidate_count": deferred_count,
+                                "deferred_candidate_count": deferred_count,
+                                "remote_artifacts_deferred": True},
+                })
+                continue
             if peer_status == "completed" and peer_output is not None:
                 materialize = _materialize_rfd4_peer_output if generator_id == "rfd4_proteina" else _materialize_bindcraft2_peer_output
                 if not materialize(
@@ -2287,10 +2474,20 @@ def _sync_parent_results(
             "worker": child_metadata.get("scheduler_worker_id") or child_metadata.get("worker_id") or "",
             "resource_allocation": child_metadata.get("resource_allocation") or {},
         })
+    counters = ledger.counters()
+    deferred_outputs = [
+        {
+            "receipt_id": row.get("receipt_id"), "attempt_id": row.get("attempt_id"),
+            "candidate_count": row.get("candidate_count", 0),
+            "evidence": row.get("evidence", {}), "status": row.get("status"),
+        }
+        for row in state.get("deferred_outputs", {}).values()
+    ]
     summary = {
         "schema_version": 1,
         "campaign_id": state["campaign_id"],
         "generator_id": state["config"].get("generator_id") or "bindcraft2",
+        "remote_artifact_policy": state["config"].get("remote_artifact_policy", "eager"),
         "acceptance_level": state["config"]["acceptance_level"],
         "accepted_target": state["config"]["accepted_target"],
         "termination_reason": state.get("termination_reason"),
@@ -2298,11 +2495,14 @@ def _sync_parent_results(
             state.get("generation_budget_exhausted")
             or len(state["attempts"]) >= int(state["config"]["max_attempts"])
         ),
-        "counters": ledger.counters(),
+        "counters": counters,
         "gpu_compute_seconds": ledger.gpu_compute_seconds(),
         "attempts": attempts,
+        "deferred_candidate_count": counters.get("deferred_candidates", 0),
+        "deferred_outputs": deferred_outputs,
         **({"execution_job_accounting": ledger.execution_job_summary()} if state["schema_version"] == 2 else {}),
-        "candidate_count": len(enriched),
+        "candidate_count": len(enriched) + counters.get("deferred_candidates", 0),
+        "materialized_candidate_count": len(enriched),
         "candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl",
         **({"shared_campaign": shared.summary()} if shared else {}),
     }
@@ -2312,7 +2512,9 @@ def _sync_parent_results(
         "termination_reason": state.get("termination_reason"),
         "generation_budget_exhausted": summary["generation_budget_exhausted"],
         "counters": summary["counters"],
-        "candidate_count": len(candidates),
+        "candidate_count": len(enriched) + counters.get("deferred_candidates", 0),
+        "deferred_candidate_count": counters.get("deferred_candidates", 0),
+        "materialized_candidate_count": len(enriched),
         **({"shared_campaign": shared.summary()} if shared else {}),
     }
     write_json(parent_run_dir / "metadata.json", metadata)

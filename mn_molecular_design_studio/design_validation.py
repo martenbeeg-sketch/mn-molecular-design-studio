@@ -244,8 +244,18 @@ def build_tasks(sources: list[dict], *, mode: str, profile: dict, target_use_msa
             except (OSError, ValueError, TypeError):
                 pass
         ids = source.get("candidate_ids")
+        if ids is None:
+            limit = source.get("candidate_limit")
+            if type(limit) is not int or not 1 <= limit <= 1024:
+                raise ValueError("A remote design source needs a candidate_limit between 1 and 1024.")
+            ids = list(rows)[:limit]
         if not isinstance(ids, list) or not ids:
             raise ValueError("Select at least one design from every selected run.")
+        if source.get("candidate_limit") is not None and len(ids) < source["candidate_limit"]:
+            raise ValueError(
+                f"Only {len(ids)} eligible design(s) are available in {run_dir.name}; "
+                f"the requested batch contains {source['candidate_limit']}."
+            )
         for identifier in ids:
             key = (str(run_dir), str(identifier))
             if key in seen:
@@ -290,6 +300,7 @@ def build_tasks(sources: list[dict], *, mode: str, profile: dict, target_use_msa
                                       "query_chain_id": chain_map[c], "template_chain_id": c})
             task = {
                 "name": f"{run_dir.name}/{identifier}",
+                "source_candidate_id": identifier,
                 "target_protein_sequences": ":".join(sequence(info["chains"][c]) for c in target_ids),
                 "binder_sequence": info["binder_sequence"],
                 "molecule_chain_options": options,

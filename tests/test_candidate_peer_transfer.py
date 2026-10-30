@@ -52,6 +52,33 @@ def test_candidate_bundle_is_content_stable_and_does_not_copy_checkpoints(tmp_pa
     assert first[3] == 0
 
 
+def test_poll_summary_reads_counts_without_requesting_candidate_artifacts(monkeypatch):
+    summary = {
+        "schema_version": 1, "status": "complete", "candidate_count": 4, "eligible_count": 3,
+        "native_filter_counts": {"passed": 2, "failed": 1, "unavailable": 0},
+        "acceptance_counts": {"accepted": 0, "rejected": 0, "unresolved": 0, "not_evaluated": 4},
+    }
+
+    class FakeStore:
+        def job(self, job_id, user):
+            assert job_id == "cluster-job"
+            return {"status": "completed", "node_id": "worker", "candidate_summary": summary}
+
+        def nodes(self):
+            raise AssertionError("A completed job summary does not need an artifact or node request.")
+
+    monkeypatch.setattr(cb, "Store", FakeStore)
+    monkeypatch.setattr(cb, "actor", lambda *args, **kwargs: {"id": "researcher"})
+    batch = {"cluster_job_id": "cluster-job"}
+
+    status, job = cb.poll_summary(batch, owner_id="researcher", project_id="project")
+
+    assert status == "completed"
+    assert job["candidate_summary"] == summary
+    assert batch["candidate_summary"] == summary
+    assert "candidates" not in batch["candidate_summary"]
+
+
 def test_output_transfer_resumes_and_rejects_corruption(tmp_path, monkeypatch):
     monkeypatch.setenv('MDS_CLUSTER_HOME', str(tmp_path / 'cluster'))
     data = b'scientific artifact'
