@@ -80,6 +80,46 @@ def read_json(path: Path) -> dict:
     return resolve_managed_paths(payload, run_dir=_job_dir_for_path(Path(path)))
 
 
+_RESULT_PARAMETER_KEYS = {
+    "target_name", "target_id", "target_type", "input_type", "design_task", "design_mode",
+    "binder_format", "binder_type", "design_count", "num_designs", "number_of_designs",
+    "num_candidates", "num_replicates", "num_seq_per_target", "batch_size", "seed",
+    "objective_type", "generated_target", "accepted_target", "passing_target", "max_attempts",
+    "max_runtime_seconds", "deadline_at", "hotspots", "hotspot_residues", "contig",
+    "target_chain", "engine", "model", "model_name", "sequence_model", "cofolding_engine",
+    "refolding_engine", "num_recycles", "recycling_steps", "diffusion_samples", "num_predictions",
+    "quality_profile", "min_plddt", "min_iptm", "max_ipae", "iptm_cutoff", "ipae_cutoff",
+    "ipsae_cutoff", "rmsd_cutoff", "confidence_threshold", "max_rmsd", "temperature",
+    "score_threshold", "filter_profile", "validation_mode", "acceptance_mode",
+}
+
+
+def campaign_result_parameters(parameters: dict) -> dict:
+    """Return a small, sequence-free settings summary for campaign Results."""
+    if not isinstance(parameters, dict):
+        return {}
+
+    def safe_string(key, value, *, maximum=120):
+        if len(value) > maximum or value.startswith(("/", "./", "../", "~/", "file://", "cluster://")):
+            return False
+        return key in {"contig", "target_type", "input_type"} or ("/" not in value and "\\" not in value)
+
+    result = {}
+    for key, value in parameters.items():
+        normalized = str(key).casefold()
+        if normalized not in _RESULT_PARAMETER_KEYS or value is None:
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            if isinstance(value, str) and not safe_string(normalized, value):
+                continue
+            result[str(key)] = value
+        elif isinstance(value, (list, tuple)) and len(value) <= 12:
+            if all(not isinstance(item, str) or safe_string(normalized, item, maximum=80) for item in value) and all(
+                    isinstance(item, (str, int, float, bool)) for item in value):
+                result[str(key)] = list(value)
+    return result
+
+
 def _job_dir_for_path(path: Path) -> Path | None:
     try:
         relative = Path(path).expanduser().resolve().relative_to(runs_root().expanduser().resolve())
@@ -950,6 +990,13 @@ def collect_jobs(task_group: str | None = None, *, include_hidden: bool = False)
                     "warning_level": metadata.get("warning_level", "degraded" if warning else ""),
                     "campaign_name": job_name(metadata, input_params),
                     "campaign_id": metadata.get("campaign_id") or (Path(pipeline_parent.rstrip("/")).name if pipeline_parent else ""),
+                    "campaign_group_id": str(
+                        metadata.get("campaign_group_id") or input_params.get("campaign_group_id")
+                        or metadata.get("distributed_campaign_id")
+                        or (metadata.get("campaign_id") if not is_visual_pipeline else "") or ""
+                    ),
+                    "campaign_group_name": str(metadata.get("campaign_group_name") or input_params.get("campaign_group_name") or ""),
+                    "campaign_parameters": campaign_result_parameters(input_params),
                     "pipeline_parent_node_id": str(metadata.get("pipeline_parent_node_id") or ""),
                     "pipeline_iteration": int(metadata.get("pipeline_iteration") or metadata.get("active_learning_round") or 0),
                     "pipeline_name": pipeline_name,

@@ -10,7 +10,7 @@ from mn_molecular_design_studio.design_validation import (
 from mn_molecular_design_studio.cofolding_input import prediction_settings_for, render_molecule_editor
 
 
-def _acceptance_controls(key, engine_id, mode, source_tools=(), inferred_formats=(), inferred_target_types=()):
+def _acceptance_controls(key, engine_id, mode, source_tools=(), inferred_formats=(), inferred_target_types=(), evidence_only=False):
     from mn_molecular_design_studio.validation_acceptance import (
         BINDER_FORMATS, TARGET_TYPES, BINDCRAFT2_REFERENCE, available_metrics, bindcraft2_reference_policy,
     )
@@ -61,7 +61,8 @@ def _acceptance_controls(key, engine_id, mode, source_tools=(), inferred_formats
         if not st.checkbox(f"Confirm all selected targets are {TARGET_TYPES[target_type]}",
                            value=False, key=f"{target_key}-confirm"):
             format_errors.append("Confirm the target type for candidates without recorded input provenance.")
-    mandatory_rows = available_metrics(binder_format, target_type, mode, engine=engine_id)
+    mandatory_rows = available_metrics(binder_format, target_type, mode, engine=engine_id,
+                                       source_tools=source_tools)
     information_rows = available_metrics(binder_format, target_type, mode, engine=engine_id,
                                          source_tools=source_tools, informational=True)
     mandatory_options = {spec["field"]: spec for _, spec in mandatory_rows
@@ -70,10 +71,10 @@ def _acceptance_controls(key, engine_id, mode, source_tools=(), inferred_formats
     mandatory_fields = list(mandatory_options)
     criteria_key = f"{key}-{binder_format}-{target_type}-{mode}"
     reference_rules, inactive_reference = bindcraft2_reference_policy(
-        binder_format, target_type, mode, dict(mandatory_rows))
+        binder_format, target_type, mode, dict([*mandatory_rows, *information_rows]))
     reference_by_field = {rule["field"]: rule for rule in reference_rules}
     default_filters = [field for field in mandatory_fields if field in reference_by_field]
-    st.caption("Starting criteria follow the installed BindCraft2 format and target defaults where this independent engine provides a compatible measurement. Values and operators are editable; each result retains the selected engine and exact measurement method.")
+    st.caption("Starting criteria follow the installed BindCraft2 format defaults where this evidence source provides a compatible measurement. Values and operators are editable; Results retain the source tool and exact measurement method.")
     selected_filters = st.multiselect("Mandatory acceptance measurements", mandatory_fields,
                                       default=default_filters,
                                       format_func=lambda field: f"{mandatory_options[field]['label']} · {mandatory_options[field]['unit']}",
@@ -121,9 +122,10 @@ def _acceptance_controls(key, engine_id, mode, source_tools=(), inferred_formats
                                   index=rank_options.index(ipdae_field) if source_only_bindcraft2 and ipdae_field else 0,
                                   key=f"{criteria_key}-acceptance-ranking")
     if target_type == "fasta_idr":
-        st.caption("FASTA / IDR mode disables target-coordinate templates and target-aligned pose RMSD. Binder self-consistency can still be measured; target-pose RMSD is unavailable.")
+        st.caption("FASTA / IDR mode does not filter target pLDDT or target-aligned pose RMSD: the target has no fixed reference structure. No confidence value is substituted for either measure.")
     measured_labels = [spec["label"] for _, spec in mandatory_rows]
-    st.caption("Independent engine measurements available for this setup: " + (", ".join(measured_labels) or "none"))
+    source_label = "Saved evidence" if evidence_only else "Independent engine measurements"
+    st.caption(source_label + " available for this setup: " + (", ".join(measured_labels) or "none"))
     source_labels = [spec["label"] for _, spec in information_rows if spec.get("source_tools")]
     if source_labels:
         st.caption("Source-design measurements available for display or ranking: " + ", ".join(source_labels))
@@ -147,7 +149,9 @@ def _acceptance_controls(key, engine_id, mode, source_tools=(), inferred_formats
 
 
 def render_batch_controls(engine_id, profile, project_id, job_name, schema, *, search_jobs, submit,
-                          allow_new_batch=True, include_acceptance=False, existing_designs_only=False):
+                          allow_new_batch=True, include_acceptance=False, existing_designs_only=False,
+                          evaluation_only=False):
+    from mn_molecular_design_studio.candidate_sets import native_filter
     key = f"design-validation-{profile.get('form_key', engine_id)}-{project_id or 'no-project'}"
     sources = []
     with st.container():
@@ -167,8 +171,12 @@ def render_batch_controls(engine_id, profile, project_id, job_name, schema, *, s
                                         key=f"{key}-count")) if allow_new_batch else 1
             return False, count
         available_modes = ["Complex refolding"] if profile.get("requires_target_template") or profile["input_kind"] == "boltzgen" else ["Complex refolding", "Binder alone"]
-        mode_label = st.radio("Prediction", available_modes, key=f"{key}-mode", horizontal=True)
-        mode = "complex" if mode_label == "Complex refolding" else "binder"
+        if evaluation_only:
+            mode = "complex"
+            st.caption("Evaluation only: uses recorded model scores and the selected designs' saved structures. It will not launch a predictor.")
+        else:
+            mode_label = st.radio("Prediction", available_modes, key=f"{key}-mode", horizontal=True)
+            mode = "complex" if mode_label == "Complex refolding" else "binder"
         if not project_id:
             st.info("Select a project above to see its successfully completed design campaigns.")
             return True, 0
@@ -272,7 +280,7 @@ def render_batch_controls(engine_id, profile, project_id, job_name, schema, *, s
                     f"{candidate}"
                     + (f" · {len(str(by_candidate[candidate].get('binder_sequence') or '').replace(':', ''))} binder residues"
                        if by_candidate[candidate].get("binder_sequence") else "")
-                    + (f" · native {by_candidate[candidate].get('native_filter_status', 'unavailable')}"
+                    + (f" · native {native_filter(by_candidate[candidate])}"
                        if include_acceptance else "")
                 ),
             )
@@ -336,12 +344,48 @@ def render_batch_controls(engine_id, profile, project_id, job_name, schema, *, s
                 acceptance_policy, target_type, acceptance_errors = _acceptance_controls(
                     key, engine_id, mode, source_tools=source_tools,
                     inferred_formats=inferred_formats,
-                    inferred_target_types=inferred_target_types)
+                    inferred_target_types=inferred_target_types,
+                    evidence_only=evaluation_only)
             acceptance_errors.extend(source_errors)
             if acceptance_policy.get("binder_format") == "cyclic_peptide" and not profile.get("supports_cyclic"):
                 message = f"{profile['label']} does not preserve cyclic peptide topology. Choose a co-folding engine with cyclic-chain support."
                 st.error(message)
                 acceptance_errors.append(message)
+        if evaluation_only:
+            selected_sources = [identifier for identifier in selected if identifier in source_options]
+            if len(selected_sources) != 1:
+                acceptance_errors.append("Choose exactly one completed design batch for this filtering run.")
+            selected_source = source_options.get(selected_sources[0]) if len(selected_sources) == 1 else None
+            selected_local = next((row for row in sources if selected_source and
+                                   row["source_run_dir"] == str(Path(selected_source["run_dir"]))), None)
+            selected_remote = bool(selected_source and selected_sources[0] in remote_by_id)
+            if selected_source and selected_local is None and not selected_remote:
+                acceptance_errors.append("The chosen design batch could not be resolved.")
+            if selected_local is not None and not selected_local["candidate_ids"]:
+                acceptance_errors.append("Select at least one candidate from the chosen batch.")
+            if selected_remote and not remote_candidate_limit:
+                acceptance_errors.append("Choose how many saved candidates from the remote batch to filter.")
+            count = len(selected_local["candidate_ids"]) if selected_local else int(remote_candidate_limit or 0)
+            st.caption(f"{count} saved candidate(s) selected. Native measurements and geometry from their saved structures will be evaluated; no prediction is run.")
+            if st.button("Run Validation & Acceptance", type="primary",
+                         disabled=not bool(project_id and selected_source and not acceptance_errors),
+                         key=f"{key}-run-saved-evidence"):
+                try:
+                    parameters = {
+                        "job_name": job_name or "Validation & Acceptance",
+                        "acceptance_policy": acceptance_policy,
+                        "candidate_ids": selected_local["candidate_ids"] if selected_local else None,
+                        "candidate_limit": int(remote_candidate_limit) if selected_remote else None,
+                        "_database_collection_policy": "manual",
+                    }
+                    source_job = (remote_source_job if selected_remote else
+                                  f"{selected_source.get('task_group') or 'design'}/{selected_source['run_id']}")
+                    parameters["source_job"] = source_job
+                    submit(schema, "analysis.validation_acceptance", parameters, project_id,
+                           {"prioritize": False}, "Validation & Acceptance")
+                except (ValueError, TypeError, KeyError) as exc:
+                    st.error(f"Could not start acceptance filtering: {exc}")
+            return True, 0
         target_msa = st.checkbox("Use target MSA", value=True, key=f"{key}-target-msa",
                                  disabled=mode == "binder" or not profile.get("supports_msa"),
                                  help="Reuse the shared reference MSA or fetch it from ColabFold. The designed binder always uses a single sequence.")

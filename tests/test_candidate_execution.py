@@ -71,6 +71,94 @@ def test_policy_is_opt_in_and_validated():
             ce.policy(change)
 
 
+def test_dispatch_time_limit_policy_validates_and_preserves_legacy_defaults():
+    assert 'max_runtime_seconds' not in ce.policy()
+    assert ce.policy({'mode': 'sharded', 'max_runtime_seconds': 60})['max_runtime_seconds'] == 60
+    for config in ({'max_runtime_seconds': 60}, {'mode': 'sharded', 'max_runtime_seconds': -1},
+                   {'mode': 'sharded', 'deadline_at': 'tomorrow'}):
+        with pytest.raises(ValueError):
+            ce.policy(config)
+
+
+@pytest.mark.parametrize('kind', ['rfd3', 'boltz2', 'ligandmpnn', 'sequence_qc', 'ipsae'])
+def test_common_dispatch_deadline_applies_to_independent_operations(tmp_path, monkeypatch, kind):
+    assert ce.supports(kind, {'candidates_jsonl': 'source'})
+    rows = [dict(candidate_id=f'c{i}', binder_sequence='AAA') for i in range(5)]
+    source = gp._local_source(tmp_path, 'source', rows)
+    node = dict(id='step', data=dict(kind=kind, label=kind))
+    monkeypatch.setattr(gp, 'node_request', lambda kind, params, source, name:
+                        dict(workflow='mock', parameters=dict(candidates_jsonl=source.get('candidates_jsonl'))))
+    monkeypatch.setattr(gp, '_submit', lambda *a, **k: pytest.fail('Expired scope dispatched work'))
+    monkeypatch.setattr(gp, '_attach_refold_input_references', lambda output, *a: output)
+    current = {}
+    settings = ce.policy({'mode': 'sharded', 'batch_size': 2, 'deadline_at': '2000-01-01T00:00:00Z'})
+    output, status = ce.tick(tmp_path, node, current, source, {'num_designs': 5}, 'a' * 64, settings,
+        graph=gp, owner_id='user', project_id='project', gpu_device='auto', persist=lambda: None)
+    assert status == 'completed'
+    assert [b['unit_count'] for b in current['batches']] == [2, 2, 1]
+    assert current['candidate_progress']['stopped_units'] == 5
+    assert output['candidate_count'] == 0
+    started = current['started_at']
+    ce.tick(tmp_path, node, current, source, {'num_designs': 5}, 'a' * 64, settings,
+        graph=gp, owner_id='user', project_id='project', gpu_device='auto', persist=lambda: None)
+    assert current['started_at'] == started
+
+
+def test_new_dispatch_limits_leave_existing_clustering_execution_unchanged():
+    settings = ce.policy({'mode': 'sharded', 'max_runtime_seconds': 60})
+    assert ce.dispatch_limits('sequence_clustering', settings) == {}
+    assert ce.dispatch_limits('interface_clustering', settings) == {}
+    assert ce.dispatch_limits('sequence_qc', settings) == {'max_runtime_seconds': 60}
+
+
+def test_timed_processing_drains_started_batch_and_reports_unprocessed_inputs(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import runtime, campaign_objectives
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json
+    monkeypatch.setattr(runtime, 'runs_root', lambda: tmp_path / 'runs')
+    source = gp._local_source(tmp_path, 'source', [dict(candidate_id=f'c{i}', binder_sequence='AAA') for i in range(5)])
+    node = dict(id='analysis', data=dict(kind='sequence_qc', label='Sequence Composition'))
+    submitted = []
+    def request(kind, params, source, name):
+        return dict(workflow='mock', parameters=dict(source_run_dir=source['run_dir'], candidates_jsonl=source['candidates_jsonl']))
+    def submit(request, *a, **k):
+        path = tmp_path / 'runs' / 'analysis' / str(len(submitted))
+        path.mkdir(parents=True)
+        submitted.append(path)
+        write_json(path / 'metadata.json', {'status': 'queued'})
+        return path
+    monkeypatch.setattr(gp, 'node_request', request)
+    monkeypatch.setattr(gp, '_submit', submit)
+    expired = [False]
+    monkeypatch.setattr(campaign_objectives, 'time_progress', lambda *a, **k: {'time_expired': expired[0]})
+    current = {}
+    settings = ce.policy({'mode': 'sharded', 'batch_size': 2, 'max_in_flight': 1, 'max_runtime_seconds': 60})
+    kwargs = dict(graph=gp, owner_id='user', project_id='project', gpu_device='none', persist=lambda: None)
+    assert ce.tick(tmp_path, node, current, source, {}, 'a' * 64, settings, **kwargs) is None
+    assert len(submitted) == 1
+    first = ce.read_manifest(current['batches'][0])
+    monkeypatch.setattr(gp, '_child_output', lambda path, source, *a, **k:
+                        gp._local_source(path, 'collected', gp._absolute_candidates({
+                            **first['request']['parameters'], 'run_dir': first['request']['parameters']['source_run_dir']})))
+    write_json(submitted[0] / 'metadata.json', {'status': 'completed'})
+    write_json(submitted[0] / 'result.json', {'success': True})
+    expired[0] = True
+    output, status = ce.tick(tmp_path, node, current, source, {}, 'a' * 64, settings, **kwargs)
+    assert status == 'completed' and len(submitted) == 1
+    assert output['candidate_count'] == 2
+    assert current['candidate_progress']['completed_units'] == 2
+    assert current['candidate_progress']['stopped_units'] == 3
+
+
+def test_processing_dispatch_limits_roundtrip_in_saved_graph():
+    graph = new_graph()
+    graph['candidate_execution'] = {'mode': 'sharded', 'batch_size': 10, 'max_runtime_seconds': 1800,
+                                  'deadline_at': '2026-10-31T08:00:00+01:00'}
+    restored = clean_graph(clean_graph(graph))
+    assert restored['candidate_execution']['batch_size'] == 10
+    assert restored['candidate_execution']['max_runtime_seconds'] == 1800
+    assert restored['candidate_execution']['deadline_at'] == '2026-10-31T07:00:00+00:00'
+
+
 def test_tick_runs_bounded_batches_retries_once_and_replays_without_duplicates(tmp_path, monkeypatch):
     from mn_molecular_design_studio import runtime
     monkeypatch.setattr(runtime, 'runs_root', lambda: tmp_path / 'runs')

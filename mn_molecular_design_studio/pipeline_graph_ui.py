@@ -539,6 +539,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     from mn_molecular_design_studio import candidate_execution
     from mn_molecular_design_studio.cluster import config as cluster_config
     from mn_molecular_design_studio.cluster.capabilities import gpu_details
+    execution_controls_ready = True
     settings = candidate_execution.policy(graph.get('candidate_execution'))
     nodes = []
     if cluster_config.load()['mode'] in {'peer', 'coordinator'}:
@@ -557,7 +558,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                             **{n['id']: cluster_config.display_name(n['name']) + ' · ' + n['availability'] for n in nodes}}
             placement = st.selectbox('Batch destination', list(destinations), format_func=destinations.get,
                 index=list(destinations).index(settings['placement']) if settings['placement'] in destinations else 0, key=prefix+'-batch-placement')
-            batch_size = st.number_input('Candidates per processing chunk', min_value=1, max_value=10000, value=settings['batch_size'], key=prefix+'-batch-size')
+            batch_size = st.number_input('Candidates per batch', min_value=1, max_value=10000, value=settings['batch_size'], key=prefix+'-batch-size')
             in_flight = st.number_input('Maximum batches in flight', min_value=1, max_value=32, value=settings['max_in_flight'], key=prefix+'-batch-limit')
             cpu_cores = st.number_input('CPU threads per batch', min_value=1, max_value=256, value=settings['cpu_cores'], key=prefix+'-batch-cpu')
             ram = st.number_input('RAM per batch (GiB)', min_value=0., value=float(settings['ram_gb']), key=prefix+'-batch-ram')
@@ -567,9 +568,19 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
             partial = st.checkbox('Allow explicit partial candidate pools and missing branches', value=settings['failure_policy'] == 'partial', key=prefix+'-batch-partial')
             settings.update(mode='sharded', placement=placement, batch_size=int(batch_size), max_in_flight=int(in_flight),
                             min_vram_gb=vram, ram_gb=ram, cpu_cores=int(cpu_cores), retries=int(retries), incremental_cpu=incremental, failure_policy='partial' if partial else 'all')
+            from mn_molecular_design_studio.campaign_objectives_ui import render_time_limits
+            st.caption('Optional dispatch limits below apply separately to each partitioned step, from its original start. The shared campaign objective controls the whole selected design scope.')
+            limits, limits_ready = render_time_limits(st, settings, key=prefix+'-batch-time')
+            execution_controls_ready = execution_controls_ready and limits_ready
+            if limits_ready:
+                for name in ('max_runtime_seconds', 'deadline_at'):
+                    settings.pop(name, None)
+                settings.update(limits)
             st.caption('Supported collection adapters and independent generation jobs use the existing scheduler. Batch destination applies to supported sharded nodes. Other nodes use the controller workstation. A single trajectory stays on one worker.')
         else:
             settings['mode'] = 'native'
+            settings.pop('max_runtime_seconds', None)
+            settings.pop('deadline_at', None)
         graph['candidate_execution'] = candidate_execution.policy(settings)
         if nodes:
             st.dataframe([{'Workstation': cluster_config.display_name(n['name']), 'Status': n['availability'],
@@ -604,17 +615,18 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     if shared_enabled:
         from mn_molecular_design_studio.distributed_campaign_config_ui import _default_validation_stages
         existing_shared = shared_existing or {}
-        available_objectives = ['generated'] + (['accepted'] if passing_campaign_nodes else [])
-        old_objective = existing_shared.get('objective_type', 'accepted')
+        from mn_molecular_design_studio.campaign_objectives import OBJECTIVE_LABELS
+        available_objectives = ['generated'] + (['accepted', 'time'] if passing_campaign_nodes else [])
+        old_objective = existing_shared.get('objective_type', 'generated')
         default_objective = old_objective if old_objective in available_objectives else 'generated'
         objective_type = st.selectbox(
             'Campaign objective', available_objectives,
             index=available_objectives.index(default_objective),
-            format_func=lambda value: 'Generated native designs' if value == 'generated' else 'Unique scientifically passing designs',
+            format_func=OBJECTIVE_LABELS.get,
             key=prefix + '-shared-objective-type-' + graph['id'],
             help='Generated counts every native output, including rejected outputs. Passing counts only supported campaign adapters that complete the configured validation stages.',
         )
-        objective_nodes = passing_campaign_nodes if objective_type == 'accepted' else eligible_campaign_nodes
+        objective_nodes = passing_campaign_nodes if objective_type in {'accepted', 'time'} else eligible_campaign_nodes
         branch_ids = [n['id'] for n in objective_nodes]
         selected_branches = st.multiselect(
             'Design branches in the shared objective', branch_ids,
@@ -633,14 +645,15 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         )
         default_target = int(existing_shared.get('accepted_target') or 1) if objective_type == 'accepted' else int(existing_shared.get('generated_target') or default_generated_target or 1)
         controls = st.columns(4)
-        objective_target = int(controls[0].number_input(
+        objective_target = None if objective_type == 'time' else int(controls[0].number_input(
             'Unique passing designs' if objective_type == 'accepted' else 'Generated-design target', min_value=1, value=default_target,
             step=1, key=prefix + '-shared-target-' + graph['id'],
         ))
         planned_total = sum(planned_by_node.values())
         max_attempts = int(controls[1].number_input(
-            'Total native attempts / design budget', min_value=1, value=int(existing_shared.get('max_attempts') or max(objective_target, planned_total, 1)),
+            'Maximum generation attempts', min_value=1, value=int(existing_shared.get('max_attempts') or max(objective_target or 1000, planned_total, 1)),
             step=1, key=prefix + '-shared-attempts-' + graph['id'],
+            help='Upper bound on generation tries across the selected branches. A try may yield no output or a candidate that fails acceptance. Separate from each engine’s GPU inference batch size.',
         ))
         max_jobs = int(controls[2].number_input(
             'Overall concurrent jobs', min_value=1, value=int(existing_shared.get('max_concurrent_jobs') or 2),
@@ -651,6 +664,10 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
             value=int(existing_shared.get('max_concurrent_generation_jobs') or min(max_jobs, 2)),
             step=1, key=prefix + '-shared-generation-jobs-' + graph['id'],
         ))
+        from mn_molecular_design_studio.campaign_objectives_ui import render_time_limits
+        time_limits, time_ready = render_time_limits(
+            st, existing_shared, key=prefix + '-shared-time-' + graph['id'], required=objective_type == 'time',
+        )
         max_compute = 0.0
         if objective_type == 'accepted':
             validation_left, validation_right = st.columns(2)
@@ -711,9 +728,24 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                         limits.pop(branch_id, None)
         stages = existing_shared.get('validation_stages') or _default_validation_stages()
         stage_error = None
+        acceptance_node = None
         if objective_type == 'accepted':
+            filter_nodes = [node for node in graph['nodes'] if node['data']['kind'] == 'shared_filter']
+            choices = [''] + [node['id'] for node in filter_nodes]
+            existing_node = existing_shared.get('acceptance_node') or ''
+            acceptance_node = st.selectbox(
+                'Optional filter node whose passing decisions define the goal', choices,
+                index=choices.index(existing_node) if existing_node in choices else 0,
+                format_func=lambda value: 'Existing campaign-stage criteria (legacy)' if not value else next(
+                    node['data']['label'] + ' · ' + value for node in filter_nodes if node['id'] == value),
+                key=prefix + '-acceptance-node-' + graph['id'],
+                help='Select the existing format-aware Validation & Acceptance filter. Count/timed campaigns can omit it and apply filtering later.',
+            )
+            if acceptance_node:
+                st.caption('Mandatory filters, binder format, target type, informational scores and ranking come from the selected node. Edit that node to change them.')
+
             stages_text = st.text_area(
-                'Common downstream prediction and acceptance criteria (JSON)',
+                'Independent prediction settings (JSON)' if acceptance_node else 'Common downstream prediction and acceptance criteria (JSON)',
                 value=json.dumps(stages, indent=2), height=240,
                 key=prefix + '-shared-validation-stages-' + graph['id'],
             )
@@ -724,19 +756,24 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 stage_error = f'Common validation stages must be valid JSON (line {exc.lineno}, column {exc.colno}).'
         graph['shared_campaign'] = {
             'enabled': True, 'objective_type': objective_type, 'generator_nodes': selected_branches,
-            **({'accepted_target': objective_target} if objective_type == 'accepted' else {'generated_target': objective_target}),
+            **({'accepted_target': objective_target} if objective_type == 'accepted' else
+               {'generated_target': objective_target} if objective_type == 'generated' else {}),
             'max_attempts': max_attempts,
             'max_concurrent_jobs': max_jobs,
             'max_concurrent_generation_jobs': max_generation_jobs,
             'max_concurrent_validations': max_validations,
             'workstation_selection': workstation_selection,
             'generator_limits': limits, 'validation_stages': stages if objective_type == 'accepted' else [],
+            **({'acceptance_node': acceptance_node} if acceptance_node else {}),
+            **time_limits,
             **({'max_compute_seconds': max_compute} if objective_type == 'accepted' and max_compute else {}),
         }
         if stage_error:
             st.error(stage_error)
         if objective_type == 'accepted':
             st.caption('Only registered native campaign adapters are eligible. The shared target counts unique sequences that pass the configured predictor and downstream metrics; native rejection, downstream rejection, duplicate and unresolved outcomes remain visible.')
+        elif objective_type == 'time':
+            st.caption('The shared timer keeps supported branches producing until the duration, deadline, or attempt budget is reached. Acceptance filtering is optional and can run later.')
         else:
             st.caption(f'Planned native design count: {planned_total}. Every emitted candidate is recorded, including native-filter rejections and rows without an available native filter. Shared generated target: {objective_target}.')
         if not selected_branches:
@@ -744,7 +781,10 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     else:
         graph.pop('shared_campaign', None)
     with st.expander("Branch and processing settings", expanded=False):
-        configurable = [n for n in graph['nodes'] if NODE_CATALOG[n['data']['kind']]['category'] in {'Design engine', 'Design pipeline', 'Structure prediction', 'Sequence design'}]
+        from mn_molecular_design_studio.quality_tools import TOOLS as quality_tools
+        configurable = [n for n in graph['nodes']
+                        if NODE_CATALOG[n['data']['kind']]['category'] in {'Design engine', 'Design pipeline', 'Structure prediction', 'Sequence design', 'Analysis'}
+                        and not quality_tools.get(n['data']['kind'], {}).get('cohort')]
         if configurable:
             selected_id = st.selectbox('Pipeline branch or processing step', [n['id'] for n in configurable],
                 format_func=lambda value: next(n['data']['label'] + ' · ' + value for n in configurable if n['id'] == value),
@@ -760,13 +800,24 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
             current_policy = candidate_execution.policy(data.get('execution', graph.get('candidate_execution')))
             can_partition = candidate_execution.supports(data['kind'], {'candidates_jsonl': 'preview'})
             if can_partition or graph.get('workflow_mode') and category in {'Design engine', 'Design pipeline'}:
-                distribute = can_partition and st.checkbox('Partition this step into processing chunks', value=current_policy['mode'] == 'sharded', key=node_key+'-sharded')
+                distribute = can_partition and st.checkbox('Partition this step into batches', value=current_policy['mode'] == 'sharded', key=node_key+'-sharded')
                 if distribute:
-                    current_policy['batch_size'] = int(st.number_input('Candidates per chunk for this step', min_value=1, max_value=10000, value=current_policy['batch_size'], key=node_key+'-size'))
+                    current_policy['batch_size'] = int(st.number_input('Candidates per batch for this step', min_value=1, max_value=10000, value=current_policy['batch_size'], key=node_key+'-size'))
                     current_policy['max_in_flight'] = int(st.number_input('Maximum concurrent jobs for this step', min_value=1, max_value=32, value=current_policy['max_in_flight'], key=node_key+'-concurrency'))
                     current_policy['mode'] = 'sharded'
                 else:
                     current_policy['mode'] = 'native'
+                    current_policy.pop('max_runtime_seconds', None)
+                    current_policy.pop('deadline_at', None)
+                if distribute:
+                    from mn_molecular_design_studio.campaign_objectives_ui import render_time_limits
+                    st.caption('Optional dispatch limit for this step. Existing inputs are processed once; active batches finish and unused inputs remain unprocessed.')
+                    limits, limits_ready = render_time_limits(st, current_policy, key=node_key+'-time')
+                    execution_controls_ready = execution_controls_ready and limits_ready
+                    if limits_ready:
+                        for name in ('max_runtime_seconds', 'deadline_at'):
+                            current_policy.pop(name, None)
+                        current_policy.update(limits)
                 destinations = {'local': 'This workstation', 'auto': 'Automatic · eligible trusted workstations',
                                 **{n['id']: cluster_config.display_name(n['name']) + ' · ' + n['availability'] for n in nodes}}
                 current_policy['placement'] = st.selectbox('Workstation destination for this step', list(destinations), format_func=destinations.get,
@@ -779,7 +830,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                 current_policy['cpu_cores'] = int(st.number_input('CPU cores per processing job', min_value=1, max_value=256, value=current_policy['cpu_cores'], key=node_key+'-cpu'))
                 current_policy['min_vram_gb'] = st.number_input('Minimum VRAM per GPU for this step (GiB)', min_value=0., value=float(current_policy['min_vram_gb']), key=node_key+'-vram')
                 data['execution'] = current_policy
-                st.caption('Collection chunks use the existing scheduler. Engine-native samples, sequence multiplicity and GPU microbatching remain in the tool controls. Per-step execution settings override the pipeline policy.')
+                st.caption('Candidate batches use the existing scheduler. Engine-native samples, sequence multiplicity and GPU microbatching remain in the tool controls. Per-step execution settings override the pipeline policy.')
     with st.expander('Collection execution plan', expanded=False):
         from mn_molecular_design_studio.candidate_pipeline import execution_plan
         preview_count = int(st.number_input('Preview eligible candidates per processing tile', min_value=0, max_value=10000, value=5, key=prefix+'-execution-preview-count'))
@@ -850,6 +901,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                         result=submit_api("/api/v1/pipelines/save", {"project_id":project_id,"graph":graph,"version":True})
                         st.success(f"Version {result['revision'][:10]} saved. Existing versions and runs are preserved.")
                     elif action["type"] == "run":
+                        if not execution_controls_ready:
+                            raise ValueError('Correct the dispatch time limits before starting this pipeline.')
                         result=submit_api("/api/v1/pipelines/run", {"project_id":project_id,"graph":graph,"reuse_completed":reuse,"gpu_device":gpu_values[gpu], **({"execution": {"placement": "local"}} if settings["mode"] == "sharded" else {})})
                         st.session_state[prefix+"-last-job"] = result["job"]
                         st.session_state["last_submitted_job"] = result["job"]
@@ -897,7 +950,12 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                     target = max(1, int(shared_progress.get('objective_target') or shared_progress.get('accepted_target') or shared_progress.get('generated_target') or 1))
                     count = int(shared_progress.get('generated_designs') or 0) if objective_type == 'generated' else int(shared_progress.get('unique_accepted') or 0)
                     count_label = 'generated designs' if objective_type == 'generated' else 'unique passing designs'
-                    st.progress(min(1.0, count / target), text=f"Shared objective · {count}/{target} {count_label} · {shared_progress.get('status', 'running')}")
+                    if objective_type == 'time':
+                        remaining = shared_progress.get('remaining_seconds')
+                        st.caption(f"Timed campaign · {shared_progress.get('generated_designs', 0)} generated · "
+                                   + (f"{remaining / 60:.1f} minutes remaining" if remaining is not None else str(shared_progress.get('status'))))
+                    else:
+                        st.progress(min(1.0, count / target), text=f"Shared objective · {count}/{target} {count_label} · {shared_progress.get('status', 'running')}")
                     if objective_type == 'generated':
                         scheduler_text = (f"Scheduler generation jobs {shared_progress.get('scheduler_jobs_active', 0)}/"
                                           f"{shared_progress.get('max_concurrent_generation_jobs', 0)} active · "

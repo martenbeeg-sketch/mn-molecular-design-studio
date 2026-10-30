@@ -131,6 +131,176 @@ def test_pipeline_step_button_uses_the_clicked_row(monkeypatch):
     assert state["cluster-results-pipeline-details-request"] == "pipeline-2"
 
 
+def test_campaign_batches_group_across_workstations_and_keep_campaign_scopes_separate():
+    rows = [
+        {"cluster_job_id": "batch-a", "campaign_name": "R3 IDR · RFD4 10-design batch 01 · pc004032 GPU0 · 2026-10-30",
+         "node_id": "pc004032", "project_id": "michele", "owner_id": "user", "tool": "rfd4_proteina"},
+        {"cluster_job_id": "batch-b", "campaign_name": "R3 IDR · RFD4 10-design batch 01 · pc004033 GPU0 · 2026-10-30",
+         "node_id": "pc004033", "project_id": "michele", "owner_id": "user", "tool": "rfd4_proteina"},
+        {"cluster_job_id": "batch-c", "campaign_name": "R3 IDR · RFD4 10-design batch 02 · pc002975 GPU1 · 2026-10-30",
+         "node_id": "pc002975", "project_id": "michele", "owner_id": "user", "tool": "rfd4_proteina"},
+        {"cluster_job_id": "other-date", "campaign_name": "R3 IDR · RFD4 10-design batch 01 · pc004032 GPU0 · 2026-10-31",
+         "node_id": "pc004032", "project_id": "michele", "owner_id": "user", "tool": "rfd4_proteina"},
+        {"cluster_job_id": "other-project", "campaign_name": "R3 IDR · RFD4 10-design batch 03 · pc004032 GPU0 · 2026-10-30",
+         "node_id": "pc004032", "project_id": "other", "owner_id": "user", "tool": "rfd4_proteina"},
+    ]
+    groups, row_to_group, labels = ui._campaign_batch_groups(rows)
+    assert len(groups) == 1
+    group_id, members = next(iter(groups.items()))
+    assert [row["cluster_job_id"] for row in members] == ["batch-a", "batch-b", "batch-c"]
+    assert {row_to_group[row["cluster_job_id"]] for row in members} == {group_id}
+    assert labels[group_id] == "R3 IDR · RFD4 10-design · 2026-10-30"
+    explicit, _, explicit_labels = ui._campaign_batch_groups([
+        {"cluster_job_id": "native-a", "request_summary": {"parameters": {
+            "campaign_group_id": "stable-campaign-id", "campaign_group_name": "Native design campaign"}},
+         "project_id": "michele", "owner_id": "user", "tool": "boltzgen"},
+        {"cluster_job_id": "native-b", "request_summary": {"payload": {"parameters": {
+            "campaign_group_id": "stable-campaign-id", "campaign_group_name": "Native design campaign"}}},
+         "project_id": "michele", "owner_id": "user", "tool": "boltzgen"},
+    ])
+    assert len(explicit) == 1
+    assert next(iter(explicit_labels.values())) == "Native design campaign"
+
+
+def test_campaign_results_summarize_shared_and_varying_parameters(monkeypatch):
+    members = [
+        {"cluster_job_id": "first", "campaign_name": "R3 IDR · batch 01", "campaign_parameters": {
+            "target_type": "IDR", "num_designs": 10, "seed": 1}, "status": "completed"},
+        {"cluster_job_id": "second", "campaign_name": "R3 IDR · batch 02", "request_summary": {"payload": {"parameters": {
+            "target_type": "IDR", "num_designs": 10, "seed": 2}}}, "status": "failed"},
+    ]
+    table = {row["Parameter"]: row["Value"] for row in ui._campaign_parameter_rows(members)}
+    assert table["Target Type"] == "IDR (2 jobs)"
+    assert table["Num Designs"] == "10 (2 jobs)"
+    assert table["Seed"] == "1 (1 jobs) · 2 (1 jobs)"
+    assert ui._campaign_group_status(members) == ("Partial", "1/2 complete · 1 failed")
+    state = {"campaign-results-click": {"row": 0}}
+    monkeypatch.setattr(ui.st, "session_state", state)
+    ui._request_results_pipeline_results("campaign-results-click", [{"kind": "campaign", "members": members}])
+    assert state["cluster-results-campaign-details-request"] == members
+
+
+def test_campaign_candidate_results_show_measured_values_and_keep_native_metrics_distinct():
+    records = [
+        {"job": {"campaign_name": "Campaign · batch 01", "tool": "protenix_v1", "node_name": "pc004032"},
+         "candidate": {"candidate_id": "design-a", "source_tool": "protenix_v1", "stage": "complex_refolding",
+                       "binder_sequence": "ACDE", "metrics": {"iptm": 0.72, "plddt_mean": 84.9, "pae": 6.1}}},
+        {"job": {"campaign_name": "Campaign · batch 02", "tool": "mol1", "node_name": "pc004033"},
+         "candidate": {"candidate_id": "design-b", "source_tool": "mol1", "stage": "complex_refolding",
+                       "binder_sequence": "FGHI", "metrics": {"iptm": 0.81, "plddt_mean": 88.314,
+                                                                  "complex_plddt": 88.314, "pae": 5.2},
+                       "raw_metadata": {"confidence_outputs": {"plddt_mean": 84.976}}}},
+        {"job": {"campaign_name": "Campaign · batch 03", "tool": "mol1", "node_name": "pc004032"},
+         "candidate": {"candidate_id": "design-c", "source_tool": "mol1", "stage": "complex_refolding",
+                       "binder_sequence": "KLMN", "metrics": {"iptm": 0.5}}},
+    ]
+    rows, definitions = ui._campaign_candidate_result_rows(records)
+    by_id = {row["Candidate"]: row for row in rows}
+    assert by_id["design-a"]["Validation complex iptm (0–1)"] == 0.72
+    assert by_id["design-a"]["Mean structure Cα pLDDT (0–100)"] == 84.9
+    assert '"pae": 6.1' in by_id["design-a"]["Native metrics"]
+    assert by_id["design-b"]["Mean structure Cα pLDDT (0–100)"] == 88.314
+    assert by_id["design-b"]["Mol-1 model summary pLDDT (0–100)"] == 84.976
+    assert by_id["design-b"]["Validation complex iptm (0–1)"] == 0.81
+    assert by_id["design-c"]["Mean structure Cα pLDDT (0–100)"] == "—"
+    assert any("Validation complex iptm" in item["Metric"] and "protenix" in item["Methods"].casefold()
+               for item in definitions)
+    assert all("pass" not in item["Metric"].casefold() for item in definitions)
+
+
+def test_catalog_campaign_parameter_summary_keeps_key_settings_without_sequences_or_paths():
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import campaign_result_parameters
+
+    summary = campaign_result_parameters({
+        "target_name": "R3",
+        "target_type": "IDR",
+        "num_designs": 10,
+        "seed": 42,
+        "hotspots": ["A25", "A30-35"],
+        "target_sequence": "ACDEFGHIKLMNPQRSTVWY",
+        "target_pdb": "/reference_files/r3.pdb",
+        "api_token": "private-token",
+    })
+    assert summary == {
+        "target_name": "R3", "target_type": "IDR", "num_designs": 10,
+        "seed": 42, "hotspots": ["A25", "A30-35"],
+    }
+
+
+def test_legacy_campaign_batch_results_collapse_into_one_row(isolated, monkeypatch):
+    rows = [
+        {"cluster_job_id": f"batch-{index}", "campaign_name": f"PD-L1 · RFD4 10-design batch {index:02d} · pc00403{index} GPU0 · 2026-10-30",
+         "node_id": f"pc00403{index}", "node_name": f"pc00403{index}", "project_id": "p", "owner_id": "user",
+         "tool": "rfd4_proteina", "status": "completed", "availability": "online",
+         "created_at": f"2026-10-30T00:0{index}:00Z", "campaign_parameters": {"target_type": "IDR", "num_designs": 10}}
+        for index in range(1, 4)
+    ]
+    rows.append({"cluster_job_id": "unrelated", "campaign_name": "Standalone design", "node_id": "pc004032",
+                 "project_id": "p", "owner_id": "user", "tool": "boltz2", "status": "completed",
+                 "availability": "online", "created_at": "2026-10-30T00:00:00Z"})
+    monkeypatch.setattr(ui, "catalog", lambda *a, **kw: ({"items": rows, "total": len(rows)}, False))
+    from mn_molecular_design_studio import workspace
+    monkeypatch.setattr(workspace, "load_organization", lambda: {"projects": [{"id": "p", "name": "Project"}]})
+    at = AppTest.from_string(
+        'from mn_molecular_design_studio.cluster.ui import render_runs\n'
+        'render_runs({"id":"scientist"}, "token", lambda **kw: {"items":[], "total":0})'
+    ).run()
+    assert not at.exception
+    table = at.dataframe[0].value
+    assert len(table) == 2
+    campaign = table[table["Job"] == "PD-L1 · RFD4 10-design · 2026-10-30"].iloc[0]
+    assert campaign["Results"] == "Campaign"
+    assert campaign["Steps"] == "3 batch jobs"
+    assert campaign["Workstation"] == "3 computers"
+    at.session_state["cluster-results-campaign-details-request"] = rows[:3]
+    at.run()
+    assert not at.exception
+    assert any("Parameter" in frame.value.columns for frame in at.dataframe if hasattr(frame.value, "columns"))
+
+
+def test_campaign_results_load_candidate_metrics_from_the_owning_workstation(isolated, monkeypatch):
+    row = {
+        "cluster_job_id": "batch-a", "campaign_name": "PD-L1 · batch 01", "node_id": "remote",
+        "node_name": "pc004032", "project_id": "p", "owner_id": "user", "tool": "protenix_v1",
+        "status": "completed", "availability": "online", "local_reference": "design/run-a",
+        "campaign_parameters": {"num_designs": 2},
+    }
+    candidate = {
+        "candidate_id": "design-42", "source_tool": "protenix_v1", "stage": "complex_refolding",
+        "binder_sequence": "ACDEFG", "metrics": {"iptm": 0.74, "plddt_mean": 88.2, "pae": 7.4},
+        "complex_pdb": "artifacts/design-42.pdb",
+    }
+    calls = []
+
+    def request(path, token, payload=None, method="GET", **kwargs):
+        calls.append((path, payload, method))
+        if path == "/jobs/batch-a/actions" and method == "POST":
+            return {"command_id": "inspect-a"}
+        if path == "/commands/inspect-a":
+            return {"status": "completed", "response": {"results": {"candidates": [candidate]}}}
+        raise AssertionError(f"Unexpected cluster request: {path} {payload} {method}")
+
+    monkeypatch.setattr(ui, "_request", request)
+    at = AppTest.from_string(
+        'from mn_molecular_design_studio.cluster.ui import _render_campaign_candidate_measurements\n'
+        'member = {"cluster_job_id":"batch-a", "campaign_name":"PD-L1 · batch 01", '
+        '"node_id":"remote", "node_name":"pc004032", "tool":"protenix_v1", '
+        '"status":"completed", "availability":"online", "local_reference":"design/run-a"}\n'
+        '_render_campaign_candidate_measurements([member], "token")'
+    ).run()
+    assert not at.exception
+    next(button for button in at.button if button.label == "Load candidate measurements").click().run()
+    assert not at.exception
+    assert ("/jobs/batch-a/actions", {"action": "inspect"}, "POST") in calls
+    assert any(path == "/commands/inspect-a" for path, _, _ in calls)
+    result_tables = [frame.value for frame in at.dataframe if hasattr(frame.value, "columns")]
+    candidate_table = next(frame for frame in result_tables if "Candidate" in frame.columns)
+    assert candidate_table.iloc[0]["Candidate"] == "design-42"
+    assert candidate_table.iloc[0]["Validation complex iptm (0–1)"] == 0.74
+    assert candidate_table.iloc[0]["Mean structure Cα pLDDT (0–100)"] == 88.2
+    assert '"pae": 7.4' in candidate_table.iloc[0]["Native metrics"]
+
+
 def test_selected_pipeline_includes_new_and_hidden_steps_and_blocks_active_purge(isolated, monkeypatch):
     parent = {
         "cluster_job_id": "parent", "run_id": "pipeline-run", "tool": "visual_pipeline",

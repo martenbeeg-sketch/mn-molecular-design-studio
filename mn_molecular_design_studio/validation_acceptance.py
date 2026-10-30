@@ -147,9 +147,15 @@ METRICS = {
             "engines": ("alphafold3", "af3_torch", "openfold3_jax", "boltz2", "protenix_v1", "protenix_v2", "colabfold", "mol1")},
     "iptm": {"label": "iPTM · interface confidence", "field": PREFIX + "confidence.validation.complex.iptm", "unit": "0–1", "direction": "higher", "modes": ("complex",),
               "engines": ("alphafold3", "af3_torch", "openfold3_jax", "boltz2", "protenix_v1", "protenix_v2", "colabfold", "mol1")},
+    "rfd4_native_ptm": {"label": "RFD4 native OpenFold3 · complex pTM", "field": PREFIX + "confidence.generator.complex.ptm", "unit": "0–1", "direction": "higher", "modes": ("complex",), "source_tools": ("rfd4_proteina",)},
+    "rfd4_native_iptm": {"label": "RFD4 native OpenFold3 · complex iPTM", "field": PREFIX + "confidence.generator.complex.iptm", "unit": "0–1", "direction": "higher", "modes": ("complex",), "source_tools": ("rfd4_proteina",)},
+    "rfd4_native_plddt": {"label": "RFD4 native OpenFold3 · complex pLDDT", "field": PREFIX + "confidence.generator.complex.plddt", "unit": "0–100", "direction": "higher", "modes": ("complex",), "source_tools": ("rfd4_proteina",), "informational_only": True},
+    "rfd4_native_interface_pae": {"label": "RFD4 native OpenFold3 · chain-of-interest iPAE", "field": PREFIX + "confidence.generator.interface.ipae_coi", "unit": "Å", "direction": "lower", "modes": ("complex",), "source_tools": ("rfd4_proteina",), "informational_only": True},
+    "rfd4_interface_residues_4a": {"label": "Saved RFD4 complex · binder residues within 4 Å", "field": PREFIX + "interface.native.rfd4_proteina.binder_residue_count_4a", "unit": "residues", "direction": "higher", "modes": ("complex",), "source_tools": ("rfd4_proteina",)},
+    "rfd4_backbone_clashes_2_5a": {"label": "Saved RFD4 complex · interchain Cα clashes ≤2.5 Å", "field": PREFIX + "geometry.native.rfd4_proteina.backbone_ca_clashes_2_5a", "unit": "atom pairs", "direction": "lower", "modes": ("complex",), "source_tools": ("rfd4_proteina",)},
     "ipsae_min": {"label": "ipSAE · minimum direction", "field": PREFIX + "interface.ipsae.minimum", "unit": "0–1", "direction": "higher", "modes": ("complex",), "engines": ("boltz2",)},
     "bound_binder_plddt": {"label": "Bound binder structure mean Cα pLDDT", "field": PREFIX + "confidence.validation.structure.binder_ca_plddt", "unit": "0–100", "direction": "higher", "modes": ("complex",)},
-    "target_plddt": {"label": "Target structure mean Cα pLDDT", "field": PREFIX + "confidence.validation.structure.target_ca_plddt", "unit": "0–100", "direction": "higher", "modes": ("complex",), "targets": ("fasta_idr",)},
+    "target_plddt": {"label": "Target structure mean Cα pLDDT", "field": PREFIX + "confidence.validation.structure.target_ca_plddt", "unit": "0–100", "direction": "higher", "modes": ("complex",), "targets": ("fasta_idr",), "informational_only": True},
     "complex_structure_ca_plddt": {"label": "Structure mean Cα pLDDT", "field": PREFIX + "confidence.validation.structure.mean_ca_plddt", "unit": "0–100", "direction": "higher", "modes": ("complex", "binder")},
     "target_aligned_binder_rmsd": {"label": "Target-aligned binder pose RMSD", "field": PREFIX + "geometry.validation.binder.target_aligned_rmsd", "unit": "Å", "direction": "lower", "modes": ("complex",), "targets": ("structured",)},
     "binder_self_consistency_rmsd": {"label": "Binder self-consistency RMSD", "field": PREFIX + "geometry.validation.binder.self_consistency_rmsd", "unit": "Å", "direction": "lower", "modes": ("complex", "binder")},
@@ -223,20 +229,32 @@ def bindcraft2_reference_policy(binder_format: str, target_type: str, mode: str,
         else:
             shared["ptm"] = (">=", format_spec["ptm"])
     criteria = dict(shared)
-    if target_type == "fasta_idr":
-        criteria["target_plddt"] = (">=", 60.0)
-    compatible = []
     inactive = []
+    if target_type == "fasta_idr":
+        # The target is supplied as sequence because it is intrinsically
+        # disordered. Its local structure confidence is not a binder acceptance
+        # criterion, and target-pose RMSD has no fixed reference structure.
+        inactive.append("Target pLDDT and target-aligned binder RMSD: not used for sequence-defined IDR targets.")
+    metric_aliases = {
+        "ptm": "rfd4_native_ptm",
+        "iptm": "rfd4_native_iptm",
+        "interface_residues_4a": "rfd4_interface_residues_4a",
+        "backbone_clashes_2_5a": "rfd4_backbone_clashes_2_5a",
+    }
+    compatible = []
     for metric_id, (comparison, threshold) in criteria.items():
-        spec = available.get(metric_id)
+        selected_metric_id = metric_aliases.get(metric_id) if metric_aliases.get(metric_id) in available else metric_id
+        spec = available.get(selected_metric_id)
         if spec is None or mode not in spec.get("modes", ()):
-            inactive.append(f"{metric_id}: this independent engine/mode does not provide a compatible measurement")
+            inactive.append(f"{metric_id}: no compatible measurement is available for this source and mode")
             continue
         compatible.append({"field": spec["field"], "operator": comparison,
-                           "value": threshold, "metric_id": metric_id})
+                           "value": threshold, "metric_id": selected_metric_id})
     if mode == "complex":
         unsupported = [f"Unbound_Binder_pLDDT ≥{format_spec.get('unbound_plddt', 0.8)}",
-                       f"i_pAE ≤{format_spec.get('ipae', 0.35)}"]
+                       f"BindCraft2 normalized i_pAE ≤{format_spec.get('ipae', 0.35)}"]
+        if "rfd4_native_interface_pae" in available:
+            inactive.append("RFD4 raw chain-of-interest iPAE: recorded as information only; not interchangeable with BindCraft2 normalized i_pAE.")
         if format_spec.get("binder_rmsd") is not None:
             unsupported.append(f"Binder_RMSD ≤{format_spec['binder_rmsd']} Å")
         format_filter_names = {
@@ -253,7 +271,7 @@ def bindcraft2_reference_policy(binder_format: str, target_type: str, mode: str,
                 value = format_spec[key]
                 direction = "≥" if key in {"scaffold_sequence_retained", "domain_separation_ratio", "induced_fit_interface_rmsd"} else "≤"
                 unsupported.append(f"{filter_name} {direction}{value}")
-        inactive.extend(f"{name}: no compatible independent measurement in this run" for name in unsupported)
+        inactive.extend(f"{name}: no compatible measurement in this run" for name in unsupported)
     return compatible, inactive
 
 
@@ -428,17 +446,53 @@ def evaluate_candidate(candidate: dict, policy: dict) -> dict:
     native_metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
     native_status = native_metrics.get("native_pass_filters", native_metrics.get("pass_filters"))
     source_candidate = (candidate.get("raw_metadata") or {}).get("source_candidate")
-    if native_status is None and isinstance(source_candidate, dict):
-        source_metrics = source_candidate.get("metrics") if isinstance(source_candidate.get("metrics"), dict) else {}
+    source_metrics = native_metrics
+    if isinstance(source_candidate, dict):
+        source_metrics = source_candidate.get("metrics") if isinstance(source_candidate.get("metrics"), dict) else source_metrics
+    if native_status is None:
         native_status = source_metrics.get("native_pass_filters", source_metrics.get("pass_filters"))
-        if native_status is None and (source_candidate.get("raw_metadata") or {}).get("bindcraft_output_kind"):
+        if native_status is None and isinstance(source_candidate, dict) and (source_candidate.get("raw_metadata") or {}).get("bindcraft_output_kind"):
             native_status = (source_candidate["raw_metadata"]["bindcraft_output_kind"] == "Accepted")
+        if native_status is None and "ppi.pass" in source_metrics:
+            all_metrics_present = source_metrics.get("ppi.all_metrics_present")
+            if all_metrics_present not in (1, 1.0, True):
+                native_status = "unavailable · native PPI metrics incomplete"
+            else:
+                native_status = "passed" if source_metrics["ppi.pass"] in (1, 1.0, True) else "failed"
     return {"status": status, "reasons": reasons, "measurements": measurements,
             "binder_format": policy["binder_format"], "target_type": policy["target_type"],
             "ranking_metric": policy["ranking_metric"] or None,
             "ranking_value": rank.get("value") if rank and rank.get("status") == "measured" else None,
             "policy": policy,
             "native_filter_status": native_status}
+
+
+def campaign_policy_from_node(params: dict) -> dict:
+    """Use exactly the same policy as the graph Validation & Acceptance node."""
+    policy = normalize_policy({
+        "binder_format": params.get("binder_format", "miniprotein"),
+        "target_type": params.get("target_type", "structured"),
+        "mandatory_filters": params.get("rules", []),
+        "informational_scores": params.get("informational_scores", []),
+        "ranking_metric": params.get("ranking_metric", ""),
+    })
+    if not policy["mandatory_filters"]:
+        raise ValueError("A passing-design campaign requires mandatory filters on its Validation & Acceptance node.")
+    return policy
+
+
+def campaign_stage(policy: dict, *, engine: str = "boltz2", parameters: dict | None = None) -> dict:
+    """Bind the independent prediction workflow to the shared acceptance backend."""
+    policy = normalize_policy(policy)
+    if not policy["mandatory_filters"]:
+        raise ValueError("A passing-design objective requires at least one mandatory acceptance filter.")
+    return {
+        "workflow": "refolding.optimized_prediction",
+        "parameters": {"engine": engine, "samples": 1, "optimization_mode": "off",
+                       "use_target_template": False, **(parameters or {})},
+        "acceptance_policy": policy,
+        "required_metrics": [], "rules": [],
+    }
 
 
 def apply_acceptance(candidates: list[dict], policy: dict) -> tuple[list[dict], dict]:
@@ -485,10 +539,14 @@ def write_report(run_dir: Path, candidates: list[dict], summary: dict) -> Path:
         writer.writeheader()
         for candidate in candidates:
             decision = (candidate.get("raw_metadata") or {}).get("validation_acceptance") or {}
+            provenance = (candidate.get("raw_metadata") or {}).get("validation_acceptance_provenance") or {}
+            source_ids = candidate.get("parents") or ([provenance["source_candidate_id"]]
+                                                        if provenance.get("source_candidate_id") else [])
             writer.writerow({"candidate_id": candidate.get("candidate_id"),
-                             "source_candidate_ids": ";".join(map(str, candidate.get("parents") or [])),
+                             "source_candidate_ids": ";".join(map(str, source_ids)),
                              "native_filter_status": decision.get("native_filter_status"),
                              **{key: decision.get(key) for key in ("status", "binder_format", "target_type", "ranking_metric", "ranking_value", "reasons")},
+                             "reasons": "; ".join(map(str, decision.get("reasons") or [])),
                              "measurements_json": json.dumps(decision.get("measurements", {}), sort_keys=True)})
     (path.parent / "acceptance_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
     return path

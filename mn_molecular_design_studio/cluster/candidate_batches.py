@@ -196,6 +196,16 @@ def submit(request, manifest, submission_key, settings, *, owner_id, project_id,
     return result
 
 
+def recover_submission(submission_key, *, owner_id, project_id, allow_development=False):
+    """Read an existing idempotent submission without creating or dispatching work."""
+    user = actor(owner_id, project_id, allow_development=allow_development)
+    store = Store()
+    with store.connect() as db:
+        row = db.execute("SELECT job_id FROM submissions WHERE owner_id=? AND idempotency_key=?",
+                         (user['id'], submission_key)).fetchone()
+    return store.job(row['job_id'], user) if row else None
+
+
 def _artifact(state, job_id, relative, user, directory):
     """Resume one authenticated artifact command and verify its returned blob."""
     store = Store()

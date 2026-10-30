@@ -108,9 +108,9 @@ _CAPABILITIES = {
         supported_stopping_policies=("validated", "diversity_qualified"),
         graph_campaign_constraints=(
             ("task", ("protein_binder",)),
-            ("input_mode", ("guided", "guided_binder")),
+            ("input_mode", ("guided", "guided_binder", "condition_spec")),
         ),
-        graph_campaign_exclusions=("input_files", "avoid_structures", "also_bind_structures"),
+        graph_campaign_exclusions=("avoid_structures", "also_bind_structures"),
         native_execution=NativeExecutionCapabilities(
             multi_attempt_invocation=True, semantics=("replicates_per_input", "vectorized_dataloader_batch"),
             max_verified_campaign_attempts_per_job=1, max_measured_native_attempts_per_invocation=1,

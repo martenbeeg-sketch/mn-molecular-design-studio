@@ -35,7 +35,10 @@ def _spec(key, label, category, description, *, output="backbone", accepts=None,
             "fields": list(fields), **({"coldspot_support": coldspot_support} if coldspot_support else {})}
 
 
-COUNT = field("num_designs", "Design attempts", 10, minimum=1, maximum=10000)
+COUNT = field(
+    "num_designs", "Number of designs", 10, minimum=1, maximum=10000,
+    help="How many design outputs to request from this generator node. This count is separate from any engine GPU batch size, which controls how many samples run together.",
+)
 LENGTH = field("binder_length", "Binder length", "60-100", kind="text")
 STEPS = field("timesteps", "Diffusion steps", 50, minimum=1, maximum=1000)
 SEED = field("seed", "Random seed", 0, minimum=0, maximum=2147483647)
@@ -97,7 +100,9 @@ NODE_CATALOG = {
         field("condition_spec", "Native condition specification", "", kind="text", help="Native YAML/JSON design specification used with the condition_spec input method."),
         field("input_files", "Input structure files (one path per line)", "", kind="text", help="For annotated_cif mode, list one annotated CIF path per design. Structure scoring can also take multiple inputs."),
         field("options_json", "Task options (JSON)", "{}", kind="text", help="Multiline JSON matching the RFD4 task options, including motif residues, active-site atoms and ligand interactions. The standalone RFD4 form exposes these controls directly."),
-        COUNT, field("length_min", "Minimum length", 60, minimum=20, maximum=1024), field("length_max", "Maximum length", 120, minimum=20, maximum=1024),
+        field("num_designs", "Number of designs (Studio total)", 10, minimum=1, maximum=10000,
+              help="Design outputs requested for this target. Separate from RFD4's internal GPU batch size; distributed campaigns may execute the count as repeated one-design jobs."),
+        field("length_min", "Minimum length", 60, minimum=20, maximum=1024), field("length_max", "Maximum length", 120, minimum=20, maximum=1024),
         field("nsteps", "Sampling steps", 60, minimum=60, maximum=120), SEED], formats=("cif",)),
     "rfd4_fold": _spec("rfd4_fold", "RFD4-Proteina Structure Prediction", "Structure prediction", "Fold supplied protein sequences or connected generated structures using RFD4 itself.", accepts=["sequence","prediction","target","molecule_task"], output="prediction", workflow="refolding.rfd4_proteina", fields=[
         field("protein_sequences", "Protein sequence(s) / FASTA", "", kind="text"), field("target_structure", "Input structure", "", kind="text"),
@@ -106,8 +111,8 @@ NODE_CATALOG = {
     "rfdiffusion": _spec("rfdiffusion", "RFdiffusion", "Design engine", "Generate binder backbones without running the bundled downstream pipeline.", accepts=["target"], workflow="design.rfdiffusion_classic", fields=[COUNT, LENGTH, STEPS], formats=("pdb",)),
     "genie3": _spec("genie3", "Genie3", "Design engine", "Generation only; connect sequence design and prediction nodes.", accepts=["target"], workflow="design.genie3", fields=[COUNT, LENGTH, SEED], formats=("pdb",)),
     "pxdesign": _spec("pxdesign", "PXDesign generator", "Design engine", "PXDesign generation only, with downstream steps chosen on the canvas.", accepts=["target"], workflow="design.pxdesign", fields=[COUNT, LENGTH, field("n_steps", "Diffusion steps", 400, minimum=1, maximum=2000)], formats=("cif",)),
-    "bindcraft2": _spec("bindcraft2", "BindCraft2", "Design pipeline", "Complete design, MPNN refinement, validation and filtering workflow.", accepts=["target"], output="prediction", workflow="design.bindcraft2", fields=[COUNT, LENGTH], color="#8268a2"),
-    "bindcraft2_generator": _spec("bindcraft2_generator", "BindCraft2 Generator", "Design engine", "Run gradient design and emit only trajectories that pass the pre-ProteinMPNN gate. Select a binder format such as VHH; connect ProteinMPNN and structure prediction as separate steps.", accepts=["target"], output="sequence", workflow="design.bindcraft2_generator", fields=[COUNT, LENGTH, field("modality", "Binder format", "binder", kind="select", options=["binder", "large_binder", "peptide", "cyclic_peptide", "VHH", "scFv", "Fab", "ARP", "multidomain", "homo_oligomer"], section="basic"), field("scaffold_edits", "VHH scaffold edit regions", "", kind="text", section="basic", help="Only used for VHH, scFv, Fab, or ARP scaffold modes. For VHH, the template supplies the default CDR edit regions.")], formats=("cif",)),
+    "bindcraft2": _spec("bindcraft2", "BindCraft2", "Design pipeline", "Complete design, MPNN refinement, validation and filtering workflow.", accepts=["target"], output="prediction", workflow="design.bindcraft2", fields=[field("num_designs", "Target number of final designs", 10, minimum=1, maximum=10000, help="BindCraft2 continues through its native design and filtering stages toward this final-design count, subject to its native trajectory limit."), LENGTH], color="#8268a2"),
+    "bindcraft2_generator": _spec("bindcraft2_generator", "BindCraft2 Generator", "Design engine", "Run gradient design and emit only trajectories that pass the pre-ProteinMPNN gate. Select a binder format such as VHH; connect ProteinMPNN and structure prediction as separate steps.", accepts=["target"], output="sequence", workflow="design.bindcraft2_generator", fields=[field("num_designs", "Maximum gradient trajectories", 10, minimum=1, maximum=10000, help="Maximum independent gradient design tries. Only trajectories passing BindCraft2's pre-ProteinMPNN gate are emitted, so output designs can be fewer than this count."), LENGTH, field("modality", "Binder format", "binder", kind="select", options=["binder", "large_binder", "peptide", "cyclic_peptide", "VHH", "scFv", "Fab", "ARP", "multidomain", "homo_oligomer"], section="basic"), field("scaffold_edits", "VHH scaffold edit regions", "", kind="text", section="basic", help="Only used for VHH, scFv, Fab, or ARP scaffold modes. For VHH, the template supplies the default CDR edit regions.")], formats=("cif",)),
     "boltzgen": _spec("boltzgen", "BoltzGen", "Design pipeline", "Generation, inverse folding, refolding, analysis and filtering.", accepts=["target"], output="prediction", workflow="design.boltzgen", fields=[COUNT, LENGTH, field("budget", "Final selection budget", 10, minimum=1, maximum=10000)], color="#8268a2", formats=("cif",)),
     "boltzgen_generator": _spec("boltzgen_generator", "BoltzGen Generator", "Design engine", "Run BoltzGen's design stage only. Connect sequence redesign and structure prediction as separate steps.", accepts=["target"], output="sequence", workflow="design.boltzgen_generator", fields=[COUNT, LENGTH, field("task", "Design task", "protein", kind="select", options=["protein", "nanobody", "peptide", "cyclotide", "redesign"]), field("sampling_steps", "Sampling steps", 20, minimum=1, maximum=1000), field("hotspots", "Binding-site residues", "", kind="text"), field("non_binding_residues", "Non-binding residues override", "", kind="text", help="Leave empty to inherit coldspots from the connected Target block. BoltzGen maps these residues to its chain-local numbering.")], formats=("cif",)),
     "pxdesign_pipeline": _spec("pxdesign_pipeline", "PXDesign pipeline", "Design pipeline", "Bundled ProteinMPNN and AF2-IG evaluation; Extended also uses Protenix.", accepts=["target"], output="prediction", workflow="design.pxdesign", fields=[COUNT, LENGTH, field("preset", "Evaluation preset", "preview", kind="select", options=["preview", "extended"])], color="#8268a2"),
@@ -223,8 +228,8 @@ NODE_CATALOG.update({
         field("score_direction", "Score ranking", "Lower is better", kind="select", options=["Lower is better", "Higher is better"], section="basic"),
         field("batch_size", "Maximum compounds in later rounds (0 = no cap)", 0, minimum=0, section="basic",
               help="Optional cap for active-selection batches after the first round. By default, later rounds use the configured percentage of the initial centroid sample. Large rounds are split into UniDock Pro-sized launches on each selected computer."),
-        field("worker_batch_size", "Compounds per computer launch", 2000, minimum=1, maximum=150000, section="basic",
-              help="Each selected computer docks batches of this size in its scheduled UniDock Pro jobs. Preparation and docking run on that computer. Increase this based on available GPU memory and measured throughput; the Studio adapter supports up to 150,000 compounds per launch."),
+        field("worker_batch_size", "Compounds per distributed batch", 2000, minimum=1, maximum=150000, section="basic",
+              help="Studio items per batch: for 1,000 compounds and 10 per batch, 100 independent batches are distributed across the selected computers and GPUs. Preparation and docking run on that worker. Separate from an engine's internal GPU batch size; up to 150,000 compounds per launch."),
         field("docking_mode", "UniDock Pro docking mode", "hybrid", kind="select",
               options=["classic", "ligand_based", "hybrid"], section="basic",
               help="Classic is structure-based (receptor only). Ligand-based uses the reference ligand. Hybrid uses both receptor and reference ligand. This is separate from Search effort."),
@@ -1406,8 +1411,8 @@ def clean_graph(graph: dict) -> dict:
             from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import validate_campaign_config
             campaign = {**campaign, "generator_id": "bindcraft2" if kind == "bindcraft2" else "rfd4_proteina"}
             params["distributed_campaign"] = validate_campaign_config(campaign)
-            if kind == "rfd4" and (params.get("task") != "protein_binder" or params.get("input_mode") not in {"guided", "guided_binder"}):
-                raise ValueError("RFD4 distributed campaigns support guided protein-binder tiles only.")
+            if kind == "rfd4" and (params.get("task") != "protein_binder" or params.get("input_mode") not in {"guided", "guided_binder", "condition_spec"}):
+                raise ValueError("RFD4 distributed campaigns support one guided or condition-spec protein-binder input.")
         if "selected_candidate_ids" in params and (not isinstance(params["selected_candidate_ids"], list) or not all(isinstance(v, str) for v in params["selected_candidate_ids"])):
             raise ValueError("Selected designs must be a list of candidate IDs.")
         for f in NODE_CATALOG[kind]["fields"]:
@@ -1514,9 +1519,9 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
         return None
     if not isinstance(raw, dict) or raw.get("enabled") is not True:
         raise ValueError("shared_campaign must be an enabled shared objective configuration.")
-    objective_type = str(raw.get('objective_type', 'accepted')).strip().lower()
-    if objective_type not in {'accepted', 'generated'}:
-        raise ValueError('Shared objective_type must be accepted or generated.')
+    from mn_molecular_design_studio.campaign_objectives import normalize_objective
+    raw = normalize_objective(raw)
+    objective_type = raw['objective_type']
     unique_accepted = raw.get('unique_accepted', True)
     if type(unique_accepted) is not bool or objective_type == 'accepted' and not unique_accepted:
         raise ValueError('Passing-design objectives count unique sequences; generated-design objectives retain every candidate.')
@@ -1525,7 +1530,7 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
         "max_concurrent_jobs", "max_concurrent_generation_jobs",
         "max_concurrent_validations", "max_compute_seconds", "validation_stages",
         "generator_limits", "target_node", "objective_type", "unique_accepted",
-        "workstation_selection",
+        "workstation_selection", "max_runtime_seconds", "deadline_at", "acceptance_node",
     }
     if set(raw) - allowed:
         raise ValueError("Shared campaign has unsupported setting(s): " + ", ".join(sorted(set(raw) - allowed)) + ".")
@@ -1536,9 +1541,9 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
         raise ValueError("Select one or more distinct existing design branches for the campaign objective.")
     target_field = 'accepted_target' if objective_type == 'accepted' else 'generated_target'
     target_count = raw.get(target_field, raw.get('accepted_target') if objective_type == 'generated' else None)
-    if type(target_count) is not int or target_count < 1:
+    if objective_type != 'time' and (type(target_count) is not int or target_count < 1):
         raise ValueError(f"Shared {target_field} must be a positive integer.")
-    if type(raw.get("max_attempts")) is not int or raw["max_attempts"] < target_count:
+    if type(raw.get("max_attempts")) is not int or raw["max_attempts"] < (target_count or 1):
         raise ValueError("Shared max_attempts must be at least the campaign objective target.")
 
     def positive(name: str, default: int) -> int:
@@ -1564,6 +1569,29 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
     if not isinstance(limits, dict) or set(limits) - set(branches):
         raise ValueError("Shared generator_limits may only name selected generator branches.")
 
+    acceptance_node = raw.get("acceptance_node")
+    if acceptance_node is not None:
+        if objective_type != "accepted":
+            raise ValueError("acceptance_node is only a stopping source for a passing-count objective.")
+        if acceptance_node not in nodes or nodes[acceptance_node]["data"]["kind"] != "shared_filter":
+            raise ValueError("Select an existing Validation & Acceptance / Shared scientific filters node.")
+        from mn_molecular_design_studio.validation_acceptance import campaign_policy_from_node
+        policy = campaign_policy_from_node(nodes[acceptance_node]["data"]["params"])
+        ancestors, pending = set(), list(incoming[acceptance_node])
+        while pending:
+            value = pending.pop()
+            if value not in ancestors:
+                ancestors.add(value)
+                pending.extend(incoming[value])
+        if not set(branches) <= ancestors:
+            raise ValueError("The acceptance node must receive the selected generator branches.")
+        stages = copy.deepcopy(raw.get("validation_stages") or [])
+        if len(stages) != 1 or stages[0].get("workflow") != "refolding.optimized_prediction":
+            raise ValueError("A node-bound acceptance objective requires one configured independent prediction stage.")
+        stages[0].update(acceptance_policy=policy, acceptance_node=acceptance_node,
+                         required_metrics=[], rules=[])
+        raw["validation_stages"] = stages
+
     common_target = None
     branch_configs = []
     planned_designs = 0
@@ -1582,9 +1610,9 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
             tool_campaign = generator_capabilities(tool_id)
         except ValueError:
             tool_campaign = None
-        if objective_type == 'accepted':
+        if objective_type in {'accepted', 'time'}:
             if tool_campaign is None or not tool_campaign.campaign_adapter:
-                raise ValueError(f"{NODE_CATALOG[kind]['label']} can report generated designs but has no verified passing-design campaign adapter.")
+                raise ValueError(f"{NODE_CATALOG[kind]['label']} can report generated designs but has no verified replenishing campaign adapter for passing-count or timed objectives.")
             for parameter, allowed_values in tool_campaign.graph_campaign_constraints:
                 if node['data']['params'].get(parameter) not in allowed_values:
                     raise ValueError(f"{NODE_CATALOG[kind]['label']} campaign requires {parameter} in {', '.join(allowed_values)}.")
@@ -1625,11 +1653,11 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
             raise ValueError(f"generator_limits.{node_id}.max_attempts must be within the shared attempt budget.")
         if type(branch_jobs) is not int or not 1 <= branch_jobs <= max_generation:
             raise ValueError(f"generator_limits.{node_id}.max_concurrent_generation_jobs must fit within shared generation concurrency.")
-        if type(branch_target) is not int or not 1 <= branch_target <= target_count or branch_target > branch_attempts:
+        if objective_type != 'time' and (type(branch_target) is not int or not 1 <= branch_target <= target_count or branch_target > branch_attempts):
             raise ValueError(f"generator_limits.{node_id}.target_count must be within the shared target and branch attempt budget.")
         if objective_type == 'generated' and branch_target > requested_designs:
             raise ValueError(f"generator_limits.{node_id}.target_count cannot exceed that native workflow's requested design count.")
-        planned_branch_targets += branch_target
+        planned_branch_targets += branch_target or 0
         if objective_type == 'generated' and not (tool_campaign and tool_campaign.campaign_adapter) and requested_designs > branch_attempts:
             raise ValueError(f"{NODE_CATALOG[kind]['label']} native design count exceeds its branch generation budget.")
 
@@ -1686,7 +1714,9 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
         "max_concurrent_validations": max_validations,
         "workstation_selection": workstation_selection,
         "generator_limits": normalized_limits,
-        "validation_stages": normalized_stages if objective_type == 'accepted' else list(stages or []),
+        **({"acceptance_node": acceptance_node} if acceptance_node is not None else {}),
+        "validation_stages": normalized_stages if objective_type == 'accepted' else [],
+        **{key: raw[key] for key in ("max_runtime_seconds", "deadline_at") if raw.get(key) is not None},
         **({"max_compute_seconds": float(compute)} if compute is not None else {}),
     }
 

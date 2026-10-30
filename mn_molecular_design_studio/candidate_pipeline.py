@@ -360,9 +360,10 @@ def execution_plan(graph, candidate_counts=None):
     unknown. Preview counts never change saved scientific or scheduler settings.
     """
     from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, OPTIMIZED_PREDICTION_NODE_ENGINES
-    from mn_molecular_design_studio.candidate_execution import policy, supports
+    from mn_molecular_design_studio.candidate_execution import policy, supports, dispatch_limits
     from mn_molecular_design_studio.native_execution import prediction_contract, request_contract, prediction_engine
     from mn_molecular_design_studio.engine.workflow_engine.workflows.execution_planning import describe_native_invocation
+    from mn_molecular_design_studio.batching import batch_plan
     counts, plan = candidate_counts or {}, []
     for node in graph["nodes"]:
         data = node["data"]
@@ -375,11 +376,14 @@ def execution_plan(graph, candidate_counts=None):
             raise ValueError("Preview candidate counts must be nonnegative integers.")
         preserve_sequences = params.get('sequence_stage') == 'soluble_optimization' and not params.get('optimization_enabled')
         inactive = not data.get("enabled", True) or bool(data.get("retained_run_dir")) or not spec["workflow"] or preserve_sequences
-        chunks = 0 if inactive else None if count is None else (count + settings["batch_size"] - 1) // settings["batch_size"] if sharded else int(count > 0)
+        chunks = 0 if inactive else None if count is None else batch_plan(count, settings['batch_size'])['batch_count'] if sharded else int(count > 0)
         row = dict(node=node["id"], tool=spec["label"], enabled=data.get("enabled", True),
             execution="disabled" if not data.get("enabled", True) else "preserve sequences" if preserve_sequences else "retained evidence" if data.get("retained_run_dir") else "collection chunks" if sharded else "ordinary native workflow" if spec["workflow"] else "collection transformation",
             candidates=count, collection_chunks=chunks, expected_jobs=chunks,
             candidates_per_chunk=settings["batch_size"] if sharded else None,
+            items_per_batch=settings['batch_size'] if sharded else None,
+            batch_count=chunks,
+            dispatch_limits=dispatch_limits(kind, settings) if sharded else {},
             max_concurrent_jobs=settings["max_in_flight"] if sharded else 1,
             placement=settings["placement"] if sharded or spec["workflow"] else "local",
             native_invocations=None, docker_processes=None, gpu_allocation_events=None,
@@ -398,7 +402,7 @@ def execution_plan(graph, candidate_counts=None):
                          native_batch_size=int(params.get("batch_size", params.get("diffusion_batch_size", 1))))
             row.update(requested_generator_attempts=attempts * input_count, attempts_per_input=attempts, generator_input_count=input_count,
                        gpu_microbatch=params.get("batch_size", params.get("diffusion_batch_size")),
-                       expected_jobs=attempt_chunks, generator_attempt_chunks=attempt_chunks, collection_chunks=0, docker_processes=attempt_chunks,
+                       expected_jobs=attempt_chunks, batch_count=attempt_chunks, generator_attempt_chunks=attempt_chunks, collection_chunks=0, docker_processes=attempt_chunks,
                        native_invocations=(sum((min(settings['batch_size'], attempts-offset)+99)//100 for offset in range(0, attempts, settings['batch_size'])) if sharded and kind == 'rfd4' else attempt_chunks if sharded else native["native_python_invocations"]),
                        gpu_allocation_events=attempt_chunks, gpu_slots=attempt_chunks, prediction_outputs=0,
                        model_initializations=None,

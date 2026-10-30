@@ -500,3 +500,31 @@ def test_campaign_validation_is_projected_into_candidate_set_without_overwriting
     assert visible["Campaign acceptance"] == "accepted"
     assert visible["Campaign acceptance level"] == "validated"
     assert visible["Selection"] == "not_evaluated" and visible["Selected"] is False
+
+
+def test_node_bound_acceptance_reuses_exact_independent_decision_without_reading_native_score(collection_harness):
+    from mn_molecular_design_studio.validation_acceptance import METRICS, evaluate_candidate, campaign_policy_from_node
+    h = collection_harness
+    source = h.source('designs', 'rfd4_proteina', 1)
+    path = source / 'artifacts/normalized_candidates/candidates.jsonl'
+    candidate = json.loads(path.read_text())
+    params = {'binder_format': 'miniprotein', 'target_type': 'structured',
+              'rules': [{'field': METRICS['iptm']['field'], 'operator': '>=', 'value': .7}],
+              'exclude_native_rejected': False}
+    policy = campaign_policy_from_node(params)
+    candidate['metrics']['iptm'] = .1  # Native measurement has a different meaning/source.
+    prediction = {**candidate, 'source_tool': 'optimized_prediction_boltz2', 'stage': 'complex_refolding',
+                  'metrics': {'iptm': .8}}
+    candidate['raw_metadata']['validation_acceptance'] = evaluate_candidate(prediction, policy)
+    candidate['raw_metadata']['validation_acceptance_provenance'] = {'acceptance_node': 'filter', 'validation_run_dir': 'independent-run'}
+    path.write_text(json.dumps(candidate) + '\n')
+    target = {'target_pdb': h.target, 'target_chains': ['A']}
+    target['identity'] = cs.target_identity(target)
+    merged = cs.merge(h.tmp_path, 'merged', [('generator', {'run_dir': str(source), 'candidates_jsonl': str(path), 'target': target})], {'deduplication': 'keep_all'})
+    output = cs.shared_filter(h.tmp_path, 'filter', merged, params)
+    rows = list(cs.iter_candidates(output))
+    assert len(rows) == 1
+    assert rows[0]['metrics']['iptm'] == .1
+    measured = rows[0]['raw_metadata']['validation_acceptance']['measurements'][METRICS['iptm']['field']]
+    assert measured['value'] == .8
+    assert cs.metadata(rows[0])['shared_filter']['status'] == 'passed'

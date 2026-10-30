@@ -218,6 +218,7 @@ _SPECS = (
     _spec("refolding.boltzgen_fold", "refolding", "run_boltzgen_fold_complex_refolding", "refolding-validation", "boltzgen_fold", "complex_refolding", "Run BoltzGen Fold complex refolding."),
     _spec("analysis.ipsae", "analysis", "run_ipsae_analysis_contract", "analysis", "ipsae", "analysis", "Calculate standalone ipSAE scores from saved complex structures and pairwise PAE matrices; scalar PAE metrics are not a substitute."),
     _spec("analysis.rosetta", "analysis", "run_rosetta_metrics_contract", "analysis", "rosetta_metrics", "analysis", "Calculate PyRosetta interface and energy metrics from saved complex structures."),
+    _spec("analysis.validation_acceptance", "analysis", "run_validation_acceptance_analysis", "analysis", "validation_acceptance", "analysis", "Apply explicit acceptance filters to saved native metrics and structures without launching a prediction engine."),
     _spec("import.bindcraft", "candidate_import", "run_bindcraft_import", "candidate-import", "bindcraft_import", "candidate_import", "Import a BindCraft result folder as normalized candidates."),
     _spec("import.table", "candidate_import", "run_generic_table_import", "candidate-import", "generic_table_import", "candidate_import", "Import candidates from CSV/TSV/Excel and referenced structures."),
     _spec("benchmark.dataset", "benchmark", "run_de_novo_binder_scoring_dataset", "benchmark", "de_novo_binder_scoring_scripts", "de_novo_binder_scoring_dataset", "Run the de novo binder scoring dataset and configured structure metrics."),
@@ -398,6 +399,18 @@ def workflow_schema(workflow_id: str) -> dict[str, Any]:
         "parameters_accepts": ["object", "array"] if spec.mode == "queued" else ["object"],
         "strategy": "native_batch_when_available",
     }
+    from mn_molecular_design_studio.candidate_execution import supports
+    from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
+    from mn_molecular_design_studio.quality_tools import WORKFLOWS as quality_workflows
+    partition_nodes = [kind for kind, node in NODE_CATALOG.items()
+                       if node.get('workflow') == workflow_id and supports(kind, {'candidates_jsonl': 'schema'})]
+    schema['collection_execution'].update(
+        pipeline_batch_nodes=partition_nodes,
+        pipeline_dispatch_time_limits=bool(partition_nodes) and not quality_workflows.get(workflow_id, {}).get('cohort', False),
+        requires_complete_collection=bool(quality_workflows.get(workflow_id, {}).get('cohort')),
+        batch_size_meaning='Independent items per Studio execution job; engine GPU batch sizes remain separate.',
+        acceptance_filter='Optional separate workflow node; no filter is added automatically.',
+    )
     if spec.mode in {"target_refolding_evaluation", "candidate_refolding"}:
         from mn_molecular_design_studio.engine.workflow_engine.workflows.benchmark import run_de_novo_binder_scoring_dataset
 
@@ -430,6 +443,9 @@ def workflow_schema(workflow_id: str) -> dict[str, Any]:
         schema["options_schema"] = options_schema
     from mn_molecular_design_studio.workflow_json_schema import parameters_schema
     schema["parameters_json_schema"] = parameters_schema(schema["parameters"])
+    if "distributed_campaign" in schema["parameters_json_schema"]["properties"]:
+        from mn_molecular_design_studio.campaign_objectives import configuration_schema
+        schema["parameters_json_schema"]["properties"]["distributed_campaign"] = configuration_schema()
     if workflow_id in {"design.kejia_idr", "design.peptide_trap"}:
         from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
         node = NODE_CATALOG[workflow_id.split(".", 1)[1]]
@@ -670,6 +686,18 @@ def _validate_generic_parameters(
     elif spec.workflow_id == "design.boltzgen":
         normalized.setdefault("run_vanilla_pipeline", True)
         normalized["generator_only_tile"] = False
+    if spec.workflow_id == "analysis.validation_acceptance":
+        from mn_molecular_design_studio.validation_acceptance import normalize_policy
+        normalized["acceptance_policy"] = normalize_policy(normalized.get("acceptance_policy"))
+        limit = normalized.get("candidate_limit")
+        if limit is not None and (type(limit) is not int or limit < 1):
+            raise AutomationError("candidate_limit must be a positive integer when provided.")
+        identifiers = normalized.get("candidate_ids")
+        if identifiers is not None and (
+            not identifiers or any(not isinstance(value, str) or not value.strip() for value in identifiers)
+            or len(identifiers) != len(set(identifiers))
+        ):
+            raise AutomationError("candidate_ids must contain unique, nonempty candidate IDs.")
     if spec.mode in {"target_refolding_evaluation", "candidate_refolding"}:
         _validate_refolding_options(
             normalized.get("options") or {},
@@ -766,6 +794,13 @@ def _apply_resource_parameters(
 
 
 def _validate_workflow_inputs(spec: WorkflowSpec, parameters: dict[str, Any]) -> None:
+    campaign = parameters.get("distributed_campaign")
+    if isinstance(campaign, dict) and campaign.get("enabled"):
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import validate_campaign_config
+        try:
+            parameters["distributed_campaign"] = validate_campaign_config({**campaign, "generator_id": spec.tool})
+        except (TypeError, ValueError) as exc:
+            raise AutomationError(str(exc)) from exc
     if spec.workflow_id in {"library.prepare", "library.centroids", "library.seed_dock"}:
         try:
             from mn_molecular_design_studio.engine.workflow_engine.workflows import library_preparation
@@ -846,8 +881,10 @@ def _validate_workflow_inputs(spec: WorkflowSpec, parameters: dict[str, Any]) ->
             raise AutomationError(str(exc)) from exc
     if spec.workflow_id == "design.rfd4_proteina":
         from tempfile import TemporaryDirectory
-        from mn_molecular_design_studio.rfd4_proteina_input import prepare_request, TASKS
+        from mn_molecular_design_studio.rfd4_proteina_input import prepare_request, validate_campaign_inputs, TASKS
         try:
+            if campaign and campaign.get("enabled"):
+                validate_campaign_inputs(parameters)
             if _schema_only_paths.get():
                 task = parameters.get("task", "protein_binder")
                 mode = parameters.get("input_mode", "guided_binder")

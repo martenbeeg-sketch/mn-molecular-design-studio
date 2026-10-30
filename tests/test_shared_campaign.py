@@ -39,6 +39,18 @@ def candidate(identifier, sequence):
             "raw_metadata": {"generator": identifier.split("-")[0]}}
 
 
+def test_legacy_shared_campaign_without_explicit_objective_recovers(tmp_path):
+    config = shared_config()
+    config.pop('objective_type')
+    shared = SharedCampaignLedger.create(tmp_path / 'legacy.json', config)
+    original = shared.snapshot()
+    original['config'].pop('objective_type')
+    shared.path.write_text(json.dumps(original))
+    recovered = SharedCampaignLedger.create(shared.path, config)
+    assert recovered.snapshot()['created_at'] == original['created_at']
+    assert recovered.summary()['objective_type'] == 'accepted'
+
+
 def test_two_generators_share_unique_acceptance_after_rejection_and_stop_at_target(tmp_path):
     shared = SharedCampaignLedger.create(tmp_path / "shared.json", shared_config())
     assert shared.reserve_attempt("bc-campaign", "bc-a1", "bindcraft", "bindcraft2")
@@ -407,3 +419,28 @@ def test_normal_campaign_controllers_continue_from_bindcraft_rejection_to_rfd4_a
     accepted = next(iter(rfd4_state["candidates"].values()))
     assert accepted["validated_acceptance"] == "accepted"
     assert accepted["validation_stages"]["0"]["evidence_candidate"]["metrics"]["iptm"] == 0.8
+
+
+def test_shared_timer_blocks_all_new_reservations_but_keeps_active_records(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta
+    from mn_molecular_design_studio import campaign_objectives
+    config = shared_config(objective_type='time', accepted_target=None, max_runtime_seconds=60)
+    shared = SharedCampaignLedger.create(tmp_path / 'time.json', config)
+    assert shared.reserve_attempt('a', 'a1', 'bindcraft', 'bindcraft2')
+    before = shared.snapshot()
+    expired = campaign_objectives.timestamp(before['created_at']) + timedelta(seconds=60)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return expired
+    monkeypatch.setattr(campaign_objectives, 'datetime', Clock)
+    recovered = SharedCampaignLedger(shared.path)
+    assert not recovered.reserve_attempt('b', 'b1', 'rfd4', 'rfd4_proteina')
+    assert not recovered.reserve_job('job', 'rfd4')
+    assert not recovered.reserve_validation('a', 'bindcraft', 'candidate', 0)
+    after = recovered.snapshot()
+    assert after['attempts'] == before['attempts']  # Active work drains; timer adds no cancellation.
+    summary = recovered.summary()
+    assert summary['termination_reason'] == 'runtime_exhausted'
+    assert summary['objective_target'] is None
+    assert summary['objective_met'] is True

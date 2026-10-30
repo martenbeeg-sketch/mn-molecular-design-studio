@@ -18,6 +18,10 @@ from pathlib import Path
 from typing import Any
 
 
+from mn_molecular_design_studio.campaign_objectives import (
+    normalize_objective, count_target, count_reached, time_progress, objective_progress,
+)
+
 ACTIVE_ATTEMPT_STATES = {"reserved", "authorized", "submitting", "queued", "preparing", "running"}
 TERMINAL_ATTEMPT_STATES = {"completed", "failed", "interrupted", "cancelled", "not_started"}
 
@@ -74,11 +78,12 @@ class SharedCampaignLedger:
 
     @classmethod
     def create(cls, path: Path, config: dict[str, Any]) -> "SharedCampaignLedger":
+        config = normalize_objective(config)
         ledger = cls(path)
         with _locked(ledger.path):
             state = _read(ledger.path)
             if state:
-                if state.get("config") != config:
+                if normalize_objective(state.get("config", {})) != config:
                     raise ValueError("A shared campaign ledger already exists with different graph settings.")
                 return ledger
             now = _now()
@@ -100,20 +105,29 @@ class SharedCampaignLedger:
         return ledger
 
     @staticmethod
-    def _target_count(config: dict[str, Any]) -> int:
-        if config.get("objective_type", "accepted") == "generated":
-            return int(config.get("generated_target", config.get("accepted_target", 1)))
-        return int(config.get("accepted_target", 1))
+    def _target_count(config: dict[str, Any]) -> int | None:
+        return count_target(config)
 
     @classmethod
     def _objective_count(cls, state: dict[str, Any]) -> int:
+        if state.get("config", {}).get("objective_type") == "time":
+            return sum(int(row.get("generated_candidates", 0)) for row in state.get("campaigns", {}).values())
         if state.get("config", {}).get("objective_type", "accepted") == "generated":
             return sum(row.get("status") != "not_evaluated" for row in state.get("participants", {}).values())
         return sum(row.get("status") == "accepted" for row in state.get("sequences", {}).values())
 
     def snapshot(self) -> dict[str, Any]:
         with _locked(self.path):
-            return _read(self.path)
+            state = _read(self.path)
+            previous = state.get("status")
+            if (state.get("status") == "running"
+                    and (state.get("config", {}).get("max_runtime_seconds") or state.get("config", {}).get("deadline_at"))
+                    and time_progress(state["config"], state["created_at"])["time_expired"]):
+                self._refresh_terminal(state)
+            if state.get("status") != previous:
+                state["updated_at"] = _now()
+                _atomic_write(self.path, state)
+            return state
 
     def reserve_attempt(
         self, campaign_id: str, attempt_id: str, generator_node: str, generator_id: str,
@@ -121,7 +135,9 @@ class SharedCampaignLedger:
         key = f"{campaign_id}:{attempt_id}"
         with _locked(self.path):
             state = _read(self.path)
+            self._refresh_terminal(state)
             if state.get("status") != "running":
+                _atomic_write(self.path, state)
                 return False
             attempts = state["attempts"]
             if key in attempts:
@@ -143,7 +159,7 @@ class SharedCampaignLedger:
                     or len(generator_attempts) >= max_generator_attempts
                     or len(generator_active) >= max_generator_active
                     or compute_limit is not None and reported_compute >= float(compute_limit)
-                    or self._objective_count(state) >= self._target_count(config)
+                    or count_reached(config, self._objective_count(state))
             ):
                 self._refresh_terminal(state)
                 state["updated_at"] = _now()
@@ -165,7 +181,9 @@ class SharedCampaignLedger:
         """Reserve one scheduler submission under the shared generation caps."""
         with _locked(self.path):
             state = _read(self.path)
+            self._refresh_terminal(state)
             if state.get('status') != 'running':
+                _atomic_write(self.path, state)
                 return False
             jobs = state.setdefault('jobs', {})
             existing = jobs.get(job_id)
@@ -262,7 +280,8 @@ class SharedCampaignLedger:
                     if status in ACTIVE_ATTEMPT_STATES:
                         active_validations += 1
                 shared = candidate.get("shared_objective") or {}
-                if (candidate.get("native_acceptance") in {"accepted", "unavailable"}
+                if ((local_state.get("config", {}).get("validation_stages") or state["config"].get("validation_stages"))
+                        and candidate.get("native_acceptance") in {"accepted", "unavailable"}
                         and candidate.get("validated_acceptance") not in {"accepted", "rejected", "failed"}
                         and shared.get("role") not in {"duplicate", "native_rejected", "not_evaluated"}):
                     pending_validations += 1
@@ -271,6 +290,10 @@ class SharedCampaignLedger:
                     continue
                 if key not in local_validation_keys and validation.get("status") == "reserved":
                     validation.update(status="released", updated_at=_now())
+            campaign["generated_candidates"] = len(local_candidates) + sum(
+                int(row.get("candidate_count") or 0) for row in local_state.get("deferred_outputs", {}).values()
+                if row.get("status") == "deferred"
+            )
             campaign["active_validations"] = active_validations
             campaign["pending_validations"] = pending_validations
             state["updated_at"] = _now()
@@ -435,7 +458,7 @@ class SharedCampaignLedger:
                     for job in state.get('jobs', {}).values():
                         if job.get('status') in ACTIVE_ATTEMPT_STATES:
                             job.update(status='interrupted', completed_at=_now())
-                elif count >= target:
+                elif target is not None and count >= target:
                     status, reason = "target_reached", "target_reached"
                 else:
                     status, reason = "budget_exhausted", "budget_exhausted"
@@ -486,7 +509,9 @@ class SharedCampaignLedger:
         key = f"{campaign_id}:{candidate_id}:{stage_index}"
         with _locked(self.path):
             state = _read(self.path)
+            self._refresh_terminal(state)
             if state.get("status") != "running":
+                _atomic_write(self.path, state)
                 return False
             validations = state.setdefault("validations", {})
             if key in validations:
@@ -641,7 +666,11 @@ class SharedCampaignLedger:
             "objective_target": self._target_count(config),
             "accepted_target": config.get("accepted_target") if objective_type == "accepted" else None,
             "generated_target": config.get("generated_target") if objective_type == "generated" else None,
-            "generated_designs": len(generated),
+            "generated_designs": (sum(row.get("generated_candidates", 0) for row in state.get("campaigns", {}).values())
+                                  if objective_type == "time" else len(generated)),
+            **objective_progress(config, self._objective_count(state), state["created_at"]),
+            **({"objective_met": state.get("termination_reason") == "runtime_exhausted"}
+               if objective_type == "time" and state.get("status") != "running" else {}),
             "generated_native_pass": sum(row.get("native_filter_status") == "native_pass" for row in generated),
             "generated_native_rejected": sum(row.get("native_filter_status") == "native_rejected" for row in generated),
             "generated_native_filter_unavailable": sum(row.get("native_filter_status") == "unavailable" for row in generated),
@@ -686,8 +715,11 @@ class SharedCampaignLedger:
     def _refresh_terminal(self, state: dict[str, Any]) -> None:
         if state.get("status") != "running":
             return
-        if (state.get("config", {}).get("objective_type", "accepted") == "accepted"
-                and self._accepted_count(state) >= self._target_count(state["config"])):
+        if time_progress(state["config"], state["created_at"])["time_expired"]:
+            state.update(status="runtime_exhausted", termination_reason="runtime_exhausted", completed_at=_now())
+            state["events"].append({"type": "shared_time_limit_reached", "at": _now()})
+            return
+        if count_reached(state["config"], self._objective_count(state)):
             state.update(status="target_reached", termination_reason="target_reached", completed_at=_now())
             state["events"].append({"type": "shared_target_reached", "at": _now()})
             return

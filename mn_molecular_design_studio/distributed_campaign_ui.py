@@ -358,7 +358,7 @@ def campaign_context_for_job(
 
     native_batch_size, native_source_run_id = _native_batch_size(current_dir, input_payload, candidates_raw, ledger_root)
     objective_type = str(config.get("objective_type") or "accepted")
-    if objective_type == "generated":
+    if objective_type in {"generated", "time"}:
         objective_count = len(candidates_raw) + deferred_candidate_count
     elif config.get("unique_accepted"):
         field = f"{acceptance_level}_acceptance"
@@ -377,7 +377,11 @@ def campaign_context_for_job(
         for attempt in attempts_raw.values() if isinstance(attempt, dict)
     )
 
+    from mn_molecular_design_studio.campaign_objectives import objective_progress
+    timer = (objective_progress(config, objective_count, ledger["created_at"])
+             if ledger.get("created_at") else {})
     return {
+        "campaign_objective": timer,
         "campaign_id": campaign_id,
         "campaign_kind": "Validation-only follow-up" if validation_only else "Original generation campaign",
         "status": str(ledger.get("status") or "unknown"),
@@ -442,6 +446,11 @@ def render_campaign_context(st: Any, context: dict[str, Any] | None) -> None:
 
         accepted_target = context.get("accepted_target")
         attempt_budget = context.get("attempt_budget")
+        if context.get("objective_type") == "time":
+            timing = context.get("campaign_objective") or {}
+            remaining = timing.get("remaining_seconds")
+            st.caption(f"Timed campaign · {context.get('objective_count', 0)} generated · "
+                       + (f"{remaining / 60:.1f} minutes until dispatch stops" if remaining is not None else "time unavailable"))
         if isinstance(accepted_target, int) and accepted_target > 0:
             accepted = int(context.get("objective_count", context.get("accepted_count")) or 0)
             attempt_text = ""

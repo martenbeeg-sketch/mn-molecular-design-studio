@@ -28,6 +28,22 @@ def test_sequence_records_batch_independently_but_keep_complex_chains():
     assert batching.sequence_tasks("ACD:EFG\nACDEFG")[0]["protein_sequences"] == "ACD:EFG"
 
 
+@pytest.mark.parametrize('count,size,expected,last', [(1000, 10, 100, 10), (1003, 10, 101, 3), (0, 10, 0, 0)])
+def test_studio_batch_arithmetic_is_independent_of_scientific_operation(count, size, expected, last):
+    plan = batching.batch_plan(count, size)
+    assert plan['batch_count'] == expected
+    assert plan['last_batch_items'] == last
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.active_learning_controller import _compound_batches
+    assert len(_compound_batches(list(range(count)), size)) == expected
+
+
+def test_schema_reports_partition_capabilities_without_claiming_all_tiles_support_timers():
+    prediction = workflows.workflow_schema('refolding.optimized_prediction')['collection_execution']
+    analysis = workflows.workflow_schema('analysis.sequence_qc')['collection_execution']
+    assert prediction['pipeline_dispatch_time_limits'] and prediction['pipeline_batch_nodes']
+    assert analysis['pipeline_dispatch_time_limits'] and 'sequence_qc' in analysis['pipeline_batch_nodes']
+
+
 @pytest.mark.parametrize("engine", ["boltz2", "alphafold3", "af3_torch", "protenix_v2"])
 def test_compound_collection_is_native_prediction_batch(compound_file, engine):
     prepared = optimized_prediction._prepare_prediction(
@@ -262,6 +278,61 @@ render_batch_controls("boltz2", {{**ENGINE_PROFILES["boltz2"], "form_key": "acce
     campaigns.set_value(["source-run"]).run()
     candidates = next(widget for widget in app.multiselect if widget.label == "Designs · VHH-1")
     assert candidates.value == ["passing-design"]
-    assert any("native no pass recorded" in str(option) for option in candidates.options)
+    assert any("native failed" in str(option) for option in candidates.options)
     binder_format = next(widget for widget in app.selectbox if widget.label == "Binder format")
     assert binder_format.value == "vhh"
+
+
+def test_validation_acceptance_tile_submits_saved_remote_idr_evidence_without_prediction(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio.cluster import config as cluster_config, service as cluster_service
+
+    monkeypatch.setattr(cluster_config, "load", lambda: {"mode": "coordinator"})
+    monkeypatch.setattr(cluster_config, "identity", lambda: "local-node")
+    monkeypatch.setattr(cluster_service, "shared_jobs", lambda *args, **kwargs: {"items": [{
+        "cluster_job_id": "remote-rfd4-job", "node_id": "rfd4-node", "node_name": "4032",
+        "project_id": "project", "tool": "rfd4_proteina", "run_id": "rfd4-run",
+        "job_code": "RFD4-10", "candidate_summary": {
+            "status": "complete", "candidate_count": 10, "eligible_count": 10,
+            "native_filter_counts": {"passed": 0, "failed": 0, "unavailable": 10},
+        },
+    }]})
+    app = AppTest.from_string('''
+import streamlit as st
+from mn_molecular_design_studio.design_validation_ui import render_batch_controls
+from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import workflow_schema
+st.session_state['_molecular_database_user'] = {'id': 'user'}
+st.session_state['studio-session-token'] = 'test'
+def submit(schema, workflow, parameters, project, settings, label):
+    st.session_state['submitted'] = (workflow, parameters)
+render_batch_controls(
+    'rfd4_proteina', {'form_key': 'saved-evidence', 'input_kind': 'saved_results',
+    'requires_target_template': True, 'label': 'Saved evidence', 'supports_cyclic': True},
+    'project', 'R3 acceptance', workflow_schema('analysis.validation_acceptance'),
+    search_jobs=lambda **kwargs: {'items': [], 'next_cursor': None}, submit=submit,
+    allow_new_batch=False, include_acceptance=True, existing_designs_only=True,
+    evaluation_only=True)
+''').run()
+    assert not app.exception
+    assert not any(widget.label == "Prediction" for widget in app.radio)
+    sources = next(widget for widget in app.multiselect if widget.label == "Design campaigns")
+    sources.set_value(["cluster:remote-rfd4-job"]).run()
+    next(widget for widget in app.selectbox if widget.label == "Binder format").set_value("miniprotein").run()
+    next(widget for widget in app.selectbox if widget.label == "Target type").set_value("fasta_idr").run()
+    confirms = [widget for widget in app.checkbox if widget.label.startswith("Confirm all selected")]
+    for widget in confirms:
+        widget.set_value(True)
+    app.run()
+    run_button = next(widget for widget in app.button if widget.label == "Run Validation & Acceptance")
+    assert not run_button.disabled, next(
+        (element.value for element in app.caption if "temporarily unavailable" in element.value),
+        ([element.value for element in app.error], sources.value, sources.options),
+    )
+    run_button.click().run()
+    workflow, parameters = app.session_state["submitted"]
+    assert workflow == "analysis.validation_acceptance"
+    assert parameters["candidate_limit"] == 10
+    assert parameters["source_job"] == "cluster:remote-rfd4-job"
+    assert parameters["acceptance_policy"]["binder_format"] == "miniprotein"
+    assert parameters["acceptance_policy"]["target_type"] == "fasta_idr"
+    assert parameters["_database_collection_policy"] == "manual"

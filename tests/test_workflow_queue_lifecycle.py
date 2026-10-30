@@ -354,6 +354,24 @@ def test_legacy_generic_rows_keep_status_and_resolve_engine_and_name(api_queue, 
     assert len(response.json()["items"]) == 1
 
 
+def test_shared_job_catalog_exposes_campaign_identity_and_curated_settings(api_queue):
+    run = api_queue.root / "design" / "campaign-batch"
+    run.mkdir(parents=True)
+    jobs.write_json(run / "input.json", {
+        "job_type": "design_generation", "tool": "rfd4_proteina",
+        "params": {"campaign_group_id": "campaign-123", "campaign_group_name": "R3 IDR",
+                   "target_name": "R3", "target_type": "IDR", "num_designs": 10,
+                   "seed": 42, "target_sequence": "ACDEFGHIKLMNPQRSTVWY"},
+    })
+    jobs.write_json(run / "metadata.json", {"tool": "rfd4_proteina", "status": "completed"})
+    row = next(item for item in jobs.collect_jobs(include_hidden=True) if item["run_id"] == "campaign-batch")
+    assert row["campaign_group_id"] == "campaign-123"
+    assert row["campaign_group_name"] == "R3 IDR"
+    assert row["campaign_parameters"] == {
+        "target_name": "R3", "target_type": "IDR", "num_designs": 10, "seed": 42,
+    }
+
+
 def test_job_reference_keeps_remote_metadata_paths_opaque(api_queue):
     run = api_queue.root / "design" / "remote-candidate-campaign"
     run.mkdir(parents=True)

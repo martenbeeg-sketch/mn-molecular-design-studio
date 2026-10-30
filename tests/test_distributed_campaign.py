@@ -2076,3 +2076,117 @@ def test_validation_job_metadata_tracks_actual_campaign_generator(tmp_path, monk
         metadata = jobs.read_json(child.run_dir / 'metadata.json')
         assert metadata['benchmark_engine'] == generator
         assert metadata['parent_role'] == expected_role
+
+
+def test_timed_campaign_has_no_fixed_count_or_mandatory_filter(tmp_path, monkeypatch):
+    config = {
+        'enabled': True, 'generator_id': 'rfd4_proteina', 'objective_type': 'time',
+        'max_runtime_seconds': 600, 'max_attempts': 100,
+        'max_concurrent_generation_jobs': 4,
+    }
+    normalized = distributed_campaign.validate_campaign_config(config)
+    assert normalized['accepted_target'] is None
+    assert normalized['validation_stages'] == []
+    campaign = CampaignLedger.create(tmp_path / 'ledger.json', config)
+    made = []
+    monkeypatch.setattr(distributed_campaign, '_create_attempt_child', lambda _p, _l, attempt, _c: made.append(attempt))
+    distributed_campaign._dispatch_attempts(tmp_path, campaign, normalized, active_count=0, accepted_count=1000)
+    assert len(made) == 4  # Generated count never acts as an accidental timer goal.
+
+
+@pytest.mark.parametrize('already_submitted', [False, True])
+def test_expired_recovery_never_submits_remote_work_and_keeps_existing_job(tmp_path, monkeypatch, already_submitted):
+    from mn_molecular_design_studio.cluster import candidate_batches
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    config = distributed_campaign.validate_campaign_config({
+        'generator_id': 'rfd4_proteina', 'objective_type': 'time',
+        'max_runtime_seconds': 60, 'max_attempts': 2,
+    })
+    campaign = CampaignLedger.create(tmp_path / 'ledger.json', config)
+    attempt = campaign.authorize(1, batch_id='first')[0]
+    child = tmp_path / 'child'
+    child.mkdir()
+    jobs.write_json(child / 'metadata.json', {'status': 'queued', 'cluster_remote': True})
+    campaign.transition(attempt['attempt_id'], 'queued', child_run_dir=str(child),
+                        cluster_submission={'submission_key': 'durable-key'})
+    monkeypatch.setattr(distributed_campaign, 'time_progress', lambda *a, **k: {'time_expired': True})
+    monkeypatch.setattr(distributed_campaign, '_attempt_child_paths', lambda *a: {attempt['attempt_id']: child})
+    monkeypatch.setattr(distributed_campaign, '_campaign_actor', lambda *a: ('owner', 'project', True))
+    monkeypatch.setattr(distributed_campaign, '_submit_rfd4_peer_attempt', lambda *a: pytest.fail('Expired recovery submitted work'))
+    recovered = {'cluster_job_id': 'existing-job'} if already_submitted else None
+    monkeypatch.setattr(candidate_batches, 'recover_submission', lambda *a, **k: recovered)
+    monkeypatch.setattr(candidate_batches, 'poll_summary', lambda *a, **k: ('running', {'node_id': 'peer'}))
+    _, active, _ = distributed_campaign._reconcile_attempts(campaign, tmp_path, config)
+    latest = campaign.snapshot()['attempts'][attempt['attempt_id']]
+    if already_submitted:
+        assert latest['status'] == 'running'
+        assert latest['cluster_job_id'] == 'existing-job'
+        assert len(active) == 1
+    else:
+        assert latest['status'] == 'not_started'
+        assert active == []
+
+
+def test_expired_campaign_stops_before_dispatch_and_finishes_with_time_results(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    config = {
+        'objective_type': 'time', 'deadline_at': '2000-01-01T08:00:00+01:00',
+        'max_attempts': 100, 'poll_interval_seconds': 0.25,
+    }
+    _root, parent = _parent_run(tmp_path, monkeypatch, config)
+    monkeypatch.setattr(distributed_campaign, '_create_attempt_child', lambda *a: pytest.fail('Expired timer dispatched work'))
+    _mock_finish(monkeypatch)
+    distributed_campaign.run_bindcraft2_distributed_campaign(parent)
+    result = jobs.read_json(parent / 'result.json')
+    assert result['metrics']['termination_reason'] == 'runtime_exhausted'
+    assert result['metrics']['attempts_authorized'] == 0
+    assert result['metrics']['campaign_success'] is True
+    assert result['metrics']['accepted_target'] is None
+    assert result['metrics']['campaign_objective']['objective_target'] is None
+
+
+def test_optional_acceptance_uses_the_existing_backend_and_keeps_missing_values_unresolved(tmp_path):
+    from mn_molecular_design_studio.validation_acceptance import METRICS, campaign_stage
+    policy = {'binder_format': 'peptide', 'target_type': 'fasta_idr',
+              'mandatory_filters': [{'field': METRICS['iptm']['field'], 'operator': '>=', 'value': .7}],
+              'informational_scores': [METRICS['bindcraft2_ipdae']['field']]}
+    stage = campaign_stage(policy, engine='boltz2')
+    validated = distributed_campaign.validate_campaign_config({
+        'generator_id': 'rfd4_proteina', 'accepted_target': 100, 'max_attempts': 300,
+        'acceptance_level': 'validated', 'validation_stages': [stage],
+    })
+    assert validated['validation_stages'][0]['acceptance_policy']['target_type'] == 'fasta_idr'
+    passed = {'candidate_id': 'predicted', 'source_tool': 'optimized_prediction_boltz2',
+              'stage': 'complex_refolding', 'metrics': {'iptm': .8}}
+    rejected = {**passed, 'metrics': {'iptm': .2}}
+    missing = {**passed, 'metrics': {}}
+    assert distributed_campaign._stage_selectors({}, passed, stage)['status'] == 'pass'
+    assert distributed_campaign._stage_selectors({}, rejected, stage)['status'] == 'reject'
+    assert distributed_campaign._stage_selectors({}, missing, stage)['status'] == 'missing'
+    request, _resources = distributed_campaign._validation_request(
+        tmp_path, {'candidate_id': 'design-a'}, stage, 0, 'campaign', None)
+    assert request['parameters']['validation_sources'][0]['candidate_ids'] == ['design-a']
+    assert request['parameters']['use_target_template'] is False
+    assert request['parameters']['acceptance_policy']['binder_format'] == 'peptide'
+
+
+def test_timed_campaign_exhausting_budget_early_is_not_reported_as_timer_success(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta
+    from mn_molecular_design_studio import campaign_objectives
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    config = {'objective_type': 'time', 'max_runtime_seconds': 60, 'max_attempts': 1}
+    _root, parent = _parent_run(tmp_path, monkeypatch, config)
+    campaign = CampaignLedger.create(parent / 'artifacts/distributed_campaign/ledger.json', config)
+    campaign.terminate('budget_exhausted', detail='Safety budget reached before timer.')
+    late = campaign_objectives.timestamp(campaign.snapshot()['created_at']) + timedelta(seconds=120)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return late
+    monkeypatch.setattr(campaign_objectives, 'datetime', Clock)
+    _mock_finish(monkeypatch)
+    distributed_campaign._finish_campaign(parent, campaign, [])
+    result = jobs.read_json(parent / 'result.json')
+    assert result['metrics']['campaign_objective']['time_expired'] is True
+    assert result['metrics']['termination_reason'] == 'budget_exhausted'
+    assert result['metrics']['campaign_success'] is False

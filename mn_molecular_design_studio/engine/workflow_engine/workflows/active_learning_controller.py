@@ -60,8 +60,8 @@ def _next_round_selection_counts(*, initial_seed_count: int, remaining_compounds
 
 def _compound_batches(rows: list[dict], batch_size: int) -> list[list[dict]]:
     """Split one computer's assignments into launches accepted by the docking adapter."""
-    if batch_size < 1:
-        raise ValueError("A docking launch must contain at least one compound.")
+    from mn_molecular_design_studio.batching import batch_plan
+    batch_plan(len(rows), batch_size)
     return [rows[start:start + batch_size] for start in range(0, len(rows), batch_size)]
 
 

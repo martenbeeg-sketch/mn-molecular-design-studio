@@ -591,3 +591,131 @@ def test_shared_generator_objective_validates_and_runs_through_normal_pipeline_a
     assert captured["graph"]["shared_campaign"]["accepted_target"] == 1
     assert captured["graph"]["shared_campaign"]["generator_nodes"] == ["bindcraft", "rfd4"]
     assert captured["graph"]["shared_campaign"]["workstation_selection"] == "auto"
+
+
+def test_time_campaign_validates_on_workflow_and_pipeline_api_without_filter(api_data):
+    from mn_molecular_design_studio.auth import user_input_root
+    from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, SCHEMA
+    data, client = api_data, api_data['client']
+    target_path = user_input_root(data['admin']['id']) / 'timer-target.pdb'
+    write_structure(target_path, chains=(("A", 4),))
+    campaign = {'enabled': True, 'objective_type': 'time', 'max_attempts': 200,
+                'max_runtime_seconds': 1800, 'deadline_at': '2026-10-31T08:00:00+01:00'}
+    request = {'schema_version': 1, 'workflow': 'design.rfd4_proteina',
+               'project_id': data['project']['id'], 'parameters': {
+                   'target_structure': str(target_path), 'target_chains': ['A'],
+                   'distributed_campaign': campaign}}
+    response = client.post('/api/v1/workflows/validate', json=request)
+    assert response.status_code == 200, response.text
+    bad = json.loads(json.dumps(request))
+    bad['parameters']['distributed_campaign'].pop('deadline_at')
+    bad['parameters']['distributed_campaign'].pop('max_runtime_seconds')
+    rejected = client.post('/api/v1/workflows/validate', json=bad)
+    assert rejected.status_code in {400, 422}, rejected.text
+    assert 'time objective requires' in rejected.text
+    schema = client.get('/api/v1/workflows/design.rfd4_proteina/schema').json()
+    # Public workflow schema documents the nested campaign stopping contract.
+    assert schema['parameters_json_schema']['properties']['distributed_campaign']['properties']['objective_type']['enum'] == ['generated', 'accepted', 'time']
+    def make(kind, ident):
+        spec = NODE_CATALOG[kind]
+        return {'id': ident, 'type': 'studio', 'position': {'x': 0, 'y': 0},
+                'data': {'kind': kind, 'label': spec['label'],
+                         'params': {field['name']: field['default'] for field in spec['fields']}}}
+    target, generator, results = make('target', 'target'), make('rfd4', 'generator'), make('results', 'results')
+    target['data']['params'].update(target_pdb=str(target_path), target_chains='A')
+    graph = {'schema_version': SCHEMA, 'id': 'a' * 32, 'nodes': [target, generator, results],
+             'edges': [{'id': 't-g', 'source': 'target', 'target': 'generator'},
+                       {'id': 'g-r', 'source': 'generator', 'target': 'results'}],
+             'shared_campaign': {**campaign, 'generator_nodes': ['generator']}}
+    validated = client.post('/api/v1/pipelines/validate', json={'project_id': data['project']['id'], 'graph': graph})
+    assert validated.status_code == 200, validated.text
+    assert validated.json()['valid'] is True
+
+
+def test_validation_acceptance_saved_evidence_is_public_and_api_validated(api_data):
+    data, client = api_data, api_data["client"]
+    source = candidate_run(data, tool="rfd4_proteina")
+    request = {
+        "schema_version": 1,
+        "workflow": "analysis.validation_acceptance",
+        "project_id": data["project"]["id"],
+        "source_job": f"design/{source.name}",
+        "parameters": {
+            "candidate_ids": ["generated-1"],
+            "acceptance_policy": {
+                "binder_format": "miniprotein", "target_type": "fasta_idr",
+                "mandatory_filters": [
+                    {"field": "common.confidence.generator.complex.ptm", "operator": ">=", "value": 0.55},
+                    {"field": "common.confidence.generator.complex.iptm", "operator": ">=", "value": 0.7},
+                ],
+            },
+        },
+    }
+    schema = client.get("/api/v1/workflows/analysis.validation_acceptance/schema")
+    assert schema.status_code == 200, schema.text
+    assert "source_job" in schema.json()["request_fields"]
+    validated = client.post("/api/v1/workflows/validate", json=request)
+    assert validated.status_code == 200, validated.text
+    assert validated.json()["valid"] is True
+    bad = json.loads(json.dumps(request))
+    bad["parameters"]["candidate_limit"] = 0
+    rejected = client.post("/api/v1/workflows/validate", json=bad)
+    assert rejected.status_code in {400, 422}, rejected.text
+    assert "candidate_limit" in rejected.text
+
+
+def test_validation_acceptance_api_runs_saved_rfd4_evidence_without_prediction(api_data, monkeypatch):
+    data, client = api_data, api_data["client"]
+    source = candidate_run(data, tool="rfd4_proteina")
+    candidates = source / "artifacts/normalized_candidates/candidates.jsonl"
+    row = json.loads(candidates.read_text())
+    row["metrics"] = {
+        "oracle_ppi.overall_ptm": 73.0,
+        "oracle_ppi.overall_iptm": 78.0,
+        "oracle_ppi.overall_plddt": 81.65,
+        "oracle_ppi.ipae_coi": 17.48,
+        "ppi.pass": 0.0,
+        "ppi.all_metrics_present": 0.0,
+    }
+    candidates.write_text(json.dumps(row) + "\n")
+    from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation
+
+    def execute_analysis_inline(function, **kwargs):
+        assert kwargs.get("tool") == "validation_acceptance"
+        return function(**kwargs["kwargs"])
+
+    monkeypatch.setattr(workflow_automation, "enqueue_workflow_call", execute_analysis_inline)
+    response = client.post("/api/v1/workflows", json={
+        "schema_version": 1,
+        "workflow": "analysis.validation_acceptance",
+        "project_id": data["project"]["id"],
+        "source_job": f"design/{source.name}",
+        "database_collection_policy": "manual",
+        "parameters": {
+            "candidate_ids": ["generated-1"],
+            "acceptance_policy": {
+                "binder_format": "miniprotein", "target_type": "fasta_idr",
+                "mandatory_filters": [
+                    {"field": "common.confidence.generator.complex.ptm", "operator": ">=", "value": 0.55},
+                    {"field": "common.confidence.generator.complex.iptm", "operator": ">=", "value": 0.70},
+                ],
+                "informational_scores": ["common.confidence.generator.complex.plddt",
+                                         "common.confidence.generator.interface.ipae_coi"],
+            },
+        },
+    })
+    assert response.status_code == 202, response.text
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+    from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import resolve_job
+    job = response.json()["job"]
+    assert job["tool"] == "validation_acceptance"
+    result = read_json(Path(resolve_job(f"{job['task_group']}/{job['run_id']}")["run_dir"]) / "result.json")
+    summary = result["metrics"]["validation_acceptance"]
+    assert summary["prediction_performed"] is False
+    assert summary["accepted"] == 1 and summary["rejected"] == 0
+    filtered = (Path(resolve_job(f"{job['task_group']}/{job['run_id']}")["run_dir"])
+                / "artifacts/normalized_candidates/candidates.jsonl").read_text()
+    output_candidate = json.loads(filtered)
+    assert output_candidate["candidate_id"] == "generated-1"
+    assert output_candidate["raw_metadata"]["validation_acceptance"]["native_filter_status"] == "unavailable · native PPI metrics incomplete"
+    assert output_candidate["metrics"]["ppi.pass"] == 0.0

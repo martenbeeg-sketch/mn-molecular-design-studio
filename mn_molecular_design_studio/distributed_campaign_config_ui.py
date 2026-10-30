@@ -63,7 +63,7 @@ def render_campaign_config_editor(
         "Use distributed campaign",
         value=bool(existing.get("enabled", current is not None)),
         key=key + "-enabled",
-        help="One controller tracks the global accepted target and attempt budget across eligible workers.",
+        help="Use the existing controller to run to a generated count, passing count, or time limit across eligible workers.",
     )
     if not enabled:
         return None, True
@@ -73,30 +73,33 @@ def render_campaign_config_editor(
 
     capability = generator_capabilities(generator_id)
     default_level = "validated" if not capability.native_acceptance_available else "native"
-    objective_options = ["accepted", "generated"]
-    current_objective = str(existing.get("objective_type") or "accepted")
+    from mn_molecular_design_studio.campaign_objectives import OBJECTIVE_LABELS
+    objective_options = list(OBJECTIVE_LABELS)
+    current_objective = str(existing.get("objective_type") or "generated")
     if current_objective not in objective_options:
-        current_objective = "accepted"
+        current_objective = "generated"
     objective_type = st.selectbox(
         "Campaign objective", objective_options, index=objective_options.index(current_objective),
-        format_func={"accepted": "Unique candidates passing criteria", "generated": "Generated designs"}.get,
+        format_func=OBJECTIVE_LABELS.get,
         key=key + "-objective-type",
     )
-    accepted_target = int(st.number_input(
+    accepted_target = None if objective_type == "time" else int(st.number_input(
         "Target designs" if objective_type == "generated" else "Target unique passing designs",
         min_value=1, value=int(existing.get("accepted_target") or 1),
         step=1, key=key + "-accepted-target",
+        help=(
+            "Studio-level campaign objective: total generated designs, or unique candidates that pass the configured criteria. "
+            "It is independent of the generator's internal GPU/dataloader batch size."
+        ),
     ))
     max_attempts = int(st.number_input(
-        "Global maximum native attempts", min_value=1, value=int(existing.get("max_attempts") or max(2, accepted_target)),
+        "Maximum campaign attempts", min_value=1, value=int(existing.get("max_attempts") or max(2, accepted_target or 1000)),
         step=1, key=key + "-max-attempts",
+        help="Upper bound on individual generator tries across the campaign. An attempt can produce no output or a rejected design, so the passing-design target may need more attempts. This is separate from the engine's GPU batch size.",
     ))
-    budget_left, budget_right = st.columns(2)
-    runtime_seconds = float(budget_left.number_input(
-        "Maximum elapsed seconds (0 = no limit)", min_value=0.0,
-        value=float(existing.get("max_runtime_seconds") or 0), key=key + "-runtime-budget",
-    ))
-    compute_seconds = float(budget_right.number_input(
+    from mn_molecular_design_studio.campaign_objectives_ui import render_time_limits
+    time_limits, time_ready = render_time_limits(st, existing, key=key, required=objective_type == "time")
+    compute_seconds = float(st.number_input(
         "Maximum GPU seconds (0 = no limit)", min_value=0.0,
         value=float(existing.get("max_compute_seconds") or 0), key=key + "-compute-budget",
     ))
@@ -156,7 +159,7 @@ def render_campaign_config_editor(
 
     stages = existing.get("validation_stages")
     stages = stages if isinstance(stages, list) else []
-    if objective_type == "generated":
+    if objective_type in {"generated", "time"}:
         stages = []
     if objective_type == "accepted" and (acceptance_level != "native" or not capability.native_acceptance_available):
         if not stages:
@@ -200,11 +203,10 @@ def render_campaign_config_editor(
         "diversity": diversity,
         "seed": int(existing.get("seed", seed) or 0),
     }
-    if runtime_seconds:
-        config["max_runtime_seconds"] = runtime_seconds
+    config.update(time_limits)
     if compute_seconds:
         config["max_compute_seconds"] = compute_seconds
-    ready = True
+    ready = time_ready
     for error in (stage_error, diversity_error):
         if error:
             st.error(error)
@@ -218,15 +220,20 @@ def render_campaign_config_editor(
 
     st.caption("Available GPUs are candidates for scheduling; allocated GPUs are selected only when each attempt or validation starts. Validation concurrency is independent of generation concurrency.")
     st.caption(
-        f"Native attempts per execution job: 1 (the only verified campaign choice). "
+        ("Studio timed campaign; " if objective_type == "time" else
+         f"Studio campaign target: {accepted_target} {'generated designs' if objective_type == 'generated' else 'unique passing designs'}; ")
+        +
+        f"maximum campaign attempts: {max_attempts}. "
+        f"Each execution job currently requests one native design (the only verified campaign choice). "
         f"Maximum concurrent generation jobs: {max_concurrent_generation_jobs}; "
         f"maximum concurrent validation jobs: {max_concurrent_validations}. "
-        "Each generation job retains its own seed, native receipt and recovery state; actual placement remains subject to scheduler resource checks."
+        "The controller keeps launching/recovering independent attempts toward the Studio target, subject to the attempt and resource budgets. "
+        "This execution unit is separate from an engine's native GPU/dataloader batch size."
     )
     st.markdown("**Effective campaign settings before submission**")
     st.code(json.dumps(config, indent=2, sort_keys=True), language="json")
     if node_kind == "rfd4":
-        st.caption("Distributed RFD4 children request one native design with dataloader batch size 1. Controller dispatch size changes only how the campaign groups separate execution jobs.")
+        st.caption("Each RFD4 campaign attempt currently requests one design with native GPU batch_size=1. Count and timed objectives require no acceptance filter; designs can be evaluated in a later pipeline. A passing-count objective uses only its explicitly configured acceptance stage.")
     with st.expander("Native execution plan"):
         from mn_molecular_design_studio.engine.workflow_engine.workflows.execution_planning import (
             PROPOSED_NATIVE_CHOICES, plan_campaign_execution,

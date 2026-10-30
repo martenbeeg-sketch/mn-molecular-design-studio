@@ -301,7 +301,8 @@ def test_shared_objective_rejects_different_target_and_incompatible_downstream_p
         graph.validate_graph(incompatible)
 
 
-def test_graph_runner_injects_one_shared_campaign_context_into_normal_branch_requests(tmp_path, monkeypatch, design_source_factory):
+@pytest.mark.parametrize("objective_type", ["accepted", "time"])
+def test_graph_runner_injects_one_shared_campaign_context_into_normal_branch_requests(tmp_path, monkeypatch, design_source_factory, objective_type):
     from mn_molecular_design_studio import workspace
     from mn_molecular_design_studio.distributed_campaign_config_ui import _default_validation_stages
 
@@ -331,6 +332,9 @@ def test_graph_runner_injects_one_shared_campaign_context_into_normal_branch_req
         },
         "viewport": {"x": 0, "y": 0, "zoom": 1},
     }
+    if objective_type == "time":
+        graph_data['shared_campaign'].update(objective_type='time', max_runtime_seconds=300, validation_stages=[])
+        graph_data['shared_campaign'].pop('accepted_target')
     requests = []
     children = []
 
@@ -356,7 +360,10 @@ def test_graph_runner_injects_one_shared_campaign_context_into_normal_branch_req
 
     assert [request["parameters"]["distributed_campaign"]["_shared_objective"]["generator_node"]
             for request in requests] == ["bindcraft", "rfd4"]
-    assert all(request["parameters"]["distributed_campaign"]["accepted_target"] == 1 for request in requests)
+    assert all(request["parameters"]["distributed_campaign"]["accepted_target"] == (None if objective_type == "time" else 1) for request in requests)
+    if objective_type == "time":
+        assert all(request["parameters"]["distributed_campaign"]["validation_stages"] == [] for request in requests)
+        assert len({request["parameters"]["distributed_campaign"]["deadline_at"] for request in requests}) == 1
     assert all(request["parameters"]["distributed_campaign"]["workstation_selection"] == "auto" for request in requests)
     shared_path = result / "artifacts/shared_campaign/ledger.json"
     assert shared_path.is_file()
@@ -1004,3 +1011,48 @@ def test_explicit_partial_fan_in_reports_missing_branch_without_changing_saved_d
         assert payload['outputs']['candidates'][0]['raw_metadata']['partial_pool']['missing_branches'] == ['bad']
     else:
         assert states['results']['status'] == 'blocked'
+
+
+def test_timed_pipeline_objective_requires_no_filter_node_and_round_trips():
+    target, generator, results = node('target', 'target'), node('rfd4', 'generator'), node('results', 'results')
+    definition = {'schema_version': graph.SCHEMA, 'id': 'e' * 32,
+                  'nodes': [target, generator, results],
+                  'edges': [edge('target', 'generator'), edge('generator', 'results')],
+                  'shared_campaign': {'enabled': True, 'objective_type': 'time',
+                                      'generator_nodes': ['generator'], 'max_attempts': 100,
+                                      'max_runtime_seconds': 1800}}
+    saved = graph.validate_graph(definition)['graph']
+    scope = saved['shared_campaign']
+    assert scope['validation_stages'] == []
+    assert scope['accepted_target'] is None and scope['generated_target'] is None
+    assert 'acceptance_node' not in scope
+    assert graph.validate_graph(saved)['graph']['shared_campaign'] == scope
+
+
+def test_passing_objective_references_optional_format_aware_filter_node():
+    from mn_molecular_design_studio.validation_acceptance import METRICS
+    target, generator = node('target', 'target'), node('rfd4', 'generator')
+    merge, accept, results = node('candidate_merge', 'collection'), node('shared_filter', 'acceptance'), node('results', 'results')
+    accept['data']['params'].update(binder_format='peptide', target_type='fasta_idr',
+                                   rules=[{'field': METRICS['iptm']['field'], 'operator': '>=', 'value': .71}])
+    definition = {'schema_version': graph.SCHEMA, 'id': 'f' * 32,
+                  'nodes': [target, generator, merge, accept, results],
+                  'edges': [edge('target', 'generator'), edge('generator', 'collection'),
+                            edge('collection', 'acceptance'), edge('acceptance', 'results')],
+                  'shared_campaign': {'enabled': True, 'objective_type': 'accepted',
+                                      'generator_nodes': ['generator'], 'accepted_target': 100, 'max_attempts': 300,
+                                      'acceptance_node': 'acceptance',
+                                      'validation_stages': [{'workflow': 'refolding.optimized_prediction',
+                                                             'parameters': {'engine': 'boltz2'}}]}}
+    saved = graph.validate_graph(definition)['graph']
+    stage = saved['shared_campaign']['validation_stages'][0]
+    assert stage['acceptance_node'] == 'acceptance'
+    assert stage['acceptance_policy']['mandatory_filters'][0]['value'] == .71
+    assert stage['acceptance_policy']['binder_format'] == 'peptide'
+    assert stage['acceptance_policy']['target_type'] == 'fasta_idr'
+    assert graph.validate_graph(saved)['graph']['shared_campaign'] == saved['shared_campaign']
+    definition['shared_campaign'] = {'enabled': True, 'objective_type': 'generated',
+                                     'generator_nodes': ['generator'], 'generated_target': 10, 'max_attempts': 10}
+    scope = graph.validate_graph(definition)['graph']['shared_campaign']
+    assert 'acceptance_node' not in scope
+    assert scope['validation_stages'] == []  # Optional filter remains an ordinary pipeline node.

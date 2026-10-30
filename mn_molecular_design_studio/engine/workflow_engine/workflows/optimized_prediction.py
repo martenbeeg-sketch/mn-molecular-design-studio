@@ -2387,7 +2387,7 @@ def _prepare_prediction(
 
 def validate_prediction_request(parameters: dict[str, Any]) -> None:
     """Apply worker input checks before queueing, without jobs, searches, or seed generation."""
-    prepared = dict(parameters)
+    prepared = _normalize_validation_selection(parameters)
     acceptance_policy = prepared.pop("acceptance_policy", None)
     if acceptance_policy is not None:
         from mn_molecular_design_studio.validation_acceptance import normalize_policy
@@ -2402,6 +2402,54 @@ def validate_prediction_request(parameters: dict[str, Any]) -> None:
         # requires the concrete devices assigned by the scheduler.
         prepared['gpu_device'] = ','.join(str(i) for i in range(required))
     _prepare_prediction(**prepared, resolve_random_seed=False)
+
+
+def _normalize_validation_selection(parameters: dict[str, Any]) -> dict[str, Any]:
+    """Translate the public remote-selection controls to the internal source list.
+
+    The API exposes a candidate count or explicit IDs alongside ``source_job``.
+    Once the request reaches the owning workstation, ``_resolve_source_job``
+    adds its local run directory and candidate index. Both preflight validation
+    and execution must convert those fields to the same ``validation_sources``
+    representation before calling ``_prepare_prediction``.
+    """
+    prepared = dict(parameters)
+    validation_sources = prepared.get("validation_sources")
+    candidate_ids = prepared.pop("validation_candidate_ids", None)
+    candidate_limit = prepared.pop("validation_candidate_limit", None)
+    source_run_dir = prepared.pop("source_run_dir", None)
+    candidates_jsonl = prepared.pop("candidates_jsonl", None)
+
+    if candidate_ids is not None:
+        if validation_sources is not None or candidate_limit is not None:
+            raise ValueError("Use one validation source selection: explicit IDs, a count limit, or validation_sources.")
+        if source_run_dir is None or candidates_jsonl is None:
+            raise ValueError("Remote candidate validation requires an owning source_job and its normalized candidate index.")
+        if not isinstance(candidate_ids, list) or not candidate_ids:
+            raise ValueError("Select at least one remote candidate to validate.")
+        validation_sources = [{
+            "source_run_dir": str(source_run_dir),
+            "candidates_jsonl": str(candidates_jsonl),
+            "candidate_ids": [str(value) for value in candidate_ids],
+        }]
+    elif candidate_limit is not None:
+        if validation_sources is not None:
+            raise ValueError("Use validation_sources or a source_job with validation_candidate_limit, not both.")
+        if source_run_dir is None or candidates_jsonl is None:
+            raise ValueError("Remote candidate batches require an owning source_job and its normalized candidate index.")
+        if type(candidate_limit) is not int or not 1 <= candidate_limit <= 1024:
+            raise ValueError("validation_candidate_limit must be an integer between 1 and 1024.")
+        validation_sources = [{
+            "source_run_dir": str(source_run_dir),
+            "candidates_jsonl": str(candidates_jsonl),
+            "candidate_limit": candidate_limit,
+        }]
+    elif source_run_dir is not None or candidates_jsonl is not None:
+        raise ValueError("Select existing designs with validation_candidate_ids or validation_candidate_limit.")
+
+    if validation_sources is not None:
+        prepared["validation_sources"] = validation_sources
+    return prepared
 
 
 def boltz2_prediction_parameters(
@@ -2472,30 +2520,14 @@ def run_optimized_prediction(
     sequence_file: Path | None = None,
 ) -> Path:
     """Run one engine using the same input checks as API preflight validation."""
-    if validation_candidate_ids is not None:
-        if validation_sources is not None or validation_candidate_limit is not None:
-            raise ValueError("Use one validation source selection: explicit IDs, a count limit, or validation_sources.")
-        if source_run_dir is None or candidates_jsonl is None:
-            raise ValueError("Remote candidate validation requires an owning source_job and its normalized candidate index.")
-        if not isinstance(validation_candidate_ids, list) or not validation_candidate_ids:
-            raise ValueError("Select at least one remote candidate to validate.")
-        validation_sources = [{
-            "source_run_dir": str(source_run_dir),
-            "candidates_jsonl": str(candidates_jsonl),
-            "candidate_ids": [str(value) for value in validation_candidate_ids],
-        }]
-    if validation_candidate_limit is not None:
-        if validation_sources is not None:
-            raise ValueError("Use validation_sources or a source_job with validation_candidate_limit, not both.")
-        if source_run_dir is None or candidates_jsonl is None:
-            raise ValueError("Remote candidate batches require an owning source_job and its normalized candidate index.")
-        if type(validation_candidate_limit) is not int or not 1 <= validation_candidate_limit <= 1024:
-            raise ValueError("validation_candidate_limit must be an integer between 1 and 1024.")
-        validation_sources = [{
-            "source_run_dir": str(source_run_dir),
-            "candidates_jsonl": str(candidates_jsonl),
-            "candidate_limit": validation_candidate_limit,
-        }]
+    selection = _normalize_validation_selection({
+        "validation_sources": validation_sources,
+        "validation_candidate_ids": validation_candidate_ids,
+        "validation_candidate_limit": validation_candidate_limit,
+        "source_run_dir": source_run_dir,
+        "candidates_jsonl": candidates_jsonl,
+    })
+    validation_sources = selection.get("validation_sources")
     if acceptance_policy is not None:
         from mn_molecular_design_studio.validation_acceptance import normalize_policy
         acceptance_policy = normalize_policy(acceptance_policy)

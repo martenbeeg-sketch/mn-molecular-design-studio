@@ -197,6 +197,13 @@ def _candidate_artifacts(run_dir: Path) -> list[dict[str, str]]:
                     "type": "normalized_candidates" if path.suffix == ".jsonl" else "campaign_result",
                 }
             )
+    for path in sorted((run_dir / "artifacts" / "validation").glob("*")):
+        if path.is_file():
+            artifacts.append({
+                "name": path.stem,
+                "path": str(path.relative_to(run_dir)),
+                "type": "validation_report" if path.suffix == ".csv" else "validation_summary",
+            })
     return artifacts
 
 
@@ -295,6 +302,154 @@ def _analysis_metrics_table(candidates: list[dict[str, Any]]) -> pd.DataFrame:
         row.update(_flatten_metrics(candidate.get("metrics") or {}))
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def run_validation_acceptance_analysis(
+    source_run_dir: Path,
+    candidates_jsonl: Path,
+    acceptance_policy: dict[str, Any],
+    candidate_ids: list[str] | None = None,
+    candidate_limit: int | None = None,
+    job_name: str = "Validation & Acceptance",
+) -> Path:
+    """Filter saved design evidence without invoking any prediction engine.
+
+    Source candidate IDs and generator provenance are preserved in Results.
+    Structure-derived interface geometry is measured directly from each saved
+    complex, while model scores are read from the candidate's existing native
+    metrics and retain their original producing workflow.
+    """
+    from mn_molecular_design_studio.design_validation import interface_filter_measurements
+    from mn_molecular_design_studio.validation_acceptance import apply_acceptance, normalize_policy, write_report
+
+    source_run_dir = Path(source_run_dir)
+    candidates_jsonl = Path(candidates_jsonl)
+    policy = normalize_policy(acceptance_policy)
+    if candidate_limit is not None and (type(candidate_limit) is not int or candidate_limit < 1):
+        raise ValueError("candidate_limit must be a positive integer when provided.")
+    candidates = _analysis_source_candidates(source_run_dir, candidates_jsonl)
+    if candidate_ids is not None:
+        requested = [str(value).strip() for value in candidate_ids if str(value).strip()]
+        if not requested or len(requested) != len(set(requested)):
+            raise ValueError("candidate_ids must contain one or more unique candidate IDs.")
+        by_id = {str(row.get("candidate_id") or ""): row for row in candidates}
+        missing = [identifier for identifier in requested if identifier not in by_id]
+        if missing:
+            raise ValueError("Selected candidate ID(s) are absent from this source run: " + ", ".join(missing[:10]))
+        candidates = [by_id[identifier] for identifier in requested]
+    if candidate_limit is not None:
+        candidates = candidates[:candidate_limit]
+    if not candidates:
+        raise ValueError("The selected source contains no candidates to filter.")
+
+    source_metadata = read_json(source_run_dir / "metadata.json")
+    job = _analysis_job(
+        source_run_dir, candidates_jsonl, tool="validation_acceptance",
+        params={"job_name": job_name,
+                "acceptance_policy": policy,
+                "candidate_ids": [str(row.get("candidate_id") or "") for row in candidates],
+                "candidate_limit": candidate_limit,
+                "prediction_performed": False},
+        note="Evaluate the configured acceptance rules using existing native measurements and saved structures only. No prediction engine is run.",
+        mode="saved-evidence-only",
+    )
+    prepared = []
+    geometry_errors = {}
+    for source in candidates:
+        row = copy.deepcopy(source)
+        metrics = dict(row.get("metrics") or {})
+        raw = row.setdefault("raw_metadata", {})
+        source_id = str(row.get("candidate_id") or "")
+        source_tool = str(row.get("source_tool") or row.get("tool") or "")
+        raw["source_run_dir"] = str(source_run_dir.resolve())
+        raw["validation_acceptance_provenance"] = {
+            "source_candidate_id": source_id,
+            "source_tool": source_tool,
+            "source_run_id": source_metadata.get("run_id") or source_run_dir.name,
+            "method": "saved native metrics + Studio geometry from saved candidate structure",
+            "prediction_performed": False,
+            "structure": row.get("complex_pdb"),
+        }
+        structure_path = row.get("complex_pdb") or row.get("binder_pdb")
+        if structure_path and row.get("binder_chains") and row.get("target_chains"):
+            try:
+                measurements = interface_filter_measurements(
+                    Path(structure_path), list(row.get("binder_chains") or []),
+                    list(row.get("target_chains") or []),
+                )
+                metrics["validation_interface_residue_count_4a"] = measurements["validation_interface_residue_count_4a"]
+                metrics["validation_backbone_ca_clashes_2_5a"] = measurements["validation_backbone_ca_clashes_2_5a"]
+                if source_tool == "rfd4_proteina":
+                    metrics["rfd4_native_interface_residue_count_4a"] = measurements["validation_interface_residue_count_4a"]
+                    metrics["rfd4_native_backbone_ca_clashes_2_5a"] = measurements["validation_backbone_ca_clashes_2_5a"]
+            except Exception as exc:
+                geometry_errors[source_id] = f"{type(exc).__name__}: {exc}"
+                metrics["validation_acceptance_geometry_error"] = geometry_errors[source_id]
+        else:
+            geometry_errors[source_id] = "Saved complex structure or binder/target chain roles are unavailable."
+            metrics["validation_acceptance_geometry_error"] = geometry_errors[source_id]
+        row["metrics"] = metrics
+        prepared.append(row)
+
+    accepted_rows, summary = apply_acceptance(prepared, policy)
+    for row in accepted_rows:
+        decision = row.setdefault("raw_metadata", {}).get("validation_acceptance") or {}
+        provenance = row["raw_metadata"].setdefault("validation_acceptance_provenance", {})
+        provenance.update({
+            "criteria_source": "configured Validation & Acceptance policy",
+            "measurements": {
+                field: {key: value for key, value in observation.items()
+                        if key in {"value", "unit", "status", "source_tool", "stage", "method", "passed", "threshold", "operator"}}
+                for field, observation in (decision.get("measurements") or {}).items()
+            },
+        })
+    summary.update({
+        "tool": "validation_acceptance",
+        "source_run_id": source_metadata.get("run_id") or source_run_dir.name,
+        "source_tool": source_metadata.get("tool") or "",
+        "prediction_performed": False,
+        "geometry_measurement_errors": geometry_errors,
+        "execution_status": "completed",
+        "scientific_status": "partial" if summary["unresolved"] else "valid",
+        "source_candidate_ids_preserved": True,
+    })
+    analysis_dir = job.run_dir / "artifacts" / "analysis"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    acceptance_report = write_report(job.run_dir, accepted_rows, summary)
+    table = _analysis_metrics_table(accepted_rows)
+    for row in accepted_rows:
+        decision = (row.get("raw_metadata") or {}).get("validation_acceptance") or {}
+        table.loc[table["candidate_id"] == row.get("candidate_id"), "acceptance_status"] = decision.get("status")
+        table.loc[table["candidate_id"] == row.get("candidate_id"), "acceptance_reasons"] = "; ".join(decision.get("reasons") or [])
+        for field, observation in (decision.get("measurements") or {}).items():
+            table.loc[table["candidate_id"] == row.get("candidate_id"), f"{field} · measured"] = observation.get("value")
+            table.loc[table["candidate_id"] == row.get("candidate_id"), f"{field} · passed"] = observation.get("passed")
+    table_path = analysis_dir / "acceptance_measurements.csv"
+    table.to_csv(table_path, index=False)
+    summary_path = job.run_dir / "artifacts" / "validation" / "acceptance_summary.json"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(summary_path, summary)
+    normalized = write_candidates(job.run_dir, "validation_acceptance", accepted_rows)
+    artifacts = _candidate_artifacts(job.run_dir)
+    finish_job(job.run_dir, True, {
+        "outputs": {
+            "artifacts": artifacts,
+            "candidates": normalized,
+            "acceptance_report": str(acceptance_report.relative_to(job.run_dir)),
+            "acceptance_measurements": str(table_path.relative_to(job.run_dir)),
+        },
+        "metrics": {"validation_acceptance": summary},
+        "execution_status": "completed",
+        "scientific_status": summary["scientific_status"],
+        "downstream_artifacts": {
+            "candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl",
+            "campaign_result": "artifacts/normalized_candidates/campaign_result.json",
+            "acceptance_report": str(acceptance_report.relative_to(job.run_dir)),
+            "acceptance_summary": str(summary_path.relative_to(job.run_dir)),
+        },
+        "summary": summary,
+    })
+    return job.run_dir
 
 
 def _finish_metric_analysis(

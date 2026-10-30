@@ -10,6 +10,7 @@ import csv
 import io
 import time
 import zipfile
+import re
 from pathlib import Path, PurePosixPath
 
 import pandas as pd
@@ -231,6 +232,108 @@ def _visual_pipeline_groups(rows):
     return groups, row_to_group
 
 
+_BATCH_NAME = re.compile(r"(?i)\bbatch\s*#?(\d+)\b")
+_BATCH_DATE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
+
+
+def _campaign_batch_name(row):
+    """Recognize legacy `campaign · batch N · workstation · date` job names."""
+    name = str(row.get("campaign_name") or "").strip()
+    match = _BATCH_NAME.search(name)
+    if not match:
+        return None
+    label = name[:match.start()].strip(" ·|-")
+    if not label:
+        return None
+    date_match = _BATCH_DATE.search(name[match.end():])
+    date = date_match.group(1) if date_match else ""
+    return {"label": f"{label} · {date}" if date else label, "batch_number": int(match.group(1))}
+
+
+def _campaign_request_parameters(row):
+    summary = row.get("request_summary")
+    if not isinstance(summary, dict):
+        return {}
+    payload = summary.get("payload") if isinstance(summary.get("payload"), dict) else summary
+    parameters = payload.get("parameters") or payload.get("params")
+    return parameters if isinstance(parameters, dict) else {}
+
+
+def _campaign_batch_groups(rows, *, excluded_references=()):
+    """Group explicit campaign batches and recognizable legacy batch names."""
+    excluded = set(excluded_references)
+    grouped = {}
+    labels = {}
+    order = {}
+    for row in rows:
+        reference = _results_job_reference(row)
+        if reference in excluded or _is_visual_pipeline_row(row):
+            continue
+        request_parameters = _campaign_request_parameters(row)
+        explicit_id = str(row.get("campaign_group_id") or request_parameters.get("campaign_group_id") or "").strip()
+        legacy = _campaign_batch_name(row)
+        if explicit_id:
+            identity = ("id", explicit_id)
+            label = str(row.get("campaign_group_name") or request_parameters.get("campaign_group_name")
+                        or (legacy or {}).get("label")
+                        or row.get("campaign_name") or "Campaign")
+            batch_number = None
+        elif legacy:
+            identity = ("name", legacy["label"])
+            label = legacy["label"]
+            batch_number = legacy["batch_number"]
+        else:
+            continue
+        scope = (str(row.get("project_id") or ""), str(row.get("owner_id") or ""),
+                 str(row.get("tool") or row.get("job_type") or "").casefold(), *identity)
+        stable_ref = "campaign:" + hashlib.sha1(repr(scope).encode("utf-8")).hexdigest()[:16]
+        grouped.setdefault(stable_ref, []).append(row)
+        labels[stable_ref] = label
+        order[(stable_ref, reference)] = batch_number
+
+    groups = {}
+    row_to_group = {}
+    for stable_ref, members in grouped.items():
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda row: (
+            order.get((stable_ref, _results_job_reference(row))) is None,
+            order.get((stable_ref, _results_job_reference(row))) or 0,
+            str(row.get("created_at") or ""),
+            str(row.get("job_code") or ""),
+        ))
+        groups[stable_ref] = members
+        for member in members:
+            row_to_group[_results_job_reference(member)] = stable_ref
+    return groups, row_to_group, labels
+
+
+def _campaign_group_status(members):
+    statuses = [str(row.get("status") or "unknown").casefold() for row in members]
+    active = sum(status not in _RESULTS_TERMINAL_STATUSES for status in statuses)
+    completed = sum(status in {"completed", "succeeded"} for status in statuses)
+    failed = sum(status in {"failed", "lost"} for status in statuses)
+    cancelled = sum(status in {"cancelled", "canceled"} for status in statuses)
+    if active:
+        status = "Running"
+    elif failed:
+        status = "Partial" if completed or cancelled else "Failed"
+    elif cancelled:
+        status = "Partial" if completed else "Cancelled"
+    elif completed == len(members):
+        status = "Completed"
+    else:
+        status = "Mixed"
+    progress = f"{completed}/{len(members)} complete"
+    if active:
+        progress += f" · {active} active"
+    if failed:
+        progress += f" · {failed} failed"
+    if cancelled:
+        progress += f" · {cancelled} cancelled"
+    return status, progress
+
+
 def _pipeline_iterations(children):
     grouped = {}
     for child in children:
@@ -313,8 +416,17 @@ def _request_pipeline_iteration_view(click_key, reference, numbers):
 
 def _request_results_pipeline_results(click_key, entry_refs):
     click = st.session_state.get(click_key)
-    if click and 0 <= int(click["row"]) < len(entry_refs) and entry_refs[int(click["row"])]:
-        _navigate_to_job_details(entry_refs[int(click["row"])], final_results=True)
+    if not click or not 0 <= int(click["row"]) < len(entry_refs):
+        return
+    target = entry_refs[int(click["row"])]
+    if not target:
+        return
+    if isinstance(target, dict) and target.get("kind") == "campaign":
+        st.session_state["cluster-results-campaign-details-request"] = target.get("members") or []
+    else:
+        reference = target.get("reference") if isinstance(target, dict) else target
+        if reference:
+            _navigate_to_job_details(reference, final_results=True)
 
 
 def _request_results_job_view(click_key, entry_refs):
@@ -469,6 +581,364 @@ def _render_results_pipeline_steps(members, elapsed_label=None, user=None, token
         )},
         height=min(420, 36 * len(step_rows) + 42),
     )
+
+
+def _campaign_parameter_rows(members):
+    labels = {
+        "iptm_cutoff": "ipTM cutoff", "min_iptm": "Minimum ipTM",
+        "ipae_cutoff": "iPAE cutoff", "max_ipae": "Maximum iPAE",
+        "ipsae_cutoff": "ipSAE cutoff", "rmsd_cutoff": "RMSD cutoff",
+        "min_plddt": "Minimum pLDDT", "max_rmsd": "Maximum RMSD",
+    }
+    values_by_key = {}
+    for member in members:
+        parameters = member.get("campaign_parameters")
+        if not isinstance(parameters, dict):
+            raw_parameters = _campaign_request_parameters(member)
+            if raw_parameters:
+                from mn_molecular_design_studio.engine.workflow_engine.core.jobs import campaign_result_parameters
+                parameters = campaign_result_parameters(raw_parameters)
+        if not isinstance(parameters, dict):
+            continue
+        for key, value in parameters.items():
+            encoded = json.dumps(value, sort_keys=True, ensure_ascii=False)
+            bucket = values_by_key.setdefault(str(key), {})
+            bucket[encoded] = bucket.get(encoded, 0) + 1
+    rows = []
+    for key in sorted(values_by_key, key=str.casefold):
+        values = values_by_key[key]
+        rendered = []
+        for encoded, count in sorted(values.items(), key=lambda item: item[0].casefold()):
+            try:
+                decoded = json.loads(encoded)
+            except json.JSONDecodeError:
+                decoded = encoded
+            label = decoded if isinstance(decoded, str) else encoded
+            rendered.append(f"{label} ({count} jobs)")
+        rows.append({
+            "Parameter": labels.get(key.casefold(), key.replace("_", " ").strip().title()),
+            "Value": rendered[0] if len(rendered) == 1 and next(iter(values.values())) == len(members)
+            else " · ".join(rendered) + (f" · not recorded for {len(members) - sum(values.values())} jobs"
+                                         if sum(values.values()) < len(members) else ""),
+        })
+    return rows
+
+
+def _campaign_candidate_result_rows(records):
+    """Show candidate measurements with common definitions and native provenance."""
+    from mn_molecular_design_studio.output_vocabulary import DEFINITIONS, candidate_output
+
+    rows = []
+    definitions = {}
+    for record in records:
+        member = record.get("job") if isinstance(record.get("job"), dict) else {}
+        candidate = record.get("candidate") if isinstance(record.get("candidate"), dict) else {}
+        source_tool = candidate.get("source_tool") or member.get("tool") or member.get("workflow") or "unknown"
+        candidate_for_output = dict(candidate)
+        if not candidate_for_output.get("source_tool"):
+            candidate_for_output["source_tool"] = source_tool
+        try:
+            output = candidate_output(candidate_for_output)
+        except (TypeError, ValueError):
+            output = {"metrics": {}, "provenance": {}, "conflicts": {}}
+        common_values = output.get("metrics") if isinstance(output.get("metrics"), dict) else {}
+        provenance = output.get("provenance") if isinstance(output.get("provenance"), dict) else {}
+        conflicts = output.get("conflicts") if isinstance(output.get("conflicts"), dict) else {}
+        common_columns = {}
+        used_native_fields = set()
+        for field, value in common_values.items():
+            definition = DEFINITIONS.get(field)
+            if definition is None:
+                continue
+            column = f"{definition.label} ({definition.unit})"
+            if column in definitions and definitions[column]["_field"] != field:
+                column = f"{column} · {field}"
+            common_columns[column] = value
+            details = provenance.get(field) if isinstance(provenance.get(field), dict) else {}
+            aliases = details.get("aliases") if isinstance(details.get("aliases"), list) else []
+            sources = sorted({str(alias.get("source_field") or "") for alias in aliases if isinstance(alias, dict) and alias.get("source_field")})
+            used_native_fields.update(sources)
+            definition_row = definitions.setdefault(column, {
+                "Metric": column,
+                "_field": field,
+                "Field": field,
+                "Scope": definition.scope,
+                "Methods": set(),
+                "Source fields": set(),
+            })
+            definition_row["Methods"].update(str(alias.get("method")) for alias in aliases if isinstance(alias, dict) and alias.get("method"))
+            definition_row["Methods"].add(definition.method)
+            definition_row["Source fields"].update(sources)
+        raw_metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
+        # Keep unnormalized producer fields visible under their source tool. This
+        # includes tool-specific PAE fields and conflicting aliases; it does not
+        # promote them into a shared metric or quality decision.
+        native = {
+            str(key): value for key, value in raw_metrics.items()
+            if key not in used_native_fields
+            and not str(key).casefold().endswith(("_error", "_traceback"))
+            and isinstance(value, (str, int, float, bool, type(None), list, dict))
+        }
+        if conflicts:
+            native["normalization_conflicts"] = conflicts
+        row = {
+            "Candidate": str(candidate.get("candidate_id") or candidate.get("design_id") or f"Design {len(rows) + 1}"),
+            "Batch job": str(member.get("campaign_name") or member.get("job_code") or ""),
+            "Tool": display_tool_label(member) if member else str(source_tool),
+            "Workstation": config.display_name(member.get("node_name") or "Not assigned"),
+            "Sequence": candidate.get("binder_sequence") or candidate.get("sequence") or "—",
+            **common_columns,
+            "Native metrics": json.dumps(native, ensure_ascii=False, sort_keys=True, default=str) if native else "—",
+        }
+        rows.append(row)
+    for row in rows:
+        for column in definitions:
+            row.setdefault(column, "—")
+    definition_rows = []
+    for item in definitions.values():
+        row = {key: value for key, value in item.items() if key != "_field"}
+        row["Methods"] = "; ".join(sorted(item["Methods"]))
+        row["Source fields"] = ", ".join(sorted(item["Source fields"]))
+        definition_rows.append(row)
+    return rows, definition_rows
+
+
+def _campaign_results_key(members):
+    references = tuple(_results_job_reference(member) for member in members)
+    return hashlib.sha1(repr(references).encode("utf-8")).hexdigest()[:16]
+
+
+def _render_campaign_candidate_measurements(members, token):
+    group_key = _campaign_results_key(members)
+    eligible = [member for member in members
+                if member.get("local_reference")
+                and str(member.get("status") or "").casefold() in {"completed", "succeeded"}
+                and (member.get("node_id") == config.identity() or member.get("availability") == "online")]
+    offline = sum(
+        bool(member.get("local_reference"))
+        and str(member.get("status") or "").casefold() in {"completed", "succeeded"}
+        and member.get("node_id") != config.identity()
+        and member.get("availability") != "online"
+        for member in members
+    )
+    st.subheader("Measured design results")
+    st.caption(
+        "Candidate-level measurements are loaded from completed batches on their owning workstations. "
+        "Common fields use the Studio metric definitions; other values retain their native tool names. "
+        "No missing measurement is treated as passing."
+    )
+    if offline:
+        st.info(f"{offline} completed batch job(s) are offline; their full results will be available when the owning workstation reconnects.")
+    if not eligible:
+        st.info("No completed, reachable batch has candidate-level results to load yet.")
+        return
+
+    page_size = st.selectbox(
+        "Completed batches per results page", [10, 25, 50, 100], index=0,
+        key=f"cluster-campaign-results-page-size-{group_key}",
+    )
+    page_count = max(1, (len(eligible) + int(page_size) - 1) // int(page_size))
+    page_number = st.number_input(
+        "Results page", min_value=1, max_value=page_count, value=1, step=1,
+        key=f"cluster-campaign-results-page-{group_key}",
+    )
+    start = (int(page_number) - 1) * int(page_size)
+    page_members = eligible[start:start + int(page_size)]
+    st.caption(f"Showing batch jobs {start + 1}–{start + len(page_members)} of {len(eligible)} reachable completed jobs.")
+
+    state_key = f"cluster-campaign-candidate-results-{group_key}"
+    state = st.session_state.setdefault(state_key, {})
+    if st.button("Load candidate measurements", type="primary", key=f"cluster-campaign-load-results-{group_key}-{page_number}"):
+        for member in page_members:
+            reference = _job_details_reference(member)
+            jid = str(member.get("cluster_job_id") or "")
+            previous = state.get(jid, {}) if jid else {}
+            if previous.get("status") == "completed":
+                continue
+            if reference.startswith("cluster:"):
+                try:
+                    operation = _request(
+                        "/jobs/" + reference.removeprefix("cluster:") + "/actions", token,
+                        {"action": "inspect"}, method="POST",
+                    )
+                    state[jid] = {"status": "pending", "command_id": operation["command_id"], "job": member}
+                except (ValueError, transport.ClusterUnavailable) as exc:
+                    state[jid] = {"status": "failed", "error": str(exc), "job": member}
+            else:
+                try:
+                    from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import job_results
+                    ref = str(member.get("local_reference") or reference)
+                    state[jid or reference] = {
+                        "status": "completed", "job": member,
+                        "candidates": job_results(ref, include_candidates=True, include_hidden=True).get("candidates", []),
+                    }
+                except (OSError, ValueError, KeyError) as exc:
+                    state[jid or reference] = {"status": "failed", "error": str(exc), "job": member}
+        st.session_state[state_key] = state
+
+    page_ids = {str(member.get("cluster_job_id") or _job_details_reference(member)) for member in page_members}
+
+    @st.fragment(run_every=2)
+    def campaign_results_fragment():
+        current = st.session_state.get(state_key, {})
+        changed = False
+        for job_id in page_ids:
+            item = current.get(job_id)
+            if not isinstance(item, dict) or item.get("status") != "pending":
+                continue
+            try:
+                operation = _request("/commands/" + str(item["command_id"]), token)
+            except (ValueError, transport.ClusterUnavailable) as exc:
+                item.update(status="failed", error=str(exc))
+                changed = True
+                continue
+            if operation.get("status") == "failed":
+                item.update(status="failed", error=operation.get("error") or "The owning workstation could not return results.")
+                changed = True
+            elif operation.get("status") == "completed":
+                response = operation.get("response") or {}
+                candidates = (response.get("results") or {}).get("candidates", [])
+                item.update(status="completed", candidates=candidates)
+                changed = True
+        if changed:
+            st.session_state[state_key] = current
+        loaded = []
+        pending = 0
+        failures = []
+        for member in page_members:
+            job_id = str(member.get("cluster_job_id") or _job_details_reference(member))
+            item = current.get(job_id) or current.get(str(member.get("cluster_job_id") or ""))
+            if not isinstance(item, dict):
+                continue
+            if item.get("status") == "pending":
+                pending += 1
+            elif item.get("status") == "failed":
+                failures.append((item.get("job") or member, item.get("error") or "Results unavailable"))
+            elif item.get("status") == "completed":
+                loaded.extend({"job": member, "candidate": candidate}
+                              for candidate in item.get("candidates", []) if isinstance(candidate, dict))
+        if pending:
+            st.info(f"Loading candidate results from {pending} workstation job(s)…")
+        for failed_job, error in failures:
+            st.warning(f"{failed_job.get('job_code') or failed_job.get('campaign_name') or 'Batch'}: {error}")
+        if loaded:
+            rows, definition_rows = _campaign_candidate_result_rows(loaded)
+            st.dataframe(
+                pd.DataFrame(rows), hide_index=True, width="stretch",
+                height=min(560, 36 * min(len(rows), 15) + 42),
+                column_config={"Sequence": st.column_config.TextColumn(width="large"),
+                               "Native metrics": st.column_config.TextColumn(width="large")},
+            )
+            st.caption(f"{len(rows)} candidate records loaded. Values are reported per design; this table does not average metrics across tools or batches.")
+            if definition_rows:
+                with st.expander("Metric definitions and provenance"):
+                    st.dataframe(pd.DataFrame(definition_rows), hide_index=True, width="stretch")
+            candidates = []
+            for record in loaded:
+                member = record["job"]
+                candidate = record["candidate"]
+                candidates.append((candidate, member))
+            if candidates:
+                selected = st.selectbox(
+                    "Open a design structure",
+                    range(len(candidates)),
+                    format_func=lambda index: (
+                        f"{candidates[index][0].get('candidate_id') or 'Design'} · "
+                        f"{display_tool_label(candidates[index][1])} · "
+                        f"{config.display_name(candidates[index][1].get('node_name') or 'Not assigned')}"
+                    ),
+                    key=f"cluster-campaign-structure-select-{group_key}-{page_number}",
+                )
+                if st.button("Open selected design", key=f"cluster-campaign-structure-open-{group_key}-{page_number}"):
+                    candidate, member = candidates[selected]
+                    reference = _job_details_reference(member)
+                    jid = str(member.get("cluster_job_id") or reference.removeprefix("cluster:"))
+                    st.session_state.pop(f"cluster-candidate-{jid}", None)
+                    st.session_state[f"cluster-candidate-default-{jid}"] = str(candidate.get("candidate_id") or "")
+                    _navigate_to_job_details(reference, final_results=True)
+                st.caption("The full structure is fetched only after opening the candidate on its source job; it stays on that workstation until requested.")
+        elif not pending and not failures:
+            st.info("Choose Load candidate measurements to retrieve the saved designs for this page.")
+
+    campaign_results_fragment()
+
+
+@st.dialog("Campaign batches and settings", width="large")
+def _render_results_campaign_batches(members, elapsed_label=None, token=None):
+    if not members:
+        st.info("No campaign batch jobs are available.")
+        return
+    first = members[0]
+    label = str(first.get("campaign_group_name") or (_campaign_batch_name(first) or {}).get("label")
+                or first.get("campaign_name") or "Campaign")
+    status, progress = _campaign_group_status(members)
+    completed = sum(str(row.get("status") or "").casefold() in {"completed", "succeeded"} for row in members)
+    active = sum(str(row.get("status") or "").casefold() not in _RESULTS_TERMINAL_STATUSES for row in members)
+    failed = sum(str(row.get("status") or "").casefold() in {"failed", "lost"} for row in members)
+    st.markdown(f"**{config.display_text(label)}**")
+    st.caption(f"{status} · {len(members)} jobs · {len({row.get('node_id') for row in members if row.get('node_id')})} computers · {progress}")
+    metric_columns = st.columns(4)
+    metric_columns[0].metric("Batch jobs", len(members))
+    metric_columns[1].metric("Completed", completed)
+    metric_columns[2].metric("Active", active)
+    metric_columns[3].metric("Failed", failed)
+
+    _render_campaign_candidate_measurements(members, token)
+
+    parameters = _campaign_parameter_rows(members)
+    st.subheader("Important parameters")
+    if parameters:
+        st.dataframe(parameters, hide_index=True, width="stretch")
+        st.caption("Values are read from each job's saved input settings. Different values are shown with the number of jobs using each value.")
+    else:
+        st.info("This campaign's saved job records do not include a summary of the supported scientific settings.")
+
+    st.subheader("Batch jobs")
+    table_rows = []
+    references = []
+    for index, row in enumerate(members, 1):
+        references.append(_job_details_reference(row))
+        table_rows.append({
+            "Batch job": config.display_text(row.get("campaign_name") or f"Job {index}"),
+            "View": "View",
+            "Tool": display_tool_label(row),
+            "#": str(row.get("job_code") or ""),
+            "Status": str(row.get("status") or "unknown").replace("_", " ").title(),
+            "Elapsed": elapsed_label(row) if elapsed_label else "—",
+            "Workstation": config.display_name(row.get("node_name") or "Not assigned"),
+            "GPU / resources": str(row.get("resource_allocation") or ""),
+        })
+    key = "cluster-campaign-batch-view-" + hashlib.sha1(
+        repr(tuple(references)).encode("utf-8")
+    ).hexdigest()[:12]
+    view_key = key + "-button"
+    st.data_editor(
+        pd.DataFrame(table_rows).style.map(lambda _: "color: #2f6fba; font-weight: 600;", subset=["View"]),
+        key=key,
+        hide_index=True,
+        num_rows="fixed",
+        disabled=[column for column in table_rows[0] if column != "View"],
+        width="stretch",
+        column_config={"View": st.column_config.ButtonColumn(
+            "View", width="small", type="tertiary", key=view_key,
+            on_click=_request_pipeline_dialog_job_view, args=(view_key, references),
+        )},
+        height=min(480, 36 * len(table_rows) + 42),
+    )
+
+
+def _campaign_files_label(members, *, stale=False):
+    states = [str(row.get("availability") or "pending").casefold() for row in members]
+    online = sum(state == "online" for state in states)
+    if online == len(members):
+        summary = "Online"
+    elif online:
+        summary = f"{online}/{len(members)} online"
+    elif len(set(states)) == 1:
+        summary = states[0].replace("_", " ").title()
+    else:
+        summary = "Mixed"
+    return f"Last known · {summary}" if stale else summary
 
 
 @st.dialog("Distributed library workers", width="large")
@@ -1442,6 +1912,12 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
         key="cluster-results-group-pipelines",
         help="Show each pipeline once, including jobs on other computers. Counts include jobs created so far; looping workflows add jobs until they stop. The Steps button opens their tool-call jobs.",
     )
+    group_campaign_batches = st.toggle(
+        "Group campaign batches",
+        value=True,
+        key="cluster-results-group-campaign-batches",
+        help="Collapse related batch jobs into one campaign row. Open Campaign in Results to see batch status and the saved scientific settings together.",
+    )
     search_col, machine_col, status_col, sort_col = st.columns([0.38, 0.21, 0.21, 0.20])
     query = search_col.text_input("Search jobs", placeholder="Name, engine, or run ID", key="cluster-results-query").casefold()
     names = {r.get("node_id"): config.display_name(r.get("node_name") or "Not assigned") for r in rows if r.get("node_id")}
@@ -1507,7 +1983,8 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
         format_func=lambda value: project_names.get(value, "All projects"),
         key="cluster-results-project",
     )
-    filters_key = (query, machine, project, tuple(sorted(statuses)), sort_by, show_removed, group_pipeline_runs)
+    filters_key = (query, machine, project, tuple(sorted(statuses)), sort_by, show_removed,
+                   group_pipeline_runs, group_campaign_batches)
     if st.session_state.get("cluster-results-filter-state") != filters_key:
         st.session_state["cluster-results-filter-state"] = filters_key
         st.session_state["cluster-results-page"] = 1
@@ -1568,8 +2045,12 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
         for root_ref, members in pipeline_groups.items():
             if root_ref in selected_jobs:
                 selected_jobs.update((_results_job_reference(member), member) for member in members)
+    campaign_groups, row_to_campaign, campaign_labels = _campaign_batch_groups(
+        scope_rows, excluded_references=row_to_group,
+    ) if group_campaign_batches else ({}, {}, {})
     display_entries = []
     seen_groups = set()
+    seen_campaigns = set()
     for row in chosen:
         reference = _results_job_reference(row)
         group_ref = row_to_group.get(reference) if group_pipeline_runs else None
@@ -1584,12 +2065,28 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
                 "members": members,
             })
         else:
-            display_entries.append({"kind": "job", "row": row})
+            campaign_ref = row_to_campaign.get(reference) if group_campaign_batches else None
+            if campaign_ref:
+                if campaign_ref in seen_campaigns:
+                    continue
+                seen_campaigns.add(campaign_ref)
+                members = campaign_groups[campaign_ref]
+                display_entries.append({
+                    "kind": "campaign",
+                    "root": members[0],
+                    "members": members,
+                    "label": campaign_labels[campaign_ref],
+                })
+            else:
+                display_entries.append({"kind": "job", "row": row})
 
     grouped_count = sum(entry["kind"] == "pipeline" for entry in display_entries)
     caption = f"{len(chosen)} jobs · Job status and file availability are tracked separately."
     if grouped_count:
         caption += f" {grouped_count} pipeline run{'s' if grouped_count != 1 else ''} grouped."
+    campaign_count = sum(entry["kind"] == "campaign" for entry in display_entries)
+    if campaign_count:
+        caption += f" {campaign_count} campaign{'s' if campaign_count != 1 else ''} grouped."
     st.caption(caption)
     page_size_col, page_col, range_col = st.columns([0.24, 0.24, 0.52], vertical_alignment="bottom")
     page_size = page_size_col.selectbox("Entries per page", [25, 50, 100], index=1, key="cluster-results-page-size")
@@ -1612,8 +2109,8 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
     else:
         entry_worker_details = []
         for entry in page_entries:
-            row = entry["root"] if entry["kind"] == "pipeline" else entry["row"]
-            members = entry["members"] if entry["kind"] == "pipeline" else [row]
+            row = entry["root"] if entry["kind"] in {"pipeline", "campaign"} else entry["row"]
+            members = entry["members"] if entry["kind"] in {"pipeline", "campaign"} else [row]
             entry_worker_details.append(_library_worker_details(row, members))
         show_computers = any(entry_worker_details)
         table_rows = []
@@ -1623,13 +2120,17 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
         entry_result_refs = []
         for entry_index, entry in enumerate(page_entries):
             is_pipeline = entry["kind"] == "pipeline"
-            row = entry["root"] if is_pipeline else entry["row"]
+            is_campaign = entry["kind"] == "campaign"
+            row = entry["root"] if is_pipeline or is_campaign else entry["row"]
             ref = _results_job_reference(row)
-            members = entry["members"] if is_pipeline else [row]
+            members = entry["members"] if is_pipeline or is_campaign else [row]
             entry_members.append(members)
             entry_pipeline_refs.append(ref if is_pipeline else None)
             entry_view_refs.append(_job_details_reference(row))
-            entry_result_refs.append(_job_details_reference(row) if is_pipeline else None)
+            entry_result_refs.append(
+                {"kind": "campaign", "members": members} if is_campaign else
+                {"reference": _job_details_reference(row)} if is_pipeline else None
+            )
             worker_details = entry_worker_details[entry_index]
             availability = "Last known" if stale and row.get("node_id") != config.identity() else str(row.get("availability", "pending")).title()
             if row.get("last_seen_at"):
@@ -1637,24 +2138,43 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
             table_row = {
                 "_reference": ref,
                 "Select": all(_results_job_reference(member) in selected_jobs for member in members),
-                "Job": config.display_text(row.get("campaign_name") or row.get("tool") or "Job"),
+                "Job": config.display_text(entry.get("label") if is_campaign else row.get("campaign_name") or row.get("tool") or "Job"),
                 "View": "View",
             }
-            if group_pipeline_runs:
-                table_row["Results"] = ("Final results" if str(row.get("status") or "").casefold() in {"completed", "succeeded"}
-                                        else "Results so far") if is_pipeline else None
+            if group_pipeline_runs or group_campaign_batches:
+                table_row["Results"] = (
+                    "Campaign" if is_campaign else
+                    ("Final results" if str(row.get("status") or "").casefold() in {"completed", "succeeded"}
+                     else "Results so far") if is_pipeline else None
+                )
             if show_computers:
                 table_row["Computers"] = f"{len(worker_details['workers'])} computers" if worker_details else None
             if group_pipeline_runs:
                 children = members[1:] if is_pipeline else []
-                table_row["Steps"] = _pipeline_step_count_label(row, children) if is_pipeline else None
+                table_row["Steps"] = (
+                    _pipeline_step_count_label(row, children) if is_pipeline else
+                    f"{len(members)} batch jobs" if is_campaign else None
+                )
             table_row.update({
                 "Project": project_names.get(row.get("project_id"), "Project"),
                 "Tool": display_tool_label(row),
             })
             if not group_pipeline_runs:
                 table_row["Pipeline"] = config.display_text(str(row.get("pipeline_name") or "").strip() or "—")
-            table_row.update({
+            if is_campaign:
+                campaign_status, campaign_progress = _campaign_group_status(members)
+                table_row["Status"] = campaign_status
+                table_row["Elapsed"] = "—"
+                latest_update = max(
+                    (str(member.get("updated_at") or member.get("completed_at") or member.get("created_at") or "")
+                     for member in members), default="",
+                )
+                table_row["Updated"] = elapsed_since({"updated_at": latest_update}) if elapsed_since else latest_update
+                computer_count = len({member.get("node_id") for member in members if member.get("node_id")})
+                table_row["Workstation"] = f"{computer_count} computers" if computer_count else "Not assigned"
+                table_row["Progress"] = campaign_progress
+            else:
+                table_row.update({
                 "Code": str(row.get("job_code") or ""),
                 "Status": str(row.get("status") or "unknown").replace("_", " ").title(),
                 "Elapsed": elapsed_label(row) if elapsed_label else "—",
@@ -1662,12 +2182,18 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
                 "Workstation": config.display_name(row.get("node_name") or "Not assigned"),
                 "Files": availability,
                 "Progress": _progress_summary(row.get("progress")),
-            })
+                })
+            if is_campaign:
+                table_row["Files"] = _campaign_files_label(
+                    members, stale=stale and any(member.get("node_id") != config.identity() for member in members),
+                )
+                table_row["Code"] = f"{len(members)} jobs"
             table_rows.append(table_row)
         table = pd.DataFrame(table_rows).set_index("_reference")
         table_key = "cluster-results-table-" + hashlib.sha1(
             repr((query, machine, project, tuple(sorted(statuses)), sort_by, show_removed,
-                  group_pipeline_runs, selected_page, page_size, tuple(table.index), tuple(table.columns),
+                  group_pipeline_runs, group_campaign_batches, selected_page, page_size,
+                  tuple(table.index), tuple(table.columns),
                   tuple(sorted(selected_jobs)))).encode("utf-8")
         ).hexdigest()[:12]
         column_config = {
@@ -1701,11 +2227,12 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
                 on_click=_request_results_worker_details,
                 args=(worker_click_key, entry_worker_details),
             )
-        if group_pipeline_runs:
+        if group_pipeline_runs or group_campaign_batches:
             results_key = table_key + "-results"
             column_config["Results"] = st.column_config.ButtonColumn("Results", width=120, type="tertiary",
-                help="Open the combined campaign results across all iterations and batches.", key=results_key,
+                help="Open combined pipeline results or the campaign's batch jobs and settings.", key=results_key,
                 on_click=_request_results_pipeline_results, args=(results_key, entry_result_refs))
+        if group_pipeline_runs:
             click_key = table_key + "-steps"
             column_config["Steps"] = st.column_config.ButtonColumn(
                 "Steps", width=120, type="tertiary",
@@ -1737,6 +2264,9 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
             pipeline_groups[details_reference], elapsed_label, user, token, submit,
             iteration=st.session_state.pop("cluster-results-pipeline-iteration-request", None),
         )
+    campaign_details = st.session_state.pop("cluster-results-campaign-details-request", None)
+    if campaign_details:
+        _render_results_campaign_batches(campaign_details, elapsed_label, token)
     worker_details_request = st.session_state.pop("cluster-results-library-workers-request", None)
     if worker_details_request:
         _render_library_worker_details(worker_details_request)
@@ -2013,9 +2543,16 @@ def render_job(reference, user, token, submit):
                 parameter_rows, filter_rows = ([], [])
                 if "bindcraft2" in tool:
                     parameter_rows, filter_rows = _bindcraft2_run_parameter_rows(data)
+                requested_candidate = st.session_state.pop(f"cluster-candidate-default-{jid}", None)
+                default_candidate_index = next(
+                    (index for index, candidate_row in enumerate(candidates)
+                     if str(candidate_row.get("candidate_id") or "") == str(requested_candidate)),
+                    0,
+                )
                 selected = st.selectbox(
                     "Design to visualize",
                     range(len(candidates)),
+                    index=default_candidate_index,
                     format_func=lambda index: f"{index + 1}. {candidates[index].get('candidate_id') or 'Design'}",
                     key="cluster-candidate-" + jid,
                 )

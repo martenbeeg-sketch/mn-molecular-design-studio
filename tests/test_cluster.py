@@ -282,6 +282,22 @@ def test_submission_idempotency_and_changed_input_conflicts(cluster):
         store.submit(request | {"bundle_id": "changed"}, needs, user, origin_node=nodes[0]["node_id"], idempotency_key="one-click")
 
 
+def test_submission_recovery_is_read_only_and_owner_scoped(cluster, monkeypatch):
+    from mn_molecular_design_studio.cluster import candidate_batches
+    store, nodes, user, needs, _, request, _ = cluster
+    original = store.submit(request, needs, user, origin_node=nodes[0]['node_id'],
+                            idempotency_key='recover-after-deadline')['job']
+    monkeypatch.setattr(candidate_batches, 'Store', lambda: store)
+    monkeypatch.setattr(candidate_batches, 'actor', lambda *a, **k: user)
+    monkeypatch.setattr(store, 'submit', lambda *a, **k: pytest.fail('Recovery submitted work'))
+    monkeypatch.setattr(store, 'dispatch', lambda *a, **k: pytest.fail('Recovery dispatched work'))
+    recovered = candidate_batches.recover_submission('recover-after-deadline', owner_id=user['id'], project_id='project-a')
+    assert recovered['cluster_job_id'] == original['cluster_job_id']
+    assert candidate_batches.recover_submission('never-submitted', owner_id=user['id'], project_id='project-a') is None
+    monkeypatch.setattr(candidate_batches, 'actor', lambda *a, **k: {'id': 'other', 'role': 'user', 'project_ids': []})
+    assert candidate_batches.recover_submission('recover-after-deadline', owner_id='other', project_id='project-a') is None
+
+
 def test_cancel_waiting_submission_remembers_idempotency_and_does_not_dispatch(cluster):
     store, nodes, user, needs, snapshot, request, clock = cluster
     clock[0] += 180

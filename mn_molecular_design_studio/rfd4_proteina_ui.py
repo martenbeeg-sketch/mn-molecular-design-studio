@@ -500,7 +500,15 @@ def _render_content(schema:dict,*,owner_id,project_selector,submit,folding=False
         if o['operation']=='sidechain_packing':o['ligand_pose']=_pills('Ligand Pose',['generated','fixed'],'generated',key='rfd4-ligand-pose-'+task,labels={'generated':'Generated','fixed':'Held as uploaded'})
         if o['operation']=='diversify' and st.session_state.get('rfd4-noise-mode','fraction')=='fraction':o['noise_fraction']=st.number_input('Noise Fraction',.05,1.,.3)
         if o['operation'] in ('diversify','inverse_folding'):o['keep_residues']=_residues('Residues To Keep',path,chains,'rfd4-keep')
-    p['num_designs']=1 if task=='score_structures' else st.number_input('Number of Predictions' if folding else 'Number of Designs',1,500000,1 if folding else 8,key='rfd4-count')
+    p['num_designs']=1 if task=='score_structures' else st.number_input(
+        'Predictions per input (Studio count)' if folding else 'Number of Designs (Studio count)',
+        1, 500000, 1 if folding else 8, key='rfd4-count',
+        help=(
+            'Studio count of independent designs/predictions per input record. For RFD4 generation this maps to '
+            'num_replicates; with multiple input records, each receives this many replicates. It is not RFD4’s '
+            'internal GPU dataloader batch size.'
+        ),
+    )
     if task=='protein_binder':
         p['avoid_structures']=_source(owner_id,key='rfd4-avoid',label='Structures to Avoid',multiple=True)
         p['also_bind_structures']=_source(owner_id,key='rfd4-alsobind',label='Structures to Also Bind',multiple=True)
@@ -510,15 +518,33 @@ def _render_content(schema:dict,*,owner_id,project_selector,submit,folding=False
         with st.expander('View Optional Settings'):_optional(task,o,p,path,chains,folding)
     if folding:o.update(refold=False,filter_conditions=False)
     with st.popover('Compute settings'):
-        p['batch_size']=st.number_input('GPU Batch Size',1,16,1,key='rfd4-batch-size')
+        p['batch_size']=st.number_input(
+            'RFD4 GPU Batch Size', 1, 16, 1, key='rfd4-batch-size',
+            help=(
+                'RFD4’s internal dataloader/inference batch size: how many designs it processes together on the GPU. '
+                'This does not change Studio’s requested total; increasing it may improve GPU utilization but uses more '
+                'GPU memory and can cause out-of-memory errors.'
+            ),
+        )
         p['cpu_cores']=st.number_input('CPU Cores',1,256,8,key='rfd4-cpu-cores')
         p['compile_model']=st.checkbox('Compile Model',key='rfd4-compile-model')
         prioritize=st.checkbox('Prioritize in Scheduler Queue',key='rfd4-prioritize')
-    if not folding:st.button('Load example inputs',on_click=_load_example_inputs,args=('pd_l1_binder',owner_id),key='rfd4-load-example')
+    campaign_ready = True
+    if not folding and task in {'protein_binder', 'idr_peptide_binder'}:
+        with st.expander('Campaign objective (optional)'):
+            from mn_molecular_design_studio.distributed_campaign_config_ui import render_campaign_config_editor
+            campaign, campaign_ready = render_campaign_config_editor(
+                st, 'rfd4', None, key='rfd4-native-campaign', seed=int(p.get('seed') or 0),
+                generation_cpu_cores=p.get('cpu_cores'),
+            )
+            if campaign:
+                p['distributed_campaign'] = campaign
+    if not folding:
+        st.button('Load example inputs',on_click=_load_example_inputs,args=('pd_l1_binder',owner_id),key='rfd4-load-example')
     validate_clicked, submit_column, _ = st.columns([1.25,1,1])
     placeholder_preview=task=='cyclic_peptide_binder'
     validate_clicked=validate_clicked.button('Validate / Prepare',disabled=placeholder_preview or not ready,key='rfd4-validate-prepare')
-    clicked=submit_column.button('Submit',type='primary',disabled=placeholder_preview or not ready or not project_id,key='rfd4-submit')
+    clicked=submit_column.button('Submit',type='primary',disabled=placeholder_preview or not ready or not campaign_ready or not project_id,key='rfd4-submit')
     st.caption('Validate / Prepare checks the inputs in the RFD4 container. It does not create a job or run inference.')
     if validate_clicked:
         try:

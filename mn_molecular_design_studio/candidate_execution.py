@@ -32,9 +32,17 @@ def policy(value=None):
     defaults = dict(mode='native', placement='local', batch_size=4, max_in_flight=2,
                     retries=1, failure_policy='all', min_vram_gb=8., ram_gb=0.,
                     cpu_cores=4, stall_timeout_seconds=1800, incremental_cpu=False)
-    if set(value) - defaults.keys() - {'gpu_device'}:
-        raise ValueError('Unsupported candidate execution settings: ' + ', '.join(sorted(set(value) - defaults.keys() - {'gpu_device'})))
+    optional = {'gpu_device', 'max_runtime_seconds', 'deadline_at'}
+    if set(value) - defaults.keys() - optional:
+        raise ValueError('Unsupported candidate execution settings: ' + ', '.join(sorted(set(value) - defaults.keys() - optional)))
     result = defaults | value
+    if any(value.get(key) is not None for key in ('max_runtime_seconds', 'deadline_at')):
+        from mn_molecular_design_studio.campaign_objectives import normalize_objective
+        if result['mode'] != 'sharded':
+            raise ValueError('Dispatch time limits require partitioned batches; a native invocation cannot be split by this controller.')
+        limits = normalize_objective({'objective_type': 'generated', **{
+            key: value[key] for key in ('max_runtime_seconds', 'deadline_at') if value.get(key) is not None}})
+        result.update({key: limits[key] for key in ('max_runtime_seconds', 'deadline_at') if key in limits})
     if 'gpu_device' in value:
         from mn_molecular_design_studio.engine.workflow_engine.core.gpu import normalize_gpu_device
         selector = value['gpu_device']
@@ -71,8 +79,34 @@ def supports(kind, source):
             or generator.get('generator_only', False))
 
 
+def dispatch_limits(kind, settings):
+    """New dispatch limits apply to independent work; preserve existing cohort operations."""
+    from mn_molecular_design_studio.quality_tools import TOOLS
+    if TOOLS.get(kind, {}).get('cohort'):
+        return {}
+    return {key: settings[key] for key in ('max_runtime_seconds', 'deadline_at') if settings.get(key) is not None}
+
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def runs_with_submission_key(root, submission_key):
+    """Find local run receipts without resolving unrelated managed artifacts.
+
+    Run metadata may include portable paths owned by another workstation. This
+    lookup only needs the durable submission key, so parsing raw metadata keeps
+    cluster URIs from unrelated runs out of the local recovery path.
+    """
+    matches = []
+    for path in root.glob('*/*/metadata.json'):
+        try:
+            metadata = json.loads(path.read_text())
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if isinstance(metadata, dict) and metadata.get('candidate_submission_key') == submission_key:
+            matches.append(path.parent)
+    return matches
 
 
 def data_hashes(value):
@@ -310,6 +344,8 @@ def aggregate(batches, *, stream=False):
 
 def progress(batches):
     return dict(total_units=sum(b['unit_count'] for b in batches),
+                total_batches=len(batches),
+                stopped_units=sum(b['unit_count'] for b in batches if b.get('objective_stop')),
                 completed_units=sum(b.get('completed_units', 0) for b in batches if b['status'] in {'completed', 'partial'}),
                 completed_batches=sum(b['status'] == 'completed' for b in batches),
                 failed_batches=sum(b['status'] in {'failed', 'lost'} for b in batches),
@@ -348,10 +384,18 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
     if 'batches' not in current:
         current['batches'] = initialize(parent, node, source, params, key, settings,
             make_source=graph._local_source, make_request=graph.node_request, read_rows=graph._absolute_candidates)
-        current.update(status='running', fingerprint=key, started_at=utc_now())
+        current.update(status='running', fingerprint=key)
+        current.setdefault('started_at', utc_now())
         persist()
     batches = current['batches']
+    limits = dispatch_limits(node['data']['kind'], settings)
     for batch in batches:
+        if (shared_campaign_ledger and batch['status'] in {'pending', 'retrying'}
+                and not batch.get('job_run_dir') and not batch.get('cluster_job_id')
+                and shared_campaign_ledger.snapshot().get('status') != 'running'):
+            batch.update(status='cancelled', objective_stop=True,
+                         stop_reason=shared_campaign_ledger.snapshot().get('termination_reason'))
+            continue
         # The controller can stop after persisting the reservation but before
         # recording the child path. Re-enter the existing stable-submission-key
         # reconciliation path; it will attach a created child or submit once.
@@ -486,6 +530,42 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
             if shared_id:
                 shared_campaign_ledger.finish_job(shared_id, terminal_batch_status)
         if batch['status'] in {'pending', 'retrying'}:
+            from mn_molecular_design_studio.campaign_objectives import time_progress
+            if limits and time_progress(limits, current['started_at'])['time_expired']:
+                # Recover an existing submission read-only. Repeating a submit
+                # here could start another calculation after the time limit.
+                pending_key = batch.get('submission_key')
+                recovered = None
+                matches = []
+                if pending_key:
+                    from mn_molecular_design_studio.runtime import runs_root
+                    matches = runs_with_submission_key(runs_root(), pending_key)
+                    if len(matches) > 1:
+                        raise ValueError('Duplicate candidate submission receipt.')
+                    if settings['placement'] != 'local':
+                        from mn_molecular_design_studio.cluster import candidate_batches, config
+                        if config.enabled():
+                            recovered = candidate_batches.recover_submission(
+                                pending_key, owner_id=owner_id, project_id=project_id,
+                                allow_development=allow_development)
+                if recovered or matches:
+                    attempt = dict(index=len(batch['attempts']), status='queued',
+                                   submission_key=pending_key, recovered_after_deadline=True)
+                    if recovered:
+                        attempt['cluster_job_id'] = recovered['cluster_job_id']
+                        batch['cluster_job_id'] = recovered['cluster_job_id']
+                    else:
+                        attempt['run_dir'] = str(matches[0])
+                        batch['job_run_dir'] = str(matches[0])
+                    batch['attempts'].append(attempt)
+                    batch['status'] = 'queued'
+                else:
+                    batch.update(status='cancelled', objective_stop=True, stop_reason='runtime_exhausted')
+                    shared_id = batch.pop('shared_job_id', None)
+                    if shared_campaign_ledger and shared_id:
+                        shared_campaign_ledger.finish_job(shared_id, 'cancelled')
+                persist()
+                continue
             active = sum(b['status'] not in TERMINAL | {'pending', 'retrying'} for b in batches)
             if active >= settings['max_in_flight']:
                 continue
@@ -501,8 +581,7 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
             batch['submission_key'] = submission_key
             # A durable creation tag closes the submission-response crash window.
             from mn_molecular_design_studio.runtime import runs_root
-            matches = [p.parent for p in runs_root().glob('*/*/metadata.json')
-                       if read_json(p).get('candidate_submission_key') == submission_key]
+            matches = runs_with_submission_key(runs_root(), submission_key)
             if len(matches) > 1:
                 raise ValueError('Duplicate candidate submission receipt.')
             request = copy.deepcopy(manifest['request'])
@@ -556,7 +635,7 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
     persist()
     if any(b['status'] not in TERMINAL for b in batches):
         return None
-    failures = [b['batch_id'] for b in batches if b['status'] != 'completed']
+    failures = [b['batch_id'] for b in batches if b['status'] != 'completed' and not b.get('objective_stop')]
     if source.get('candidate_set_manifest'):
         from mn_molecular_design_studio.candidate_sets import write_collection
         output = write_collection(parent, node['id'] + '_batches', aggregate(batches, stream=True), source['target'])
@@ -567,6 +646,10 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
         output = graph._attach_refold_input_references(output, source, parent, node['id'])
     output['candidate_execution'] = dict(policy=settings, progress=progress(batches), missing_batches=failures,
                                        native_execution=execution_totals(batches))
+    if limits:
+        from mn_molecular_design_studio.campaign_objectives import time_progress
+        output['candidate_execution']['time_limit'] = time_progress(limits, current['started_at'])
+        output['candidate_execution']['started_at'] = current['started_at']
     if node.get('native_invocation') and len(batches) == 1:
         output.update(source_provenance=batches[0].get('source_provenance', {}),
                       source_run_id=batches[0].get('source_run_id'))
@@ -612,6 +695,7 @@ def tick_incremental(parent, node, current, upstream_state, upstream_output, set
     Groups share the same controller loop and scheduler; no executor is added.
     """
     groups = current.setdefault('incremental_groups', {})
+    current.setdefault('started_at', utc_now())
     kind, params = node['data']['kind'], node['data']['params']
     from mn_molecular_design_studio.cache_provenance import execution_identity
     if 'incremental_runtime' not in current:
@@ -623,7 +707,7 @@ def tick_incremental(parent, node, current, upstream_state, upstream_output, set
         if batch['batch_id'] not in groups:
             rows = json.loads(Path(batch['rows_path']).read_text())
             source = graph._local_source(parent, f'{node["id"]}_{batch["batch_id"]}_stream', rows, upstream_output.get('target'))
-            groups[batch['batch_id']] = dict(source=source, state={}, upstream_manifest=batch['manifest_sha256'])
+            groups[batch['batch_id']] = dict(source=source, state={'started_at': current['started_at']}, upstream_manifest=batch['manifest_sha256'])
             persist()
     for batch_id, group in groups.items():
         if group.get('output'):

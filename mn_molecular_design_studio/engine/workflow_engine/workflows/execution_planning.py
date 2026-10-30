@@ -200,7 +200,7 @@ def plan_campaign_execution(campaign, *, engine_id=None, native_attempts_per_job
         raise ValueError("Conflicting requested native attempts per job.")
     requested = _positive(requested, "native_attempts_per_job")
     budget = _positive(raw.get("max_attempts", 1), "max_attempts")
-    target = _positive(raw.get("accepted_target", 1), "accepted_target")
+    target = None if raw.get("objective_type") == "time" else _positive(raw.get("accepted_target", 1), "accepted_target")
     if not isinstance(raw.get("resources", {}), dict):
         raise ValueError("resources must be an object.")
     for key in ("cpu_cores", "min_vram_gb", "ram_gb", "scratch_gb"):
@@ -233,7 +233,7 @@ def plan_campaign_execution(campaign, *, engine_id=None, native_attempts_per_job
         errors.append("Current campaign adapters require one input; multiple-input partitioning is hypothetical only.")
     if batch != 1:
         errors.append("Current campaign jobs do not support changing the native GPU microbatch from 1.")
-    if target > budget and not any("accepted_target cannot exceed" in x for x in errors):
+    if target is not None and target > budget and not any("accepted_target cannot exceed" in x for x in errors):
         errors.append("accepted_target cannot exceed max_attempts under current campaign semantics.")
     partition = _partition_budget(budget, inputs, requested)
     physical, nominal = 0, 0

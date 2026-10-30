@@ -50,15 +50,112 @@ def test_bindcraft2_miniprotein_and_vhh_presets_use_compatible_filters_only():
     assert "bindcraft2_scaffold_sequence_retained" not in mixed_source_metrics
 
 
-def test_idr_and_peptide_preset_disables_free_fold_filters_but_requires_target_confidence():
+def test_idr_preset_does_not_gate_on_unconstrained_target_confidence_or_pose_rmsd():
     metrics = dict(available_metrics("peptide", "fasta_idr", "complex", engine="boltz2"))
     rules, unavailable = bindcraft2_reference_policy("peptide", "fasta_idr", "complex", metrics)
     by_id = {row["metric_id"]: row for row in rules}
     assert "ptm" not in by_id
-    assert "target_plddt" in by_id and by_id["target_plddt"]["value"] == 60.0
     assert by_id["iptm"]["value"] == 0.70
+    assert "target_plddt" not in by_id
+    assert any("sequence-defined IDR targets" in item for item in unavailable)
     assert any("i_pAE ≤0.33" in item for item in unavailable)
     assert any("Unbound_Binder_pLDDT" in item for item in unavailable)
+
+
+def test_rfd4_idr_policy_uses_its_native_openfold3_metrics_and_saved_geometry():
+    available = dict([*available_metrics(
+        "miniprotein", "fasta_idr", "complex", engine="rfd4_proteina",
+        source_tools={"rfd4_proteina"},
+    ), *available_metrics(
+        "miniprotein", "fasta_idr", "complex", engine="rfd4_proteina",
+        source_tools={"rfd4_proteina"}, informational=True,
+    )])
+    rules, unavailable = bindcraft2_reference_policy(
+        "miniprotein", "fasta_idr", "complex", available,
+    )
+    by_id = {row["metric_id"]: row for row in rules}
+    assert set(by_id) == {
+        "rfd4_native_ptm", "rfd4_native_iptm",
+        "rfd4_interface_residues_4a", "rfd4_backbone_clashes_2_5a",
+    }
+    assert by_id["rfd4_native_ptm"]["value"] == 0.55
+    assert by_id["rfd4_native_iptm"]["value"] == 0.70
+    assert any("normalized i_pAE" in item for item in unavailable)
+    assert any("raw chain-of-interest iPAE" in item for item in unavailable)
+
+
+def test_rfd4_native_oracle_aliases_are_normalized_without_losing_raw_scores():
+    from mn_molecular_design_studio.output_vocabulary import PREFIX, candidate_output
+
+    candidate = {
+        "candidate_id": "native-rfd4-1", "source_tool": "rfd4_proteina",
+        "stage": "generation.backbone_sequence", "binder_sequence": "AAAA",
+        "binder_chains": ["B"], "target_chains": ["A"],
+        "metrics": {"oracle_ppi.overall_ptm": 73.0, "oracle_ppi.overall_iptm": 78.0,
+                    "oracle_ppi.overall_plddt": 81.65, "oracle_ppi.ipae_coi": 17.48},
+    }
+    output = candidate_output(candidate)
+    assert output["metrics"]["confidence.generator.complex.ptm"] == 0.73
+    assert output["metrics"]["confidence.generator.complex.iptm"] == 0.78
+    assert output["metrics"]["confidence.generator.complex.plddt"] == 81.65
+    assert output["metrics"]["confidence.generator.interface.ipae_coi"] == 17.48
+    assert PREFIX == "common."
+
+
+def test_saved_evidence_acceptance_preserves_rfd4_ids_and_never_predicts(tmp_path, monkeypatch, design_source_factory):
+    import json
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import analysis
+
+    source, candidate = design_source_factory()
+    candidates_path = source / "artifacts/normalized_candidates/candidates.jsonl"
+    rows = []
+    for identifier, iptm in (("rfd4-pass", 78.0), ("rfd4-reject", 33.0)):
+        rows.append({
+            **candidate,
+            "candidate_id": identifier,
+            "source_tool": "rfd4_proteina",
+            "stage": "generation.backbone_sequence",
+            "metrics": {"oracle_ppi.overall_ptm": 73.0,
+                        "oracle_ppi.overall_iptm": iptm,
+                        "oracle_ppi.overall_plddt": 81.65,
+                        "oracle_ppi.ipae_coi": 17.48,
+                        "ppi.pass": 0.0},
+            "raw_metadata": {"modality": "miniprotein", "target_type": "fasta_idr"},
+        })
+    candidates_path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    run_root = tmp_path / "analysis-runs"
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(run_root))
+
+    from mn_molecular_design_studio.validation_acceptance import METRICS
+    policy = {
+        "binder_format": "miniprotein", "target_type": "fasta_idr",
+        "mandatory_filters": [
+            {"field": METRICS["rfd4_native_ptm"]["field"], "operator": ">=", "value": 0.55},
+            {"field": METRICS["rfd4_native_iptm"]["field"], "operator": ">=", "value": 0.70},
+        ],
+        "informational_scores": [METRICS["rfd4_native_plddt"]["field"],
+                                 METRICS["rfd4_native_interface_pae"]["field"]],
+    }
+    output_dir = analysis.run_validation_acceptance_analysis(
+        source, candidates_path, policy,
+    )
+    result = read_json(output_dir / "result.json")
+    filtered = read_candidates(output_dir)
+    by_id = {row["candidate_id"]: row for row in filtered}
+    summary = result["metrics"]["validation_acceptance"]
+    assert summary["accepted"] == 1 and summary["rejected"] == 1
+    assert summary["prediction_performed"] is False
+    assert set(by_id) == {"rfd4-pass", "rfd4-reject"}
+    assert all(row["source_tool"] == "rfd4_proteina" for row in filtered)
+    assert by_id["rfd4-pass"]["raw_metadata"]["validation_acceptance"]["status"] == "accepted"
+    assert by_id["rfd4-reject"]["raw_metadata"]["validation_acceptance"]["status"] == "rejected"
+    assert by_id["rfd4-pass"]["raw_metadata"]["validation_acceptance"]["native_filter_status"] == "unavailable · native PPI metrics incomplete"
+    assert "confidence.generator.interface.ipae_coi" in by_id["rfd4-pass"]["normalized_output"]["metrics"]
+    assert by_id["rfd4-pass"]["metrics"]["ppi.pass"] == 0.0  # native gate remains distinct
+    assert (output_dir / "artifacts/validation/acceptance.csv").is_file()
+    assert (output_dir / "artifacts/analysis/acceptance_measurements.csv").is_file()
 
 
 def test_ipae_and_ipsae_are_not_offered_as_interchangeable_filters():
@@ -167,6 +264,56 @@ def test_prediction_api_preflight_persists_selected_format_and_target(monkeypatc
     assert captured["validation_require_passing"] is False
 
 
+def test_prediction_api_preflight_normalizes_remote_candidate_count(monkeypatch, tmp_path):
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import optimized_prediction
+
+    captured = {}
+
+    def prepare(**parameters):
+        captured.update(parameters)
+
+    source_run = tmp_path / "design-run"
+    candidate_index = source_run / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+    monkeypatch.setattr(optimized_prediction, "_prepare_prediction", prepare)
+    optimized_prediction.validate_prediction_request({
+        "engine": "protenix_v2", "gpu_device": "0", "validation_mode": "complex",
+        "validation_target_type": "fasta_idr", "validation_candidate_limit": 10,
+        "source_run_dir": source_run, "candidates_jsonl": candidate_index,
+        "acceptance_policy": {"binder_format": "miniprotein", "target_type": "fasta_idr",
+                              "mandatory_filters": [], "informational_scores": []},
+    })
+
+    assert captured["validation_sources"] == [{
+        "source_run_dir": str(source_run),
+        "candidates_jsonl": str(candidate_index),
+        "candidate_limit": 10,
+    }]
+    assert "validation_candidate_limit" not in captured
+    assert "source_run_dir" not in captured
+    assert "candidates_jsonl" not in captured
+    assert captured["validation_require_passing"] is False
+
+
+def test_prediction_api_preflight_normalizes_remote_candidate_ids(monkeypatch, tmp_path):
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import optimized_prediction
+
+    captured = {}
+    source_run = tmp_path / "design-run"
+    candidate_index = source_run / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+    monkeypatch.setattr(optimized_prediction, "_prepare_prediction", lambda **kwargs: captured.update(kwargs))
+    optimized_prediction.validate_prediction_request({
+        "engine": "protenix_v2", "gpu_device": "0", "validation_mode": "complex",
+        "validation_candidate_ids": ["candidate-a", "candidate-b"],
+        "source_run_dir": source_run, "candidates_jsonl": candidate_index,
+    })
+    assert captured["validation_sources"] == [{
+        "source_run_dir": str(source_run),
+        "candidates_jsonl": str(candidate_index),
+        "candidate_ids": ["candidate-a", "candidate-b"],
+    }]
+    assert "validation_candidate_ids" not in captured
+
+
 def test_unavailable_selected_measurement_is_unresolved_not_passed():
     field = METRICS["iptm"]["field"]
     candidate = {"candidate_id": "missing-iptm", "source_tool": "optimized_prediction_boltz2",
@@ -197,8 +344,9 @@ st.session_state["acceptance_errors"] = errors
     assert policy["binder_format"] == "vhh"
     assert policy["target_type"] == "fasta_idr"
     assert {row["metric_id"] for row in policy["mandatory_filters"]} >= {
-        "iptm", "interface_residues_4a", "backbone_clashes_2_5a", "target_plddt",
+        "iptm", "interface_residues_4a", "backbone_clashes_2_5a",
     }
+    assert "target_plddt" not in {row["metric_id"] for row in policy["mandatory_filters"]}
     assert policy["ranking_metric"] == METRICS["bindcraft2_ipdae"]["field"]
     assert METRICS["bindcraft2_ipdae"]["field"] in policy["informational_scores"]
     assert policy["reference_preset"]["source"] == "BindCraft2 source 4a56313"

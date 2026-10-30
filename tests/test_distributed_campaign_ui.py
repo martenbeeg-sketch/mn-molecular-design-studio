@@ -271,8 +271,11 @@ def test_rfd4_tile_campaign_controls_expose_independent_settings_before_submit()
     assert any(widget.label == "Use distributed campaign" for widget in app.checkbox)
     app.checkbox(key="tile-campaign-enabled").check().run()
     assert not app.exception
+    assert app.session_state["effective_config"]["objective_type"] == "generated"
+    assert app.session_state["effective_config"]["validation_stages"] == []
+    app.selectbox(key="tile-campaign-objective-type").set_value("accepted").run()
     assert any(widget.label == "Target unique passing designs" for widget in app.number_input)
-    assert any(widget.label == "Global maximum native attempts" for widget in app.number_input)
+    assert any(widget.label == "Maximum campaign attempts" for widget in app.number_input)
     assert any(widget.label == "Scientific acceptance policy" for widget in app.selectbox)
     assert any(widget.label == "Maximum concurrent generation jobs" for widget in app.number_input)
     assert any(widget.label == "Concurrent downstream validations" for widget in app.number_input)
@@ -307,6 +310,16 @@ def test_rfd4_tile_campaign_controls_expose_independent_settings_before_submit()
     assert generated["validation_stages"] == []
     assert generated["unique_accepted"] is False
     assert any(widget.label == "Target designs" for widget in app.number_input)
+
+    app.selectbox(key="tile-campaign-objective-type").set_value("time").run()
+    assert not app.exception
+    app.number_input(key="tile-campaign-duration-minutes").set_value(30).run()
+    timed = app.session_state["effective_config"]
+    assert timed["objective_type"] == "time"
+    assert timed["accepted_target"] is None
+    assert timed["validation_stages"] == []
+    assert timed["max_runtime_seconds"] > 0
+    assert not any(widget.label == "Target unique passing designs" for widget in app.number_input)
 
     bindcraft = AppTest.from_string(
         "import streamlit as st\n"
@@ -346,7 +359,7 @@ def test_selected_shared_branch_uses_graph_objective_instead_of_independent_camp
     ).run()
 
     assert not app.exception
-    assert any("graph’s shared acceptance target" in item.value for item in app.info)
+    assert any("graph’s shared campaign objective" in item.value for item in app.info)
     assert not any(widget.label == "Use distributed campaign" for widget in app.checkbox)
 
 

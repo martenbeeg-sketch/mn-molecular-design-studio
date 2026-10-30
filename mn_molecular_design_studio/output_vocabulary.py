@@ -155,21 +155,58 @@ for role, stages in (("generator", ("generation.backbone_sequence",)),
 # 100; PAE remains in Å. These aliases are scoped to RFD4's generator stage,
 # since trajectory confidence is not an independent validation run.
 for scope, suffix, aliases in (
-    ("complex", "", ("oracle.overall_plddt", "oracle.overall_pae", "oracle.overall_ptm")),
-    ("chain of interest", ".chain_of_interest", ("oracle.plddt_coi", "oracle.pae_coi", "oracle.ptm_coi")),
+    ("complex", "", (("oracle.overall_plddt", "oracle_ppi.overall_plddt"),
+                       ("oracle.overall_pae", "oracle_ppi.overall_pae"),
+                       ("oracle.overall_ptm", "oracle_ppi.overall_ptm"))),
+    ("chain of interest", ".chain_of_interest", (("oracle.plddt_coi", "oracle_ppi.plddt_coi"),
+                                                    ("oracle.pae_coi", "oracle_ppi.pae_coi"),
+                                                    ("oracle.ptm_coi", "oracle_ppi.ptm_coi"))),
 ):
     for quantity, unit, direction, transform, maximum, alias in zip(
         ("plddt", "pae", "ptm"), ("0–100", "Å", "0–1"),
         ("higher", "lower", "higher"), ("identity", "identity", "percent_to_fraction"),
         (100, None, 1), aliases,
     ):
-        MEASURES.append(Measure(
-            f"confidence.generator.{scope.replace(' ', '_')}.{quantity}",
-            f"Generator {scope} {quantity}", unit, scope,
-            "RFD4 AF3 oracle", (alias,), direction, maximum=maximum,
-            engines=("rfd4_proteina",), transform=transform,
-            stages=("generation.backbone_sequence",),
-        ))
+        for source_alias, method in reversed(tuple(zip(
+            alias,
+            ("RFD4 AF3 oracle", "RFD4 native OpenFold3 oracle"),
+        ))):
+            MEASURES.append(Measure(
+                f"confidence.generator.{scope.replace(' ', '_')}.{quantity}",
+                f"Generator {scope} {quantity}", unit, scope,
+                method, (source_alias,), direction, maximum=maximum,
+                engines=("rfd4_proteina",), transform=transform,
+                stages=("generation.backbone_sequence",),
+            ))
+# RFD4-PPI uses an OpenFold3 oracle whose fields are emitted under
+# ``oracle_ppi``. Keep these measurements explicitly native and namespaced;
+# they are not independent re-prediction results. Confidence values from this
+# provider are percentages and are converted only for pTM/iPTM fields.
+for quantity, label, unit, direction, maximum, alias, transform in (
+    ("iptm", "Generator complex iPTM", "0–1", "higher", 1,
+     "oracle_ppi.overall_iptm", "percent_to_fraction"),
+    ("ipae_coi", "Generator chain-of-interest interface PAE", "Å", "lower", None,
+     "oracle_ppi.ipae_coi", "identity"),
+):
+    MEASURES.append(Measure(
+        f"confidence.generator.complex.{quantity}" if quantity == "iptm" else f"confidence.generator.interface.{quantity}",
+        label, unit, "complex interfaces" if quantity == "iptm" else "RFD4 chain of interest",
+        "RFD4 native OpenFold3 PPI oracle", (alias,), direction,
+        maximum=maximum, engines=("rfd4_proteina",), transform=transform,
+        stages=("generation.backbone_sequence",),
+    ))
+MEASURES.extend([
+    Measure("interface.native.rfd4_proteina.binder_residue_count_4a",
+        "RFD4 saved complex · binder residues contacting target within 4 Å", "residues",
+        "saved RFD4 generated complex", "Studio heavy-atom distance; each binder residue counted once",
+        ("rfd4_native_interface_residue_count_4a",), minimum=0,
+        engines=("rfd4_proteina",), stages=("generation.backbone_sequence",)),
+    Measure("geometry.native.rfd4_proteina.backbone_ca_clashes_2_5a",
+        "RFD4 saved complex · interchain Cα clashes within 2.5 Å", "atom pairs",
+        "saved RFD4 generated complex", "Studio interchain Cα pair count at ≤2.5 Å",
+        ("rfd4_native_backbone_ca_clashes_2_5a",), minimum=0,
+        engines=("rfd4_proteina",), stages=("generation.backbone_sequence",)),
+])
 for model in sorted(MPNN_ENGINES):
     for key, label, aliases, unit, direction, transform, maximum in (
         ("redesigned_nll", "redesigned-residue NLL", ("score",), "nats/residue", "lower", "identity", None),
@@ -415,7 +452,16 @@ def normalize_metrics(metrics, tool="", context=None):
             if (measure.minimum is not None and number < measure.minimum) or (measure.maximum is not None and number > measure.maximum):
                 issues.append({"field": alias, "reason": "outside declared range"})
                 continue
-            source = "binder_sequence" if alias == "$sequence_length" else alias if alias in original else "fasta_header." + alias
+            if alias == "$sequence_length":
+                source = "binder_sequence"
+            elif alias in original:
+                source = alias
+            elif engine == "mol1" and alias == "mol1_model_plddt_mean":
+                confidence = raw.get("confidence_outputs") if isinstance(raw.get("confidence_outputs"), dict) else {}
+                confidence_field = "plddt_mean" if confidence.get("plddt_mean") is not None else "plddt"
+                source = f"raw_metadata.confidence_outputs.{confidence_field}"
+            else:
+                source = "fasta_header." + alias
             matches.setdefault(measure.key, []).append({"source_field": source, "raw_value": value, "value": number, "conversion": measure.transform, "method": measure.method, "_engine_scoped": bool(measure.engines)})
     normalized, provenance, conflicts = {}, {}, {}
     for key, entries in matches.items():

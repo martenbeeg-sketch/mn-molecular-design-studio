@@ -245,6 +245,7 @@ TOOL_CATALOG_WORKFLOW_IDS = {
     "refolding.boltzgen_fold",
     "analysis.ipsae",
     "analysis.rosetta",
+    "analysis.validation_acceptance",
     "ligand.complex.prepare",
     "ligand.docking.vina",
     "ligand.docking.autodock_gpu",
@@ -362,7 +363,7 @@ TOOL_CATALOG_GROUPS = {
 }
 
 from mn_molecular_design_studio.quality_tools import WORKFLOWS as QUALITY_WORKFLOWS
-ANALYSIS_SOURCE_WORKFLOWS = {"analysis.ipsae", "analysis.rosetta", *QUALITY_WORKFLOWS}
+ANALYSIS_SOURCE_WORKFLOWS = {"analysis.ipsae", "analysis.rosetta", "analysis.validation_acceptance", *QUALITY_WORKFLOWS}
 TOOL_CATALOG_WORKFLOW_IDS = (*TOOL_CATALOG_WORKFLOW_IDS, *QUALITY_WORKFLOWS)
 
 # Each optimized prediction profile gets its own engine card. Version labels
@@ -1068,6 +1069,8 @@ def _render_tool_catalog() -> None:
         workflow_id = row["workflow"]
         if workflow_id == "refolding.optimized_prediction":
             continue
+        if workflow_id == "analysis.validation_acceptance":
+            continue
         if workflow_id in grouped_workflow_ids:
             continue
         base_title = workflow_id.split(".", 1)[-1].replace("_", " ").title()
@@ -1121,17 +1124,16 @@ def _render_tool_catalog() -> None:
                 },
             })
 
-        # Acceptance is a standalone Studio tool backed by the existing
-        # optimized-prediction job and shared policy evaluator. It is not a
-        # control repeated across every co-folding engine tile.
+        # Acceptance is an evaluation-only tool over saved candidate evidence.
+        validation_row = workflow_by_id.get("analysis.validation_acceptance")
         tool_rows.append({
             "key": "studio.validation-acceptance",
             "group_id": None,
             "workflow": "studio.validation_acceptance",
             "title": "Validation & Acceptance",
-            "description": "Independently re-predict completed designs, apply explicit format-aware acceptance criteria, and retain every measured value and rejection reason.",
+            "description": "Apply configurable, format-aware acceptance criteria to saved design measurements and structures. No prediction engine is launched.",
             "workflow_ids": ["studio.validation_acceptance"],
-            "workflow_rows": [optimized_row],
+            "workflow_rows": [validation_row] if validation_row else [],
             "engine_version": None,
             "engine_optimized": False,
             "references": [],
@@ -4186,36 +4188,28 @@ def _render_optimized_prediction_setup(engine_id: str) -> None:
 
 
 def _render_validation_acceptance_setup() -> None:
-    """Standalone design re-prediction and acceptance tool.
-
-    It submits the same optimized-prediction workflow used by the engine tiles;
-    acceptance policy is attached to that job and evaluated by the shared
-    backend also used by graph Shared scientific filters.
-    """
+    """Standalone filter over saved design evidence; it never predicts."""
     if st.button("← Back to All tools", key="back-to-validation-acceptance"):
         st.session_state["page"] = "All tools"
         st.session_state.pop("selected_workflow", None)
         st.rerun()
     _render_cofolding_header(
         "Validation & Acceptance",
-        "Independently re-predict completed binder designs, then apply explicit, format-aware acceptance criteria.",
+        "Filter completed designs using recorded measurements and their saved structures. No predictor is launched.",
     )
     st.caption(
-        "Native workflow decisions remain attached to the source design. This tool records independent prediction measurements, "
-        "configured pass/fail rules, and unresolved measurements separately."
+        "Native workflow decisions and scores remain attached to the source design. This tool adds configurable acceptance decisions, "
+        "measured interface geometry, and explicit unresolved or rejection reasons as a separate Results job."
     )
-    engine_ids = list(optimized_prediction.ENGINE_PROFILES)
-    engine_id = st.selectbox(
-        "Independent co-folding engine", engine_ids,
-        format_func=lambda engine: optimized_prediction.ENGINE_PROFILES[engine]["label"],
-        key="validation-acceptance-engine",
-    )
-    profile = {**optimized_prediction.ENGINE_PROFILES[engine_id], "form_key": f"acceptance-{engine_id}"}
-    schema = workflow_schema("refolding.optimized_prediction")
+    engine_id = "rfd4_proteina"
+    profile = {"form_key": "saved-evidence", "input_kind": "saved_results",
+               "requires_target_template": True, "label": "Saved candidate evidence",
+               "supports_cyclic": True}
+    schema = workflow_schema("analysis.validation_acceptance")
     name_col, project_col = st.columns([1.25, 1.25])
     with name_col:
         job_name = st.text_input(
-            "Job name", value=f"{engine_id}-acceptance", key="validation-acceptance-job-name"
+        "Job name", value=f"{engine_id}-acceptance", key="validation-acceptance-job-name"
         ).strip()
     with project_col:
         project_id = _render_project_selector("validation-acceptance")
@@ -4223,6 +4217,7 @@ def _render_validation_acceptance_setup() -> None:
         engine_id, profile, project_id, job_name, schema,
         search_jobs=search_jobs, submit=_submit_cofolding_job,
         allow_new_batch=False, include_acceptance=True, existing_designs_only=True,
+        evaluation_only=True,
     )
 
 
@@ -4728,7 +4723,10 @@ def _render_multi_engine_campaign() -> None:
     with setting_cols[0]:
         binder_length = st.text_input("Binder length", value="60-100", key="pipeline-binder-length").strip()
     with setting_cols[1]:
-        design_attempts = st.number_input("Design attempts per engine", min_value=1, max_value=1000, value=2, step=1, key="pipeline-design-attempts")
+        design_attempts = st.number_input(
+            "Generator attempts per engine", min_value=1, max_value=1000, value=2, step=1, key="pipeline-design-attempts",
+            help="Number of separate design tries for each selected engine. An attempt can yield no retained design. This does not set how many samples an engine processes together on the GPU.",
+        )
     with setting_cols[2]:
         sequences_per_backbone = st.number_input("Sequences per backbone", min_value=1, max_value=1000, value=2, step=1, key="pipeline-sequences-per-backbone")
     with setting_cols[3]:
@@ -8074,6 +8072,36 @@ def _render_job_details() -> None:
     is_generator_tool=str(job.get('tool')) in generator_input.TOOLS.values()
 
     with results_tab:
+        if analysis_tool == "validation_acceptance":
+            acceptance = result_metrics.get("validation_acceptance") if isinstance(result_metrics.get("validation_acceptance"), dict) else {}
+            st.subheader("Validation & Acceptance results")
+            columns = st.columns(5)
+            for column, label, key in zip(
+                columns, ("Candidates", "Accepted", "Rejected", "Unresolved", "Not evaluated"),
+                ("candidate_count", "accepted", "rejected", "unresolved", "not_evaluated"),
+            ):
+                column.metric(label, acceptance.get(key, 0))
+            source_tool = acceptance.get("source_tool") or "source workflow"
+            source_run_id = acceptance.get("source_run_id") or ""
+            st.caption(
+                f"Saved-evidence-only analysis from {source_tool} · source run {source_run_id}. "
+                f"Prediction performed: {'yes' if acceptance.get('prediction_performed') else 'no'}. "
+                "Native filter status is reported separately; an incomplete native PPI gate does not pass or fail these configured criteria."
+            )
+            measurements_path = run_dir / "artifacts/analysis/acceptance_measurements.csv"
+            if measurements_path.is_file():
+                try:
+                    measured = pd.read_csv(measurements_path, low_memory=False)
+                    st.dataframe(measured, hide_index=True, use_container_width=True)
+                except (OSError, ValueError, pd.errors.ParserError) as exc:
+                    st.warning(f"Could not display the acceptance measurements table: {exc}")
+            report_path = run_dir / "artifacts/validation/acceptance.csv"
+            if report_path.is_file():
+                st.download_button(
+                    "Download acceptance decisions and rejection reasons",
+                    report_path.read_bytes(), file_name=f"{run_id}_acceptance.csv",
+                    mime="text/csv", key=f"saved-evidence-acceptance-{run_id}",
+                )
         if (run_dir / "artifacts/md/study.json").is_file() or str(job.get("tool")) == "md_analysis":
             from mn_molecular_design_studio.md_results_ui import render_md_results
             render_md_results(st, run_dir, result)

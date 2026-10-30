@@ -422,7 +422,10 @@ def shared_filter(parent, node_id, source, params):
                 if not info:
                     raise ValueError("Shared filters require a CandidateSet merge first.")
                 decisions = []
-                acceptance = evaluate_candidate(row, policy) if acceptance_enabled else None
+                retained = (row.get("raw_metadata") or {}).get("validation_acceptance") or {}
+                provenance = (row.get("raw_metadata") or {}).get("validation_acceptance_provenance") or {}
+                reuse_decision = (provenance.get("acceptance_node") == node_id and retained.get("policy") == policy)
+                acceptance = (copy.deepcopy(retained) if reuse_decision else evaluate_candidate(row, policy)) if acceptance_enabled else None
                 if acceptance:
                     row.setdefault("raw_metadata", {})["validation_acceptance"] = acceptance
                     for rule in policy["mandatory_filters"]:
@@ -442,7 +445,8 @@ def shared_filter(parent, node_id, source, params):
                 elif acceptance and acceptance["status"] == "rejected":
                     status = "failed"
                 elif acceptance and acceptance["status"] == "unresolved":
-                    status = "unresolved"
+                    status = next((v for v in ("invalid_metadata", "missing_evidence")
+                                   if any(d["status"] == v for d in decisions)), "unresolved")
                 elif acceptance and acceptance["status"] == "accepted":
                     status = "passed"
                 else:

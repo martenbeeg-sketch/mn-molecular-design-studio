@@ -174,7 +174,8 @@ def _render_connection_card(node, graph):
 def _render_field(field, values, key):
     name = field["name"]
     value = values.get(name, field["default"])
-    label = {"num_designs":"Number of designs", "timesteps":"Diffusion timesteps", "seed":"Random seed (0 = random)"}.get(name, field["label"])
+    label = field["label"]
+    label = {"timesteps":"Diffusion timesteps", "seed":"Random seed (0 = random)"}.get(name, label)
     kwargs = {"key": key+"-"+name, "help":field.get("help")}
     if name == "scaffold_ids" and field["type"] == "json":
         from mn_molecular_design_studio.peptide_trap_input import SCAFFOLDS
@@ -735,9 +736,9 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
             if kind in {"bindcraft2", "rfd4"}:
                 shared_campaign = graph.get("shared_campaign") if isinstance(graph.get("shared_campaign"), dict) else {}
                 if shared_campaign.get("enabled") and node["id"] in shared_campaign.get("generator_nodes", []):
-                    st.info("This branch uses the graph’s shared acceptance target, common downstream criteria, and distributed budgets. Configure them in the Shared campaign panel.")
+                    st.info("This branch uses the graph’s shared campaign objective and distributed budgets. Configure them in the Shared campaign panel. Scientific filtering is optional; passing-count goals use explicitly configured criteria.")
                 else:
-                    with st.expander("Distributed acceptance campaign", expanded=bool(values.get("distributed_campaign"))):
+                    with st.expander("Campaign objective (optional)", expanded=bool(values.get("distributed_campaign"))):
                         from mn_molecular_design_studio.distributed_campaign_config_ui import render_campaign_config_editor
                         campaign, campaign_ready = render_campaign_config_editor(
                             st, kind, values.get("distributed_campaign"), key=key + "-campaign",

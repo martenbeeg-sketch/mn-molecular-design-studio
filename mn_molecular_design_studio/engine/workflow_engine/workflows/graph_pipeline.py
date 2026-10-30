@@ -1203,6 +1203,18 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                 settings = candidate_execution.policy(node["data"].get("execution", graph.get("candidate_execution")))
                 if current.get("status") in {"failed", "blocked"}:
                     continue
+                if (shared_ledger and shared_campaign.get('objective_type') == 'generated'
+                        and node_id in shared_campaign.get('generator_nodes', [])
+                        and shared_ledger.snapshot().get('status') != 'running'
+                        and current.get('status') == 'pending' and not current.get('batches')
+                        and not current.get('job_run_dir')):
+                    current['stop_reason'] = shared_ledger.snapshot().get('termination_reason')
+                    target = next((outputs[parent_id].get('target') for parent_id in parents
+                                   if parent_id in outputs and outputs[parent_id].get('target')), {})
+                    complete(node_id, _local_source(parent, node_id + '_objective_stop', [], target),
+                             fingerprint(node_id, {'objective_stop': current['stop_reason']}, []), 'skipped')
+                    progressed = True
+                    continue
                 if (settings['mode'] == 'sharded' and settings['incremental_cpu'] and len(parents) == 1
                         and candidate_execution.incremental_cpu_kind(node['data']['kind'])
                         and node_states.get(parents[0], {}).get('batches')):
@@ -1427,6 +1439,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     key = fingerprint(kind, key_params, [o["fingerprint"] for o in upstream])
                     native_invocation = (graph.get('workflow_mode') and settings['placement'] != 'local'
                         and NODE_CATALOG[kind]['category'] in {'Design engine', 'Design pipeline'}
+                        and not (shared_campaign and shared_campaign.get('objective_type') in {'accepted', 'time'}
+                                 and node_id in shared_campaign.get('generator_nodes', []))
                         and not params.get('distributed_campaign'))
                     if native_invocation or settings['mode'] == 'sharded' and candidate_execution.supports(kind, source):
                         cached = read_json(cache_root / f'{key}.json').get('output') if reuse_completed and not current.get('batches') else None
@@ -1647,7 +1661,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     if source.get("candidates_jsonl") and not source.get("candidate_count"):
                         complete(node_id, _local_source(parent, node_id, [], source.get("target")), key, "skipped");progressed=True;continue
                     request = node_request(kind, params, source, f"{pipeline_name} · {node['data']['label']}")
-                    if (shared_campaign and shared_campaign.get('objective_type') == 'accepted'
+                    if (shared_campaign and shared_campaign.get('objective_type') in {'accepted', 'time'}
                             and node_id in shared_campaign["generator_nodes"]):
                         from mn_molecular_design_studio.workflow_modes import capability
                         route = capability(kind)
@@ -1657,10 +1671,11 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             "enabled": True,
                             "generator_id": route.get('tool'),
                             "workstation_selection": shared_campaign.get("workstation_selection", "auto"),
-                            "objective_type": "accepted",
-                            "unique_accepted": True,
+                            "objective_type": shared_campaign["objective_type"],
+                            "unique_accepted": shared_campaign["objective_type"] == "accepted",
                             "acceptance_level": "validated",
-                            "accepted_target": int(limit.get('target_count', shared_campaign["accepted_target"])),
+                            "accepted_target": (int(limit.get('target_count', shared_campaign["accepted_target"]))
+                                                if shared_campaign["objective_type"] == "accepted" else None),
                             "max_attempts": int(limit.get("max_attempts", shared_campaign["max_attempts"])),
                             "max_concurrent_generation_jobs": int(limit.get(
                                 "max_concurrent_generation_jobs", shared_campaign["max_concurrent_generation_jobs"],
@@ -1669,8 +1684,18 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             "validation_stages": copy.deepcopy(shared_campaign["validation_stages"]),
                             "_shared_objective": {"ledger_path": str(shared_ledger_path), "generator_node": node_id},
                         })
-                        campaign.pop("max_runtime_seconds", None)
-                        campaign.pop("max_compute_seconds", None)
+                        for field in ("max_runtime_seconds", "deadline_at", "max_compute_seconds"):
+                            campaign.pop(field, None)
+                        # The shared ledger owns the timer start and deadline.
+                        # Children use that absolute stop time, including recovery.
+                        from mn_molecular_design_studio.campaign_objectives import timestamp
+                        from datetime import timedelta
+                        deadline = shared_campaign.get("deadline_at")
+                        if shared_campaign.get("max_runtime_seconds"):
+                            duration_end = timestamp(shared_ledger.snapshot()["created_at"]) + timedelta(seconds=shared_campaign["max_runtime_seconds"])
+                            deadline = min(timestamp(deadline), duration_end).isoformat() if deadline else duration_end.isoformat()
+                        if deadline:
+                            campaign["deadline_at"] = deadline
                         request.setdefault("parameters", {})["distributed_campaign"] = campaign
                     if (shared_ledger and shared_campaign.get('objective_type') == 'generated'
                             and node_id in shared_campaign.get('generator_nodes', [])):

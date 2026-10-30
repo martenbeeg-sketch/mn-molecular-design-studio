@@ -119,6 +119,9 @@ def test_mol1_monomer_does_not_report_complex_or_interface_measurements():
     assert result["kind"] == "refolded_monomer"
     assert result["metrics"]["confidence.validation.structure.mean_ca_plddt"] == 88.314
     assert result["metrics"]["confidence.validation.model.mol1_plddt_mean"] == 84.976
+    summary_alias = result["provenance"]["confidence.validation.model.mol1_plddt_mean"]["aliases"][0]
+    assert summary_alias["source_field"] == "raw_metadata.confidence_outputs.plddt_mean"
+    assert summary_alias["method"] == "Mol-1 native summary_confidence_sample plddt"
     assert result["metrics"]["confidence.validation.monomer.ptm"] == .83376
     assert "confidence.validation.complex.iptm" not in result["metrics"]
     assert "confidence.validation.complex.ptm" not in result["metrics"]

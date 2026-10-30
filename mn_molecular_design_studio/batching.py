@@ -16,6 +16,17 @@ PREDICTION_INPUTS = frozenset({
 })
 
 
+def batch_plan(total_items, batch_size):
+    """Common Studio partition arithmetic; says nothing about GPU microbatches."""
+    if type(total_items) is not int or total_items < 0:
+        raise ValueError('Total items must be a nonnegative integer.')
+    if type(batch_size) is not int or batch_size < 1:
+        raise ValueError('Items per batch must be a positive integer.')
+    return {'total_items': total_items, 'items_per_batch': batch_size,
+            'batch_count': (total_items + batch_size - 1) // batch_size,
+            'last_batch_items': ((total_items - 1) % batch_size + 1) if total_items else 0}
+
+
 def parameter_items(value):
     """Accept one input or an ordered selection, without a batch-mode switch."""
     items = value if isinstance(value, list) else [value]
