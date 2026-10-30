@@ -64,11 +64,17 @@ def display_job_code(metadata_code: object, run_id: str) -> str:
     return short_job_code(run_id)
 
 
-def read_json(path: Path) -> dict:
+def read_json_raw(path: Path) -> dict:
+    """Read a job JSON document without resolving its managed-path strings."""
     try:
         payload = json.loads(path.read_text())
     except Exception:
         return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def read_json(path: Path) -> dict:
+    payload = read_json_raw(path)
     if Path(path).name == "command.json":
         return payload
     return resolve_managed_paths(payload, run_dir=_job_dir_for_path(Path(path)))
@@ -881,7 +887,9 @@ def collect_jobs(task_group: str | None = None, *, include_hidden: bool = False)
         if not group_dir.exists():
             continue
         for run_dir in sorted([p for p in group_dir.iterdir() if p.is_dir()], key=lambda p: p.stat().st_mtime, reverse=True):
-            metadata = read_json(run_dir / "metadata.json")
+            # Metadata is catalog data: paths may intentionally reference a
+            # different workstation and must remain opaque while listing jobs.
+            metadata = read_json_raw(run_dir / "metadata.json")
             if not include_hidden and (metadata.get("hidden") or metadata.get("capacity_parent_run_id")):
                 continue
             result = read_json(run_dir / "result.json")

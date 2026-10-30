@@ -354,6 +354,25 @@ def test_legacy_generic_rows_keep_status_and_resolve_engine_and_name(api_queue, 
     assert len(response.json()["items"]) == 1
 
 
+def test_job_reference_keeps_remote_metadata_paths_opaque(api_queue):
+    run = api_queue.root / "design" / "remote-candidate-campaign"
+    run.mkdir(parents=True)
+    (run / "metadata.json").write_text(json.dumps({
+        "tool": "rfd4_proteina_campaign",
+        "status": "running",
+        "source_job": "cluster://remote-node/design/remote-candidate/result.json",
+    }))
+    (run / "input.json").write_text(json.dumps({"tool": "rfd4_proteina_campaign", "params": {}}))
+    (run / "result.json").write_text(json.dumps({"success": None}))
+
+    from mn_molecular_design_studio.engine.workflow_engine.services import local_automation
+
+    reference = local_automation.job_reference(run)
+
+    assert reference["run_id"] == run.name
+    assert reference["status"] == "running"
+
+
 @pytest.mark.parametrize("backend", ["central", "local"])
 def test_dispatch_backends_keep_one_correctly_labelled_run(api_queue, monkeypatch, backend):
     dispatched = []
