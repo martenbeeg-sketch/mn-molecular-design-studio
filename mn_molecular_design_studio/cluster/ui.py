@@ -74,7 +74,7 @@ _TOOL_LABELS = {
     "pesto": "PeSTo",
     "surf2spot": "Surf2Spot",
     "masif_seed": "MaSIF-seed",
-    "ipsae": "ipSAE Scoring",
+    "ipsae": "ipSAE & Structure Analysis",
     "rosetta_metrics": "Rosetta Interface Metrics",
 }
 
@@ -2750,7 +2750,8 @@ def render_job(reference, user, token, submit):
                                     format_func=lambda v: {"analysis.ipsae": "ipSAE interface confidence", "analysis.rosetta": "Rosetta interface analysis", "sequence.mpnn": "ProteinMPNN sequence redesign", "refolding.boltz2_complex": "Boltz-2 complex prediction"}[v], key="cluster-analysis-" + jid)
             if workflow == "analysis.ipsae":
                 parameters = {"pae_cutoff": st.number_input("PAE cutoff", 1.0, 40.0, 10.0, key="cluster-pae-" + jid),
-                              "dist_cutoff": st.number_input("Distance cutoff", 1.0, 40.0, 10.0, key="cluster-dist-" + jid)}
+                              "dist_cutoff": st.number_input("ipSAE contact distance cutoff (Å)", 1.0, 40.0, 10.0, key="cluster-dist-" + jid),
+                              "ipdae_contact_cutoff": st.number_input("i_pDAE Cα contact cutoff (Å)", 1.0, 40.0, 8.0, key="cluster-ipdae-dist-" + jid)}
             elif workflow == "analysis.rosetta":
                 parameters = {"nprocs": st.number_input("CPU processes", 1, 64, 4, key="cluster-nprocs-" + jid)}
             elif workflow == "sequence.mpnn":

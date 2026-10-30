@@ -61,9 +61,17 @@ def _acceptance_controls(key, engine_id, mode, source_tools=(), inferred_formats
         if not st.checkbox(f"Confirm all selected targets are {TARGET_TYPES[target_type]}",
                            value=False, key=f"{target_key}-confirm"):
             format_errors.append("Confirm the target type for candidates without recorded input provenance.")
-    mandatory_rows = available_metrics(binder_format, target_type, mode, engine=engine_id,
+    # The saved-evidence tile can filter either native design outputs or the
+    # results from an independent co-folding engine. Its measurement catalog
+    # must follow the selected evidence source, not the tile's legacy RFD4 ID.
+    metric_engine = engine_id
+    if evidence_only and source_tools:
+        from mn_molecular_design_studio.output_vocabulary import engine_name
+        source_engines = {engine_name(tool) for tool in source_tools if tool}
+        metric_engine = next(iter(source_engines)) if len(source_engines) == 1 else None
+    mandatory_rows = available_metrics(binder_format, target_type, mode, engine=metric_engine,
                                        source_tools=source_tools)
-    information_rows = available_metrics(binder_format, target_type, mode, engine=engine_id,
+    information_rows = available_metrics(binder_format, target_type, mode, engine=metric_engine,
                                          source_tools=source_tools, informational=True)
     mandatory_options = {spec["field"]: spec for _, spec in mandatory_rows
                          if spec["direction"] in {"higher", "lower"}}
@@ -191,6 +199,43 @@ def render_batch_controls(engine_id, profile, project_id, job_name, schema, *, s
         eligible = {row["run_id"]: designs for row in rows
                     if (designs := design_candidates(Path(row["run_dir"]), require_passing=not include_acceptance))}
         by_id = {row["run_id"]: row for row in rows if row["run_id"] in eligible}
+        prediction_eligible, prediction_by_id = {}, {}
+        if evaluation_only and include_acceptance:
+            # Existing co-folding results are also valid saved evidence. Load
+            # only completed complex predictions with explicit binder/target
+            # roles and an in-run structure; no prediction is run here.
+            from mn_molecular_design_studio.cofolding_results import local_artifact
+            from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+
+            prediction_rows, prediction_cursor = [], None
+            while True:
+                page = search_jobs(project_id=project_id, task_group="refolding-validation",
+                                  statuses=["completed", "succeeded"], limit=1000,
+                                  cursor=prediction_cursor)
+                prediction_rows.extend(page["items"])
+                prediction_cursor = page.get("next_cursor")
+                if not prediction_cursor:
+                    break
+            for row in prediction_rows:
+                run_dir = Path(row["run_dir"])
+                path = run_dir / "artifacts/normalized_candidates/candidates.jsonl"
+                if not path.is_file():
+                    continue
+                candidates = []
+                for candidate in read_candidates(path):
+                    if (candidate.get("stage") != "complex_refolding"
+                            or not candidate.get("binder_chains") or not candidate.get("target_chains")):
+                        continue
+                    structure = local_artifact(run_dir, candidate.get("complex_pdb"))
+                    if structure is None:
+                        continue
+                    candidate["complex_pdb"] = str(structure)
+                    candidates.append(candidate)
+                if not candidates:
+                    continue
+                option = "prediction:" + str(row["run_id"])
+                prediction_eligible[option] = candidates
+                prediction_by_id[option] = row
         remote_by_id = {}
         try:
             from mn_molecular_design_studio.cluster import config as cluster_config
@@ -236,8 +281,9 @@ def render_batch_controls(engine_id, profile, project_id, job_name, schema, *, s
         from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
         from mn_molecular_design_studio.validation_acceptance import infer_binder_format, infer_target_type
         workflow_parameters_by_run = {}
-        source_options = {**by_id, **remote_by_id}
-        selected = st.multiselect("Design campaigns", list(source_options), key=f"{key}-runs-v2",
+        source_options = {**by_id, **prediction_by_id, **remote_by_id}
+        source_label = "Saved design or prediction results" if evaluation_only else "Design campaigns"
+        selected = st.multiselect(source_label, list(source_options), key=f"{key}-runs-v2",
                                  format_func=lambda identifier: (
                                      f"{source_options[identifier].get('campaign_name') or source_options[identifier].get('tool')} · "
                                      f"{source_options[identifier].get('job_code') or source_options[identifier].get('run_id') or identifier}"
@@ -246,7 +292,7 @@ def render_batch_controls(engine_id, profile, project_id, job_name, schema, *, s
                                  ),
                                  help=("Only completed design jobs with filter-passing outputs are listed."
                                        if not include_acceptance else
-                                       "Completed local and remote design jobs are listed, including candidates that did not pass their source workflow's native filters."))
+                                       "Completed local design jobs and co-folding prediction results are listed. Saved confidence files and structures are filtered in place; no model is launched."))
         if not source_options:
             st.info("This project has no completed design candidates available for the selected input mode.")
         remote_candidate_ids = []
@@ -271,7 +317,7 @@ def render_batch_controls(engine_id, profile, project_id, job_name, schema, *, s
                 remote_candidate_limit = int(chosen_count)
                 candidates = []
             else:
-                candidates = eligible[identifier]
+                candidates = prediction_eligible.get(identifier, eligible.get(identifier, []))
             by_candidate = {c["candidate_id"]: c for c in candidates}
             chosen = [] if is_remote else st.multiselect(
                 f"Designs · {row.get('job_code') or row.get('run_id') or identifier}", list(by_candidate),

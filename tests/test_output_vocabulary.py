@@ -73,6 +73,7 @@ def test_generator_confidence_has_declared_units_scope_and_stage():
     assert trajectory["metrics"]["confidence.generator.bound_binder.plddt"] == 88
     assert trajectory["metrics"]["confidence.generator.unbound_binder.plddt"] == 80
     assert trajectory["metrics"]["confidence.generator.interface.mean_pae"] == pytest.approx(6.2)
+    assert trajectory["metrics"]["confidence.generator.interface.pae_norm31"] == pytest.approx(.2)
     assert validation["metrics"]["confidence.validation.complex.iptm"] == .7
     assert "confidence.generator.complex.iptm" not in validation["metrics"]
     assert not any("binder.plddt" == key for key in trajectory["metrics"])
@@ -81,6 +82,32 @@ def test_generator_confidence_has_declared_units_scope_and_stage():
     assert native["i_pAE"] == .2
     bad_scale = candidate_output({"source_tool": "bindcraft2_generator", "stage": "generation.backbone_sequence", "metrics": {"Target_pLDDT": 90}})
     assert bad_scale["metrics"] == {}
+
+
+def test_ipsae_analysis_keeps_directional_pae_and_recomputed_ipdae_distinct():
+    output = candidate_output({
+        "source_tool": "ipsae", "stage": "analysis",
+        "metrics": {
+            "ipae_binder_to_target": 7.5, "ipae_target_to_binder": 8.5,
+            "ipae_bidirectional": 8.0, "ipae_bidirectional_norm31": 8.0 / 31.0,
+            "ipae_binder_to_target_norm31": 7.5 / 31.0,
+            "ipae_target_to_binder_norm31": 8.5 / 31.0,
+            "bindcraft2_ipdae_recomputed": 0.74,
+            "bindcraft2_ipdae_binder_anchor_max": 0.74,
+            "bindcraft2_ipdae_target_anchor_max": 0.61,
+        },
+    })
+    metrics = output["metrics"]
+    assert metrics["confidence.analysis.interface.pae_binder_to_target"] == 7.5
+    assert metrics["confidence.analysis.interface.pae_target_to_binder"] == 8.5
+    assert metrics["confidence.analysis.interface.pae_bidirectional"] == 8.0
+    assert metrics["confidence.analysis.interface.pae_binder_to_target_norm31"] == pytest.approx(7.5 / 31)
+    assert metrics["confidence.analysis.interface.pae_target_to_binder_norm31"] == pytest.approx(8.5 / 31)
+    assert metrics["confidence.analysis.interface.pae_bidirectional_norm31"] == pytest.approx(8 / 31)
+    assert metrics["interface.analysis.bindcraft2_definition.ipdae"] == 0.74
+    assert metrics["interface.analysis.bindcraft2_definition.ipdae_binder_anchor"] == 0.74
+    assert metrics["interface.analysis.bindcraft2_definition.ipdae_target_anchor"] == 0.61
+    assert "confidence.native.bindcraft2.interface.ipdae" not in metrics
 
 
 def test_rf_boltzgen_and_bindcraft_validation_tm_scores_share_family_not_method():
@@ -237,7 +264,7 @@ def test_rfd4_oracle_aliases_preserve_native_scale_and_require_rfd4_generation()
     assert result["metrics"]["geometry.binder.ca_rg"] == 12.5
     assert result["provenance"]["confidence.generator.complex.ptm"]["aliases"][0] == {
         "source_field": "oracle.overall_ptm", "raw_value": 45.0, "value": .45,
-        "conversion": "percent_to_fraction", "method": "RFD4 AF3 oracle"}
+        "conversion": "percent_to_fraction", "method": "RFD4 native oracle (backend in candidate metadata)"}
     assert native["oracle.overall_ptm"] == 45.0
     for out_of_scope in (candidate_output({**candidate, "source_tool": "other"}),
                          candidate_output({**candidate, "stage": "complex_refolding"})):
@@ -345,4 +372,9 @@ def test_output_dictionary_api_and_accessible_metric_fields(tmp_path, monkeypatc
     response = client.get("/api/v1/molecules/output-vocabulary")
     assert response.status_code == 200
     assert response.json()["version"] == "studio.output.v1"
+    prediction_measurements = response.json()["prediction_measurements"]
+    assert prediction_measurements["version"] == "studio.prediction-measurements.v1"
+    assert {"alphafold3", "boltz2", "protenix_v1", "protenix_v2", "mol1", "esmfold2"} <= {
+        row["engine"] for row in prediction_measurements["engines"]
+    }
     assert "common.geometry.binder.ca_rg" in client.get("/api/v1/molecules/metrics").json()["items"]

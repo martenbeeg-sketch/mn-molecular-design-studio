@@ -537,7 +537,7 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
         elif kind in {"ipsae", "rosetta_metrics"}:
             _render_connection_card(node, graph)
             if kind == "ipsae":
-                st.caption("Reads the predicted complex and its saved pairwise PAE matrix. Boltz-2 full PAE output is enabled in the all-generators starter template.")
+                st.caption("Reads each saved predicted complex, its own PAE matrix, the source design structure when available, and target hotspots. The ipSAE container measures directional contact PAE, BindCraft2-definition i_pDAE, heavy-atom and residue contacts, interchain Cα clashes, hotspot contacts, and sequence-matched binder-only fitted RMSD. When a source design complex is available, it also compares sequence-mapped binder–target residue-contact pairs to report contact preservation. This does not identify hydrogen bonds or other chemical interactions. Chain Cα B-factors are shown as B-factors, distinct from predictor-native pLDDT summaries. Each candidate runs as an independent CPU job, so the existing analysis worker pool can parallelize it. Missing PAE, design references, or hotspots are reported as unavailable/not applicable; they are never filled with zero.")
             else:
                 st.caption("Adds PyRosetta interface energy, shape complementarity, buried surface area, and related metrics to each connected predicted complex.")
         elif kind == "surface_analysis":

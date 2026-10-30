@@ -23,6 +23,8 @@ ENGINE_ALIASES = {
     "protpardelle_generator": "protpardelle", "boltzgen_generator": "boltzgen",
     "protein_mpnn": "proteinmpnn", "ligand_mpnn": "ligandmpnn",
     "soluble_mpnn": "solublempnn", "ab_mpnn": "abmpnn", "hyper_mpnn": "hypermpnn",
+    "esmfold2_cofolding": "esmfold2", "esmfold2_complex_validation": "esmfold2",
+    "esmfold2_initial_guess_validation": "esmfold2",
 }
 MPNN_ENGINES = {"proteinmpnn", "ligandmpnn", "solublempnn", "abmpnn", "hypermpnn"}
 GENERATOR_WORKFLOWS = {
@@ -150,8 +152,19 @@ for role, stages in (("generator", ("generation.backbone_sequence",)),
         ("unbound_binder.plddt", "unbound binder pLDDT", "binder alone", "Unbound_Binder_pLDDT"),
     ):
         MEASURES.append(Measure(f"confidence.{role}.{key}", f"{role.title()} {label}", "0–100", scope, "BindCraft2 AF2", (alias,), "higher", maximum=100, engines=("bindcraft2",), transform="fraction_to_percent", stages=stages))
-    MEASURES.append(Measure(f"confidence.{role}.interface.mean_pae", f"{role.title()} binder–target mean PAE", "Å", "binder–target symmetric mean", "BindCraft2 AF2", ("i_pAE",), "lower", engines=("bindcraft2",), transform="times_31", stages=stages))
-# RFD4's oracle flattens AF3 confidence outputs after scaling pLDDT/pTM by
+    MEASURES.append(Measure(f"confidence.{role}.interface.mean_pae", f"{role.title()} binder–target mean PAE", "Å", "binder-to-target directional mean", "BindCraft2 AF2", ("i_pAE",), "lower", engines=("bindcraft2",), transform="times_31", stages=stages))
+# BindCraft2 stores its binder-to-target mean PAE after division by 31 Å.
+# RFD4's native oracle emits an Å-valued COI/partner mean that averages both
+# directions. Keep raw producer metrics and expose the numeric /31 scale;
+# provenance retains aggregation and the selected oracle engine.
+MEASURES.extend([
+    Measure("confidence.generator.interface.pae_norm31", "Generator interface PAE normalized by 31 Å", "PAE / 31 Å", "producer-defined interchain PAE aggregation",
+        "BindCraft2 AF2 i_pAE: binder-to-target directional mean, already normalized by 31 Å", ("i_pAE",), "lower", minimum=0, maximum=1, engines=("bindcraft2",)),
+    Measure("confidence.generator.interface.pae_norm31", "Generator interface PAE normalized by 31 Å", "PAE / 31 Å", "producer-defined interchain PAE aggregation",
+        "RFD4 native PPI oracle ipae_coi: COI-to-partner mean averaged across both directions, divided by 31 Å; folding_engine is retained per run", ("oracle_ppi.ipae_coi",), "lower", minimum=0,
+        maximum=1, engines=("rfd4_proteina",), transform="divide_31", stages=("generation.backbone_sequence",)),
+])
+# RFD4's oracle flattens AF3-shaped confidence outputs after scaling pLDDT/pTM by
 # 100; PAE remains in Å. These aliases are scoped to RFD4's generator stage,
 # since trajectory confidence is not an independent validation run.
 for scope, suffix, aliases in (
@@ -169,7 +182,7 @@ for scope, suffix, aliases in (
     ):
         for source_alias, method in reversed(tuple(zip(
             alias,
-            ("RFD4 AF3 oracle", "RFD4 native OpenFold3 oracle"),
+            ("RFD4 native oracle (backend in candidate metadata)", "RFD4 native PPI oracle (backend in candidate metadata)"),
         ))):
             MEASURES.append(Measure(
                 f"confidence.generator.{scope.replace(' ', '_')}.{quantity}",
@@ -178,8 +191,8 @@ for scope, suffix, aliases in (
                 engines=("rfd4_proteina",), transform=transform,
                 stages=("generation.backbone_sequence",),
             ))
-# RFD4-PPI uses an OpenFold3 oracle whose fields are emitted under
-# ``oracle_ppi``. Keep these measurements explicitly native and namespaced;
+# RFD4-PPI emits confidence fields under ``oracle_ppi``. Keep these
+# measurements explicitly native and namespaced;
 # they are not independent re-prediction results. Confidence values from this
 # provider are percentages and are converted only for pTM/iPTM fields.
 for quantity, label, unit, direction, maximum, alias, transform in (
@@ -191,7 +204,7 @@ for quantity, label, unit, direction, maximum, alias, transform in (
     MEASURES.append(Measure(
         f"confidence.generator.complex.{quantity}" if quantity == "iptm" else f"confidence.generator.interface.{quantity}",
         label, unit, "complex interfaces" if quantity == "iptm" else "RFD4 chain of interest",
-        "RFD4 native OpenFold3 PPI oracle", (alias,), direction,
+        "RFD4 native PPI oracle (backend in candidate metadata)", (alias,), direction,
         maximum=maximum, engines=("rfd4_proteina",), transform=transform,
         stages=("generation.backbone_sequence",),
     ))
@@ -222,14 +235,42 @@ MEASURES.extend([
     Measure("sequence.esm_if1.log_likelihood", "ESM-IF1 log likelihood", "native", "designed sequence", "ESM-IF1", ("esm_if1_log_likelihood",), "higher", minimum=None, engines=("esm_if1",)),
     Measure("sequence.caliby.energy", "Caliby energy", "native", "designed sequence", "Caliby", ("caliby_energy",), "lower", minimum=None, engines=("caliby",)),
 ])
-# Evaluation descriptors are defined here as well, so ranking and UI use the
-# same conversions and cannot substitute confidence for an unrelated measure.
-for engine in ("af2_initial_guess", "boltz2_initial_guess", "boltz2", "alphafold3", "af3_jax_cofolding", "optimized_prediction", "openfold3", "openfold3_jax", "af3_torch", "rf3_foundry", "protenix", "protenix_v1", "protenix_v2", "mol1", "colabfold"):
+# Independent predictors retain the same canonical pTM/iPTM families, but each
+# source keeps its exact result key and method. See prediction_measurements for
+# the locally installed engines and their full matrix/output capabilities.
+from mn_molecular_design_studio.prediction_measurements import (
+    PAE_MATRIX_ENGINES, SCALAR_SCORE_ALIASES, prediction_engine_catalog,
+)
+
+for engine, scores in SCALAR_SCORE_ALIASES.items():
     for quantity in ("ptm", "iptm"):
-        MEASURES.append(Measure(f"confidence.validation.complex.{quantity}", f"Validation complex {quantity}", "0–1", "complex interfaces" if quantity == "iptm" else "complex", engine,
-            (quantity,), "higher", maximum=1, engines=(engine,), stages=("complex_refolding",)))
-    MEASURES.append(Measure("confidence.validation.monomer.ptm", "Validation monomer pTM", "0–1", "single modeled component", engine,
-        ("ptm",), "higher", maximum=1, engines=(engine,), stages=("monomer_refolding",)))
+        aliases = scores.get(quantity, ())
+        if aliases:
+            MEASURES.append(Measure(
+                f"confidence.validation.complex.{quantity}", f"Validation complex {quantity}", "0–1",
+                "complex interfaces" if quantity == "iptm" else "complex",
+                f"{engine} native prediction confidence", aliases, "higher", maximum=1,
+                engines=(engine,), stages=("complex_refolding",),
+            ))
+    aliases = scores.get("ptm", ())
+    if aliases:
+        MEASURES.append(Measure(
+            "confidence.validation.monomer.ptm", "Validation monomer pTM", "0–1",
+            "single modeled component", f"{engine} native prediction confidence", aliases,
+            "higher", maximum=1, engines=(engine,), stages=("monomer_refolding",),
+        ))
+# The shared prediction adapters emit scalar pTM/iPTM for these routes. Their
+# result-level key can be generic or prefixed by the native route name.
+for engine, aliases in {
+    "optimized_prediction": {"ptm": ("ptm",), "iptm": ("iptm",)},
+}.items():
+    for quantity, keys in aliases.items():
+        MEASURES.append(Measure(
+            f"confidence.validation.complex.{quantity}", f"Validation complex {quantity}", "0–1",
+            "complex interfaces" if quantity == "iptm" else "complex",
+            f"{engine} native prediction confidence", keys, "higher", maximum=1,
+            engines=(engine,), stages=("complex_refolding",),
+        ))
 MEASURES.append(Measure("confidence.validation.structure.mean_ca_plddt", "Mean structure Cα pLDDT", "0–100", "all protein Cα atoms", "Studio mean Cα B-factor read from output PDB/mmCIF",
     ("plddt_mean", "complex_plddt"), "higher", maximum=100, stages=("complex_refolding", "monomer_refolding")))
 MEASURES.extend([
@@ -244,7 +285,7 @@ MEASURES.append(Measure("confidence.validation.bound_binder.plddt", "Validation 
     ("binder_plddt", "af2_binder_plddt", "af2_average_binder_plddt"), "higher", maximum=100,
     stages=("complex_refolding",)))
 MEASURES.extend([
-    Measure("confidence.validation.interface.mean_pae", "Validation interface PAE", "Å", "binder–target interface", "Producer-reported interface PAE; source method and cutoff retained",
+    Measure("confidence.validation.interface.mean_pae", "Validation interface PAE", "Å", "producer-defined binder–target interface", "Producer-reported interface PAE; source tool and aggregation retained",
         ("ipae", "i_pae", "binder_pae", "boltz2_ipae"), "lower", minimum=0, stages=("complex_refolding",)),
     Measure("geometry.validation.binder.target_aligned_rmsd", "Target-aligned binder RMSD", "Å", "binder backbone in target frame", "Studio matched target Cα alignment and binder Cα RMSD",
         ("target_aligned_binder_rmsd", "binder_rmsd_target_aligned"), "lower", minimum=0, stages=("complex_refolding",)),
@@ -259,10 +300,87 @@ MEASURES.extend([
             Measure("confidence.native_design.esmfold2.critic.iptm", "ESMFold2 native design critic iPTM", "0–1", "complex interfaces", "ESMFold2 gradient-design critic; native objective, not independent validation",
         ("iptm",), "higher", maximum=1, engines=("esmfold2_binder",), stages=("complex_refolding",)),
 ])
+# Values calculated from a saved, prediction-specific PAE matrix. Keep raw Å
+# results, each direction, and the shared /31 numeric scale as separate fields.
+for engine in sorted(PAE_MATRIX_ENGINES):
+    method = (f"{engine} saved PAE matrix; arithmetic mean of PAE[binder,target] over all inter-chain residues/tokens"
+              if engine != "boltzgen_fold" else
+              "BoltzGen Fold saved PAE matrix; arithmetic mean of PAE[binder,target] over all inter-chain residues/tokens")
+    for key, label, unit, alias in (
+        ("confidence.validation.interface.pae_binder_to_target", "Validation binder→target mean PAE", "Å", "prediction_ipae_binder_to_target"),
+        ("confidence.validation.interface.pae_target_to_binder", "Validation target→binder mean PAE", "Å", "prediction_ipae_target_to_binder"),
+        ("confidence.validation.interface.pae_bidirectional", "Validation bidirectional mean PAE", "Å", "prediction_ipae_bidirectional"),
+        ("confidence.validation.interface.pae_binder_to_target_norm31", "Validation binder→target mean PAE / 31 Å", "PAE / 31 Å", "prediction_ipae_binder_to_target_norm31"),
+        ("confidence.validation.interface.pae_target_to_binder_norm31", "Validation target→binder mean PAE / 31 Å", "PAE / 31 Å", "prediction_ipae_target_to_binder_norm31"),
+        ("confidence.validation.interface.pae_bidirectional_norm31", "Validation bidirectional mean PAE / 31 Å", "PAE / 31 Å", "prediction_ipae_bidirectional_norm31"),
+    ):
+        measure_method = method + ("; divide by 31 Å" if unit == "PAE / 31 Å" else "; raw PAE in Å")
+        MEASURES.append(Measure(key, label, unit, "all binder×target PAE entries" if "binder_to_target" in key or "target_to_binder" in key else "mean of both inter-chain directions",
+            measure_method, (alias,), "lower", minimum=0, engines=(engine,), stages=("complex_refolding",)))
 MEASURES.extend([
+    Measure("confidence.analysis.interface.pae_binder_to_target", "ipSAE analysis contact PAE · binder→target", "Å", "Cα-contacting binder×target residue pairs", "Saved PAE[binder,target] over Cα contacts within the configured ipSAE distance cutoff",
+        ("ipae_binder_to_target",), "lower", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("confidence.analysis.interface.pae_target_to_binder", "ipSAE analysis contact PAE · target→binder", "Å", "Cα-contacting target×binder residue pairs", "Saved PAE[target,binder] over Cα contacts within the configured ipSAE distance cutoff",
+        ("ipae_target_to_binder",), "lower", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("confidence.analysis.interface.pae_bidirectional", "ipSAE analysis bidirectional contact PAE", "Å", "mean of directional Cα-contact PAE means", "Arithmetic mean of the two contact-scoped directional PAE means",
+        ("ipae_bidirectional",), "lower", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("confidence.analysis.interface.pae_binder_to_target_norm31", "ipSAE analysis binder→target contact PAE / 31 Å", "PAE / 31 Å", "Cα-contacting binder×target residue pairs", "Contact PAE[binder,target] mean divided by 31 Å; scale conversion, not model calibration",
+        ("ipae_binder_to_target_norm31",), "lower", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("confidence.analysis.interface.pae_target_to_binder_norm31", "ipSAE analysis target→binder contact PAE / 31 Å", "PAE / 31 Å", "Cα-contacting target×binder residue pairs", "Contact PAE[target,binder] mean divided by 31 Å; scale conversion, not model calibration",
+        ("ipae_target_to_binder_norm31",), "lower", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("confidence.analysis.interface.pae_bidirectional_norm31", "ipSAE analysis bidirectional contact PAE / 31 Å", "PAE / 31 Å", "mean of directional Cα-contact PAE means", "Bidirectional contact PAE divided by 31 Å; scale conversion, not model calibration",
+        ("ipae_bidirectional_norm31",), "lower", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.bindcraft2_definition.ipdae", "BC2-definition i_pDAE · Studio recomputed", "0–1", "Cα-contacting binder–target interface", "BindCraft2 anchored interface TM formula recomputed from saved PAE and Cα contacts; max over binder- and target-anchored residue scores",
+        ("bindcraft2_ipdae_recomputed",), "higher", minimum=0, maximum=1, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.bindcraft2_definition.ipdae_binder_anchor", "BC2-definition i_pDAE · binder anchored", "0–1", "binder interface residues", "Maximum BindCraft2 anchored interface TM score among contacting binder residues",
+        ("bindcraft2_ipdae_binder_anchor_max",), "higher", minimum=0, maximum=1, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.bindcraft2_definition.ipdae_target_anchor", "BC2-definition i_pDAE · target anchored", "0–1", "target interface residues", "Maximum BindCraft2 anchored interface TM score among contacting target residues",
+        ("bindcraft2_ipdae_target_anchor_max",), "higher", minimum=0, maximum=1, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.ipsae_structure.atom_contact_pairs", "ipSAE analysis · inter-chain heavy-atom contact pairs", "pairs", "selected binder and target chains", "Biopython NeighborSearch pair count under configured heavy-atom distance cutoff",
+        ("structure_interface_atom_contact_pair_count",), "higher", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.ipsae_structure.residue_contact_pairs", "ipSAE analysis · inter-chain residue contact pairs", "pairs", "selected binder and target chains", "Unique residue pairs with any heavy-atom contact under configured distance cutoff",
+        ("structure_interface_residue_contact_pair_count",), "higher", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.ipsae_structure.binder_interface_residues", "ipSAE analysis · binder interface residues", "residues", "selected binder chains", "Unique binder residues with any heavy-atom contact under configured distance cutoff",
+        ("structure_binder_interface_residue_count",), "higher", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.ipsae_structure.target_interface_residues", "ipSAE analysis · target interface residues", "residues", "selected target chains", "Unique target residues with any heavy-atom contact under configured distance cutoff",
+        ("structure_target_interface_residue_count",), "higher", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.ipsae_structure.design_contact_pairs", "Designed complex · residue contact pairs", "pairs", "separate source design complex", "Unique binder–target residue pairs with heavy-atom contacts under the shared configured distance cutoff",
+        ("structure_design_interface_residue_contact_pairs",), "higher", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.ipsae_structure.cofold_contact_pairs", "Cofold complex · residue contact pairs", "pairs", "saved predicted complex", "Unique binder–target residue pairs with heavy-atom contacts under the shared configured distance cutoff",
+        ("structure_cofold_interface_residue_contact_pairs",), "higher", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.ipsae_structure.preserved_contact_pairs", "Designed contact pairs retained in cofold", "pairs", "sequence-mapped binder–target interface", "Designed residue-contact pairs also found after sequence mapping in the cofolded complex",
+        ("structure_interface_contact_pairs_preserved",), "higher", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.ipsae_structure.design_contact_preservation_fraction", "Designed interface contact preservation fraction", "fraction", "sequence-mapped designed residue-contact pairs", "Fraction of designed binder–target residue-contact pairs also contacting in the cofold",
+        ("structure_design_interaction_preservation_fraction",), "higher", minimum=0, maximum=1, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.ipsae_structure.contact_jaccard", "Designed/cofold interface contact Jaccard", "fraction", "sequence-mapped residue-contact pair sets", "Intersection-over-union of designed and cofold residue-contact pairs",
+        ("structure_interface_contact_jaccard",), "higher", minimum=0, maximum=1, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.ipsae_structure.binder_residue_preservation_fraction", "Binder interface residue preservation fraction", "fraction", "designed binder interface residues", "Fraction of designed binder interface residues that retain any target contact in cofold",
+        ("structure_binder_interface_residue_preservation_fraction",), "higher", minimum=0, maximum=1, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.ipsae_structure.target_residue_preservation_fraction", "Target interface residue preservation fraction", "fraction", "designed target interface residues", "Fraction of designed target interface residues that retain any binder contact in cofold",
+        ("structure_target_interface_residue_preservation_fraction",), "higher", minimum=0, maximum=1, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.ipsae_structure.sequence_mapping_coverage", "Designed/cofold sequence mapping coverage", "fraction", "designed binder and target residues", "Minimum aligned-residue coverage across binder and target sequence alignments used for contact preservation",
+        ("structure_interaction_sequence_mapping_coverage",), "higher", minimum=0, maximum=1, engines=("ipsae",), stages=("analysis",)),
+    Measure("geometry.analysis.ipsae_structure.ca_clashes_2_5a", "ipSAE analysis · inter-chain Cα pairs ≤2.5 Å", "pairs", "selected binder and target chains", "Biopython NeighborSearch inter-chain C-alpha pairs within 2.5 Å",
+        ("structure_ca_clash_pair_count_2_5a",), "lower", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("confidence.analysis.structure.binder_ca_bfactor_mean", "ipSAE analysis · binder mean Cα B-factor", "B-factor units", "selected binder chains", "Arithmetic mean of saved structure C-alpha B-factor fields; not assumed to be pLDDT",
+        ("structure_binder_ca_bfactor_mean",), engines=("ipsae",), stages=("analysis",)),
+    Measure("confidence.analysis.structure.target_ca_bfactor_mean", "ipSAE analysis · target mean Cα B-factor", "B-factor units", "selected target chains", "Arithmetic mean of saved structure C-alpha B-factor fields; not assumed to be pLDDT",
+        ("structure_target_ca_bfactor_mean",), engines=("ipsae",), stages=("analysis",)),
+    Measure("confidence.analysis.structure.complex_ca_bfactor_mean", "ipSAE analysis · complex mean Cα B-factor", "B-factor units", "selected binder and target chains", "Arithmetic mean of binder and target chain C-alpha B-factor means; not assumed to be pLDDT",
+        ("structure_complex_ca_bfactor_mean",), engines=("ipsae",), stages=("analysis",)),
+    Measure("geometry.analysis.binder.design_to_cofold_fitted_ca_rmsd", "Binder design-to-cofold fitted Cα RMSD", "Å", "sequence-aligned binder C-alpha atoms", "Design and predicted binder matched by global sequence alignment; optimal binder-only superposition. Does not measure target-relative pose RMSD",
+        ("structure_binder_design_to_cofold_fitted_ca_rmsd",), "lower", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.hotspots.contact_fraction_found", "ipSAE analysis · hotspot contact fraction (found residues)", "fraction", "configured target hotspots found in predicted structure", "Fraction of located configured hotspots within the configured heavy-atom distance cutoff",
+        ("structure_hotspot_contact_fraction_found",), "higher", minimum=0, maximum=1, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.hotspots.contact_fraction_requested", "ipSAE analysis · hotspot contact fraction (requested residues)", "fraction", "all configured target hotspots", "Contacted configured hotspots divided by requested hotspots; missing target residues do not count as contacts",
+        ("structure_hotspot_contact_fraction_requested",), "higher", minimum=0, maximum=1, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.hotspots.contacted_count", "ipSAE analysis · contacted hotspot count", "residues", "configured target hotspots", "Configured target hotspots with a heavy-atom contact under the configured cutoff",
+        ("structure_hotspot_contacted_count",), "higher", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("interface.analysis.hotspots.minimum_distance", "ipSAE analysis · nearest hotspot distance", "Å", "configured target hotspots and binder heavy atoms", "Minimum heavy-atom distance from any located hotspot residue to selected binder chains",
+        ("structure_hotspot_min_distance",), "lower", minimum=0, engines=("ipsae",), stages=("analysis",)),
     Measure("confidence.native.bindcraft2.interface.ipdae", "BindCraft2 i_pDAE", "0–1", "contact-focused binder–target interface", "BindCraft2 PAE-derived score over Cα contacts within 8 Å; maximum over contacting residues and directions",
         ("i_pDAE", "ipdae"), "higher", minimum=0, maximum=1, engines=("bindcraft2",)),
-    Measure("confidence.native.bindcraft2.interface.ipae_normalized", "BindCraft2 normalized i_pAE", "0–1", "binder–target symmetric mean", "BindCraft2 mean interface PAE normalized by 31 Å; distinct from raw PAE in Å",
+    Measure("confidence.native.bindcraft2.interface.ipae_normalized", "BindCraft2 normalized i_pAE", "0–1", "binder-to-target directional mean", "BindCraft2 mean interface PAE normalized by 31 Å; distinct from raw PAE in Å",
         ("i_pAE",), "lower", minimum=0, maximum=1, engines=("bindcraft2",)),
     Measure("geometry.native.bindcraft2.bound_unbound_rmsd", "BindCraft2 Binder_RMSD", "Å", "binder backbone between bound and unbound predictions", "BindCraft2 matched binder Cα RMSD; distinct from target-aligned pose RMSD",
         ("Binder_RMSD",), "lower", minimum=0, engines=("bindcraft2",)),
@@ -348,6 +466,7 @@ def vocabulary():
     """Machine-readable dictionary of IDs, definitions and conversion rules."""
     return {"version": VERSION, "field_prefix": PREFIX, "engine_aliases": dict(ENGINE_ALIASES),
             "generator_workflows": dict(GENERATOR_WORKFLOWS),
+            "prediction_measurements": prediction_engine_catalog(),
             "measures": [{"field": PREFIX + key, "key": key,
                           **{name: getattr(definition, name) for name in ("label", "unit", "scope", "direction", "minimum", "maximum", "description", "value_type", "prerequisites", "aggregation")},
                           "range_semantics": "Physical/value-domain validation only; these limits are not quality thresholds.",
@@ -446,6 +565,8 @@ def normalize_metrics(metrics, tool="", context=None):
                 number /= 100
             elif measure.transform == "times_31":
                 number *= 31
+            elif measure.transform == "divide_31":
+                number /= 31
             if not math.isfinite(number):
                 issues.append({"field": alias, "reason": "conversion is not finite"})
                 continue

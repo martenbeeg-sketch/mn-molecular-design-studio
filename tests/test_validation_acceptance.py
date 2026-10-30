@@ -1,4 +1,6 @@
 """Format-aware independent validation and acceptance contracts."""
+import pytest
+
 from mn_molecular_design_studio import design_validation
 from mn_molecular_design_studio.validation_acceptance import (
     METRICS,
@@ -58,7 +60,7 @@ def test_idr_preset_does_not_gate_on_unconstrained_target_confidence_or_pose_rms
     assert by_id["iptm"]["value"] == 0.70
     assert "target_plddt" not in by_id
     assert any("sequence-defined IDR targets" in item for item in unavailable)
-    assert any("i_pAE ≤0.33" in item for item in unavailable)
+    assert any("Interface PAE normalized by 31 Å ≤0.33" in item for item in unavailable)
     assert any("Unbound_Binder_pLDDT" in item for item in unavailable)
 
 
@@ -76,12 +78,14 @@ def test_rfd4_idr_policy_uses_its_native_openfold3_metrics_and_saved_geometry():
     by_id = {row["metric_id"]: row for row in rules}
     assert set(by_id) == {
         "rfd4_native_ptm", "rfd4_native_iptm",
+        "interface_pae_norm31",
         "rfd4_interface_residues_4a", "rfd4_backbone_clashes_2_5a",
     }
     assert by_id["rfd4_native_ptm"]["value"] == 0.55
     assert by_id["rfd4_native_iptm"]["value"] == 0.70
-    assert any("normalized i_pAE" in item for item in unavailable)
-    assert any("raw chain-of-interest iPAE" in item for item in unavailable)
+    assert by_id["interface_pae_norm31"]["value"] == 0.35
+    assert by_id["interface_pae_norm31"]["operator"] == "<="
+    assert not any("normalized by 31 Å" in item for item in unavailable)
 
 
 def test_rfd4_native_oracle_aliases_are_normalized_without_losing_raw_scores():
@@ -99,7 +103,38 @@ def test_rfd4_native_oracle_aliases_are_normalized_without_losing_raw_scores():
     assert output["metrics"]["confidence.generator.complex.iptm"] == 0.78
     assert output["metrics"]["confidence.generator.complex.plddt"] == 81.65
     assert output["metrics"]["confidence.generator.interface.ipae_coi"] == 17.48
+    assert output["metrics"]["confidence.generator.interface.pae_norm31"] == pytest.approx(17.48 / 31)
+    pae_provenance = output["provenance"]["confidence.generator.interface.pae_norm31"]
+    assert pae_provenance["unit"] == "PAE / 31 Å"
+    assert pae_provenance["aliases"][0]["raw_value"] == 17.48
+    assert pae_provenance["aliases"][0]["conversion"] == "divide_31"
     assert PREFIX == "common."
+
+
+def test_bindcraft_and_rfd4_interface_pae_share_31a_normalization_but_keep_provenance():
+    policy = {
+        "binder_format": "miniprotein", "target_type": "fasta_idr",
+        "mandatory_filters": [{"field": METRICS["interface_pae_norm31"]["field"],
+                               "operator": "<=", "value": 0.35}],
+    }
+    bindcraft, _ = apply_acceptance([{
+        "candidate_id": "bc2", "source_tool": "bindcraft2", "stage": "generation.backbone_sequence",
+        "metrics": {"i_pAE": 0.35}, "raw_metadata": {},
+    }], policy)
+    rfd4, _ = apply_acceptance([{
+        "candidate_id": "rfd4", "source_tool": "rfd4_proteina", "stage": "generation.backbone_sequence",
+        "metrics": {"oracle_ppi.ipae_coi": 10.85}, "raw_metadata": {},
+    }], policy)
+    bc2_measurement = bindcraft[0]["raw_metadata"]["validation_acceptance"]["measurements"][METRICS["interface_pae_norm31"]["field"]]
+    rfd4_measurement = rfd4[0]["raw_metadata"]["validation_acceptance"]["measurements"][METRICS["interface_pae_norm31"]["field"]]
+    assert bc2_measurement["value"] == pytest.approx(0.35)
+    assert rfd4_measurement["value"] == pytest.approx(0.35)
+    assert bc2_measurement["source_tool"] == "bindcraft2"
+    assert rfd4_measurement["source_tool"] == "rfd4_proteina"
+    assert "binder-to-target directional mean" in bc2_measurement["method"]
+    assert "averaged across both directions" in rfd4_measurement["method"]
+    assert bindcraft[0]["raw_metadata"]["validation_acceptance"]["status"] == "accepted"
+    assert rfd4[0]["raw_metadata"]["validation_acceptance"]["status"] == "accepted"
 
 
 def test_saved_evidence_acceptance_preserves_rfd4_ids_and_never_predicts(tmp_path, monkeypatch, design_source_factory):
@@ -161,11 +196,26 @@ def test_saved_evidence_acceptance_preserves_rfd4_ids_and_never_predicts(tmp_pat
 def test_ipae_and_ipsae_are_not_offered_as_interchangeable_filters():
     boltz = dict(available_metrics("miniprotein", "structured", "complex", engine="boltz2"))
     af3 = dict(available_metrics("miniprotein", "structured", "complex", engine="alphafold3"))
+    ipsae_analysis = dict(available_metrics("miniprotein", "structured", "complex", engine="ipsae"))
+    proteina_complexa = dict(available_metrics("miniprotein", "structured", "complex", engine="proteina_complexa"))
     assert "ipsae_min" in boltz
+    assert "ipsae_min" in ipsae_analysis
+    assert "ipsae_bindcraft2_ipdae" in ipsae_analysis
+    assert "ipsae_min" in proteina_complexa
     assert "ipsae_min" not in af3
     rules, unavailable = bindcraft2_reference_policy("miniprotein", "structured", "complex", boltz)
     assert all(row["metric_id"] != "ipsae_min" for row in rules)
-    assert any("i_pAE" in item for item in unavailable)
+    assert any("Interface PAE normalized by 31 Å" in item for item in unavailable)
+    assert "predicted_pae_bidirectional_norm31" in boltz
+
+
+def test_ipdae_recomputed_by_ipsae_is_filterable_without_being_called_native_bc2_score():
+    ipdae = dict(available_metrics("miniprotein", "fasta_idr", "complex", engine="ipsae"))
+    native = dict(available_metrics("miniprotein", "fasta_idr", "complex", engine="bindcraft2",
+                                    source_tools={"bindcraft2"}, informational=True))
+    assert "ipsae_bindcraft2_ipdae" in ipdae
+    assert "bindcraft2_ipdae" in native
+    assert ipdae["ipsae_bindcraft2_ipdae"]["field"] != native["bindcraft2_ipdae"]["field"]
 
 
 def test_interface_measurements_use_bindcraft2_contact_and_ca_clash_definitions(design_source_factory):

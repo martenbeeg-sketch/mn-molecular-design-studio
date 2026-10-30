@@ -15,6 +15,7 @@ from pathlib import Path
 
 from mn_molecular_design_studio.measurement_status import RANGES, finite_number
 from mn_molecular_design_studio.output_vocabulary import DEFINITIONS, PREFIX, candidate_output, metric_value
+from mn_molecular_design_studio.prediction_measurements import PAE_MATRIX_ENGINES, SCALAR_SCORE_ALIASES
 
 COMPARISONS = {">=": operator.ge, "<=": operator.le, ">": operator.gt, "<": operator.lt}
 BINDER_FORMATS = {
@@ -144,16 +145,47 @@ def infer_target_type(candidate: dict, workflow_parameters: dict | None = None) 
 # there; users configure shared thresholds for the exact independent engine.
 METRICS = {
     "ptm": {"label": "pTM · predicted complex confidence", "field": PREFIX + "confidence.validation.complex.ptm", "unit": "0–1", "direction": "higher", "modes": ("complex",),
-            "engines": ("alphafold3", "af3_torch", "openfold3_jax", "boltz2", "protenix_v1", "protenix_v2", "colabfold", "mol1")},
+            "engines": tuple(engine for engine, values in SCALAR_SCORE_ALIASES.items() if values.get("ptm"))},
     "iptm": {"label": "iPTM · interface confidence", "field": PREFIX + "confidence.validation.complex.iptm", "unit": "0–1", "direction": "higher", "modes": ("complex",),
-              "engines": ("alphafold3", "af3_torch", "openfold3_jax", "boltz2", "protenix_v1", "protenix_v2", "colabfold", "mol1")},
-    "rfd4_native_ptm": {"label": "RFD4 native OpenFold3 · complex pTM", "field": PREFIX + "confidence.generator.complex.ptm", "unit": "0–1", "direction": "higher", "modes": ("complex",), "source_tools": ("rfd4_proteina",)},
-    "rfd4_native_iptm": {"label": "RFD4 native OpenFold3 · complex iPTM", "field": PREFIX + "confidence.generator.complex.iptm", "unit": "0–1", "direction": "higher", "modes": ("complex",), "source_tools": ("rfd4_proteina",)},
-    "rfd4_native_plddt": {"label": "RFD4 native OpenFold3 · complex pLDDT", "field": PREFIX + "confidence.generator.complex.plddt", "unit": "0–100", "direction": "higher", "modes": ("complex",), "source_tools": ("rfd4_proteina",), "informational_only": True},
-    "rfd4_native_interface_pae": {"label": "RFD4 native OpenFold3 · chain-of-interest iPAE", "field": PREFIX + "confidence.generator.interface.ipae_coi", "unit": "Å", "direction": "lower", "modes": ("complex",), "source_tools": ("rfd4_proteina",), "informational_only": True},
+              "engines": tuple(engine for engine, values in SCALAR_SCORE_ALIASES.items() if values.get("iptm"))},
+    "predicted_pae_binder_to_target": {"label": "Predicted binder→target mean PAE", "field": PREFIX + "confidence.validation.interface.pae_binder_to_target", "unit": "Å", "direction": "lower", "modes": ("complex",),
+              "engines": tuple(sorted(PAE_MATRIX_ENGINES))},
+    "predicted_pae_bidirectional": {"label": "Predicted bidirectional mean PAE", "field": PREFIX + "confidence.validation.interface.pae_bidirectional", "unit": "Å", "direction": "lower", "modes": ("complex",),
+              "engines": tuple(sorted(PAE_MATRIX_ENGINES))},
+    "predicted_pae_binder_to_target_norm31": {"label": "Predicted binder→target mean PAE / 31 Å", "field": PREFIX + "confidence.validation.interface.pae_binder_to_target_norm31", "unit": "PAE / 31 Å", "direction": "lower", "modes": ("complex",),
+              "engines": tuple(sorted(PAE_MATRIX_ENGINES))},
+    "predicted_pae_bidirectional_norm31": {"label": "Predicted bidirectional mean PAE / 31 Å", "field": PREFIX + "confidence.validation.interface.pae_bidirectional_norm31", "unit": "PAE / 31 Å", "direction": "lower", "modes": ("complex",),
+              "engines": tuple(sorted(PAE_MATRIX_ENGINES))},
+    "rfd4_native_ptm": {"label": "RFD4 native oracle · complex pTM", "field": PREFIX + "confidence.generator.complex.ptm", "unit": "0–1", "direction": "higher", "modes": ("complex",), "source_tools": ("rfd4_proteina",)},
+    "rfd4_native_iptm": {"label": "RFD4 native oracle · complex iPTM", "field": PREFIX + "confidence.generator.complex.iptm", "unit": "0–1", "direction": "higher", "modes": ("complex",), "source_tools": ("rfd4_proteina",)},
+    "rfd4_native_plddt": {"label": "RFD4 native oracle · complex pLDDT", "field": PREFIX + "confidence.generator.complex.plddt", "unit": "0–100", "direction": "higher", "modes": ("complex",), "source_tools": ("rfd4_proteina",), "informational_only": True},
+    "rfd4_native_interface_pae": {"label": "RFD4 native oracle · chain-of-interest iPAE", "field": PREFIX + "confidence.generator.interface.ipae_coi", "unit": "Å", "direction": "lower", "modes": ("complex",), "source_tools": ("rfd4_proteina",), "informational_only": True},
+    "interface_pae_norm31": {"label": "Native interface PAE normalized by 31 Å", "field": PREFIX + "confidence.generator.interface.pae_norm31", "unit": "PAE / 31 Å", "direction": "lower", "modes": ("complex",), "source_tools": ("rfd4_proteina", "bindcraft2")},
     "rfd4_interface_residues_4a": {"label": "Saved RFD4 complex · binder residues within 4 Å", "field": PREFIX + "interface.native.rfd4_proteina.binder_residue_count_4a", "unit": "residues", "direction": "higher", "modes": ("complex",), "source_tools": ("rfd4_proteina",)},
     "rfd4_backbone_clashes_2_5a": {"label": "Saved RFD4 complex · interchain Cα clashes ≤2.5 Å", "field": PREFIX + "geometry.native.rfd4_proteina.backbone_ca_clashes_2_5a", "unit": "atom pairs", "direction": "lower", "modes": ("complex",), "source_tools": ("rfd4_proteina",)},
-    "ipsae_min": {"label": "ipSAE · minimum direction", "field": PREFIX + "interface.ipsae.minimum", "unit": "0–1", "direction": "higher", "modes": ("complex",), "engines": ("boltz2",)},
+    "ipsae_min": {"label": "ipSAE · minimum direction", "field": PREFIX + "interface.ipsae.minimum", "unit": "0–1", "direction": "higher", "modes": ("complex",), "engines": ("ipsae", "boltz2", "proteina_complexa")},
+    "ipsae_contact_pae_binder_to_target": {"label": "ipSAE analysis · contact PAE binder→target", "field": PREFIX + "confidence.analysis.interface.pae_binder_to_target", "unit": "Å", "direction": "lower", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_contact_pae_target_to_binder": {"label": "ipSAE analysis · contact PAE target→binder", "field": PREFIX + "confidence.analysis.interface.pae_target_to_binder", "unit": "Å", "direction": "lower", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_contact_pae_bidirectional": {"label": "ipSAE analysis · bidirectional contact PAE", "field": PREFIX + "confidence.analysis.interface.pae_bidirectional", "unit": "Å", "direction": "lower", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_contact_pae_binder_to_target_norm31": {"label": "ipSAE analysis · contact PAE binder→target /31", "field": PREFIX + "confidence.analysis.interface.pae_binder_to_target_norm31", "unit": "PAE / 31 Å", "direction": "lower", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_contact_pae_target_to_binder_norm31": {"label": "ipSAE analysis · contact PAE target→binder /31", "field": PREFIX + "confidence.analysis.interface.pae_target_to_binder_norm31", "unit": "PAE / 31 Å", "direction": "lower", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_contact_pae_bidirectional_norm31": {"label": "ipSAE analysis · bidirectional contact PAE / 31 Å", "field": PREFIX + "confidence.analysis.interface.pae_bidirectional_norm31", "unit": "PAE / 31 Å", "direction": "lower", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_bindcraft2_ipdae": {"label": "ipSAE analysis · BC2-definition i_pDAE (Studio recomputed)", "field": PREFIX + "interface.analysis.bindcraft2_definition.ipdae", "unit": "0–1", "direction": "higher", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_structure_binder_interface_residues": {"label": "ipSAE & Structure Analysis · binder interface residues", "field": PREFIX + "interface.analysis.ipsae_structure.binder_interface_residues", "unit": "residues", "direction": "higher", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_structure_residue_contact_pairs": {"label": "ipSAE & Structure Analysis · residue contact pairs", "field": PREFIX + "interface.analysis.ipsae_structure.residue_contact_pairs", "unit": "pairs", "direction": "higher", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_design_contact_preservation_fraction": {"label": "Designed interface contact preservation fraction", "field": PREFIX + "interface.analysis.ipsae_structure.design_contact_preservation_fraction", "unit": "fraction", "direction": "higher", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_design_cofold_contact_jaccard": {"label": "Designed/cofold interface contact Jaccard", "field": PREFIX + "interface.analysis.ipsae_structure.contact_jaccard", "unit": "fraction", "direction": "higher", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_binder_interface_residue_preservation": {"label": "Binder interface residue preservation fraction", "field": PREFIX + "interface.analysis.ipsae_structure.binder_residue_preservation_fraction", "unit": "fraction", "direction": "higher", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_target_interface_residue_preservation": {"label": "Target interface residue preservation fraction", "field": PREFIX + "interface.analysis.ipsae_structure.target_residue_preservation_fraction", "unit": "fraction", "direction": "higher", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_structure_atom_contact_pairs": {"label": "ipSAE & Structure Analysis · heavy-atom contact pairs", "field": PREFIX + "interface.analysis.ipsae_structure.atom_contact_pairs", "unit": "pairs", "direction": "higher", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_structure_ca_clashes_2_5a": {"label": "ipSAE & Structure Analysis · inter-chain Cα clashes", "field": PREFIX + "geometry.analysis.ipsae_structure.ca_clashes_2_5a", "unit": "pairs", "direction": "lower", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_structure_binder_ca_bfactor_mean": {"label": "ipSAE & Structure Analysis · binder mean Cα B-factor (informational)", "field": PREFIX + "confidence.analysis.structure.binder_ca_bfactor_mean", "unit": "B-factor units", "direction": "", "modes": ("complex",), "engines": ("ipsae",), "informational_only": True},
+    "ipsae_structure_target_ca_bfactor_mean": {"label": "ipSAE & Structure Analysis · target mean Cα B-factor (informational)", "field": PREFIX + "confidence.analysis.structure.target_ca_bfactor_mean", "unit": "B-factor units", "direction": "", "modes": ("complex",), "engines": ("ipsae",), "informational_only": True},
+    "ipsae_binder_design_to_cofold_fitted_ca_rmsd": {"label": "Binder design-to-cofold fitted Cα RMSD", "field": PREFIX + "geometry.analysis.binder.design_to_cofold_fitted_ca_rmsd", "unit": "Å", "direction": "lower", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_hotspot_contact_fraction_found": {"label": "Configured hotspot contact fraction (found residues)", "field": PREFIX + "interface.analysis.hotspots.contact_fraction_found", "unit": "fraction", "direction": "higher", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_hotspot_contact_fraction_requested": {"label": "Configured hotspot contact fraction (requested residues)", "field": PREFIX + "interface.analysis.hotspots.contact_fraction_requested", "unit": "fraction", "direction": "higher", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_hotspot_contacted_count": {"label": "Configured hotspot contacted count", "field": PREFIX + "interface.analysis.hotspots.contacted_count", "unit": "residues", "direction": "higher", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_hotspot_minimum_distance": {"label": "Nearest configured hotspot distance", "field": PREFIX + "interface.analysis.hotspots.minimum_distance", "unit": "Å", "direction": "lower", "modes": ("complex",), "engines": ("ipsae",)},
     "bound_binder_plddt": {"label": "Bound binder structure mean Cα pLDDT", "field": PREFIX + "confidence.validation.structure.binder_ca_plddt", "unit": "0–100", "direction": "higher", "modes": ("complex",)},
     "target_plddt": {"label": "Target structure mean Cα pLDDT", "field": PREFIX + "confidence.validation.structure.target_ca_plddt", "unit": "0–100", "direction": "higher", "modes": ("complex",), "targets": ("fasta_idr",), "informational_only": True},
     "complex_structure_ca_plddt": {"label": "Structure mean Cα pLDDT", "field": PREFIX + "confidence.validation.structure.mean_ca_plddt", "unit": "0–100", "direction": "higher", "modes": ("complex", "binder")},
@@ -229,6 +261,8 @@ def bindcraft2_reference_policy(binder_format: str, target_type: str, mode: str,
         else:
             shared["ptm"] = (">=", format_spec["ptm"])
     criteria = dict(shared)
+    if format_spec.get("ipae") is not None:
+        criteria["ipae"] = ("<=", format_spec["ipae"])
     inactive = []
     if target_type == "fasta_idr":
         # The target is supplied as sequence because it is intrinsically
@@ -238,6 +272,7 @@ def bindcraft2_reference_policy(binder_format: str, target_type: str, mode: str,
     metric_aliases = {
         "ptm": "rfd4_native_ptm",
         "iptm": "rfd4_native_iptm",
+        "ipae": "interface_pae_norm31",
         "interface_residues_4a": "rfd4_interface_residues_4a",
         "backbone_clashes_2_5a": "rfd4_backbone_clashes_2_5a",
     }
@@ -251,10 +286,11 @@ def bindcraft2_reference_policy(binder_format: str, target_type: str, mode: str,
         compatible.append({"field": spec["field"], "operator": comparison,
                            "value": threshold, "metric_id": selected_metric_id})
     if mode == "complex":
-        unsupported = [f"Unbound_Binder_pLDDT ≥{format_spec.get('unbound_plddt', 0.8)}",
-                       f"BindCraft2 normalized i_pAE ≤{format_spec.get('ipae', 0.35)}"]
-        if "rfd4_native_interface_pae" in available:
-            inactive.append("RFD4 raw chain-of-interest iPAE: recorded as information only; not interchangeable with BindCraft2 normalized i_pAE.")
+        unsupported = [f"Unbound_Binder_pLDDT ≥{format_spec.get('unbound_plddt', 0.8)}"]
+        if format_spec.get("ipae") is not None and not any(row.get("metric_id") == "interface_pae_norm31" for row in compatible):
+            unsupported.append(f"Interface PAE normalized by 31 Å ≤{format_spec['ipae']}")
+        if "rfd4_native_interface_pae" in available and "interface_pae_norm31" not in available:
+            inactive.append("RFD4 raw chain-of-interest iPAE is recorded as information only because no verified 31 Å normalization is available.")
         if format_spec.get("binder_rmsd") is not None:
             unsupported.append(f"Binder_RMSD ≤{format_spec['binder_rmsd']} Å")
         format_filter_names = {
@@ -377,10 +413,11 @@ def _observe(candidate: dict, field: str) -> dict:
         return {"field": field, "value": None, "status": "invalid_metadata", "raw_value": value,
                 "error": "Measurement is nonfinite or outside its declared value range."}
     provenance = normalized.get("provenance") or {}
+    metric_provenance = provenance.get(field[len(PREFIX):], {}) if field.startswith(PREFIX) else {}
     return {"field": field, "value": number, "status": "measured", "unit": (DEFINITIONS.get(field[len(PREFIX):]).unit if field.startswith(PREFIX) and DEFINITIONS.get(field[len(PREFIX):]) else None),
             "source_tool": measurement_candidate.get("source_tool"), "stage": measurement_candidate.get("stage"),
             "measurement_candidate_id": measurement_candidate.get("candidate_id"),
-            "method": provenance.get("method"), "output_provenance": provenance}
+            "method": metric_provenance.get("method"), "output_provenance": provenance}
 
 
 def _selected_measurement(candidate: dict, field: str):

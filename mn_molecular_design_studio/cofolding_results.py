@@ -79,7 +79,7 @@ def read_payload(path: Path) -> dict[str, Any]:
         if path.suffix == '.npz':
             with np.load(path, allow_pickle=False) as archive:
                 return {key: np.asarray(archive[key]) for key in archive.files
-                        if any(token in key for token in ('plddt', 'pae', 'ptm', 'score', 'affinity', 'complex', 'clash', 'pde', 'disorder', 'interaction', 'ipsae'))
+                        if any(token in key for token in ('plddt', 'pae', 'aligned_error', 'ptm', 'score', 'affinity', 'complex', 'clash', 'pde', 'disorder', 'interaction', 'ipsae'))
                         if np.issubdtype(archive[key].dtype, np.number) or archive[key].dtype == np.bool_}
         if path.suffix == '.gz':
             with gzip.open(path, 'rt', encoding='utf-8') as handle:
@@ -210,6 +210,76 @@ def sample_payload(structure: Path, path: Path, payload: dict) -> dict:
     return payload
 
 
+def _pae_matrix(payload: dict) -> np.ndarray | None:
+    for key in ("predicted_aligned_error", "pae", "token_pair_pae", "predicted_aligned_errors"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            value = value.get("data", value.get("values"))
+        if value is None:
+            continue
+        try:
+            matrix = np.asarray(value, dtype=float)
+            while matrix.ndim > 2 and matrix.shape[0] == 1:
+                matrix = matrix[0]
+            if matrix.ndim == 2 and matrix.shape[0] == matrix.shape[1] and np.isfinite(matrix).all():
+                return matrix
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return None
+
+
+def _saved_interface_pae(run_dir: Path, candidate: dict, structure: Path, files: list[Path]) -> tuple[dict, dict] | None:
+    """Derive reproducible directional PAE means from an exact saved sidecar."""
+    from mn_molecular_design_studio.output_vocabulary import engine_name
+    from mn_molecular_design_studio.prediction_measurements import PAE_MATRIX_ENGINES, interface_pae_from_matrix
+
+    engine = engine_name(candidate.get("source_tool") or candidate.get("tool"))
+    if engine not in PAE_MATRIX_ENGINES:
+        return None
+    binder_chains = [str(value) for value in candidate.get("binder_chains") or []]
+    target_chains = [str(value) for value in candidate.get("target_chains") or []]
+    if not binder_chains or not target_chains or set(binder_chains) & set(target_chains):
+        return None
+    try:
+        from Bio.PDB import MMCIFParser, PDBParser
+
+        parser = PDBParser(QUIET=True) if structure.suffix.lower() in {".pdb", ".ent"} else MMCIFParser(QUIET=True)
+        model = parser.get_structure("prediction_pae_summary", str(structure))[0]
+        chain_indices = {}
+        offset = 0
+        for chain in model:
+            residues = [residue for residue in chain if residue.has_id("CA")]
+            chain_indices[str(chain.id)] = list(range(offset, offset + len(residues)))
+            offset += len(residues)
+        binder_indices = [index for chain in binder_chains for index in chain_indices.get(chain, [])]
+        target_indices = [index for chain in target_chains for index in chain_indices.get(chain, [])]
+        if not binder_indices or not target_indices:
+            return None
+    except (ImportError, OSError, ValueError, KeyError, IndexError):
+        return None
+
+    for path in files:
+        payload = sample_payload(structure, path, read_payload(path))
+        matrix = _pae_matrix(payload)
+        if matrix is None or matrix.shape[0] != offset:
+            continue
+        measurements = interface_pae_from_matrix(matrix, binder_indices, target_indices)
+        if measurements:
+            provenance = {
+                "source": str(path.resolve().relative_to(run_dir.resolve())) if path.resolve().is_relative_to(run_dir.resolve()) else str(path),
+                "engine": engine,
+                "unit": "Å before normalization",
+                "matrix_shape": list(matrix.shape),
+                "axis_mapping": "saved structure chain order; one PAE token per protein Cα residue",
+                "binder_to_target": "arithmetic mean PAE[binder_index, target_index] over all selected residue pairs",
+                "target_to_binder": "arithmetic mean PAE[target_index, binder_index] over all selected residue pairs",
+                "bidirectional": "arithmetic mean of the two directional means",
+                "normalization": "raw directional mean / 31 Å; numeric scale only, not model calibration",
+            }
+            return measurements, provenance
+    return None
+
+
 def prediction_row(structure: Path) -> dict:
     """ESMFold2 stores scalar scores in pred_rows.jsonl beside cif_all/."""
     for parent in list(structure.parents)[:2]:
@@ -247,6 +317,13 @@ def enrich_candidate(run_dir: Path, candidate: dict) -> dict:
     if native_rank:
         merged['native_rank'] = int(native_rank[1])
     raw['confidence_outputs'] = scores
+    if structure is not None and candidate.get("binder_chains") and candidate.get("target_chains"):
+        pae_result = _saved_interface_pae(Path(run_dir), candidate, structure, files)
+        if pae_result:
+            pae_metrics, pae_provenance = pae_result
+            for key, value in pae_metrics.items():
+                merged.setdefault(key, value)
+            raw.setdefault("prediction_pae_measurement", pae_provenance)
     return {**candidate, 'metrics': merged, 'raw_metadata': raw}
 
 

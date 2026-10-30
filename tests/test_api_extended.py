@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 import httpx
+import numpy as np
 import pytest
 
 from test_api_integrations import api_data, headers, import_compounds, screening_run
@@ -718,4 +719,351 @@ def test_validation_acceptance_api_runs_saved_rfd4_evidence_without_prediction(a
     output_candidate = json.loads(filtered)
     assert output_candidate["candidate_id"] == "generated-1"
     assert output_candidate["raw_metadata"]["validation_acceptance"]["native_filter_status"] == "unavailable · native PPI metrics incomplete"
-    assert output_candidate["metrics"]["ppi.pass"] == 0.0
+
+
+def test_validation_acceptance_api_filters_saved_prediction_pae_from_cofold_run(api_data, monkeypatch):
+    data, client = api_data, api_data["client"]
+    from mn_molecular_design_studio.runtime import runs_root
+    from mn_molecular_design_studio.workspace import STUDIO_SOURCE_ID
+
+    source = Path(runs_root()) / "refolding-validation" / "saved-boltz-pae"
+    source.mkdir(parents=True)
+    # Give DSSP a non-degenerate backbone; the generic fixture above is
+    # intentionally collinear and triggers divide-by-zero warnings there.
+    structure_path = source / "complex.pdb"
+    structure_path.parent.mkdir(parents=True, exist_ok=True)
+    records, serial = [], 0
+    for chain, offset in (("A", 0.0), ("B", 20.0)):
+        for residue in range(1, 5):
+            x = (residue - 1) * 3.8 + offset
+            atoms = (
+                ("N", x, 0.0, 0.0, "N"),
+                ("CA", x + 1.45, 0.25, 0.1, "C"),
+                ("C", x + 2.1, 1.45, -0.15, "C"),
+                ("O", x + 1.8, 2.4, -0.7, "O"),
+            )
+            for atom, ax, ay, az, element in atoms:
+                serial += 1
+                records.append(
+                    f"ATOM  {serial:5d} {atom:^4s} GLY {chain}{residue:4d}    "
+                    f"{ax:8.3f}{ay:8.3f}{az:8.3f}{1.:6.2f}{20.:6.2f}          {element:>2s}"
+                )
+        records.append("TER")
+    structure_path.write_text("\n".join(records) + "\nEND\n")
+    pae = np.zeros((8, 8), dtype=float)
+    pae[:4, 4:] = 3.0
+    pae[4:, :4] = 5.0
+    (source / "prediction-pae.json").write_text(json.dumps({"predicted_aligned_error": pae.tolist()}))
+    for name, payload in {
+        "metadata.json": {"run_id": source.name, "task_group": "refolding-validation",
+                          "tool": "optimized_prediction_boltz2", "status": "completed",
+                          "job_type": "optimized_prediction", "created_at": "2026-10-30T00:00:00Z"},
+        "input.json": {"params": {"engine": "boltz2"}},
+        "result.json": {"success": True},
+        "molecular_design_studio.json": {"application": STUDIO_SOURCE_ID,
+                                         "project_id": data["project"]["id"],
+                                         "studio_owner_id": data["admin"]["id"]},
+    }.items():
+        (source / name).write_text(json.dumps(payload))
+    candidate = {
+        "candidate_id": "boltz-saved-complex", "source_tool": "optimized_prediction_boltz2",
+        "stage": "complex_refolding", "complex_pdb": "complex.pdb",
+        "binder_sequence": "GGGG", "binder_chains": ["A"], "target_chains": ["B"],
+        "metrics": {"iptm": 0.76}, "raw_metadata": {"pae_path": "prediction-pae.json"},
+    }
+    candidate_dir = source / "artifacts/normalized_candidates"
+    candidate_dir.mkdir(parents=True)
+    (candidate_dir / "candidates.jsonl").write_text(json.dumps(candidate) + "\n")
+    from mn_molecular_design_studio.job_catalog import reconcile
+    reconcile()
+
+    from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation
+
+    def execute_analysis_inline(function, **kwargs):
+        assert kwargs.get("tool") == "validation_acceptance"
+        return function(**kwargs["kwargs"])
+
+    monkeypatch.setattr(workflow_automation, "enqueue_workflow_call", execute_analysis_inline)
+    from mn_molecular_design_studio.validation_acceptance import METRICS
+    pae_field = METRICS["predicted_pae_bidirectional_norm31"]["field"]
+    response = client.post("/api/v1/workflows", json={
+        "schema_version": 1,
+        "workflow": "analysis.validation_acceptance",
+        "project_id": data["project"]["id"],
+        "source_job": f"refolding-validation/{source.name}",
+        "database_collection_policy": "manual",
+        "parameters": {
+            "candidate_ids": ["boltz-saved-complex"],
+            "acceptance_policy": {
+                "binder_format": "miniprotein", "target_type": "structured",
+                "mandatory_filters": [{"field": pae_field, "operator": "<=", "value": 0.14}],
+            },
+        },
+    })
+    assert response.status_code == 202, response.text
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+    from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import resolve_job
+    job = response.json()["job"]
+    result = read_json(Path(resolve_job(f"{job['task_group']}/{job['run_id']}")["run_dir"]) / "result.json")
+    assert result["metrics"]["validation_acceptance"]["prediction_performed"] is False
+    assert result["metrics"]["validation_acceptance"]["accepted"] == 1
+    output_candidate = json.loads((Path(resolve_job(f"{job['task_group']}/{job['run_id']}")["run_dir"])
+                                  / "artifacts/normalized_candidates/candidates.jsonl").read_text())
+    assert output_candidate["raw_metadata"]["validation_acceptance"]["status"] == "accepted"
+    measured = output_candidate["raw_metadata"]["validation_acceptance"]["measurements"][pae_field]
+    assert measured["value"] == pytest.approx(4.0 / 31.0, abs=1e-6)
+    assert output_candidate["raw_metadata"]["prediction_pae_measurement"]["engine"] == "boltz2"
+
+
+def test_validation_acceptance_can_filter_ipSAE_analysis_results(api_data, monkeypatch):
+    data, client = api_data, api_data["client"]
+    from mn_molecular_design_studio.runtime import runs_root
+    from mn_molecular_design_studio.workspace import STUDIO_SOURCE_ID
+
+    source = Path(runs_root()) / "analysis" / "saved-ipsae-for-acceptance"
+    source.mkdir(parents=True)
+    write_structure(source / "complex.pdb", chains=(("A", 4), ("B", 4)))
+    for name, payload in {
+        "metadata.json": {"run_id": source.name, "task_group": "analysis", "tool": "ipsae",
+                          "status": "completed", "job_type": "analysis", "created_at": "2026-10-30T00:00:00Z"},
+        "input.json": {"params": {"pae_cutoff": 10.0, "dist_cutoff": 10.0, "ipdae_contact_cutoff": 8.0}},
+        "result.json": {"success": True},
+        "molecular_design_studio.json": {"application": STUDIO_SOURCE_ID,
+                                         "project_id": data["project"]["id"],
+                                         "studio_owner_id": data["admin"]["id"]},
+    }.items():
+        (source / name).write_text(json.dumps(payload))
+    original = {
+        "candidate_id": "rfd4-design-1", "source_tool": "rfd4_proteina",
+        "stage": "generation.backbone_sequence", "binder_sequence": "GGGG",
+        "binder_chains": ["A"], "target_chains": ["B"],
+        "raw_metadata": {"native_design_id": "rfd4-design-1"},
+    }
+    candidate = {
+        "candidate_id": "rfd4-design-1_ipsae_001", "source_tool": "ipsae", "tool": "ipsae",
+        "stage": "analysis", "complex_pdb": "complex.pdb", "binder_sequence": "GGGG",
+        "binder_chains": ["A"], "target_chains": ["B"], "parents": ["rfd4-design-1"],
+        "metrics": {"ipsae_min": 0.82, "ipsae_max": 0.91, "ipsae_avg": 0.86,
+                    "bindcraft2_ipdae_recomputed": 0.74,
+                    "ipae_binder_to_target": 7.5, "ipae_target_to_binder": 8.5,
+                    "ipae_bidirectional": 8.0},
+        "raw_metadata": {"result_kind": "app_reanalysis", "source_candidate": original,
+                         "measurement_provenance": {"tool": "ipsae", "source_candidate_id": "rfd4-design-1"}},
+    }
+    candidate_dir = source / "artifacts/normalized_candidates"
+    candidate_dir.mkdir(parents=True)
+    (candidate_dir / "candidates.jsonl").write_text(json.dumps(candidate) + "\n")
+    from mn_molecular_design_studio.job_catalog import reconcile
+    reconcile()
+
+    from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation
+
+    def execute_analysis_inline(function, **kwargs):
+        assert kwargs.get("tool") == "validation_acceptance"
+        return function(**kwargs["kwargs"])
+
+    monkeypatch.setattr(workflow_automation, "enqueue_workflow_call", execute_analysis_inline)
+    from mn_molecular_design_studio.output_vocabulary import PREFIX
+    ipsae_field = PREFIX + "interface.ipsae.minimum"
+    ipdae_field = PREFIX + "interface.analysis.bindcraft2_definition.ipdae"
+    response = client.post("/api/v1/workflows", json={
+        "schema_version": 1,
+        "workflow": "analysis.validation_acceptance",
+        "project_id": data["project"]["id"],
+        "source_job": f"analysis/{source.name}",
+        "database_collection_policy": "manual",
+        "parameters": {
+            "candidate_ids": [candidate["candidate_id"]],
+            "acceptance_policy": {
+                "binder_format": "miniprotein", "target_type": "structured",
+                "mandatory_filters": [
+                    {"field": ipsae_field, "operator": ">=", "value": 0.7},
+                    {"field": ipdae_field, "operator": ">=", "value": 0.7},
+                ],
+            },
+        },
+    })
+    assert response.status_code == 202, response.text
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+    from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import resolve_job
+    job = response.json()["job"]
+    run_dir = Path(resolve_job(f"{job['task_group']}/{job['run_id']}")["run_dir"])
+    result = read_json(run_dir / "result.json")
+    summary = result["metrics"]["validation_acceptance"]
+    assert summary["prediction_performed"] is False
+    assert summary["accepted"] == 1 and summary["rejected"] == 0
+    output_candidate = json.loads((run_dir / "artifacts/normalized_candidates/candidates.jsonl").read_text())
+    assert output_candidate["candidate_id"] == candidate["candidate_id"]
+    assert output_candidate["parents"] == ["rfd4-design-1"]
+    measured = output_candidate["raw_metadata"]["validation_acceptance"]["measurements"][ipsae_field]
+    assert measured["value"] == pytest.approx(0.82)
+    assert output_candidate["raw_metadata"]["validation_acceptance"]["measurements"][ipdae_field]["value"] == pytest.approx(0.74)
+
+
+def test_ipsae_analysis_api_emits_directional_contact_pae_and_bc2_definition_ipdae(api_data, monkeypatch):
+    from types import SimpleNamespace
+
+    data, client = api_data, api_data["client"]
+    from mn_molecular_design_studio.runtime import runs_root
+    from mn_molecular_design_studio.workspace import STUDIO_SOURCE_ID
+
+    source = Path(runs_root()) / "refolding-validation" / "saved-complex-for-ipsae-measurements"
+    source.mkdir(parents=True)
+    write_structure(source / "designed_binder.pdb", chains=(("B", 4),))
+    write_structure(source / "design_complex.pdb", chains=(("A", 4), ("B", 4)))
+    atom_rows, serial = [], 0
+    for chain, chain_offset in (("A", 0.0), ("B", 4.0)):
+        for residue in range(1, 5):
+            x = (residue - 1) * 3.0
+            for atom, dx, dy, dz, element in (
+                ("N", 0.0, 0.0, 0.0, "N"), ("CA", 1.0, 0.0, 0.0, "C"),
+                ("C", 1.0, 1.0, 0.0, "C"), ("O", 1.0, 1.0, 1.0, "O"),
+            ):
+                serial += 1
+                atom_rows.append(
+                    f"ATOM  {serial:5d} {atom:^4s} GLY {chain}{residue:4d}    "
+                    f"{x + dx:8.3f}{chain_offset + dy:8.3f}{dz:8.3f}{1.:6.2f}{85.:6.2f}          {element:>2s}"
+                )
+    (source / "complex.pdb").write_text("\n".join(atom_rows) + "\nEND\n")
+    (source / "pae.json").write_text(json.dumps({"predicted_aligned_error": np.full((8, 8), 12.0).tolist()}))
+    original = {
+        "candidate_id": "r3-binder-1", "source_tool": "rfd4_proteina",
+        "stage": "generation.backbone_sequence", "binder_sequence": "GGGG",
+        "binder_chains": ["B"], "target_chains": ["A"], "binder_pdb": "designed_binder.pdb",
+        "complex_pdb": "design_complex.pdb", "hotspots": "A1",
+    }
+    candidate = {
+        "candidate_id": "r3-binder-1", "source_tool": "optimized_prediction_boltz2",
+        "stage": "complex_refolding", "complex_pdb": "complex.pdb", "binder_sequence": "GGGG",
+        "binder_chains": ["B"], "target_chains": ["A"], "metrics": {"iptm": 0.73},
+        "raw_metadata": {"pae_path": "pae.json", "source_candidate": original},
+    }
+    candidate_path = source / "artifacts/normalized_candidates/candidates.jsonl"
+    candidate_path.parent.mkdir(parents=True)
+    candidate_path.write_text(json.dumps(candidate) + "\n")
+    for name, payload in {
+        "metadata.json": {"run_id": source.name, "task_group": "refolding-validation", "tool": "boltz2",
+                          "status": "completed", "job_type": "complex_refolding", "created_at": "2026-10-30T00:00:00Z"},
+        "input.json": {"params": {}}, "result.json": {"success": True},
+        "molecular_design_studio.json": {"application": STUDIO_SOURCE_ID,
+                                         "project_id": data["project"]["id"],
+                                         "studio_owner_id": data["admin"]["id"]},
+    }.items():
+        (source / name).write_text(json.dumps(payload))
+    from mn_molecular_design_studio.job_catalog import reconcile
+    reconcile()
+
+    from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation
+
+    def execute_analysis_inline(function, **kwargs):
+        assert kwargs.get("tool") == "ipsae"
+        return function(**kwargs["kwargs"])
+
+    monkeypatch.setattr(workflow_automation, "enqueue_workflow_call", execute_analysis_inline)
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import analysis
+
+    def fake_container(command, stdout=None, stderr=None, check=False):
+        run_dir = Path(command[command.index("-v") + 1].split(":", 1)[0])
+        manifest_path = run_dir / "artifacts/analysis/ipsae/batch_manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        step = manifest["jobs"][0]
+        row_command = step["command"]
+        assert row_command[row_command.index("--ipdae-contact-cutoff") + 1] == "8.0"
+        assert row_command[row_command.index("--measurement-target-chains") + 1] == "A"
+        assert row_command[row_command.index("--structure-contact-cutoff") + 1] == "4.0"
+        assert row_command[row_command.index("--hotspot-contact-cutoff") + 1] == "5.0"
+        assert row_command[row_command.index("--hotspots") + 1] == "A1"
+        assert "--design-structure" in row_command
+        assert row_command[row_command.index("--design-reference-binder-chains") + 1] == "B"
+        assert "--design-complex" in row_command
+        assert row_command[row_command.index("--design-complex-binder-chains") + 1] == "B"
+        assert row_command[row_command.index("--design-target-chains") + 1] == "A"
+        row_path = Path(row_command[row_command.index("--output") + 1].replace("/work/", str(run_dir) + "/", 1))
+        headers_list = ["ID", "ipsae", "ipsae_d0chn", "ipsae_d0dom", "iptm_af", "iptm_d0chn",
+                        "binder_chain", "target_chain", "type", "engine", "pae_format", "error",
+                        "ipae_binder_to_target", "ipae_target_to_binder", "ipae_bidirectional",
+                        "ipae_binder_to_target_norm31", "ipae_target_to_binder_norm31", "ipae_bidirectional_norm31",
+                        "ipae_contact_pair_count", "ipae_contact_cutoff", "bindcraft2_ipdae_recomputed",
+                        "bindcraft2_ipdae_binder_anchor_max", "bindcraft2_ipdae_target_anchor_max",
+                        "bindcraft2_ipdae_contact_pair_count", "bindcraft2_ipdae_contact_cutoff", "pae_measurement_error",
+                        "structure_interface_atom_contact_pair_count", "structure_interface_residue_contact_pair_count",
+                        "structure_binder_interface_residue_count", "structure_target_interface_residue_count",
+                        "structure_ca_clash_pair_count_2_5a", "structure_binder_ca_bfactor_mean",
+                        "structure_target_ca_bfactor_mean", "structure_complex_ca_bfactor_mean", "structure_contact_cutoff",
+                        "structure_hotspot_count", "structure_hotspot_found_count", "structure_hotspot_contacted_count",
+                        "structure_hotspot_contact_fraction_found", "structure_hotspot_contact_fraction_requested",
+                        "structure_hotspot_min_distance", "structure_hotspot_mean_min_distance", "structure_hotspot_contact_cutoff",
+                        "structure_hotspots_contacted", "structure_hotspots_missing", "structure_metrics_status",
+                        "structure_metrics_error", "design_vs_cofold_rmsd_status", "design_vs_cofold_rmsd_error",
+                        "structure_binder_design_to_cofold_fitted_ca_rmsd", "structure_binder_rmsd_ca_count",
+                        "structure_binder_rmsd_alignment_coverage", "hotspot_analysis_status", "hotspot_analysis_error"]
+        headers_list.extend(["interaction_preservation_status", "interaction_preservation_error",
+                             "structure_design_interface_residue_contact_pairs", "structure_cofold_interface_residue_contact_pairs",
+                             "structure_interface_contact_pairs_preserved", "structure_design_interaction_preservation_fraction",
+                             "structure_interface_contact_jaccard", "structure_binder_interface_residue_preservation_fraction",
+                             "structure_target_interface_residue_preservation_fraction", "structure_interaction_sequence_mapping_coverage"])
+        row_path.parent.mkdir(parents=True, exist_ok=True)
+        with row_path.open("w", newline="", encoding="utf-8") as handle:
+            csv.DictWriter(handle, fieldnames=headers_list).writerow({
+                "ID": step["id"], "ipsae": 0.82, "binder_chain": "B", "target_chain": "A",
+                "ipae_binder_to_target": 9.0, "ipae_target_to_binder": 15.0, "ipae_bidirectional": 12.0,
+                "ipae_binder_to_target_norm31": 9 / 31, "ipae_target_to_binder_norm31": 15 / 31,
+                "ipae_bidirectional_norm31": 12 / 31, "ipae_contact_pair_count": 4, "ipae_contact_cutoff": 10,
+                "bindcraft2_ipdae_recomputed": 0.71, "bindcraft2_ipdae_binder_anchor_max": 0.71,
+                "bindcraft2_ipdae_target_anchor_max": 0.66, "bindcraft2_ipdae_contact_pair_count": 2,
+                "bindcraft2_ipdae_contact_cutoff": 8.0, "structure_interface_atom_contact_pair_count": 16,
+                "structure_interface_residue_contact_pair_count": 4, "structure_binder_interface_residue_count": 4,
+                "structure_target_interface_residue_count": 4, "structure_binder_ca_bfactor_mean": 85.0,
+                "structure_target_ca_bfactor_mean": 85.0, "structure_complex_ca_bfactor_mean": 85.0,
+                "structure_contact_cutoff": 4.0, "structure_hotspot_count": 1, "structure_hotspot_found_count": 1,
+                "structure_hotspot_contacted_count": 1, "structure_hotspot_contact_fraction_found": 1.0,
+                "structure_hotspot_contact_fraction_requested": 1.0, "structure_hotspot_min_distance": 2.0,
+                "structure_hotspot_mean_min_distance": 2.0, "structure_hotspot_contact_cutoff": 5.0,
+                "structure_hotspots_contacted": "A1", "structure_metrics_status": "measured",
+                "hotspot_analysis_status": "measured", "structure_binder_design_to_cofold_fitted_ca_rmsd": 0.5,
+                "structure_binder_rmsd_ca_count": 4, "structure_binder_rmsd_alignment_coverage": 1.0,
+                "design_vs_cofold_rmsd_status": "measured",
+                "interaction_preservation_status": "measured", "structure_design_interface_residue_contact_pairs": 8,
+                "structure_cofold_interface_residue_contact_pairs": 7, "structure_interface_contact_pairs_preserved": 6,
+                "structure_design_interaction_preservation_fraction": 0.75, "structure_interface_contact_jaccard": 0.6,
+                "structure_binder_interface_residue_preservation_fraction": 0.8,
+                "structure_target_interface_residue_preservation_fraction": 0.75,
+                "structure_interaction_sequence_mapping_coverage": 1.0,
+            })
+        (run_dir / "artifacts/analysis/ipsae/batch_status.json").write_text(json.dumps({"jobs": [
+            {"id": step["id"], "return_code": 0, "log_path": step["log_path"]}]}))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(analysis.subprocess, "run", fake_container)
+    response = client.post("/api/v1/workflows", json={
+        "schema_version": 1, "workflow": "analysis.ipsae", "project_id": data["project"]["id"],
+        "source_job": f"refolding-validation/{source.name}", "database_collection_policy": "manual",
+        "parameters": {"pae_cutoff": 10.0, "dist_cutoff": 10.0, "ipdae_contact_cutoff": 8.0,
+                        "structure_contact_cutoff": 4.0, "hotspot_contact_cutoff": 5.0},
+    })
+    assert response.status_code == 202, response.text
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+    from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import resolve_job
+    job = response.json()["job"]
+    run_dir = Path(resolve_job(f"{job['task_group']}/{job['run_id']}")["run_dir"])
+    result = read_json(run_dir / "result.json")
+    assert result["success"] is True
+    output_candidate = json.loads((run_dir / "artifacts/normalized_candidates/candidates.jsonl").read_text())
+    assert output_candidate["metrics"]["ipae_binder_to_target"] == 9.0
+    assert output_candidate["metrics"]["ipae_target_to_binder"] == 15.0
+    assert output_candidate["metrics"]["ipae_bidirectional"] == 12.0
+    assert output_candidate["metrics"]["bindcraft2_ipdae_recomputed"] == 0.71
+    assert output_candidate["normalized_output"]["metrics"]["confidence.analysis.interface.pae_bidirectional_norm31"] == pytest.approx(12 / 31)
+    assert output_candidate["normalized_output"]["metrics"]["interface.analysis.bindcraft2_definition.ipdae"] == 0.71
+    assert output_candidate["metrics"]["structure_binder_ca_bfactor_mean"] == 85.0
+    assert output_candidate["metrics"]["structure_hotspot_contact_fraction_requested"] == 1.0
+    assert output_candidate["metrics"]["structure_binder_design_to_cofold_fitted_ca_rmsd"] == 0.5
+    assert output_candidate["normalized_output"]["metrics"]["geometry.analysis.binder.design_to_cofold_fitted_ca_rmsd"] == 0.5
+    assert output_candidate["metrics"]["structure_design_interaction_preservation_fraction"] == 0.75
+    assert output_candidate["normalized_output"]["metrics"]["interface.analysis.ipsae_structure.design_contact_preservation_fraction"] == 0.75
+    assert output_candidate["raw_metadata"]["analysis_parameters"]["ipdae_contact_cutoff"] == 8.0
+    assert output_candidate["raw_metadata"]["analysis_parameters"]["structure_contact_cutoff"] == 4.0
+    assert output_candidate["raw_metadata"]["analysis_parameters"]["hotspot_contact_cutoff"] == 5.0
+    assert output_candidate["raw_metadata"]["measurement_provenance"]["ipsae_structure_analysis"]["design_reference_found"] is True
+    assert output_candidate["raw_metadata"]["measurement_provenance"]["ipsae_structure_analysis"]["design_complex_found"] is True
+    assert output_candidate["raw_metadata"]["measurement_provenance"]["ipsae_structure_analysis"]["interaction_preservation"].startswith("sequence-mapped")

@@ -5,6 +5,10 @@ outputs. It is applied by the shared candidate reader and writer, rather than
 being implemented separately in each tool page. Both tile jobs and pipeline
 steps therefore emit the same `normalized_output` contract.
 
+The installed co-fold prediction score and PAE sidecar catalog is described in
+[prediction-measurements.md](prediction-measurements.md) and is returned by the
+output-vocabulary API.
+
 ## Generator coverage
 
 All 15 design workflows currently exposed as tiles are covered. The coverage
@@ -75,7 +79,14 @@ calibration between models.
   the complex, `Target_pLDDT` is target confidence, and
   `Unbound_Binder_pLDDT` refers to the binder alone. The declared 0–1 readings
   become separate 0–100 fields. Native `i_pAE` is divided by 31; the common
-  symmetric interface mean PAE multiplies it by 31 to report Å.
+  interface mean PAE multiplies it by 31 to report Å. RFD4 native
+  `oracle_ppi.ipae_coi` is a chain-of-interest/partner mean PAE in Å averaged
+  across both directions; COI is the chain of interest, ordinarily the designed
+  chain. Its configured oracle engine is retained on the candidate (the current
+  Studio default is OpenFold3 JAX). `common.confidence.generator.interface.pae_norm31`
+  divides the raw value by 31 to expose a shared numeric scale, not a calibrated
+  score equivalence.
+  Aggregation definitions, raw scores and producing predictors remain distinct.
 - A generic `plddt`, a whole-complex pLDDT, a binder pLDDT and a composite
   confidence score are not interchangeable. Minimum, mean and directional PAE
   also remain distinct. RMSDs with different atoms, alignment or references do

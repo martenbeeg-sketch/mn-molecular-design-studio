@@ -208,7 +208,7 @@ def _candidate_artifacts(run_dir: Path) -> list[dict[str, str]]:
 
 
 def _analysis_source_candidates(source_run_dir: Path, candidates_jsonl: Path) -> list[dict[str, Any]]:
-    """Retain incomplete inputs so each requested measurement has an outcome."""
+    """Retain inputs and enrich them from their exact saved prediction sidecars."""
     candidates = read_candidates(candidates_jsonl)
     if not candidates:
         raise ValueError("The selected results contain no candidates.")
@@ -216,7 +216,12 @@ def _analysis_source_candidates(source_run_dir: Path, candidates_jsonl: Path) ->
         for key in ("complex_pdb", "binder_pdb", "target_pdb"):
             if candidate.get(key):
                 candidate[key] = str(_resolve_path(source_run_dir, candidate[key]))
-    return candidates
+    # Validation & Acceptance is saved-evidence-only. Recover score summaries
+    # and inter-chain PAE from the selected model's own files; never launch a
+    # predictor or borrow confidence data from a neighbouring sample.
+    from mn_molecular_design_studio.cofolding_results import enrich_candidate
+
+    return [enrich_candidate(source_run_dir, candidate) for candidate in candidates]
 
 
 def _analysis_job(
@@ -274,6 +279,7 @@ def _analysis_output_candidates(
                     "result_kind": "app_reanalysis",
                     "analysis_tool": tool,
                     "measurement_provenance": {
+                        **dict((source.get("raw_metadata") or {}).get("measurement_provenance") or {}),
                         "tool": tool,
                         "analysis_parameters": (source.get("raw_metadata") or {}).get("analysis_parameters", {}),
                         "source_candidate_id": source_id,
@@ -469,16 +475,33 @@ def _finish_metric_analysis(
     for candidate in candidates:
         metrics = candidate.setdefault("metrics", {})
         outcome = measurement_outcome(metrics, required, metrics.get(error_key))
+        structure_measured = tool == "ipsae" and metrics.get("structure_metrics_status") == "measured"
+        if tool == "ipsae" and outcome["status"] != "measured" and structure_measured:
+            outcome = {**outcome, "status": "partial",
+                       "error": str(metrics.get(error_key) or "ipSAE/PAE-derived measurements were unavailable; structure analysis completed")}
         outcomes.append(outcome)
         if outcome["error"]:
             metrics[error_key] = outcome["error"]
-        metrics["analysis_status"] = "measured" if outcome["status"] == "measured" else "error"
+        metrics["analysis_status"] = outcome["status"] if outcome["status"] in {"measured", "partial"} else "error"
         candidate.setdefault("raw_metadata", {})["measurement_status"] = outcome
     table = _analysis_metrics_table(candidates)
     table.to_csv(table_path, index=False)
     outputs = _analysis_output_candidates(candidates, tool=tool)
     normalized = write_candidates(job.run_dir, tool, outputs)
     counts = measurement_summary(outcomes)
+    if tool == "ipsae":
+        partial_count = sum(item["status"] == "partial" for item in outcomes)
+        structure_count = sum((candidate.get("metrics") or {}).get("structure_metrics_status") == "measured" for candidate in candidates)
+        counts["partial_count"] = partial_count
+        counts["structure_measured_count"] = structure_count
+        counts["ipsae_measured_count"] = sum(item["status"] == "measured" for item in outcomes)
+        counts["scored_count"] += partial_count
+        if not counts["scored_count"]:
+            counts["scientific_status"] = "failed"
+        elif partial_count or counts["error_count"] or counts["missing_count"] or counts["invalid_count"]:
+            counts["scientific_status"] = "partial"
+        else:
+            counts["scientific_status"] = "valid"
     summary = {
         "tool": tool,
         **counts,
@@ -539,6 +562,96 @@ def _resolve_path(base_dir: Path, path_text: str | None) -> Path | None:
 
 def _safe_id(candidate: dict[str, Any]) -> str:
     return str(candidate.get("candidate_id") or "candidate").replace("/", "_").replace(" ", "_")
+
+
+def _candidate_design_reference(source_run_dir: Path, candidate: dict[str, Any]) -> tuple[Path | None, list[str]]:
+    """Find a separate designed binder structure without confusing it with the cofold."""
+    predicted = _resolve_path(source_run_dir, candidate.get("complex_pdb"))
+    pending: list[tuple[dict[str, Any], Path, bool]] = [(candidate, source_run_dir, False)]
+    seen: set[int] = set()
+    while pending:
+        item, root, inherited = pending.pop(0)
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        raw = item.get("raw_metadata") if isinstance(item.get("raw_metadata"), dict) else {}
+        nested_root_text = raw.get("upstream_source_run_dir") or raw.get("source_run_dir") or raw.get("design_run_dir")
+        nested_root = Path(nested_root_text) if nested_root_text else root
+        keys = ["design_structure_path", "reference_structure_path", "designed_structure_path", "input_structure_path"]
+        if inherited or str(item.get("stage") or "").startswith(("generation.", "sequence_design")):
+            keys.extend(["binder_pdb", "complex_pdb"])
+        for key in keys:
+            value = item.get(key) or raw.get(key)
+            path = _resolve_path(nested_root, value)
+            if not path or not path.is_file():
+                continue
+            if predicted and path.resolve() == predicted.resolve():
+                continue
+            binder_chains = [str(value) for value in item.get("binder_chains") or [] if str(value)]
+            if not binder_chains:
+                binder_chains = [str(value) for value in (raw.get("binder_chains") or []) if str(value)]
+            return path, binder_chains
+        nested = raw.get("source_candidate")
+        if isinstance(nested, dict):
+            pending.append((nested, nested_root, True))
+        evidence = raw.get("evidence_candidates")
+        if isinstance(evidence, list):
+            pending.extend((entry, nested_root, True) for entry in evidence if isinstance(entry, dict))
+    return None, []
+
+
+def _candidate_design_complex(source_run_dir: Path, candidate: dict[str, Any]) -> tuple[Path | None, list[str], list[str]]:
+    """Locate the upstream generated complex for contact-pattern comparison."""
+    predicted = _resolve_path(source_run_dir, candidate.get("complex_pdb"))
+    pending: list[tuple[dict[str, Any], Path, bool]] = [(candidate, source_run_dir, False)]
+    seen: set[int] = set()
+    while pending:
+        item, root, inherited = pending.pop(0)
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        raw = item.get("raw_metadata") if isinstance(item.get("raw_metadata"), dict) else {}
+        nested_root_text = raw.get("upstream_source_run_dir") or raw.get("source_run_dir") or raw.get("design_run_dir")
+        nested_root = Path(nested_root_text) if nested_root_text else root
+        keys = ["design_complex_path", "reference_complex_path"]
+        if inherited or str(item.get("stage") or "").startswith(("generation.", "sequence_design")):
+            keys.append("complex_pdb")
+        for key in keys:
+            path = _resolve_path(nested_root, item.get(key) or raw.get(key))
+            if not path or not path.is_file() or (predicted and path.resolve() == predicted.resolve()):
+                continue
+            binder_chains = [str(value) for value in item.get("binder_chains") or raw.get("binder_chains") or [] if str(value)]
+            target_chains = [str(value) for value in item.get("target_chains") or raw.get("target_chains") or [] if str(value)]
+            return path, binder_chains, target_chains
+        nested = raw.get("source_candidate")
+        if isinstance(nested, dict):
+            pending.append((nested, nested_root, True))
+        evidence = raw.get("evidence_candidates")
+        if isinstance(evidence, list):
+            pending.extend((entry, nested_root, True) for entry in evidence if isinstance(entry, dict))
+    return None, [], []
+
+
+def _candidate_hotspots(candidate: dict[str, Any]) -> str:
+    pending = [candidate]
+    seen: set[int] = set()
+    while pending:
+        item = pending.pop(0)
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        value = item.get("hotspots")
+        if value:
+            return ",".join(map(str, value)) if isinstance(value, (list, tuple, set)) else str(value)
+        raw = item.get("raw_metadata") if isinstance(item.get("raw_metadata"), dict) else {}
+        for key in ("hotspots", "hotspot_residues", "target_hotspots"):
+            value = raw.get(key)
+            if value:
+                return ",".join(map(str, value)) if isinstance(value, (list, tuple, set)) else str(value)
+        nested = raw.get("source_candidate")
+        if isinstance(nested, dict):
+            pending.append(nested)
+    return ""
 
 
 def _flatten_metrics(metrics: dict[str, Any], prefix: str = "") -> dict[str, Any]:
@@ -628,6 +741,58 @@ def _parse_ipsae_row(path: Path) -> dict[str, Any]:
         "engine",
         "pae_format",
         "error",
+        "ipae_binder_to_target",
+        "ipae_target_to_binder",
+        "ipae_bidirectional",
+        "ipae_binder_to_target_norm31",
+        "ipae_target_to_binder_norm31",
+        "ipae_bidirectional_norm31",
+        "ipae_contact_pair_count",
+        "ipae_contact_cutoff",
+        "bindcraft2_ipdae_recomputed",
+        "bindcraft2_ipdae_binder_anchor_max",
+        "bindcraft2_ipdae_target_anchor_max",
+        "bindcraft2_ipdae_contact_pair_count",
+        "bindcraft2_ipdae_contact_cutoff",
+        "pae_measurement_error",
+        "structure_interface_atom_contact_pair_count",
+        "structure_interface_residue_contact_pair_count",
+        "structure_binder_interface_residue_count",
+        "structure_target_interface_residue_count",
+        "structure_ca_clash_pair_count_2_5a",
+        "structure_binder_ca_bfactor_mean",
+        "structure_target_ca_bfactor_mean",
+        "structure_complex_ca_bfactor_mean",
+        "structure_contact_cutoff",
+        "structure_hotspot_count",
+        "structure_hotspot_found_count",
+        "structure_hotspot_contacted_count",
+        "structure_hotspot_contact_fraction_found",
+        "structure_hotspot_contact_fraction_requested",
+        "structure_hotspot_min_distance",
+        "structure_hotspot_mean_min_distance",
+        "structure_hotspot_contact_cutoff",
+        "structure_hotspots_contacted",
+        "structure_hotspots_missing",
+        "structure_metrics_status",
+        "structure_metrics_error",
+        "design_vs_cofold_rmsd_status",
+        "design_vs_cofold_rmsd_error",
+        "structure_binder_design_to_cofold_fitted_ca_rmsd",
+        "structure_binder_rmsd_ca_count",
+        "structure_binder_rmsd_alignment_coverage",
+        "hotspot_analysis_status",
+        "hotspot_analysis_error",
+        "interaction_preservation_status",
+        "interaction_preservation_error",
+        "structure_design_interface_residue_contact_pairs",
+        "structure_cofold_interface_residue_contact_pairs",
+        "structure_interface_contact_pairs_preserved",
+        "structure_design_interaction_preservation_fraction",
+        "structure_interface_contact_jaccard",
+        "structure_binder_interface_residue_preservation_fraction",
+        "structure_target_interface_residue_preservation_fraction",
+        "structure_interaction_sequence_mapping_coverage",
     ]
     if not path.exists():
         return {"ipsae_error": "IPSAE output row missing"}
@@ -641,7 +806,18 @@ def _parse_ipsae_row(path: Path) -> dict[str, Any]:
         if key == "ID":
             continue
         if key == "error":
-            parsed["ipsae_error"] = value
+            if value:
+                parsed["ipsae_error"] = value
+            continue
+        if key == "pae_measurement_error":
+            if value:
+                parsed[key] = value
+            continue
+        if key in {"binder_chain", "target_chain", "type", "engine", "pae_format", "structure_metrics_status",
+                   "structure_metrics_error", "design_vs_cofold_rmsd_status", "design_vs_cofold_rmsd_error",
+                   "structure_hotspots_contacted", "structure_hotspots_missing", "hotspot_analysis_status", "hotspot_analysis_error",
+                   "interaction_preservation_status", "interaction_preservation_error"}:
+            parsed[key] = value
             continue
         number = _safe_float(value)
         parsed[key] = number if number is not None else value
@@ -1000,6 +1176,9 @@ def _run_ipsae(
     pae_cutoff: float = 10.0,
     dist_cutoff: float = 10.0,
     workers: int | None = None,
+    ipdae_contact_cutoff: float = 8.0,
+    structure_contact_cutoff: float = 4.0,
+    hotspot_contact_cutoff: float = 5.0,
 ) -> list[dict[str, Any]]:
     ipsae_dir = run_dir / "artifacts" / "analysis" / "ipsae"
     input_dir = ipsae_dir / "inputs"
@@ -1013,6 +1192,7 @@ def _run_ipsae(
     enhanced: list[dict[str, Any]] = []
     used_ids: set[str] = set()
     staged_structures: dict[str, Path] = {}
+    staged_measurement_structures: dict[str, Path] = {}
 
     for index, candidate in enumerate(candidates, start=1):
         safe_id = _safe_id(candidate)
@@ -1026,10 +1206,6 @@ def _run_ipsae(
             metrics["ipsae_error"] = "binder or target chain roles are missing"
             enhanced.append({**candidate, "metrics": metrics, "_ipsae_batch_id": safe_id})
             continue
-        if len(binder_chains) != 1:
-            metrics["ipsae_error"] = "current ipSAE interface scorer supports exactly one binder chain"
-            enhanced.append({**candidate, "metrics": metrics, "_ipsae_batch_id": safe_id})
-            continue
         binder_chain, target_chain = binder_chains[0], target_chains[0]
         structure_path = _resolve_path(source_run_dir, candidate.get("complex_pdb"))
         pae_path = _find_pae_path(source_run_dir, candidate, structure_path)
@@ -1041,57 +1217,89 @@ def _run_ipsae(
             metrics["ipsae_error"] = "complex structure missing"
             enhanced.append({**candidate, "metrics": metrics, "_ipsae_batch_id": safe_id})
             continue
-        if not pae_path or not pae_path.exists():
-            metrics["ipsae_error"] = "PAE file missing"
-            enhanced.append({**candidate, "metrics": metrics, "_ipsae_batch_id": safe_id})
-            continue
-
-        staged_structure = staged_dir / structure_path.name
-        staged_pae = staged_dir / pae_path.name
-        shutil.copy2(structure_path, staged_structure)
-        shutil.copy2(pae_path, staged_pae)
+        staged_measurement_structure = staged_dir / structure_path.name
+        shutil.copy2(structure_path, staged_measurement_structure)
+        staged_measurement_structures[safe_id] = staged_measurement_structure
+        staged_pae = None
+        if pae_path and pae_path.exists():
+            staged_pae = staged_dir / pae_path.name
+            shutil.copy2(pae_path, staged_pae)
+        else:
+            metrics["ipsae_error"] = "PAE file missing; structure metrics were still calculated"
         staged_structure = _collapse_target_chains_for_ipsae(
-            staged_structure,
+            staged_measurement_structure,
             binder_chain=binder_chain,
             target_chains=target_chains,
         )
         staged_structures[safe_id] = staged_structure
+        design_structure, design_binder_chains = _candidate_design_reference(source_run_dir, candidate)
+        design_complex, design_complex_binder_chains, design_complex_target_chains = _candidate_design_complex(source_run_dir, candidate)
+        staged_design_structure = None
+        if design_structure:
+            staged_design_structure = staged_dir / f"design_reference{design_structure.suffix.lower()}"
+            shutil.copy2(design_structure, staged_design_structure)
+        staged_design_complex = None
+        if design_complex:
+            staged_design_complex = staged_dir / f"design_complex{design_complex.suffix.lower()}"
+            shutil.copy2(design_complex, staged_design_complex)
+        hotspots = _candidate_hotspots(candidate)
         engine, pae_format = _ipsae_engine(candidate, staged_pae)
-        full_runner = Path(IPSAE_FULL_RUNNER)
-        if staged_pae.suffix.lower() == ".json" and staged_structure.suffix.lower() == ".pdb":
-            command = [
-                "python3",
-                str(full_runner),
-                f"/work/artifacts/analysis/ipsae/inputs/{safe_id}/{staged_pae.name}",
-                f"/work/artifacts/analysis/ipsae/inputs/{safe_id}/{staged_structure.name}",
-                str(pae_cutoff),
-                str(dist_cutoff),
-            ]
-        else:
-            command = [
-                "python3",
-                str(IPSAE_RUNNER),
-                "--id",
-                safe_id,
-                "--structure",
-                f"/work/artifacts/analysis/ipsae/inputs/{safe_id}/{staged_structure.name}",
-                "--pae",
-                f"/work/artifacts/analysis/ipsae/inputs/{safe_id}/{staged_pae.name}",
-                "--pae-format",
-                pae_format,
-                "--engine",
-                engine,
-                "--binder-chain",
-                binder_chain,
-                "--target-chain",
-                target_chain,
-                "--pae-cutoff",
-                str(pae_cutoff),
-                "--dist-cutoff",
-                str(dist_cutoff),
-                "--output",
-                f"/work/artifacts/analysis/ipsae/rows/{safe_id}_ipsae_row.csv",
-            ]
+        command = [
+            "python3",
+            str(IPSAE_RUNNER),
+            "--id",
+            safe_id,
+            "--structure",
+            f"/work/artifacts/analysis/ipsae/inputs/{safe_id}/{staged_structure.name}",
+            "--measurement-structure",
+            f"/work/artifacts/analysis/ipsae/inputs/{safe_id}/{staged_measurement_structure.name}",
+            "--pae-format",
+            pae_format,
+            "--engine",
+            engine,
+            "--binder-chain",
+            binder_chain,
+            "--target-chain",
+            target_chain,
+            "--measurement-target-chains",
+            ",".join(target_chains),
+            "--pae-cutoff",
+            str(pae_cutoff),
+            "--dist-cutoff",
+            str(dist_cutoff),
+            "--ipdae-contact-cutoff",
+            str(ipdae_contact_cutoff),
+            "--structure-contact-cutoff",
+            str(structure_contact_cutoff),
+            "--hotspot-contact-cutoff",
+            str(hotspot_contact_cutoff),
+            "--hotspots",
+            hotspots,
+            "--output",
+            f"/work/artifacts/analysis/ipsae/rows/{safe_id}_ipsae_row.csv",
+        ]
+        if staged_pae:
+            command.extend(["--pae", f"/work/artifacts/analysis/ipsae/inputs/{safe_id}/{staged_pae.name}"])
+        if staged_design_structure:
+            command.extend([
+                "--design-structure",
+                f"/work/artifacts/analysis/ipsae/inputs/{safe_id}/{staged_design_structure.name}",
+                "--design-reference-binder-chains",
+                ",".join(design_binder_chains),
+            ])
+        if staged_design_complex:
+            command.extend([
+                "--design-complex",
+                f"/work/artifacts/analysis/ipsae/inputs/{safe_id}/{staged_design_complex.name}",
+                "--design-complex-binder-chains",
+                ",".join(design_complex_binder_chains or design_binder_chains),
+                "--design-target-chains",
+                ",".join(design_complex_target_chains),
+            ])
+        if staged_pae and staged_pae.suffix.lower() == ".json" and staged_structure.suffix.lower() == ".pdb":
+            # Preserve the existing richer AF2/AF3 scorer; the container adapter
+            # runs it unchanged, then emits the common PAE/i_pDAE measurements.
+            command.extend(["--ipsae-script", str(IPSAE_FULL_RUNNER)])
         steps.append(
             {
                 "id": safe_id,
@@ -1125,7 +1333,7 @@ def _run_ipsae(
             "candidate_count": len(steps),
             "cpu_workers": worker_count,
             "steps": steps,
-            "note": "One CPU-limited ipSAE container processes the eligible candidates in parallel; candidates without a saved pairwise PAE matrix are reported as unavailable.",
+            "note": "One CPU-limited ipSAE container processes each candidate independently in parallel. Structure contacts, chain-scoped Cα B-factor means, hotspot contacts, and optional design-to-cofold binder RMSD and sequence-mapped designed-contact preservation are calculated from saved structures; ipSAE and PAE-derived measurements require that candidate's saved PAE matrix.",
         }
         docker_command = [
             "docker",
@@ -1169,7 +1377,7 @@ def _run_ipsae(
         safe_id = str(candidate.pop("_ipsae_batch_id", _safe_id(candidate)))
         row_path = output_dir / f"{safe_id}_ipsae_row.csv"
         binder_chains, target_chains = _chain_role_groups(candidate)
-        if len(binder_chains) != 1 or not target_chains:
+        if not binder_chains or not target_chains:
             continue
         structure_path = _resolve_path(source_run_dir, candidate.get("complex_pdb"))
         pae_path = _find_pae_path(source_run_dir, candidate, structure_path)
@@ -1190,7 +1398,7 @@ def _run_ipsae(
                 target_chain=target_chains[0],
                 target_chains=target_chains,
                 dist_cutoff=dist_cutoff,
-            )
+            ) if pae_path and pae_path.exists() else {}
             merged_metrics = dict(candidate.get("metrics") or {})
             for metric_block in [pae_metrics, row_metrics, summary_metrics]:
                 merged_metrics.update(
@@ -1222,8 +1430,11 @@ def run_ipsae_analysis_contract(
     pae_cutoff: float = 10.0,
     dist_cutoff: float = 10.0,
     candidate_ids: list[str] | None = None,
+    ipdae_contact_cutoff: float = 8.0,
+    structure_contact_cutoff: float = 4.0,
+    hotspot_contact_cutoff: float = 5.0,
 ) -> Path:
-    """Compute ipSAE as a standalone result analysis over saved complex predictions."""
+    """Analyze saved complex PAE and structures without launching a predictor."""
     source_run_dir = Path(source_run_dir)
     candidates_jsonl = Path(candidates_jsonl)
     candidates = _analysis_source_candidates(source_run_dir, candidates_jsonl)
@@ -1237,24 +1448,73 @@ def run_ipsae_analysis_contract(
         candidates_jsonl,
         tool="ipsae",
         params={"pae_cutoff": pae_cutoff, "dist_cutoff": dist_cutoff,
+                "ipdae_contact_cutoff": ipdae_contact_cutoff,
+                "structure_contact_cutoff": structure_contact_cutoff,
+                "hotspot_contact_cutoff": hotspot_contact_cutoff,
                 "candidate_ids": sorted(selected_ids) if candidate_ids is not None else None},
-        note="Calculate standalone ipSAE interface scores from each selected complex structure and its saved pairwise PAE matrix.",
+        note="Calculate ipSAE and PAE-derived interface scores when a saved PAE matrix exists; also measure structure contacts, chain-scoped Cα B-factors, configured hotspot contacts, binder design-to-cofold fitted RMSD, and sequence-mapped designed-interface contact preservation when a separate design complex is available. No predictor is launched.",
         mode="internal+docker",
     )
     inputs = [{**copy.deepcopy(candidate), "metrics": {}, "_measurement_source": candidate} for candidate in candidates]
-    scored = _run_ipsae(source_run_dir, job.run_dir, inputs, pae_cutoff=float(pae_cutoff), dist_cutoff=float(dist_cutoff))
+    scored = _run_ipsae(source_run_dir, job.run_dir, inputs, pae_cutoff=float(pae_cutoff),
+                        dist_cutoff=float(dist_cutoff), ipdae_contact_cutoff=float(ipdae_contact_cutoff),
+                        structure_contact_cutoff=float(structure_contact_cutoff),
+                        hotspot_contact_cutoff=float(hotspot_contact_cutoff))
     for candidate in scored:
         raw = candidate.setdefault("raw_metadata", {})
+        design_reference, _reference_binder_chains = _candidate_design_reference(source_run_dir, candidate)
+        design_complex, _complex_binder_chains, _complex_target_chains = _candidate_design_complex(source_run_dir, candidate)
         raw["analysis_parameters"] = {"pae_cutoff": float(pae_cutoff), "dist_cutoff": float(dist_cutoff),
+            "ipdae_contact_cutoff": float(ipdae_contact_cutoff),
+            "structure_contact_cutoff": float(structure_contact_cutoff),
+            "hotspot_contact_cutoff": float(hotspot_contact_cutoff),
             "image": IPSAE_IMAGE,
             "pae_file": str(_find_pae_path(source_run_dir, candidate, _resolve_path(source_run_dir, candidate.get("complex_pdb"))) or "")}
+        raw["measurement_provenance"] = {
+            **dict(raw.get("measurement_provenance") or {}),
+            "bindcraft2_ipdae_recomputed": {
+                "definition": "BindCraft2 anchored_interface_tm_scores; maximum binder- and target-anchored contact scores",
+                "contact_cutoff_angstrom": float(ipdae_contact_cutoff),
+                "source_pae_matrix": raw["analysis_parameters"]["pae_file"],
+                "calculation_location": "mn-protein-scoring-ipsae container adapter",
+                "native_bindcraft2_score": False,
+            },
+            "ipsae_structure_analysis": {
+                "calculation_location": "mn-protein-scoring-ipsae container adapter",
+                "structure_contact_cutoff_angstrom": float(structure_contact_cutoff),
+                "hotspot_contact_cutoff_angstrom": float(hotspot_contact_cutoff),
+                "structure_confidence_source": "saved complex C-alpha B-factors; kept distinct from predictor-native confidence summaries and not assumed to be pLDDT",
+                "binder_rmsd": "sequence-aligned binder C-alpha RMSD after optimal binder-only superposition; available only when a separate design structure is found",
+                "design_reference_found": bool(design_reference),
+                "design_complex_found": bool(design_complex),
+                "design_reference_structure": str(design_reference or ""),
+                "design_complex_structure": str(design_complex or ""),
+                "interaction_preservation": "sequence-mapped binder–target residue contact-pair overlap using the same configured heavy-atom distance cutoff; no claim about specific chemical interactions",
+                "hotspots": _candidate_hotspots(candidate),
+                "native_prediction_performed": False,
+            },
+        }
 
     return _finish_metric_analysis(
         job,
         scored,
         tool="ipsae",
         table_name="ipsae_metrics.csv",
-        metric_names=["ipsae", "ipsae_min", "ipsae_max", "ipsae_avg", "lis", "ipae"],
+        metric_names=["ipsae", "ipsae_min", "ipsae_max", "ipsae_avg", "lis", "ipae",
+                      "ipae_binder_to_target", "ipae_target_to_binder", "ipae_bidirectional",
+                      "ipae_binder_to_target_norm31", "ipae_target_to_binder_norm31", "ipae_bidirectional_norm31",
+                      "bindcraft2_ipdae_recomputed", "bindcraft2_ipdae_binder_anchor_max",
+                      "bindcraft2_ipdae_target_anchor_max", "structure_interface_atom_contact_pair_count",
+                      "structure_interface_residue_contact_pair_count", "structure_binder_interface_residue_count",
+                      "structure_target_interface_residue_count", "structure_ca_clash_pair_count_2_5a",
+                      "structure_binder_ca_bfactor_mean", "structure_target_ca_bfactor_mean",
+                      "structure_complex_ca_bfactor_mean", "structure_hotspot_contact_fraction_found",
+                      "structure_hotspot_contact_fraction_requested", "structure_hotspot_contacted_count",
+                      "structure_hotspot_min_distance", "structure_binder_design_to_cofold_fitted_ca_rmsd",
+                      "structure_design_interface_residue_contact_pairs", "structure_cofold_interface_residue_contact_pairs",
+                      "structure_interface_contact_pairs_preserved", "structure_design_interaction_preservation_fraction",
+                      "structure_interface_contact_jaccard", "structure_binder_interface_residue_preservation_fraction",
+                      "structure_target_interface_residue_preservation_fraction", "structure_interaction_sequence_mapping_coverage"],
     )
 
 
