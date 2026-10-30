@@ -215,6 +215,18 @@ class Store:
                         db.execute("UPDATE jobs SET payload=? WHERE id=?", (encoded(data), old["id"]))
         self.dispatch()
 
+    def pulse(self, node_id, snapshot):
+        """Refresh workstation liveness without catalog reconciliation or dispatch."""
+        if not isinstance(snapshot, dict):
+            raise ValueError("Invalid workstation heartbeat.")
+        with self.connect() as db:
+            cursor = db.execute(
+                "UPDATE nodes SET snapshot=?,last_seen=? WHERE id=? AND disabled=0",
+                (encoded(snapshot), self.clock(), node_id),
+            )
+            if cursor.rowcount != 1:
+                raise LookupError("Workstation is not enrolled or has been disabled.")
+
     def _job(self, db, jid):
         row = db.execute("SELECT * FROM jobs WHERE id=?", (str(jid).removeprefix("cluster:"),)).fetchone()
         if not row:

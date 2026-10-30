@@ -319,6 +319,17 @@ def install(app, current_user, admin_user):
         from mn_molecular_design_studio.workspace import load_organization
         return {"status": "ok", "organization": load_organization(), "node_id": actor["id"], "reference_probes": store.reference_probes()}
 
+    @router.post("/node/pulse")
+    def pulse(payload: dict = Body(...), actor=Depends(node), store=Depends(coordinator)):
+        """Record liveness independently of a potentially slow catalog sync."""
+        call(store.pulse, actor["id"], payload.get("snapshot", {}))
+        local = next((item for item in store.nodes() if item["id"] == config.identity()), None)
+        return {
+            "status": "ok", "node_id": actor["id"],
+            "server_node_id": config.identity(),
+            "snapshot": local["snapshot"] if local else {},
+        }
+
     @router.post("/node/library-transfers/{job_id}/start")
     def library_transfer_start(job_id: str, payload: dict = Body(...), actor=Depends(node)):
         from . import library_transfer

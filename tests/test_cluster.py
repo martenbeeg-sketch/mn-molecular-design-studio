@@ -48,6 +48,20 @@ def test_identity_is_stable_and_node_ids_do_not_depend_on_storage_paths(monkeypa
     assert config.job_id(first, "design/same-run") != config.job_id(second, "design/same-run")
 
 
+def test_liveness_pulse_refreshes_node_without_running_catalog_dispatch(cluster, monkeypatch):
+    store, nodes, _, _, _, _, clock = cluster
+    dispatches = []
+    monkeypatch.setattr(store, "dispatch", lambda: dispatches.append(True))
+    clock[0] += 180
+
+    store.pulse(nodes[0]["node_id"], {"scheduler_online": True})
+
+    current = next(node for node in store.nodes() if node["id"] == nodes[0]["node_id"])
+    assert current["availability"] == "online"
+    assert current["snapshot"] == {"scheduler_online": True}
+    assert dispatches == []
+
+
 def test_worker_heartbeat_publishes_counts_without_candidate_identities_or_structures(tmp_path):
     run = tmp_path / "design" / "run-1"
     candidates = run / "artifacts/normalized_candidates"
@@ -847,6 +861,9 @@ def test_api_enrollment_catalog_and_agent_commands_are_authenticated(monkeypatch
             assert client.post("/api/v1/cluster/node/heartbeat", json={}, headers={"Authorization": "Bearer wrong"}).status_code == 403
             response = client.post("/api/v1/cluster/node/heartbeat", json={"snapshot": {"accept_jobs": True}, "jobs": []}, headers={"Authorization": "Bearer " + token})
             assert response.status_code == 200
+            pulse = client.post("/api/v1/cluster/node/pulse", json={"snapshot": {"accept_jobs": True}}, headers={"Authorization": "Bearer " + token})
+            assert pulse.status_code == 200
+            assert pulse.json()["node_id"] == enrollment.json()["node_id"]
             nodes = client.get("/api/v1/cluster/nodes").json()["nodes"]
             assert nodes[0]["availability"] == "online"
             assert "token_hash" not in nodes[0] and "node_token" not in nodes[0]

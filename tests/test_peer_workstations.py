@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import threading
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -275,6 +276,54 @@ def test_agent_starts_when_every_other_machine_and_local_api_are_unavailable(pee
         Agent().run(once=True)
         assert Store().nodes()[1:]
         assert json.loads((config.home()/'agent-status.json').read_text())['online']
+
+
+def test_peer_liveness_pulse_updates_both_sides_without_catalog_sync(peers,monkeypatch):
+    nodes,on=peers
+    network(peers,monkeypatch,set())
+    monkeypatch.setattr(Agent,'snapshot',lambda self:copy.deepcopy(SNAPSHOT))
+    with on(1):
+        agent=Agent()
+        monkeypatch.setattr(agent,'catalog',lambda:(_ for _ in ()).throw(AssertionError('catalog scan was called')))
+        agent.publish_liveness()
+
+        reported={node['id']:node for node in Store().nodes()}
+        assert all(reported[node['id']]['availability']=='online' for node in nodes)
+        assert all(reported[node['id']]['snapshot']==SNAPSHOT for node in nodes)
+
+
+def test_agent_liveness_keeps_pulsing_while_catalog_sync_is_blocked(peers,monkeypatch):
+    _,on=peers
+    with on(1):
+        agent=Agent()
+        sync_started=threading.Event()
+        release_sync=threading.Event()
+        pulses=[]
+
+        def slow_catalog_sync():
+            sync_started.set()
+            release_sync.wait(2)
+
+        def pulse():
+            assert sync_started.wait(1)
+            pulses.append(True)
+            if len(pulses) == 2:
+                agent._stop.set()
+                release_sync.set()
+
+        agent.settings=config.load()
+        monkeypatch.setattr(agent,'heartbeat',slow_catalog_sync)
+        monkeypatch.setattr(agent,'publish_liveness',pulse)
+        monkeypatch.setattr(agent,'_heartbeat_interval',lambda:0.01)
+        monkeypatch.setattr(agent,'poll',lambda:False)
+        monkeypatch.setattr(config,'enabled',lambda:True)
+        monkeypatch.setattr('mn_molecular_design_studio.cluster.agent.signal.signal',lambda *a,**k:None)
+
+        agent.run()
+
+        assert len(pulses) >= 2
+        assert sync_started.is_set()
+        assert release_sync.is_set()
 
 
 def test_peer_agent_processes_local_queue_and_replays_receipt_without_primary(peers,monkeypatch):

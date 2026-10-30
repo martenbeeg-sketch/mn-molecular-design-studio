@@ -237,6 +237,58 @@ class Agent:
         store.cleanup_transfers()
         self._schedule_library_transfers()
 
+    def publish_liveness(self):
+        """Refresh local and remote node status without scanning or syncing jobs."""
+        settings = config.load()
+        snapshot = self.snapshot()
+        if settings["mode"] == "peer":
+            from .store import Store
+
+            store = Store()
+            store.pulse(self.node_id, snapshot)
+            for peer in settings.get("peers", []):
+                try:
+                    response = transport.node_request(
+                        "/pulse", {"snapshot": snapshot}, method="POST",
+                        base_url=peer["url"], timeout=4,
+                    )
+                    if response.get("server_node_id") != peer["id"]:
+                        raise transport.ClusterUnavailable(
+                            "The configured peer address belongs to another workstation."
+                        )
+                    store.pulse(peer["id"], response.get("snapshot") or {})
+                except Exception as exc:
+                    log.warning(
+                        "Workstation %s liveness check paused: %s",
+                        peer.get("name", peer["id"]), exc,
+                    )
+        else:
+            response = transport.node_request(
+                "/pulse", {"snapshot": snapshot}, method="POST", timeout=10,
+            )
+            if response.get("node_id") != self.node_id:
+                raise RuntimeError(
+                    "This credential belongs to another workstation. Check the enrollment file."
+                )
+        config.atomic_json(config.home() / "agent-status.json", {
+            "last_heartbeat": time.time(), "node_id": self.node_id, "online": True,
+        })
+
+    def _heartbeat_interval(self):
+        try:
+            return max(5, min(300, int(config.load().get("heartbeat_seconds", 15))))
+        except (TypeError, ValueError):
+            return 15
+
+    def _liveness_loop(self):
+        while not self._stop.is_set():
+            try:
+                self.publish_liveness()
+            except Exception as exc:
+                log.warning("Workstation liveness update paused: %s", exc)
+            if self._stop.wait(self._heartbeat_interval()):
+                break
+
     def _schedule_library_transfers(self):
         """Retry finished external-library output copies after each successful sync."""
         from mn_molecular_design_studio import job_catalog
@@ -686,18 +738,30 @@ class Agent:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
                 raise RuntimeError("A workstation agent is already running on this machine.") from exc
-            self.heartbeat()
             if once:
+                self.heartbeat()
                 self.poll()
                 return
-            def heartbeat_loop():
-                while not self._stop.wait(15):
+
+            def catalog_sync_loop():
+                while not self._stop.is_set():
                     try:
                         self.heartbeat()
                     except Exception as exc:
                         log.warning("Catalog synchronization paused: %s", exc)
-            thread = threading.Thread(target=heartbeat_loop, daemon=True)
-            thread.start()
+                    if self._stop.wait(self._heartbeat_interval()):
+                        break
+
+            # Liveness has its own small request path, so a full job/catalog
+            # reconciliation cannot make a healthy workstation look offline.
+            liveness_thread = threading.Thread(
+                target=self._liveness_loop, name="studio-agent-liveness", daemon=True,
+            )
+            sync_thread = threading.Thread(
+                target=catalog_sync_loop, name="studio-agent-catalog-sync", daemon=True,
+            )
+            liveness_thread.start()
+            sync_thread.start()
             signal.signal(signal.SIGTERM, lambda *_: self._stop.set())
             signal.signal(signal.SIGINT, lambda *_: self._stop.set())
             try:
@@ -710,4 +774,5 @@ class Agent:
                     self._stop.wait(0.2 if active else 2)
             finally:
                 self._stop.set()
-                thread.join(timeout=5)
+                liveness_thread.join(timeout=5)
+                sync_thread.join(timeout=5)

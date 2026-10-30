@@ -25,7 +25,8 @@ scheduler, job catalog and Results storage. In **Independent workstations** mode
 - A submitted request that still needs inputs or acceptance from an offline origin
   waits for that origin to return. It is not duplicated elsewhere. Retry the same
   submission ID against the same originating installation.
-- Heartbeats normally run every 15 seconds. After 45 seconds without direct contact
+- Direct liveness pulses normally run every 15 seconds, independently of job-catalog
+  reconciliation and metadata replication. After 45 seconds without direct contact
   a peer is unreachable; after 120 seconds it is offline. Synchronizing an old
   catalog entry through another peer does not make the unavailable machine online.
 - Every catalog retains the machine name, original path and last known job state.
