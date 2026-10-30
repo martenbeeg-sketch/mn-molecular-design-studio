@@ -556,7 +556,12 @@ def test_campaign_cancellation_uses_parent_ledger_and_preserves_completed_peer_j
     attempt = campaign.authorize(1, batch_id="batch")[0]
     child = tmp_path / "design" / "child"
     child.mkdir(parents=True)
-    jobs.write_json(child / "metadata.json", {"status": "queued"})
+    jobs.write_json(child / "metadata.json", {
+        "status": "queued",
+        # Child paths are portable; cancellation must use the owning ledger,
+        # not pass this URI to pathlib as if it were an absolute filesystem path.
+        "parent_run_dir": "runs:///design/a-different-parent",
+    })
     peer = {"cluster_job_id": "completed-job"}
     campaign.transition(
         attempt["attempt_id"], "queued", child_run_dir=str(child), cluster_submission=peer,

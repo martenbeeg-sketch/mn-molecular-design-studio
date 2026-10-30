@@ -2862,17 +2862,23 @@ def _cancel_campaign_attempt(
     if peer.get("cluster_job_id"):
         from mn_molecular_design_studio.cluster import candidate_batches
 
+        # The ledger path is the durable authority for the owning campaign.
+        # Child metadata stores parent_run_dir as a portable runs:/// URI; using
+        # Path() on that URI produces a nonexistent relative path and loses the
+        # project owner during runtime-limit cancellation.
+        ledger_path = Path(ledger.path).expanduser().resolve()
         parent = Path(child).parent
-        # Attempt runs live below the same results root as their campaign
-        # parent, recorded durably in their own metadata.
+        if (ledger_path.parent.name == "distributed_campaign"
+                and ledger_path.parent.parent.name == "artifacts"):
+            parent = ledger_path.parents[2]
         metadata = read_json_raw(child / "metadata.json")
-        parent_text = str(metadata.get("parent_run_dir") or "")
-        if parent_text:
-            parent = Path(parent_text)
-        else:
-            ledger_path = Path(ledger.path).resolve()
-            if ledger_path.parent.name == "distributed_campaign" and ledger_path.parent.parent.name == "artifacts":
-                parent = ledger_path.parents[2]
+        if parent == Path(child).parent:
+            parent_text = str(metadata.get("parent_run_dir") or "")
+            if parent_text:
+                from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+                resolved_parent = resolve_stored_path(parent_text, must_exist=True)
+                if resolved_parent is not None:
+                    parent = resolved_parent
         owner_id, project_id, development_mode = _campaign_actor(parent)
         remote = candidate_batches.Store().job(
             peer["cluster_job_id"],
