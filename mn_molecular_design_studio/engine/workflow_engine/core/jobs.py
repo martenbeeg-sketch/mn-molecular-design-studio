@@ -892,8 +892,10 @@ def collect_jobs(task_group: str | None = None, *, include_hidden: bool = False)
             metadata = read_json_raw(run_dir / "metadata.json")
             if not include_hidden and (metadata.get("hidden") or metadata.get("capacity_parent_run_id")):
                 continue
-            result = read_json(run_dir / "result.json")
-            input_payload = read_json(run_dir / "input.json")
+            # These documents are inspected only for catalog fields below.
+            # Their artifact references can belong to a peer workstation.
+            result = read_json_raw(run_dir / "result.json")
+            input_payload = read_json_raw(run_dir / "input.json")
             input_params = input_payload.get("params") if isinstance(input_payload.get("params"), dict) else {}
             tool = job_tool(metadata.get("tool") or input_payload.get("tool", ""), input_params)
             pipeline_parent = str(metadata.get("pipeline_parent_run_dir") or metadata.get("active_learning_parent_run") or "").strip()

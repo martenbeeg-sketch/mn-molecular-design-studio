@@ -316,9 +316,11 @@ def list_jobs(
 def inspect_job(reference: str, *, include_hidden: bool = False) -> dict[str, Any]:
     row = resolve_job(reference, include_hidden=include_hidden)
     run_dir = Path(row["run_dir"])
-    metadata = jobs.read_json(run_dir / "metadata.json")
-    input_payload = jobs.read_json(run_dir / "input.json")
-    result = jobs.read_json(run_dir / "result.json")
+    # Inspection returns catalog documents and may include artifact URIs owned
+    # by peer workstations. Keep those references intact for the Results UI.
+    metadata = jobs.read_json_raw(run_dir / "metadata.json")
+    input_payload = jobs.read_json_raw(run_dir / "input.json")
+    result = jobs.read_json_raw(run_dir / "result.json")
     candidates_path = campaign_result_path(run_dir)
     candidates = read_candidates(run_dir)
     from mn_molecular_design_studio.distributed_campaign_ui import campaign_context_for_job

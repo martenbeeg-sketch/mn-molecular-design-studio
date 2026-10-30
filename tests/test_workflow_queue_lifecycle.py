@@ -362,8 +362,14 @@ def test_job_reference_keeps_remote_metadata_paths_opaque(api_queue):
         "status": "running",
         "source_job": "cluster://remote-node/design/remote-candidate/result.json",
     }))
-    (run / "input.json").write_text(json.dumps({"tool": "rfd4_proteina_campaign", "params": {}}))
-    (run / "result.json").write_text(json.dumps({"success": None}))
+    (run / "input.json").write_text(json.dumps({
+        "tool": "rfd4_proteina_campaign",
+        "params": {"source_job": "cluster://remote-node/design/remote-candidate"},
+    }))
+    (run / "result.json").write_text(json.dumps({
+        "success": None,
+        "candidate_artifact": "cluster://remote-node/design/remote-candidate/result.json",
+    }))
 
     from mn_molecular_design_studio.engine.workflow_engine.services import local_automation
 
@@ -371,6 +377,11 @@ def test_job_reference_keeps_remote_metadata_paths_opaque(api_queue):
 
     assert reference["run_id"] == run.name
     assert reference["status"] == "running"
+    inspected = api_queue.client.get(f"/api/v1/jobs/{run.name}")
+    assert inspected.status_code == 200, inspected.text
+    assert inspected.json()["result"]["candidate_artifact"] == (
+        "cluster://remote-node/design/remote-candidate/result.json"
+    )
 
 
 @pytest.mark.parametrize("backend", ["central", "local"])

@@ -151,8 +151,8 @@ def _resolve_api_job(reference: str, user: dict[str, Any], *, include_hidden: bo
             raise HTTPException(status_code=404, detail="Job not found.") from exc
         raise _http_error(exc) from exc
     identity = _require_api_job_access(user, row)
-    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
-    metadata = read_json(Path(row["run_dir"]) / "metadata.json")
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json_raw
+    metadata = read_json_raw(Path(row["run_dir"]) / "metadata.json")
     return {**row, **identity, "hidden": bool(metadata.get("hidden"))}
 
 
