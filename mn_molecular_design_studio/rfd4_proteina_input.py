@@ -227,16 +227,17 @@ def idr_binder_condition_spec(
 
 
 def validate_campaign_inputs(parameters: dict[str, Any]) -> int:
-    """Validate one RFD4 protein-binder input for attempt-based campaigns.
+    """Validate one RFD4 protein-binder target/input for campaign batches.
 
     Guided and condition-spec inputs are two native RFD4 input forms. A campaign
-    attempt can carry either form, but must describe exactly one binder design
-    against one staged target so candidate and retry accounting stays one-to-one.
+    execution job can carry either form and request multiple native RFD4 designs
+    against one staged target. One seed, child run and result receipt identify
+    each native batch; normalized candidate IDs identify individual outputs.
     """
     task = str(parameters.get("task") or "protein_binder")
     mode = str(parameters.get("input_mode") or "guided")
     if task != "protein_binder" or mode not in {"guided", "guided_binder", "condition_spec"}:
-        raise ValueError("RFD4 campaigns require one protein-binder design using a guided or condition-spec input.")
+        raise ValueError("RFD4 campaigns require a protein-binder task using a guided or condition-spec input.")
     target_value = parameters.get("target_structure")
     if not target_value:
         raise ValueError("RFD4 campaigns require one target structure.")

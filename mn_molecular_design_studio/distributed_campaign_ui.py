@@ -341,6 +341,7 @@ def campaign_context_for_job(
             "GPU device(s)": _gpu_devices(allocation),
             "Scheduler allocation": str(allocation.get("scheduler_job_id") or "—"),
             "Attempt unit": str(attempt.get("attempt_unit") or native_state.get("attempt_unit") or "—"),
+            "Requested designs": int(attempt.get("requested_designs") or native_state.get("requested_designs") or 1),
         })
 
     validation_stage_configs = config.get("validation_stages") if isinstance(config.get("validation_stages"), list) else []

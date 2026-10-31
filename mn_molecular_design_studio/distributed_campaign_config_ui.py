@@ -93,10 +93,22 @@ def render_campaign_config_editor(
         ),
     ))
     max_attempts = int(st.number_input(
-        "Maximum campaign attempts", min_value=1, value=int(existing.get("max_attempts") or max(2, accepted_target or 1000)),
+        "Maximum total designs", min_value=1, value=int(existing.get("max_attempts") or max(2, accepted_target or 1000)),
         step=1, key=key + "-max-attempts",
-        help="Upper bound on individual generator tries across the campaign. An attempt can produce no output or a rejected design, so the passing-design target may need more attempts. This is separate from the engine's GPU batch size.",
+        help="Hard cap on requested design outputs over the whole campaign, including rejected designs. This is independent of native jobs and GPU microbatches.",
     ))
+    native_designs_per_job = 1
+    if generator_id == "rfd4_proteina":
+        try:
+            requested_default = int(existing.get("native_designs_per_job") or 50)
+        except (TypeError, ValueError):
+            requested_default = 50
+        native_designs_per_job = int(st.number_input(
+            "RFD4 designs per distributed job", min_value=1,
+            max_value=max(1, max_attempts), value=min(max_attempts, max(1, requested_default)),
+            step=1, key=key + "-native-designs-per-job",
+            help="Sets RFD4 num_designs for each scheduler job. RFD4's own GPU batch_size stays in the RFD4 settings and controls its internal microbatching.",
+        ))
     from mn_molecular_design_studio.campaign_objectives_ui import render_time_limits
     time_limits, time_ready = render_time_limits(st, existing, key=key, required=objective_type == "time")
     compute_seconds = float(st.number_input(
@@ -125,16 +137,24 @@ def render_campaign_config_editor(
         legacy_concurrent_batches = max(1, int(existing.get("max_concurrent_batches") or 1))
     except (TypeError, ValueError):
         legacy_concurrent_batches = 1
+    if generator_id == "rfd4_proteina":
+        # RFD4's real per-job output count is shown explicitly below; retain
+        # the legacy Studio grouping field at one to avoid a second "batch size".
+        legacy_batch_size = 1
+        legacy_concurrent_batches = 1
     legacy_concurrency = legacy_batch_size * legacy_concurrent_batches
     try:
-        generation_job_default = max(1, int(existing.get("max_concurrent_generation_jobs") or legacy_concurrency))
+        generation_job_default = max(1, int(
+            existing.get("max_concurrent_generation_jobs")
+            or (4 if generator_id == "rfd4_proteina" else legacy_concurrency)
+        ))
     except (TypeError, ValueError):
         generation_job_default = legacy_concurrency
     max_concurrent_generation_jobs = int(st.number_input(
         "Maximum concurrent generation jobs", min_value=1,
         value=generation_job_default, step=1,
         key=key + "-generation-job-concurrency",
-        help="Caps scheduler-owned one-attempt jobs across compatible workstations. Each attempt keeps its own seed, receipt and recovery record.",
+        help="Caps independently scheduled native jobs across compatible workstations. One RFD4 job can contain multiple designs; each job keeps its own seed, receipt and recovery record.",
     ))
     max_concurrent_validations = int(st.number_input(
         "Concurrent downstream validations", min_value=1,
@@ -190,6 +210,7 @@ def render_campaign_config_editor(
         "unique_accepted": objective_type == "accepted",
         "accepted_target": accepted_target,
         "max_attempts": max_attempts,
+        "native_designs_per_job": native_designs_per_job,
         "acceptance_level": acceptance_level,
         # Keep legacy dispatch grouping values intact for persisted configs;
         # the explicit job cap now controls actual campaign parallelism.
@@ -219,21 +240,30 @@ def render_campaign_config_editor(
             ready = False
 
     st.caption("Available GPUs are candidates for scheduling; allocated GPUs are selected only when each attempt or validation starts. Validation concurrency is independent of generation concurrency.")
+    if generator_id == "rfd4_proteina":
+        st.caption(
+            f"Up to {native_designs_per_job * max_concurrent_generation_jobs:,} RFD4 designs can be in flight "
+            f"({max_concurrent_generation_jobs} jobs × {native_designs_per_job} designs); "
+            "RFD4 GPU batch_size controls the internal microbatch within each job."
+        )
     st.caption(
         ("Studio timed campaign; " if objective_type == "time" else
          f"Studio campaign target: {accepted_target} {'generated designs' if objective_type == 'generated' else 'unique passing designs'}; ")
         +
-        f"maximum campaign attempts: {max_attempts}. "
-        f"Each execution job currently requests one native design (the only verified campaign choice). "
+        f"maximum requested designs: {max_attempts}. "
+        + (f"Each RFD4 execution job requests {native_designs_per_job} native designs (num_designs); the native GPU batch_size remains independently configured. "
+           if generator_id == "rfd4_proteina" else
+           "Each execution job requests one native design. ")
+        +
         f"Maximum concurrent generation jobs: {max_concurrent_generation_jobs}; "
         f"maximum concurrent validation jobs: {max_concurrent_validations}. "
-        "The controller keeps launching/recovering independent attempts toward the Studio target, subject to the attempt and resource budgets. "
-        "This execution unit is separate from an engine's native GPU/dataloader batch size."
+        "The controller dispatches available jobs toward the Studio objective and hard design cap. "
+        "When the passing target is reached, queued jobs stop and already-running jobs finish."
     )
     st.markdown("**Effective campaign settings before submission**")
     st.code(json.dumps(config, indent=2, sort_keys=True), language="json")
     if node_kind == "rfd4":
-        st.caption("Each RFD4 campaign attempt currently requests one design with native GPU batch_size=1. Count and timed objectives require no acceptance filter; designs can be evaluated in a later pipeline. A passing-count objective uses only its explicitly configured acceptance stage.")
+        st.caption("Finished RFD4 native batches are reconciled candidate-by-candidate and sent through the configured acceptance stages while other batches continue. Reaching the passing target stops new dispatch; already-running native batches finish.")
     with st.expander("Native execution plan"):
         from mn_molecular_design_studio.engine.workflow_engine.workflows.execution_planning import (
             PROPOSED_NATIVE_CHOICES, plan_campaign_execution,

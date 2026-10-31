@@ -1467,7 +1467,7 @@ def test_attempt_child_rebases_target_and_native_settings_to_its_run(tmp_path, m
     assert settings["campaign_seed"] == attempt["seed"]
 
 
-def test_rfd4_attempt_child_queues_one_seeded_gpu_co_design(tmp_path, monkeypatch):
+def test_rfd4_attempt_child_queues_native_batch_with_independent_gpu_microbatch(tmp_path, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs
 
     root = tmp_path / "runs"
@@ -1486,7 +1486,7 @@ def test_rfd4_attempt_child_queues_one_seeded_gpu_co_design(tmp_path, monkeypatc
             "target_structure": str(staged_target), "target_chains": ["A"],
             "hotspots": "A40", "length_min": 60, "length_max": 120,
             "num_designs": 8, "batch_size": 1, "nsteps": 60, "seed": 55,
-            "options": {"refold": False}, "cpu_cores": 3, "gpu_device": "0",
+            "options": {"refold": True}, "cpu_cores": 3, "gpu_device": "0",
             "job_name": "PD-L1 campaign", "task_group": "design",
             "distributed_campaign": {"enabled": True, "generator_id": "rfd4_proteina"},
         },
@@ -1496,13 +1496,13 @@ def test_rfd4_attempt_child_queues_one_seeded_gpu_co_design(tmp_path, monkeypatc
     })
     config = distributed_campaign.validate_campaign_config({
         "generator_id": "rfd4_proteina", "acceptance_level": "validated",
-        "max_attempts": 1, "accepted_target": 1, "seed": 101,
+        "max_attempts": 100, "accepted_target": 50, "native_designs_per_job": 50, "seed": 101,
         "gpu_selection": "0,1", "resources": {"cpu_cores": 3},
         "validation_stages": [{"workflow": "refolding.optimized_prediction",
                                 "required_metrics": ["model_1_iptm"]}],
     })
     ledger = CampaignLedger.create(parent / "artifacts/distributed_campaign/ledger.json", config)
-    attempt = ledger.authorize(1, batch_id="batch-rfd4")[0]
+    attempt = ledger.authorize(1, batch_id="batch-rfd4", requested_designs=50)[0]
     dispatched = []
     monkeypatch.setattr(
         "mn_molecular_design_studio.engine.workflow_engine.core.local_worker.spawn_worker_for_run",
@@ -1514,7 +1514,9 @@ def test_rfd4_attempt_child_queues_one_seeded_gpu_co_design(tmp_path, monkeypatc
     child_params = jobs.read_json(child / "input.json")["params"]
     worker = jobs.read_json(child / "worker_request.json")
     metadata = jobs.read_json(child / "metadata.json")
-    assert child_params["num_designs"] == child_params["batch_size"] == 1
+    assert child_params["num_designs"] == 50
+    assert child_params["batch_size"] == 1
+    assert child_params["options"]["refold"] is True
     assert child_params["seed"] == attempt["seed"]
     assert child_params["target_structure"] == str(staged_target)
     assert child_params["distributed_campaign"] is None
@@ -1525,7 +1527,44 @@ def test_rfd4_attempt_child_queues_one_seeded_gpu_co_design(tmp_path, monkeypatc
     assert metadata["distributed_attempt_id"] == attempt["attempt_id"]
     assert metadata["parent_role"] == "distributed_rfd4_attempt"
     assert dispatched == [child]
-    assert ledger.snapshot()["attempts"][attempt["attempt_id"]]["requested_outputs"] == 1
+    assert ledger.snapshot()["attempts"][attempt["attempt_id"]]["requested_outputs"] == 50
+    assert ledger.counters()["designs_authorized"] == 50
+
+
+def test_rfd4_campaign_dispatches_four_native_batches_of_fifty(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    parent = tmp_path / "rfd4-parent"
+    parent.mkdir()
+    jobs.write_json(parent / "input.json", {"params": {"task": "protein_binder"}})
+    config = distributed_campaign.validate_campaign_config({
+        "generator_id": "rfd4_proteina", "objective_type": "accepted",
+        "acceptance_level": "validated", "accepted_target": 200,
+        "max_attempts": 3000, "native_designs_per_job": 50,
+        "max_concurrent_generation_jobs": 4,
+        "validation_stages": [{"workflow": "analysis.validation_acceptance",
+            "acceptance_policy": {"schema": "studio.validation-acceptance.v1",
+                "target_type": "fasta_idr", "binder_format": "miniprotein",
+                "mandatory_filters": [{"metric_id": "rfd4_native_iptm",
+                    "field": "common.confidence.generator.complex.iptm",
+                    "operator": ">=", "value": 0.7}],
+                "informational_scores": [], "ranking_metric": ""}}],
+    })
+    ledger = CampaignLedger.create(parent / "ledger.json", config, campaign_id="rfd4-native-batches")
+    dispatched = []
+    monkeypatch.setattr(distributed_campaign, "_create_attempt_child",
+                        lambda _parent, _ledger, attempt, _config: dispatched.append(dict(attempt)))
+
+    distributed_campaign._dispatch_attempts(
+        parent, ledger, config, active_count=0, accepted_count=0,
+    )
+
+    attempts = list(ledger.snapshot()["attempts"].values())
+    assert len(dispatched) == len(attempts) == 4
+    assert [item["requested_designs"] for item in attempts] == [50] * 4
+    assert len({item["batch_id"] for item in attempts}) == 4
+    assert ledger.counters()["designs_authorized"] == 200
+    assert ledger.counters()["attempts_authorized"] == 4
 
 
 def test_rfd4_candidate_reconciliation_preserves_co_designed_sequence_and_target_mapping(
@@ -1548,19 +1587,22 @@ def test_rfd4_candidate_reconciliation_preserves_co_designed_sequence_and_target
         source_tool="rfd4_proteina", target_pdb=str(target_path),
         raw_metadata={"engine_version": "test"},
     )
+    second_candidate = json.loads(json.dumps(candidate))
+    second_candidate["candidate_id"] = "rfd4_000002"
+    candidate["candidate_id"] = "rfd4_000001"
     (child / "artifacts/normalized_candidates/candidates.jsonl").write_text(
-        json.dumps(candidate) + "\n"
+        json.dumps(candidate) + "\n" + json.dumps(second_candidate) + "\n"
     )
     attempt = {"ordinal": 1, "attempt_id": "a00000001", "batch_id": "batch-1", "seed": 4242}
     native_state = {
         "engine": "rfd4_proteina", "authoritative": False,
-        "attempt_unit": "one native design request", "requested_designs": 1,
-        "output_candidates": 1, "seed": 4242,
+        "attempt_unit": "one native RFD4 batch request", "requested_designs": 50,
+        "output_candidates": 2, "seed": 4242,
     }
 
     rows = distributed_campaign._rfd4_candidate_rows(child, "campaign-rfd4", attempt, native_state)
 
-    assert len(rows) == 1
+    assert len(rows) == 2
     row = rows[0]
     lineage = row["raw_metadata"]["distributed_campaign"]
     mapping = row["raw_metadata"]["source_to_prediction_components"]
@@ -1574,6 +1616,8 @@ def test_rfd4_candidate_reconciliation_preserves_co_designed_sequence_and_target
     assert lineage["native_acceptance"] == "unavailable"
     assert lineage["attempt_seed"] == 4242
     assert lineage["sequence_structure_mode"] == "co_design"
+    assert len({item["candidate_id"] for item in rows}) == 2
+    assert [item["raw_metadata"]["distributed_campaign"]["native_candidate_index"] for item in rows] == [1, 2]
 
 
 def test_rfd4_candidate_reconciliation_maps_mmcif_author_chain_to_label_chain(

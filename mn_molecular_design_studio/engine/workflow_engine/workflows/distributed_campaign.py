@@ -128,6 +128,10 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
         return value
 
     maximum = positive_int("max_attempts", 1)
+    generator_id = str(config.get("generator_id") or "bindcraft2").strip().lower()
+    native_designs_per_job = positive_int("native_designs_per_job", 1)
+    if generator_id != "rfd4_proteina" and native_designs_per_job != 1:
+        raise ValueError("native_designs_per_job greater than 1 is currently supported only by RFD4 campaigns.")
     target = None if objective_type == "time" else positive_int("accepted_target", 1)
     batch = positive_int("batch_size", 1)
     concurrency = positive_int("max_concurrent_batches", 1)
@@ -135,7 +139,7 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
         "max_concurrent_generation_jobs", batch * concurrency,
     )
     if target is not None and target > maximum:
-        raise ValueError("accepted_target cannot exceed max_attempts.")
+        raise ValueError("accepted_target cannot exceed the maximum campaign design budget.")
     seed = config.get("seed", 0)
     if type(seed) is not int or seed < 0:
         raise ValueError("seed must be a nonnegative integer.")
@@ -251,7 +255,6 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
             index < 2 or requirements[index - 2].get("workflow") != "refolding.optimized_prediction"
         ):
             raise ValueError("analysis.ipsae must follow a refolding.optimized_prediction stage.")
-    generator_id = str(config.get("generator_id") or "bindcraft2").strip().lower()
     from mn_molecular_design_studio.engine.workflow_engine.workflows.generator_capabilities import (
         generator_capabilities,
         validate_stopping_policy,
@@ -316,6 +319,7 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
         "unique_accepted": unique_accepted,
         "acceptance_level": acceptance_level,
         "max_attempts": maximum,
+        "native_designs_per_job": native_designs_per_job,
         "accepted_target": target,
         "batch_size": batch,
         "max_concurrent_batches": concurrency,
@@ -378,6 +382,15 @@ def _state_accepted_count(state: dict[str, Any]) -> int:
         sequences.discard("")
         return len(sequences)
     return len(candidates)
+
+
+def _authorized_design_count(state: dict[str, Any]) -> int:
+    """Count bounded native design requests, independent of dispatched job count."""
+    return sum(int(attempt.get("requested_designs") or 1) for attempt in state.get("attempts", {}).values())
+
+
+def _design_budget_exhausted(state: dict[str, Any]) -> bool:
+    return _authorized_design_count(state) >= int(state["config"]["max_attempts"])
 
 
 class CampaignLedger(ExecutionJobLedgerMixin):
@@ -555,6 +568,16 @@ class CampaignLedger(ExecutionJobLedgerMixin):
         state = self.snapshot()
         attempts = list(state["attempts"].values())
         candidates = list(state["candidates"].values())
+        designs_authorized = _authorized_design_count(state)
+        designs_started = sum(
+            int(item.get("requested_designs") or 1) for item in attempts
+            if item.get("first_started_at") or item.get("native_started") is True
+        )
+        designs_completed = len(candidates) + sum(
+            int(row.get("candidate_count") or 0)
+            for row in state.get("deferred_outputs", {}).values()
+            if row.get("status") == "deferred"
+        )
         return {
             **({"execution_jobs_authorized": len(state["execution_jobs"]),
                 "execution_retries": sum(len(j["executions"]) - 1 for j in state["execution_jobs"].values()),
@@ -572,6 +595,10 @@ class CampaignLedger(ExecutionJobLedgerMixin):
             "attempts_authorized": len(attempts),
             "attempts_started": sum(bool(item.get("first_started_at")) for item in attempts),
             "attempts_completed": sum(item.get("status") == "completed" for item in attempts),
+            "designs_authorized": designs_authorized,
+            "designs_started": designs_started,
+            "designs_completed": designs_completed,
+            "designs_remaining": max(0, int(state["config"]["max_attempts"]) - designs_authorized),
             "generated_candidates": len(candidates) + sum(
                 int(row.get("candidate_count") or 0)
                 for row in state.get("deferred_outputs", {}).values()
@@ -749,7 +776,7 @@ class CampaignLedger(ExecutionJobLedgerMixin):
         """Persist that all generation attempts have been authorized, even if validation is pending."""
         with _locked(self.path):
             state = _read(self.path)
-            if len(state["attempts"]) < int(state["config"]["max_attempts"]):
+            if _authorized_design_count(state) < int(state["config"]["max_attempts"]):
                 return state
             if state.get("generation_budget_exhausted"):
                 return state
@@ -768,25 +795,30 @@ class CampaignLedger(ExecutionJobLedgerMixin):
         digest = hashlib.sha256(f"{campaign_id}:{configured_seed}:{ordinal}".encode()).digest()
         return int.from_bytes(digest[:4], "big") % 2_147_483_646 + 1
 
-    def authorize(self, requested: int, *, batch_id: str, source_input: dict[str, Any] | None = None, native_configuration: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def authorize(self, requested: int, *, batch_id: str, source_input: dict[str, Any] | None = None,
+                  native_configuration: dict[str, Any] | None = None, requested_designs: int = 1) -> list[dict[str, Any]]:
         if type(requested) is not int or requested < 1 or not batch_id:
             raise ValueError("Attempt authorization needs a positive count and batch identity.")
+        if type(requested_designs) is not int or requested_designs < 1:
+            raise ValueError("Attempt authorization needs a positive requested-design count.")
         with _locked(self.path):
             state = _read(self.path)
             if state.get("status") != "running":
                 return []
             if time_progress(state["config"], state["created_at"])["time_expired"]:
                 return []
-            remaining = state["config"]["max_attempts"] - len(state["attempts"])
-            count = min(requested, max(0, remaining))
+            remaining = int(state["config"]["max_attempts"]) - _authorized_design_count(state)
             created = []
-            for _ in range(count):
+            while len(created) < requested and remaining > 0:
+                job_designs = min(requested_designs, remaining)
                 if state["schema_version"] == 2:
                     job = reserve(state, f"adapter:{state['next_ordinal']}",
                                   [source_input or {"identity": "unspecified_legacy_api_input", "verified": False}],
                                   native_configuration or {}, state["config"].get("resources", {}),
-                                  mode="single_attempt_adapter", batch_id=batch_id)
+                                  mode="single_attempt_adapter", batch_id=batch_id,
+                                  requested_designs=job_designs)
                     created.append(deepcopy(state["attempts"][job["manifest"][0]["attempt_id"]]))
+                    remaining -= job_designs
                     continue
                 ordinal = int(state["next_ordinal"])
                 state["next_ordinal"] = ordinal + 1
@@ -795,6 +827,7 @@ class CampaignLedger(ExecutionJobLedgerMixin):
                     "attempt_id": attempt_id,
                     "ordinal": ordinal,
                     "batch_id": batch_id,
+                    "requested_designs": job_designs,
                     "seed": self._seed(state["campaign_id"], state["config"]["seed"], ordinal),
                     "status": "authorized",
                     "authorized_at": utc_now(),
@@ -807,10 +840,12 @@ class CampaignLedger(ExecutionJobLedgerMixin):
                 }
                 state["attempts"][attempt_id] = attempt
                 created.append(dict(attempt))
+                remaining -= job_designs
             state["updated_at"] = utc_now()
             state["events"].append({
                 "type": "attempts_authorized", "batch_id": batch_id,
                 "attempt_ids": [item["attempt_id"] for item in created], "at": state["updated_at"],
+                "designs_authorized": sum(int(item.get("requested_designs") or 1) for item in created),
             })
             _atomic_json(self.path, state)
             return created
@@ -826,7 +861,7 @@ class CampaignLedger(ExecutionJobLedgerMixin):
             before_attempt = deepcopy(attempt)
             before_job = None
             if state["schema_version"] == 2:
-                if set(details) & {"attempt_id", "ordinal", "seed", "execution_job_id", "job_position", "source_input", "native_rng_mapping", "authorized_at", "native_status", "native_started"}:
+                if set(details) & {"attempt_id", "ordinal", "seed", "execution_job_id", "job_position", "source_input", "native_rng_mapping", "requested_designs", "authorized_at", "native_status", "native_started"}:
                     raise ValueError("Attempt authorization and native provenance are immutable through worker transitions.")
                 job = state["execution_jobs"][attempt["execution_job_id"]]
                 before_job = deepcopy(job)
@@ -1032,7 +1067,7 @@ class CampaignLedger(ExecutionJobLedgerMixin):
             )
             if existing and existing != reason and not promotes_budget_outcome:
                 return state
-            if len(state["attempts"]) >= int(state["config"]["max_attempts"]):
+            if _design_budget_exhausted(state):
                 state["generation_budget_exhausted"] = True
             state["status"] = "completed" if reason in {
                 "target_reached", "budget_exhausted", "runtime_exhausted", "compute_exhausted",
@@ -1560,7 +1595,7 @@ def _rfd4_candidate_rows(
     attempt: dict[str, Any],
     native_state: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Verify one RFD4 co-designed sequence/structure output without inventing native acceptance."""
+    """Verify every RFD4 co-designed output in one native batch receipt."""
     import copy
 
     from mn_molecular_design_studio.design_validation import protein_chains, read_structure, sequence
@@ -1575,10 +1610,6 @@ def _rfd4_candidate_rows(
     child_run_dir = Path(child_run_dir)
     candidates_path = child_run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl"
     candidates = read_candidates(candidates_path)
-    if len(candidates) > 1:
-        raise RuntimeError(
-            f"RFD4 attempt {attempt['attempt_id']} requested one output but normalized {len(candidates)} candidates."
-        )
     payload = read_json(child_run_dir / "input.json")
     params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
     target_path = resolve_stored_path(params.get("target_structure"), must_exist=True)
@@ -1599,7 +1630,7 @@ def _rfd4_candidate_rows(
     allocation = metadata.get("resource_allocation") if isinstance(metadata.get("resource_allocation"), dict) else {}
     result: list[dict[str, Any]] = []
     seen_native_ids: set[str] = set()
-    for row in candidates:
+    for candidate_index, row in enumerate(candidates, start=1):
         native_id = str(row.get("candidate_id") or "")
         if not native_id or native_id in seen_native_ids:
             raise RuntimeError(f"RFD4 returned a missing or duplicate candidate ID in {child_run_dir.name}.")
@@ -1666,7 +1697,9 @@ def _rfd4_candidate_rows(
             "attempt_id": attempt["attempt_id"],
             "batch_id": attempt["batch_id"],
             "attempt_seed": attempt["seed"],
-            "attempt_unit": "one native design request",
+            "attempt_unit": "one native RFD4 batch request",
+            "requested_designs": int(attempt.get("requested_designs") or 1),
+            "native_candidate_index": candidate_index,
             "worker_run_id": child_run_dir.name,
             "worker": metadata.get("scheduler_worker_id") or metadata.get("worker_id") or "",
             "gpu_device": allocation.get("gpu_device") or params.get("gpu_device") or "",
@@ -1698,7 +1731,7 @@ def _create_rfd4_attempt_child(
     attempt: dict[str, Any],
     config: dict[str, Any],
 ) -> Path:
-    """Queue one independently seeded, one-output RFD4 co-design request."""
+    """Queue one independently seeded, native-batched RFD4 co-design request."""
     ledger.assert_production_jobs()
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import (
         mark_internal_job,
@@ -1730,8 +1763,8 @@ def _create_rfd4_attempt_child(
         input_files=[str(staged_target)] if parent_params.get("input_mode") == "condition_spec" else [],
         avoid_structures=[],
         also_bind_structures=[],
-        num_designs=1,
-        batch_size=1,
+        num_designs=int(attempt.get("requested_designs") or config.get("native_designs_per_job") or 1),
+        batch_size=int(parent_params.get("batch_size") or 1),
         seed=int(attempt["seed"]),
         gpu_device="auto" if peer_execution else _gpu_for_attempt(config, int(attempt["ordinal"])),
         cpu_cores=int((config.get("resources") or {}).get("cpu_cores") or parent_params.get("cpu_cores") or 8),
@@ -1786,8 +1819,9 @@ def _create_rfd4_attempt_child(
     write_json(child_run_dir / "metadata.json", metadata)
     ledger.transition(
         attempt["attempt_id"], "queued", child_run_dir=str(child_run_dir),
-        native_campaign_seed=int(attempt["seed"]), attempt_unit="one native design request",
-        requested_outputs=1, cluster_remote=peer_execution,
+        native_campaign_seed=int(attempt["seed"]), attempt_unit="one native RFD4 batch request",
+        requested_outputs=int(attempt.get("requested_designs") or config.get("native_designs_per_job") or 1),
+        cluster_remote=peer_execution,
     )
     if peer_execution:
         current_attempt = ledger.snapshot()["attempts"][attempt["attempt_id"]]
@@ -1821,7 +1855,8 @@ def _repair_rfd4_attempt_child(
     params = child_payload.get("params") if isinstance(child_payload.get("params"), dict) else {}
     peer_execution = _peer_campaign_mode(config)
     params.update(
-        num_designs=1, batch_size=1, seed=int(attempt["seed"]),
+        num_designs=int(attempt.get("requested_designs") or config.get("native_designs_per_job") or 1),
+        seed=int(attempt["seed"]),
         gpu_device="auto" if peer_execution else _gpu_for_attempt(config, int(attempt["ordinal"])),
         distributed_campaign=None,
     )
@@ -2139,6 +2174,16 @@ def _generation_slot_count(active: list[dict[str, Any]]) -> int:
     return sum(item.get("worker_status") != "collecting" for item in active)
 
 
+def _objective_reserved_design_count(
+    state: dict[str, Any], active: list[dict[str, Any]], config: dict[str, Any],
+) -> int:
+    """Reserve outputs from active native batches and unresolved acceptance checks."""
+    reserved = sum(int(item.get("requested_designs") or 1) for item in active)
+    if config.get("objective_type", "accepted") == "accepted":
+        reserved += _validation_pending_candidates(state, config)
+    return reserved
+
+
 def _rfd4_retry_safe(child_run_dir: Path) -> bool:
     """Only retry an RFD4 child if its native Docker process was never launched."""
     command_path = Path(child_run_dir) / "command.json"
@@ -2352,8 +2397,11 @@ def _reconcile_attempts(
                 native_state = {
                     "engine": generator_id,
                     "authoritative": False,
-                    "attempt_unit": "one native design request",
-                    "requested_designs": 1,
+                    "attempt_unit": (
+                        "one native RFD4 batch request" if generator_id == "rfd4_proteina"
+                        else "one native design request"
+                    ),
+                    "requested_designs": int(attempt.get("requested_designs") or 1),
                     "output_candidates": deferred_count,
                     "seed": int(attempt["seed"]),
                     "output_storage": "worker_local",
@@ -2477,8 +2525,8 @@ def _reconcile_attempts(
                 native_state = {
                     "engine": "rfd4_proteina",
                     "authoritative": False,
-                    "attempt_unit": "one native design request",
-                    "requested_designs": 1,
+                    "attempt_unit": "one native RFD4 batch request",
+                    "requested_designs": int(attempt.get("requested_designs") or 1),
                     "output_candidates": output_count,
                     "seed": int(attempt["seed"]),
                 }
@@ -2689,7 +2737,7 @@ def _sync_parent_results(
         "termination_reason": state.get("termination_reason"),
         "generation_budget_exhausted": bool(
             state.get("generation_budget_exhausted")
-            or len(state["attempts"]) >= int(state["config"]["max_attempts"])
+            or _design_budget_exhausted(state)
         ),
         "counters": counters,
         "gpu_compute_seconds": ledger.gpu_compute_seconds(),
@@ -2730,7 +2778,7 @@ def _parent_progress(
     capability = generator_capabilities(str(config.get("generator_id") or "bindcraft2"))
     selected = _accepted_count(ledger, config)
     state = ledger.snapshot()
-    attempts_remaining = max(0, int(config["max_attempts"]) - counters["attempts_authorized"])
+    attempts_remaining = counters["designs_remaining"]
     validation_pending = _validation_pending_candidates(state, config)
     collecting = _collecting_attempt_count(active)
     generating = _generation_slot_count(active)
@@ -2739,7 +2787,7 @@ def _parent_progress(
             f"{selected}/{config['accepted_target']} {'generated' if config.get('objective_type') == 'generated' else 'accepted'}")
     label = (
         f"{capability.label} · {goal} · "
-        f"{counters['attempts_started']}/{config['max_attempts']} attempts started · "
+        f"{counters['designs_started']}/{config['max_attempts']} designs started · "
         f"{generating} generation slots reserved · {collecting} collecting"
     )
     if state.get("generation_budget_exhausted") and validation_pending:
@@ -2783,27 +2831,38 @@ def _dispatch_attempts(
     state = ledger.snapshot()
     max_concurrent = int(config["max_concurrent_generation_jobs"])
     slots = max(0, max_concurrent - active_count)
-    # active_count limits generation concurrency. Collection-only attempts do
-    # not hold a GPU slot, but reserve one possible objective result until the
-    # candidate receipt arrives. This keeps the objective bounded without
-    # making artifact-transfer latency a generation barrier.
+    # Attempts are scheduler jobs; the design budget and objective are counted
+    # in candidate outputs. A single RFD4 job can therefore reserve N outputs.
     target = count_target(config)
-    target_remaining = slots if target is None else max(
-        0, target - accepted_count - active_count - objective_reserved_count,
+    designs_per_job = int(config.get("native_designs_per_job") or 1)
+    target_remaining = None if target is None else max(
+        0, target - accepted_count - objective_reserved_count,
     )
-    authorized_remaining = max(0, int(config["max_attempts"]) - len(state["attempts"]))
-    requested = min(slots, target_remaining, authorized_remaining)
+    authorized_remaining = max(0, int(config["max_attempts"]) - _authorized_design_count(state))
+    by_target = slots if target_remaining is None else math.ceil(target_remaining / designs_per_job)
+    by_budget = math.ceil(authorized_remaining / designs_per_job) if authorized_remaining else 0
+    requested = min(slots, by_target, by_budget)
     if requested <= 0:
         return
     shared, generator_node = _shared_objective_runtime(parent_run_dir, config)
     batch_base = (int(state["next_ordinal"]) - 1) // int(config["batch_size"]) + 1
     for offset in range(requested):
         batch_number = batch_base + offset // int(config["batch_size"])
-        batch_id = f"b{batch_number:06d}"
+        # RFD4 child jobs are native design batches, not Studio groups of
+        # single-output attempts. Give each independently scheduled batch its
+        # own identity; preserve historical grouping for single-design tools.
+        batch_id = (
+            f"b{int(state['next_ordinal']) + offset:06d}"
+            if designs_per_job > 1 else f"b{batch_number:06d}"
+        )
         parent_input = parent_run_dir / "input.json"
         input_bytes = parent_input.read_bytes() if parent_input.is_file() else None
         source_input = {"parent_run_dir": str(parent_run_dir), "input_sha256": hashlib.sha256(input_bytes).hexdigest()} if input_bytes is not None else None
         native_configuration = json.loads(input_bytes) if input_bytes is not None else None
+        remaining_designs = int(config["max_attempts"]) - _authorized_design_count(ledger.snapshot())
+        job_designs = min(designs_per_job, max(0, remaining_designs))
+        if job_designs <= 0:
+            return
         predicted_attempt_id = None
         if shared:
             ordinal = int(ledger.snapshot()["next_ordinal"])
@@ -2813,7 +2872,10 @@ def _dispatch_attempts(
                 str(config.get("generator_id") or "bindcraft2"),
             ):
                 return
-        attempts = ledger.authorize(1, batch_id=batch_id, source_input=source_input, native_configuration=native_configuration)
+        attempts = ledger.authorize(
+            1, batch_id=batch_id, source_input=source_input,
+            native_configuration=native_configuration, requested_designs=job_designs,
+        )
         if not attempts:
             if shared and predicted_attempt_id:
                 shared.release_attempt(state["campaign_id"], predicted_attempt_id, "Local campaign authorization did not create an attempt.")
@@ -3048,7 +3110,7 @@ def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: l
     reason = str(state.get("termination_reason") or "failed")
     generation_budget_exhausted = bool(
         state.get("generation_budget_exhausted")
-        or len(state["attempts"]) >= int(state["config"]["max_attempts"])
+        or _design_budget_exhausted(state)
     )
     success = reason in {"target_reached", "budget_exhausted", "runtime_exhausted", "compute_exhausted",
                          "shared_target_reached", "shared_budget_exhausted", "shared_branch_budget_exhausted"}
@@ -3070,7 +3132,7 @@ def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: l
                                  progress["objective_met"] and (state["config"].get("objective_type") != "time" or reason == "runtime_exhausted")),
             "campaign_objective": progress,
             "generation_budget_exhausted": generation_budget_exhausted,
-            "attempts_remaining": max(0, int(state["config"]["max_attempts"]) - counters["attempts_authorized"]),
+            "attempts_remaining": counters["designs_remaining"],
             "termination_reason": reason,
             "target_met": target_met,
             "gpu_compute_seconds": ledger.gpu_compute_seconds(),
@@ -4032,7 +4094,7 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
             )
         while True:
             state = ledger.snapshot()
-            if len(state["attempts"]) >= int(config["max_attempts"]):
+            if _design_budget_exhausted(state):
                 state = ledger.mark_generation_budget_exhausted()
             parent_metadata = read_json_raw(parent_run_dir / "metadata.json")
             if state.get("termination_reason") == "failed":
@@ -4176,12 +4238,11 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
             else:
                 _dispatch_attempts(
                     parent_run_dir, ledger, config,
-                    active_count=(
-                        _generation_slot_count(active)
-                        + _validation_pending_candidates(ledger.snapshot(), config)
-                    ),
+                    active_count=_generation_slot_count(active),
                     accepted_count=selected,
-                    objective_reserved_count=_collecting_attempt_count(active),
+                    objective_reserved_count=_objective_reserved_design_count(
+                        ledger.snapshot(), active, config,
+                    ),
                 )
                 # Newly created child jobs are scheduler-owned immediately,
                 # even before the scheduler records their first status. Reconcile
@@ -4191,10 +4252,10 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
                 candidates = _drive_validation(parent_run_dir, ledger, candidates, config)
                 _sync_parent_results(parent_run_dir, ledger, children, candidates)
                 state = ledger.snapshot()
-                if len(state["attempts"]) >= int(config["max_attempts"]):
+                if _design_budget_exhausted(state):
                     state = ledger.mark_generation_budget_exhausted()
                 if (
-                    len(state["attempts"]) >= int(config["max_attempts"])
+                    _design_budget_exhausted(state)
                     and not active
                 ):
                     pending_validation = _validation_pending_candidates(state, config)

@@ -48,6 +48,9 @@ def _check_contract(state):
             raise LedgerConflict("A production adapter job requires exactly one authorized attempt.")
         if job_id != job["execution_job_id"] or digest(job["configuration"]) != job["configuration_digest"]:
             raise LedgerConflict("Execution-job configuration digest mismatch.")
+        requested_designs = job["configuration"].get("requested_designs_per_attempt", 1)
+        if type(requested_designs) is not int or requested_designs < 1:
+            raise LedgerConflict("Execution-job requested-design count is invalid.")
         if job["configuration"]["campaign"] != state["config"]:
             raise LedgerConflict("Campaign configuration changed after authorization.")
         if digest(job["manifest"]) != job["manifest_digest"]:
@@ -59,6 +62,8 @@ def _check_contract(state):
             members.add(member["attempt_id"])
             if attempt.get("execution_job_id") != job_id or any(attempt.get(k) != v for k, v in member.items()):
                 raise LedgerConflict("Immutable attempt membership or provenance changed.")
+            if int(attempt.get("requested_designs") or 1) != requested_designs:
+                raise LedgerConflict("Attempt requested-design count differs from its immutable execution job.")
     if members != set(state["attempts"]):
         raise LedgerConflict("Schema-v2 attempts require execution-job membership.")
 
@@ -92,7 +97,8 @@ def _new_execution(job, retry_key):
     return execution
 
 
-def reserve(state, request_key, sources, native_configuration, resources, *, mode, batch_id=None):
+def reserve(state, request_key, sources, native_configuration, resources, *, mode, batch_id=None,
+            requested_designs=1):
     if state["schema_version"] != 2:
         raise ValueError("Execution-job operations require schema v2; historical ledgers are not migrated.")
     if not isinstance(request_key, str) or not request_key.strip() or not isinstance(sources, list) or not sources or any(not isinstance(s, dict) or not s for s in sources):
@@ -108,12 +114,19 @@ def reserve(state, request_key, sources, native_configuration, resources, *, mod
             return deepcopy(job)
     if state["status"] != "running":
         raise ValueError("A stopped campaign cannot authorize a new job.")
-    if len(state["attempts"]) + len(sources) > state["config"]["max_attempts"]:
-        raise ValueError("The entire manifest must fit the remaining scientific attempt budget.")
+    if type(requested_designs) is not int or requested_designs < 1:
+        raise ValueError("A reservation needs a positive requested-design count.")
+    already_authorized = sum(
+        int(attempt.get("requested_designs") or 1) for attempt in state["attempts"].values()
+    )
+    if already_authorized + len(sources) * requested_designs > state["config"]["max_attempts"]:
+        raise ValueError("The entire manifest must fit the remaining scientific design budget.")
     first = state["next_ordinal"]
     job_id = f"{state['campaign_id']}:j{first:08d}"
     manifest = manifest_entries(state["campaign_id"], state["config"]["seed"], first, sources)
     configuration = {"campaign": deepcopy(state["config"]), "native": deepcopy(native_configuration), "resource_requirements": deepcopy(resources)}
+    if requested_designs != 1:
+        configuration["requested_designs_per_attempt"] = requested_designs
     job = {"record_version": 1, "execution_job_id": job_id, "request_key": request_key,
            "reservation_digest": reservation_digest, "mode": mode, "configuration": configuration,
            "configuration_digest": digest(configuration), "manifest": manifest, "manifest_digest": digest(manifest),
@@ -123,6 +136,7 @@ def reserve(state, request_key, sources, native_configuration, resources, *, mod
     for entry in manifest:
         state["attempts"][entry["attempt_id"]] = {**deepcopy(entry), "execution_job_id": job_id,
             "batch_id": batch_id, "status": "authorized", "native_status": "authorized", "native_started": None,
+            "requested_designs": requested_designs,
             "authorized_at": job["authorized_at"], "started_at": None, "completed_at": None,
             "child_run_dir": None, "trajectory_index": None, "retry_count": 0, "receipts": []}
     state["next_ordinal"] += len(sources)
