@@ -436,7 +436,7 @@ def test_rfd4_remote_completion_materializes_verified_artifacts_and_provenance(t
     monkeypatch.setattr(candidate_batches, "actor", lambda *_args, **_kwargs: {"id": "owner"})
     monkeypatch.setattr(
         candidate_batches, "_artifact",
-        lambda _peer, _job, relative, _actor, directory: Path(directory) / relative,
+        lambda _peer, _job, relative, _actor, directory, **_kwargs: Path(directory) / relative,
     )
     peer = {
         "manifest": str(manifest), "cluster_job_id": "cluster-job", "input_transfer_bytes": 42,
@@ -486,10 +486,12 @@ def test_rfd4_pending_artifact_command_is_persisted_and_reused(tmp_path, monkeyp
     monkeypatch.setattr(candidate_batches, "actor", lambda *_args, **_kwargs: {"id": "owner"})
     requests = []
 
-    def pending_artifact(state, _job_id, relative, _user, _directory):
+    def pending_artifact(state, _job_id, relative, _user, _directory, *, persist_transfers=None):
         transfer = state.setdefault("transfers", {}).setdefault(relative, {})
         if "command_id" not in transfer:
             transfer["command_id"] = f"transfer-{len(requests) + 1}"
+            if persist_transfers is not None:
+                persist_transfers(state["transfers"])
             requests.append(relative)
         return None
 
@@ -498,13 +500,16 @@ def test_rfd4_pending_artifact_command_is_persisted_and_reused(tmp_path, monkeyp
 
     for _ in range(2):
         stored = campaign.snapshot()["attempts"][attempt["attempt_id"]]["cluster_submission"]
+        distributed_campaign._restore_peer_transfer_state(child, stored)
         assert not distributed_campaign._materialize_rfd4_peer_output(
             parent, campaign, attempt, child, stored, output, {"node_id": "peer-4032"},
         )
 
     stored = campaign.snapshot()["attempts"][attempt["attempt_id"]]["cluster_submission"]
     relative = "artifacts/rfd4_proteina/request.json"
-    assert stored["transfers"][relative]["command_id"] == "transfer-1"
+    sidecar = distributed_campaign._peer_transfer_state_path(child)
+    assert json.loads(sidecar.read_text())["transfers"][relative]["command_id"] == "transfer-1"
+    assert stored["transfers"] == {}
     assert requests == [
         relative,
         "artifacts/rfd4_proteina/native_command.json",
@@ -2356,10 +2361,12 @@ def test_remote_artifact_poll_persists_transfer_ids_before_the_next_poll(tmp_pat
     )
     transfer_requests = []
 
-    def poll(state, *_args, **_kwargs):
+    def poll(state, *_args, persist_transfers=None, **_kwargs):
         transfer = state.setdefault('transfers', {}).get('request.json')
         if transfer is None:
             state['transfers']['request.json'] = {'command_id': 'transfer-1'}
+            if persist_transfers is not None:
+                persist_transfers(state['transfers'])
             transfer_requests.append('request.json')
         return 'running', None, {
             'cluster_job_id': 'peer-job', 'node_id': 'peer-node', 'wait_reason': '',
@@ -2370,8 +2377,27 @@ def test_remote_artifact_poll_persists_transfer_ids_before_the_next_poll(tmp_pat
         distributed_campaign._reconcile_attempts(campaign, parent, config)
 
     latest = campaign.snapshot()['attempts'][attempt['attempt_id']]
-    assert latest['cluster_submission']['transfers']['request.json']['command_id'] == 'transfer-1'
+    sidecar = distributed_campaign._peer_transfer_state_path(child)
+    assert json.loads(sidecar.read_text())['transfers']['request.json']['command_id'] == 'transfer-1'
+    assert 'transfers' not in latest['cluster_submission']
     assert transfer_requests == ['request.json']
+
+
+def test_stale_unassigned_peer_request_is_detected_after_code_update(monkeypatch):
+    from mn_molecular_design_studio.cluster import capabilities
+
+    monkeypatch.setattr(capabilities, 'code_revision', lambda: 'current-revision')
+    peer = {'prepared_envelope': {'requirements': {'code_revision': 'previous-revision'}}}
+    remote_job = {
+        'status': 'waiting_for_workstation',
+        'wait_reason': 'pc002975 is running a different Studio code revision.',
+    }
+    assert distributed_campaign._peer_submission_needs_revision_refresh(peer, remote_job)
+
+    peer['prepared_envelope']['requirements']['code_revision'] = 'current-revision'
+    assert not distributed_campaign._peer_submission_needs_revision_refresh(peer, remote_job)
+    remote_job['wait_reason'] = 'Waiting for an available GPU.'
+    assert not distributed_campaign._peer_submission_needs_revision_refresh(peer, remote_job)
 
 
 def test_expired_campaign_stops_before_dispatch_and_finishes_with_time_results(tmp_path, monkeypatch):

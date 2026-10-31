@@ -94,9 +94,13 @@ def test_output_transfer_resumes_and_rejects_corruption(tmp_path, monkeypatch):
     monkeypatch.setattr(cb, 'Store', Store)
     state = {}
     args = (state, 'job', 'artifacts/design.pdb', {}, tmp_path / 'result')
-    assert cb._artifact(*args) is None
-    assert cb._artifact(*args).read_bytes() == data
-    assert cb._artifact(*args).read_bytes() == data
+    persisted = []
+    persist = lambda transfers: persisted.append({key: dict(value) for key, value in transfers.items()})
+    assert cb._artifact(*args, persist_transfers=persist) is None
+    assert persisted[-1]['artifacts/design.pdb']['command_id'] == 'command'
+    assert cb._artifact(*args, persist_transfers=persist).read_bytes() == data
+    assert persisted[-1]['artifacts/design.pdb']['sha256'] == checksum
+    assert cb._artifact(*args, persist_transfers=persist).read_bytes() == data
     assert len(calls) == 1
     bundles.blob_path(checksum).write_bytes(b'corrupt')
     with pytest.raises(ValueError, match='integrity'):
@@ -249,7 +253,7 @@ def test_poll_preserves_native_receipts_and_completed_partial_members(tmp_path, 
         def job(self, *_): return remote
     monkeypatch.setattr(cb, 'Store', Store)
     monkeypatch.setattr(cb, 'actor', lambda *a, **k: {})
-    monkeypatch.setattr(cb, '_artifact', lambda batch, job, path, user, destination: directory / path)
+    monkeypatch.setattr(cb, '_artifact', lambda batch, job, path, user, destination, **_kwargs: directory / path)
     outcome, output, job = cb.poll({'cluster_job_id': 'job', 'manifest': str(tmp_path / 'batch.json')}, owner_id='owner', project_id=None)
     assert outcome == ('completed' if status == 'completed' else 'partial')
     row = json.loads(Path(output['candidates_jsonl']).read_text())

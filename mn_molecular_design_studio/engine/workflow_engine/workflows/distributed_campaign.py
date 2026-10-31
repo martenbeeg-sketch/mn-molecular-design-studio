@@ -1347,30 +1347,13 @@ def _materialize_rfd4_peer_output(
     job_id = str(peer.get("cluster_job_id") or "")
 
     def artifact(relative: str) -> Path | None:
-        previous = json.dumps(peer.get("transfers", {}), sort_keys=True)
-        result_path = candidate_batches._artifact(
+        return candidate_batches._artifact(
             peer, job_id, relative,
             candidate_batches.actor(owner_id, project_id, allow_development=development_mode), collected,
+            persist_transfers=lambda transfers: _persist_peer_transfer_state(
+                child_run_dir, job_id, transfers,
+            ),
         )
-        if json.dumps(peer.get("transfers", {}), sort_keys=True) != previous:
-            latest = _ledger_view(ledger)["attempts"].get(attempt["attempt_id"], {})
-            current_peer = dict(latest.get("cluster_submission") or {})
-            current_peer.update({
-                key: peer[key] for key in (
-                    "manifest", "submission_key", "prepared_envelope", "cluster_job_id",
-                    "origin_node_id", "placement_node_id", "placement_policy",
-                    "input_transfer_bytes", "output_transfer_bytes",
-                ) if key in peer
-            })
-            current_peer["transfers"] = json.loads(json.dumps(peer.get("transfers", {})))
-            current_status = str(latest.get("status") or "queued")
-            if current_status not in {"completed", "failed", "interrupted", "cancelled", "not_started"}:
-                ledger.transition(
-                    attempt["attempt_id"], current_status,
-                    cluster_submission=current_peer,
-                    remote_submission_key=peer.get("submission_key"),
-                )
-        return result_path
 
     # These files are needed by the campaign's existing target/parameter
     # identity checks. Start every transfer with a known path in the same poll
@@ -1467,6 +1450,7 @@ def _materialize_rfd4_peer_output(
     peer_state["collected_output"] = output
     peer_state["worker_node_id"] = remote_job.get("node_id")
     peer_state["resource_allocation"] = allocation
+    peer_state["transfers"] = deepcopy(peer.get("transfers", {}))
     ledger.transition(
         attempt["attempt_id"], "running", cluster_submission=peer_state,
         worker_node_id=remote_job.get("node_id"), resource_allocation=allocation,
@@ -2251,6 +2235,58 @@ def _collecting_attempt_count(active: list[dict[str, Any]]) -> int:
     return sum(item.get("worker_status") == "collecting" for item in active)
 
 
+def _peer_transfer_state_path(child_run_dir: Path) -> Path:
+    return Path(child_run_dir) / "artifacts" / "distributed_campaign" / "peer_transfers.json"
+
+
+def _persist_peer_transfer_state(
+    child_run_dir: Path, cluster_job_id: str, transfers: dict[str, Any],
+) -> None:
+    """Durably checkpoint small artifact-transfer cursors outside the large ledger."""
+    path = _peer_transfer_state_path(child_run_dir)
+    payload = {
+        "schema_version": 1,
+        "cluster_job_id": str(cluster_job_id),
+        "transfers": deepcopy(transfers),
+    }
+    if path.is_file():
+        saved = read_json_raw(path)
+        if saved.get("cluster_job_id") == payload["cluster_job_id"] and saved.get("transfers") == payload["transfers"]:
+            return
+    _atomic_json(path, payload)
+
+
+def _restore_peer_transfer_state(child_run_dir: Path, peer: dict[str, Any]) -> None:
+    """Resume exact remote artifact commands after a controller restart."""
+    path = _peer_transfer_state_path(child_run_dir)
+    cluster_job_id = str(peer.get("cluster_job_id") or "")
+    saved = read_json_raw(path) if path.is_file() else {}
+    if saved.get("cluster_job_id") == cluster_job_id and isinstance(saved.get("transfers"), dict):
+        transfers = dict(peer.get("transfers") or {})
+        transfers.update(saved["transfers"])
+        peer["transfers"] = transfers
+        _persist_peer_transfer_state(child_run_dir, cluster_job_id, transfers)
+    elif isinstance(peer.get("transfers"), dict) and peer["transfers"]:
+        # Adopt transfer IDs written by older versions before removing them
+        # from the campaign ledger on the next poll.
+        _persist_peer_transfer_state(child_run_dir, cluster_job_id, peer["transfers"])
+
+
+def _peer_submission_needs_revision_refresh(peer: dict[str, Any], remote_job: dict[str, Any]) -> bool:
+    """Identify an unassigned job whose immutable request predates this code update."""
+    reason = str(remote_job.get("wait_reason") or "")
+    if "different Studio code revision" not in reason:
+        return False
+    prepared = peer.get("prepared_envelope") or {}
+    requirements = prepared.get("requirements") or {}
+    required_revision = str(requirements.get("code_revision") or "")
+    if not required_revision:
+        return False
+    from mn_molecular_design_studio.cluster.capabilities import code_revision
+
+    return required_revision != code_revision()
+
+
 def _attempt_transition_needed(attempt: dict[str, Any], status: str, details: dict[str, Any]) -> bool:
     """Skip an unchanged scheduler poll without reopening the full campaign ledger."""
     return attempt.get("status") != status or any(
@@ -2390,9 +2426,8 @@ def _reconcile_attempts(
         ):
             from mn_molecular_design_studio.cluster import candidate_batches
 
-            # Polling mutates nested transfer state. Keep that mutation separate
-            # from the ledger snapshot so _attempt_transition_needed can detect
-            # it and persist the command IDs before the next poll.
+            # Transfer command IDs live in a small atomic sidecar, not the
+            # campaign ledger (which also contains every candidate structure).
             peer = deepcopy(attempt.get("cluster_submission") or {})
             try:
                 owner_id, project_id, development_mode = _campaign_actor(parent_run_dir)
@@ -2422,6 +2457,7 @@ def _reconcile_attempts(
                     state = _ledger_view(ledger)
                     attempt = state["attempts"][attempt_id]
                     peer = dict(attempt.get("cluster_submission") or peer)
+                _restore_peer_transfer_state(child, peer)
                 defer_remote_artifacts = config.get("remote_artifact_policy") == "defer_generated"
                 if defer_remote_artifacts:
                     peer_status, peer_job = candidate_batches.poll_summary(
@@ -2438,9 +2474,13 @@ def _reconcile_attempts(
                     else:
                         peer_output = None
                 else:
+                    persist_transfers = lambda transfers: _persist_peer_transfer_state(
+                        child, str(peer.get("cluster_job_id") or ""), transfers,
+                    )
                     peer_status, peer_output, peer_job = candidate_batches.poll(
                         peer, owner_id=owner_id, project_id=project_id,
                         allow_development=development_mode,
+                        persist_transfers=persist_transfers,
                     )
             except Exception as exc:
                 failure = f"{type(exc).__name__}: {exc}"
@@ -2449,6 +2489,34 @@ def _reconcile_attempts(
                 write_json(child / "metadata.json", child_metadata)
                 ledger.transition(attempt_id, "failed", child_run_dir=str(child), failure=failure)
                 continue
+            if (
+                peer_status == "waiting_for_workstation"
+                and not peer_job.get("node_id")
+                and _peer_submission_needs_revision_refresh(peer, peer_job)
+                and not time_expired
+                and int(attempt.get("retry_count", 0)) < int(config["max_retries"])
+                and ledger.retry_is_safe(attempt)
+            ):
+                # The immutable peer request predates the coordinated Studio
+                # update. Cancel only this unassigned job and retry the same
+                # authorized attempt/seed with a fresh capability manifest.
+                _cancel_campaign_attempt(
+                    ledger, attempt, child,
+                    "Refreshing an unstarted peer submission after a Studio code update.",
+                )
+                retried = ledger.retry(attempt_id)
+                try:
+                    retry_child = _create_attempt_child(
+                        parent_run_dir, ledger, retried, config,
+                    )
+                except Exception as exc:
+                    ledger.transition(
+                        attempt_id, "failed", failure=f"{type(exc).__name__}: {exc}",
+                    )
+                    continue
+                children[attempt_id] = retry_child
+                active.append({**retried, "worker_status": "queued", "retrying": True})
+                continue
             peer["cluster_job_id"] = peer.get("cluster_job_id") or peer_job.get("cluster_job_id")
             peer["worker_node_id"] = peer_job.get("node_id")
             peer["wait_reason"] = peer_job.get("wait_reason") or peer.get("wait_reason") or ""
@@ -2456,8 +2524,10 @@ def _reconcile_attempts(
                 peer_job.get("metadata") if isinstance(peer_job.get("metadata"), dict) else {}
             )
             transition_status = "running" if peer_status == "running" else "queued"
+            ledger_peer = deepcopy(peer)
+            ledger_peer.pop("transfers", None)
             transition_details = {
-                "cluster_submission": peer,
+                "cluster_submission": ledger_peer,
                 "cluster_job_id": peer.get("cluster_job_id"),
                 "worker_node_id": peer.get("worker_node_id"),
                 "wait_reason": peer.get("wait_reason"),

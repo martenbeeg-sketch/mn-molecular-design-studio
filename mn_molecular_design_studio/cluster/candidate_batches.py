@@ -206,13 +206,15 @@ def recover_submission(submission_key, *, owner_id, project_id, allow_developmen
     return store.job(row['job_id'], user) if row else None
 
 
-def _artifact(state, job_id, relative, user, directory):
+def _artifact(state, job_id, relative, user, directory, *, persist_transfers=None):
     """Resume one authenticated artifact command and verify its returned blob."""
     store = Store()
     transfers = state.setdefault('transfers', {})
     transfer = transfers.setdefault(relative, {})
     if 'command_id' not in transfer:
         transfer.update(store.action(job_id, 'artifact', {'path': relative}, user))
+        if persist_transfers is not None:
+            persist_transfers(transfers)
         return None
     command = store.command(transfer['command_id'], user)
     if command['status'] == 'failed':
@@ -225,6 +227,8 @@ def _artifact(state, job_id, relative, user, directory):
         # Existing peer artifact commands upload blobs to their originating
         # store. An expired copy can be requested again without rerunning inference.
         transfer.pop('command_id', None)
+        if persist_transfers is not None:
+            persist_transfers(transfers)
         return None
     if bundles.digest_file(blob) != checksum:
         raise ValueError('Remote output failed its SHA-256 integrity check.')
@@ -238,6 +242,8 @@ def _artifact(state, job_id, relative, user, directory):
         temporary = path.with_suffix(path.suffix + '.transfer')
         temporary.write_bytes(blob.read_bytes()); temporary.replace(path)
     transfer.update(sha256=checksum, bytes=path.stat().st_size)
+    if persist_transfers is not None:
+        persist_transfers(transfers)
     return path
 
 
@@ -293,7 +299,7 @@ def poll_summary(batch, *, owner_id, project_id, allow_development=False):
     return status, job
 
 
-def poll(batch, *, owner_id, project_id, allow_development=False):
+def poll(batch, *, owner_id, project_id, allow_development=False, persist_transfers=None):
     """Return a local verified snapshot only after every candidate file arrives."""
     user = actor(owner_id, project_id, allow_development=allow_development)
     store = Store()
@@ -322,7 +328,13 @@ def poll(batch, *, owner_id, project_id, allow_development=False):
     names = ['metadata.json', 'input.json', collection]
     if not partial or 'result.json' in catalog:
         names.append('result.json')
-    paths = {name: _artifact(batch, batch['cluster_job_id'], name, user, directory) for name in names}
+    paths = {
+        name: _artifact(
+            batch, batch['cluster_job_id'], name, user, directory,
+            persist_transfers=persist_transfers,
+        )
+        for name in names
+    }
     if not all(paths.values()):
         return 'collecting', None, job
     metadata = json.loads(paths['metadata.json'].read_text())
@@ -332,7 +344,10 @@ def poll(batch, *, owner_id, project_id, allow_development=False):
     rows = [json.loads(line) for line in paths[collection].read_text().splitlines() if line.strip()]
     receipt = None
     if 'native_execution.json' in catalog:
-        receipt_path = _artifact(batch, batch['cluster_job_id'], 'native_execution.json', user, directory)
+        receipt_path = _artifact(
+            batch, batch['cluster_job_id'], 'native_execution.json', user, directory,
+            persist_transfers=persist_transfers,
+        )
         if receipt_path is None:
             return 'collecting', None, job
         receipt = json.loads(receipt_path.read_text())
