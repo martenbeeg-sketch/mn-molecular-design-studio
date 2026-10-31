@@ -178,7 +178,9 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
     requirements = deepcopy(config.get("validation_stages", []))
     if not isinstance(requirements, list) or any(not isinstance(item, dict) for item in requirements):
         raise ValueError("validation_stages must be a list of workflow objects.")
-    allowed_validation_workflows = {"refolding.optimized_prediction", "analysis.ipsae"}
+    allowed_validation_workflows = {
+        "refolding.optimized_prediction", "analysis.ipsae", "analysis.validation_acceptance",
+    }
     has_validation_criteria = False
     for index, stage in enumerate(requirements, start=1):
         workflow = str(stage.get("workflow") or "")
@@ -215,6 +217,21 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
             if not stage["acceptance_policy"]["mandatory_filters"]:
                 raise ValueError("Campaign acceptance_policy requires mandatory filters.")
             requirements[index - 1] = stage
+        if workflow == "analysis.validation_acceptance":
+            if index != 1:
+                raise ValueError(
+                    "A native-evidence Validation & Acceptance stage must be the first campaign stage. "
+                    "This stage evaluates generator evidence directly. For prediction-derived criteria, "
+                    "attach the acceptance policy to an independent prediction stage instead."
+                )
+            if acceptance_policy is None:
+                raise ValueError(
+                    "analysis.validation_acceptance campaign stages require an explicit acceptance_policy."
+                )
+            if required_metrics or rules:
+                raise ValueError(
+                    "Use acceptance_policy for Validation & Acceptance stages; do not duplicate rules or required_metrics."
+                )
         has_validation_criteria = has_validation_criteria or bool(
             required_metrics or rules or acceptance_policy is not None
         )
@@ -2574,6 +2591,8 @@ def _sync_parent_results(
                         "acceptance_node": selection.get("acceptance_node"),
                         "validation_run_dir": stage_record.get("run_dir"),
                         "output_candidate_id": stage_record.get("output_candidate_id"),
+                        "evaluation_mode": stage_record.get("evaluation_mode") or "independent_validation",
+                        "workflow": stage_record.get("workflow"),
                     }
             raw.setdefault("distributed_campaign", {}).update({
                 "native_acceptance": record.get("native_acceptance"),
@@ -2596,6 +2615,27 @@ def _sync_parent_results(
                     "sequence_identity": participant.get("sequence_identity"),
                 }
         enriched.append(row)
+    acceptance_summary = None
+    acceptance_stage = next((stage for stage in state["config"].get("validation_stages", [])
+                            if stage.get("workflow") == "analysis.validation_acceptance"), None)
+    if acceptance_stage is not None:
+        from mn_molecular_design_studio.validation_acceptance import write_report
+
+        decisions = [((row.get("raw_metadata") or {}).get("validation_acceptance") or {}) for row in enriched]
+        acceptance_summary = {
+            "workflow": "analysis.validation_acceptance",
+            "evaluation_mode": "native_saved_evidence",
+            "prediction_performed": False,
+            "policy": acceptance_stage.get("acceptance_policy"),
+            "candidate_count": len(enriched),
+            "accepted": sum(row.get("status") == "accepted" for row in decisions),
+            "rejected": sum(row.get("status") == "rejected" for row in decisions),
+            "unresolved": sum(row.get("status") == "unresolved" for row in decisions),
+            "not_evaluated": sum(row.get("status") == "not_evaluated" for row in decisions),
+            "source_measurements": "RFD4 native refold oracle and Studio geometry from the saved complex",
+        }
+        write_report(parent_run_dir, enriched, acceptance_summary)
+        write_json(parent_run_dir / "artifacts" / "validation" / "acceptance_summary.json", acceptance_summary)
     candidate_digest = hashlib.sha256(json.dumps(enriched, sort_keys=True, default=str).encode()).hexdigest()
     if (
         old_ids != candidate_ids
@@ -2660,6 +2700,7 @@ def _sync_parent_results(
         "candidate_count": len(enriched) + counters.get("deferred_candidates", 0),
         "materialized_candidate_count": len(enriched),
         "candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl",
+        **({"validation_acceptance": acceptance_summary} if acceptance_summary is not None else {}),
         **({"shared_campaign": shared.summary()} if shared else {}),
     }
     write_json(parent_run_dir / "artifacts" / "distributed_campaign" / "summary.json", summary)
@@ -2986,7 +3027,7 @@ def _cancel_validation_runs(ledger: CampaignLedger, reason: str) -> None:
 
 
 def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: list[dict[str, Any]]) -> Path:
-    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import finish_job
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import finish_job, read_json
 
     state = ledger.snapshot()
     counters = ledger.counters()
@@ -3001,6 +3042,8 @@ def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: l
             detail=f"Reached {accepted} {'generated' if state['config'].get('objective_type') == 'generated' else 'accepted'} candidates.",
         )
     _sync_parent_results(parent_run_dir, ledger, _attempt_child_paths(ledger), candidates)
+    persisted_summary = read_json(parent_run_dir / "artifacts" / "distributed_campaign" / "summary.json")
+    validation_acceptance_summary = persisted_summary.get("validation_acceptance")
     state = ledger.snapshot()
     reason = str(state.get("termination_reason") or "failed")
     generation_budget_exhausted = bool(
@@ -3031,12 +3074,17 @@ def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: l
             "termination_reason": reason,
             "target_met": target_met,
             "gpu_compute_seconds": ledger.gpu_compute_seconds(),
+            **({"validation_acceptance": validation_acceptance_summary}
+               if validation_acceptance_summary is not None else {}),
             **({"shared_campaign": shared_summary} if shared_summary else {}),
         },
         "downstream_artifacts": {
             "campaign_ledger": "artifacts/distributed_campaign/ledger.json",
             "attempt_summary": "artifacts/distributed_campaign/summary.json",
             "native_worker_runs": [item.get("child_run_dir") for item in state["attempts"].values() if item.get("child_run_dir")],
+            **({"validation_acceptance_report": "artifacts/validation/acceptance.csv",
+                "validation_acceptance_summary": "artifacts/validation/acceptance_summary.json"}
+               if validation_acceptance_summary is not None else {}),
         },
     }
     finish_job(parent_run_dir, success, result)
@@ -3375,6 +3423,50 @@ def _validation_pending_candidates(state: dict[str, Any], config: dict[str, Any]
     return pending
 
 
+def _native_acceptance_geometry(parent_run_dir: Path, candidate: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
+    """Attach only geometry measurements that the saved candidate can support."""
+    from mn_molecular_design_studio.validation_acceptance import METRICS
+
+    geometry_metric_ids = {"rfd4_interface_residues_4a", "rfd4_backbone_clashes_2_5a"}
+    requested_fields = {
+        str(rule.get("field") or "") for rule in policy.get("mandatory_filters", [])
+    } | {str(value) for value in policy.get("informational_scores", [])}
+    requested_fields.update({str(policy.get("ranking_metric") or "")})
+    if not any(METRICS[key]["field"] in requested_fields for key in geometry_metric_ids):
+        return candidate
+
+    source_tool = str(candidate.get("source_tool") or candidate.get("tool") or "")
+    if source_tool != "rfd4_proteina":
+        return candidate
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import _resolve_candidate_structure_path
+
+    structure = _resolve_candidate_structure_path(parent_run_dir, candidate)
+    if structure is None:
+        candidate.setdefault("raw_metadata", {})["validation_acceptance_geometry_error"] = (
+            "Saved RFD4 complex structure is unavailable."
+        )
+        return candidate
+    try:
+        from mn_molecular_design_studio.design_validation import interface_filter_measurements
+
+        geometry = interface_filter_measurements(
+            structure,
+            list(candidate.get("binder_chains") or []),
+            list(candidate.get("target_chains") or []),
+        )
+    except Exception as exc:
+        candidate.setdefault("raw_metadata", {})["validation_acceptance_geometry_error"] = (
+            f"{type(exc).__name__}: {exc}"
+        )
+        return candidate
+    candidate.setdefault("metrics", {}).update({
+        "rfd4_native_interface_residue_count_4a": geometry["validation_interface_residue_count_4a"],
+        "rfd4_native_backbone_ca_clashes_2_5a": geometry["validation_backbone_ca_clashes_2_5a"],
+    })
+    candidate.setdefault("raw_metadata", {}).pop("validation_acceptance_geometry_error", None)
+    return candidate
+
+
 def _mark_validation_pending(ledger: CampaignLedger, candidate_id: str) -> None:
     """Keep requeued validation visible as pending until its evidence is reconciled."""
     ledger.set_candidate_acceptance(candidate_id, validated="pending")
@@ -3403,6 +3495,21 @@ def _drive_validation(
     dispatch = dispatch and not time_progress(config, state["created_at"])["time_expired"]
     stage_specs = config["validation_stages"]
     active_count = _validation_active_count(state)
+
+    def completed_stage_passed(stage_config: dict[str, Any], stage_result: dict[str, Any]) -> bool:
+        """Recover a completed stage's decision from the persisted stage result.
+
+        Campaign polling is repeated, so completion cannot be treated as
+        acceptance. In particular, native saved-evidence stages have no worker
+        run to re-open; their explicit acceptance status is authoritative.
+        """
+        if stage_result.get("status") != "completed":
+            return False
+        if stage_config.get("workflow") == "analysis.validation_acceptance":
+            return stage_result.get("acceptance_status") == "accepted"
+        selection = stage_result.get("selection") or {}
+        return selection.get("status") == "pass"
+
     for candidate_id, ledger_candidate in sorted(
         state["candidates"].items(),
         key=lambda item: (state["attempts"][item[1]["attempt_id"]]["ordinal"], item[0]),
@@ -3426,6 +3533,61 @@ def _drive_validation(
         for stage_index, stage_config in enumerate(stage_specs):
             key = str(stage_index)
             stage_result = dict(stage_results.get(key) or {})
+            if stage_config.get("workflow") == "analysis.validation_acceptance":
+                if stage_result.get("status") == "completed" and stage_result.get("evaluation_mode") == "native_saved_evidence":
+                    if not completed_stage_passed(stage_config, stage_result):
+                        failed_stage = True
+                        reason = str(ledger_candidate.get("validation_decision_reason")
+                                     or "; ".join((stage_result.get("selection") or {}).get("reasons") or [])
+                                     or f"Persisted Validation & Acceptance status is {stage_result.get('acceptance_status') or 'unresolved'}.")
+                        ledger.set_candidate_acceptance(
+                            candidate_id,
+                            validated="failed" if stage_result.get("acceptance_status") in {"failed", "unresolved"} else "rejected",
+                            reason=reason,
+                        )
+                        ledger.update_candidate(candidate_id, validation_decision_reason=reason)
+                        break
+                    continue
+                try:
+                    from mn_molecular_design_studio.validation_acceptance import normalize_policy
+
+                    policy = normalize_policy(stage_config["acceptance_policy"])
+                    _native_acceptance_geometry(parent_run_dir, native, policy)
+                    selection = _stage_selectors(native, native, stage_config)
+                    decision = selection.get("validation_acceptance") or {}
+                    status = str(decision.get("status") or "unresolved")
+                    accepted = {"accepted": "accepted", "rejected": "rejected"}.get(status, "failed")
+                    reason = "; ".join(selection.get("reasons") or [])
+                    if accepted == "accepted":
+                        reason = "Configured Validation & Acceptance filters passed using saved native measurements."
+                    stage_result.update(
+                        status="completed", workflow=stage_config["workflow"],
+                        evaluation_mode="native_saved_evidence", acceptance_status=status,
+                        selection=selection,
+                    )
+                    stage_results[key] = stage_result
+                    ledger.update_candidate(
+                        candidate_id, validation_stages=stage_results,
+                        validation_decision_reason=reason,
+                    )
+                    ledger.set_candidate_acceptance(
+                        candidate_id, validated=accepted, reason=reason,
+                    )
+                    failed_stage = accepted != "accepted"
+                except Exception as exc:
+                    reason = f"Validation & Acceptance evaluation failed: {type(exc).__name__}: {exc}"
+                    stage_result.update(
+                        status="failed", workflow=stage_config["workflow"],
+                        evaluation_mode="native_saved_evidence", error=reason,
+                    )
+                    stage_results[key] = stage_result
+                    ledger.update_candidate(
+                        candidate_id, validation_stages=stage_results,
+                        validation_decision_reason=reason,
+                    )
+                    ledger.set_candidate_acceptance(candidate_id, validated="failed", reason=reason)
+                    failed_stage = True
+                continue
             run_dir = Path(str(stage_result.get("run_dir") or "")).expanduser() if stage_result.get("run_dir") else None
             if run_dir is None or not run_dir.exists():
                 run_dir = _validation_tagged_run(state["campaign_id"], candidate_id, stage_index)
@@ -3556,6 +3718,15 @@ def _drive_validation(
                 break
 
             if stage_result.get("status") == "completed":
+                if not completed_stage_passed(stage_config, stage_result):
+                    failed_stage = True
+                    reason = str(ledger_candidate.get("validation_decision_reason")
+                                 or "; ".join((stage_result.get("selection") or {}).get("reasons") or [])
+                                 or "Persisted validation stage did not pass its configured criteria.")
+                    status = "failed" if (stage_result.get("selection") or {}).get("status") in {"missing", "failed"} else "rejected"
+                    ledger.set_candidate_acceptance(candidate_id, validated=status, reason=reason)
+                    ledger.update_candidate(candidate_id, validation_decision_reason=reason)
+                    break
                 recovered_error = stage_result.pop("error", None)
                 if recovered_error:
                     stage_result.setdefault("recovered_submission_errors", []).append(recovered_error)
@@ -3605,11 +3776,13 @@ def _drive_validation(
         latest = ledger.snapshot()["candidates"].get(candidate_id, {})
         latest_stages = latest.get("validation_stages") or {}
         if not failed_stage and len(latest_stages) == len(stage_specs) and all(
-            (latest_stages.get(str(index)) or {}).get("status") == "completed"
+            completed_stage_passed(stage_specs[index], latest_stages.get(str(index)) or {})
             for index in range(len(stage_specs))
         ):
-            ledger.set_candidate_acceptance(candidate_id, validated="accepted", reason="All configured validation stages and criteria passed.")
-            ledger.update_candidate(candidate_id, validation_decision_reason="All configured validation stages and criteria passed.")
+            accepted_reason = str(latest.get("validation_decision_reason") or
+                                  "All configured validation stages and criteria passed.")
+            ledger.set_candidate_acceptance(candidate_id, validated="accepted", reason=accepted_reason)
+            ledger.update_candidate(candidate_id, validation_decision_reason=accepted_reason)
     if shared:
         final_state = ledger.snapshot()
         for candidate_id, record in final_state["candidates"].items():

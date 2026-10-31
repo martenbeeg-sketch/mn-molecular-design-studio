@@ -633,6 +633,43 @@ def test_time_campaign_validates_on_workflow_and_pipeline_api_without_filter(api
     assert validated.json()['valid'] is True
 
 
+def test_rfd4_native_refold_acceptance_campaign_validates_through_workflow_api(api_data):
+    from mn_molecular_design_studio.auth import user_input_root
+    from mn_molecular_design_studio.validation_acceptance import METRICS
+
+    data, client = api_data, api_data["client"]
+    target_path = user_input_root(data["admin"]["id"]) / "rfd4-native-acceptance-target.pdb"
+    write_structure(target_path, chains=(("A", 12),))
+    policy = {
+        "binder_format": "miniprotein", "target_type": "fasta_idr",
+        "mandatory_filters": [
+            {"field": METRICS["rfd4_native_ptm"]["field"], "operator": ">=", "value": .55},
+            {"field": METRICS["rfd4_native_iptm"]["field"], "operator": ">=", "value": .70},
+            {"field": METRICS["interface_pae_norm31"]["field"], "operator": "<=", "value": .35},
+        ],
+    }
+    request = {
+        "schema_version": 1, "workflow": "design.rfd4_proteina",
+        "project_id": data["project"]["id"],
+        "parameters": {
+            "target_structure": str(target_path), "target_chains": ["A"],
+            "options": {"refold": True},
+            "distributed_campaign": {
+                "enabled": True, "generator_id": "rfd4_proteina",
+                "acceptance_level": "validated", "accepted_target": 1,
+                "max_attempts": 2, "batch_size": 1,
+                "validation_stages": [{
+                    "workflow": "analysis.validation_acceptance",
+                    "acceptance_policy": policy,
+                }],
+            },
+        },
+    }
+    response = client.post("/api/v1/workflows/validate", json=request)
+    assert response.status_code == 200, response.text
+    assert response.json()["valid"] is True
+
+
 def test_validation_acceptance_saved_evidence_is_public_and_api_validated(api_data):
     data, client = api_data, api_data["client"]
     source = candidate_run(data, tool="rfd4_proteina")

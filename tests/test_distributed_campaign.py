@@ -2271,3 +2271,94 @@ def test_timed_campaign_exhausting_budget_early_is_not_reported_as_timer_success
     assert result['metrics']['campaign_objective']['time_expired'] is True
     assert result['metrics']['termination_reason'] == 'budget_exhausted'
     assert result['metrics']['campaign_success'] is False
+
+
+def test_rfd4_native_refold_acceptance_uses_available_metrics_without_extra_prediction(
+    tmp_path, monkeypatch, design_source_factory,
+):
+    from mn_molecular_design_studio.validation_acceptance import (
+        METRICS, available_metrics, bindcraft2_reference_policy,
+    )
+
+    mandatory = dict(available_metrics(
+        "miniprotein", "fasta_idr", "complex", engine="rfd4_proteina",
+        source_tools={"rfd4_proteina"},
+    ))
+    informational = dict(available_metrics(
+        "miniprotein", "fasta_idr", "complex", engine="rfd4_proteina",
+        source_tools={"rfd4_proteina"}, informational=True,
+    ))
+    rules, _unavailable = bindcraft2_reference_policy(
+        "miniprotein", "fasta_idr", "complex", {**mandatory, **informational},
+    )
+    assert {rule["metric_id"] for rule in rules} == {
+        "rfd4_native_ptm", "rfd4_native_iptm", "interface_pae_norm31",
+        "rfd4_interface_residues_4a", "rfd4_backbone_clashes_2_5a",
+    }
+    # The tiny shared fixture cannot contain seven binder residues; retain the
+    # metric and its direction while setting this contract test's threshold to 0.
+    for rule in rules:
+        if rule["metric_id"] == "rfd4_interface_residues_4a":
+            rule["value"] = 0
+    policy = {
+        "binder_format": "miniprotein", "target_type": "fasta_idr",
+        "mandatory_filters": rules,
+    }
+    stage = {"workflow": "analysis.validation_acceptance", "acceptance_policy": policy}
+    config = distributed_campaign.validate_campaign_config({
+        "generator_id": "rfd4_proteina", "acceptance_level": "validated",
+        "accepted_target": 1, "max_attempts": 3,
+        "validation_stages": [stage],
+    })
+
+    root = tmp_path / "runs"
+    monkeypatch.setattr("mn_molecular_design_studio.engine.workflow_engine.core.jobs.runs_root", lambda: root)
+    parent = root / "design" / "native-acceptance-campaign"
+    parent.mkdir(parents=True)
+    (parent / "metadata.json").write_text(json.dumps({"status": "running", "tool": "rfd4_proteina"}))
+    campaign = CampaignLedger.create(parent / "artifacts/distributed_campaign/ledger.json", config)
+    source_run, fixture = design_source_factory(tmp_path / "source")
+    rows = []
+    for candidate_id, iptm, ipae in (
+        ("rfd4-pass", 78.0, 9.3),
+        ("rfd4-reject", 20.0, 9.3),
+        ("rfd4-unresolved", 78.0, None),
+    ):
+        metrics = {"oracle_ppi.overall_ptm": 73.0, "oracle_ppi.overall_iptm": iptm}
+        if ipae is not None:
+            metrics["oracle_ppi.ipae_coi"] = ipae
+        row = {
+            **fixture, "candidate_id": candidate_id, "source_tool": "rfd4_proteina",
+            "stage": "generation.backbone_sequence", "complex_pdb": str(source_run / "designed.cif"),
+            "metrics": metrics, "raw_metadata": {"source_run_dir": str(source_run), "target_type": "fasta_idr"},
+        }
+        attempt = campaign.authorize(1, batch_id=candidate_id)[0]
+        campaign.record_receipt(attempt["attempt_id"], f"receipt-{candidate_id}", candidates=[row],
+                                native_state={"authoritative": False, "output_candidates": 1})
+        rows.append(row)
+
+    monkeypatch.setattr(
+        distributed_campaign, "_submit_validation_stage",
+        lambda *_args, **_kwargs: pytest.fail("Native refold filtering must not submit another co-fold."),
+    )
+    distributed_campaign._drive_validation(parent, campaign, rows, config, dispatch=False)
+    # Controller polling runs repeatedly. A completed rejection must not be
+    # reinterpreted as acceptance merely because its stage itself completed.
+    distributed_campaign._drive_validation(parent, campaign, rows, config, dispatch=False)
+
+    state = campaign.snapshot()
+    decisions = {candidate_id: record["validation_stages"]["0"]["selection"]["validation_acceptance"]
+                 for candidate_id, record in state["candidates"].items()}
+    assert decisions["rfd4-pass"]["status"] == "accepted"
+    assert decisions["rfd4-reject"]["status"] == "rejected"
+    assert "common.confidence.generator.complex.iptm" in ";".join(decisions["rfd4-reject"]["reasons"])
+    assert decisions["rfd4-unresolved"]["status"] == "unresolved"
+    pae_field = METRICS["interface_pae_norm31"]["field"]
+    observed = decisions["rfd4-pass"]["measurements"][pae_field]
+    assert observed["value"] == pytest.approx(9.3 / 31)
+    assert "averaged across both directions" in observed["method"]
+    assert state["candidates"]["rfd4-pass"]["validated_acceptance"] == "accepted"
+    assert state["candidates"]["rfd4-reject"]["validated_acceptance"] == "rejected"
+    assert state["candidates"]["rfd4-unresolved"]["validated_acceptance"] == "failed"
+    assert campaign.counters()["validated_accepted_candidates"] == 1
+    assert campaign.counters()["rejected_candidates"] == 1

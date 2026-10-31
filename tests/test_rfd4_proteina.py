@@ -274,3 +274,28 @@ def test_queued_rfd4_folding_adopts_refolding_job_and_completes(monkeypatch, tmp
     from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation as automation
     schema=automation.workflow_schema('refolding.rfd4_proteina')
     assert 'task_group' not in {field['name'] for field in schema['parameters']}
+
+
+def test_native_acceptance_campaign_requires_rfd4_refold():
+    from mn_molecular_design_studio.validation_acceptance import METRICS
+
+    campaign = {
+        "enabled": True, "acceptance_level": "validated", "accepted_target": 1,
+        "max_attempts": 1,
+        "validation_stages": [{
+            "workflow": "analysis.validation_acceptance",
+            "acceptance_policy": {
+                "binder_format": "miniprotein", "target_type": "fasta_idr",
+                "mandatory_filters": [{
+                    "field": METRICS["rfd4_native_iptm"]["field"],
+                    "operator": ">=", "value": 0.7,
+                }],
+            },
+        }],
+    }
+    with pytest.raises(ValueError, match="requires RFD4 options.refold=true"):
+        inputs.validate_campaign_inputs({
+            "task": "protein_binder", "input_mode": "guided_binder",
+            "target_structure": "/tmp/target.cif", "target_chains": ["A"],
+            "options": {"refold": False}, "distributed_campaign": campaign,
+        })

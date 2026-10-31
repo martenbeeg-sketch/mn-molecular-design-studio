@@ -248,6 +248,16 @@ def validate_campaign_inputs(parameters: dict[str, Any]) -> int:
         raise ValueError("RFD4 campaigns require explicit target-chain identities for candidate verification.")
     if parameters.get("avoid_structures") or parameters.get("also_bind_structures") or parameters.get("protein_sequences"):
         raise ValueError("RFD4 campaigns currently support one target without secondary inputs.")
+    campaign = parameters.get("distributed_campaign") or {}
+    uses_native_acceptance = isinstance(campaign, dict) and any(
+        isinstance(stage, dict) and stage.get("workflow") == "analysis.validation_acceptance"
+        for stage in campaign.get("validation_stages", [])
+    )
+    if uses_native_acceptance and not (parameters.get("options") or {}).get("refold", True):
+        raise ValueError(
+            "Native-evidence Validation & Acceptance requires RFD4 options.refold=true so its "
+            "oracle measurements are available; no separate co-folding job will be substituted."
+        )
 
     input_files = [Path(str(value)).expanduser() for value in parameters.get("input_files") or []]
     if mode in {"guided", "guided_binder"}:
