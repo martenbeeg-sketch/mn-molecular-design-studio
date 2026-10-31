@@ -154,6 +154,24 @@ def _connection():
             capture_identity()
 
 
+@contextmanager
+def _read_connection():
+    """Open an account database connection for read-only access.
+
+    Peer identity edits use a process-wide file lock so account changes and
+    their replicated snapshot stay atomic. Queries must not take that lock:
+    replication can process a large metadata backlog, and blocking ordinary
+    authentication and campaign result collection behind it makes the Studio
+    appear hung.
+    """
+    connection = _connect()
+    try:
+        connection.execute("PRAGMA query_only=ON")
+        yield connection
+    finally:
+        connection.close()
+
+
 def _normalize_username(username: str) -> str:
     normalized = " ".join(str(username or "").split()).casefold()
     if not normalized or len(normalized) > 254 or not _USERNAME_PATTERN.fullmatch(normalized):
@@ -211,7 +229,7 @@ def user_count() -> int:
     from mn_molecular_design_studio.cluster import config as cluster_config
     if cluster_config.is_worker():
         return 1  # Accounts are managed by the coordinator.
-    with _connection() as connection:
+    with _read_connection() as connection:
         return int(connection.execute("SELECT count(*) FROM users").fetchone()[0])
 
 
@@ -300,7 +318,7 @@ def create_user(
 
 
 def list_users() -> list[dict[str, Any]]:
-    with _connection() as connection:
+    with _read_connection() as connection:
         rows = connection.execute(
             "SELECT id, username, display_name, role, must_change_password, disabled, created_at, updated_at "
             "FROM users ORDER BY role DESC, username COLLATE NOCASE"
@@ -352,7 +370,7 @@ def authenticate(username: str, password: str) -> tuple[dict[str, Any], str, str
         normalized = _normalize_username(username)
     except ValueError:
         normalized = str(username or "").strip().casefold()[:254]
-    with _connection() as connection:
+    with _read_connection() as connection:
         attempt = connection.execute(
             "SELECT failures, locked_until FROM login_attempts WHERE username_key=?", (normalized,)
         ).fetchone()
@@ -383,7 +401,7 @@ def resolve_session(token: object) -> dict[str, Any] | None:
     if not isinstance(token, str) or not token:
         return None
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    with _connection() as connection:
+    with _read_connection() as connection:
         row = connection.execute(
             "SELECT u.*, s.expires_at AS session_expires_at FROM sessions s JOIN users u ON u.id=s.user_id "
             "WHERE s.token_hash=? AND s.expires_at>? AND u.disabled=0",
@@ -474,7 +492,7 @@ def accessible_project_ids(user: dict[str, Any]) -> list[str]:
             for project in organization.get("projects", [])
             if isinstance(project, dict) and project.get("id")
         )
-    with _connection() as connection:
+    with _read_connection() as connection:
         rows = connection.execute(
             "SELECT project_id FROM project_memberships WHERE user_id=? ORDER BY project_id", (user["id"],)
         ).fetchall()
@@ -482,7 +500,7 @@ def accessible_project_ids(user: dict[str, Any]) -> list[str]:
 
 
 def project_member_ids(project_id: str) -> list[str]:
-    with _connection() as connection:
+    with _read_connection() as connection:
         rows = connection.execute(
             "SELECT user_id FROM project_memberships WHERE project_id=? ORDER BY user_id", (project_id,)
         ).fetchall()
@@ -544,7 +562,7 @@ def require_job_access(user: dict[str, Any], job: dict[str, Any] | None) -> None
 
 
 def project_is_member(project_id: str, user_id: str) -> bool:
-    with _connection() as connection:
+    with _read_connection() as connection:
         row = connection.execute(
             "SELECT 1 FROM project_memberships WHERE project_id=? AND user_id=?", (project_id, user_id)
         ).fetchone()

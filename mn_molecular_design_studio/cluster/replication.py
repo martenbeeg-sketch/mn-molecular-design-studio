@@ -165,16 +165,20 @@ class Replica:
             raise ValueError("Synchronize at most 500 metadata records per request.")
         known = {n['id'] for n in Store().nodes()} | {config.identity()}
         accepted = 0
-        with locked():
-            capture_identity()
-            for record in records:
-                if not isinstance(record, dict) or set(record) != {'key','kind','author','counter','value'}:
-                    raise ValueError("Invalid peer metadata record.")
-                key, kind, author, counter, value = (record[k] for k in ('key','kind','author','counter','value'))
-                if author not in known or kind not in IDENTITY_KINDS | {'job', 'molecule_group', 'molecule_entry', 'external_library'} or not isinstance(key, str) or not key.startswith(kind + ':') or len(key) > 300 or type(counter) is not int or not 0 < counter < 2**62:
-                    raise ValueError("Invalid metadata authority or version.")
-                if len(encoded(record)) > 2 * 1024 * 1024:
-                    raise ValueError("Metadata record exceeds 2 MB.")
+        capture_identity()
+        for record in records:
+            if not isinstance(record, dict) or set(record) != {'key','kind','author','counter','value'}:
+                raise ValueError("Invalid peer metadata record.")
+            key, kind, author, counter, value = (record[k] for k in ('key','kind','author','counter','value'))
+            if author not in known or kind not in IDENTITY_KINDS | {'job', 'molecule_group', 'molecule_entry', 'external_library'} or not isinstance(key, str) or not key.startswith(kind + ':') or len(key) > 300 or type(counter) is not int or not 0 < counter < 2**62:
+                raise ValueError("Invalid metadata authority or version.")
+            if len(encoded(record)) > 2 * 1024 * 1024:
+                raise ValueError("Metadata record exceeds 2 MB.")
+            # Apply each record under the replica lock, then release it before
+            # moving to the next. A peer page can contain hundreds of entries;
+            # holding the lock for the full page blocked account reads and
+            # campaign result collection during a large synchronization catch-up.
+            with locked():
                 with self.db() as db:
                     previous = db.execute("SELECT * FROM records WHERE key=?", (key,)).fetchone()
                     old = json.loads(previous['value']) if previous else None
@@ -315,16 +319,28 @@ def capture_identity():
             replica.capture(kind, values)
 
 
-def sync_peer(peer, snapshot):
+def sync_peer(peer, snapshot, jobs=None):
     from . import transport
     replica = Replica()
     from mn_molecular_design_studio.molecular_database_peer import capture
     capture(replica)
     state = replica.state('peer:'+peer['id'], {'push':0, 'pull':0})
-    response = transport.node_request('/peer/hello', {'node_id': config.identity(), 'snapshot': snapshot, 'reference_probes': Store().reference_probes()}, method='POST', base_url=peer['url'], timeout=4)
-    if response.get('node_id') != peer['id']:
-        raise ValueError("The peer API belongs to a different workstation. Check its SSH tunnel.")
-    Store().heartbeat(peer['id'], response['snapshot'], [])
+    job_rows = jobs if isinstance(jobs, list) else []
+    responses = []
+    for offset in range(0, max(1, len(job_rows)), 1000):
+        response = transport.node_request('/peer/hello', {
+            'node_id': config.identity(), 'snapshot': snapshot,
+            'reference_probes': Store().reference_probes(),
+            'jobs': job_rows[offset:offset + 1000],
+        }, method='POST', base_url=peer['url'], timeout=45)
+        if response.get('node_id') != peer['id']:
+            raise ValueError("The peer API belongs to a different workstation. Check its SSH tunnel.")
+        responses.append(response)
+        if job_rows[offset:offset + 1000]:
+            Store().pulse(peer['id'], response['snapshot'])
+    response = responses[-1]
+    if not job_rows:
+        Store().pulse(peer['id'], response['snapshot'])
     if state.get('epoch') != response['epoch']:
         state = {'push':0, 'pull':0, 'epoch':response['epoch']}
     # Independent durable cursors let a machine catch up after any length of outage.

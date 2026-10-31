@@ -230,7 +230,7 @@ class Agent:
             Replica().capture_jobs()
         for peer in config.load().get("peers", []):
             try:
-                sync_peer(peer, snapshot)
+                sync_peer(peer, snapshot, jobs)
             except Exception as exc:
                 log.warning("Workstation %s synchronization paused: %s", peer.get("name",peer["id"]), exc)
         config.atomic_json(config.home() / "agent-status.json", {"last_heartbeat":time.time(), "node_id":self.node_id, "online":True})

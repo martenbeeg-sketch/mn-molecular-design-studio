@@ -364,6 +364,59 @@ def test_peer_metadata_routes_require_machine_credentials_and_keep_user_endpoint
         assert response.status_code==403
 
 
+def test_peer_heartbeat_publishes_changed_jobs_without_waiting_for_replica_cursor(peers):
+    nodes,on=peers
+    user,project=account(on)
+    transfer(on,0,1)
+    from mn_molecular_design_studio import api
+    job={
+        'cluster_job_id':'remote-completed-job', 'task_group':'design', 'run_id':'completed-run',
+        'owner_id':user['id'], 'project_id':project['id'], 'tool':'rfd4_proteina',
+        'status':'completed', 'candidate_summary':{'status':'complete','candidate_count':1},
+        'artifacts':[],
+    }
+    with on(1),TestClient(api.app) as client:
+        response=client.post(
+            '/api/v1/cluster/node/peer/hello',
+            headers={'Authorization':'Bearer '+nodes[0]['token']},
+            json={'node_id':nodes[0]['id'],'snapshot':SNAPSHOT,'jobs':[job]},
+        )
+        assert response.status_code==200, response.text
+        row=Store().job('remote-completed-job',user)
+        assert row['status']=='completed'
+        assert row['candidate_summary']['candidate_count']==1
+        assert row['node_id']==nodes[0]['id']
+
+
+def test_peer_account_reads_do_not_wait_for_metadata_replication(peers,monkeypatch):
+    _,on=peers
+    with on(1):
+        from mn_molecular_design_studio.cluster import replication
+
+        def lock_must_not_be_used():
+            raise AssertionError('Read-only account queries must not acquire the peer replication lock.')
+
+        monkeypatch.setattr(replication,'locked',lock_must_not_be_used)
+        assert auth.list_users()==[]
+
+
+def test_peer_agent_sends_changed_job_rows_to_each_peer(peers,monkeypatch):
+    nodes,on=peers
+    with on(1):
+        row={'cluster_job_id':'changed-job','task_group':'design','run_id':'new-run',
+             'owner_id':'owner','project_id':'project','status':'completed','_signature':[1]}
+        sent=[]
+        monkeypatch.setattr(Agent,'storage_online',lambda self:True)
+        monkeypatch.setattr(Agent,'catalog',lambda self:[row])
+        monkeypatch.setattr(Agent,'snapshot',lambda self:copy.deepcopy(SNAPSHOT))
+        monkeypatch.setattr(Agent,'_reconcile_purged_peer_jobs',lambda self:None)
+        monkeypatch.setattr('mn_molecular_design_studio.cluster.replication.sync_peer',
+                            lambda peer,snapshot,jobs=None:sent.append((peer['id'],jobs)))
+        Agent().peer_heartbeat()
+        assert {node_id for node_id,_ in sent}=={nodes[0]['id'],nodes[2]['id']}
+        assert all(jobs==[row] for _,jobs in sent)
+
+
 def test_conflicting_new_usernames_are_preserved_for_admin_review(peers):
     _,on=peers
     account(on)

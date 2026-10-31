@@ -293,7 +293,17 @@ def install(app, current_user, admin_user):
     def peer_hello(payload: dict = Body(...), actor=Depends(node), replica=Depends(peer_replica), store=Depends(coordinator)):
         if payload.get("node_id") != actor["id"] or actor["id"] == config.identity():
             raise HTTPException(403, "A peer can publish only its own resource snapshot.")
-        call(store.heartbeat, actor["id"], payload.get("snapshot", {}), [])
+        snapshot = payload.get("snapshot", {})
+        jobs = payload.get("jobs", [])
+        if not isinstance(jobs, list) or len(jobs) > 1000:
+            raise HTTPException(422, "A peer can publish at most 1,000 changed job records per heartbeat.")
+        # Job status and compact candidate summaries must reach the peer
+        # coordinator immediately, even when durable molecular-library
+        # replication has a large historical backlog. Empty liveness checks
+        # avoid dispatching the waiting-job catalog on every heartbeat.
+        call(store.pulse, actor["id"], snapshot)
+        if jobs:
+            call(store.heartbeat, actor["id"], snapshot, jobs)
         own = next((n for n in store.nodes() if n["id"] == config.identity()), None)
         snapshot = dict(own["snapshot"]) if own else {}
         if not own or own["availability"] != "online":
