@@ -62,6 +62,30 @@ def test_liveness_pulse_refreshes_node_without_running_catalog_dispatch(cluster,
     assert dispatches == []
 
 
+def test_empty_agent_claim_does_not_run_the_full_dispatcher(cluster, monkeypatch):
+    store, nodes, *_ = cluster
+    dispatches = []
+    monkeypatch.setattr(store, "dispatch", lambda: dispatches.append(True))
+
+    assert store.claim(nodes[0]["node_id"]) is None
+    assert dispatches == []
+
+
+def test_dispatch_scans_active_catalog_once_per_workstation(cluster, monkeypatch):
+    store, nodes, user, needs, _snapshot, request, _clock = cluster
+    scans = []
+    original = Store._active_job_resource_usage
+
+    def counted(db, node_id):
+        scans.append(node_id)
+        return original(db, node_id)
+
+    monkeypatch.setattr(Store, "_active_job_resource_usage", staticmethod(counted))
+    store.submit(request, needs, user, origin_node=nodes[0]["node_id"])
+
+    assert sorted(scans) == sorted(node["node_id"] for node in nodes)
+
+
 def test_agent_heartbeat_interval_stays_below_unreachable_threshold(monkeypatch):
     agent = Agent()
     monkeypatch.setattr(config, "load", lambda: {"heartbeat_seconds": 300})

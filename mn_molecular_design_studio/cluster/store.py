@@ -505,6 +505,20 @@ class Store:
                     value = json.loads(self._job(db, waiting["job_id"])["payload"])
                     value.update(node_id=None, status="waiting_for_workstation", wait_reason="The selected workstation disconnected before accepting; selecting an available workstation.")
                     db.execute("UPDATE jobs SET node_id=NULL,payload=? WHERE id=?", (encoded(value), waiting["job_id"]))
+            # Resource usage is derived from the synchronized job catalog. Read
+            # it once per node for this dispatch pass instead of rescanning and
+            # JSON-decoding every job for every waiting submission.
+            usage_by_node = {
+                node["id"]: self._active_job_resource_usage(db, node["id"])
+                for node in nodes
+            }
+            reserved_node_ids = {
+                row["node_id"]
+                for row in db.execute(
+                    "SELECT DISTINCT node_id FROM commands "
+                    "WHERE kind IN ('workflow','pipeline') AND status IN ('queued','claimed')"
+                )
+            }
             rows = db.execute("SELECT * FROM submissions WHERE command_id IS NULL AND cancelled=0").fetchall()
             for row in rows:
                 target = row["affinity_node"] or (row["placement"] if row["placement"] != "auto" else None)
@@ -552,12 +566,11 @@ class Store:
                         else:
                             wait_reason = f"{node['name']} is not accepting jobs or its scheduler is offline."
                         continue
-                    reserved = db.execute(
-                        "SELECT 1 FROM commands WHERE node_id=? AND kind IN ('workflow','pipeline') "
-                        "AND status IN ('queued','claimed') LIMIT 1", (node["id"],),
-                    ).fetchone()
-                    usage = self._active_job_resource_usage(db, node["id"])
-                    effective = self._with_active_job_resources(node, usage)
+                    reserved = node["id"] in reserved_node_ids
+                    usage = usage_by_node.get(node["id"], {})
+                    effective = self._with_active_job_resources(
+                        node, usage
+                    )
                     if self.capacity(effective, needs, reserved):
                         choices.append((node, effective, refresh_local_code))
                     elif target:
@@ -586,8 +599,9 @@ class Store:
                 ))
                 if not choices:
                     job = json.loads(self._job(db, row["job_id"])["payload"])
-                    job.update(status="waiting_for_workstation", wait_reason=wait_reason)
-                    db.execute("UPDATE jobs SET payload=? WHERE id=?", (encoded(job), row["job_id"]))
+                    if job.get("status") != "waiting_for_workstation" or job.get("wait_reason") != wait_reason:
+                        job.update(status="waiting_for_workstation", wait_reason=wait_reason)
+                        db.execute("UPDATE jobs SET payload=? WHERE id=?", (encoded(job), row["job_id"]))
                     continue
                 node_id, refresh_local_code = choices[0][0]["id"], choices[0][2]
                 cmd = str(uuid.uuid4())
@@ -598,6 +612,7 @@ class Store:
                 db.execute("INSERT INTO commands(id,node_id,job_id,kind,payload,owner_id,project_id,created_at) VALUES (?,?,?,?,?,?,?,?)",
                            (cmd, node_id, row["job_id"], request["kind"], encoded(request), row["owner_id"], request["project_id"], stamp(self.clock())))
                 db.execute("UPDATE submissions SET command_id=? WHERE job_id=?", (cmd, row["job_id"]))
+                reserved_node_ids.add(node_id)
                 job = json.loads(self._job(db, row["job_id"])["payload"])
                 job.update(node_id=node_id, status="dispatching", wait_reason="Inputs are being staged on the selected workstation.")
                 db.execute("UPDATE jobs SET node_id=?,payload=? WHERE id=?", (node_id, encoded(job), row["job_id"]))
@@ -801,7 +816,12 @@ class Store:
             }
 
     def claim(self, node_id):
-        self.dispatch()
+        # Dispatching re-evaluates every waiting submission against every
+        # workstation. Agents poll this endpoint frequently, so doing that
+        # full write transaction on each empty poll starves heartbeats and
+        # concurrent submissions on catalogs with a backlog. New submissions
+        # and catalog heartbeats already trigger dispatch; this endpoint only
+        # leases commands that are ready for this node.
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             # Expired commands are retried only on the original machine. Its receipt
