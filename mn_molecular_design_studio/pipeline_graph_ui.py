@@ -289,6 +289,13 @@ def _render_active_target(params, key):
 
 
 def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, graph=None):
+    if selected["data"]["kind"] == "run_source":
+        from mn_molecular_design_studio.run_inputs_ui import select
+        choice = select(project_id, prefix + "-run-output", require_complex=False,
+                        reference=selected["data"]["params"].get("run_reference"))
+        if choice:
+            selected["data"]["params"]["run_reference"] = choice["reference"]
+        return {}
     from mn_molecular_design_studio.target_editor import TargetSource, _hash, _target_widget_keys, render_target_coldspots, render_target_editor, render_target_source
     from mn_molecular_design_studio.design_validation import design_candidates
     from mn_molecular_design_studio.generation_io import generated_candidates

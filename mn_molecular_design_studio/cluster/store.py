@@ -233,7 +233,7 @@ class Store:
             raise LookupError("Job not found.")
         return dict(row)
 
-    def job(self, jid, user):
+    def job(self, jid, user, *, nodes=None):
         with self.connect() as db:
             row = self._job(db, jid)
             transfer = db.execute(
@@ -243,7 +243,11 @@ class Store:
         if not visible(row, user):
             raise LookupError("Job not found.")
         item = json.loads(row["payload"])
-        node = next((n for n in self.nodes() if n["id"] == row["node_id"]), None)
+        node = next((n for n in (self.nodes() if nodes is None else nodes) if n["id"] == row["node_id"]), None)
+        return self._present_job(item, node, transfer)
+
+    @staticmethod
+    def _present_job(item, node, transfer=None):
         item.update(node_name=node["name"] if node else "Not assigned", availability=node["availability"] if node else "pending",
                     last_seen_at=node["last_seen_at"] if node else None)
         if transfer:
@@ -261,7 +265,12 @@ class Store:
         if type(limit) is not int or not 1 <= limit <= 1000 or type(offset) is not int or offset < 0:
             raise ValueError("Invalid result page.")
         with self.connect() as db:
-            rows = db.execute("SELECT * FROM jobs ORDER BY created_at DESC,id DESC").fetchall()
+            # Large artifact inventories and saved graphs are only needed by
+            # job inspection, never by a Run/input selector. Strip them before
+            # transferring catalog rows from SQLite into Python.
+            rows = db.execute("SELECT id,node_id,local_ref,owner_id,project_id,created_at,"
+                "json_remove(payload,'$.artifacts','$.request_summary') AS payload "
+                "FROM jobs ORDER BY created_at DESC,id DESC").fetchall()
         selected = []
         for raw in rows:
             row = dict(raw)
@@ -274,8 +283,14 @@ class Store:
                 continue
             if query and str(query).casefold() not in " ".join(str(item.get(k) or "") for k in ("campaign_name", "pipeline_name", "run_id", "tool", "job_code")).casefold():
                 continue
-            selected.append(row["id"])
-        items = [self.job(j, user) for j in selected[offset:offset + limit]]
+            selected.append((row, item))
+        nodes = {node["id"]: node for node in self.nodes()}
+        page = selected[offset:offset + limit]
+        with self.connect() as db:
+            transfers = {r["job_id"]: r for r in db.execute(
+                "SELECT job_id,status,total_bytes,transferred_bytes,error FROM library_transfers WHERE job_id IN ("
+                + ",".join("?" for _ in page) + ")", [row["id"] for row, _ in page]).fetchall()} if page else {}
+        items = [self._present_job(item, nodes.get(row["node_id"]), transfers.get(row["id"])) for row, item in page]
         # Detailed manifests and request graphs are fetched when opening a job.
         return {"items": [{k: v for k, v in item.items() if k not in {"artifacts", "request_summary"}} for item in items], "total": len(selected)}
 
@@ -684,6 +699,25 @@ class Store:
             return {"status": job["status"], "cancel_requested": job.get("cancel_requested", False)}
         if not job.get("local_reference"):
             raise ValueError("This job has not been accepted by its workstation yet.")
+        if kind == "artifact":
+            artifact_path = str(payload.get("path") or "")
+            if not artifact_path:
+                raise ValueError("An artifact path is required.")
+            with self.connect() as db:
+                existing = db.execute(
+                    "SELECT id,status,node_id FROM commands "
+                    "WHERE job_id=? AND node_id=? AND kind='artifact' "
+                    "AND status IN ('queued','claimed') "
+                    "AND json_extract(payload,'$.path')=? "
+                    "ORDER BY created_at,id LIMIT 1",
+                    (job["cluster_job_id"], job["node_id"], artifact_path),
+                ).fetchone()
+            if existing:
+                return {
+                    "command_id": existing["id"],
+                    "status": existing["status"],
+                    "node_id": existing["node_id"],
+                }
         if kind == "purge":
             with self.connect() as db:
                 existing = db.execute(

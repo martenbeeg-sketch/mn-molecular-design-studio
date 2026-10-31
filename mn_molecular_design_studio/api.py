@@ -358,7 +358,7 @@ def _guard_source_job(payload: dict[str, Any], user: dict[str, Any], *, project_
         return
     if not isinstance(source_job, str) or not source_job.strip():
         raise HTTPException(status_code=422, detail="source_job must be a visible job ID or code.")
-    row = _resolve_api_job(source_job, user)
+    row = _resolve_api_job(source_job, user, include_hidden=bool(payload.get("run_context")))
     from mn_molecular_design_studio.job_catalog import get_job_access_record
 
     record = get_job_access_record(str(row.get("task_group") or ""), str(row.get("run_id") or ""))
@@ -472,6 +472,16 @@ def validate_workflow(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> dict[str, Any]:
     request_payload, project_id = _request_payload_and_project(payload, user)
+    if str(request_payload.get("source_job") or "").startswith("run:"):
+        from mn_molecular_design_studio import logical_runs, run_operations
+        token = credentials.credentials if credentials else "development-mode" if is_development_mode() else ""
+        run, output, sources, excluded = _call(run_operations.prepare, request_payload,
+            logical_runs.catalog(user, project_id=project_id, token=token))
+        children = _call(run_operations.requests, dict(request_payload, project_id=project_id), sources)
+        validations = [validate_workflow(child, base_dir=base_dir, user=user, credentials=credentials) for child in children]
+        return {"valid": all(item.get("valid") for item in validations), "run_id": run["id"],
+                "source_output": output["reference"], "source_count": len(sources), "excluded_sources": excluded,
+                "validation_scope": "all_selected_sources", "sources": validations}
     request_dir = _request_directory(user, base_dir)
     _validate_user_path_values(request_payload, user, request_dir)
     remote = _cluster_submission(request_payload, project_id, user, request_dir, credentials, validate_only=True)
@@ -509,6 +519,16 @@ def submit_workflow(
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> dict[str, Any]:
     request_payload, project_id = _request_payload_and_project(payload, user)
+    if str(request_payload.get("source_job") or "").startswith("run:"):
+        from mn_molecular_design_studio import logical_runs, run_operations
+        token = credentials.credentials if credentials else "development-mode" if is_development_mode() else ""
+        def dispatch(child):
+            return _dispatch_run_child(child, base_dir=base_dir, user=user, credentials=credentials, token=token)
+        return _submit_once(request_payload, project_id, user, "run-operation", idempotency_key, lambda: _call(
+            run_operations.submit, dict(request_payload, project_id=project_id),
+            logical_runs.catalog(user, project_id=project_id, token=token), owner_id=str(user["id"]),
+            validate=lambda child: validate_workflow(child, base_dir=base_dir, user=user, credentials=credentials),
+            dispatch=dispatch, idempotency_key=idempotency_key or (request_payload.get("execution") or {}).get("idempotency_key")))
     request_dir = _request_directory(user, base_dir)
     _validate_user_path_values(request_payload, user, request_dir)
     def perform():
@@ -528,6 +548,100 @@ def submit_workflow(
         return mark_studio_job(result, project_id=project_id, owner_id=str(user["id"]))
     return _submit_once(request_payload, project_id, user, "workflow", idempotency_key, perform)
 
+
+@app.get("/api/v1/runs")
+def get_runs(project_id: str | None = None, user: dict[str, Any] = Depends(_current_user),
+             credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)):
+    from mn_molecular_design_studio import logical_runs
+    if project_id:
+        _call(require_project_access, user, project_id)
+    token = credentials.credentials if credentials else "development-mode" if is_development_mode() else ""
+    items = _call(logical_runs.catalog, user, project_id=project_id, token=token)
+    return {"items": [logical_runs.public(run) for run in items], "total": len(items)}
+
+
+@app.get("/api/v1/runs/{reference}")
+def get_run(reference: str, project_id: str, user: dict[str, Any] = Depends(_current_user),
+            credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)):
+    from mn_molecular_design_studio import logical_runs
+    _call(require_project_access, user, project_id)
+    token = credentials.credentials if credentials else "development-mode" if is_development_mode() else ""
+    run, output = _call(logical_runs.resolve, reference, logical_runs.catalog(user, project_id=project_id, token=token))
+    return {**logical_runs.public(run), "selected_output": output["reference"],
+            "execution_jobs": run["jobs"], "source_jobs": output["sources"]}
+
+
+@app.get("/api/v1/runs/{reference}/results")
+def get_run_results(reference: str, project_id: str, export: str | None = None,
+                    user: dict[str, Any] = Depends(_current_user),
+                    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)):
+    from mn_molecular_design_studio import logical_runs, run_results
+    _call(require_project_access, user, project_id)
+    token = credentials.credentials if credentials else "development-mode" if is_development_mode() else ""
+    run, output = _call(logical_runs.resolve, reference, logical_runs.catalog(user, project_id=project_id, token=token))
+    result = _call(run_results.collect, run, output, user, token=token)
+    if export is None:
+        return result
+    if export not in {"jsonl", "csv"}:
+        raise HTTPException(422, "Choose csv or jsonl export.")
+    if not result["complete"]:
+        raise HTTPException(409, "Some source results are pending or unavailable. Retry after they are loaded; incomplete exports are not labelled complete.")
+    from fastapi.responses import Response
+    if export == "jsonl":
+        content = "".join(json.dumps(row, sort_keys=True) + "\n" for row in result["candidates"])
+        media = "application/x-ndjson"
+    else:
+        import pandas as pd
+        rows = [{**{key: row.get(key) for key in ("run_candidate_id", "candidate_id", "source_job", "source_node_id", "source_tool", "stage", "binder_sequence")},
+                 **{"metric." + key: value for key, value in row.get("metrics", {}).items()}} for row in result["candidates"]]
+        content = pd.DataFrame(rows).to_csv(index=False)
+        media = "text/csv"
+    return Response(content, media_type=media, headers={"Content-Disposition": f'attachment; filename="run-results.{export}"'})
+
+
+@app.post("/api/v1/run-operations/{operation_id}/retry", status_code=202)
+def retry_run_operation(operation_id: str, user: dict[str, Any] = Depends(_current_user),
+                        credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)):
+    import re
+    from mn_molecular_design_studio import logical_runs, run_operations
+    from mn_molecular_design_studio.workspace import _studio_home
+    if not re.fullmatch(r"op-[a-f0-9]{24}", operation_id):
+        raise HTTPException(404, "Run operation not found.")
+    path = _studio_home() / "run_operations" / (operation_id + ".json")
+    if not path.is_file():
+        raise HTTPException(404, "Run operation not found.")
+    state = json.loads(path.read_text())
+    if state["owner_id"] != user["id"]:
+        raise HTTPException(404, "Run operation not found.")
+    _call(require_project_access, user, state["project_id"])
+    token = credentials.credentials if credentials else "development-mode" if is_development_mode() else ""
+    def dispatch(child):
+        return _dispatch_run_child(child, base_dir=None, user=user, credentials=credentials, token=token)
+    return _call(run_operations.submit, state["payload"], logical_runs.catalog(user, project_id=state["project_id"], token=token),
+        owner_id=str(user["id"]), validate=lambda child: validate_workflow(child, base_dir=None, user=user, credentials=credentials),
+        dispatch=dispatch, idempotency_key=state["idempotency_key"])
+
+
+
+def _dispatch_run_child(child, *, base_dir, user, credentials, token):
+    child = dict(child)
+    if str(child.get("source_job") or "").startswith("cluster:"):
+        # Organizer receipts link outputs on older workers too. Source files
+        # are read on their owner through the existing native workflow API.
+        child.pop("run_context", None)
+        from mn_molecular_design_studio.cluster.service import lookup_job
+        from mn_molecular_design_studio.cluster import config
+        source = lookup_job(child["source_job"], user, token)
+        if source.get("hidden"):
+            uri = config.artifact_uri(source["node_id"], source["task_group"], source["run_id"])
+            source_paths = {"source_run_dir": uri, "candidates_jsonl": uri + "/artifacts/normalized_candidates/candidates.jsonl"}
+            if child.get("workflow") == "campaign.validation_sequence":
+                source_paths = {"initial_source": {"run_dir": uri, "candidates_jsonl": source_paths["candidates_jsonl"],
+                                "run_id": source["run_id"], "task_group": source["task_group"], "tool": source.get("tool")}}
+            child["parameters"] = {**child["parameters"], **source_paths}
+            child.pop("source_job")
+    return submit_workflow(child, base_dir=base_dir, user=user, credentials=credentials,
+                           idempotency_key=child["execution"]["idempotency_key"])
 
 
 def _submit_once(payload, project_id, user, kind, header_key, operation):
@@ -597,6 +711,11 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
     graph = _call(clean_graph, request.get("graph"))
     _validate_user_path_values(graph, user, _request_directory(user, None))
     for node in graph["nodes"]:
+        if node["data"]["kind"] == "run_source":
+            from mn_molecular_design_studio import logical_runs
+            reference = node["data"]["params"].get("run_reference")
+            if reference:
+                _call(logical_runs.resolve, reference, logical_runs.catalog(user, project_id=project_id))
         if node["data"].get("retained_run_dir") and node["data"].get("enabled", True):
             from mn_molecular_design_studio.candidate_pipeline import retained_source
             retained_path = resolve_stored_path(node["data"]["retained_run_dir"], must_exist=True)

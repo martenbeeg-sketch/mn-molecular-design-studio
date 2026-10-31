@@ -249,8 +249,8 @@ def test_legacy_campaign_batch_results_collapse_into_one_row(isolated, monkeypat
     table = at.dataframe[0].value
     assert len(table) == 2
     campaign = table[table["Job"] == "PD-L1 · RFD4 10-design · 2026-10-30"].iloc[0]
-    assert campaign["Results"] == "Campaign"
-    assert campaign["Steps"] == "3 batch jobs"
+    assert campaign["Results"] == "Results"
+    assert campaign["Steps"] == "3 jobs"
     assert campaign["Workstation"] == "3 computers"
     at.session_state["cluster-results-campaign-details-request"] = rows[:3]
     at.run()

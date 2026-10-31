@@ -21,6 +21,8 @@ from mn_molecular_design_studio.library_centroids import prepare_centroids
 @pytest.fixture
 def library(tmp_path, monkeypatch):
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_APP_HOME", str(tmp_path / "app"))
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_HOME", str(tmp_path / "app"))
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(tmp_path / "app/workdir/runs"))
     source = tmp_path / "input.csv"
     source.write_text("vendor,structure\n0001,CCO\n0002,OCC\n0003,c1ccccc1\n0004,CC(=O)O\n0005,not_a_smiles\n")
     catalog = LibraryCatalog()

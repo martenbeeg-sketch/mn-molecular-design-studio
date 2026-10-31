@@ -186,50 +186,18 @@ def _is_visual_pipeline_row(row):
 
 
 def _visual_pipeline_groups(rows):
-    """Group visual-pipeline children with their parent run, keyed by its stable run reference."""
-    roots = {}
-    for row in rows:
-        if _is_visual_pipeline_row(row) and row.get("run_id"):
-            roots[(str(row.get("node_id") or ""), str(row["run_id"]))] = row
-
-    groups = {_results_job_reference(root): [root] for root in roots.values()}
-    row_to_group = {reference: reference for reference in groups}
-    for row in rows:
-        if _is_visual_pipeline_row(row):
-            continue
-        parent_id = str(row.get("campaign_id") or "").strip()
-        if not parent_id:
-            continue
-        parent_node = str(row.get("pipeline_parent_node_id") or row.get("node_id") or "")
-        root = roots.get((parent_node, parent_id))
-        if not root and not row.get("pipeline_parent_node_id") and row.get("pipeline_iteration"):
-            # Legacy active-learning children used a parent path without its
-            # workstation. Accept only a unique parent in the same access scope.
-            candidates = [candidate for (_, run_id), candidate in roots.items() if run_id == parent_id
-                          and str(candidate.get("project_id") or "") == str(row.get("project_id") or "")
-                          and str(candidate.get("owner_id") or "") == str(row.get("owner_id") or "")]
-            root = candidates[0] if len(candidates) == 1 else None
-        if not root:
-            continue
-        row_project = str(row.get("project_id") or "")
-        root_project = str(root.get("project_id") or "")
-        if row_project and root_project and row_project != root_project:
-            continue
-        if row.get("owner_id") and root.get("owner_id") and row["owner_id"] != root["owner_id"]:
+    """Use the same Run membership as analysis selectors and the API."""
+    from mn_molecular_design_studio.logical_runs import group_runs, apply_operation_links
+    groups, mapping = {}, {}
+    for run in group_runs(apply_operation_links(rows)):
+        root = run["root"]
+        if not _is_visual_pipeline_row(root):
             continue
         root_ref = _results_job_reference(root)
-        row_ref = _results_job_reference(row)
-        if row_ref == root_ref:
-            continue
-        groups[root_ref].append(row)
-        row_to_group[row_ref] = root_ref
-
-    for members in groups.values():
-        members[1:] = sorted(
-            members[1:],
-            key=lambda row: (str(row.get("created_at") or ""), str(row.get("job_code") or "")),
-        )
-    return groups, row_to_group
+        members = [root, *[r for r in run["jobs"] if _results_job_reference(r) != root_ref]]
+        groups[root_ref] = members
+        mapping.update((_results_job_reference(row), root_ref) for row in members)
+    return groups, mapping
 
 
 _BATCH_NAME = re.compile(r"(?i)\bbatch\s*#?(\d+)\b")
@@ -334,6 +302,26 @@ def _campaign_group_status(members):
     return status, progress
 
 
+def _logical_run_groups(rows, excluded_references=()):
+    from mn_molecular_design_studio.logical_runs import apply_operation_links, group_runs
+    excluded = set(excluded_references)
+    groups, mapping, labels = {}, {}, {}
+    for run in group_runs(apply_operation_links(rows)):
+        members = [row for row in run["jobs"] if _results_job_reference(row) not in excluded]
+        if not members:
+            continue
+        if len(members) == 1:
+            # Native singleton Results retain their specialized structure,
+            # docking, trajectory and library viewers.
+            continue
+        root = run["root"]
+        members.sort(key=lambda row: (_results_job_reference(row) != _results_job_reference(root), str(row.get("created_at") or "")))
+        groups[run["id"]] = members
+        labels[run["id"]] = run["name"]
+        mapping.update((_results_job_reference(row), run["id"]) for row in members)
+    return groups, mapping, labels
+
+
 def _pipeline_iterations(children):
     grouped = {}
     for child in children:
@@ -403,7 +391,13 @@ def _request_results_pipeline_steps(click_key, entry_refs):
         return
     index = int(click["row"])
     if 0 <= index < len(entry_refs) and entry_refs[index]:
-        st.session_state["cluster-results-pipeline-details-request"] = entry_refs[index]
+        target = entry_refs[index]
+        if isinstance(target, dict) and target.get("kind") == "campaign":
+            members = target["members"]
+            st.session_state["cluster-results-campaign-details-request"] = members
+            st.session_state["run-execution-" + _campaign_results_key(members)] = True
+            return
+        st.session_state["cluster-results-pipeline-details-request"] = target
         st.session_state.pop("cluster-results-pipeline-iteration-request", None)
 
 
@@ -435,7 +429,11 @@ def _request_results_job_view(click_key, entry_refs):
         return
     index = int(click["row"])
     if 0 <= index < len(entry_refs) and entry_refs[index]:
-        _navigate_to_job_details(entry_refs[index])
+        target = entry_refs[index]
+        if isinstance(target, dict) and target.get("kind") == "campaign":
+            st.session_state["cluster-results-campaign-details-request"] = target["members"]
+        else:
+            _navigate_to_job_details(target)
 
 
 def _request_pipeline_dialog_job_view(click_key, entry_refs):
@@ -863,7 +861,64 @@ def _render_campaign_candidate_measurements(members, token):
     campaign_results_fragment()
 
 
-@st.dialog("Campaign batches and settings", width="large")
+def _render_run_output_results(run, output, token):
+    from mn_molecular_design_studio import logical_runs, run_results
+    from mn_molecular_design_studio.auth import development_user, is_development_mode
+    user = st.session_state.get("_molecular_database_user")
+    if not user and is_development_mode():
+        user = development_user()
+    if not user:
+        _render_campaign_candidate_measurements(output["sources"], token)
+        return
+    key = "run-measurements-" + output["reference"]
+    if st.button("Load Run results", key=key + "-load", type="primary"):
+        st.session_state[key] = run_results.collect(run, output, user, token=token or "")
+
+    @st.fragment(run_every=2)
+    def measured_results():
+        result = st.session_state.get(key)
+        if result is None:
+            st.caption("Load the complete saved output, including measurements held on the source computers.")
+            return
+        if result.get("pending_sources"):
+            result = run_results.collect(run, output, user, token=token or "")
+            st.session_state[key] = result
+        if result["pending_sources"]:
+            st.info(f"Loading saved results from {len(result['pending_sources'])} source collection(s)…")
+        for error in result["source_errors"]:
+            st.warning(f"{error['source_job']}: {error['error']}")
+        if result["excluded_sources"]:
+            st.caption(f"{len(result['excluded_sources'])} source collection(s) are unfinished or have no saved candidates. Execution details retain their status.")
+        by_reference = {logical_runs.source_reference(row): row for row in output["sources"]}
+        records = [{"job": by_reference[row["source_job"]], "candidate": row} for row in result["candidates"]]
+        rows, definitions = _campaign_candidate_result_rows(records)
+        for table_row, record in zip(rows, records):
+            table_row["Run candidate ID"] = record["candidate"]["run_candidate_id"]
+        if rows:
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", height=min(560, 36 * min(len(rows), 15) + 42))
+            st.caption(f"{len(rows):,} candidates in this output. Native candidate IDs and source provenance are retained; Run candidate IDs distinguish duplicate names across batches.")
+            if definitions:
+                with st.expander("Metric definitions and provenance"):
+                    st.dataframe(pd.DataFrame(definitions), hide_index=True, width="stretch")
+            if result["complete"]:
+                a, b = st.columns(2)
+                a.download_button("Export output CSV", pd.DataFrame(rows).to_csv(index=False).encode(), "run-results.csv", "text/csv", key=key + "-csv")
+                b.download_button("Export output JSONL", "".join(json.dumps(row, sort_keys=True) + "\n" for row in result["candidates"]), "run-results.jsonl", "application/x-ndjson", key=key + "-jsonl")
+            candidate_index = st.selectbox("Design structure", range(len(records)),
+                format_func=lambda i: f"{records[i]['candidate']['candidate_id']} · {config.display_name(records[i]['job'].get('node_name') or 'This workstation')} · {records[i]['candidate']['run_candidate_id'][:8]}", key=key + "-structure")
+            if st.button("Open selected structure", key=key + "-open"):
+                record = records[candidate_index]
+                member = record["job"]
+                jid = str(member.get("cluster_job_id") or _job_details_reference(member).removeprefix("cluster:"))
+                st.session_state.pop("cluster-candidate-" + jid, None)
+                st.session_state["cluster-candidate-default-" + jid] = record["candidate"]["candidate_id"]
+                _navigate_to_job_details(_job_details_reference(member), final_results=True)
+        elif not result["pending_sources"] and not result["source_errors"]:
+            st.info("No saved candidate records are available in this output.")
+    measured_results()
+
+
+@st.dialog("Run results", width="large")
 def _render_results_campaign_batches(members, elapsed_label=None, token=None):
     if not members:
         st.info("No campaign batch jobs are available.")
@@ -883,7 +938,35 @@ def _render_results_campaign_batches(members, elapsed_label=None, token=None):
     metric_columns[2].metric("Active", active)
     metric_columns[3].metric("Failed", failed)
 
-    _render_campaign_candidate_measurements(members, token)
+    from mn_molecular_design_studio.logical_runs import group_runs, apply_operation_links
+    logical = group_runs(apply_operation_links(members))
+    if logical and logical[0]["outputs"]:
+        by_id = {o["id"]: o for o in logical[0]["outputs"]}
+        output_id = st.selectbox("Run output", list(by_id), format_func=lambda value: str(by_id[value]["name"]),
+                                 key="run-output-" + logical[0]["id"])
+        output = by_id[output_id]
+        from mn_molecular_design_studio.workspace import _studio_home, load_settings
+        operation_path = _studio_home() / "run_operations" / (output_id + ".json")
+        if operation_path.is_file():
+            operation = json.loads(operation_path.read_text())
+            if operation.get("errors"):
+                st.error(f"{len(operation['errors'])} source collection(s) could not be submitted. Their existing data is retained.")
+                with st.expander("Dispatch errors"):
+                    st.json(operation["errors"])
+                if st.button("Retry unsubmitted work", key="retry-" + output_id):
+                    import os
+                    base = os.environ.get("MDS_API_BASE_URL") or load_settings()["api_base_url"]
+                    response = transport.request("/api/v1/run-operations/" + output_id + "/retry", token=token or "",
+                                                 method="POST", base_url=base, timeout=60)
+                    st.info(f"{response['submitted_job_count']} source jobs recorded; {len(response['dispatch_errors'])} dispatch errors remain. Refresh Results to update the Run.")
+            if operation.get("excluded"):
+                st.caption(f"{len(operation['excluded'])} unfinished or unavailable source collections were excluded when this output's inputs were frozen.")
+            with st.expander("Output settings"):
+                st.json(operation.get("payload", {}).get("parameters", {}))
+        st.caption("Select this complete output in another tool. Analysis and filtering outputs keep their original source lineage.")
+        _render_run_output_results(logical[0], output, token)
+    else:
+        _render_campaign_candidate_measurements(members, token)
 
     parameters = _campaign_parameter_rows(members)
     st.subheader("Important parameters")
@@ -893,7 +976,10 @@ def _render_results_campaign_batches(members, elapsed_label=None, token=None):
     else:
         st.info("This campaign's saved job records do not include a summary of the supported scientific settings.")
 
-    st.subheader("Batch jobs")
+    st.subheader("Execution details")
+    show_execution = st.checkbox("Show individual jobs, computers and logs", key="run-execution-" + _campaign_results_key(members))
+    if not show_execution:
+        return
     table_rows = []
     references = []
     for index, row in enumerate(members, 1):
@@ -1906,25 +1992,16 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
     status_key = "cluster-results-status-filter"
     if not set(st.session_state.get(status_key, [])).issubset(status_options):
         st.session_state[status_key] = []
-    group_pipeline_runs = st.toggle(
-        "Group pipeline steps",
-        value=True,
-        key="cluster-results-group-pipelines",
-        help="Show each pipeline once, including jobs on other computers. Counts include jobs created so far; looping workflows add jobs until they stop. The Steps button opens their tool-call jobs.",
-    )
-    group_campaign_batches = st.toggle(
-        "Group campaign batches",
-        value=True,
-        key="cluster-results-group-campaign-batches",
-        help="Collapse related batch jobs into one campaign row. Open Campaign in Results to see batch status and the saved scientific settings together.",
-    )
+    group_pipeline_runs = True
+    group_campaign_batches = True
+    st.caption("One Run contains its distributed jobs and named result outputs. Individual jobs are available under Execution details.")
     search_col, machine_col, status_col, sort_col = st.columns([0.38, 0.21, 0.21, 0.20])
-    query = search_col.text_input("Search jobs", placeholder="Name, engine, or run ID", key="cluster-results-query").casefold()
+    query = search_col.text_input("Search runs", placeholder="Name, engine, or run ID", key="cluster-results-query").casefold()
     names = {r.get("node_id"): config.display_name(r.get("node_name") or "Not assigned") for r in rows if r.get("node_id")}
     machine = machine_col.selectbox("Workstation", ["", *names], format_func=lambda v: names.get(v, "All workstations"), key="cluster-results-machine")
     statuses = status_col.multiselect("Status", status_options, key=status_key, placeholder="All statuses")
     sort_by = sort_col.selectbox(
-        "Sort jobs",
+        "Sort runs",
         ["active_desc", "finished_desc", "name_asc", "status_asc"],
         format_func=lambda value: {
             "active_desc": "Newest",
@@ -2045,8 +2122,8 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
         for root_ref, members in pipeline_groups.items():
             if root_ref in selected_jobs:
                 selected_jobs.update((_results_job_reference(member), member) for member in members)
-    campaign_groups, row_to_campaign, campaign_labels = _campaign_batch_groups(
-        scope_rows, excluded_references=row_to_group,
+    campaign_groups, row_to_campaign, campaign_labels = _logical_run_groups(
+        rows, excluded_references=row_to_group,
     ) if group_campaign_batches else ({}, {}, {})
     display_entries = []
     seen_groups = set()
@@ -2081,12 +2158,12 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
                 display_entries.append({"kind": "job", "row": row})
 
     grouped_count = sum(entry["kind"] == "pipeline" for entry in display_entries)
-    caption = f"{len(chosen)} jobs · Job status and file availability are tracked separately."
+    caption = f"{len(display_entries)} Runs · Execution status and file availability are tracked separately."
     if grouped_count:
         caption += f" {grouped_count} pipeline run{'s' if grouped_count != 1 else ''} grouped."
     campaign_count = sum(entry["kind"] == "campaign" for entry in display_entries)
     if campaign_count:
-        caption += f" {campaign_count} campaign{'s' if campaign_count != 1 else ''} grouped."
+        caption += f" {campaign_count} result collection{'s' if campaign_count != 1 else ''}."
     st.caption(caption)
     page_size_col, page_col, range_col = st.columns([0.24, 0.24, 0.52], vertical_alignment="bottom")
     page_size = page_size_col.selectbox("Entries per page", [25, 50, 100], index=1, key="cluster-results-page-size")
@@ -2125,8 +2202,8 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
             ref = _results_job_reference(row)
             members = entry["members"] if is_pipeline or is_campaign else [row]
             entry_members.append(members)
-            entry_pipeline_refs.append(ref if is_pipeline else None)
-            entry_view_refs.append(_job_details_reference(row))
+            entry_pipeline_refs.append(ref if is_pipeline else {"kind": "campaign", "members": members} if is_campaign else None)
+            entry_view_refs.append({"kind": "campaign", "members": members} if is_campaign else _job_details_reference(row))
             entry_result_refs.append(
                 {"kind": "campaign", "members": members} if is_campaign else
                 {"reference": _job_details_reference(row)} if is_pipeline else None
@@ -2143,7 +2220,7 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
             }
             if group_pipeline_runs or group_campaign_batches:
                 table_row["Results"] = (
-                    "Campaign" if is_campaign else
+                    "Results" if is_campaign else
                     ("Final results" if str(row.get("status") or "").casefold() in {"completed", "succeeded"}
                      else "Results so far") if is_pipeline else None
                 )
@@ -2153,7 +2230,7 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
                 children = members[1:] if is_pipeline else []
                 table_row["Steps"] = (
                     _pipeline_step_count_label(row, children) if is_pipeline else
-                    f"{len(members)} batch jobs" if is_campaign else None
+                    f"{len(members)} jobs" if is_campaign else None
                 )
             table_row.update({
                 "Project": project_names.get(row.get("project_id"), "Project"),
@@ -2201,7 +2278,7 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
                 "Select", width="small",
                 help="Selecting a pipeline includes its parent run and every tool-call job. Finish or cancel jobs before purging them.",
             ),
-            "Job": st.column_config.TextColumn("Job", width="large"),
+            "Job": st.column_config.TextColumn("Run", width="large"),
             "View": st.column_config.ButtonColumn(
                 "View", width="small", type="tertiary", key=table_key + "-view",
                 on_click=_request_results_job_view,
@@ -2230,7 +2307,7 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
         if group_pipeline_runs or group_campaign_batches:
             results_key = table_key + "-results"
             column_config["Results"] = st.column_config.ButtonColumn("Results", width=120, type="tertiary",
-                help="Open combined pipeline results or the campaign's batch jobs and settings.", key=results_key,
+                help="Open the Run's result outputs, measurements and structures.", key=results_key,
                 on_click=_request_results_pipeline_results, args=(results_key, entry_result_refs))
         if group_pipeline_runs:
             click_key = table_key + "-steps"

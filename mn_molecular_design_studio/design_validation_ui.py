@@ -188,296 +188,73 @@ def render_batch_controls(engine_id, profile, project_id, job_name, schema, *, s
         if not project_id:
             st.info("Select a project above to see its successfully completed design campaigns.")
             return True, 0
-        rows, cursor = [], None
-        while True:
-            page = search_jobs(project_id=project_id, task_group="design", statuses=["completed", "succeeded"],
-                               limit=1000, cursor=cursor)
-            rows.extend(page["items"])
-            cursor = page.get("next_cursor")
-            if not cursor:
-                break
-        eligible = {row["run_id"]: designs for row in rows
-                    if (designs := design_candidates(Path(row["run_dir"]), require_passing=not include_acceptance))}
-        by_id = {row["run_id"]: row for row in rows if row["run_id"] in eligible}
-        prediction_eligible, prediction_by_id = {}, {}
-        if evaluation_only and include_acceptance:
-            # Existing co-folding results are also valid saved evidence. Load
-            # only completed complex predictions with explicit binder/target
-            # roles and an in-run structure; no prediction is run here.
-            from mn_molecular_design_studio.cofolding_results import local_artifact
-            from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+        return _render_run_validation(engine_id, profile, project_id, job_name, schema, key, mode,
+                                      submit=submit, include_acceptance=include_acceptance,
+                                      evaluation_only=evaluation_only)
 
-            prediction_rows, prediction_cursor = [], None
-            while True:
-                page = search_jobs(project_id=project_id, task_group="refolding-validation",
-                                  statuses=["completed", "succeeded"], limit=1000,
-                                  cursor=prediction_cursor)
-                prediction_rows.extend(page["items"])
-                prediction_cursor = page.get("next_cursor")
-                if not prediction_cursor:
-                    break
-            for row in prediction_rows:
-                run_dir = Path(row["run_dir"])
-                path = run_dir / "artifacts/normalized_candidates/candidates.jsonl"
-                if not path.is_file():
-                    continue
-                candidates = []
-                for candidate in read_candidates(path):
-                    if (candidate.get("stage") != "complex_refolding"
-                            or not candidate.get("binder_chains") or not candidate.get("target_chains")):
-                        continue
-                    structure = local_artifact(run_dir, candidate.get("complex_pdb"))
-                    if structure is None:
-                        continue
-                    candidate["complex_pdb"] = str(structure)
-                    candidates.append(candidate)
-                if not candidates:
-                    continue
-                option = "prediction:" + str(row["run_id"])
-                prediction_eligible[option] = candidates
-                prediction_by_id[option] = row
-        remote_by_id = {}
-        try:
-            from mn_molecular_design_studio.cluster import config as cluster_config
-            from mn_molecular_design_studio.cluster.service import shared_jobs
-            cluster_settings = cluster_config.load()
-            if cluster_settings.get("mode") != "disabled":
-                token = str(st.session_state.get("studio-session-token") or "")
-                user = st.session_state.get("_molecular_database_user")
-                if not isinstance(user, dict):
-                    raise ValueError("The signed-in user context is unavailable.")
-                shared = shared_jobs(user, token=token, project_id=project_id,
-                                     task_group="design", statuses=["completed", "succeeded"], limit=1000,
-                                     include_hidden=True)
-                local_node = cluster_config.identity()
-                for row in shared.get("items", []):
-                    if str(row.get("node_id") or "") == local_node:
-                        continue
-                    compact = row.get("candidate_summary")
-                    if not isinstance(compact, dict) or compact.get("status") != "complete":
-                        continue
-                    counts = compact.get("native_filter_counts") if isinstance(compact.get("native_filter_counts"), dict) else {}
-                    candidate_count = int(compact.get("candidate_count") or 0)
-                    eligible_count = int(compact.get("eligible_count") or 0)
-                    if not include_acceptance:
-                        eligible_count = min(eligible_count, int(counts.get("passed") or 0))
-                    if eligible_count <= 0:
-                        continue
-                    reference = str(row.get("cluster_job_id") or "")
-                    if not reference and row.get("local_reference"):
-                        reference = cluster_config.job_id(str(row["node_id"]), str(row["local_reference"]))
-                    if not reference:
-                        continue
-                    option = "cluster:" + reference
-                    remote_by_id[option] = {**row, "candidate_count": candidate_count,
-                                            "eligible_count": eligible_count,
-                                            "native_filter_counts": counts,
-                                            "source_reference": option}
-        except Exception as exc:
-            st.caption(f"Remote design sources are temporarily unavailable: {exc}")
-        source_tools = set()
-        inferred_formats = []
-        inferred_target_types = []
-        from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
-        from mn_molecular_design_studio.validation_acceptance import infer_binder_format, infer_target_type
-        workflow_parameters_by_run = {}
-        source_options = {**by_id, **prediction_by_id, **remote_by_id}
-        source_label = "Saved design or prediction results" if evaluation_only else "Design campaigns"
-        selected = st.multiselect(source_label, list(source_options), key=f"{key}-runs-v2",
-                                 format_func=lambda identifier: (
-                                     f"{source_options[identifier].get('campaign_name') or source_options[identifier].get('tool')} · "
-                                     f"{source_options[identifier].get('job_code') or source_options[identifier].get('run_id') or identifier}"
-                                     + (f" · source files on {source_options[identifier].get('node_name') or source_options[identifier].get('node_id')}"
-                                        if identifier in remote_by_id else "")
-                                 ),
-                                 help=("Only completed design jobs with filter-passing outputs are listed."
-                                       if not include_acceptance else
-                                       "Completed local design jobs and co-folding prediction results are listed. Saved confidence files and structures are filtered in place; no model is launched."))
-        if not source_options:
-            st.info("This project has no completed design candidates available for the selected input mode.")
-        remote_candidate_ids = []
-        remote_candidate_limit = None
-        remote_source_job = None
-        source_errors = []
-        for identifier in selected:
-            is_remote = identifier in remote_by_id
-            row = source_options[identifier]
-            run_dir = None if is_remote else Path(row["run_dir"])
-            if is_remote:
-                max_count = int(row["eligible_count"])
-                default_count = min(max_count, 16)
-                chosen_count = st.number_input(
-                    f"Remote designs to validate · {row.get('job_code') or row.get('run_id') or identifier}",
-                    min_value=1, max_value=max_count, value=default_count,
-                    key=f"{key}-remote-count-{identifier.replace(':', '-')}",
-                    help="The worker selects eligible designs locally. Candidate sequences and structures are not copied to this workstation.",
-                )
-                if remote_candidate_limit is not None:
-                    source_errors.append("Choose one remote design run per validation batch.")
-                remote_candidate_limit = int(chosen_count)
-                candidates = []
-            else:
-                candidates = prediction_eligible.get(identifier, eligible.get(identifier, []))
-            by_candidate = {c["candidate_id"]: c for c in candidates}
-            chosen = [] if is_remote else st.multiselect(
-                f"Designs · {row.get('job_code') or row.get('run_id') or identifier}", list(by_candidate),
-                default=list(by_candidate), key=f"{key}-candidates-{identifier.replace(':', '-')}",
-                format_func=lambda candidate: (
-                    f"{candidate}"
-                    + (f" · {len(str(by_candidate[candidate].get('binder_sequence') or '').replace(':', ''))} binder residues"
-                       if by_candidate[candidate].get("binder_sequence") else "")
-                    + (f" · native {native_filter(by_candidate[candidate])}"
-                       if include_acceptance else "")
-                ),
-            )
-            if not candidates:
-                if is_remote:
-                    counts = row.get("native_filter_counts") or {}
-                    if include_acceptance:
-                        st.caption(f"{row.get('candidate_count', 0)} remote candidate(s); selecting from the source run on its workstation.")
-                    else:
-                        st.caption(f"{counts.get('passed', 0)} candidate(s) recorded as native filter-passing on the source workstation.")
-                else:
-                    st.caption("This campaign has no eligible designs available for validation.")
-            if chosen:
-                if is_remote:
-                    remote_candidate_ids.extend(chosen)
-                    remote_source_job = row["source_reference"]
-                else:
-                    sources.append({"source_run_dir": str(run_dir), "candidate_ids": chosen})
-                source_tools.update(str(by_candidate[candidate].get("source_tool") or "") for candidate in chosen)
-                if is_remote:
-                    inferred_formats.extend(
-                        infer_binder_format(by_candidate[candidate], {"binder_format": by_candidate[candidate].get("binder_format")})
-                        for candidate in chosen
-                    )
-                    inferred_target_types.extend(
-                        infer_target_type(by_candidate[candidate], {"target_type": by_candidate[candidate].get("target_type")})
-                        for candidate in chosen
-                    )
-                elif identifier not in workflow_parameters_by_run:
-                    try:
-                        params = read_json(run_dir / "input.json").get("params", {})
-                    except (OSError, ValueError, TypeError):
-                        params = {}
-                    native_settings = run_dir / "artifacts/raw/bindcraft2/settings.json"
-                    if native_settings.is_file():
-                        try:
-                            params = {"input_params": params, "bindcraft2_settings": read_json(native_settings)}
-                        except (OSError, ValueError, TypeError):
-                            pass
-                    workflow_parameters_by_run[identifier] = params if isinstance(params, dict) else {}
-                    inferred_formats.extend(
-                        infer_binder_format(by_candidate[candidate], workflow_parameters_by_run[identifier])
-                        for candidate in chosen
-                    )
-                    inferred_target_types.extend(
-                        infer_target_type(by_candidate[candidate], workflow_parameters_by_run[identifier])
-                        for candidate in chosen
-                    )
-            elif is_remote:
-                remote_source_job = row["source_reference"]
-                source_tools.add(str(row.get("tool") or ""))
-                inferred_formats.append(None)
-                inferred_target_types.append(None)
-        if remote_source_job and (sources or len({identifier for identifier in selected if identifier in remote_by_id}) > 1):
-            source_errors.append("Remote validation currently accepts one source run per batch. Select one remote run at a time.")
-            st.error(source_errors[-1])
-        acceptance_policy, acceptance_errors = None, list(source_errors)
-        target_type = "structured"
-        if include_acceptance:
-            with st.expander("Acceptance criteria", expanded=True):
-                acceptance_policy, target_type, acceptance_errors = _acceptance_controls(
-                    key, engine_id, mode, source_tools=source_tools,
-                    inferred_formats=inferred_formats,
-                    inferred_target_types=inferred_target_types,
-                    evidence_only=evaluation_only)
-            acceptance_errors.extend(source_errors)
-            if acceptance_policy.get("binder_format") == "cyclic_peptide" and not profile.get("supports_cyclic"):
-                message = f"{profile['label']} does not preserve cyclic peptide topology. Choose a co-folding engine with cyclic-chain support."
-                st.error(message)
-                acceptance_errors.append(message)
-        if evaluation_only:
-            selected_sources = [identifier for identifier in selected if identifier in source_options]
-            if len(selected_sources) != 1:
-                acceptance_errors.append("Choose exactly one completed design batch for this filtering run.")
-            selected_source = source_options.get(selected_sources[0]) if len(selected_sources) == 1 else None
-            selected_local = next((row for row in sources if selected_source and
-                                   row["source_run_dir"] == str(Path(selected_source["run_dir"]))), None)
-            selected_remote = bool(selected_source and selected_sources[0] in remote_by_id)
-            if selected_source and selected_local is None and not selected_remote:
-                acceptance_errors.append("The chosen design batch could not be resolved.")
-            if selected_local is not None and not selected_local["candidate_ids"]:
-                acceptance_errors.append("Select at least one candidate from the chosen batch.")
-            if selected_remote and not remote_candidate_limit:
-                acceptance_errors.append("Choose how many saved candidates from the remote batch to filter.")
-            count = len(selected_local["candidate_ids"]) if selected_local else int(remote_candidate_limit or 0)
-            st.caption(f"{count} saved candidate(s) selected. Native measurements and geometry from their saved structures will be evaluated; no prediction is run.")
-            if st.button("Run Validation & Acceptance", type="primary",
-                         disabled=not bool(project_id and selected_source and not acceptance_errors),
-                         key=f"{key}-run-saved-evidence"):
-                try:
-                    parameters = {
-                        "job_name": job_name or "Validation & Acceptance",
-                        "acceptance_policy": acceptance_policy,
-                        "candidate_ids": selected_local["candidate_ids"] if selected_local else None,
-                        "candidate_limit": int(remote_candidate_limit) if selected_remote else None,
-                        "_database_collection_policy": "manual",
-                    }
-                    source_job = (remote_source_job if selected_remote else
-                                  f"{selected_source.get('task_group') or 'design'}/{selected_source['run_id']}")
-                    parameters["source_job"] = source_job
-                    submit(schema, "analysis.validation_acceptance", parameters, project_id,
-                           {"prioritize": False}, "Validation & Acceptance")
-                except (ValueError, TypeError, KeyError) as exc:
-                    st.error(f"Could not start acceptance filtering: {exc}")
-            return True, 0
-        target_msa = st.checkbox("Use target MSA", value=True, key=f"{key}-target-msa",
-                                 disabled=mode == "binder" or not profile.get("supports_msa"),
-                                 help="Reuse the shared reference MSA or fetch it from ColabFold. The designed binder always uses a single sequence.")
-        target_template = st.checkbox("Use target structure as a template", value=True, key=f"{key}-target-template",
-                                      disabled=bool(mode == "binder" or target_type == "fasta_idr" or not profile.get("supports_templates") or profile.get("requires_target_template")),
-                                      help="Supply only the target coordinates; the designed binder is excluded from the input template.")
-        target_template = bool(target_template and target_type == "structured")
-        if mode == "complex" and not profile.get("supports_templates"):
-            st.caption("The installed engine accepts sequence inputs without a supplied structure template.")
-        elif profile.get("requires_target_template"):
-            st.caption("This engine requires the target structure.")
-        selected_count = sum(len(s["candidate_ids"]) for s in sources) + int(remote_candidate_limit or 0)
-        st.caption(f"{selected_count} selected designs. Validation measurements and acceptance decisions appear in Results.")
+
+def _render_run_validation(engine_id, profile, project_id, job_name, schema, key, mode, *, submit,
+                           include_acceptance=False, evaluation_only=False):
+    from mn_molecular_design_studio.run_inputs_ui import select
+    from mn_molecular_design_studio.validation_acceptance import infer_binder_format, infer_target_type
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+    from mn_molecular_design_studio.cluster import config as cluster_config
+    selected = select(project_id, key + "-run-output")
+    if not selected:
+        return True, 0
+    source_tools, formats, targets = set(), [], []
+    for row in selected["row"]["_run_sources"]:
+        source_tools.add(str(row.get("tool") or ""))
+        if row.get("node_id") != cluster_config.identity():
+            formats.append(None)
+            targets.append(None)
+            continue
+        root = Path(row["run_dir"])
+        params = read_json(root / "input.json").get("params", {})
+        native_settings = root / "artifacts/raw/bindcraft2/settings.json"
+        if native_settings.is_file():
+            params = {"input_params": params, "bindcraft2_settings": read_json(native_settings)}
+        for candidate in read_candidates(root):
+            formats.append(infer_binder_format(candidate, params))
+            targets.append(infer_target_type(candidate, params))
+    policy, errors, target_type = None, [], "structured"
+    if include_acceptance:
+        with st.expander("Acceptance criteria", expanded=True):
+            policy, target_type, errors = _acceptance_controls(key, engine_id, mode, source_tools=source_tools,
+                inferred_formats=formats, inferred_target_types=targets, evidence_only=evaluation_only)
+        if policy.get("binder_format") == "cyclic_peptide" and not profile.get("supports_cyclic"):
+            errors.append("Choose a cofolding engine that preserves cyclic peptide topology.")
+            st.error(errors[-1])
+    if evaluation_only:
+        st.caption("Filters the complete saved output using existing measurements and structures. No prediction is launched.")
+        if st.button("Run Validation & Acceptance", type="primary", disabled=bool(errors), key=key + "-filter-run"):
+            submit(schema, "analysis.validation_acceptance", {"source_job": selected["reference"],
+                "job_name": job_name or "Validation & Acceptance", "acceptance_policy": policy,
+                "_database_collection_policy": "manual"}, project_id, {"prioritize": False}, "Validation & Acceptance")
+        return True, 0
+    target_msa = st.checkbox("Use target MSA", value=True, key=key + "-target-msa", disabled=mode == "binder" or not profile.get("supports_msa"))
+    target_template = st.checkbox("Use target structure as a template", value=target_type == "structured",
+        key=key + "-target-template", disabled=mode == "binder" or target_type == "fasta_idr" or not profile.get("supports_templates"))
     config = prediction_settings_for(profile)
-    config["fields"] = [field for field in config["fields"] if field["key"] != "use_msa"]
-    _, settings, submitted = render_molecule_editor(
-        f"{key}-settings", (), settings_only=True, prediction_settings=config,
-        can_submit=bool(project_id and (sources or remote_source_job) and not acceptance_errors), modes=tuple(profile["modes"]),
-    )
+    config["fields"] = [f for f in config["fields"] if f["key"] != "use_msa"]
+    _, settings, submitted = render_molecule_editor(key + "-settings", (), settings_only=True,
+        prediction_settings=config, can_submit=not errors, modes=tuple(profile["modes"]))
     if submitted:
-        try:
-            inference_mode = str(settings.get("optimization_mode", "off"))
-            parameters = {
-                "engine": engine_id, "job_name": job_name or f"{engine_id}-validation",
-                "optimization_mode": inference_mode, "seed": int(settings.get("seed") or 0),
-                "samples": int(settings["samples"]), "cpu_cores": int(settings["cpu_cores"]),
-                "num_recycles": int(settings.get("num_loops", settings.get("num_recycles", profile.get("default_recycles", 10)))),
-                "gpu_device": "0,1" if profile.get("gpu_count", {}).get(inference_mode, 1) == 2 else "0",
-                "accept_alphafold3_terms": bool(settings.get("accept_terms")),
-                "engine_options": {field["key"]: settings[field["key"]] for field in profile.get("settings", ()) if field["key"] in settings},
-                "validation_mode": mode,
-                "target_use_msa": bool(target_msa and mode == "complex" and profile.get("supports_msa")),
-                "use_target_template": bool(target_template and mode == "complex" and profile.get("supports_templates")),
-            }
-            if remote_source_job:
-                parameters["source_job"] = remote_source_job
-                parameters["validation_candidate_limit"] = int(remote_candidate_limit or 0)
-            else:
-                parameters["validation_sources"] = sources
-            if include_acceptance:
-                parameters["_database_collection_policy"] = "manual"
-                parameters["validation_target_type"] = target_type
-                parameters["acceptance_policy"] = acceptance_policy
-            submit(schema, "refolding.optimized_prediction", parameters, project_id, settings, profile["label"])
-        except (ValueError, TypeError, KeyError) as exc:
-            st.error(f"Could not submit design validation: {exc}")
+        inference_mode = str(settings.get("optimization_mode", "off"))
+        parameters = {"engine": engine_id, "job_name": job_name or f"{engine_id}-validation",
+            "source_job": selected["reference"], "optimization_mode": inference_mode,
+            "seed": int(settings.get("seed") or 0), "samples": int(settings["samples"]),
+            "cpu_cores": int(settings["cpu_cores"]),
+            "num_recycles": int(settings.get("num_loops", settings.get("num_recycles", profile.get("default_recycles", 10)))),
+            "gpu_device": "0,1" if profile.get("gpu_count", {}).get(inference_mode, 1) == 2 else "0",
+            "accept_alphafold3_terms": bool(settings.get("accept_terms")),
+            "engine_options": {f["key"]: settings[f["key"]] for f in profile.get("settings", ()) if f["key"] in settings},
+            "validation_mode": mode, "target_use_msa": bool(target_msa and mode == "complex" and profile.get("supports_msa")),
+            "use_target_template": bool(target_template and target_type == "structured" and mode == "complex" and profile.get("supports_templates"))}
+        if include_acceptance:
+            parameters.update(_database_collection_policy="manual", validation_target_type=target_type, acceptance_policy=policy)
+        submit(schema, "refolding.optimized_prediction", parameters, project_id, settings, profile["label"])
     return True, 0
 
 

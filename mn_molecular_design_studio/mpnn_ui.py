@@ -264,35 +264,13 @@ def render_inputs(*, owner_id, key_prefix, initial=None, connected=False, abmpnn
 
 
 def _existing_results(project, search_jobs, prefix, *, antibody_backbones_only=False):
-    if not project:
-        st.info("Select a project to choose its completed design results.")
-        return {}, "Select a project."
-    rows = []
-    page = {"items": []}
-    cursor = None
-    while True:
-        result = search_jobs(project_id=project, statuses=["completed", "succeeded"], limit=1000, cursor=cursor)
-        page["items"].extend(result["items"])
-        cursor = result.get("next_cursor")
-        if not cursor:
-            break
+    from mn_molecular_design_studio.run_inputs_ui import select
     from mn_molecular_design_studio.engine.workflow_engine.workflows.mpnn import STAGES
-    for row in page["items"]:
-        run = Path(row["run_dir"])
-        if read_json(run / "result.json").get("success") is not True:
-            continue
-        allowed_stages = {"generation.backbone", "generation.backbone_sequence"} if antibody_backbones_only else set(STAGES)
-        candidates = [c for c in read_candidates(run / "artifacts/normalized_candidates/candidates.jsonl") if c.get("stage") in allowed_stages and c.get("complex_pdb")]
-        if candidates:
-            rows.append((row, candidates))
-    if not rows:
-        st.info("No completed jobs with designable structures are available in this project.")
-        return {}, "Choose existing design results."
-    index = st.selectbox("Source job", range(len(rows)), format_func=lambda i: f"{rows[i][0].get('campaign_name') or rows[i][0]['tool']} · {rows[i][0].get('job_code')}", key=prefix + "-source-job-" + project)
-    row, candidates = rows[index]
-    ids = [c["candidate_id"] for c in candidates]
-    selected = st.multiselect("Designs", ids, default=ids, key=prefix + "-source-designs-" + row["run_id"])
-    return {"source_run_dir": row["run_dir"], "candidates_jsonl": str(Path(row["run_dir"]) / "artifacts/normalized_candidates/candidates.jsonl"), "selected_candidate_ids": selected}, None if selected else "Select at least one input design."
+    allowed = {"generation.backbone", "generation.backbone_sequence"} if antibody_backbones_only else set(STAGES)
+    selected = select(project, prefix + "-source-run", require_complex=False, stages=allowed)
+    if not selected:
+        return {}, "Choose a compatible Run output."
+    return {"source_job": selected["reference"]}, None
 
 
 def render_setup(schema, *, owner_id, project_selector, submit, search_jobs, abmpnn_only=False):
@@ -357,4 +335,4 @@ def render_setup(schema, *, owner_id, project_selector, submit, search_jobs, abm
             st.caption("Select a project to submit.")
         if clicked:
             allowed = {f["name"] for f in schema["parameters"]}
-            submit(schema, schema["workflow"], {k: v for k, v in parameters.items() if k in allowed}, project, {"prioritize": priority}, name or ("AbMPNN" if abmpnn_only else "ProteinMPNN"))
+            submit(schema, schema["workflow"], {k: v for k, v in parameters.items() if k in allowed or k == "source_job"}, project, {"prioritize": priority}, name or ("AbMPNN" if abmpnn_only else "ProteinMPNN"))

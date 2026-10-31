@@ -3475,79 +3475,16 @@ def _render_parameter_fields(parameters: list[dict], *, workflow_id: str, group:
 
 
 def _analysis_source_job_options(project_id: str, *, require_complex=True, allow_docking=False) -> list[dict]:
-    """List completed, accessible complex-result jobs from one selected project."""
-    result = search_jobs(statuses=["completed", "succeeded"], project_id=project_id, limit=1000)
-    options: list[dict] = []
-    seen_runs: set[tuple[str, str]] = set()
-    for row in result.get("items", []):
-        run_dir = Path(str(row.get("run_dir") or ""))
-        candidates_path = run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl"
-        if not candidates_path.is_file():
-            if allow_docking and (run_dir / "artifacts/docking_scores.csv").is_file():
-                options.append({"reference": f"{row.get('task_group', '')}/{row.get('run_id', '')}",
-                                "label": f"{row.get('campaign_name') or row.get('tool')} · {row.get('job_code') or row.get('run_id')} · best pose per compound", "row": row})
-                seen_runs.add((str(row.get("task_group") or ""), str(row.get("run_id") or "")))
-            continue
-        candidates = read_candidates(candidates_path)
-        complex_candidates = [candidate for candidate in candidates if candidate.get("complex_pdb") or (not require_complex and candidate.get("binder_sequence"))]
-        if not complex_candidates:
-            continue
-        reference = f"{row.get('task_group', '')}/{row.get('run_id', '')}"
-        name = str(row.get("campaign_name") or row.get("tool") or row.get("job_type") or "Results")
-        seen_runs.add((str(row.get("task_group") or ""), str(row.get("run_id") or "")))
-        options.append(
-            {
-                "reference": reference,
-                "label": f"{name} · {row.get('job_code') or row.get('run_id')} · {len(complex_candidates)} complex candidate(s)",
-                "row": row,
-            }
-        )
-
-    # A synchronized Database may contain results whose PAE matrices and other
-    # source-run artifacts remain on another workstation. Include those runs
-    # as choices; source_job affinity will send the analysis to that owner.
-    cluster_settings = cluster_config.load()
-    if cluster_settings.get("mode") != "disabled":
-        try:
-            from mn_molecular_design_studio.cluster.service import shared_jobs
-
-            token = str(st.session_state.get("studio-session-token") or ("development-mode" if is_development_mode() else ""))
-            shared = shared_jobs(
-                CURRENT_USER,
-                token=token,
-                project_id=project_id,
-                statuses=["completed", "succeeded"],
-                limit=1000,
-            )
-            local_node_id = cluster_config.identity()
-            for row in shared.get("items", []):
-                task_group = str(row.get("task_group") or "")
-                run_id = str(row.get("run_id") or "")
-                node_id = str(row.get("node_id") or "")
-                if not task_group or not run_id or (task_group, run_id) in seen_runs or node_id == local_node_id:
-                    continue
-                # The job manifest is intentionally not copied to this machine.
-                # Its complex/PAE artifacts are checked by the workflow on owner.
-                job_id = str(row.get("cluster_job_id") or "")
-                if not job_id:
-                    local_reference = str(row.get("local_reference") or f"{task_group}/{run_id}")
-                    job_id = cluster_config.job_id(node_id, local_reference)
-                reference = "cluster:" + job_id
-                label = " · ".join(filter(None, (
-                    str(row.get("campaign_name") or row.get("tool") or row.get("job_type") or "Results"),
-                    str(row.get("job_code") or run_id),
-                    f"source files on {cluster_config.display_name(row.get('node_name') or node_id)}",
-                )))
-                options.append({"reference": reference, "label": label, "row": row})
-                seen_runs.add((task_group, run_id))
-        except Exception as exc:
-            st.warning(f"Could not refresh results from other workstations: {exc}")
-    return options
+    """Select a whole Run output, independently of native job boundaries."""
+    from mn_molecular_design_studio.run_inputs_ui import options_for_user
+    token = str(st.session_state.get("studio-session-token") or ("development-mode" if is_development_mode() else ""))
+    return options_for_user(project_id, CURRENT_USER, token=token,
+                         require_complex=require_complex, allow_docking=allow_docking)
 
 
 def _source_job_pae_availability(source_job: dict, candidate_ids: list[str] | None = None) -> tuple[int | None, int | None]:
     """Count source complex candidates with a saved pairwise PAE matrix file."""
-    if str(source_job.get("run_dir") or "").startswith("cluster://"):
+    if len(source_job.get("_run_sources", [])) > 1 or str(source_job.get("run_dir") or "").startswith("cluster://"):
         # The artifact is remote by design. It will be verified after the job
         # reaches its owner workstation, which also holds the PAE sidecars.
         return None, None
@@ -3566,6 +3503,104 @@ def _source_job_pae_availability(source_job: dict, candidate_ids: list[str] | No
         if pae_path and pae_path.is_file():
             available += 1
     return available, len(candidates)
+
+
+def _source_job_structure_analysis_profile(source_job: dict, candidate_ids: list[str] | None = None) -> dict | None:
+    """Inspect local per-candidate files to preview which structure measurements can run."""
+    if len(source_job.get("_run_sources", [])) > 1 or str(source_job.get("run_dir") or "").startswith("cluster://"):
+        return None
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.analysis import (
+        _candidate_design_complex,
+        _candidate_design_reference,
+        _candidate_hotspots,
+        _find_pae_path,
+        _resolve_path,
+    )
+
+    run_dir = Path(str(source_job.get("run_dir") or ""))
+    candidates_path = run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+    candidates = read_candidates(candidates_path)
+    if candidate_ids is not None:
+        selected_ids = {str(value) for value in candidate_ids}
+        candidates = [candidate for candidate in candidates
+                      if str(candidate.get("candidate_id") or "") in selected_ids]
+    pae_count = design_reference_count = design_complex_count = hotspot_count = 0
+    design_only_count = cofold_only_count = design_cofold_count = other_stage_count = 0
+    missing_complex_count = 0
+    for candidate in candidates:
+        if not candidate.get("complex_pdb"):
+            missing_complex_count += 1
+            continue
+        structure = _resolve_path(run_dir, str(candidate.get("complex_pdb") or ""))
+        if not structure or not structure.is_file():
+            missing_complex_count += 1
+            continue
+        pae_path = _find_pae_path(run_dir, candidate, structure)
+        pae_count += int(bool(pae_path and pae_path.is_file()))
+        design_reference, _ = _candidate_design_reference(run_dir, candidate)
+        has_design_reference = bool(design_reference and design_reference.is_file())
+        design_reference_count += int(has_design_reference)
+        design_complex, _, _ = _candidate_design_complex(run_dir, candidate)
+        has_design_complex = bool(design_complex and design_complex.is_file())
+        design_complex_count += int(has_design_complex)
+        hotspot_count += int(bool(_candidate_hotspots(candidate)))
+        stage = str(candidate.get("stage") or "").lower()
+        if has_design_reference or has_design_complex:
+            design_cofold_count += 1
+        elif stage.startswith(("generation.", "sequence_design")):
+            design_only_count += 1
+        elif stage == "complex_refolding":
+            cofold_only_count += 1
+        else:
+            other_stage_count += 1
+    return {
+        "candidate_count": len(candidates),
+        "complex_count": len(candidates) - missing_complex_count,
+        "missing_complex_count": missing_complex_count,
+        "pae_count": pae_count,
+        "design_reference_count": design_reference_count,
+        "design_complex_count": design_complex_count,
+        "hotspot_count": hotspot_count,
+        "design_only_count": design_only_count,
+        "cofold_only_count": cofold_only_count,
+        "design_cofold_count": design_cofold_count,
+        "other_stage_count": other_stage_count,
+    }
+
+
+def _render_ipsae_analysis_cutoffs(parameters: list[dict]) -> dict:
+    """Render the five settings by the evidence they affect."""
+    names = {
+        "pae_cutoff": ("ipSAE PAE cutoff (Å)", "Used only when that candidate has a saved pairwise PAE matrix."),
+        "dist_cutoff": ("Directional i_pAE contact distance (Å)", "Cα contact distance for directional PAE measurements."),
+        "ipdae_contact_cutoff": ("i_pDAE contact cutoff (Å)", "Contact cutoff for the BindCraft2-definition i_pDAE recalculation."),
+        "structure_contact_cutoff": ("Structure contact distance (Å)", "Heavy-atom distance for interface contacts and designed-contact preservation."),
+        "hotspot_contact_cutoff": ("Hotspot contact distance (Å)", "Used only when target hotspot residues are annotated."),
+    }
+    by_name = {parameter["name"]: parameter for parameter in parameters}
+    raw_values = {}
+    with st.expander("Analysis cutoffs", expanded=False):
+        st.markdown("**PAE-based scores**")
+        st.caption("Only candidates with a saved pairwise PAE matrix receive ipSAE, directional i_pAE, or i_pDAE measurements.")
+        columns = st.columns(3)
+        for index, name in enumerate(("pae_cutoff", "dist_cutoff", "ipdae_contact_cutoff")):
+            parameter = by_name[name]
+            label, help_text = names[name]
+            with columns[index]:
+                raw_values[name] = st.number_input(label, min_value=0.0,
+                    value=float(parameter.get("default") or 0.0), step=0.5,
+                    help=help_text, key=f"setup-analysis.ipsae-cutoff-{name}")
+        st.markdown("**Structure measurements**")
+        st.caption("These use the saved complex directly. Hotspot contacts additionally need hotspot annotations.")
+        columns = st.columns(2)
+        for index, name in enumerate(("structure_contact_cutoff", "hotspot_contact_cutoff")):
+            parameter = by_name[name]
+            label, help_text = names[name]
+            with columns[index]:
+                raw_values[name] = st.number_input(label, min_value=0.0,
+                    value=float(parameter.get("default") or 0.0), step=0.5,
+                    help=help_text, key=f"setup-analysis.ipsae-cutoff-{name}")
+    return raw_values
 
 
 def _render_esmfold2_cofolding_setup(schema: dict) -> None:
@@ -4474,7 +4509,7 @@ def _render_workflow_setup() -> None:
     analysis_source_workflow = workflow_id in ANALYSIS_SOURCE_WORKFLOWS
     source_jobs: list[dict] = []
     selected_source_job: str | None = None
-    selected_source_pae_count: int | None = None
+    selected_source_analysis_profile: dict | None = None
     selected_source_candidate_ids: list[str] | None = None
     database_source_selection = None
     database_source_candidate_map: dict[str, list[str]] = {}
@@ -4515,14 +4550,16 @@ def _render_workflow_setup() -> None:
                     (item["label"] for item in source_jobs if item["reference"] == reference), reference
                 ),
                 key=f"analysis-source-job-{workflow_id}-{project_id}",
-                help="The selected job is read as input. This tool creates a separate analysis result and leaves its original ranking and files unchanged.",
+                help="Process the complete selected Run output. Each source collection stays on its owning workstation; this analysis becomes a named output under the Run.",
             )
             selected_source = next(
                 (item for item in source_jobs if item["reference"] == selected_source_job),
                 None,
             )
             selected_row = (selected_source or {}).get("row") or {}
-            if selected_source_job.startswith("cluster:") or str(selected_row.get("run_dir") or "").startswith("cluster://"):
+            if selected_row.get("_run_sources"):
+                st.caption(f"Whole Run output · {len(selected_row['_run_sources'])} source collection(s). Processing uses the saved files on each owning workstation.")
+            elif selected_source_job.startswith("cluster:") or str(selected_row.get("run_dir") or "").startswith("cluster://"):
                 owner_name = cluster_config.display_name(
                     selected_row.get("node_name") or selected_row.get("node_id") or "the owning workstation"
                 )
@@ -4532,7 +4569,7 @@ def _render_workflow_setup() -> None:
                     "It will wait there if that workstation is offline or busy."
                 )
         elif project_id:
-            st.info("No completed jobs with saved complex structures are available in this project yet.")
+            st.info("No Run outputs with saved complex structures are available in this project yet.")
 
         if database_source_selection and workflow_id == "analysis.ipsae":
             if not database_source_candidate_map:
@@ -4558,19 +4595,40 @@ def _render_workflow_setup() -> None:
                 None,
             )
             if selected_source:
-                pae_count, complex_count = _source_job_pae_availability(
+                selected_source_analysis_profile = _source_job_structure_analysis_profile(
                     selected_source["row"], candidate_ids=selected_source_candidate_ids
                 )
-                selected_source_pae_count = pae_count
-                if pae_count is None:
-                    st.caption("The source workstation will check that run's PAE matrices when the analysis starts.")
-                elif pae_count:
-                    st.caption(f"Pairwise PAE matrix files found for {pae_count} of {complex_count} complex candidate(s).")
+                st.subheader("Detected input evidence")
+                if selected_source_analysis_profile is None:
+                    st.info("This Run is stored on another workstation or combines multiple source collections. The analysis will inspect each candidate there and use only its saved evidence.")
                 else:
-                    st.warning(
-                        "No pairwise PAE matrix file was found for this job. ipSAE needs the PAE matrix; "
-                        "scalar i_pAE or i_pDAE metrics are not sufficient."
-                    )
+                    profile = selected_source_analysis_profile
+                    total = profile["complex_count"]
+                    pae_count = profile["pae_count"]
+                    st.markdown(f"**Input profile · {total} readable complex structure(s) from {profile['candidate_count']} selected candidate(s)**")
+                    if profile["missing_complex_count"]:
+                        st.warning(f"{profile['missing_complex_count']} selected candidate(s) have no readable target–binder complex; they will carry an explicit unavailable reason.")
+                    profile_cols = st.columns(3)
+                    profile_cols[0].metric("Design only", profile["design_only_count"])
+                    profile_cols[1].metric("Cofold only", profile["cofold_only_count"])
+                    profile_cols[2].metric("Design + cofold", profile["design_cofold_count"])
+                    if profile["other_stage_count"]:
+                        st.caption(f"{profile['other_stage_count']} candidate(s) have another or unrecorded stage; their individual file evidence is still checked.")
+                    evidence_cols = st.columns(4)
+                    evidence_cols[0].metric("With pairwise PAE", pae_count)
+                    evidence_cols[1].metric("With design reference", profile["design_reference_count"])
+                    evidence_cols[2].metric("With design complex", profile["design_complex_count"])
+                    evidence_cols[3].metric("With target hotspots", profile["hotspot_count"])
+                    if pae_count:
+                        st.caption(f"ipSAE, directional i_pAE, and i_pDAE will be measured for {pae_count} of {total} candidate(s).")
+                    else:
+                        st.info("No full pairwise PAE matrix was found. The run can still measure structure contacts, clashes, Cα B-factors, and any available design-reference or hotspot metrics; PAE-derived scores will be marked unavailable. Scalar i_pAE or i_pDAE is not substituted for the matrix.")
+                    if profile["design_reference_count"]:
+                        st.caption(f"Design-to-cofold binder RMSD is available for up to {profile['design_reference_count']} candidate(s); contact preservation also needs a separate design complex.")
+                    else:
+                        st.caption("No separate design structure was found; design-to-cofold RMSD and contact preservation will be unavailable.")
+                    if not profile["hotspot_count"]:
+                        st.caption("No target hotspot annotations were found; hotspot satisfaction will be unavailable.")
 
     parameters = schema.get("parameters", [])
     if analysis_source_workflow:
@@ -4593,7 +4651,12 @@ def _render_workflow_setup() -> None:
             st.caption("This workflow can start with its default settings.")
             raw_values = {}
 
-        if optional or options:
+        if workflow_id == "analysis.ipsae":
+            st.subheader("Measurements")
+            st.caption("This step analyzes saved complexes; it does not launch a predictor or apply acceptance filters. Candidate-level files determine which measurements are available.")
+            raw_values = _render_ipsae_analysis_cutoffs(optional)
+            raw_options = {}
+        elif optional or options:
             with st.expander(f"Advanced settings · {len(optional) + len(options)} options"):
                 if optional:
                     st.markdown("#### Workflow options")
@@ -4618,7 +4681,6 @@ def _render_workflow_setup() -> None:
             use_container_width=True,
             disabled=not project_id
             or (analysis_source_workflow and not selected_source_job)
-            or (workflow_id == "analysis.ipsae" and selected_source_pae_count == 0)
             or database_source_selection_invalid,
         )
 

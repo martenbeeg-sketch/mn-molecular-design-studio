@@ -90,6 +90,7 @@ NODE_CATALOG = {
         field("coldspots", "Coldspot override", "", kind="text", help="Leave empty to inherit the connected Target Structure coldspots."),
         field("clear_unselected", "Clear inherited annotations when overrides are empty", False, kind="boolean", help="Enable this to explicitly pass no hotspots or coldspots when the corresponding override is blank.")]),
     "molecule_source": _spec("molecule_source", "Database selection", "Input", "An immutable selection of Database molecules, prepared through Use in pipeline.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Selection snapshot", "", kind="text")]),
+    "run_source": _spec("run_source", "Run results", "Input", "A complete named Run output across its source computers. Downstream tools process every source collection through the existing scheduler.", output="candidates", color="#758f84", fields=[field("run_reference", "Run output", "", kind="text")]),
     "design_source": _spec("design_source", "Successful project designs", "Input", "Selected filter-passing designs from a successful job in this project.", output="sequence", color="#758f84", fields=[field("source_run_dir", "Source run", "", kind="text")]),
     "generation_source": _spec("generation_source", "Generated project designs", "Input", "Select generated structures and sequences from a completed generator job in this project.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Generator run", "", kind="text")]),
     "project_design_source": _spec("project_design_source", "Existing project designs", "Input", "Select structure-bearing candidates from any completed design job in this project, including generator and refold outputs.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Design job", "", kind="text")]),
@@ -176,7 +177,7 @@ NODE_CATALOG = {
         field("scannet_use_msa", "Use MSA with ScanNet", False, kind="boolean"),
         field("masif_chain_id", "MaSIF-seed chain", "", kind="text")]),
     "results": _spec("results", "Results & comparison", "Results", "Collect candidate structures, metrics, and surface-analysis runs from connected branches.", accepts=["backbone", "sequence", "prediction", "candidates", "analysis"], output=None, color="#5d7b6c"),
-    "ipsae": _spec("ipsae", "ipSAE & Structure Analysis", "Analysis", "Analyze saved structures and prediction-specific PAE in one parallel candidate job: ipSAE, directional PAE and i_pDAE, heavy-atom interface contacts, chain-scoped Cα B-factors, configured hotspot contacts, binder design-to-cofold RMSD, and sequence-mapped preservation of designed interface residue contacts when a source design complex is available. No prediction is launched.", accepts=["prediction"], output="prediction", workflow="analysis.ipsae", color="#9a7854", fields=[field("pae_cutoff", "ipSAE PAE cutoff (Å)", 10., minimum=0., maximum=100.), field("dist_cutoff", "ipSAE/iPAE Cα contact distance (Å)", 10., minimum=0., maximum=100.), field("ipdae_contact_cutoff", "i_pDAE Cα contact cutoff (Å)", 8., minimum=0., maximum=100.), field("structure_contact_cutoff", "Structure heavy-atom contact cutoff (Å)", 4., minimum=0., maximum=100.), field("hotspot_contact_cutoff", "Hotspot contact cutoff (Å)", 5., minimum=0., maximum=100.)]),
+    "ipsae": _spec("ipsae", "ipSAE & Structure Analysis", "Analysis", "Automatically measures each saved target–binder complex using only the evidence it contains. Pairwise PAE enables ipSAE, directional i_pAE, and i_pDAE; a separate design reference enables fitted binder RMSD and interface-contact preservation; target hotspots enable hotspot contacts. No prediction is launched.", accepts=["backbone", "sequence", "prediction"], output="prediction", workflow="analysis.ipsae", color="#9a7854", fields=[field("pae_cutoff", "ipSAE PAE cutoff (Å)", 10., minimum=0., maximum=100., help="Used only for candidates with a saved pairwise PAE matrix."), field("dist_cutoff", "Directional i_pAE contact distance (Å)", 10., minimum=0., maximum=100., help="Cα contact distance for PAE-derived i_pAE measurements."), field("ipdae_contact_cutoff", "i_pDAE contact cutoff (Å)", 8., minimum=0., maximum=100., help="Cα contact cutoff used by the BindCraft2-definition i_pDAE recalculation."), field("structure_contact_cutoff", "Interface contact distance (Å)", 4., minimum=0., maximum=100., help="Heavy-atom distance for structure contacts and designed-interface preservation."), field("hotspot_contact_cutoff", "Hotspot contact distance (Å)", 5., minimum=0., maximum=100., help="Heavy-atom distance used only when target hotspot residues are annotated." )]),
     "rosetta_metrics": _spec("rosetta_metrics", "Rosetta Interface Analysis", "Analysis", "Calculate PyRosetta interface, packing, SASA, hydrogen-bond, and binder surface metrics.", accepts=["prediction"], output="prediction", workflow="analysis.rosetta", color="#9a7854", fields=[]),
 }
 
@@ -684,6 +685,8 @@ for _kind, _specification in NODE_CATALOG.items():
 for _kind in ('ipsae', 'rosetta_metrics'):
     if 'candidates' not in NODE_CATALOG[_kind]['inputs'][0]['accepts']:
         NODE_CATALOG[_kind]['inputs'][0]['accepts'].append('candidates')
+NODE_CATALOG['ipsae']['inputs'][0]['multiple'] = True
+NODE_CATALOG['ipsae']['inputs'][0]['label'] = 'Design / cofold candidates'
 if 'prediction' not in NODE_CATALOG['candidate_rank']['inputs'][0]['accepts']:
     NODE_CATALOG['candidate_rank']['inputs'][0]['accepts'].append('prediction')
 
@@ -1795,7 +1798,11 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
         if kind == 'af2' and ligand_context[node_id]:
             raise ValueError('AlphaFold2 does not predict ligand complexes. Use RosettaFold3, or ESMFold for the binder alone.')
         for source in incoming[node_id]:
-            if output_types[source] not in spec["inputs"][0]["accepts"]:
+            if nodes[source]["data"]["kind"] == "run_source":
+                from mn_molecular_design_studio.run_graph import compatible
+                if not compatible(kind):
+                    raise ValueError("Run results must connect to a tool with a compatible saved-collection input. Connect analysis before cohort ranking or merging.")
+            if output_types[source] != "candidates" and output_types[source] not in spec["inputs"][0]["accepts"]:
                 raise ValueError(f"{nodes[source]['data']['label']} does not supply the data required by {spec['label']}.")
         output_types[node_id] = (output_types[incoming[node_id][0]] if kind == "filter" and incoming[node_id] else spec["outputs"][0]["type"] if spec["outputs"] else "results")
         output_formats[node_id] = output_formats[incoming[node_id][0]] if kind == "filter" and incoming[node_id] else spec["formats"]
@@ -1888,6 +1895,8 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
             match = re.fullmatch(r"(\d+)(?:-(\d+))?", length)
             if not match or not 1 <= int(match[1]) <= int(match[2] or match[1]) <= 10000:
                 raise ValueError("Binder length must be a positive length or range, such as 74 or 60-100.")
+        if require_inputs and kind == "run_source" and not str(node["data"]["params"].get("run_reference") or "").startswith("run:"):
+            raise ValueError("Select a Run output from this project.")
         if require_inputs and kind == "design_source" and not node["data"]["params"].get("source_run_dir"):
             raise ValueError("Select a successful design job from this project.")
         if require_inputs and kind == "molecule_source" and not node["data"]["params"].get("source_run_dir"):

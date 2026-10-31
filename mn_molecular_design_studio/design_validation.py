@@ -244,6 +244,8 @@ def build_tasks(sources: list[dict], *, mode: str, profile: dict, target_use_msa
             except (OSError, ValueError, TypeError):
                 pass
         ids = source.get("candidate_ids")
+        if ids is None and source.get("all_candidates") is True:
+            ids = list(rows)
         if ids is None:
             limit = source.get("candidate_limit")
             if type(limit) is not int or not 1 <= limit <= 1024:

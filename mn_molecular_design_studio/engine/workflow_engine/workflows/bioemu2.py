@@ -43,8 +43,20 @@ def run_bioemu2(
     job_name: str = "bioemu2-sampling",
     cpu_cores: int = 8,
     gpu_device: str = "all",
+    source_run_dir: Path | None = None,
+    candidates_jsonl: Path | None = None,
 ) -> Path:
     """Sample one or more starting complexes, or a sequence-defined system."""
+    if source_run_dir is not None or candidates_jsonl is not None:
+        if source_run_dir is None or candidates_jsonl is None or structure_paths:
+            raise ValueError("Select a Run output or explicit structures, with both source paths supplied together.")
+        from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+        from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+        source_candidates = read_candidates(Path(candidates_jsonl))
+        structure_paths = [resolve_stored_path(c["complex_pdb"], run_dir=Path(source_run_dir), must_exist=True)
+                           for c in source_candidates if c.get("complex_pdb")]
+        if len(structure_paths) != len(source_candidates):
+            raise ValueError("Every candidate in the selected Run output must have a complex structure for BioEmu-2 propagation.")
     structures = [Path(path).expanduser().resolve() for path in structure_paths or []]
     sequences = [str(sequence).strip() for sequence in protein_sequences or [] if str(sequence).strip()]
     if num_samples < 1:
@@ -96,6 +108,7 @@ def run_bioemu2(
     inputs = {
         "structure_paths": [str(path) for path in structures],
         "protein_chain_count": len(sequences),
+        **({"source_run_dir": str(source_run_dir), "candidates_jsonl": str(candidates_jsonl)} if source_run_dir else {}),
     }
     job = create_job("simulation", "bioemu2_sampling", "bioemu2", inputs, parameters)
     input_root = job.run_dir / "artifacts" / "input"

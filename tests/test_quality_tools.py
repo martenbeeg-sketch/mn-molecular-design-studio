@@ -108,7 +108,7 @@ def test_legacy_docking_source_selects_only_best_poses_and_api_allows_missing_ca
     assert len(selected) == 1
     assert selected[0]["complex_pdb"].endswith("pose-1.pdbqt")
     assert selected[0]["raw_metadata"]["name"] == "Ethanol"
-    monkeypatch.setattr(workflow_automation, "resolve_job", lambda ref: {"run_dir": str(source), "run_id": source.name})
+    monkeypatch.setattr(workflow_automation, "resolve_job", lambda ref, **kwargs: {"run_dir": str(source), "run_id": source.name})
     parameters = workflow_automation._resolve_source_job({}, "legacy", quality.run_plip, WORKFLOWS["analysis.plip"])
     assert parameters == {"source_run_dir": source.resolve()}
     with pytest.raises(workflow_automation.AutomationError, match="no normalized candidates"):

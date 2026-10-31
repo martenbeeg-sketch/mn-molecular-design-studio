@@ -228,6 +228,7 @@ def render_setup(schema: dict, *, owner_id: str, user: dict, project_selector, s
     uploads = []
     sequences: list[str] = []
     selected_paths: list[str] = []
+    source_run_reference = None
     selected_database_ids: list[str] = []
     database = None
     database_structures: dict[str, dict] = {}
@@ -328,37 +329,12 @@ def render_setup(schema: dict, *, owner_id: str, user: dict, project_selector, s
                     st.info("No completed project results with saved complex structures are available.")
                     has_structures = False
                 else:
-                    selected_source = st.selectbox(
-                        "Completed design or prediction job",
-                        sources,
-                        format_func=lambda row: row["label"],
-                        key="bioemu2-source-job",
-                    )
-                    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
-                    source_run = Path(str(selected_source["row"].get("run_dir") or ""))
-                    candidates = [
-                        candidate for candidate in read_candidates(source_run)
-                        if candidate.get("complex_pdb")
-                        and Path(str(candidate["complex_pdb"])).is_file()
-                        and Path(str(candidate["complex_pdb"])).suffix.lower() in {".pdb", ".ent", ".cif", ".mmcif"}
-                    ]
-                    labels = {
-                        str(candidate.get("candidate_id") or f"Candidate {index + 1}"): candidate
-                        for index, candidate in enumerate(candidates)
-                    }
-                    selected_ids = st.multiselect(
-                        "Designs to propagate",
-                        list(labels),
-                        format_func=lambda candidate_id: f"{candidate_id} · {Path(str(labels[candidate_id]['complex_pdb'])).name}",
-                        key="bioemu2-source-candidates",
-                        help="Select saved complex structures. Each design is propagated independently in one scheduled batch.",
-                    )
-                    selected_paths = [str(Path(labels[candidate_id]["complex_pdb"]).resolve()) for candidate_id in selected_ids]
-                    has_structures = bool(selected_paths)
-                    if not candidates:
-                        st.info("This result job has no supported complex-structure files.")
+                    by_reference = {row["reference"]: row for row in sources}
+                    source_run_reference = st.selectbox("Run results", list(by_reference), format_func=lambda value: by_reference[value]["label"], key="bioemu2-source-run-" + project_id)
+                    has_structures = True
+                    st.caption("Propagate all complexes in this Run output. Source collections are processed on their owning workstations.")
             st.markdown(
-                '<div class="bioemu2-note">Project designs lists completed jobs in the selected project. Choose Molecular database for saved designs such as Tau R3 100-Pass Binder Design, or upload target–design complexes. Each selected structure is propagated independently in one batch and produces an XTC ensemble, topology mmCIF, and physicality report.</div>',
+                '<div class="bioemu2-note">Project designs lists complete Run outputs in the selected project. Choose Molecular database for saved designs such as Tau R3 100-Pass Binder Design, or upload target–design complexes. Each selected structure is propagated independently in one batch and produces an XTC ensemble, topology mmCIF, and physicality report.</div>',
                 unsafe_allow_html=True,
             )
     else:
@@ -511,6 +487,9 @@ def render_setup(schema: dict, *, owner_id: str, user: dict, project_selector, s
                 "job_name": job_name or "bioemu2-sampling",
                 "gpu_device": "all",
             }
+            if source_run_reference:
+                parameters["source_job"] = source_run_reference
+                parameters.pop("structure_paths", None)
             submit(
                 schema,
                 "simulation.bioemu2",

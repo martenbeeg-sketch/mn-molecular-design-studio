@@ -1145,6 +1145,8 @@ def _submit_rfd4_peer_attempt(
         "parameters": parameters,
         "resources": resources,
     }
+    from mn_molecular_design_studio.logical_runs import native_context
+    request["run_context"] = native_context(parent_run_dir)
     if state["config"].get("remote_artifact_policy") == "defer_generated":
         # The worker retains all output files and does not auto-ingest an
         # unfiltered batch into its Database. Promotion happens after review.
@@ -2237,7 +2239,10 @@ def _reconcile_attempts(
         ):
             from mn_molecular_design_studio.cluster import candidate_batches
 
-            peer = dict(attempt.get("cluster_submission") or {})
+            # Polling mutates nested transfer state. Keep that mutation separate
+            # from the ledger snapshot so _attempt_transition_needed can detect
+            # it and persist the command IDs before the next poll.
+            peer = deepcopy(attempt.get("cluster_submission") or {})
             try:
                 owner_id, project_id, development_mode = _campaign_actor(parent_run_dir)
                 peer["cluster_job_id"] = (peer.get("cluster_job_id") or attempt.get("cluster_job_id")

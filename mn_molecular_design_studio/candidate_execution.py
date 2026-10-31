@@ -67,6 +67,8 @@ def policy(value=None):
 
 
 def supports(kind, source):
+    if source.get("run_sources"):
+        return True  # The workflow contract is validated by source_request.
     from mn_molecular_design_studio.pipeline_graph import OPTIMIZED_PREDICTION_NODE_ENGINES
     from mn_molecular_design_studio.quality_tools import WORKFLOWS
     from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG
@@ -157,6 +159,9 @@ def data_hashes(value):
 
 def initialize(parent, node, source, params, key, settings, *, make_source, make_request, read_rows):
     """Freeze ordered units and complete effective requests before submitting any work."""
+    if source.get("run_sources"):
+        from mn_molecular_design_studio.run_graph import initialize_batches
+        return initialize_batches(parent, node, source, params, key, settings)
     collection = bool(source.get('candidates_jsonl'))
     native_invocation = node.get('native_invocation', False)
     from mn_molecular_design_studio.workflow_modes import capability
@@ -587,6 +592,10 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
             request = copy.deepcopy(manifest['request'])
             request['resources'] = dict(cpu_cores=settings['cpu_cores'], min_vram_gb=settings['min_vram_gb'], ram_gb=settings['ram_gb'])
             selected_gpu = settings.get('gpu_device', gpu_device)
+            from mn_molecular_design_studio.quality_tools import WORKFLOWS as quality_workflows
+            if request['workflow'].startswith('analysis.') and not quality_workflows.get(request['workflow'], {}).get('gpu', False):
+                selected_gpu = 'none'
+                request['resources']['min_vram_gb'] = 0
             if str(selected_gpu) == 'all':
                 selected_gpu = 'auto'
                 if request['workflow'] == 'refolding.optimized_prediction':
@@ -601,7 +610,8 @@ def tick(parent, node, current, source, params, key, settings, *, graph, owner_i
                 from mn_molecular_design_studio.cluster import candidate_batches, config
                 if config.enabled():
                     request['resources']['gpu_device'] = selected_gpu
-                    result = candidate_batches.submit(request, batch['manifest'], submission_key, settings,
+                    dispatch_settings = {**settings, 'placement': manifest.get('source_node_id') or settings['placement']}
+                    result = candidate_batches.submit(request, batch['manifest'], submission_key, dispatch_settings,
                         owner_id=owner_id, project_id=project_id, state=batch,
                         allow_development=allow_development)
                     batch['attempts'].append(dict(index=attempt_index, cluster_job_id=result['cluster_job_id'],

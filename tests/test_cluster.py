@@ -104,6 +104,32 @@ def test_automatic_placement_uses_other_ready_workstation_when_origin_is_busy(cl
     assert result["job"]["node_id"] in {nodes[1]["node_id"], nodes[2]["node_id"]}
 
 
+def test_pending_artifact_actions_reuse_the_same_command(cluster):
+    store, nodes, user, needs, _snapshot, request, _clock = cluster
+    submission = store.submit(request, needs, user, origin_node=nodes[0]['node_id'])
+    job = submission['job']
+    command = store.claim(job['node_id'])
+    assert command and command['kind'] == 'workflow'
+    store.finish(job['node_id'], command['id'], command['lease_token'], response={
+        'job': {
+            'task_group': 'design', 'run_id': 'accepted-run',
+            'status': 'running', 'run_dir': '/worker/design/accepted-run',
+        },
+    })
+
+    first = store.action(job['cluster_job_id'], 'artifact', {'path': 'result.json'}, user)
+    second = store.action(job['cluster_job_id'], 'artifact', {'path': 'result.json'}, user)
+
+    assert first['command_id'] == second['command_id']
+    with store.connect() as db:
+        count = db.execute(
+            "SELECT COUNT(*) FROM commands WHERE job_id=? AND kind='artifact' "
+            "AND status IN ('queued','claimed') AND json_extract(payload,'$.path')=?",
+            (job['cluster_job_id'], 'result.json'),
+        ).fetchone()[0]
+    assert count == 1
+
+
 def test_synchronized_running_job_reserves_its_gpu_for_automatic_placement(cluster):
     store, nodes, user, needs, snapshot, request, _ = cluster
     busy = copy.deepcopy(snapshot)

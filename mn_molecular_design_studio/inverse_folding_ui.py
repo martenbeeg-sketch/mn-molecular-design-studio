@@ -192,4 +192,4 @@ def render_setup(engine, schema, *, owner_id, project_selector, submit, search_j
             clicked = st.button("Submit", type="primary", key=prefix + "-submit", use_container_width=True, disabled=not project or bool(error) or not ready["ready"])
         if clicked:
             allowed = {f["name"] for f in schema["parameters"]}
-            submit(schema, inputs.WORKFLOWS[engine], {k: v for k, v in p.items() if k in allowed}, project, {"prioritize": priority}, name or meta["title"])
+            submit(schema, inputs.WORKFLOWS[engine], {k: v for k, v in p.items() if k in allowed or k == "source_job"}, project, {"prioritize": priority}, name or meta["title"])

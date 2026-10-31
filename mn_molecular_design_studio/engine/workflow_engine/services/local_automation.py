@@ -267,6 +267,18 @@ def resolve_job(reference: str, *, include_hidden: bool = False) -> dict[str, An
         raise AutomationError("A job ID or job code is required.")
     if "/" in ref:
         group, run_id = ref.split("/", 1)
+        if not group or not run_id or "/" in run_id or group in {".", ".."} or run_id in {".", ".."}:
+            raise AutomationError("Invalid job reference.")
+        from mn_molecular_design_studio.job_catalog import _job_payload
+        root = jobs.runs_root().resolve()
+        path = root / group / run_id
+        if not path.resolve().is_relative_to(root):
+            raise AutomationError("Invalid job reference.")
+        if (path / "metadata.json").is_file():
+            row = _job_payload(path)
+            if include_hidden or not (row.get("hidden") or row.get("capacity_parent")):
+                row.update(json.loads(row.pop("run_identity_json", "{}")))
+                return row
         matches = [row for row in _visible_jobs(include_hidden=include_hidden) if row["task_group"] == group and row["run_id"] == run_id]
     else:
         matches = [
@@ -284,7 +296,10 @@ def resolve_job(reference: str, *, include_hidden: bool = False) -> dict[str, An
 
 def job_reference(run_dir: str | Path) -> dict[str, Any]:
     run_path = Path(run_dir).expanduser().resolve()
-    row = next((item for item in _visible_jobs(include_hidden=True) if Path(item["run_dir"]).resolve() == run_path), None)
+    root = jobs.runs_root().resolve()
+    relative = run_path.relative_to(root) if run_path.is_relative_to(root) else None
+    row = resolve_job(relative.as_posix(), include_hidden=True) if relative is not None and len(relative.parts) == 2 else next(
+        (item for item in _visible_jobs(include_hidden=True) if Path(item["run_dir"]).resolve() == run_path), None)
     if row is None:
         raise AutomationError(f"Submitted job is not discoverable in the local run store: {run_path}")
     return {key: row[key] for key in (

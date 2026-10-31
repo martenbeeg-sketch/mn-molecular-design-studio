@@ -26,6 +26,163 @@ def test_foundry_template_has_explicit_generation_sequence_and_prediction():
     assert len(plan["order"]) == 6
 
 
+def test_ipsae_analysis_accepts_design_only_and_design_to_cofold_inputs():
+    from mn_molecular_design_studio.pipeline_node_ui import _analysis_input_profile
+
+    for include_cofolder, expected_label in ((False, "Design structures / sequences"),
+                                             (True, "Design → cofold path")):
+        nodes = [node("target", "target"), node("rfd4", "design"),
+                 node("ipsae", "analysis"), node("results", "results")]
+        edges = [edge("target", "design")]
+        if include_cofolder:
+            nodes.insert(2, node("boltz2", "cofold"))
+            edges.extend([edge("design", "cofold"), edge("cofold", "analysis")])
+        else:
+            edges.append(edge("design", "analysis"))
+        edges.append(edge("analysis", "results"))
+        draft = graph.new_graph("blank")
+        draft["nodes"], draft["edges"] = nodes, edges
+        validated = graph.validate_graph(draft)
+        assert "analysis" in validated["order"]
+        assert _analysis_input_profile(validated["graph"], "analysis")[0] == expected_label
+
+
+def test_ipsae_accepts_separate_design_and_cofold_inputs_and_profiles_identity_join():
+    from mn_molecular_design_studio.pipeline_node_ui import _analysis_input_profile
+
+    g = graph.new_graph("blank")
+    g["nodes"] = [node(kind, identifier) for kind, identifier in [
+        ("target", "target"), ("rfd4", "design"), ("boltz2", "cofold"),
+        ("ipsae", "analysis"), ("results", "results"),
+    ]]
+    g["edges"] = [edge("target", "design"), edge("design", "cofold"),
+                  edge("design", "analysis"), edge("cofold", "analysis"), edge("analysis", "results")]
+    validated = graph.validate_graph(g)
+    assert _analysis_input_profile(validated["graph"], "analysis")[0] == \
+        "Separate design + cofold inputs · matched by candidate identity"
+
+
+def test_ipsae_fanin_joins_by_exact_candidate_lineage_and_marks_unmatched(tmp_path, design_source_factory):
+    source_dir, design = design_source_factory()
+    design = copy.deepcopy(design)
+    design.update(candidate_id="rfd4-design-1", stage="generation.backbone_sequence",
+                  complex_pdb=str(source_dir / "designed.cif"), binder_chains=["B"], target_chains=["A"])
+    unrelated = copy.deepcopy(design)
+    unrelated["candidate_id"] = "other-design"
+    cofolded = copy.deepcopy(design)
+    cofolded.update(candidate_id="of3-prediction-1", stage="complex_refolding",
+                     parents=[design["candidate_id"]],
+                     raw_metadata={"source_candidate": {**design, "candidate_id": "stale-lineage"}})
+    orphan = copy.deepcopy(cofolded)
+    unrelated_prediction_structure = tmp_path / "orphan.cif"
+    unrelated_prediction_structure.write_text("prediction")
+    orphan.update(candidate_id="of3-orphan", parents=["missing-design"], complex_pdb=str(unrelated_prediction_structure),
+                  raw_metadata={"source_candidate": {**design, "candidate_id": "stale-lineage"},
+                                "design_structure_path": str(source_dir / "designed.cif")})
+
+    design_output = runner._local_source(tmp_path, "design", [design, unrelated])
+    cofold_output = runner._local_source(tmp_path, "cofold", [cofolded, orphan])
+    nodes = {"design": node("rfd4", "design"), "cofold": node("boltz2", "cofold")}
+    joined = runner._ipsae_design_cofold_inputs(
+        tmp_path, "analysis", ["design", "cofold"], [design_output, cofold_output], nodes)
+    rows = runner._absolute_candidates(joined)
+    matched, unmatched = rows
+
+    assert matched["candidate_id"] == "of3-prediction-1"
+    assert matched["raw_metadata"]["analysis_design_pairing"]["status"] == "matched"
+    assert matched["raw_metadata"]["source_candidate"]["candidate_id"] == "rfd4-design-1"
+    assert unmatched["raw_metadata"]["analysis_design_pairing"]["status"] == "unmatched"
+    assert "source_candidate" not in unmatched["raw_metadata"]
+    assert unmatched["raw_metadata"]["unmatched_upstream_source_candidate"]["candidate_id"] == "stale-lineage"
+    assert joined["analysis_input_join"]["matched_count"] == 1
+    assert joined["analysis_input_join"]["unmatched_count"] == 1
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.analysis import _candidate_design_reference
+    assert _candidate_design_reference(Path(tmp_path), unmatched) == (None, [])
+
+
+def test_graph_routes_rfd4_and_independent_cofold_to_ipsae(monkeypatch, tmp_path, design_source_factory):
+    from types import SimpleNamespace
+    from mn_molecular_design_studio import workspace
+
+    source_dir, base = design_source_factory()
+    pipeline_run = tmp_path / "pipeline"
+    pipeline_run.mkdir()
+    (pipeline_run / "metadata.json").write_text(json.dumps({"status": "queued", "job_type": "visual_pipeline"}))
+    (pipeline_run / "input.json").write_text(json.dumps({"tool": "visual_pipeline", "params": {"pipeline_name": "rfd4-of3-analysis"}}))
+    monkeypatch.setattr(workspace, "mark_studio_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(graph, "app_home", lambda: tmp_path / "home")
+    monkeypatch.setattr(runner, "create_job", lambda *args, **kwargs: SimpleNamespace(run_dir=pipeline_run))
+
+    g = graph.new_graph("blank")
+    g["nodes"] = [node(kind, identifier) for kind, identifier in [
+        ("target", "target"), ("rfd4", "design"), ("boltz2", "cofold"),
+        ("ipsae", "analysis"), ("results", "results"),
+    ]]
+    next(item for item in g["nodes"] if item["id"] == "target")["data"]["params"].update(
+        target_pdb=str(source_dir / "designed.cif"), target_chains="A")
+    g["edges"] = [edge("target", "design"), edge("design", "cofold"),
+                  edge("design", "analysis"), edge("cofold", "analysis"), edge("analysis", "results")]
+
+    captured = {}
+    original_request = runner.node_request
+
+    def node_request(kind, params, input_source, name):
+        if kind == "ipsae":
+            captured["analysis_rows"] = runner._absolute_candidates(input_source)
+            return {"workflow": graph.NODE_CATALOG[kind]["workflow"], "parameters": {
+                "source_run_dir": input_source["run_dir"], "candidates_jsonl": input_source["candidates_jsonl"],
+                "job_name": name,
+            }}
+        return {"workflow": graph.NODE_CATALOG[kind]["workflow"], "parameters": {
+            "source_run_dir": input_source.get("run_dir", ""),
+            "candidates_jsonl": input_source.get("candidates_jsonl", ""),
+        }}
+
+    monkeypatch.setattr(runner, "node_request", node_request)
+    submitted = []
+
+    def submit(request, parent, current_node, **kwargs):
+        kind = current_node["data"]["kind"]
+        submitted.append(kind)
+        child = tmp_path / f"child-{kind}"
+        child.mkdir()
+        if kind == "ipsae":
+            result = {"success": True, "outputs": {"tool_status": {"ipsae": {"success": True}}}}
+        else:
+            candidate = copy.deepcopy(base)
+            candidate.update(
+                candidate_id="rfd4-design-1" if kind == "rfd4" else "of3-prediction-1",
+                complex_pdb=str(source_dir / "designed.cif"),
+                stage="generation.backbone_sequence" if kind == "rfd4" else "complex_refolding",
+                parents=[] if kind == "rfd4" else ["rfd4-design-1"],
+            )
+            normalized = child / "artifacts/normalized_candidates"
+            normalized.mkdir(parents=True)
+            (normalized / "candidates.jsonl").write_text(json.dumps(candidate) + "\n")
+            result = {"success": True}
+        (child / "metadata.json").write_text(json.dumps({
+            "status": "completed", "job_code": kind, "task_group": "test",
+            "pipeline_parent_run_dir": str(parent),
+        }))
+        (child / "result.json").write_text(json.dumps(result))
+        (child / "input.json").write_text(json.dumps({"params": {}}))
+        return child
+
+    monkeypatch.setattr(runner, "_submit", submit)
+    try:
+        result_dir = runner.run_graph_pipeline(g, "rfd4-of3-analysis", "owner", "project")
+    finally:
+        monkeypatch.setattr(runner, "node_request", original_request)
+
+    assert submitted == ["rfd4", "boltz2", "ipsae"]
+    row = captured["analysis_rows"][0]
+    assert row["candidate_id"] == "of3-prediction-1"
+    assert row["raw_metadata"]["source_candidate"]["candidate_id"] == "rfd4-design-1"
+    assert row["raw_metadata"]["analysis_design_pairing"]["status"] == "matched"
+    results = json.loads((result_dir / "result.json").read_text())
+    assert results["success"] is True
+
+
 def test_supported_campaign_tile_settings_survive_graph_validation_and_use_normal_workflow_requests():
     from mn_molecular_design_studio.distributed_campaign_config_ui import _default_validation_stages
 
@@ -608,6 +765,27 @@ def test_adapters_disable_hidden_downstream_pipelines_and_bind_existing_signatur
         if kind=="rfd3":assert request["parameters"]["low_memory_mode"] is False
 
 
+def test_rfd4_campaign_graph_accepts_native_condition_spec_input():
+    campaign = {
+        "enabled": True, "objective_type": "generated", "generated_target": 1,
+        "max_attempts": 1, "batch_size": 1, "max_concurrent_batches": 1,
+        "max_concurrent_generation_jobs": 1, "workstation_selection": "eligible",
+        "gpu_selection": "all",
+    }
+    target_path = "/tmp/rfd4-idr-target.cif"
+    condition_spec = "idr_peptide_binder:\n  input: rfd4-idr-target.cif\n  contig: '70-110, /0, A1-70'\n  conditions:\n    C_SEQ:\n      true:\n        - select: \"sel('A')\"\n"
+    request = runner.node_request("rfd4", {
+        "task": "protein_binder", "input_mode": "condition_spec",
+        "condition_spec": condition_spec, "target_structure": target_path,
+        "num_designs": 1, "input_files": "", "options_json": "{}",
+        "distributed_campaign": campaign,
+    }, {"target": {"target_pdb": target_path, "target_chains": ["A"], "hotspots": ""}}, "IDR campaign")
+    assert request["workflow"] == "design.rfd4_proteina"
+    assert request["parameters"]["input_mode"] == "condition_spec"
+    assert request["parameters"]["condition_spec"] == condition_spec
+    assert request["parameters"]["distributed_campaign"]["generated_target"] == 1
+
+
 def test_existing_design_inputs_require_successful_filter_passes_in_same_project(design_source_factory):
     source,_=design_source_factory()
     assert len(runner.source_designs(str(source),"test-project")[1])==1
@@ -896,6 +1074,21 @@ def test_api_saves_and_validates_without_queuing_jobs(monkeypatch,tmp_path):
         surface_graph["nodes"][1]["data"]["params"]["masif_chain_id"] = "not-a-target-chain"
         invalid_surface = client.post("/api/v1/pipelines/validate", json=surface_payload)
         assert invalid_surface.status_code == 422 and "MaSIF-seed chain" in invalid_surface.text
+
+        split_analysis_graph = graph.new_graph("blank")
+        split_analysis_graph["nodes"] = [node(kind, identifier) for kind, identifier in [
+            ("target", "target"), ("rfd4", "design"), ("boltz2", "cofold"),
+            ("ipsae", "analysis"), ("results", "results"),
+        ]]
+        next(item for item in split_analysis_graph["nodes"] if item["id"] == "target")["data"]["params"].update(
+            target_pdb=str(uploaded / "target.pdb"), target_chains="A")
+        split_analysis_graph["edges"] = [edge("target", "design"), edge("design", "cofold"),
+                                          edge("design", "analysis"), edge("cofold", "analysis"),
+                                          edge("analysis", "results")]
+        split_response = client.post("/api/v1/pipelines/validate", json={
+            "project_id": "project", "graph": split_analysis_graph,
+        })
+        assert split_response.status_code == 200, split_response.text
         assert calls == []
 
         bad=copy.deepcopy(payload);bad["graph"]["nodes"][0]["data"]["params"]["target_pdb"]="/etc/passwd"

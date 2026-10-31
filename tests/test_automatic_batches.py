@@ -249,10 +249,11 @@ render_batch_controls('boltz2', ENGINE_PROFILES['boltz2'], 'project', 'predictio
     assert not any(element.label == "Batch mode" for element in app.expander)
 
 
-def test_acceptance_tile_lists_native_rejected_designs_by_their_recorded_format(monkeypatch, design_source_factory):
+def test_acceptance_tile_selects_a_run_and_infers_recorded_binder_format(monkeypatch, design_source_factory):
     import json
     from streamlit.testing.v1 import AppTest
-    from mn_molecular_design_studio import design_validation_ui
+    from mn_molecular_design_studio import design_validation_ui, run_inputs_ui
+    from mn_molecular_design_studio.cluster import config as cluster_config
     from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
 
     run, _ = design_source_factory(passed=False)
@@ -263,28 +264,32 @@ def test_acceptance_tile_lists_native_rejected_designs_by_their_recorded_format(
     monkeypatch.setattr(design_validation_ui, "render_molecule_editor", lambda *args, **kwargs: ({}, {
         "optimization_mode": "off", "samples": 1, "cpu_cores": 4, "seed": 1,
     }, False))
+    monkeypatch.setattr(run_inputs_ui, "options", lambda *args, **kwargs: [{
+        "reference": "source-run", "label": "VHH campaign · Results · 1 source collection · 1 candidate",
+        "row": {"_run_sources": [{"node_id": cluster_config.identity(), "run_dir": str(run),
+                                    "tool": "bindcraft2", "status": "completed"}]},
+    }])
     app = AppTest.from_string(f'''
 import streamlit as st
 from mn_molecular_design_studio.design_validation_ui import render_batch_controls
 from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
 def search_jobs(**kwargs):
     return {{"items": [{{"run_id": "source-run", "run_dir": {str(run)!r}, "tool": "bindcraft2", "campaign_name": "VHH campaign", "job_code": "VHH-1"}}], "next_cursor": None}}
+st.session_state['_molecular_database_user'] = {{'id': 'test-user'}}
 render_batch_controls("boltz2", {{**ENGINE_PROFILES["boltz2"], "form_key": "acceptance-boltz2"}},
     "project", "validation", {{}}, search_jobs=search_jobs, submit=lambda *args: None,
     include_acceptance=True, existing_designs_only=True)
 ''').run()
     assert not app.exception
-    campaigns = next(widget for widget in app.multiselect if widget.label == "Design campaigns")
-    campaigns.set_value(["source-run"]).run()
-    candidates = next(widget for widget in app.multiselect if widget.label == "Designs · VHH-1")
-    assert candidates.value == ["passing-design"]
-    assert any("native failed" in str(option) for option in candidates.options)
+    selected_run = next(widget for widget in app.selectbox if widget.label == "Run results")
+    assert selected_run.value == "source-run"
     binder_format = next(widget for widget in app.selectbox if widget.label == "Binder format")
     assert binder_format.value == "vhh"
 
 
 def test_validation_acceptance_tile_submits_saved_remote_idr_evidence_without_prediction(monkeypatch):
     from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import run_inputs_ui
     from mn_molecular_design_studio.cluster import config as cluster_config, service as cluster_service
 
     monkeypatch.setattr(cluster_config, "load", lambda: {"mode": "coordinator"})
@@ -296,7 +301,14 @@ def test_validation_acceptance_tile_submits_saved_remote_idr_evidence_without_pr
             "status": "complete", "candidate_count": 10, "eligible_count": 10,
             "native_filter_counts": {"passed": 0, "failed": 0, "unavailable": 10},
         },
-    }]})
+    }], "total": 1})
+    monkeypatch.setattr(run_inputs_ui, "options", lambda *args, **kwargs: [{
+        "reference": "cluster:remote-rfd4-job", "label": "R3 acceptance · Results · 1 source collection · 10 candidates",
+        "row": {"_run_sources": [{"cluster_job_id": "remote-rfd4-job", "node_id": "rfd4-node",
+                                    "node_name": "4032", "project_id": "project", "tool": "rfd4_proteina",
+                                    "run_id": "rfd4-run", "job_code": "RFD4-10", "status": "completed",
+                                    "candidate_summary": {"candidate_count": 10, "eligible_count": 10}}]},
+    }])
     app = AppTest.from_string('''
 import streamlit as st
 from mn_molecular_design_studio.design_validation_ui import render_batch_controls
@@ -315,8 +327,8 @@ render_batch_controls(
 ''').run()
     assert not app.exception
     assert not any(widget.label == "Prediction" for widget in app.radio)
-    sources = next(widget for widget in app.multiselect if widget.label == "Design campaigns")
-    sources.set_value(["cluster:remote-rfd4-job"]).run()
+    sources = next(widget for widget in app.selectbox if widget.label == "Run results")
+    sources.set_value("cluster:remote-rfd4-job").run()
     next(widget for widget in app.selectbox if widget.label == "Binder format").set_value("miniprotein").run()
     next(widget for widget in app.selectbox if widget.label == "Target type").set_value("fasta_idr").run()
     confirms = [widget for widget in app.checkbox if widget.label.startswith("Confirm all selected")]
@@ -331,8 +343,8 @@ render_batch_controls(
     run_button.click().run()
     workflow, parameters = app.session_state["submitted"]
     assert workflow == "analysis.validation_acceptance"
-    assert parameters["candidate_limit"] == 10
     assert parameters["source_job"] == "cluster:remote-rfd4-job"
+    assert "candidate_limit" not in parameters  # Run output selection evaluates the complete saved output.
     assert parameters["acceptance_policy"]["binder_format"] == "miniprotein"
     assert parameters["acceptance_policy"]["target_type"] == "fasta_idr"
     assert parameters["_database_collection_policy"] == "manual"

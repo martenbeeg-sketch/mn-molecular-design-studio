@@ -478,7 +478,9 @@ def _optimized_prediction_request(engine: str, params: dict, source: dict, name:
             "samples": int(params.get("samples", 1)),
             "num_recycles": int(params.get("num_recycles", profile.get("default_recycles", 10))),
             "cpu_cores": 4,
-            "tasks": _optimized_prediction_tasks(engine, source, params),
+            **({"source_run_dir": source["run_dir"], "candidates_jsonl": source["candidates_jsonl"],
+                "validation_mode": "complex", "validation_require_passing": bool(source.get("require_native_passing"))}
+               if source.get("deferred_run_source") else {"tasks": _optimized_prediction_tasks(engine, source, params)}),
             "engine_options": engine_options,
             "use_target_template": bool(params.get("use_target_template", profile.get("requires_target_template", False))),
             "target_use_msa": False if ligand_only else bool(params.get(msa_setting, True)),
@@ -496,6 +498,11 @@ def filter_candidates(rows: list[dict], settings: dict) -> list[dict]:
 
 
 def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
+    if source.get("run_sources"):
+        from mn_molecular_design_studio.run_graph import source_request, deferred_source
+        return source_request(kind, params, deferred_source(source["run_sources"][0], source), name)
+    if source.get("deferred_run_source") and kind in OPTIMIZED_PREDICTION_NODE_ENGINES:
+        return _optimized_prediction_request(OPTIMIZED_PREDICTION_NODE_ENGINES[kind], params, source, name)
     """Only allowlisted adapters can turn graph data into a workflow call."""
     workflow = NODE_CATALOG[kind]["workflow"]
     p = copy.deepcopy(params)
@@ -539,8 +546,8 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
             p["hotspots"]=target.get("hotspots","")
             campaign=p.pop("distributed_campaign",None)
             if campaign is not None:
-                if p.get("task")!="protein_binder" or p.get("input_mode") not in {"guided","guided_binder"} or p["input_files"]:
-                    raise ValueError("RFD4 distributed campaigns support one guided protein-binder target only.")
+                if p.get("task")!="protein_binder" or p.get("input_mode") not in {"guided","guided_binder","condition_spec"} or p["input_files"]:
+                    raise ValueError("RFD4 distributed campaigns support one guided or condition-spec protein-binder target only.")
                 campaign={**campaign,"generator_id":"rfd4_proteina"}
                 campaign.setdefault("seed",int(p.get("seed") or 0))
                 from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import validate_campaign_config
@@ -929,6 +936,125 @@ def _attach_refold_input_references(output: dict, source: dict, parent: Path, no
     return result
 
 
+def _candidate_identity_links(candidate: dict) -> list[str]:
+    """Return only explicit candidate identifiers that can safely join evidence."""
+    links: list[str] = []
+    candidate_id = candidate.get("candidate_id")
+    if candidate_id:
+        links.append(str(candidate_id))
+    links.extend(str(value) for value in candidate.get("parents") or [] if value)
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    for key in ("source_candidate_id", "native_candidate_id", "analysis_source_candidate_id"):
+        if raw.get(key):
+            links.append(str(raw[key]))
+    refold = raw.get("pipeline_refold_input") if isinstance(raw.get("pipeline_refold_input"), dict) else {}
+    if refold.get("source_candidate_id"):
+        links.append(str(refold["source_candidate_id"]))
+    source_candidate = raw.get("source_candidate") if isinstance(raw.get("source_candidate"), dict) else {}
+    if source_candidate.get("candidate_id"):
+        links.append(str(source_candidate["candidate_id"]))
+    return list(dict.fromkeys(links))
+
+
+def _ipsae_design_cofold_inputs(parent: Path, node_id: str, parents: list[str], upstream: list[dict], nodes: dict) -> dict | None:
+    """Join direct design and independent cofold inputs by exact candidate lineage."""
+    designs: list[tuple[str, dict]] = []
+    predictions: list[tuple[str, dict]] = []
+    passthrough: list[tuple[str, dict]] = []
+    target = {}
+    for source_node, source in zip(parents, upstream):
+        target = target or source.get("target") or {}
+        if source.get("run_sources"):
+            raise ValueError(
+                "Connect the design and cofold candidate collections directly to ipSAE & Structure Analysis. "
+                "Separate saved Run collections cannot yet be identity-joined before execution."
+            )
+        rows = _absolute_candidates(source) if source.get("candidates_jsonl") else []
+        category = NODE_CATALOG[nodes[source_node]["data"]["kind"]]["category"]
+        if category in {"Design engine", "Design pipeline", "Sequence design"}:
+            designs.extend((source_node, row) for row in rows)
+        elif category == "Structure prediction":
+            predictions.extend((source_node, row) for row in rows)
+        else:
+            stages = {str(row.get("stage") or "") for row in rows}
+            if any(stage.startswith(("generation.", "sequence_design")) for stage in stages):
+                designs.extend((source_node, row) for row in rows)
+            elif any(stage in {"complex_refolding", "analysis"} for stage in stages):
+                predictions.extend((source_node, row) for row in rows)
+            else:
+                passthrough.extend((source_node, row) for row in rows)
+
+    if not designs or not predictions:
+        return None
+
+    by_design_id: dict[str, list[tuple[str, dict]]] = {}
+    for source_node, row in designs:
+        candidate_id = str(row.get("candidate_id") or "")
+        if candidate_id:
+            by_design_id.setdefault(candidate_id, []).append((source_node, row))
+
+    joined_rows = []
+    for prediction_node, prediction in predictions:
+        raw = copy.deepcopy(prediction.get("raw_metadata") or {})
+        existing = raw.get("source_candidate") if isinstance(raw.get("source_candidate"), dict) else None
+        matches = []
+        for identity in _candidate_identity_links(prediction):
+            matches.extend(by_design_id.get(identity, []))
+        unique_matches = {(source_node, str(row.get("candidate_id") or "")): (source_node, row)
+                          for source_node, row in matches}
+        if len(unique_matches) == 1:
+            design_node, design = next(iter(unique_matches.values()))
+            raw["source_candidate"] = copy.deepcopy(design)
+            raw.pop("unmatched_upstream_source_candidate", None)
+            raw["analysis_design_pairing"] = {
+                "status": "matched",
+                "method": "exact_candidate_identity",
+                "design_candidate_id": str(design.get("candidate_id") or ""),
+                "prediction_candidate_id": str(prediction.get("candidate_id") or ""),
+                "design_node_id": design_node,
+                "cofold_node_id": prediction_node,
+            }
+        elif not unique_matches:
+            if existing:
+                raw["unmatched_upstream_source_candidate"] = existing
+                raw.pop("source_candidate", None)
+            raw["analysis_design_pairing"] = {
+                "status": "unmatched",
+                "reason": "No exact candidate or parent identity linked this cofold result to the connected design collection.",
+                "prediction_candidate_id": str(prediction.get("candidate_id") or ""),
+                "cofold_node_id": prediction_node,
+            }
+        else:
+            raw["analysis_design_pairing"] = {
+                "status": "ambiguous",
+                "reason": "Candidate identity matched more than one connected design; structural comparison is withheld.",
+                "prediction_candidate_id": str(prediction.get("candidate_id") or ""),
+                "candidate_ids": sorted({candidate_id for _, candidate_id in unique_matches}),
+                "cofold_node_id": prediction_node,
+            }
+            if existing:
+                raw["unmatched_upstream_source_candidate"] = existing
+                raw.pop("source_candidate", None)
+        candidate = copy.deepcopy(prediction)
+        candidate["raw_metadata"] = raw
+        joined_rows.append(candidate)
+
+    # A direct collection input can itself contain candidate rows. Preserve such
+    # rows only when no explicit design/cofold branch classifies them.
+    if passthrough:
+        joined_rows.extend(copy.deepcopy(row) for _, row in passthrough)
+    source = _local_source(parent, f"{node_id}_design_cofold_join", joined_rows, target)
+    source["analysis_input_join"] = {
+        "mode": "direct_design_and_cofold",
+        "design_candidate_count": len(designs),
+        "cofold_candidate_count": len(predictions),
+        "matched_count": sum(row.get("raw_metadata", {}).get("analysis_design_pairing", {}).get("status") == "matched" for row in joined_rows),
+        "unmatched_count": sum(row.get("raw_metadata", {}).get("analysis_design_pairing", {}).get("status") == "unmatched" for row in joined_rows),
+        "ambiguous_count": sum(row.get("raw_metadata", {}).get("analysis_design_pairing", {}).get("status") == "ambiguous" for row in joined_rows),
+    }
+    return source
+
+
 def _add_target_aligned_pose_rmsd(candidate: dict, parent: Path) -> dict:
     raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
     reference = raw.get("pipeline_refold_input") if isinstance(raw.get("pipeline_refold_input"), dict) else None
@@ -1265,6 +1391,14 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     kind, params = node["data"]["kind"], node["data"]["params"]
                     upstream = [outputs[p] for p in parents]
                     source = upstream[0] if upstream else {}
+                    if any(item.get("run_sources") for item in upstream) and len(upstream) > 1:
+                        if not all(item.get("run_sources") for item in upstream):
+                            raise ValueError("Process Run inputs through a compatible tool before merging them with newly generated collections.")
+                        from mn_molecular_design_studio.logical_runs import reference as source_identity
+                        joined = {source_identity(row): row for item in upstream for row in item["run_sources"]}
+                        source = {"run_sources": list(joined.values()), "target": {}}
+                    if kind == "ipsae" and len(upstream) > 1:
+                        source = _ipsae_design_cofold_inputs(parent, node_id, parents, upstream, nodes) or source
                     from mn_molecular_design_studio import candidate_sets, candidate_pipeline
                     if node["data"].get("enabled") is False:
                         key = fingerprint(kind, {"enabled": False}, [o["fingerprint"] for o in upstream])
@@ -1280,7 +1414,18 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         output = cached if cached and _cache_valid(cached) else candidate_pipeline.replay(parent, node, source, retained, key)
                         complete(node_id, output, key, "cached" if output is cached else "completed")
                         progressed = True; continue
-                    if kind in candidate_sets.KINDS or kind == "results" and source.get("candidate_set_manifest"):
+                    if kind == "run_source":
+                        from mn_molecular_design_studio.run_graph import load_source
+                        if not current.get("run_source_snapshot"):
+                            current["run_source_snapshot"] = load_source(params["run_reference"], owner_id=owner_id,
+                                project_id=project_id, allow_development=bool(read_json(parent / "metadata.json").get("studio_development_mode")))
+                            persist()
+                        output = copy.deepcopy(current["run_source_snapshot"])
+                        complete(node_id, output, fingerprint(kind, output, [])); progressed = True; continue
+                    if source.get("run_sources"):
+                        from mn_molecular_design_studio.candidate_execution import policy as execution_policy
+                        settings = execution_policy({**settings, "mode": "sharded", "placement": "auto"})
+                    if (kind in candidate_sets.KINDS and not source.get("run_sources")) or kind == "results" and source.get("candidate_set_manifest"):
                         expected = {nodes[p]["data"].get("evidence_namespace", p): dict(kind=nodes[p]["data"]["kind"], enabled=nodes[p]["data"].get("enabled", True),
                                              retained=bool(nodes[p]["data"].get("retained_run_dir")),
                                              status=node_states.get(p, {}).get("status"), params=nodes[p]["data"]["params"])
@@ -1318,7 +1463,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         if settings["mode"] == "sharded":
                             current.update(batches=[], candidate_progress=candidate_execution.progress([]))
                         complete(node_id, output, key, "skipped"); progressed = True; continue
-                    if kind in {"ligandmpnn", "foundry_mpnn", "sabr", "abmpnn"} and len(upstream) > 1:
+                    if kind in {"ligandmpnn", "foundry_mpnn", "sabr", "abmpnn"} and len(upstream) > 1 and not source.get("run_sources"):
                         merged_rows = []
                         merged_target = next((item.get("target") for item in upstream if item.get("target")), {})
                         for source_id, output in zip(parents, upstream):
@@ -1477,7 +1622,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         current["status"] = str(metadata.get("status") or "queued")
                         current["job_code"] = metadata.get("job_code")
                         child_result = read_json(child / "result.json")
-                        is_analysis_node = bool(NODE_CATALOG[kind]["outputs"] and NODE_CATALOG[kind]["outputs"][0]["type"] == "analysis")
+                        is_analysis_node = (
+                            NODE_CATALOG[kind]["category"] == "Analysis"
+                            and bool(NODE_CATALOG[kind].get("workflow"))
+                        )
                         if is_analysis_node and current["status"] in {"completed", "failed"} and isinstance(child_result.get("outputs", {}).get("tool_status"), dict):
                             output = _child_analysis_output(child, source.get("target", {}))
                             step_status = "completed" if output["analysis_run"]["success"] else "failed"

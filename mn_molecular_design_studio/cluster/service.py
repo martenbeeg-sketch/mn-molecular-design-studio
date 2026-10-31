@@ -31,7 +31,7 @@ def schema_check(payload, kind, request_dir):
         graph = clean_graph(payload.get("graph"))
         validate_graph(graph, require_inputs=False)
         return
-    allowed = {"schema_version", "workflow", "parameters", "resources", "source_job", "priority", "database_collection_policy"}
+    allowed = {"schema_version", "workflow", "parameters", "resources", "source_job", "priority", "database_collection_policy", "run_context"}
     if set(payload) - allowed or payload.get("schema_version") != 1 or type(payload.get("schema_version")) is not int:
         raise ValueError("Unsupported workflow request fields or schema version.")
     spec = workflows.WORKFLOWS.get(payload.get("workflow"))

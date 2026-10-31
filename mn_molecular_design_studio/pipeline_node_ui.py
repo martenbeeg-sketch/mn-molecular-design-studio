@@ -144,6 +144,68 @@ def _connected_inputs(graph, node_id):
     return parents, upstream
 
 
+def _analysis_input_profile(graph, node_id):
+    """Describe the connected workflow lineage without assuming its artifacts exist."""
+    nodes = {node["id"]: node for node in graph.get("nodes", [])}
+    direct_ids = [edge["source"] for edge in graph.get("edges", [])
+                  if edge.get("target") == node_id and edge.get("source") in nodes]
+    queue = list(direct_ids)
+    seen = set()
+    kinds = []
+    while queue:
+        current = queue.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        item = nodes[current]
+        kind = item.get("data", {}).get("kind", "")
+        kinds.append(kind)
+        queue.extend(edge["source"] for edge in graph.get("edges", [])
+                     if edge.get("target") == current and edge.get("source") in nodes)
+
+    categories = {NODE_CATALOG[kind]["category"] for kind in kinds if kind in NODE_CATALOG}
+    design_sources = {"design_source", "generation_source", "backbone_source", "project_design_source"}
+    has_saved_run = "run_source" in kinds
+    design_categories = {"Design engine", "Design pipeline", "Sequence design"}
+    has_design = bool(categories & design_categories or set(kinds) & design_sources)
+    native_design_pipeline = "Design pipeline" in categories
+    has_cofold = "Structure prediction" in categories or native_design_pipeline
+    if has_saved_run:
+        label = "Existing Run output · checked per candidate"
+    elif ({NODE_CATALOG[nodes[source_id]["data"]["kind"]]["category"] for source_id in direct_ids}
+          & design_categories
+          and "Structure prediction" in {NODE_CATALOG[nodes[source_id]["data"]["kind"]]["category"] for source_id in direct_ids}):
+        label = "Separate design + cofold inputs · matched by candidate identity"
+    elif native_design_pipeline:
+        label = "Complete native design workflow output"
+    elif has_design and has_cofold:
+        label = "Design → cofold path"
+    elif has_design:
+        label = "Design structures / sequences"
+    elif has_cofold:
+        label = "Cofold prediction output"
+    else:
+        label = "Connected candidate structures"
+    return label, has_design, has_cofold, has_saved_run
+
+
+def _render_ipsae_settings(spec, values, key):
+    fields = {item["name"]: item for item in spec["fields"]}
+    with st.expander("Measurement cutoffs", expanded=False):
+        st.markdown("**PAE based scores**")
+        st.caption("Applied only to candidates with a saved pairwise PAE matrix.")
+        columns = st.columns(3)
+        for index, name in enumerate(("pae_cutoff", "dist_cutoff", "ipdae_contact_cutoff")):
+            with columns[index]:
+                values[name] = _render_field(fields[name], values, key)
+        st.markdown("**Structure contacts**")
+        st.caption("Applied to saved complexes; hotspot measurements also need target hotspot annotations.")
+        columns = st.columns(2)
+        for index, name in enumerate(("structure_contact_cutoff", "hotspot_contact_cutoff")):
+            with columns[index]:
+                values[name] = _render_field(fields[name], values, key)
+
+
 def _render_connection_card(node, graph):
     parents, inputs = _connected_inputs(graph, node["id"])
     with st.container(border=True):
@@ -152,6 +214,10 @@ def _render_connection_card(node, graph):
             st.caption("Connect an upstream block to provide this step’s input.")
         else:
             st.write(" → ".join(p["data"]["label"] for p in parents) + " → " + node["data"]["label"])
+        if node.get("data", {}).get("kind") == "ipsae":
+            direct_categories = {NODE_CATALOG[p["data"]["kind"]]["category"] for p in parents}
+            if {"Structure prediction"} <= direct_categories and direct_categories & {"Design engine", "Design pipeline", "Sequence design"}:
+                st.caption("Separate design and cofold outputs are paired by exact candidate or parent ID. Unmatched or ambiguous predictions still receive independent structure analysis, with design comparisons marked unavailable.")
         for source in inputs:
             params = source["data"]["params"]
             if source["data"]["kind"] == "target":
@@ -537,7 +603,25 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
         elif kind in {"ipsae", "rosetta_metrics"}:
             _render_connection_card(node, graph)
             if kind == "ipsae":
-                st.caption("Reads each saved predicted complex, its own PAE matrix, the source design structure when available, and target hotspots. The ipSAE container measures directional contact PAE, BindCraft2-definition i_pDAE, heavy-atom and residue contacts, interchain Cα clashes, hotspot contacts, and sequence-matched binder-only fitted RMSD. When a source design complex is available, it also compares sequence-mapped binder–target residue-contact pairs to report contact preservation. This does not identify hydrogen bonds or other chemical interactions. Chain Cα B-factors are shown as B-factors, distinct from predictor-native pLDDT summaries. Each candidate runs as an independent CPU job, so the existing analysis worker pool can parallelize it. Missing PAE, design references, or hotspots are reported as unavailable/not applicable; they are never filled with zero.")
+                profile, has_design, has_cofold, has_saved_run = _analysis_input_profile(graph, node["id"])
+                st.info(f"**Input profile:** {profile}")
+                st.caption("Per-candidate evidence detection · analyzes saved structures only; no prediction is launched.")
+                with st.expander("What can be measured", expanded=False):
+                    st.markdown(
+                        "- **Saved target–binder complex:** heavy-atom contacts, inter-chain Cα clashes, and chain Cα B-factors.\n"
+                        "- **Saved pairwise PAE:** ipSAE, binder→target and target→binder i_pAE, plus i_pDAE.\n"
+                        "- **Separate design structure:** binder-fitted RMSD; a separate design complex also enables contact preservation.\n"
+                        "- **Target hotspots:** hotspot contact measurements.\n\n"
+                        "Missing files or annotations are reported as unavailable for that candidate; they are never replaced with zero."
+                    )
+                if not has_cofold:
+                    st.caption("Design-only path: structure measurements need a saved target–binder complex with binder and target chain roles. PAE scores and design-to-cofold comparisons need their corresponding saved files.")
+                elif has_design:
+                    st.caption("Design and cofold stages are connected. Comparisons still run only for candidates that retain both structures.")
+                if has_saved_run:
+                    st.caption("Run outputs can contain a mix of these per-candidate inputs; the execution inspects each candidate rather than assigning one mode to the whole Run.")
+                _render_ipsae_settings(spec, values, key)
+                st.caption("For pass/reject decisions, connect Validation & Acceptance after this analysis.")
             else:
                 st.caption("Adds PyRosetta interface energy, shape complementarity, buried surface area, and related metrics to each connected predicted complex.")
         elif kind == "surface_analysis":

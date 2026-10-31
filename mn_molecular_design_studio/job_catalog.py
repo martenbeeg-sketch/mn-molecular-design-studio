@@ -147,6 +147,9 @@ def _initialize(connection: sqlite3.Connection) -> None:
     )
     existing_columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
     added_columns = False
+    if "run_identity_json" not in existing_columns:
+        connection.execute("ALTER TABLE jobs ADD COLUMN run_identity_json TEXT NOT NULL DEFAULT '{}'")
+        added_columns = True
     if "pipeline_name" not in existing_columns:
         connection.execute("ALTER TABLE jobs ADD COLUMN pipeline_name TEXT NOT NULL DEFAULT ''")
         added_columns = True
@@ -161,6 +164,13 @@ def _initialize(connection: sqlite3.Connection) -> None:
         # Existing records must be re-read once so newly indexed metadata can
         # be derived from durable run metadata without requiring job changes.
         connection.execute("UPDATE jobs SET metadata_mtime_ns=0")
+    from mn_molecular_design_studio.logical_runs import IDENTITY_FIELDS
+    connection.execute("CREATE TABLE IF NOT EXISTS catalog_projection (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    revision = json.dumps(IDENTITY_FIELDS)
+    previous = connection.execute("SELECT value FROM catalog_projection WHERE key='run_identity'").fetchone()
+    if previous is None or previous[0] != revision:
+        connection.execute("UPDATE jobs SET metadata_mtime_ns=0")
+        connection.execute("INSERT OR REPLACE INTO catalog_projection VALUES ('run_identity', ?)", (revision,))
     try:
         connection.executescript(
             """
@@ -252,7 +262,16 @@ def _job_payload(run_dir: Path) -> dict[str, Any]:
     # in the compact job catalog. Avoid copying arbitrary result metrics into
     # every catalog response; some workflows retain large result summaries.
     worker_metrics = result_metrics.get("workers") if isinstance(result_metrics.get("workers"), list) else []
+    from mn_molecular_design_studio.logical_runs import IDENTITY_FIELDS
+    identity = {key: metadata[key] for key in IDENTITY_FIELDS if key in metadata}
+    for key in ("campaign_group_id", "campaign_group_name"):
+        if not identity.get(key) and params.get(key):
+            identity[key] = params[key]
+    collection = run_dir / "artifacts/normalized_candidates/candidates.jsonl"
+    identity["has_candidate_collection"] = collection.is_file() and collection.stat().st_size > 0
+    identity["has_docking_results"] = (run_dir / "artifacts/docking_scores.csv").is_file()
     return {
+        "run_identity_json": json.dumps(identity, sort_keys=True),
         "run_id": run_dir.name,
         "task_group": str(metadata.get("task_group") or run_dir.parent.name),
         "job_code": str(metadata.get("job_code") or run_dir.name),
@@ -360,6 +379,7 @@ def _upsert(root: Path, run_dir: Path, *, refresh_artifacts: bool) -> None:
             "SELECT id FROM jobs WHERE storage_root_id=? AND task_group=? AND run_id=?",
             (root_id, row["task_group"], row["run_id"]),
         ).fetchone()[0]
+        connection.execute("UPDATE jobs SET run_identity_json=? WHERE id=?", (row["run_identity_json"], job_id))
         if refresh_artifacts:
             connection.execute("DELETE FROM job_artifacts WHERE job_id=?", (job_id,))
             connection.executemany(
@@ -599,6 +619,7 @@ def search_jobs(
     items = []
     for row in rows:
         item = dict(row)
+        item.update(json.loads(item.pop("run_identity_json", "{}")))
         item["run_dir"] = str((root / item.pop("run_relative_path")).resolve())
         item["success"] = None if item["success"] is None else bool(item["success"])
         item["hidden"] = bool(item["hidden"])

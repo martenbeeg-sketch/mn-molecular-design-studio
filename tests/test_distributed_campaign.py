@@ -2127,6 +2127,64 @@ def test_expired_recovery_never_submits_remote_work_and_keeps_existing_job(tmp_p
         assert active == []
 
 
+def test_remote_artifact_poll_persists_transfer_ids_before_the_next_poll(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.cluster import candidate_batches
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    parent = tmp_path / 'parent'
+    parent.mkdir()
+    jobs.write_json(parent / 'metadata.json', {
+        'studio_owner_id': 'owner', 'studio_project_id': 'project',
+        'studio_development_mode': True,
+    })
+    child = tmp_path / 'child'
+    child.mkdir()
+    jobs.write_json(child / 'metadata.json', {
+        'status': 'running', 'cluster_remote': True,
+    })
+    config = distributed_campaign.validate_campaign_config({
+        'generator_id': 'rfd4_proteina', 'objective_type': 'time',
+        'max_runtime_seconds': 3600, 'max_attempts': 2,
+        'remote_artifact_policy': 'eager',
+    })
+    campaign = CampaignLedger.create(parent / 'ledger.json', config)
+    attempt = campaign.authorize(1, batch_id='first')[0]
+    peer = {
+        'cluster_job_id': 'peer-job', 'worker_node_id': 'peer-node',
+        'wait_reason': '', 'transfers': {},
+    }
+    campaign.transition(
+        attempt['attempt_id'], 'running', child_run_dir=str(child),
+        cluster_submission=peer,
+    )
+    monkeypatch.setattr(
+        distributed_campaign, '_attempt_child_paths',
+        lambda *_args: {attempt['attempt_id']: child},
+    )
+    monkeypatch.setattr(
+        distributed_campaign, '_campaign_actor',
+        lambda *_args: ('owner', 'project', True),
+    )
+    transfer_requests = []
+
+    def poll(state, *_args, **_kwargs):
+        transfer = state.setdefault('transfers', {}).get('request.json')
+        if transfer is None:
+            state['transfers']['request.json'] = {'command_id': 'transfer-1'}
+            transfer_requests.append('request.json')
+        return 'running', None, {
+            'cluster_job_id': 'peer-job', 'node_id': 'peer-node', 'wait_reason': '',
+        }
+
+    monkeypatch.setattr(candidate_batches, 'poll', poll)
+    for _ in range(2):
+        distributed_campaign._reconcile_attempts(campaign, parent, config)
+
+    latest = campaign.snapshot()['attempts'][attempt['attempt_id']]
+    assert latest['cluster_submission']['transfers']['request.json']['command_id'] == 'transfer-1'
+    assert transfer_requests == ['request.json']
+
+
 def test_expired_campaign_stops_before_dispatch_and_finishes_with_time_results(tmp_path, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs
     config = {

@@ -561,7 +561,7 @@ def _resolve_source_job(
         return parameters
     if not isinstance(source_job, str) or not source_job.strip():
         raise AutomationError("source_job must be a visible job ID or code.")
-    row = resolve_job(source_job)
+    row = resolve_job(source_job, include_hidden=True)
     run_dir = Path(row["run_dir"]).resolve()
     candidates = run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl"
     if spec.workflow_id == "campaign.validation_sequence" and "initial_source" not in parameters:
@@ -1052,6 +1052,8 @@ def _direct_result(spec: WorkflowSpec, function, parameters: dict[str, Any]) -> 
 
 def _prepare_selection(spec, payload, request_path):
     """Validate every selected input, then prefer the tool's native batch API."""
+    from mn_molecular_design_studio.logical_runs import context_tags
+    context_tags(payload.get("run_context"))
     from mn_molecular_design_studio.batching import parameter_items, coalesce_prediction_parameters
     try:
         selected = parameter_items(payload.get("parameters", {}))
@@ -1102,7 +1104,9 @@ def submit_workflow_request(request_file: str | Path, *, defer_dispatch: bool = 
     if not isinstance(payload, dict):
         raise AutomationError('Workflow request must be a JSON object.')
     _validate_resources(payload.get('resources'))
-    with execution_resources(payload.get('resources')):
+    from mn_molecular_design_studio.logical_runs import context_tags
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import submission_tags
+    with execution_resources(payload.get('resources')), submission_tags(**context_tags(payload.get('run_context'))):
         return _submit_workflow_request(request_path, defer_dispatch=defer_dispatch)
 
 
@@ -1115,7 +1119,7 @@ def _submit_workflow_request(request_file: str | Path, *, defer_dispatch: bool =
         raise AutomationError(f"Could not read workflow request JSON {request_path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise AutomationError("Workflow request must be a JSON object.")
-    allowed_fields = {"schema_version", "workflow", "parameters", "resources", "source_job", "priority", "database_collection_policy"}
+    allowed_fields = {"schema_version", "workflow", "parameters", "resources", "source_job", "priority", "database_collection_policy", "run_context"}
     unknown = sorted(set(payload) - allowed_fields)
     if unknown:
         raise AutomationError(f"Unsupported workflow request field(s): {', '.join(unknown)}")
@@ -1210,7 +1214,7 @@ def validate_workflow_request(request_file: str | Path) -> dict[str, Any]:
     if not isinstance(workflow_id, str) or workflow_id not in WORKFLOWS:
         raise AutomationError(f"Unknown workflow '{workflow_id}'. Use 'workflow list' to see supported IDs.")
     spec = WORKFLOWS[workflow_id]
-    allowed_fields = {"schema_version", "workflow", "parameters", "resources", "source_job", "priority", "database_collection_policy"}
+    allowed_fields = {"schema_version", "workflow", "parameters", "resources", "source_job", "priority", "database_collection_policy", "run_context"}
     unknown = sorted(set(payload) - allowed_fields)
     if unknown:
         raise AutomationError(f"Unsupported workflow request field(s): {', '.join(unknown)}")

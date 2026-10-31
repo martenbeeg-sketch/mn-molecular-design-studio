@@ -234,6 +234,7 @@ def _analysis_job(
     mode: str,
 ) -> Any:
     source_metadata = read_json(source_run_dir / "metadata.json")
+    source_identity = {**read_json(source_run_dir / "molecular_design_studio.json"), **source_metadata}
     job = create_job(
         ANALYSIS_GROUP,
         job_type="analysis",
@@ -242,13 +243,19 @@ def _analysis_job(
         params={**params, "backend": mode},
     )
     inherited_metadata = {
-        "campaign_name": source_metadata.get("campaign_name") or "",
+        "campaign_name": params.get("job_name") or source_metadata.get("campaign_name") or "",
         "campaign_id": source_metadata.get("campaign_id") or source_metadata.get("run_id") or "",
         "upstream_task_group": source_metadata.get("task_group") or source_run_dir.parent.name,
         "upstream_run_id": source_metadata.get("run_id") or source_run_dir.name,
         "upstream_job_code": source_metadata.get("job_code") or "",
     }
-    write_json(job.run_dir / "metadata.json", {**read_json(job.run_dir / "metadata.json"), **inherited_metadata})
+    metadata = read_json(job.run_dir / "metadata.json")
+    # Direct internal analysis calls retain source ownership as API calls do.
+    # Explicit submission ownership and graph/Run context take precedence.
+    for field in ("studio_owner_id", "project_id", "studio_project_id", "studio_development_mode"):
+        if not metadata.get(field) and source_identity.get(field):
+            metadata[field] = source_identity[field]
+    write_json(job.run_dir / "metadata.json", {**metadata, **inherited_metadata})
     write_json(job.run_dir / "command.json", {"mode": mode, "command": [], "note": note})
     update_status(job.run_dir, "running")
     return job
@@ -566,6 +573,10 @@ def _safe_id(candidate: dict[str, Any]) -> str:
 
 def _candidate_design_reference(source_run_dir: Path, candidate: dict[str, Any]) -> tuple[Path | None, list[str]]:
     """Find a separate designed binder structure without confusing it with the cofold."""
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    pairing = raw.get("analysis_design_pairing") if isinstance(raw.get("analysis_design_pairing"), dict) else {}
+    if pairing.get("status") in {"unmatched", "ambiguous"}:
+        return None, []
     predicted = _resolve_path(source_run_dir, candidate.get("complex_pdb"))
     pending: list[tuple[dict[str, Any], Path, bool]] = [(candidate, source_run_dir, False)]
     seen: set[int] = set()
@@ -602,6 +613,10 @@ def _candidate_design_reference(source_run_dir: Path, candidate: dict[str, Any])
 
 def _candidate_design_complex(source_run_dir: Path, candidate: dict[str, Any]) -> tuple[Path | None, list[str], list[str]]:
     """Locate the upstream generated complex for contact-pattern comparison."""
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    pairing = raw.get("analysis_design_pairing") if isinstance(raw.get("analysis_design_pairing"), dict) else {}
+    if pairing.get("status") in {"unmatched", "ambiguous"}:
+        return None, [], []
     predicted = _resolve_path(source_run_dir, candidate.get("complex_pdb"))
     pending: list[tuple[dict[str, Any], Path, bool]] = [(candidate, source_run_dir, False)]
     seen: set[int] = set()

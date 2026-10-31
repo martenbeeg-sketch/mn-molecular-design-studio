@@ -2445,7 +2445,10 @@ def _normalize_validation_selection(parameters: dict[str, Any]) -> dict[str, Any
             "candidate_limit": candidate_limit,
         }]
     elif source_run_dir is not None or candidates_jsonl is not None:
-        raise ValueError("Select existing designs with validation_candidate_ids or validation_candidate_limit.")
+        if source_run_dir is None or candidates_jsonl is None or validation_sources is not None:
+            raise ValueError("Provide a source run and its candidate collection together.")
+        validation_sources = [{"source_run_dir": str(source_run_dir), "candidates_jsonl": str(candidates_jsonl),
+                               "all_candidates": True}]
 
     if validation_sources is not None:
         prepared["validation_sources"] = validation_sources
@@ -2514,6 +2517,7 @@ def run_optimized_prediction(
     validation_target_type: str = "structured",
     validation_binder_format: str | None = None,
     acceptance_policy: dict[str, Any] | None = None,
+    validation_require_passing: bool = True,
     use_target_template: bool = True,
     target_use_msa: bool = True,
     compound_set_file: Path | None = None,
@@ -2545,7 +2549,7 @@ def run_optimized_prediction(
         tasks=tasks, engine_options=engine_options,
         validation_sources=validation_sources, validation_mode=validation_mode,
         validation_target_type=validation_target_type, validation_binder_format=validation_binder_format,
-        validation_require_passing=acceptance_policy is None,
+        validation_require_passing=validation_require_passing and acceptance_policy is None,
         use_target_template=use_target_template, target_use_msa=target_use_msa,
         compound_set_file=compound_set_file, sequence_file=sequence_file,
     )

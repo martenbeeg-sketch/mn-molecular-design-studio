@@ -514,7 +514,7 @@ _SUBMISSION_TAGS = ContextVar("studio_job_submission_tags", default={})
 @contextmanager
 def submission_tags(**tags):
     """Attach durable dispatch receipts before a newly created job can launch."""
-    token = _SUBMISSION_TAGS.set(tags)
+    token = _SUBMISSION_TAGS.set({**_SUBMISSION_TAGS.get(), **tags})
     try:
         yield
     finally:
@@ -918,6 +918,7 @@ def resume_job(run_dir: Path, *, gpu_device: object | None = None) -> None:
 
 
 def collect_jobs(task_group: str | None = None, *, include_hidden: bool = False) -> list[dict]:
+    from mn_molecular_design_studio.logical_runs import IDENTITY_FIELDS
     root = runs_root()
     root.mkdir(parents=True, exist_ok=True)
     groups = [task_group] if task_group else [p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith("_")]
@@ -974,6 +975,10 @@ def collect_jobs(task_group: str | None = None, *, include_hidden: bool = False)
                 status = "failed"
             rows.append(
                 {
+                    **{key: metadata[key] for key in IDENTITY_FIELDS if key in metadata},
+                    "has_candidate_collection": (run_dir / "artifacts/normalized_candidates/candidates.jsonl").is_file()
+                        and (run_dir / "artifacts/normalized_candidates/candidates.jsonl").stat().st_size > 0,
+                    "has_docking_results": (run_dir / "artifacts/docking_scores.csv").is_file(),
                     "job_code": display_job_code(metadata.get("job_code"), run_dir.name),
                     "run_id": run_dir.name,
                     "task_group": group,

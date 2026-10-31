@@ -447,7 +447,9 @@ class Agent:
             elif command["kind"] == "inspect":
                 from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import inspect_job, job_results
                 ref = command["payload"]["local_reference"]
-                response = inspect_job(ref) | {"results": job_results(ref, include_candidates=True)}
+                # The coordinator has already authorized this source job. Run
+                # results also include native batches hidden from normal lists.
+                response = inspect_job(ref, include_hidden=True) | {"results": job_results(ref, include_candidates=True, include_hidden=True)}
             elif command["kind"] == "md_source_options":
                 from mn_molecular_design_studio.auth import list_users
                 from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import resolve_job
