@@ -531,6 +531,53 @@ def test_collection_does_not_hold_generation_slot_but_reserves_objective_result(
     assert len(launched) == before
 
 
+def test_accepted_objective_refills_free_slots_without_reserving_unfiltered_candidates(tmp_path, monkeypatch):
+    config = distributed_campaign.validate_campaign_config({
+        "generator_id": "rfd4_proteina", "objective_type": "accepted",
+        "acceptance_level": "validated", "accepted_target": 200,
+        "max_attempts": 3000, "batch_size": 50,
+        "native_designs_per_job": 50, "max_concurrent_batches": 1,
+        "max_concurrent_generation_jobs": 4,
+        "validation_stages": [{
+            "workflow": "analysis.validation_acceptance",
+            "acceptance_policy": {
+                "schema": "studio.validation-acceptance.v1",
+                "target_type": "fasta_idr", "binder_format": "miniprotein",
+                "mandatory_filters": [{
+                    "metric_id": "rfd4_native_iptm",
+                    "field": "common.confidence.generator.complex.iptm",
+                    "operator": ">=", "value": 0.7,
+                }],
+                "informational_scores": [], "ranking_metric": "",
+            },
+        }],
+    })
+    campaign = CampaignLedger.create(
+        tmp_path / "campaign.json", config, campaign_id="accepted-refill-campaign",
+    )
+    launched = []
+    monkeypatch.setattr(
+        distributed_campaign, "_create_attempt_child",
+        lambda _parent, _ledger, attempt, _config: launched.append(attempt),
+    )
+
+    # A hundred and fifty not-yet-filtered designs are not 150 accepted ones.
+    distributed_campaign._dispatch_attempts(
+        tmp_path, campaign, config, active_count=0, accepted_count=6,
+        objective_reserved_count=150,
+    )
+    assert len(launched) == 4
+    assert sum(attempt["requested_designs"] for attempt in launched) == 200
+
+    # Once measured acceptance reaches its objective, no new batches are authorized.
+    before = len(launched)
+    distributed_campaign._dispatch_attempts(
+        tmp_path, campaign, config, active_count=0, accepted_count=200,
+        objective_reserved_count=0,
+    )
+    assert len(launched) == before
+
+
 def test_runtime_cancellation_drains_completed_remote_result_collection(tmp_path):
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs
 

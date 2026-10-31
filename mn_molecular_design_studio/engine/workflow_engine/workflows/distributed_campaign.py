@@ -2896,8 +2896,17 @@ def _dispatch_attempts(
     # in candidate outputs. A single RFD4 job can therefore reserve N outputs.
     target = count_target(config)
     designs_per_job = int(config.get("native_designs_per_job") or 1)
+    # For a generated-count objective, in-flight output counts reserve the
+    # remaining target. For an accepted-count objective, unfiltered candidates
+    # are not successes; do not let their optimistic worst-case count idle
+    # otherwise-free GPUs. Stop authorizing only when measured acceptance has
+    # reached the target. Already-running native batches still finish.
+    reserved_objective_count = (
+        0 if config.get("objective_type", "accepted") == "accepted"
+        else objective_reserved_count
+    )
     target_remaining = None if target is None else max(
-        0, target - accepted_count - objective_reserved_count,
+        0, target - accepted_count - reserved_objective_count,
     )
     authorized_remaining = max(0, int(config["max_attempts"]) - _authorized_design_count(state))
     by_target = slots if target_remaining is None else math.ceil(target_remaining / designs_per_job)
