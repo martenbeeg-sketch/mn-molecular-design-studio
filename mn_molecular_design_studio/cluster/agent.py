@@ -194,6 +194,29 @@ class Agent:
                                   "accept_jobs": config.load()["accept_jobs"] and storage_online,
                                   "storage_available": storage_online}
 
+    def _refresh_reference_probes(self, store=None):
+        """Refresh model-path probes from local requests and peer requests."""
+        probes = set()
+        if store is None and config.is_peer():
+            from .store import Store
+            store = Store()
+        if store is not None:
+            try:
+                probes.update(store.reference_probes())
+            except Exception:
+                # A temporary catalog lock must not suppress liveness. Keep the
+                # last known probes and retry on the next pulse.
+                probes.update(self._reference_probes)
+        for path in config.home().glob("peer-probes-*.json"):
+            try:
+                values = json.loads(path.read_text()).get("references", [])
+                if isinstance(values, list):
+                    probes.update(value for value in values if isinstance(value, str))
+            except (OSError, ValueError):
+                continue
+        self._reference_probes = sorted(probes)
+        return self._reference_probes
+
     def storage_online(self):
         from mn_molecular_design_studio.runtime import runs_root
         root = runs_root()
@@ -315,13 +338,7 @@ class Agent:
         # can take minutes on its first pass. Waiting for it here leaves the
         # node's capability snapshot without the very checkpoint paths needed
         # by newly submitted work, even though those files are installed.
-        probes = set(store.reference_probes())
-        for path in config.home().glob("peer-probes-*.json"):
-            try:
-                probes.update(json.loads(path.read_text()).get("references", []))
-            except (OSError, ValueError):
-                continue
-        self._reference_probes = sorted(probes)
+        self._refresh_reference_probes(store)
         snapshot = self.snapshot()
         # Publish current capabilities and dispatch compatible submissions
         # before the potentially expensive catalog scan and peer replication.
@@ -352,28 +369,57 @@ class Agent:
     def publish_liveness(self):
         """Refresh local and remote node status without scanning or syncing jobs."""
         settings = config.load()
-        snapshot = self.snapshot()
+        store = None
+        previous_local = {}
         if settings["mode"] == "peer":
             from .store import Store
-
             store = Store()
+            self._refresh_reference_probes(store)
+            previous_local = next(
+                (node.get("snapshot", {}) for node in store.nodes() if node["id"] == self.node_id),
+                {},
+            )
+        snapshot = self.snapshot()
+        if settings["mode"] == "peer":
+            changed = any(
+                previous_local.get(key) != snapshot.get(key)
+                for key in ("images", "references", "reference_hashes", "code_revision", "accept_jobs", "scheduler_online")
+            )
             store.pulse(self.node_id, snapshot)
             for peer in settings.get("peers", []):
                 try:
                     response = transport.node_request(
-                        "/pulse", {"snapshot": snapshot}, method="POST",
+                        "/peer/hello", {
+                            "node_id": self.node_id,
+                            "snapshot": snapshot,
+                            "reference_probes": self._reference_probes,
+                            "jobs": [],
+                        }, method="POST",
                         base_url=peer["url"], timeout=4,
                     )
-                    if response.get("server_node_id") != peer["id"]:
+                    if response.get("node_id") != peer["id"]:
                         raise transport.ClusterUnavailable(
                             "The configured peer address belongs to another workstation."
                         )
-                    store.pulse(peer["id"], response.get("snapshot") or {})
+                    previous_peer = next(
+                        (node.get("snapshot", {}) for node in store.nodes() if node["id"] == peer["id"]),
+                        {},
+                    )
+                    peer_snapshot = response.get("snapshot") or {}
+                    changed = changed or any(
+                        previous_peer.get(key) != peer_snapshot.get(key)
+                        for key in ("images", "references", "reference_hashes", "code_revision", "accept_jobs", "scheduler_online")
+                    )
+                    store.pulse(peer["id"], peer_snapshot)
                 except Exception as exc:
                     log.warning(
                         "Workstation %s liveness check paused: %s",
                         peer.get("name", peer["id"]), exc,
                     )
+            if changed:
+                # Capability changes can make a queued model workflow eligible.
+                # Avoid a full scheduling pass for routine resource telemetry.
+                store.dispatch()
         else:
             response = transport.node_request(
                 "/pulse", {"snapshot": snapshot}, method="POST", timeout=10,

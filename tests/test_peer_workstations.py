@@ -451,6 +451,35 @@ def test_peer_heartbeat_publishes_required_weights_before_catalog_scan(peers,mon
         agent.peer_heartbeat()
 
 
+def test_peer_liveness_propagates_checkpoint_probes_and_dispatches_waiting_work(peers,monkeypatch):
+    nodes,on=peers
+    user,project=account(on)
+    transfer(on,0,1)
+    reference='weights/rfd4.safetensors'
+    needs=NEEDS | {'references':[reference]}
+    request={'kind':'workflow','payload':{'workflow':'analysis.ipsae','parameters':{}},
+             'project_id':project['id'],'bundle_id':None}
+    with on(0):
+        waiting=Store().submit(request,needs,user,origin_node=nodes[0]['id'],placement='local')['job']
+    with on(1):
+        Store().submit(request,needs,user,origin_node=nodes[1]['id'],placement='local')
+
+    def snapshot(self):
+        return copy.deepcopy(SNAPSHOT) | {
+            'references':{path:True for path in self._reference_probes},
+        }
+
+    monkeypatch.setattr(Agent,'snapshot',snapshot)
+    network(peers,monkeypatch,set())
+    with on(1):
+        Agent().publish_liveness()
+    with on(0):
+        probes_file=config.home()/('peer-probes-'+nodes[1]['id']+'.json')
+        assert reference in json.loads(probes_file.read_text())['references']
+        Agent().publish_liveness()
+        assert Store().job(waiting['cluster_job_id'],user)['status']=='dispatching'
+
+
 def test_conflicting_new_usernames_are_preserved_for_admin_review(peers):
     _,on=peers
     account(on)
