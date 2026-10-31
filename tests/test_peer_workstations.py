@@ -417,6 +417,40 @@ def test_peer_agent_sends_changed_job_rows_to_each_peer(peers,monkeypatch):
         assert all(jobs==[row] for _,jobs in sent)
 
 
+def test_peer_heartbeat_publishes_required_weights_before_catalog_scan(peers,monkeypatch):
+    nodes,on=peers
+    user,project=account(on)
+    transfer(on,0,1)
+    reference='weights/rfd4.safetensors'
+    needs=NEEDS | {'references':[reference]}
+    request={'kind':'workflow','payload':{'workflow':'analysis.ipsae','parameters':{}},
+             'project_id':project['id'],'bundle_id':None}
+    with on(1):
+        submitted=Store().submit(request,needs,user,origin_node=nodes[1]['id'],placement='local')['job']
+        agent=Agent()
+
+        def snapshot(self):
+            return copy.deepcopy(SNAPSHOT) | {
+                'references':{path:True for path in self._reference_probes},
+            }
+
+        def catalog_after_capabilities(self):
+            local=next(node for node in Store().nodes() if node['id']==nodes[1]['id'])
+            assert local['snapshot']['references'][reference] is True
+            assert Store().job(submitted['cluster_job_id'],user)['status']=='dispatching'
+            return []
+
+        monkeypatch.setattr(Agent,'snapshot',snapshot)
+        monkeypatch.setattr(Agent,'catalog',catalog_after_capabilities)
+        monkeypatch.setattr(Agent,'storage_online',lambda self:True)
+        monkeypatch.setattr(Agent,'_reconcile_purged_peer_jobs',lambda self:None)
+        monkeypatch.setattr(Agent,'_schedule_library_transfers',lambda self:None)
+        monkeypatch.setattr('mn_molecular_design_studio.cluster.replication.capture_identity',lambda:None)
+        monkeypatch.setattr('mn_molecular_design_studio.cluster.replication.sync_peer',lambda *args,**kwargs:{})
+
+        agent.peer_heartbeat()
+
+
 def test_conflicting_new_usernames_are_preserved_for_admin_review(peers):
     _,on=peers
     account(on)

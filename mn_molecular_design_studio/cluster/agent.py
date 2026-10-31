@@ -310,7 +310,11 @@ class Agent:
         # Reconcile completed purges before rebuilding the catalog or publishing
         # the peer mirror. Otherwise the stale mirrored row can be sent again.
         self._reconcile_purged_peer_jobs()
-        jobs = self.catalog() if self.storage_online() else []
+        # Required model probes must be published before catalog reconciliation.
+        # On a workstation with a large historical Results catalog, catalog()
+        # can take minutes on its first pass. Waiting for it here leaves the
+        # node's capability snapshot without the very checkpoint paths needed
+        # by newly submitted work, even though those files are installed.
         probes = set(store.reference_probes())
         for path in config.home().glob("peer-probes-*.json"):
             try:
@@ -319,6 +323,14 @@ class Agent:
                 continue
         self._reference_probes = sorted(probes)
         snapshot = self.snapshot()
+        # Publish current capabilities and dispatch compatible submissions
+        # before the potentially expensive catalog scan and peer replication.
+        # Molecular artifacts remain on their producing workstation; this
+        # heartbeat contains only capabilities and the normal compact job
+        # metadata used by the existing cluster controller.
+        store.heartbeat(self.node_id, snapshot, [])
+
+        jobs = self.catalog() if self.storage_online() else []
         for index in range(0, max(1, len(jobs)), 1000):
             batch = jobs[index:index+1000]
             known = sorted(self._known_references) if index + 1000 >= len(jobs) and self.storage_online() else None
