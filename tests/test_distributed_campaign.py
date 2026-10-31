@@ -99,6 +99,29 @@ def test_gpu_compute_receipts_are_durable_and_idempotent(tmp_path):
     assert campaign.gpu_compute_seconds() == 12.5
 
 
+def test_validation_run_discovery_ignores_unresolved_peer_artifact_paths(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine import runtime
+
+    root = tmp_path / "runs"
+    unrelated = root / "design" / "peer-run"
+    matching = root / "analysis" / "validation-run"
+    unrelated.mkdir(parents=True)
+    matching.mkdir(parents=True)
+    (unrelated / "metadata.json").write_text(json.dumps({
+        "target_structure": "cluster://00000000-0000-0000-0000-000000000001/design/peer-run/target.cif",
+    }))
+    (matching / "metadata.json").write_text(json.dumps({
+        "distributed_campaign_id": "campaign-test",
+        "distributed_candidate_id": "candidate-1",
+        "distributed_validation_stage": 0,
+    }))
+    monkeypatch.setattr(runtime, "runs_root", lambda: root)
+
+    assert distributed_campaign._validation_tagged_run(
+        "campaign-test", "candidate-1", 0,
+    ) == matching
+
+
 def test_budget_termination_is_explicit_and_stable(tmp_path):
     campaign = ledger(tmp_path, max_attempts=1, target=1)
     campaign.authorize(1, batch_id="b1")

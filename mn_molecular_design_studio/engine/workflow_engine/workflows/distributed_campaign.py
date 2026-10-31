@@ -3044,12 +3044,16 @@ def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: l
 
 
 def _validation_tagged_run(campaign_id: str, candidate_id: str, stage_index: int) -> Path | None:
-    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+    # This is a discovery scan across *all* local runs, including campaign
+    # children whose metadata can retain cluster:// paths owned by a peer.
+    # Resolving those paths while looking only for three scalar tags makes an
+    # otherwise unrelated remote artifact abort the campaign controller.
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json_raw
     from mn_molecular_design_studio.engine.workflow_engine.runtime import runs_root
 
     root = runs_root()
     for metadata_path in root.glob("*/*/metadata.json"):
-        metadata = read_json(metadata_path)
+        metadata = read_json_raw(metadata_path)
         if (
             metadata.get("distributed_campaign_id") == campaign_id
             and metadata.get("distributed_candidate_id") == candidate_id
