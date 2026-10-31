@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mn_molecular_design_studio.cluster import bundles, config, service
-from mn_molecular_design_studio.cluster.agent import Agent, _candidate_summary
+from mn_molecular_design_studio.cluster.agent import Agent, _accepted_candidate_artifacts, _candidate_summary
 from mn_molecular_design_studio.cluster.store import Store
 
 
@@ -180,6 +180,73 @@ def test_worker_heartbeat_publishes_counts_without_candidate_identities_or_struc
     assert "private coordinates" not in json.dumps(summary)
 
 
+def test_worker_acceptance_is_count_only_and_keeps_only_accepted_rows_for_final_collection(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import distributed_campaign
+
+    run = tmp_path / "design" / "run-accepted"
+    candidates = run / "artifacts/normalized_candidates"
+    candidates.mkdir(parents=True)
+    rows = [
+        {"candidate_id": "private-pass", "source_tool": "rfd4_proteina", "stage": "complex_refolding",
+         "binder_sequence": "ACDEFG", "complex_pdb": "artifacts/structures/pass.cif", "metrics": {}},
+        {"candidate_id": "private-reject", "source_tool": "rfd4_proteina", "stage": "complex_refolding",
+         "binder_sequence": "GGGGGG", "complex_pdb": "artifacts/structures/reject.cif", "metrics": {}, "raw_metadata": {}},
+    ]
+    (candidates / "candidates.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+    monkeypatch.setattr(distributed_campaign, "_native_acceptance_geometry", lambda *_args: None)
+    monkeypatch.setattr(
+        distributed_campaign, "_stage_selectors",
+        lambda row, *_args: {"validation_acceptance": {
+            "status": "accepted" if row["candidate_id"] == "private-pass" else "rejected",
+            "reasons": [] if row["candidate_id"] == "private-pass" else ["fixture rejection"],
+        }},
+    )
+
+    summary = _candidate_summary(run, {"tool": "rfd4_proteina"}, acceptance_policy={"mandatory_filters": [{}]})
+    accepted = (run / "artifacts/distributed_campaign/accepted_candidates.jsonl").read_text()
+
+    assert summary["candidate_count"] == 2
+    assert summary["acceptance_counts"] == {"accepted": 1, "rejected": 1, "unresolved": 0, "not_evaluated": 0}
+    assert not ({"candidates", "accepted_candidate_ids", "accepted_sequence_hashes"} & set(summary))
+    assert "private-pass" not in json.dumps(summary)
+    assert "ACDEFG" not in json.dumps(summary)
+    assert "private-pass" in accepted and "private-reject" not in accepted
+    assert "ACDEFG" in accepted and "GGGGGG" not in accepted
+
+
+def test_accepted_only_campaign_publishes_only_accepted_artifacts(tmp_path):
+    run = tmp_path / "design" / "worker-run"
+    accepted = run / "artifacts/distributed_campaign/accepted_candidates.jsonl"
+    accepted.parent.mkdir(parents=True)
+    accepted.write_text(json.dumps({
+        "candidate_id": "private-pass",
+        "complex_pdb": "artifacts/structures/pass.cif",
+        "raw_metadata": {"prediction_input": "artifacts/structures/pass-input.cif"},
+    }) + "\n")
+    prefix = "design/worker-run/"
+    artifacts = [
+        {"relative_path": prefix + "metadata.json"},
+        {"relative_path": prefix + "artifacts/distributed_campaign/accepted_candidates.jsonl"},
+        {"relative_path": prefix + "artifacts/rfd4_proteina/request.json"},
+        {"relative_path": prefix + "artifacts/rfd4_proteina/input/target.cif"},
+        {"relative_path": prefix + "artifacts/structures/pass.cif"},
+        {"relative_path": prefix + "artifacts/structures/pass-input.cif"},
+        {"relative_path": prefix + "artifacts/structures/rejected.cif"},
+        {"relative_path": prefix + "artifacts/normalized_candidates/candidates.jsonl"},
+    ]
+
+    result = _accepted_candidate_artifacts(run, {"task_group": "design", "run_id": "worker-run"}, artifacts)
+
+    assert {row["relative_path"] for row in result} == {
+        prefix + "metadata.json",
+        prefix + "artifacts/distributed_campaign/accepted_candidates.jsonl",
+        prefix + "artifacts/rfd4_proteina/request.json",
+        prefix + "artifacts/rfd4_proteina/input/target.cif",
+        prefix + "artifacts/structures/pass.cif",
+        prefix + "artifacts/structures/pass-input.cif",
+    }
+
+
 def test_automatic_placement_uses_other_ready_workstation_when_origin_is_busy(cluster):
     store, nodes, user, needs, snapshot, request, _ = cluster
     busy = copy.deepcopy(snapshot); busy["resources"]["free_gpus"] = []
@@ -212,6 +279,10 @@ def test_pending_artifact_actions_reuse_the_same_command(cluster):
             (job['cluster_job_id'], 'result.json'),
         ).fetchone()[0]
     assert count == 1
+    stopped = store.cancel_pending_artifact_transfers(job['cluster_job_id'], user)
+    assert stopped == {"job_id": job["cluster_job_id"], "cancelled_transfers": 1}
+    assert store.command(first["command_id"], user)["status"] == "cancelled"
+    assert store.job(job["cluster_job_id"], user)["status"] == "running"
 
 
 def test_synchronized_running_job_reserves_its_gpu_for_automatic_placement(cluster):
@@ -381,6 +452,27 @@ def test_same_local_run_name_on_two_nodes_stays_distinct_and_private(cluster):
     assert store.search(outsider)["items"] == []
     with pytest.raises(LookupError):
         store.job(jobs[0]["cluster_job_id"], outsider)
+
+
+def test_cluster_search_index_tracks_filters_and_pages_without_loading_full_catalog(cluster):
+    store, nodes, user, _, snapshot, _, _ = cluster
+    rows = [
+        {"task_group": "design", "run_id": f"search-{index}", "owner_id": user["id"],
+         "project_id": "project-a", "status": "failed" if index == 0 else "completed",
+         "tool": "rfd4_proteina", "campaign_name": "R3 target 100%_ passing designs"}
+        for index in range(3)
+    ]
+    store.heartbeat(nodes[0]["node_id"], snapshot, rows)
+
+    page = store.search(user, query="100%_", statuses=["failed"], tools=["rfd4_proteina"], limit=1)
+    assert page["total"] == 1
+    assert len(page["items"]) == 1
+    assert page["items"][0]["run_id"] == "search-0"
+
+    rows[0] = rows[0] | {"status": "completed"}
+    store.heartbeat(nodes[0]["node_id"], snapshot, rows[:1])
+    assert store.search(user, statuses=["failed"])["total"] == 0
+    assert store.search(user, statuses=["completed"], limit=1)["total"] == 3
 
 
 def test_submission_idempotency_and_changed_input_conflicts(cluster):

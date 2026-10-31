@@ -79,6 +79,32 @@ def test_poll_summary_reads_counts_without_requesting_candidate_artifacts(monkey
     assert "candidates" not in batch["candidate_summary"]
 
 
+def test_poll_summary_accepts_count_only_filter_results_without_design_metadata(monkeypatch):
+    summary = {
+        "schema_version": 1, "status": "complete", "candidate_count": 4, "eligible_count": 4,
+        "native_filter_counts": {"passed": 0, "failed": 0, "unavailable": 4},
+        "acceptance_counts": {"accepted": 2, "rejected": 2, "unresolved": 0, "not_evaluated": 0},
+        "acceptance_evaluation": "worker_local_saved_evidence",
+    }
+
+    class FakeStore:
+        def job(self, _job_id, _user):
+            return {"status": "completed", "node_id": "worker", "candidate_summary": summary}
+
+        def nodes(self):
+            raise AssertionError("Aggregate acceptance counts must not trigger artifact access.")
+
+    monkeypatch.setattr(cb, "Store", FakeStore)
+    monkeypatch.setattr(cb, "actor", lambda *args, **kwargs: {"id": "researcher"})
+    batch = {"cluster_job_id": "cluster-job"}
+
+    status, job = cb.poll_summary(batch, owner_id="researcher", project_id="project")
+
+    assert status == "completed"
+    assert job["candidate_summary"] == summary
+    assert set(summary).isdisjoint({"candidates", "accepted_candidate_ids", "candidate_sequences"})
+
+
 def test_output_transfer_resumes_and_rejects_corruption(tmp_path, monkeypatch):
     monkeypatch.setenv('MDS_CLUSTER_HOME', str(tmp_path / 'cluster'))
     data = b'scientific artifact'

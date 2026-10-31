@@ -55,6 +55,54 @@ def test_rfd4_validated_campaign_requires_external_measurements_and_gpu_memory()
     assert config["acceptance_level"] == "validated"
 
 
+def test_rfd4_saved_evidence_campaign_defaults_to_count_only_deferred_outputs():
+    config = validate_campaign_config({
+        "generator_id": "rfd4_proteina",
+        "objective_type": "accepted",
+        "acceptance_level": "validated",
+        "max_attempts": 100,
+        "accepted_target": 20,
+        "native_designs_per_job": 10,
+        "validation_stages": [{
+            "workflow": "analysis.validation_acceptance",
+            "acceptance_policy": {
+                "schema": "studio.validation-acceptance.v1",
+                "binder_format": "miniprotein",
+                "target_type": "fasta_idr",
+                "mandatory_filters": [{
+                    "field": "common.confidence.generator.complex.iptm",
+                    "operator": ">=", "value": 0.7,
+                }],
+                "informational_scores": [],
+            },
+        }],
+    })
+
+    assert config["unique_accepted"] is False
+    assert config["remote_artifact_policy"] == "defer_accepted"
+
+    with pytest.raises(ValueError, match="Count-only deferred accepted artifacts"):
+        validate_campaign_config({
+            "generator_id": "rfd4_proteina",
+            "objective_type": "accepted",
+            "acceptance_level": "validated",
+            "unique_accepted": True,
+            "remote_artifact_policy": "defer_accepted",
+            "max_attempts": 100,
+            "accepted_target": 20,
+            "validation_stages": [{
+                "workflow": "analysis.validation_acceptance",
+                "acceptance_policy": {
+                    "binder_format": "miniprotein", "target_type": "fasta_idr",
+                    "mandatory_filters": [{
+                        "field": "common.confidence.generator.complex.iptm",
+                        "operator": ">=", "value": 0.7,
+                    }],
+                },
+            }],
+        })
+
+
 def test_rfd4_receipts_record_acceptance_unavailable_and_still_allow_external_validation(tmp_path):
     config = validate_campaign_config({
         "generator_id": "rfd4_proteina",

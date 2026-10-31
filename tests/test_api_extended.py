@@ -668,6 +668,9 @@ def test_rfd4_native_refold_acceptance_campaign_validates_through_workflow_api(a
     response = client.post("/api/v1/workflows/validate", json=request)
     assert response.status_code == 200, response.text
     assert response.json()["valid"] is True
+    normalized_campaign = response.json()["parameters"]["distributed_campaign"]
+    assert normalized_campaign["remote_artifact_policy"] == "defer_accepted"
+    assert normalized_campaign["unique_accepted"] is False
 
 
 def test_validation_acceptance_saved_evidence_is_public_and_api_validated(api_data):

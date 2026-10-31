@@ -262,15 +262,32 @@ def validate_campaign_config(config: dict[str, Any]) -> dict[str, Any]:
 
     capability = generator_capabilities(generator_id)
     remote_artifact_policy = str(config.get("remote_artifact_policy") or "auto").strip().lower()
-    if remote_artifact_policy not in {"auto", "eager", "defer_generated"}:
-        raise ValueError("remote_artifact_policy must be auto, eager, or defer_generated.")
-    can_defer_artifacts = (
+    if remote_artifact_policy not in {"auto", "eager", "defer_generated", "defer_accepted"}:
+        raise ValueError("remote_artifact_policy must be auto, eager, defer_generated, or defer_accepted.")
+    can_defer_generated = (
         objective_type in {"generated", "time"} and not requirements and shared_objective is None
     )
+    can_defer_accepted = (
+        generator_id == "rfd4_proteina"
+        and objective_type == "accepted"
+        and acceptance_level == "validated"
+        and not unique_accepted
+        and len(requirements) == 1
+        and requirements[0].get("workflow") == "analysis.validation_acceptance"
+        and isinstance(requirements[0].get("acceptance_policy"), dict)
+        and shared_objective is None
+    )
     if remote_artifact_policy == "auto":
-        remote_artifact_policy = "defer_generated" if can_defer_artifacts else "eager"
-    if remote_artifact_policy == "defer_generated" and not can_defer_artifacts:
-        raise ValueError("Deferred remote artifacts require a generated or timed objective without in-campaign validation or a shared objective.")
+        remote_artifact_policy = (
+            "defer_accepted" if can_defer_accepted else "defer_generated" if can_defer_generated else "eager"
+        )
+    if remote_artifact_policy == "defer_generated" and not can_defer_generated:
+        raise ValueError("Deferred generated artifacts require a generated or timed objective without in-campaign validation or a shared objective.")
+    if remote_artifact_policy == "defer_accepted" and not can_defer_accepted:
+        raise ValueError(
+            "Count-only deferred accepted artifacts require a non-unique RFD4 objective, one saved-evidence "
+            "Validation & Acceptance stage, and no shared objective. Disable unique_accepted or use eager collection."
+        )
     if objective_type == "accepted":
         validate_stopping_policy(
             generator_id, acceptance_level, requirements,
@@ -374,14 +391,25 @@ def _state_accepted_count(state: dict[str, Any]) -> int:
     }[state["config"]["acceptance_level"]]
     candidates = [candidate for candidate in state.get("candidates", {}).values()
                   if candidate.get(acceptance_field) == "accepted"]
+    deferred = [row for row in state.get("deferred_outputs", {}).values() if row.get("status") == "deferred"]
     if state["config"].get("unique_accepted", False):
         sequences = {
             "".join(str((candidate.get("candidate") or {}).get("binder_sequence") or "").split()).upper()
             for candidate in candidates
         }
         sequences.discard("")
-        return len(sequences)
-    return len(candidates)
+        hashes = {hashlib.sha256(sequence.encode("utf-8")).hexdigest() for sequence in sequences}
+        hashes.update(
+            str(value)
+            for row in deferred
+            for value in (row.get("evidence") or {}).get("accepted_sequence_hashes", [])
+            if isinstance(value, str) and len(value) == 64
+        )
+        return len(hashes)
+    return len(candidates) + sum(
+        int((row.get("evidence") or {}).get("acceptance_counts", {}).get("accepted") or 0)
+        for row in deferred
+    )
 
 
 def _authorized_design_count(state: dict[str, Any]) -> int:
@@ -653,13 +681,20 @@ class CampaignLedger(ExecutionJobLedgerMixin):
             ),
             "native_accepted_candidates": sum(item.get("native_acceptance") == "accepted" for item in candidates),
             "native_acceptance_unavailable_candidates": sum(item.get("native_acceptance") == "unavailable" for item in candidates),
-            "validated_accepted_candidates": sum(item.get("validated_acceptance") == "accepted" for item in candidates),
+            "validated_accepted_candidates": (
+                sum(item.get("validated_acceptance") == "accepted" for item in candidates)
+                + sum(int((row.get("evidence") or {}).get("acceptance_counts", {}).get("accepted") or 0)
+                      for row in state.get("deferred_outputs", {}).values() if row.get("status") == "deferred")
+            ),
             "diversity_qualified_accepted_candidates": sum(item.get("diversity_acceptance") == "accepted" for item in candidates),
             "rejected_candidates": sum(
                 item.get("native_acceptance") == "rejected"
                 or item.get("validated_acceptance") == "rejected"
                 or item.get("diversity_acceptance") == "rejected"
                 for item in candidates
+            ) + sum(
+                int((row.get("evidence") or {}).get("acceptance_counts", {}).get("rejected") or 0)
+                for row in state.get("deferred_outputs", {}).values() if row.get("status") == "deferred"
             ),
             "failed_interrupted_attempts": sum(
                 len(item.get("retry_history") or []) + int(item.get("status") in {"failed", "interrupted"})
@@ -1275,7 +1310,15 @@ def _submit_rfd4_peer_attempt(
         "resources": resources,
     }
     from mn_molecular_design_studio.logical_runs import native_context
-    request["run_context"] = native_context(parent_run_dir)
+    run_context = native_context(parent_run_dir)
+    if state["config"].get("remote_artifact_policy") == "defer_accepted":
+        acceptance_stage = next(
+            stage for stage in state["config"].get("validation_stages", [])
+            if stage.get("workflow") == "analysis.validation_acceptance"
+        )
+        run_context["distributed_acceptance_policy"] = acceptance_stage["acceptance_policy"]
+        run_context["distributed_output_policy"] = "accepted_candidates_only"
+    request["run_context"] = run_context
     # Campaign children are receipts for the parent campaign. The parent
     # publishes only acceptance-qualified designs, so workers must not ingest
     # their unfiltered native batches independently.
@@ -1336,7 +1379,7 @@ def _materialize_rfd4_peer_output(
     import shutil
 
     from mn_molecular_design_studio.cluster import candidate_batches
-    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, read_json_raw, write_json
 
     owner_id, project_id, development_mode = _campaign_actor(parent_run_dir)
     collected = Path(peer["manifest"]).with_suffix(".collected")
@@ -1767,6 +1810,14 @@ def _rfd4_candidate_rows(
             "gpu_ids": allocation.get("gpu_ids") or [],
             "native_state": native_state,
             "native_acceptance": "unavailable",
+            "validated_acceptance": (
+                "accepted" if (raw.get("validation_acceptance") or {}).get("status") == "accepted"
+                else "rejected" if (raw.get("validation_acceptance") or {}).get("status") == "rejected"
+                else "failed"
+            ),
+            "validation_decision_reason": "; ".join(
+                str(value) for value in ((raw.get("validation_acceptance") or {}).get("reasons") or [])
+            ),
             "sequence_structure_mode": "co_design",
         }
         result.append(candidate)
@@ -2379,6 +2430,12 @@ def _reconcile_attempts(
         # work proportional to the entire campaign history without changing
         # its execution record.
         if attempt.get("status") == "completed":
+            child = children.get(attempt_id)
+            child_metadata = read_json_raw(child / "metadata.json") if child else {}
+            if child and child_metadata.get("deferred_accepted_materialized"):
+                candidate_rows.extend(_rfd4_candidate_rows(
+                    child, state["campaign_id"], attempt, attempt.get("native_state") or {},
+                ))
             continue
         child = children.get(attempt_id)
         if child is None:
@@ -2454,7 +2511,7 @@ def _reconcile_attempts(
                     attempt = state["attempts"][attempt_id]
                     peer = dict(attempt.get("cluster_submission") or peer)
                 _restore_peer_transfer_state(child, peer)
-                defer_remote_artifacts = config.get("remote_artifact_policy") == "defer_generated"
+                defer_remote_artifacts = config.get("remote_artifact_policy") in {"defer_generated", "defer_accepted"}
                 if defer_remote_artifacts:
                     peer_status, peer_job = candidate_batches.poll_summary(
                         peer, owner_id=owner_id, project_id=project_id,
@@ -2548,6 +2605,14 @@ def _reconcile_attempts(
                 output_ids, deferred_candidates, deferred_count = _deferred_remote_candidate_records(
                     state["campaign_id"], attempt, peer_job, summary,
                 )
+                if config.get("remote_artifact_policy") == "defer_accepted":
+                    acceptance_counts = summary.get("acceptance_counts") or {}
+                    if summary.get("acceptance_evaluation") != "worker_local_saved_evidence":
+                        raise RuntimeError("Worker completed without evaluating the configured saved-evidence acceptance policy.")
+                    if set(acceptance_counts) != {"accepted", "rejected", "unresolved", "not_evaluated"}:
+                        raise RuntimeError("Worker acceptance summary is missing count categories.")
+                    if sum(int(value) for value in acceptance_counts.values()) != int(summary.get("candidate_count") or 0):
+                        raise RuntimeError("Worker acceptance counts do not match its design count.")
                 source_job = f"cluster://{peer_job.get('node_id')}/{peer_job.get('local_reference') or peer_job.get('local_ref')}"
                 native_state = {
                     "engine": generator_id,
@@ -2578,6 +2643,7 @@ def _reconcile_attempts(
                         "eligible_count": int(summary.get("eligible_count") or 0),
                         "native_filter_counts": summary.get("native_filter_counts", {}),
                         "acceptance_counts": summary.get("acceptance_counts", {}),
+                        "acceptance_evaluation": summary.get("acceptance_evaluation"),
                         "transferred_candidate_data": False,
                     },
                     gpu_seconds=float(remote_metadata.get("gpu_seconds") or 0),
@@ -2819,6 +2885,7 @@ def _sync_parent_results(
                     "sequence_identity": participant.get("sequence_identity"),
                 }
         enriched.append(row)
+    counters = ledger.counters()
     acceptance_summary = None
     acceptance_stage = next((stage for stage in state["config"].get("validation_stages", [])
                             if stage.get("workflow") == "analysis.validation_acceptance"), None)
@@ -2837,6 +2904,43 @@ def _sync_parent_results(
             "not_evaluated": sum(status == "not_evaluated" for status in decision_statuses),
             "source_measurements": "RFD4 native refold oracle and Studio geometry from the saved complex",
         }
+        if state["config"].get("remote_artifact_policy") == "defer_accepted":
+            deferred_receipts = [
+                row for row in state.get("deferred_outputs", {}).values()
+                if row.get("status") == "deferred"
+            ]
+            if deferred_receipts:
+                deferred_attempt_ids = {str(row.get("attempt_id") or "") for row in deferred_receipts}
+                local_statuses = [
+                    str(decision.get("status") or "not_evaluated")
+                    for row, decision in zip(enriched, decisions)
+                    if str(((row.get("raw_metadata") or {}).get("distributed_campaign") or {}).get("attempt_id") or "")
+                    not in deferred_attempt_ids
+                ]
+                deferred_evidence = [row.get("evidence") or {} for row in deferred_receipts]
+                acceptance_summary.update(
+                    candidate_count=(
+                        len(local_statuses)
+                        + sum(int(item.get("candidate_count") or 0) for item in deferred_evidence)
+                    ),
+                    accepted=(
+                        sum(status == "accepted" for status in local_statuses)
+                        + sum(int(item.get("acceptance_counts", {}).get("accepted") or 0) for item in deferred_evidence)
+                    ),
+                    rejected=(
+                        sum(status == "rejected" for status in local_statuses)
+                        + sum(int(item.get("acceptance_counts", {}).get("rejected") or 0) for item in deferred_evidence)
+                    ),
+                    unresolved=(
+                        sum(status == "unresolved" for status in local_statuses)
+                        + sum(int(item.get("acceptance_counts", {}).get("unresolved") or 0) for item in deferred_evidence)
+                    ),
+                    not_evaluated=(
+                        sum(status == "not_evaluated" for status in local_statuses)
+                        + sum(int(item.get("acceptance_counts", {}).get("not_evaluated") or 0) for item in deferred_evidence)
+                    ),
+                    rejected_structures_transferred=0,
+                )
         report_rows = []
         for row, decision in zip(enriched, decisions):
             provenance = ((row.get("raw_metadata") or {}).get("validation_acceptance_provenance") or {})
@@ -3234,6 +3338,10 @@ def _cancel_campaign_attempt(
                 if resolved_parent is not None:
                     parent = resolved_parent
         owner_id, project_id, development_mode = _campaign_actor(parent)
+        candidate_batches.cancel_pending_artifact_transfers(
+            peer, owner_id=owner_id, project_id=project_id,
+            allow_development=development_mode,
+        )
         remote = candidate_batches.Store().job(
             peer["cluster_job_id"],
             candidate_batches.actor(owner_id, project_id, allow_development=development_mode),
@@ -3244,8 +3352,12 @@ def _cancel_campaign_attempt(
                 allow_development=development_mode,
             )
         current = read_json_raw(child / "metadata.json")
-        current.update(status="cancelled", cancel_reason=reason, completed_at=utc_now())
-        write_json(child / "metadata.json", current)
+        if current.get("status") in {"queued", "preparing", "running", "collecting"}:
+            current.update(
+                status="cancelled", cancel_reason=reason, completed_at=utc_now(),
+                remote_status=remote.get("status"), result_collection_pending=False,
+            )
+            write_json(child / "metadata.json", current)
         return
     metadata = read_json_raw(child / "metadata.json")
     if metadata.get("status") in {"queued", "preparing", "running"}:
@@ -3277,8 +3389,83 @@ def _cancel_validation_runs(ledger: CampaignLedger, reason: str) -> None:
             ledger.update_candidate(candidate_id, validation_stages=stages)
 
 
+def _materialize_deferred_accepted_outputs(parent_run_dir: Path, ledger: CampaignLedger) -> bool:
+    """Fetch only locally accepted RFD4 candidate rows and their structures."""
+    state = _ledger_view(ledger)
+    if state["config"].get("remote_artifact_policy") != "defer_accepted":
+        return True
+    from mn_molecular_design_studio.cluster import candidate_batches
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, read_json_raw, write_json
+
+    children = _attempt_child_paths(ledger, state)
+    owner_id, project_id, development_mode = _campaign_actor(parent_run_dir)
+    complete = True
+    for attempt_id, attempt in sorted(state["attempts"].items(), key=lambda item: item[1]["ordinal"]):
+        receipt = next((row for row in state.get("deferred_outputs", {}).values()
+                       if row.get("attempt_id") == attempt_id), None)
+        accepted_count = int((receipt or {}).get("evidence", {}).get("acceptance_counts", {}).get("accepted") or 0)
+        if not accepted_count:
+            continue
+        child = children.get(attempt_id)
+        if child is None:
+            raise RuntimeError(f"Deferred accepted output {attempt_id} has no local recovery record.")
+        child_metadata = read_json_raw(child / "metadata.json")
+        if child_metadata.get("deferred_accepted_materialized"):
+            continue
+        peer = deepcopy(attempt.get("cluster_submission") or {})
+        peer["cluster_job_id"] = peer.get("cluster_job_id") or attempt.get("cluster_job_id")
+        if not peer.get("cluster_job_id") or not peer.get("manifest"):
+            raise RuntimeError(f"Deferred accepted output {attempt_id} has no remote job identity.")
+        _restore_peer_transfer_state(child, peer)
+        persist_transfers = lambda transfers, c=child, jid=peer["cluster_job_id"]: _persist_peer_transfer_state(c, jid, transfers)
+        status, output, peer_job = candidate_batches.poll(
+            peer, owner_id=owner_id, project_id=project_id,
+            allow_development=development_mode,
+            persist_transfers=persist_transfers,
+            candidate_collection="artifacts/distributed_campaign/accepted_candidates.jsonl",
+        )
+        if status == "collecting":
+            complete = False
+            continue
+        if status != "completed" or output is None:
+            raise RuntimeError(
+                f"Could not collect accepted outputs from {attempt_id}: {peer_job.get('wait_reason') or status}."
+            )
+        if int(output.get("candidate_count") or 0) != accepted_count:
+            raise RuntimeError(
+                f"Accepted output count mismatch for {attempt_id}: expected {accepted_count}, "
+                f"received {output.get('candidate_count')}."
+            )
+        if not _materialize_rfd4_peer_output(
+            parent_run_dir, ledger, attempt, child, peer, output, peer_job,
+        ):
+            complete = False
+            continue
+        child_metadata = read_json(child / "metadata.json")
+        child_metadata.update(
+            deferred_output=True,
+            deferred_accepted_materialized=True,
+            deferred_accepted_candidate_count=accepted_count,
+            result_collection_pending=False,
+        )
+        write_json(child / "metadata.json", child_metadata)
+    return complete
+
+
 def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: list[dict[str, Any]]) -> Path:
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import finish_job, read_json
+
+    if _ledger_view(ledger)["config"].get("remote_artifact_policy") == "defer_accepted":
+        deadline = time.monotonic() + 1800
+        while not _materialize_deferred_accepted_outputs(parent_run_dir, ledger):
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Timed out collecting accepted candidate structures from their producer workstations.")
+            time.sleep(min(2.0, float(_ledger_view(ledger)["config"].get("poll_interval_seconds") or 2.0)))
+        children, active, candidates = _reconcile_attempts(
+            ledger, parent_run_dir, _ledger_view(ledger)["config"],
+        )
+        if active:
+            raise RuntimeError("Campaign reached final collection while remote generation jobs were still active.")
 
     state = _ledger_view(ledger)
     counters = ledger.counters()
@@ -4581,7 +4768,11 @@ def cancel_distributed_campaign(parent_run_dir: Path, reason: str = "Campaign ca
     for attempt_id, child in children.items():
         attempt = _ledger_view(ledger)["attempts"].get(attempt_id, {})
         status = str(read_json_raw(child / "metadata.json").get("status") or "")
-        if status in {"queued", "preparing", "running"}:
+        if attempt.get("cluster_submission"):
+            # A completed remote job can still have queued structure downloads
+            # from an eager collector. Stop those transfers with the campaign.
+            _cancel_campaign_attempt(ledger, attempt, child, reason)
+        elif status in {"queued", "preparing", "running", "collecting"}:
             _cancel_campaign_attempt(ledger, attempt, child, reason)
         if attempt.get("status") in {"authorized", "queued", "running"}:
             ledger.transition(attempt_id, "cancelled", stop_reason=reason)

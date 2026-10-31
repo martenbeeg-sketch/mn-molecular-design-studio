@@ -297,6 +297,16 @@ def poll_summary(batch, *, owner_id, project_id, allow_development=False):
                        for key in ("accepted", "rejected", "unresolved", "not_evaluated"))
                 or sum(acceptance_counts[key] for key in ("accepted", "rejected", "unresolved", "not_evaluated")) != count):
             return "summary_unavailable", job
+        if summary.get("acceptance_evaluation") == "worker_local_saved_evidence":
+            # Completion heartbeats carry aggregate counts only. Candidate
+            # identities and structures remain on the producer until final
+            # accepted-output collection.
+            forbidden = {
+                "candidates", "candidate_records", "accepted_candidate_ids",
+                "accepted_sequence_hashes", "candidate_sequences",
+            }
+            if forbidden.intersection(summary):
+                return "summary_unavailable", job
         batch["candidate_summary"] = copy.deepcopy(summary)
         return "completed", job
     if status in {"failed", "cancelled", "lost"}:
@@ -308,15 +318,20 @@ def poll_summary(batch, *, owner_id, project_id, allow_development=False):
     return status, job
 
 
-def poll(batch, *, owner_id, project_id, allow_development=False, persist_transfers=None):
+def poll(batch, *, owner_id, project_id, allow_development=False, persist_transfers=None,
+         candidate_collection="artifacts/normalized_candidates/candidates.jsonl"):
     """Return a local verified snapshot only after every candidate file arrives."""
+    collection_path = Path(str(candidate_collection))
+    if (collection_path.is_absolute() or ".." in collection_path.parts
+            or not str(collection_path).startswith("artifacts/") or collection_path.suffix != ".jsonl"):
+        raise ValueError("Candidate collection must be a safe run-relative JSONL artifact path.")
     user = actor(owner_id, project_id, allow_development=allow_development)
     store = Store()
     job = store.job(batch['cluster_job_id'], user)
     batch['worker'] = job.get('node_id')
     batch['wait_reason'] = job.get('wait_reason') or ''
     status = job.get('status', 'queued')
-    collection = 'artifacts/normalized_candidates/candidates.jsonl'
+    collection = collection_path.as_posix()
     remote_root = str(job.get('location') or '').rstrip('/')
     catalog = {str(a.get('relative_path') or a.get('path') or '').removeprefix(remote_root + '/') for a in job.get('artifacts', [])}
     partial = status in {'failed', 'cancelled', 'lost'} and collection in catalog
@@ -391,7 +406,13 @@ def poll(batch, *, owner_id, project_id, allow_development=False, persist_transf
         if relative:
             if relative in {collection, 'metadata.json', 'input.json', 'result.json'}:
                 return str(directory / relative)
-            path = _artifact(batch, batch['cluster_job_id'], relative, user, directory)
+            # Artifact actions are asynchronous. Persist the command identity
+            # when it is first issued so the next poll can wait for that same
+            # transfer instead of scheduling a duplicate command every cycle.
+            path = _artifact(
+                batch, batch['cluster_job_id'], relative, user, directory,
+                persist_transfers=persist_transfers,
+            )
             if path is None:
                 missing.add(relative)
                 return value
@@ -404,8 +425,11 @@ def poll(batch, *, owner_id, project_id, allow_development=False, persist_transf
     rewritten = rewrite(rows)
     if missing:
         return 'collecting', None, job
-    # Keep the verified native collection intact and publish a separately rebased one.
-    rebased = directory / 'artifacts/normalized_candidates/collected.jsonl'
+    # Keep the verified source collection intact and publish a separately
+    # rebased snapshot beside it. This supports end-of-run accepted-only files
+    # as well as the normal full-candidate collection.
+    rebased = directory / collection_path.with_name(collection_path.stem + '.collected.jsonl')
+    rebased.parent.mkdir(parents=True, exist_ok=True)
     rebased.write_text(''.join(json.dumps(r) + '\n' for r in rewritten))
     batch['output_transfer_bytes'] = sum(t.get('bytes', 0) for t in batch.get('transfers', {}).values())
     return ('partial' if partial else 'completed'), {'run_dir': str(directory), 'candidates_jsonl': str(rebased),
@@ -417,5 +441,13 @@ def poll(batch, *, owner_id, project_id, allow_development=False, persist_transf
 def cancel(batch, *, owner_id, project_id, allow_development=False):
     return Store().action(
         batch['cluster_job_id'], 'cancel', {},
+        actor(owner_id, project_id, allow_development=allow_development),
+    )
+
+
+def cancel_pending_artifact_transfers(batch, *, owner_id, project_id, allow_development=False):
+    """Stop queued result downloads while retaining the producer's native run."""
+    return Store().cancel_pending_artifact_transfers(
+        batch['cluster_job_id'],
         actor(owner_id, project_id, allow_development=allow_development),
     )

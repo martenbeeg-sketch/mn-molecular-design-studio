@@ -18,7 +18,63 @@ from . import bundles, capabilities, config, context, progress as job_progress, 
 log = logging.getLogger(__name__)
 
 
-def _candidate_summary(run: Path, job: dict) -> dict:
+def _accepted_candidate_artifacts(run: Path, job: dict, artifacts: list[dict]) -> list[dict]:
+    """Expose only campaign control files and files referenced by accepted rows."""
+    prefix = f"{job.get('task_group') or ''}/{job.get('run_id') or ''}/".lstrip("/")
+    run_path = Path(run).resolve()
+    allowed = {
+        prefix + name for name in (
+            "metadata.json", "input.json", "result.json", "native_execution.json",
+            "artifacts/distributed_campaign/accepted_candidates.jsonl",
+            "artifacts/rfd4_proteina/request.json",
+            "artifacts/rfd4_proteina/native_command.json",
+            "artifacts/rfd4_proteina/effective_config.yaml",
+            "artifacts/rfd4_proteina/prepared_inputs.json",
+        )
+    }
+    allowed_prefixes = (prefix + "artifacts/rfd4_proteina/input/",)
+
+    def collect(value):
+        if isinstance(value, dict):
+            for nested in value.values():
+                collect(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                collect(nested)
+        elif isinstance(value, str):
+            if value.startswith(("runs:///", "run:///")):
+                reference = value.split("///", 1)[1]
+                if reference.startswith(prefix):
+                    allowed.add(reference)
+                return
+            if value.startswith("artifacts/"):
+                allowed.add(prefix + value)
+                return
+            candidate_path = Path(value)
+            if candidate_path.is_absolute():
+                try:
+                    relative = candidate_path.resolve(strict=False).relative_to(run_path)
+                except ValueError:
+                    return
+                allowed.add(prefix + relative.as_posix())
+
+    accepted_path = run_path / "artifacts" / "distributed_campaign" / "accepted_candidates.jsonl"
+    try:
+        with accepted_path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    collect(json.loads(line))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        pass
+    result = []
+    for artifact in artifacts:
+        relative = str(artifact.get("relative_path") or artifact.get("path") or "")
+        if relative in allowed or relative.startswith(allowed_prefixes):
+            result.append(artifact)
+    return result
+
+
+def _candidate_summary(run: Path, job: dict, acceptance_policy: dict | None = None) -> dict:
     """Publish campaign counts only; full candidate records stay on this worker."""
     path = Path(run) / "artifacts" / "normalized_candidates" / "candidates.jsonl"
     if not path.is_file():
@@ -27,6 +83,7 @@ def _candidate_summary(run: Path, job: dict) -> dict:
     acceptance = {"accepted": 0, "rejected": 0, "unresolved": 0, "not_evaluated": 0}
     candidate_count = 0
     eligible_count = 0
+    accepted_rows = []
     try:
         with path.open(encoding="utf-8") as handle:
             for line in handle:
@@ -36,7 +93,10 @@ def _candidate_summary(run: Path, job: dict) -> dict:
                 if not isinstance(row, dict) or not str(row.get("candidate_id") or "").strip():
                     raise ValueError("Normalized candidate row has no stable identity.")
                 metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
-                raw = row.get("raw_metadata") if isinstance(row.get("raw_metadata"), dict) else {}
+                raw = row.get("raw_metadata")
+                if not isinstance(raw, dict):
+                    raw = {}
+                    row["raw_metadata"] = raw
                 decision = (raw.get("validation_acceptance")
                             if isinstance(raw.get("validation_acceptance"), dict) else {})
                 eligible = (
@@ -54,12 +114,38 @@ def _candidate_summary(run: Path, job: dict) -> dict:
                         filter_value = {"true": True, "1": True, "pass": True, "passed": True,
                                         "false": False, "0": False, "fail": False, "failed": False}.get(filter_value.casefold())
                     counts["passed" if filter_value is True else "failed" if filter_value is False else "unavailable"] += 1
+                    if acceptance_policy:
+                        from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import (
+                            _native_acceptance_geometry,
+                            _stage_selectors,
+                        )
+
+                        _native_acceptance_geometry(run, row, acceptance_policy)
+                        decision = _stage_selectors(row, row, {"acceptance_policy": acceptance_policy}).get(
+                            "validation_acceptance", {}
+                        )
+                        raw["validation_acceptance"] = decision
+                        status = str(decision.get("status") or "unresolved")
+                        acceptance[status if status in acceptance else "not_evaluated"] += 1
+                        if status == "accepted":
+                            accepted_rows.append(row)
+                        candidate_count += 1
+                        continue
                 decision_status = str(decision.get("status") or "not_evaluated")
                 acceptance[decision_status if decision_status in acceptance else "not_evaluated"] += 1
                 candidate_count += 1
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         return {"schema_version": 1, "status": "invalid", "candidate_count": None, "error": str(exc)}
-    return {
+    if acceptance_policy:
+        accepted_path = Path(run) / "artifacts" / "distributed_campaign" / "accepted_candidates.jsonl"
+        accepted_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = accepted_path.with_suffix(".jsonl.tmp")
+        temporary.write_text(
+            "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in accepted_rows),
+            encoding="utf-8",
+        )
+        temporary.replace(accepted_path)
+    summary = {
         "schema_version": 1,
         "status": "complete",
         "candidate_count": candidate_count,
@@ -67,6 +153,9 @@ def _candidate_summary(run: Path, job: dict) -> dict:
         "native_filter_counts": counts,
         "acceptance_counts": acceptance,
     }
+    if acceptance_policy:
+        summary["acceptance_evaluation"] = "worker_local_saved_evidence"
+    return summary
 
 
 class Agent:
@@ -142,7 +231,13 @@ class Agent:
                 marker = read_json(run / "molecular_design_studio.json")
                 result_data = read_json(run / "result.json")
                 metrics = result_data.get("metrics", {})
-                compact_candidates = _candidate_summary(run, row) if row.get("status") in {"completed", "succeeded"} else None
+                acceptance_policy = metadata.get("distributed_acceptance_policy")
+                output_policy = metadata.get("distributed_output_policy")
+                compact_candidates = _candidate_summary(
+                    run, row, acceptance_policy,
+                ) if row.get("status") in {"completed", "succeeded"} else None
+                if output_policy == "accepted_candidates_only":
+                    metrics = {}
                 jid = (
                     metadata.get("cluster_job_id")
                     or marker.get("cluster_job_id")
@@ -152,6 +247,8 @@ class Agent:
                 )
                 if self._artifact_signatures.get(reference) != artifact_signature:
                     manifest = job_catalog.job_artifacts(row["task_group"], row["run_id"])
+                    if output_policy == "accepted_candidates_only":
+                        manifest = _accepted_candidate_artifacts(run, row, manifest)
                     self._artifact_manifests[reference] = manifest[:1000]
                     self._artifact_signatures[reference] = artifact_signature
                 progress = job_progress.bindcraft2_progress(run)

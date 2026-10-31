@@ -1478,6 +1478,7 @@ def test_distributed_campaign_cancellation_handles_peer_uris_in_proxy_metadata(
     monkeypatch.setattr(candidate_batches, "actor", lambda *_args, **_kwargs: {"id": "owner"})
     monkeypatch.setattr(candidate_batches, "Store", lambda: SimpleNamespace(
         job=lambda *_args, **_kwargs: {"status": "running"},
+        cancel_pending_artifact_transfers=lambda *_args, **_kwargs: {"cancelled_transfers": 0},
     ))
     monkeypatch.setattr(candidate_batches, "cancel", lambda *args, **kwargs: cancelled.append((args, kwargs)))
 
@@ -1486,6 +1487,81 @@ def test_distributed_campaign_cancellation_handles_peer_uris_in_proxy_metadata(
     assert len(cancelled) == 1
     assert jobs.read_json_raw(child / "metadata.json")["status"] == "cancelled"
     assert campaign.snapshot()["attempts"][attempt["attempt_id"]]["status"] == "cancelled"
+
+
+def test_deferred_accepted_finalization_fetches_only_the_accepted_collection(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.cluster import candidate_batches
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    root, parent = _parent_run(tmp_path, monkeypatch, {
+        "generator_id": "rfd4_proteina", "objective_type": "accepted",
+        "acceptance_level": "validated", "accepted_target": 2, "max_attempts": 20,
+        "unique_accepted": False,
+    })
+    jobs.write_json(parent / "metadata.json", {
+        "studio_owner_id": "owner", "studio_project_id": "project",
+        "studio_development_mode": True,
+    })
+    config = distributed_campaign.validate_campaign_config({
+        "generator_id": "rfd4_proteina", "objective_type": "accepted",
+        "acceptance_level": "validated", "accepted_target": 2, "max_attempts": 20,
+        "unique_accepted": False,
+        "validation_stages": [{
+            "workflow": "analysis.validation_acceptance",
+            "acceptance_policy": {
+                "binder_format": "miniprotein", "target_type": "fasta_idr",
+                "mandatory_filters": [{
+                    "field": "common.confidence.generator.complex.iptm",
+                    "operator": ">=", "value": 0.7,
+                }],
+            },
+        }],
+    })
+    ledger = CampaignLedger.create(
+        parent / "artifacts/distributed_campaign/ledger.json", config,
+        campaign_id="deferred-accepted-finalization",
+    )
+    attempt = ledger.authorize(1, batch_id="batch-1")[0]
+    child = root / "design" / "remote-child"
+    child.mkdir(parents=True)
+    jobs.write_json(child / "metadata.json", {"status": "completed"})
+    peer = {"cluster_job_id": "peer-job", "manifest": str(child / "peer.json")}
+    ledger.transition(
+        attempt["attempt_id"], "running", child_run_dir=str(child),
+        cluster_submission=peer,
+    )
+    ledger.record_deferred_receipt(
+        attempt["attempt_id"], "receipt-1",
+        native_state={"engine": "rfd4_proteina", "output_storage": "worker_local"},
+        native_output_ids=[], candidate_records=[], candidate_count=10,
+        evidence={
+            "candidate_count": 10,
+            "acceptance_counts": {"accepted": 2, "rejected": 8, "unresolved": 0, "not_evaluated": 0},
+        },
+    )
+    monkeypatch.setattr(distributed_campaign, "_attempt_child_paths", lambda *_args: {attempt["attempt_id"]: child})
+    observed = {}
+
+    def poll(_peer, **kwargs):
+        observed["collection"] = kwargs.get("candidate_collection")
+        observed["persist_transfers"] = kwargs.get("persist_transfers")
+        return "completed", {"candidate_count": 2, "candidates_jsonl": "accepted-only.jsonl"}, {"status": "completed"}
+
+    monkeypatch.setattr(candidate_batches, "poll", poll)
+    monkeypatch.setattr(
+        distributed_campaign, "_materialize_rfd4_peer_output",
+        lambda *_args: observed.update(materialized=True) or True,
+    )
+
+    assert distributed_campaign._materialize_deferred_accepted_outputs(parent, ledger)
+    assert observed["collection"] == "artifacts/distributed_campaign/accepted_candidates.jsonl"
+    assert callable(observed["persist_transfers"])
+    assert observed["materialized"] is True
+    saved = jobs.read_json(child / "metadata.json")
+    assert saved["deferred_accepted_materialized"] is True
+    assert saved["deferred_accepted_candidate_count"] == 2
+    receipt = next(iter(ledger.snapshot()["deferred_outputs"].values()))
+    assert receipt["candidates"] == [] and receipt["native_output_ids"] == []
 
 
 def _controlled_workers(monkeypatch, root, design_source_factory, *, accepted):

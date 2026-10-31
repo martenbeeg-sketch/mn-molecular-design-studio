@@ -13,6 +13,81 @@ from mn_molecular_design_studio.cluster.agent import Agent
 from mn_molecular_design_studio.cluster.store import Store
 
 
+def test_candidate_batch_poll_persists_pending_candidate_artifact_transfer(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.cluster import candidate_batches
+
+    remote_root = "/worker/runs/design/batch"
+    structure_rel = "artifacts/rfd4_proteina/output/complex.cif"
+    collection = "artifacts/distributed_campaign/accepted_candidates.jsonl"
+    artifact_names = [
+        "metadata.json", "input.json", "result.json",
+        collection, structure_rel,
+    ]
+
+    class FakeStore:
+        def job(self, _job_id, _user):
+            return {
+                "status": "completed", "location": remote_root,
+                "artifacts": [{"relative_path": f"{remote_root}/{name}"} for name in artifact_names],
+            }
+
+    monkeypatch.setattr(candidate_batches, "Store", FakeStore)
+    monkeypatch.setattr(candidate_batches, "actor", lambda *_args, **_kwargs: {"id": "owner"})
+    peer = {
+        "cluster_job_id": "cluster-job",
+        "manifest": str(tmp_path / "peer.json"),
+        "transfers": {},
+    }
+    artifact_requests = []
+
+    def artifact(state, _job_id, relative, _user, directory, *, persist_transfers=None):
+        path = Path(directory) / relative
+        if relative == structure_rel:
+            transfer = state.setdefault("transfers", {}).setdefault(relative, {})
+            if "command_id" not in transfer:
+                transfer["command_id"] = "structure-transfer-1"
+                artifact_requests.append(relative)
+                if persist_transfers is not None:
+                    persist_transfers(state["transfers"])
+                return None
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("verified complex\n", encoding="utf-8")
+            transfer.update(sha256="fixture", bytes=path.stat().st_size)
+            return path
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if relative == "metadata.json":
+            path.write_text(json.dumps({"status": "completed"}), encoding="utf-8")
+        elif relative == "input.json":
+            path.write_text("{}", encoding="utf-8")
+        elif relative == "result.json":
+            path.write_text(json.dumps({"success": True, "metrics": {}}), encoding="utf-8")
+        elif relative == collection:
+            path.write_text(json.dumps({"candidate_id": "candidate-1", "complex_pdb": structure_rel}) + "\n", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(candidate_batches, "_artifact", artifact)
+    persisted = []
+    status, output, _job = candidate_batches.poll(
+        peer, owner_id="owner", project_id="project",
+        persist_transfers=lambda transfers: persisted.append(dict(transfers)),
+        candidate_collection=collection,
+    )
+    assert (status, output) == ("collecting", None)
+    assert artifact_requests == [structure_rel]
+    assert persisted[-1][structure_rel]["command_id"] == "structure-transfer-1"
+
+    status, output, _job = candidate_batches.poll(
+        peer, owner_id="owner", project_id="project",
+        persist_transfers=lambda transfers: persisted.append(dict(transfers)),
+        candidate_collection=collection,
+    )
+    assert status == "completed"
+    assert output["candidate_count"] == 1
+    assert Path(output["candidates_jsonl"]).read_text(encoding="utf-8").find("candidate-1") >= 0
+    assert artifact_requests == [structure_rel]
+
+
 @pytest.fixture
 def api_cluster(monkeypatch, tmp_path):
     for name, value in {

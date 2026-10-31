@@ -72,6 +72,46 @@ class Store:
                     destination TEXT NOT NULL, library_id TEXT, files TEXT NOT NULL DEFAULT '[]',
                     status TEXT NOT NULL DEFAULT 'waiting', total_bytes INTEGER NOT NULL DEFAULT 0,
                     transferred_bytes INTEGER NOT NULL DEFAULT 0, error TEXT, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS job_search_index (
+                    job_id TEXT PRIMARY KEY, node_id TEXT, owner_id TEXT, project_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '',
+                    tool TEXT NOT NULL DEFAULT '', campaign_name TEXT NOT NULL DEFAULT '',
+                    pipeline_name TEXT NOT NULL DEFAULT '', job_code TEXT NOT NULL DEFAULT '',
+                    run_id TEXT NOT NULL DEFAULT '', hidden INTEGER NOT NULL DEFAULT 0);
+                CREATE INDEX IF NOT EXISTS cluster_search_created ON job_search_index(created_at DESC, job_id DESC);
+                CREATE INDEX IF NOT EXISTS cluster_search_node_created ON job_search_index(node_id, created_at DESC, job_id DESC);
+                CREATE INDEX IF NOT EXISTS cluster_search_owner_created ON job_search_index(owner_id, created_at DESC, job_id DESC);
+                CREATE INDEX IF NOT EXISTS cluster_search_project_created ON job_search_index(project_id, created_at DESC, job_id DESC);
+                CREATE INDEX IF NOT EXISTS cluster_search_status_created ON job_search_index(status, created_at DESC, job_id DESC);
+                CREATE INDEX IF NOT EXISTS cluster_search_tool_created ON job_search_index(tool, created_at DESC, job_id DESC);
+                CREATE INDEX IF NOT EXISTS cluster_search_hidden_created ON job_search_index(hidden, created_at DESC, job_id DESC);
+                CREATE TRIGGER IF NOT EXISTS cluster_jobs_search_insert AFTER INSERT ON jobs BEGIN
+                    DELETE FROM job_search_index WHERE job_id=new.id;
+                    INSERT INTO job_search_index
+                    VALUES (new.id, new.node_id, new.owner_id, new.project_id, new.created_at,
+                        COALESCE(json_extract(new.payload,'$.status'),''),
+                        COALESCE(json_extract(new.payload,'$.tool'),''),
+                        COALESCE(json_extract(new.payload,'$.campaign_name'),''),
+                        COALESCE(json_extract(new.payload,'$.pipeline_name'),''),
+                        COALESCE(json_extract(new.payload,'$.job_code'),''),
+                        COALESCE(json_extract(new.payload,'$.run_id'),''),
+                        COALESCE(json_extract(new.payload,'$.hidden'),0));
+                END;
+                CREATE TRIGGER IF NOT EXISTS cluster_jobs_search_update AFTER UPDATE ON jobs BEGIN
+                    DELETE FROM job_search_index WHERE job_id=old.id OR job_id=new.id;
+                    INSERT INTO job_search_index
+                    VALUES (new.id, new.node_id, new.owner_id, new.project_id, new.created_at,
+                        COALESCE(json_extract(new.payload,'$.status'),''),
+                        COALESCE(json_extract(new.payload,'$.tool'),''),
+                        COALESCE(json_extract(new.payload,'$.campaign_name'),''),
+                        COALESCE(json_extract(new.payload,'$.pipeline_name'),''),
+                        COALESCE(json_extract(new.payload,'$.job_code'),''),
+                        COALESCE(json_extract(new.payload,'$.run_id'),''),
+                        COALESCE(json_extract(new.payload,'$.hidden'),0));
+                END;
+                CREATE TRIGGER IF NOT EXISTS cluster_jobs_search_delete AFTER DELETE ON jobs BEGIN
+                    DELETE FROM job_search_index WHERE job_id=old.id;
+                END;
                 CREATE UNIQUE INDEX IF NOT EXISTS library_transfers_destination ON library_transfers(destination);
                 CREATE INDEX IF NOT EXISTS cluster_commands_queue ON commands(node_id,status,created_at);
                 -- The coordinator retains command history for audit and recovery.
@@ -91,6 +131,24 @@ class Store:
                     ON submissions(command_id,job_id)
                     WHERE placement='auto' AND affinity_node IS NULL AND cancelled=0 AND command_id IS NOT NULL;
             """)
+            missing_search_row = db.execute(
+                "SELECT 1 FROM jobs j LEFT JOIN job_search_index s ON s.job_id=j.id "
+                "WHERE s.job_id IS NULL LIMIT 1"
+            ).fetchone()
+            if missing_search_row:
+                db.execute(
+                    "INSERT OR IGNORE INTO job_search_index "
+                    "SELECT j.id,j.node_id,j.owner_id,j.project_id,j.created_at,"
+                    "COALESCE(json_extract(j.payload,'$.status'),''),"
+                    "COALESCE(json_extract(j.payload,'$.tool'),''),"
+                    "COALESCE(json_extract(j.payload,'$.campaign_name'),''),"
+                    "COALESCE(json_extract(j.payload,'$.pipeline_name'),''),"
+                    "COALESCE(json_extract(j.payload,'$.job_code'),''),"
+                    "COALESCE(json_extract(j.payload,'$.run_id'),''),"
+                    "COALESCE(json_extract(j.payload,'$.hidden'),0) "
+                    "FROM jobs j WHERE NOT EXISTS "
+                    "(SELECT 1 FROM job_search_index s WHERE s.job_id=j.id)"
+                )
             if "cancelled" not in {row[1] for row in db.execute("PRAGMA table_info(submissions)")}:
                 db.execute("ALTER TABLE submissions ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0")
         self.path.chmod(0o600)
@@ -280,35 +338,55 @@ class Store:
     def search(self, user, *, node_id=None, project_id=None, query="", statuses=None, tools=None, limit=100, offset=0, include_hidden=False):
         if type(limit) is not int or not 1 <= limit <= 1000 or type(offset) is not int or offset < 0:
             raise ValueError("Invalid result page.")
+        clauses = []
+        values = []
+        if user.get("role") != "admin":
+            project_ids = sorted({str(value) for value in user.get("project_ids") or [] if value})
+            visibility = ["s.owner_id=?"]
+            values.append(user.get("id"))
+            if project_ids:
+                visibility.append("s.project_id IN (" + ",".join("?" for _ in project_ids) + ")")
+                values.extend(project_ids)
+            clauses.append("(" + " OR ".join(visibility) + ")")
+        if node_id:
+            clauses.append("s.node_id=?")
+            values.append(node_id)
+        if project_id:
+            clauses.append("s.project_id=?")
+            values.append(project_id)
+        if statuses:
+            clauses.append("s.status IN (" + ",".join("?" for _ in statuses) + ")")
+            values.extend(statuses)
+        if tools:
+            clauses.append("s.tool IN (" + ",".join("?" for _ in tools) + ")")
+            values.extend(tools)
+        if not include_hidden:
+            clauses.append("s.hidden=0")
+        if query:
+            escaped = query.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            clauses.append("studio_casefold(s.campaign_name || ' ' || s.pipeline_name || ' ' || s.run_id || ' ' || s.tool || ' ' || s.job_code) LIKE ? ESCAPE '\\'")
+            values.append("%" + escaped + "%")
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        db_values = tuple(values)
         with self.connect() as db:
-            # Large artifact inventories and saved graphs are only needed by
-            # job inspection, never by a Run/input selector. Strip them before
-            # transferring catalog rows from SQLite into Python.
-            rows = db.execute("SELECT id,node_id,local_ref,owner_id,project_id,created_at,"
-                "json_remove(payload,'$.artifacts','$.request_summary') AS payload "
-                "FROM jobs ORDER BY created_at DESC,id DESC").fetchall()
-        selected = []
-        for raw in rows:
-            row = dict(raw)
-            if not visible(row, user) or node_id and row["node_id"] != node_id or project_id and row["project_id"] != project_id:
-                continue
-            item = json.loads(row["payload"])
-            if not include_hidden and item.get("hidden"):
-                continue
-            if statuses and item.get("status") not in statuses or tools and item.get("tool") not in tools:
-                continue
-            if query and str(query).casefold() not in " ".join(str(item.get(k) or "") for k in ("campaign_name", "pipeline_name", "run_id", "tool", "job_code")).casefold():
-                continue
-            selected.append((row, item))
+            db.create_function("studio_casefold", 1, lambda value: str(value or "").casefold())
+            total = int(db.execute("SELECT count(*) FROM job_search_index s" + where, db_values).fetchone()[0])
+            rows = db.execute(
+                "SELECT j.id,j.node_id,j.local_ref,j.owner_id,j.project_id,j.created_at,"
+                "json_remove(j.payload,'$.artifacts','$.request_summary') AS payload "
+                "FROM job_search_index s JOIN jobs j ON j.id=s.job_id" + where
+                + " ORDER BY s.created_at DESC,s.job_id DESC LIMIT ? OFFSET ?",
+                db_values + (limit, offset),
+            ).fetchall()
+        page = [(dict(raw), json.loads(raw["payload"])) for raw in rows]
         nodes = {node["id"]: node for node in self.nodes()}
-        page = selected[offset:offset + limit]
         with self.connect() as db:
             transfers = {r["job_id"]: r for r in db.execute(
                 "SELECT job_id,status,total_bytes,transferred_bytes,error FROM library_transfers WHERE job_id IN ("
                 + ",".join("?" for _ in page) + ")", [row["id"] for row, _ in page]).fetchall()} if page else {}
         items = [self._present_job(item, nodes.get(row["node_id"]), transfers.get(row["id"])) for row, item in page]
         # Detailed manifests and request graphs are fetched when opening a job.
-        return {"items": [{k: v for k, v in item.items() if k not in {"artifacts", "request_summary"}} for item in items], "total": len(selected)}
+        return {"items": [{k: v for k, v in item.items() if k not in {"artifacts", "request_summary"}} for item in items], "total": total}
 
     def submit(self, request, requirements, user, *, origin_node, placement="auto", affinity_node=None, idempotency_key=None):
         if placement not in {"auto", "local"} and placement not in {n["id"] for n in self.nodes()}:
@@ -763,6 +841,18 @@ class Store:
             db.execute("INSERT INTO commands(id,node_id,job_id,kind,payload,owner_id,project_id,created_at) VALUES (?,?,?,?,?,?,?,?)",
                        (command_id, job["node_id"], job["cluster_job_id"], kind, encoded(payload | {"local_reference": job["local_reference"]}), user["id"], job["project_id"], stamp(self.clock())))
         return {"command_id": command_id, "status": "queued", "node_id": job["node_id"]}
+
+    def cancel_pending_artifact_transfers(self, jid, user):
+        """Cancel queued output downloads without changing the scientific job."""
+        job = self.job(jid, user)
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            cursor = db.execute(
+                "UPDATE commands SET status='cancelled',error='Output collection cancelled' "
+                "WHERE job_id=? AND kind='artifact' AND status='queued'",
+                (job["cluster_job_id"],),
+            )
+            return {"job_id": job["cluster_job_id"], "cancelled_transfers": int(cursor.rowcount)}
 
     def purge_context(self, jid, user):
         """Return the terminal job and staging command needed for local cleanup."""

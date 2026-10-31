@@ -175,3 +175,15 @@ def test_new_jobs_publish_run_identity_and_nested_submission_tags(isolated, monk
     _upsert(isolated / "runs", job.run_dir, refresh_artifacts=False)
     result = search_jobs(access_admin=True)["items"][0]
     assert result["studio_run_output_id"] == "scored"
+def test_run_context_preserves_count_only_distributed_output_policy():
+    from mn_molecular_design_studio.logical_runs import context_tags
+
+    value = {
+        "studio_run_id": "run:" + "a" * 24,
+        "studio_run_name": "count-only campaign",
+        "studio_run_output_id": "results",
+        "studio_run_output_name": "Results",
+        "distributed_output_policy": "accepted_candidates_only",
+    }
+
+    assert context_tags(value)["distributed_output_policy"] == "accepted_candidates_only"

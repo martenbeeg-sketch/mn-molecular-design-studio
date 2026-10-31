@@ -270,11 +270,25 @@ def context_tags(value):
     if value is None:
         return {}
     keys = {"studio_run_id", "studio_run_name", "studio_run_output_id", "studio_run_output_name"}
-    if not isinstance(value, dict) or set(value) != keys or any(not isinstance(v, str) or not v or len(v) > 200 for v in value.values()):
+    optional = {"distributed_acceptance_policy", "distributed_output_policy"}
+    if (not isinstance(value, dict) or not keys.issubset(value) or set(value) - keys - optional
+            or any(not isinstance(value[key], str) or not value[key] or len(value[key]) > 200 for key in keys)):
         raise ValueError("Run context requires a Run identity, name and output identity/name.")
     if not re.fullmatch(r"run:[a-f0-9]{24}", value["studio_run_id"]) or not re.fullmatch(r"[a-zA-Z0-9_-]+", value["studio_run_output_id"]):
         raise ValueError("Invalid Run or output identity.")
-    return dict(value)
+    result = {key: value[key] for key in keys}
+    if "distributed_acceptance_policy" in value:
+        policy = value["distributed_acceptance_policy"]
+        if not isinstance(policy, dict) or len(json.dumps(policy, sort_keys=True)) > 16_000:
+            raise ValueError("Distributed acceptance policy must be a bounded JSON object.")
+        from mn_molecular_design_studio.validation_acceptance import normalize_policy
+        result["distributed_acceptance_policy"] = normalize_policy(policy)
+    if "distributed_output_policy" in value:
+        output_policy = value["distributed_output_policy"]
+        if output_policy != "accepted_candidates_only":
+            raise ValueError("Unsupported distributed output policy.")
+        result["distributed_output_policy"] = output_policy
+    return result
 
 
 def native_context(run_dir):

@@ -84,14 +84,25 @@ def render_campaign_config_editor(
         key=key + "-objective-type",
     )
     accepted_target = None if objective_type == "time" else int(st.number_input(
-        "Target designs" if objective_type == "generated" else "Target unique passing designs",
+        "Target designs" if objective_type == "generated" else "Target passing designs",
         min_value=1, value=int(existing.get("accepted_target") or 1),
         step=1, key=key + "-accepted-target",
         help=(
-            "Studio-level campaign objective: total generated designs, or unique candidates that pass the configured criteria. "
+            "Studio-level campaign objective: total generated designs or candidates passing the configured criteria. "
             "It is independent of the generator's internal GPU/dataloader batch size."
         ),
     ))
+    unique_accepted = False
+    if objective_type == "accepted":
+        unique_accepted = st.checkbox(
+            "Require unique binder sequences",
+            value=bool(existing.get("unique_accepted", False)),
+            key=key + "-unique-accepted",
+            help=(
+                "Off: the controller tracks only batch design/pass/reject counts and collects accepted structures at the end. "
+                "On: compact sequence fingerprints are exchanged to deduplicate accepted designs across workstations."
+            ),
+        )
     max_attempts = int(st.number_input(
         "Maximum total designs", min_value=1, value=int(existing.get("max_attempts") or max(2, accepted_target or 1000)),
         step=1, key=key + "-max-attempts",
@@ -207,7 +218,7 @@ def render_campaign_config_editor(
         "enabled": True,
         "generator_id": generator_id,
         "objective_type": objective_type,
-        "unique_accepted": objective_type == "accepted",
+        "unique_accepted": unique_accepted,
         "accepted_target": accepted_target,
         "max_attempts": max_attempts,
         "native_designs_per_job": native_designs_per_job,
@@ -248,7 +259,7 @@ def render_campaign_config_editor(
         )
     st.caption(
         ("Studio timed campaign; " if objective_type == "time" else
-         f"Studio campaign target: {accepted_target} {'generated designs' if objective_type == 'generated' else 'unique passing designs'}; ")
+         f"Studio campaign target: {accepted_target} {'generated designs' if objective_type == 'generated' else 'unique passing designs' if unique_accepted else 'passing designs'}; ")
         +
         f"maximum requested designs: {max_attempts}. "
         + (f"Each RFD4 execution job requests {native_designs_per_job} native designs (num_designs); the native GPU batch_size remains independently configured. "
