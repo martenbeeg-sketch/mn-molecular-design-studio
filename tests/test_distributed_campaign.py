@@ -1212,6 +1212,49 @@ def test_campaign_summary_reads_remote_child_metadata_without_resolving_cluster_
     assert summary["attempts"][0]["resource_allocation"] == {"gpu_device": "0"}
 
 
+def test_campaign_acceptance_summary_counts_candidates_not_yet_evaluated(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    policy = {
+        "binder_format": "miniprotein", "target_type": "fasta_idr",
+        "mandatory_filters": [{
+            "field": "common.confidence.generator.complex.iptm",
+            "operator": ">=", "value": 0.7,
+        }],
+        "informational_scores": [],
+    }
+    stage = {
+        "workflow": "analysis.validation_acceptance", "acceptance_policy": policy,
+        "required_metrics": [], "rules": [],
+    }
+    config = distributed_campaign.validate_campaign_config({
+        "generator_id": "rfd4_proteina", "acceptance_level": "validated",
+        "accepted_target": 10, "max_attempts": 20, "validation_stages": [stage],
+    })
+    _root, parent = _parent_run(tmp_path, monkeypatch, {
+        "generator_id": "rfd4_proteina", "acceptance_level": "validated",
+        "accepted_target": 10, "max_attempts": 20, "validation_stages": [stage],
+    })
+    campaign = CampaignLedger.create(parent / "artifacts/distributed_campaign/ledger.json", config)
+    attempt = campaign.authorize(1, batch_id="unfiltered-batch")[0]
+    candidate = {
+        "candidate_id": "not-evaluated-yet", "source_tool": "rfd4_proteina",
+        "stage": "generation.backbone_sequence", "binder_sequence": "ACDE",
+        "metrics": {},
+    }
+    campaign.record_receipt(
+        attempt["attempt_id"], "unfiltered-receipt", candidates=[candidate],
+        native_state={"engine": "rfd4_proteina", "authoritative": False, "output_candidates": 1},
+    )
+
+    distributed_campaign._sync_parent_results(parent, campaign, {}, [candidate])
+
+    summary = jobs.read_json(parent / "artifacts/validation/acceptance_summary.json")
+    assert summary["candidate_count"] == 1
+    assert summary["not_evaluated"] == 1
+    assert summary["accepted"] + summary["rejected"] + summary["unresolved"] + summary["not_evaluated"] == 1
+
+
 def test_unlinked_child_discovery_keeps_peer_metadata_uris_opaque(tmp_path, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs
 
@@ -2386,10 +2429,19 @@ def test_rfd4_native_refold_acceptance_uses_available_metrics_without_extra_pred
         distributed_campaign, "_submit_validation_stage",
         lambda *_args, **_kwargs: pytest.fail("Native refold filtering must not submit another co-fold."),
     )
+    ledger_writes = []
+    atomic_json = distributed_campaign._atomic_json
+    monkeypatch.setattr(
+        distributed_campaign, "_atomic_json",
+        lambda path, value: (ledger_writes.append(path), atomic_json(path, value))[1],
+    )
     distributed_campaign._drive_validation(parent, campaign, rows, config, dispatch=False)
+    assert len(ledger_writes) == 1
     # Controller polling runs repeatedly. A completed rejection must not be
     # reinterpreted as acceptance merely because its stage itself completed.
+    ledger_writes.clear()
     distributed_campaign._drive_validation(parent, campaign, rows, config, dispatch=False)
+    assert ledger_writes == []
 
     state = campaign.snapshot()
     decisions = {candidate_id: record["validation_stages"]["0"]["selection"]["validation_acceptance"]
@@ -2409,7 +2461,7 @@ def test_rfd4_native_refold_acceptance_uses_available_metrics_without_extra_pred
     assert campaign.counters()["rejected_candidates"] == 1
 
 
-def test_generation_cycle_waits_until_native_outputs_are_filtered():
+def test_generation_slots_refill_while_other_batches_are_filtering_or_collecting():
     config = {"validation_stages": [{"workflow": "analysis.validation_acceptance"}]}
     state = {
         "attempts": {"a1": {"ordinal": 1}},
@@ -2420,18 +2472,16 @@ def test_generation_cycle_waits_until_native_outputs_are_filtered():
             },
         },
     }
+    active = [
+        {"attempt_id": "a2", "worker_status": "running"},
+        {"attempt_id": "a3", "worker_status": "collecting"},
+    ]
 
-    assert not distributed_campaign._generation_cycle_ready([], state, config)
-    assert not distributed_campaign._generation_cycle_ready(
-        [{"attempt_id": "a2", "worker_status": "running"}],
-        {"attempts": {}, "candidates": {}}, config,
-    )
-
-    state["candidates"]["candidate-1"]["validated_acceptance"] = "accepted"
-    assert distributed_campaign._generation_cycle_ready([], state, config)
+    assert distributed_campaign._generation_cycle_ready(active, state, config)
+    assert distributed_campaign._generation_slot_count(active) == 1
 
 
-def test_controller_does_not_dispatch_while_completed_wave_is_awaiting_filter(
+def test_controller_refills_free_slots_while_completed_batch_is_awaiting_filter(
     tmp_path, monkeypatch,
 ):
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs
@@ -2483,7 +2533,7 @@ def test_controller_does_not_dispatch_while_completed_wave_is_awaiting_filter(
         distributed_campaign._run_distributed_campaign(parent, "rfd4_proteina")
 
     assert seeded
-    assert dispatched == []
+    assert dispatched == [True]
     state = CampaignLedger(parent / "artifacts/distributed_campaign/ledger.json").snapshot()
     assert state["candidates"][candidate["candidate_id"]]["validated_acceptance"] == "pending"
 

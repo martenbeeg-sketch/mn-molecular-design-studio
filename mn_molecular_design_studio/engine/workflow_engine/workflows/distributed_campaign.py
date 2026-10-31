@@ -1054,6 +1054,57 @@ class CampaignLedger(ExecutionJobLedgerMixin):
             })
             _atomic_json(self.path, state)
 
+    def record_native_acceptance_batch(self, updates: dict[str, dict[str, Any]]) -> None:
+        """Persist a set of native-evidence decisions with one ledger rewrite.
+
+        Campaign ledgers contain the complete candidate evidence. Writing that
+        growing JSON document once per candidate (and once again for its
+        acceptance counter) made a 50-design batch perform hundreds of MB of
+        redundant disk I/O before the scheduler could refill its GPUs.
+        """
+        if not isinstance(updates, dict):
+            raise ValueError("Native acceptance updates must be keyed by candidate ID.")
+        if not updates:
+            return
+        allowed = {"accepted", "rejected", "failed"}
+        with _locked(self.path):
+            state = _read(self.path)
+            changed = 0
+            counts = {value: 0 for value in allowed}
+            for candidate_id, details in updates.items():
+                if not isinstance(details, dict):
+                    raise ValueError("Each native acceptance update must be an object.")
+                status = details.get("validated_acceptance")
+                reason = str(details.get("validation_decision_reason") or "")
+                stages = details.get("validation_stages")
+                if status not in allowed or not isinstance(stages, dict):
+                    raise ValueError("A native acceptance update needs a final decision and stage evidence.")
+                candidate = state["candidates"].get(str(candidate_id))
+                if candidate is None:
+                    raise KeyError(f"Unknown campaign candidate: {candidate_id}")
+                if candidate.get("native_acceptance") not in {"accepted", "unavailable"}:
+                    raise ValueError("Validation acceptance requires an eligible native candidate.")
+                values = {
+                    "validation_stages": stages,
+                    "validated_acceptance": status,
+                    "validation_decision_reason": reason,
+                    "decision_reason": reason,
+                }
+                if any(candidate.get(key) != value for key, value in values.items()):
+                    candidate.update(values)
+                    changed += 1
+                    counts[status] += 1
+            if not changed:
+                return
+            state["updated_at"] = utc_now()
+            state["events"].append({
+                "type": "native_acceptance_batch",
+                "candidate_count": changed,
+                "decisions": {key: value for key, value in counts.items() if value},
+                "at": state["updated_at"],
+            })
+            _atomic_json(self.path, state)
+
     def terminate(self, reason: str, *, detail: str = "") -> dict[str, Any]:
         if reason not in TERMINATION_REASONS:
             raise ValueError(f"Unknown campaign termination reason: {reason}")
@@ -2679,16 +2730,17 @@ def _sync_parent_results(
         from mn_molecular_design_studio.validation_acceptance import write_report
 
         decisions = [((row.get("raw_metadata") or {}).get("validation_acceptance") or {}) for row in enriched]
+        decision_statuses = [str(row.get("status") or "not_evaluated") for row in decisions]
         acceptance_summary = {
             "workflow": "analysis.validation_acceptance",
             "evaluation_mode": "native_saved_evidence",
             "prediction_performed": False,
             "policy": acceptance_stage.get("acceptance_policy"),
             "candidate_count": len(enriched),
-            "accepted": sum(row.get("status") == "accepted" for row in decisions),
-            "rejected": sum(row.get("status") == "rejected" for row in decisions),
-            "unresolved": sum(row.get("status") == "unresolved" for row in decisions),
-            "not_evaluated": sum(row.get("status") == "not_evaluated" for row in decisions),
+            "accepted": sum(status == "accepted" for status in decision_statuses),
+            "rejected": sum(status == "rejected" for status in decision_statuses),
+            "unresolved": sum(status == "unresolved" for status in decision_statuses),
+            "not_evaluated": sum(status == "not_evaluated" for status in decision_statuses),
             "source_measurements": "RFD4 native refold oracle and Studio geometry from the saved complex",
         }
         write_report(parent_run_dir, enriched, acceptance_summary)
@@ -3502,20 +3554,15 @@ def _generation_cycle_ready(
     state: dict[str, Any],
     config: dict[str, Any],
 ) -> bool:
-    """Require a full generation/refold/filter wave to settle before refill.
+    """Permit per-slot refill while other batches filter or collect results.
 
-    Generation jobs within a wave remain parallel up to the configured GPU
-    concurrency. Once validation is configured, no next wave is dispatched
-    while a native job/artifact is active or any candidate still awaits its
-    configured acceptance stages.
+    _dispatch_attempts separately reserves the remaining objective against
+    accepted and pending candidates and counts occupied generation slots. A
+    campaign-wide wave barrier only idles completed GPUs behind the slowest
+    worker or validation result.
     """
-    if not config.get("validation_stages"):
-        return True
-    return (
-        not active_attempts
-        and _validation_pending_candidates(state, config) == 0
-        and _validation_active_count(state) == 0
-    )
+    del active_attempts, state, config
+    return True
 
 
 def _native_acceptance_geometry(parent_run_dir: Path, candidate: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
@@ -3605,10 +3652,76 @@ def _drive_validation(
         selection = stage_result.get("selection") or {}
         return selection.get("status") == "pass"
 
-    for candidate_id, ledger_candidate in sorted(
-        state["candidates"].items(),
-        key=lambda item: (state["attempts"][item[1]["attempt_id"]]["ordinal"], item[0]),
-    ):
+    native_evidence_batch = (
+        not shared and len(stage_specs) == 1
+        and stage_specs[0].get("workflow") == "analysis.validation_acceptance"
+    )
+    if native_evidence_batch:
+        # This is a synchronous evidence-only filter. Evaluate every available
+        # candidate in memory, then persist all decisions together so a batch
+        # does not rewrite the full ledger twice for every candidate.
+        updates: dict[str, dict[str, Any]] = {}
+        for candidate_id, ledger_candidate in sorted(
+            state["candidates"].items(),
+            key=lambda item: (state["attempts"][item[1]["attempt_id"]]["ordinal"], item[0]),
+        ):
+            native = candidate_rows.get(candidate_id)
+            if native is None or ledger_candidate.get("native_acceptance") not in {"accepted", "unavailable"}:
+                continue
+            stage_results = dict(ledger_candidate.get("validation_stages") or {})
+            stage_result = dict(stage_results.get("0") or {})
+            if (stage_result.get("status") == "completed"
+                    and stage_result.get("evaluation_mode") == "native_saved_evidence"):
+                status = str(stage_result.get("acceptance_status") or "unresolved")
+                validated = {"accepted": "accepted", "rejected": "rejected"}.get(status, "failed")
+                reason = str(ledger_candidate.get("validation_decision_reason") or "")
+                if (ledger_candidate.get("validated_acceptance") != validated
+                        or ledger_candidate.get("decision_reason") != reason):
+                    updates[candidate_id] = {
+                        "validation_stages": stage_results,
+                        "validated_acceptance": validated,
+                        "validation_decision_reason": reason,
+                    }
+                continue
+            try:
+                from mn_molecular_design_studio.validation_acceptance import normalize_policy
+
+                policy = normalize_policy(stage_specs[0]["acceptance_policy"])
+                _native_acceptance_geometry(parent_run_dir, native, policy)
+                selection = _stage_selectors(native, native, stage_specs[0])
+                decision = selection.get("validation_acceptance") or {}
+                status = str(decision.get("status") or "unresolved")
+                validated = {"accepted": "accepted", "rejected": "rejected"}.get(status, "failed")
+                reason = "; ".join(selection.get("reasons") or [])
+                if validated == "accepted":
+                    reason = "Configured Validation & Acceptance filters passed using saved native measurements."
+                stage_result.update(
+                    status="completed", workflow=stage_specs[0]["workflow"],
+                    evaluation_mode="native_saved_evidence", acceptance_status=status,
+                    selection=selection,
+                )
+            except Exception as exc:
+                reason = f"Validation & Acceptance evaluation failed: {type(exc).__name__}: {exc}"
+                stage_result.update(
+                    status="failed", workflow=stage_specs[0]["workflow"],
+                    evaluation_mode="native_saved_evidence", error=reason,
+                )
+                validated = "failed"
+            stage_results["0"] = stage_result
+            updates[candidate_id] = {
+                "validation_stages": stage_results,
+                "validated_acceptance": validated,
+                "validation_decision_reason": reason,
+            }
+        ledger.record_native_acceptance_batch(updates)
+        validation_items = ()
+    else:
+        validation_items = sorted(
+            state["candidates"].items(),
+            key=lambda item: (state["attempts"][item[1]["attempt_id"]]["ordinal"], item[0]),
+        )
+
+    for candidate_id, ledger_candidate in validation_items:
         native = candidate_rows.get(candidate_id)
         if native is None:
             continue
