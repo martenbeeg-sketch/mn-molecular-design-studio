@@ -34,6 +34,9 @@ def api(port: int = typer.Option(8766, min=1, max=65535, help="Local API port.")
         port=port,
         reload=False,
         access_log=False,
+        # Long-lived keep-alive connections from the UI or remote agents must
+        # not hold service updates open indefinitely.
+        timeout_graceful_shutdown=10,
     )
 
 

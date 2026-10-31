@@ -74,6 +74,22 @@ class Store:
                     transferred_bytes INTEGER NOT NULL DEFAULT 0, error TEXT, updated_at TEXT NOT NULL);
                 CREATE UNIQUE INDEX IF NOT EXISTS library_transfers_destination ON library_transfers(destination);
                 CREATE INDEX IF NOT EXISTS cluster_commands_queue ON commands(node_id,status,created_at);
+                -- The coordinator retains command history for audit and recovery.
+                -- Keep its hot scheduling lookups on small partial indexes so
+                -- old artifact-transfer records do not get rescanned on every
+                -- dispatch or artifact retry.
+                CREATE INDEX IF NOT EXISTS cluster_commands_active_workflow_nodes
+                    ON commands(kind,status,node_id)
+                    WHERE kind IN ('workflow','pipeline') AND status IN ('queued','claimed');
+                CREATE INDEX IF NOT EXISTS cluster_commands_active_artifact_lookup
+                    ON commands(job_id,node_id,json_extract(payload,'$.path'),created_at,id)
+                    WHERE kind='artifact' AND status IN ('queued','claimed');
+                CREATE INDEX IF NOT EXISTS cluster_submissions_waiting
+                    ON submissions(job_id)
+                    WHERE command_id IS NULL AND cancelled=0;
+                CREATE INDEX IF NOT EXISTS cluster_submissions_auto_dispatch
+                    ON submissions(command_id,job_id)
+                    WHERE placement='auto' AND affinity_node IS NULL AND cancelled=0 AND command_id IS NOT NULL;
             """)
             if "cancelled" not in {row[1] for row in db.execute("PRAGMA table_info(submissions)")}:
                 db.execute("ALTER TABLE submissions ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0")

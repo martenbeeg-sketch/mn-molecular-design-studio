@@ -112,6 +112,40 @@ def test_dispatch_scans_active_catalog_once_per_workstation(cluster, monkeypatch
     assert sorted(scans) == sorted(node["node_id"] for node in nodes)
 
 
+def test_coordinator_history_hot_paths_use_partial_indexes(cluster):
+    store, *_ = cluster
+    with store.connect() as db:
+        plans = {
+            "active_workflows": db.execute(
+                "EXPLAIN QUERY PLAN SELECT DISTINCT node_id FROM commands "
+                "WHERE kind IN ('workflow','pipeline') AND status IN ('queued','claimed')"
+            ).fetchall(),
+            "waiting_submissions": db.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM submissions "
+                "WHERE command_id IS NULL AND cancelled=0"
+            ).fetchall(),
+            "auto_submissions": db.execute(
+                "EXPLAIN QUERY PLAN SELECT s.job_id,s.command_id,c.node_id "
+                "FROM submissions s JOIN commands c ON c.id=s.command_id "
+                "WHERE s.placement='auto' AND s.affinity_node IS NULL "
+                "AND s.cancelled=0 AND c.status='queued'"
+            ).fetchall(),
+            "active_artifact": db.execute(
+                "EXPLAIN QUERY PLAN SELECT id,status,node_id FROM commands "
+                "WHERE job_id=? AND node_id=? AND kind='artifact' "
+                "AND status IN ('queued','claimed') "
+                "AND json_extract(payload,'$.path')=? ORDER BY created_at,id LIMIT 1",
+                ("job", "node", "result.json"),
+            ).fetchall(),
+        }
+
+    details = {name: " ".join(str(row[3]) for row in rows) for name, rows in plans.items()}
+    assert "cluster_commands_active_workflow_nodes" in details["active_workflows"]
+    assert "cluster_submissions_waiting" in details["waiting_submissions"]
+    assert "cluster_submissions_auto_dispatch" in details["auto_submissions"]
+    assert "cluster_commands_active_artifact_lookup" in details["active_artifact"]
+
+
 def test_agent_heartbeat_interval_stays_below_unreachable_threshold(monkeypatch):
     agent = Agent()
     monkeypatch.setattr(config, "load", lambda: {"heartbeat_seconds": 300})
