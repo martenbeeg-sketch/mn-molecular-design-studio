@@ -34,14 +34,22 @@ class NoEligiblePeerAvailable(ValueError):
     """No currently available distinct peer; a scheduler queue may still accept work."""
 
 
-def select_eligible_peer(needs, *, origin_node, ordinal=1, exclude_node_ids=()):
-    """Choose an available peer, allowing only exact reference hashes to await probing."""
+def select_eligible_peer(
+    needs, *, origin_node, ordinal=1, exclude_node_ids=(), include_origin_node=False,
+):
+    """Choose a currently-capable workstation using its live resource capacity.
+
+    ``include_origin_node`` is used by distributed campaign batches: the
+    campaign's coordinator may also have eligible GPUs. Other callers retain
+    the historical peer-only behavior by default.
+    """
     store = Store()
     excluded = {str(value) for value in exclude_node_ids if value}
     def peer_options(requirements):
         return [
             item for item in store.placement_options(requirements, origin_node=origin_node)
-            if item.get("node_id") != origin_node and item.get("node_id") not in excluded
+            if (include_origin_node or item.get("node_id") != origin_node)
+            and item.get("node_id") not in excluded
         ]
 
     options = peer_options(needs)
@@ -170,6 +178,7 @@ def submit(request, manifest, submission_key, settings, *, owner_id, project_id,
                 origin_node=config.identity(),
                 ordinal=settings.get('placement_ordinal', 1),
                 exclude_node_ids=settings.get('exclude_node_ids', ()),
+                include_origin_node=bool(settings.get('include_origin_node', False)),
             )
             state['placement_policy'] = 'eligible'
             state['placement_node_id'] = selection['node_id']

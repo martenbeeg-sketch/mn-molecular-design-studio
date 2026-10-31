@@ -298,7 +298,7 @@ def test_rfd4_remote_attempt_persists_peer_identity_without_starting_local_worke
         assert settings["placement"] == ("auto" if busy else workstation_selection)
         if workstation_selection == "eligible" and not busy:
             assert settings["placement_ordinal"] == 1
-            assert settings["exclude_node_ids"] == []
+            assert settings["include_origin_node"] is True
         assert owner_id == "owner" and project_id == "project"
         assert allow_development is True
         assert submission_key == state["submission_key"]
@@ -2181,7 +2181,8 @@ def test_bindcraft_peer_submission_retains_full_native_settings_and_one_attempt(
     assert captured['request']['workflow'] == 'design.bindcraft2'
     assert captured['request']['database_collection_policy'] == 'manual'
     assert captured['placement']['placement'] == 'eligible'
-    assert 'old-node' not in captured['placement']['exclude_node_ids']
+    assert captured['placement']['include_origin_node'] is True
+    assert 'exclude_node_ids' not in captured['placement']
     assert parameters['target_pdb'] == str(raw / 'target.cif')
     assert 'trajectory_only' not in parameters  # Public full-workflow API defaults to the complete native pipeline.
     assert parameters['max_trajectories'] == 1

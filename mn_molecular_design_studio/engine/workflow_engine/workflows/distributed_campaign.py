@@ -1259,18 +1259,14 @@ def _submit_rfd4_peer_attempt(
     placement = str(state["config"].get("workstation_selection") or "auto").strip().lower()
     settings: dict[str, Any] = {"placement": placement}
     if placement == "eligible":
-        excluded_nodes = set()
-        for other_id, other_attempt in state.get("attempts", {}).items():
-            if other_id == attempt["attempt_id"] or other_attempt.get("status") not in {"authorized", "queued", "running"}:
-                continue
-            other_peer = other_attempt.get("cluster_submission") or {}
-            prepared = other_peer.get("prepared_envelope") or {}
-            node_id = other_peer.get("placement_node_id") or prepared.get("placement")
-            if node_id:
-                excluded_nodes.add(str(node_id))
         settings.update(
             placement_ordinal=int(attempt.get("ordinal") or 1),
-            exclude_node_ids=sorted(excluded_nodes),
+            # Eligibility is determined from live per-GPU and CPU capacity by
+            # the shared cluster scheduler. Excluding every workstation that
+            # already has a campaign attempt incorrectly serialized campaigns
+            # to one job per machine and could strand free GPUs. The origin can
+            # run work too when its own resources satisfy the same checks.
+            include_origin_node=True,
         )
     request = {
         "schema_version": 1,

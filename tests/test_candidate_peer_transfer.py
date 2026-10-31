@@ -107,7 +107,7 @@ def test_output_transfer_resumes_and_rejects_corruption(tmp_path, monkeypatch):
         cb._artifact(*args)
 
 
-def test_eligible_campaign_placement_pins_distinct_compatible_peers(tmp_path, monkeypatch):
+def test_eligible_campaign_placement_uses_origin_and_live_capacity_options(tmp_path, monkeypatch):
     class Connection:
         def __enter__(self):
             return self
@@ -151,22 +151,29 @@ def test_eligible_campaign_placement_pins_distinct_compatible_peers(tmp_path, mo
     common = {
         'workflow': 'mock', 'parameters': {},
     }
-    for ordinal, state, exclusions in (
-        (1, first, []),
-        (2, second, [first.get('placement_node_id')]),
-    ):
+    for ordinal, state in ((1, first), (2, second)):
         cb.submit(
             common, str(tmp_path / f'{ordinal}.json'), f'key-{ordinal}',
-            {'placement': 'eligible', 'placement_ordinal': ordinal, 'exclude_node_ids': exclusions},
+            {'placement': 'eligible', 'placement_ordinal': ordinal, 'include_origin_node': True},
             owner_id='owner', project_id='project', state=state, persist=lambda: None,
         )
 
-    assert selected == ['peer-4032', 'peer-4033']
+    assert selected == ['origin', 'peer-4032']
     assert first['placement_policy'] == second['placement_policy'] == 'eligible'
     assert first['placement_reference_probe_pending'] is False
     assert second['placement_reference_probe_pending'] is False
-    assert first['placement_node_id'] == first['prepared_envelope']['placement'] == 'peer-4032'
-    assert second['placement_node_id'] == second['prepared_envelope']['placement'] == 'peer-4033'
+    assert first['placement_node_id'] == first['prepared_envelope']['placement'] == 'origin'
+    assert second['placement_node_id'] == second['prepared_envelope']['placement'] == 'peer-4032'
+
+
+def test_eligible_peer_placement_excludes_origin_by_default(monkeypatch):
+    class Store:
+        def placement_options(self, _needs, *, origin_node):
+            assert origin_node == 'origin'
+            return [{'node_id': 'origin'}, {'node_id': 'peer'}]
+
+    monkeypatch.setattr(cb, 'Store', Store)
+    assert cb.select_eligible_peer({}, origin_node='origin')['node_id'] == 'peer'
 
 
 def test_eligible_placement_waits_for_exact_reference_probe_before_dispatch(monkeypatch):
