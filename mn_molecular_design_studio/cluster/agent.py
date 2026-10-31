@@ -217,6 +217,30 @@ class Agent:
         self._reference_probes = sorted(probes)
         return self._reference_probes
 
+    def _restore_published_signatures(self, store):
+        """Avoid replaying the whole local Results catalog after an agent restart."""
+        if self._published:
+            return
+        try:
+            with store.connect() as db:
+                rows = db.execute(
+                    "SELECT local_ref,json_extract(payload,'$._signature') AS signature "
+                    "FROM jobs WHERE node_id=? AND local_ref IS NOT NULL "
+                    "AND json_type(payload,'$._signature')='array'",
+                    (self.node_id,),
+                ).fetchall()
+            for row in rows:
+                try:
+                    signature = json.loads(row["signature"])
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(signature, list):
+                    self._published[str(row["local_ref"])] = tuple(signature)
+        except Exception:
+            # A catalog lock or an older database schema should delay this
+            # optimization, not prevent the workstation agent from starting.
+            log.warning("Could not restore the local job sync cursor; will reconcile the catalog normally.")
+
     def storage_online(self):
         from mn_molecular_design_studio.runtime import runs_root
         root = runs_root()
@@ -330,6 +354,7 @@ class Agent:
         from .store import Store
         from .replication import Replica, capture_identity, sync_peer, locked
         store = Store()
+        self._restore_published_signatures(store)
         # Reconcile completed purges before rebuilding the catalog or publishing
         # the peer mirror. Otherwise the stale mirrored row can be sent again.
         self._reconcile_purged_peer_jobs()

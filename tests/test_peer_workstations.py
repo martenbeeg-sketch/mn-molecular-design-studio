@@ -417,6 +417,20 @@ def test_peer_agent_sends_changed_job_rows_to_each_peer(peers,monkeypatch):
         assert all(jobs==[row] for _,jobs in sent)
 
 
+def test_peer_agent_restores_local_job_sync_signatures_after_restart(peers):
+    nodes,on=peers
+    with on(0):
+        signature=[11,22,33,44]
+        Store().heartbeat(nodes[0]['id'],SNAPSHOT,[{
+            'cluster_job_id':'previously-published-job','task_group':'design','run_id':'old-run',
+            'owner_id':'owner','project_id':'project','status':'completed','_signature':signature,
+        }])
+        agent=Agent()
+        assert agent._published=={}
+        agent._restore_published_signatures(Store())
+        assert agent._published=={'design/old-run':tuple(signature)}
+
+
 def test_peer_heartbeat_publishes_required_weights_before_catalog_scan(peers,monkeypatch):
     nodes,on=peers
     user,project=account(on)
