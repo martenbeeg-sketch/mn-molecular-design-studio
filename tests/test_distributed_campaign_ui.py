@@ -274,7 +274,7 @@ def test_rfd4_tile_campaign_controls_expose_independent_settings_before_submit()
     assert app.session_state["effective_config"]["objective_type"] == "generated"
     assert app.session_state["effective_config"]["validation_stages"] == []
     app.selectbox(key="tile-campaign-objective-type").set_value("accepted").run()
-    assert any(widget.label == "Target unique passing designs" for widget in app.number_input)
+    assert any(widget.label == "Target passing designs" for widget in app.number_input)
     assert any(widget.label == "Maximum total designs" for widget in app.number_input)
     assert any(widget.label == "RFD4 designs per distributed job" for widget in app.number_input)
     assert any(widget.label == "Scientific acceptance policy" for widget in app.selectbox)
@@ -305,7 +305,7 @@ def test_rfd4_tile_campaign_controls_expose_independent_settings_before_submit()
     assert config["seed"] == 17
     assert config["generator_id"] == "rfd4_proteina"
     assert config["validation_stages"][0]["required_metrics"] == ["iptm", "ptm", "plddt_mean"]
-    assert config["unique_accepted"] is True
+    assert config["unique_accepted"] is False
 
     app.selectbox(key="tile-campaign-objective-type").set_value("generated").run()
     assert not app.exception

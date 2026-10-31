@@ -99,10 +99,18 @@ def render_campaign_config_editor(
             value=bool(existing.get("unique_accepted", False)),
             key=key + "-unique-accepted",
             help=(
-                "Off: the controller tracks only batch design/pass/reject counts and collects accepted structures at the end. "
-                "On: compact sequence fingerprints are exchanged to deduplicate accepted designs across workstations."
+                "Off: with worker-local saved-evidence filtering, workers publish only design/pass/reject counts "
+                "and accepted structures are collected at the end. An independent downstream prediction still "
+                "needs candidate structures sent to that predictor. "
+                "On: exact cross-workstation deduplication needs candidate sequence identities at the coordinator, "
+                "so this does not use count-only transfer."
             ),
         )
+        if unique_accepted:
+            st.warning(
+                "Unique-sequence counting requires transferring candidate identities during the campaign. "
+                "Turn this off to keep rejected designs on their producing workstation and collect accepted designs at the end."
+            )
     max_attempts = int(st.number_input(
         "Maximum total designs", min_value=1, value=int(existing.get("max_attempts") or max(2, accepted_target or 1000)),
         step=1, key=key + "-max-attempts",

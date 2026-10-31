@@ -29,6 +29,11 @@ def test_candidate_batch_poll_persists_pending_candidate_artifact_transfer(tmp_p
             return {
                 "status": "completed", "location": remote_root,
                 "artifacts": [{"relative_path": f"{remote_root}/{name}"} for name in artifact_names],
+                "candidate_summary": {
+                    "status": "complete", "candidate_count": 50, "eligible_count": 50,
+                    "native_filter_counts": {"passed": 50, "failed": 0, "unavailable": 0},
+                    "acceptance_counts": {"accepted": 1, "rejected": 49, "unresolved": 0, "not_evaluated": 0},
+                },
             }
 
     monkeypatch.setattr(candidate_batches, "Store", FakeStore)
@@ -39,8 +44,10 @@ def test_candidate_batch_poll_persists_pending_candidate_artifact_transfer(tmp_p
         "transfers": {},
     }
     artifact_requests = []
+    fetched_artifacts = []
 
     def artifact(state, _job_id, relative, _user, directory, *, persist_transfers=None):
+        fetched_artifacts.append(relative)
         path = Path(directory) / relative
         if relative == structure_rel:
             transfer = state.setdefault("transfers", {}).setdefault(relative, {})
@@ -72,6 +79,7 @@ def test_candidate_batch_poll_persists_pending_candidate_artifact_transfer(tmp_p
         peer, owner_id="owner", project_id="project",
         persist_transfers=lambda transfers: persisted.append(dict(transfers)),
         candidate_collection=collection,
+        require_result=False,
     )
     assert (status, output) == ("collecting", None)
     assert artifact_requests == [structure_rel]
@@ -81,11 +89,15 @@ def test_candidate_batch_poll_persists_pending_candidate_artifact_transfer(tmp_p
         peer, owner_id="owner", project_id="project",
         persist_transfers=lambda transfers: persisted.append(dict(transfers)),
         candidate_collection=collection,
+        require_result=False,
     )
     assert status == "completed"
     assert output["candidate_count"] == 1
     assert Path(output["candidates_jsonl"]).read_text(encoding="utf-8").find("candidate-1") >= 0
     assert artifact_requests == [structure_rel]
+    assert "result.json" not in fetched_artifacts
+    assert "native_execution.json" not in fetched_artifacts
+    assert output["source_provenance"]["candidate_summary"]["acceptance_counts"]["accepted"] == 1
 
 
 @pytest.fixture

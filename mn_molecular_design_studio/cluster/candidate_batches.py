@@ -319,7 +319,7 @@ def poll_summary(batch, *, owner_id, project_id, allow_development=False):
 
 
 def poll(batch, *, owner_id, project_id, allow_development=False, persist_transfers=None,
-         candidate_collection="artifacts/normalized_candidates/candidates.jsonl"):
+         candidate_collection="artifacts/normalized_candidates/candidates.jsonl", require_result=True):
     """Return a local verified snapshot only after every candidate file arrives."""
     collection_path = Path(str(candidate_collection))
     if (collection_path.is_absolute() or ".." in collection_path.parts
@@ -350,7 +350,7 @@ def poll(batch, *, owner_id, project_id, allow_development=False, persist_transf
         return status, None, job
     directory = Path(batch['manifest']).with_suffix('.collected')
     names = ['metadata.json', 'input.json', collection]
-    if not partial or 'result.json' in catalog:
+    if require_result and (not partial or 'result.json' in catalog):
         names.append('result.json')
     paths = {
         name: _artifact(
@@ -363,7 +363,9 @@ def poll(batch, *, owner_id, project_id, allow_development=False, persist_transf
         return 'collecting', None, job
     metadata = json.loads(paths['metadata.json'].read_text())
     result = json.loads(paths['result.json'].read_text()) if 'result.json' in paths else {}
-    if not partial and (metadata.get('status') != 'completed' or result.get('success') is not True):
+    if not partial and metadata.get('status') != 'completed':
+        raise ValueError('Remote job completion disagrees with its scientific artifacts.')
+    if not partial and require_result and result.get('success') is not True:
         raise ValueError('Remote job completion disagrees with its scientific artifacts.')
     rows = [json.loads(line) for line in paths[collection].read_text().splitlines() if line.strip()]
     receipt = None
@@ -435,7 +437,8 @@ def poll(batch, *, owner_id, project_id, allow_development=False, persist_transf
     return ('partial' if partial else 'completed'), {'run_dir': str(directory), 'candidates_jsonl': str(rebased),
                          'candidate_count': len(rows), 'source_run_id': metadata.get('run_id') or job.get('local_ref'),
                          'source_provenance': dict(metadata=metadata, input=json.loads(paths['input.json'].read_text()),
-                             result_metrics=result.get('metrics', {}), native_execution=receipt)}, job | {'metadata': metadata, 'native_execution': receipt}
+                             result_metrics=result.get('metrics', {}), native_execution=receipt,
+                             candidate_summary=copy.deepcopy(job.get('candidate_summary') or {}))}, job | {'metadata': metadata, 'native_execution': receipt}
 
 
 def cancel(batch, *, owner_id, project_id, allow_development=False):

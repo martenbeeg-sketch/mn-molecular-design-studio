@@ -221,13 +221,21 @@ def test_accepted_only_campaign_publishes_only_accepted_artifacts(tmp_path):
     accepted.write_text(json.dumps({
         "candidate_id": "private-pass",
         "complex_pdb": "artifacts/structures/pass.cif",
-        "raw_metadata": {"prediction_input": "artifacts/structures/pass-input.cif"},
+        "raw_metadata": {
+            "prediction_input": "artifacts/structures/pass-input.cif",
+            "target_structure": "artifacts/rfd4_proteina/input/target.cif",
+        },
     }) + "\n")
     prefix = "design/worker-run/"
     artifacts = [
         {"relative_path": prefix + "metadata.json"},
+        {"relative_path": prefix + "result.json"},
+        {"relative_path": prefix + "native_execution.json"},
         {"relative_path": prefix + "artifacts/distributed_campaign/accepted_candidates.jsonl"},
         {"relative_path": prefix + "artifacts/rfd4_proteina/request.json"},
+        {"relative_path": prefix + "artifacts/rfd4_proteina/native_command.json"},
+        {"relative_path": prefix + "artifacts/rfd4_proteina/effective_config.yaml"},
+        {"relative_path": prefix + "artifacts/rfd4_proteina/prepared_inputs.json"},
         {"relative_path": prefix + "artifacts/rfd4_proteina/input/target.cif"},
         {"relative_path": prefix + "artifacts/structures/pass.cif"},
         {"relative_path": prefix + "artifacts/structures/pass-input.cif"},
@@ -241,7 +249,9 @@ def test_accepted_only_campaign_publishes_only_accepted_artifacts(tmp_path):
         prefix + "metadata.json",
         prefix + "artifacts/distributed_campaign/accepted_candidates.jsonl",
         prefix + "artifacts/rfd4_proteina/request.json",
-        prefix + "artifacts/rfd4_proteina/input/target.cif",
+        prefix + "artifacts/rfd4_proteina/native_command.json",
+        prefix + "artifacts/rfd4_proteina/effective_config.yaml",
+        prefix + "artifacts/rfd4_proteina/prepared_inputs.json",
         prefix + "artifacts/structures/pass.cif",
         prefix + "artifacts/structures/pass-input.cif",
     }

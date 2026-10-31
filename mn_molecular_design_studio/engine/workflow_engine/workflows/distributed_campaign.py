@@ -1384,6 +1384,7 @@ def _materialize_rfd4_peer_output(
     owner_id, project_id, development_mode = _campaign_actor(parent_run_dir)
     collected = Path(peer["manifest"]).with_suffix(".collected")
     job_id = str(peer.get("cluster_job_id") or "")
+    accepted_output_only = bool(peer.get("accepted_output_only"))
 
     def artifact(relative: str) -> Path | None:
         return candidate_batches._artifact(
@@ -1416,7 +1417,14 @@ def _materialize_rfd4_peer_output(
     target_name = Path(str(target_value or "")).name
     if not target_name or target_name in {".", ".."}:
         raise RuntimeError("Remote RFD4 request is missing its staged target identity.")
-    target_path = artifact(f"artifacts/rfd4_proteina/input/{target_name}")
+    if accepted_output_only:
+        # The campaign already owns the staged target. Reuse it locally instead
+        # of downloading an identical copy from every producing workstation.
+        target_path = Path(parent_run_dir) / "artifacts" / "rfd4_proteina" / "input" / target_name
+        if not target_path.is_file():
+            raise RuntimeError("The campaign's staged RFD4 target is unavailable for accepted-output collection.")
+    else:
+        target_path = artifact(f"artifacts/rfd4_proteina/input/{target_name}")
     if target_path is None or any(path is None for path in static_paths.values()):
         return False
 
@@ -1424,6 +1432,10 @@ def _materialize_rfd4_peer_output(
     if not source_artifacts.is_dir():
         raise RuntimeError("Remote RFD4 completed without a collected artifact directory.")
     shutil.copytree(source_artifacts, child_run_dir / "artifacts", dirs_exist_ok=True)
+    if accepted_output_only:
+        local_target = child_run_dir / "artifacts" / "rfd4_proteina" / "input" / target_name
+        local_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(target_path, local_target)
     rows_path = Path(output["candidates_jsonl"])
     if not rows_path.is_file():
         raise RuntimeError("Remote RFD4 completed without normalized candidates.")
@@ -1442,9 +1454,33 @@ def _materialize_rfd4_peer_output(
     normalized.parent.mkdir(parents=True, exist_ok=True)
     normalized.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
     remote_metadata = read_json_raw(collected / "metadata.json")
-    remote_result = read_json(collected / "result.json")
-    if remote_metadata.get("status") != "completed" or remote_result.get("success") is not True:
-        raise RuntimeError("Remote completion disagrees with the transferred RFD4 result.")
+    if remote_metadata.get("status") != "completed":
+        raise RuntimeError("Remote RFD4 completion disagrees with its transferred metadata.")
+    if accepted_output_only:
+        source_provenance = output.get("source_provenance") if isinstance(output.get("source_provenance"), dict) else {}
+        summary = source_provenance.get("candidate_summary") or remote_job.get("candidate_summary") or {}
+        acceptance_counts = summary.get("acceptance_counts") if isinstance(summary, dict) else {}
+        accepted_count = int(acceptance_counts.get("accepted") or 0) if isinstance(acceptance_counts, dict) else 0
+        if accepted_count != int(output.get("candidate_count") or 0):
+            raise RuntimeError("Accepted-only RFD4 collection disagrees with the worker's count summary.")
+        remote_result = {
+            "success": True,
+            "tool": "rfd4_proteina",
+            "job_type": "rfd4_proteina_design",
+            "metrics": {
+                "candidate_count": int(summary.get("candidate_count") or 0),
+                "eligible_count": int(summary.get("eligible_count") or 0),
+                "accepted_candidate_count": accepted_count,
+                "acceptance_counts": acceptance_counts,
+                "native_filter_counts": summary.get("native_filter_counts") or {},
+                "accepted_output_only": True,
+            },
+            "outputs": {"candidate_count": accepted_count, "accepted_only": True},
+        }
+    else:
+        remote_result = read_json(collected / "result.json")
+        if remote_result.get("success") is not True:
+            raise RuntimeError("Remote RFD4 completion disagrees with the transferred RFD4 result.")
     write_json(child_run_dir / "result.json", remote_result)
     from mn_molecular_design_studio.cache_provenance import file_digest
     native_command = read_json(child_run_dir / "artifacts" / "rfd4_proteina" / "native_command.json")
@@ -3423,6 +3459,7 @@ def _materialize_deferred_accepted_outputs(parent_run_dir: Path, ledger: Campaig
             allow_development=development_mode,
             persist_transfers=persist_transfers,
             candidate_collection="artifacts/distributed_campaign/accepted_candidates.jsonl",
+            require_result=False,
         )
         if status == "collecting":
             complete = False
@@ -3436,6 +3473,7 @@ def _materialize_deferred_accepted_outputs(parent_run_dir: Path, ledger: Campaig
                 f"Accepted output count mismatch for {attempt_id}: expected {accepted_count}, "
                 f"received {output.get('candidate_count')}."
             )
+        peer["accepted_output_only"] = True
         if not _materialize_rfd4_peer_output(
             parent_run_dir, ledger, attempt, child, peer, output, peer_job,
         ):

@@ -24,7 +24,7 @@ def _accepted_candidate_artifacts(run: Path, job: dict, artifacts: list[dict]) -
     run_path = Path(run).resolve()
     allowed = {
         prefix + name for name in (
-            "metadata.json", "input.json", "result.json", "native_execution.json",
+            "metadata.json", "input.json",
             "artifacts/distributed_campaign/accepted_candidates.jsonl",
             "artifacts/rfd4_proteina/request.json",
             "artifacts/rfd4_proteina/native_command.json",
@@ -32,7 +32,6 @@ def _accepted_candidate_artifacts(run: Path, job: dict, artifacts: list[dict]) -
             "artifacts/rfd4_proteina/prepared_inputs.json",
         )
     }
-    allowed_prefixes = (prefix + "artifacts/rfd4_proteina/input/",)
 
     def collect(value):
         if isinstance(value, dict):
@@ -48,6 +47,8 @@ def _accepted_candidate_artifacts(run: Path, job: dict, artifacts: list[dict]) -
                     allowed.add(reference)
                 return
             if value.startswith("artifacts/"):
+                if value.startswith("artifacts/rfd4_proteina/input/"):
+                    return
                 allowed.add(prefix + value)
                 return
             candidate_path = Path(value)
@@ -55,6 +56,8 @@ def _accepted_candidate_artifacts(run: Path, job: dict, artifacts: list[dict]) -
                 try:
                     relative = candidate_path.resolve(strict=False).relative_to(run_path)
                 except ValueError:
+                    return
+                if relative.as_posix().startswith("artifacts/rfd4_proteina/input/"):
                     return
                 allowed.add(prefix + relative.as_posix())
 
@@ -69,7 +72,7 @@ def _accepted_candidate_artifacts(run: Path, job: dict, artifacts: list[dict]) -
     result = []
     for artifact in artifacts:
         relative = str(artifact.get("relative_path") or artifact.get("path") or "")
-        if relative in allowed or relative.startswith(allowed_prefixes):
+        if relative in allowed:
             result.append(artifact)
     return result
 

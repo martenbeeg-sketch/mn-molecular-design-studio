@@ -518,6 +518,90 @@ def test_rfd4_pending_artifact_command_is_persisted_and_reused(tmp_path, monkeyp
     ]
 
 
+def test_rfd4_accepted_only_materialization_uses_summary_and_campaign_target(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.cluster import candidate_batches
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    jobs.write_json(parent / "metadata.json", {
+        "studio_owner_id": "owner", "studio_project_id": "project", "studio_development_mode": True,
+    })
+    campaign_target = parent / "artifacts/rfd4_proteina/input/target.cif"
+    campaign_target.parent.mkdir(parents=True)
+    campaign_target.write_text("campaign-owned target\n")
+    ledger = CampaignLedger.create(
+        parent / "artifacts/distributed_campaign/ledger.json",
+        {"accepted_target": 1, "max_attempts": 1}, campaign_id="accepted-only-output-campaign",
+    )
+    attempt = ledger.authorize(1, batch_id="batch")[0]
+    child = tmp_path / "design" / "child"
+    child.mkdir(parents=True)
+    jobs.write_json(child / "metadata.json", {"status": "queued"})
+
+    manifest = tmp_path / "peer" / "submission.json"
+    collected = manifest.with_suffix(".collected")
+    rfd4 = collected / "artifacts/rfd4_proteina"
+    rfd4.mkdir(parents=True)
+    jobs.write_json(rfd4 / "request.json", {
+        "target_structure": "/worker/artifacts/rfd4_proteina/input/target.cif",
+    })
+    jobs.write_json(rfd4 / "native_command.json", {"argv": ["rfd4-generate"]})
+    (rfd4 / "effective_config.yaml").write_text("seed: 7\n")
+    jobs.write_json(rfd4 / "prepared_inputs.json", {"target_chain": "A"})
+    jobs.write_json(collected / "metadata.json", {
+        "status": "completed", "resource_allocation": {"gpu_ids": [0]},
+        "completed_at": "2026-10-31T10:00:00Z",
+    })
+    structures = rfd4 / "output"
+    structures.mkdir()
+    (structures / "accepted.cif").write_text("accepted structure\n")
+    accepted_rows = collected / "artifacts/distributed_campaign/accepted_candidates.collected.jsonl"
+    accepted_rows.parent.mkdir(parents=True)
+    accepted_rows.write_text(json.dumps({
+        "candidate_id": "accepted-1", "complex_pdb": str(structures / "accepted.cif"),
+    }) + "\n")
+    monkeypatch.setattr(candidate_batches, "actor", lambda *_args, **_kwargs: {"id": "owner"})
+    requested = []
+
+    def artifact(_peer, _job_id, relative, _user, directory, **_kwargs):
+        requested.append(relative)
+        return Path(directory) / relative
+
+    monkeypatch.setattr(candidate_batches, "_artifact", artifact)
+    peer = {"manifest": str(manifest), "cluster_job_id": "peer-job", "accepted_output_only": True}
+    ledger.transition(
+        attempt["attempt_id"], "queued", child_run_dir=str(child),
+        cluster_job_id="peer-job", cluster_submission=peer,
+    )
+    summary = {
+        "candidate_count": 50, "eligible_count": 50,
+        "acceptance_counts": {"accepted": 1, "rejected": 49, "unresolved": 0, "not_evaluated": 0},
+        "native_filter_counts": {"passed": 50, "failed": 0, "unavailable": 0},
+    }
+    output = {
+        "candidate_count": 1, "candidates_jsonl": str(accepted_rows),
+        "source_provenance": {"candidate_summary": summary},
+    }
+
+    assert distributed_campaign._materialize_rfd4_peer_output(
+        parent, ledger, attempt, child, peer, output,
+        {"node_id": "worker", "metadata": {}, "candidate_summary": summary},
+    )
+    result = jobs.read_json(child / "result.json")
+    assert result["metrics"]["candidate_count"] == 50
+    assert result["metrics"]["accepted_candidate_count"] == 1
+    assert result["metrics"]["accepted_output_only"] is True
+    assert "candidates" not in result["outputs"]
+    assert "result.json" not in requested
+    assert "native_execution.json" not in requested
+    assert "artifacts/rfd4_proteina/input/target.cif" not in requested
+    assert (child / "artifacts/rfd4_proteina/input/target.cif").read_text() == "campaign-owned target\n"
+    local_rows = (child / "artifacts/normalized_candidates/candidates.jsonl").read_text()
+    assert "accepted-1" in local_rows
+    assert "accepted structure" in (child / "artifacts/rfd4_proteina/output/accepted.cif").read_text()
+
+
 def test_collection_does_not_hold_generation_slot_but_reserves_objective_result(tmp_path, monkeypatch):
     config = distributed_campaign.validate_campaign_config({
         "generator_id": "rfd4_proteina", "objective_type": "generated",
@@ -1544,18 +1628,23 @@ def test_deferred_accepted_finalization_fetches_only_the_accepted_collection(tmp
 
     def poll(_peer, **kwargs):
         observed["collection"] = kwargs.get("candidate_collection")
+        observed["require_result"] = kwargs.get("require_result")
         observed["persist_transfers"] = kwargs.get("persist_transfers")
         return "completed", {"candidate_count": 2, "candidates_jsonl": "accepted-only.jsonl"}, {"status": "completed"}
 
     monkeypatch.setattr(candidate_batches, "poll", poll)
     monkeypatch.setattr(
         distributed_campaign, "_materialize_rfd4_peer_output",
-        lambda *_args: observed.update(materialized=True) or True,
+        lambda _parent, _ledger, _attempt, _child, peer, *_args: observed.update(
+            materialized=True, accepted_output_only=peer.get("accepted_output_only"),
+        ) or True,
     )
 
     assert distributed_campaign._materialize_deferred_accepted_outputs(parent, ledger)
     assert observed["collection"] == "artifacts/distributed_campaign/accepted_candidates.jsonl"
+    assert observed["require_result"] is False
     assert callable(observed["persist_transfers"])
+    assert observed["accepted_output_only"] is True
     assert observed["materialized"] is True
     saved = jobs.read_json(child / "metadata.json")
     assert saved["deferred_accepted_materialized"] is True
