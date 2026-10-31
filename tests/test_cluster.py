@@ -71,6 +71,32 @@ def test_empty_agent_claim_does_not_run_the_full_dispatcher(cluster, monkeypatch
     assert dispatches == []
 
 
+def test_empty_agent_claim_does_not_take_a_sqlite_write_lock(cluster, monkeypatch):
+    import contextlib
+    import sqlite3
+
+    store, nodes, *_ = cluster
+    writer = sqlite3.connect(store.path, timeout=0, isolation_level=None)
+    writer.execute("BEGIN IMMEDIATE")
+
+    @contextlib.contextmanager
+    def nonblocking_connect():
+        db = sqlite3.connect(store.path, timeout=0, isolation_level=None)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA busy_timeout=0")
+        try:
+            yield db
+        finally:
+            db.close()
+
+    monkeypatch.setattr(store, "connect", nonblocking_connect)
+    try:
+        assert store.claim(nodes[0]["node_id"]) is None
+    finally:
+        writer.rollback()
+        writer.close()
+
+
 def test_dispatch_scans_active_catalog_once_per_workstation(cluster, monkeypatch):
     store, nodes, user, needs, _snapshot, request, _clock = cluster
     scans = []

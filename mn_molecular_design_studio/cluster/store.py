@@ -819,15 +819,22 @@ class Store:
         # Dispatching re-evaluates every waiting submission against every
         # workstation. Agents poll this endpoint frequently, so doing that
         # full write transaction on each empty poll starves heartbeats and
-        # concurrent submissions on catalogs with a backlog. New submissions
-        # and catalog heartbeats already trigger dispatch; this endpoint only
-        # leases commands that are ready for this node.
+        # concurrent submissions on catalogs with a backlog. Keep the common
+        # empty-poll path read-only; take the write lock only when there is a
+        # command to lease. New submissions and catalog heartbeats already
+        # trigger dispatch; this endpoint only leases ready commands.
         with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
             # Expired commands are retried only on the original machine. Its receipt
             # journal prevents repeating a scientific submission after a lost reply.
-            row = db.execute("SELECT * FROM commands WHERE node_id=? AND (status='queued' OR (status='claimed' AND lease_until<?)) ORDER BY created_at,id LIMIT 1",
-                             (node_id, self.clock())).fetchone()
+            query = "SELECT * FROM commands WHERE node_id=? AND (status='queued' OR (status='claimed' AND lease_until<?)) ORDER BY created_at,id LIMIT 1"
+            parameters = (node_id, self.clock())
+            row = db.execute(query, parameters).fetchone()
+            if not row:
+                return None
+            db.execute("BEGIN IMMEDIATE")
+            # Another agent can lease the observed command between the initial
+            # read and this transaction. Recheck under the write lock.
+            row = db.execute(query, parameters).fetchone()
             if not row:
                 return None
             token = secrets.token_urlsafe(24)
