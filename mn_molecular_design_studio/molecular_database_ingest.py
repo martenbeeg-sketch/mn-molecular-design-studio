@@ -287,6 +287,11 @@ def _candidate_rejected(candidate):
     status = str(candidate.get("status") or raw.get("status") or raw.get("filter_status") or metrics.get("status") or "").strip().casefold()
     if status in {"rejected", "failed", "invalid", "filtered", "discarded", "not accepted", "not_accepted"}:
         return True
+    campaign = raw.get("distributed_campaign") if isinstance(raw.get("distributed_campaign"), dict) else {}
+    if campaign.get("validation_required") and campaign.get("validated_acceptance") != "accepted":
+        # Campaign candidates remain visible in Results, but only designs that
+        # passed the configured campaign filter belong in the reusable library.
+        return True
     return (candidate.get("accepted") is False or raw.get("accepted") is False
             or metrics.get("pass_filters") is False or metrics.get("native_pass_filters") is False)
 
@@ -778,6 +783,11 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         is_backbone = stage == "generation.backbone" and not sequence
         rejected = _candidate_rejected(candidate)
         raw_candidate = candidate.get("raw_metadata") or {}
+        campaign_filter = raw_candidate.get("distributed_campaign") if isinstance(raw_candidate.get("distributed_campaign"), dict) else {}
+        if campaign_filter.get("validation_required") and rejected:
+            # Campaign validation is an eligibility gate, not an intermediate
+            # library observation. Keep failures in campaign Results only.
+            continue
         preserve_failed_native_refold = (
             mode == "generated" and rejected and stage == "complex_refolding"
             and raw_candidate.get("result_kind") == "native_pipeline"

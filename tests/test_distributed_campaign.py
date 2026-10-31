@@ -2053,6 +2053,7 @@ def test_bindcraft_peer_submission_retains_full_native_settings_and_one_attempt(
     allowed = workflow_automation._parameters_for(workflow_automation.WORKFLOWS['design.bindcraft2'])
     assert set(parameters) <= set(allowed)
     assert captured['request']['workflow'] == 'design.bindcraft2'
+    assert captured['request']['database_collection_policy'] == 'manual'
     assert captured['placement']['placement'] == 'eligible'
     assert 'old-node' not in captured['placement']['exclude_node_ids']
     assert parameters['target_pdb'] == str(raw / 'target.cif')
@@ -2406,3 +2407,90 @@ def test_rfd4_native_refold_acceptance_uses_available_metrics_without_extra_pred
     assert state["candidates"]["rfd4-unresolved"]["validated_acceptance"] == "failed"
     assert campaign.counters()["validated_accepted_candidates"] == 1
     assert campaign.counters()["rejected_candidates"] == 1
+
+
+def test_generation_cycle_waits_until_native_outputs_are_filtered():
+    config = {"validation_stages": [{"workflow": "analysis.validation_acceptance"}]}
+    state = {
+        "attempts": {"a1": {"ordinal": 1}},
+        "candidates": {
+            "candidate-1": {
+                "attempt_id": "a1", "native_acceptance": "accepted",
+                "validated_acceptance": "pending", "validation_stages": {},
+            },
+        },
+    }
+
+    assert not distributed_campaign._generation_cycle_ready([], state, config)
+    assert not distributed_campaign._generation_cycle_ready(
+        [{"attempt_id": "a2", "worker_status": "running"}],
+        {"attempts": {}, "candidates": {}}, config,
+    )
+
+    state["candidates"]["candidate-1"]["validated_acceptance"] = "accepted"
+    assert distributed_campaign._generation_cycle_ready([], state, config)
+
+
+def test_controller_does_not_dispatch_while_completed_wave_is_awaiting_filter(
+    tmp_path, monkeypatch,
+):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    from mn_molecular_design_studio.validation_acceptance import campaign_stage
+
+    stage = campaign_stage({
+        "binder_format": "miniprotein", "target_type": "fasta_idr",
+        "mandatory_filters": [{
+            "field": "common.confidence.generator.complex.iptm",
+            "operator": ">=", "value": 0.7,
+        }],
+        "informational_scores": [],
+    }, engine="rfd4_proteina")
+    _root, parent = _parent_run(tmp_path, monkeypatch, {
+        "generator_id": "rfd4_proteina", "acceptance_level": "validated",
+        "accepted_target": 10, "max_attempts": 20,
+        "validation_stages": [stage], "max_retries": 0,
+    })
+    candidate = {
+        "candidate_id": "filter-pending", "source_tool": "rfd4_proteina",
+        "stage": "generation.backbone_sequence", "binder_sequence": "ACDE",
+        "metrics": {},
+    }
+    seeded = False
+    dispatched = []
+
+    def reconcile(ledger, *_args):
+        nonlocal seeded
+        if not seeded:
+            attempt = ledger.authorize(1, batch_id="completed-wave")[0]
+            ledger.record_receipt(
+                attempt["attempt_id"], "completed-native-batch",
+                candidates=[candidate], native_state={"authoritative": False, "output_candidates": 1},
+            )
+            seeded = True
+        return {}, [], [candidate]
+
+    class EndPoll(Exception):
+        pass
+
+    monkeypatch.setattr(distributed_campaign, "_reconcile_attempts", reconcile)
+    monkeypatch.setattr(distributed_campaign, "_sync_parent_results", lambda *_args: None)
+    monkeypatch.setattr(distributed_campaign, "_drive_validation", lambda _p, _l, rows, _c, **_kw: rows)
+    monkeypatch.setattr(distributed_campaign, "_parent_progress", lambda *_args: None)
+    monkeypatch.setattr(distributed_campaign, "_dispatch_attempts", lambda *_args, **_kw: dispatched.append(True))
+    monkeypatch.setattr(distributed_campaign.time, "sleep", lambda _seconds: (_ for _ in ()).throw(EndPoll()))
+
+    with pytest.raises(EndPoll):
+        distributed_campaign._run_distributed_campaign(parent, "rfd4_proteina")
+
+    assert seeded
+    assert dispatched == []
+    state = CampaignLedger(parent / "artifacts/distributed_campaign/ledger.json").snapshot()
+    assert state["candidates"][candidate["candidate_id"]]["validated_acceptance"] == "pending"
+
+
+def test_campaign_without_filter_keeps_existing_generation_concurrency():
+    assert distributed_campaign._generation_cycle_ready(
+        [{"attempt_id": "a1", "worker_status": "running"}],
+        {"attempts": {}, "candidates": {}},
+        {"validation_stages": []},
+    )

@@ -1199,10 +1199,10 @@ def _submit_rfd4_peer_attempt(
     }
     from mn_molecular_design_studio.logical_runs import native_context
     request["run_context"] = native_context(parent_run_dir)
-    if state["config"].get("remote_artifact_policy") == "defer_generated":
-        # The worker retains all output files and does not auto-ingest an
-        # unfiltered batch into its Database. Promotion happens after review.
-        request["database_collection_policy"] = "manual"
+    # Campaign children are receipts for the parent campaign. The parent
+    # publishes only acceptance-qualified designs, so workers must not ingest
+    # their unfiltered native batches independently.
+    request["database_collection_policy"] = "manual"
 
     def persist() -> None:
         ledger.transition(
@@ -1804,9 +1804,8 @@ def _create_rfd4_attempt_child(
         parent_task_group=parent_run_dir.parent.name,
         role="distributed_rfd4_attempt", engine="rfd4_proteina",
     )
-    if config.get("remote_artifact_policy") == "defer_generated":
-        from mn_molecular_design_studio.collection_policy import set_run_policy
-        set_run_policy(child_run_dir, "manual")
+    from mn_molecular_design_studio.collection_policy import set_run_policy
+    set_run_policy(child_run_dir, "manual")
     metadata = read_json_raw(child_run_dir / "metadata.json")
     metadata.update(
         distributed_campaign_id=campaign_id,
@@ -1849,8 +1848,10 @@ def _repair_rfd4_attempt_child(
     from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import portable_path
     from mn_molecular_design_studio.engine.workflow_engine.runtime import runs_root
     from mn_molecular_design_studio.engine.workflow_engine.workflows.rfd4_proteina import run_rfd4_proteina_design
+    from mn_molecular_design_studio.collection_policy import set_run_policy
 
     parent_run_dir, child_run_dir = Path(parent_run_dir), Path(child_run_dir)
+    set_run_policy(child_run_dir, "manual")
     child_payload = read_json(child_run_dir / "input.json")
     params = child_payload.get("params") if isinstance(child_payload.get("params"), dict) else {}
     peer_execution = _peer_campaign_mode(config)
@@ -1935,6 +1936,7 @@ def _create_attempt_child(
         bounded_bindcraft2_settings,
     )
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import create_job
+    from mn_molecular_design_studio.collection_policy import set_run_policy
 
     parent_payload = read_json(parent_run_dir / "input.json")
     parent_params = parent_payload.get("params") if isinstance(parent_payload.get("params"), dict) else {}
@@ -1973,6 +1975,7 @@ def _create_attempt_child(
             params=child_params,
         )
     child_run_dir = child_job.run_dir
+    set_run_policy(child_run_dir, "manual")
     mark_internal_job(
         child_run_dir,
         parent_run_dir=parent_run_dir,
@@ -2043,6 +2046,11 @@ def _repair_attempt_child(
     from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import portable_path
     from mn_molecular_design_studio.engine.workflow_engine.runtime import runs_root
     from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import bounded_bindcraft2_settings
+    from mn_molecular_design_studio.collection_policy import set_run_policy
+
+    # Recovery must restore the collection boundary before starting a queued
+    # child created by an older controller.
+    set_run_policy(child_run_dir, "manual")
 
     child_payload = read_json(child_run_dir / "input.json")
     params = child_payload.get("params") if isinstance(child_payload.get("params"), dict) else {}
@@ -2645,6 +2653,7 @@ def _sync_parent_results(
             raw.setdefault("distributed_campaign", {}).update({
                 "native_acceptance": record.get("native_acceptance"),
                 "validated_acceptance": record.get("validated_acceptance"),
+                "validation_required": bool(state["config"].get("validation_stages")),
                 "diversity_acceptance": record.get("diversity_acceptance"),
                 "decision_reason": record.get("decision_reason", ""),
                 "validation_decision_reason": record.get("validation_decision_reason", ""),
@@ -3339,6 +3348,9 @@ def _submit_validation_stage(
     payload, _ = _validation_request(
         parent_run_dir, candidate, stage, stage_index, campaign_id, previous_run,
     )
+    # Validation predictions stay available in campaign Results. The campaign
+    # root is the sole source for accepted-design Database collection.
+    payload["database_collection_policy"] = "manual"
     requests_dir = parent_run_dir / "artifacts" / "distributed_campaign" / "requests"
     requests_dir.mkdir(parents=True, exist_ok=True)
     request_path = requests_dir / f"{hashlib.sha256(f'{candidate_id}:{stage_index}'.encode()).hexdigest()[:24]}.json"
@@ -3483,6 +3495,27 @@ def _validation_pending_candidates(state: dict[str, Any], config: dict[str, Any]
             continue
         pending += 1
     return pending
+
+
+def _generation_cycle_ready(
+    active_attempts: list[dict[str, Any]],
+    state: dict[str, Any],
+    config: dict[str, Any],
+) -> bool:
+    """Require a full generation/refold/filter wave to settle before refill.
+
+    Generation jobs within a wave remain parallel up to the configured GPU
+    concurrency. Once validation is configured, no next wave is dispatched
+    while a native job/artifact is active or any candidate still awaits its
+    configured acceptance stages.
+    """
+    if not config.get("validation_stages"):
+        return True
+    return (
+        not active_attempts
+        and _validation_pending_candidates(state, config) == 0
+        and _validation_active_count(state) == 0
+    )
 
 
 def _native_acceptance_geometry(parent_run_dir: Path, candidate: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
@@ -4236,21 +4269,22 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
                     ledger.terminate(reason, detail=detail)
                     return _finish_campaign(parent_run_dir, ledger, candidates)
             else:
-                _dispatch_attempts(
-                    parent_run_dir, ledger, config,
-                    active_count=_generation_slot_count(active),
-                    accepted_count=selected,
-                    objective_reserved_count=_objective_reserved_design_count(
-                        ledger.snapshot(), active, config,
-                    ),
-                )
-                # Newly created child jobs are scheduler-owned immediately,
-                # even before the scheduler records their first status. Reconcile
-                # them before deciding that the attempt budget is exhausted.
-                children, active, candidates = _reconcile_attempts(ledger, parent_run_dir, config)
-                _sync_parent_results(parent_run_dir, ledger, children, candidates)
-                candidates = _drive_validation(parent_run_dir, ledger, candidates, config)
-                _sync_parent_results(parent_run_dir, ledger, children, candidates)
+                cycle_ready = _generation_cycle_ready(active, ledger.snapshot(), config)
+                if cycle_ready:
+                    _dispatch_attempts(
+                        parent_run_dir, ledger, config,
+                        active_count=_generation_slot_count(active),
+                        accepted_count=selected,
+                        objective_reserved_count=_objective_reserved_design_count(
+                            ledger.snapshot(), active, config,
+                        ),
+                    )
+                    # Newly created child jobs are scheduler-owned immediately,
+                    # even before the scheduler records their first status.
+                    children, active, candidates = _reconcile_attempts(ledger, parent_run_dir, config)
+                    _sync_parent_results(parent_run_dir, ledger, children, candidates)
+                    candidates = _drive_validation(parent_run_dir, ledger, candidates, config)
+                    _sync_parent_results(parent_run_dir, ledger, children, candidates)
                 state = ledger.snapshot()
                 if _design_budget_exhausted(state):
                     state = ledger.mark_generation_budget_exhausted()

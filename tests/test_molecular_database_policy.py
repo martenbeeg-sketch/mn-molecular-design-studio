@@ -160,6 +160,41 @@ def test_generated_complex_reindex_keeps_binder_identity_and_only_passing_design
     assert rows[0]["structures"][0]["context"]["portable"] is True
 
 
+def test_filtered_campaign_ingests_only_acceptance_passes(database):
+    passing = {
+        "candidate_id": "campaign-pass", "stage": "generation.backbone_sequence",
+        "source_tool": "rfd4_proteina", "binder_sequence": "ACDE",
+        "metrics": {"native_pass_filters": True},
+        "raw_metadata": {"distributed_campaign": {
+            "validation_required": True, "validated_acceptance": "accepted",
+        }},
+    }
+    rejected = {
+        "candidate_id": "campaign-reject", "stage": "generation.backbone_sequence",
+        "source_tool": "rfd4_proteina", "binder_sequence": "FGHI",
+        "raw_metadata": {"distributed_campaign": {
+            "validation_required": True, "validated_acceptance": "rejected",
+        }},
+    }
+    pending = {
+        "candidate_id": "campaign-pending", "stage": "generation.backbone_sequence",
+        "source_tool": "rfd4_proteina", "binder_sequence": "KLMN",
+        "raw_metadata": {"distributed_campaign": {
+            "validation_required": True, "validated_acceptance": "pending",
+        }},
+    }
+    run = _make_run(
+        database, "design", "filtered-campaign", workflow="rfd4_proteina_campaign",
+        tool="rfd4_proteina", candidates=[passing, rejected, pending],
+    )
+
+    assert ingest_run(run, database=database) == 1
+    group = next(group for group in database.groups(A, collection="library")
+                 if group["origin"].get("run_id") == "filtered-campaign")
+    items = database.list_molecules(A, group_id=group["id"], collection="library")["items"]
+    assert [item["components"][0]["sequence"] for item in items] == ["ACDE"]
+
+
 def test_failed_native_refold_is_kept_as_intermediate_observation(database):
     complex_text = "\n".join([
         "ATOM      1  CA  ALA A   1       1.000   1.000   1.000  1.00 20.00           C",
