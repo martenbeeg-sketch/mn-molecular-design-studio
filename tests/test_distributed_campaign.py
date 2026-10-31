@@ -28,6 +28,26 @@ def test_campaign_authorization_is_atomic_and_seeds_are_unique(tmp_path):
     assert campaign.authorize(1, batch_id="last") == []
 
 
+def test_campaign_ledger_reuses_readonly_snapshot_without_exposing_mutable_copy(tmp_path):
+    campaign = ledger(tmp_path)
+    first_view = campaign.view()
+    assert campaign.view() is first_view
+
+    detached = campaign.snapshot()
+    detached["attempts"]["local-edit"] = {"status": "completed"}
+    assert "local-edit" not in campaign.view()["attempts"]
+
+    attempt = campaign.authorize(1, batch_id="cache-invalidation")[0]
+    after_authorize = campaign.view()
+    assert after_authorize is not first_view
+    assert after_authorize["attempts"][attempt["attempt_id"]]["status"] == "authorized"
+
+    campaign.transition(attempt["attempt_id"], "queued")
+    after_transition = campaign.view()
+    assert after_transition is not after_authorize
+    assert after_transition["attempts"][attempt["attempt_id"]]["status"] == "queued"
+
+
 def test_result_receipts_are_idempotent_and_acceptance_levels_are_independent(tmp_path):
     campaign = ledger(tmp_path)
     attempt = campaign.authorize(1, batch_id="b1")[0]
@@ -1261,6 +1281,7 @@ def test_campaign_summary_reads_remote_child_metadata_without_resolving_cluster_
 
 def test_campaign_acceptance_summary_counts_candidates_not_yet_evaluated(tmp_path, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    from mn_molecular_design_studio import validation_acceptance
 
     policy = {
         "binder_format": "miniprotein", "target_type": "fasta_idr",
@@ -1294,9 +1315,19 @@ def test_campaign_acceptance_summary_counts_candidates_not_yet_evaluated(tmp_pat
         native_state={"engine": "rfd4_proteina", "authoritative": False, "output_candidates": 1},
     )
 
+    calls = []
+    write_report = validation_acceptance.write_report
+
+    def counted_write_report(*args, **kwargs):
+        calls.append(True)
+        return write_report(*args, **kwargs)
+
+    monkeypatch.setattr(validation_acceptance, "write_report", counted_write_report)
+    distributed_campaign._sync_parent_results(parent, campaign, {}, [candidate])
     distributed_campaign._sync_parent_results(parent, campaign, {}, [candidate])
 
     summary = jobs.read_json(parent / "artifacts/validation/acceptance_summary.json")
+    assert calls == [True]
     assert summary["candidate_count"] == 1
     assert summary["not_evaluated"] == 1
     assert summary["accepted"] + summary["rejected"] + summary["unresolved"] + summary["not_evaluated"] == 1

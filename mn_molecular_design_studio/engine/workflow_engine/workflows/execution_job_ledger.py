@@ -441,7 +441,8 @@ class ExecutionJobLedgerMixin:
         return self._job_transaction(change)
 
     def execution_job_summary(self):
-        state = self.snapshot()
+        view = getattr(self, "view", None)
+        state = view() if callable(view) else self.snapshot()
         if state["schema_version"] == 1:
             return {"schema_version": 1, "execution_jobs": None, "interpretation": "Historical batch_id is dispatch grouping; native job membership is unavailable."}
         rows = []

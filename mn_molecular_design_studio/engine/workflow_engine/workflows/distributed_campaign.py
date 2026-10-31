@@ -398,6 +398,8 @@ class CampaignLedger(ExecutionJobLedgerMixin):
 
     def __init__(self, path: Path):
         self.path = Path(path)
+        self._snapshot_signature: tuple[int, int, int, int] | None = None
+        self._snapshot_cache: dict[str, Any] | None = None
 
     @classmethod
     def create(cls, path: Path, config: dict[str, Any], *, campaign_id: str | None = None, schema_version: int = SCHEMA_VERSION) -> "CampaignLedger":
@@ -445,7 +447,7 @@ class CampaignLedger(ExecutionJobLedgerMixin):
             return deepcopy(result)
 
     def assert_production_jobs(self):
-        state = self.snapshot()
+        state = self.view()
         if state["schema_version"] == 2 and any(
             j["mode"] != "single_attempt_adapter" or len(j["manifest"]) != 1
             for j in state["execution_jobs"].values()
@@ -453,7 +455,7 @@ class CampaignLedger(ExecutionJobLedgerMixin):
             raise ValueError("Accounting-only execution jobs cannot enter campaign dispatch.")
 
     def retry_is_safe(self, attempt):
-        state = self.snapshot()
+        state = self.view()
         if state["schema_version"] == 1:
             # Keep the old data interpretation, but never automatically replay
             # missing or post-launch stochastic work during controller recovery.
@@ -545,9 +547,31 @@ class CampaignLedger(ExecutionJobLedgerMixin):
                 state["events"].append({"type": "execution_accounting_updated", "at": state["updated_at"]})
                 _atomic_json(self.path, state)
 
+    def _cached_snapshot(self) -> dict[str, Any]:
+        stat = self.path.stat()
+        signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+        if self._snapshot_cache is None or signature != self._snapshot_signature:
+            self._snapshot_cache = _read(self.path)
+            stat = self.path.stat()
+            self._snapshot_signature = (
+                stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns,
+            )
+        return self._snapshot_cache
+
     def snapshot(self) -> dict[str, Any]:
+        """Return an isolated campaign snapshot for callers that may mutate it."""
         with _locked(self.path):
-            return _read(self.path)
+            return deepcopy(self._cached_snapshot())
+
+    def view(self) -> dict[str, Any]:
+        """Return the cached read-only ledger view for internal hot paths.
+
+        Callers must not mutate the returned dictionary. Mutating workflows
+        continue to use ``snapshot()`` so local edits cannot corrupt the cache.
+        """
+        with _locked(self.path):
+            return self._cached_snapshot()
+
 
     @contextmanager
     def controller_lock(self) -> Iterator[None]:
@@ -565,7 +589,7 @@ class CampaignLedger(ExecutionJobLedgerMixin):
 
 
     def counters(self) -> dict[str, int]:
-        state = self.snapshot()
+        state = self.view()
         attempts = list(state["attempts"].values())
         candidates = list(state["candidates"].values())
         designs_authorized = _authorized_design_count(state)
@@ -765,7 +789,7 @@ class CampaignLedger(ExecutionJobLedgerMixin):
             return True
 
     def gpu_compute_seconds(self) -> float:
-        state = self.snapshot()
+        state = self.view()
         validation_and_legacy = sum(float(seconds) for attempt in state["attempts"].values()
                                     for seconds in (attempt.get("compute_runs") or {}).values())
         job_seconds = sum(float(seconds) for job in state.get("execution_jobs", {}).values()
@@ -1139,6 +1163,12 @@ def _campaign_ledger_path(parent_run_dir: Path) -> Path:
     return Path(parent_run_dir) / "artifacts" / "distributed_campaign" / "ledger.json"
 
 
+def _ledger_view(ledger: Any) -> dict[str, Any]:
+    """Use the cached read-only view when available; retain test adapters."""
+    view = getattr(ledger, "view", None)
+    return view() if callable(view) else ledger.snapshot()
+
+
 def _gpu_for_attempt(config: dict[str, Any], ordinal: int) -> str:
     selection = str(config.get("gpu_selection") or "auto").strip().lower().removeprefix("device=")
     if selection in {"all", "auto", "eligible"}:
@@ -1185,7 +1215,7 @@ def _submit_rfd4_peer_attempt(
     from mn_molecular_design_studio.cluster import candidate_batches
 
     parent_run_dir, child_run_dir = Path(parent_run_dir), Path(child_run_dir)
-    state = ledger.snapshot()
+    state = _ledger_view(ledger)
     campaign_id = state["campaign_id"]
     generator_id = str(state["config"].get("generator_id") or "bindcraft2")
     peer = dict(attempt.get("cluster_submission") or {})
@@ -1323,7 +1353,7 @@ def _materialize_rfd4_peer_output(
             candidate_batches.actor(owner_id, project_id, allow_development=development_mode), collected,
         )
         if json.dumps(peer.get("transfers", {}), sort_keys=True) != previous:
-            latest = ledger.snapshot()["attempts"].get(attempt["attempt_id"], {})
+            latest = _ledger_view(ledger)["attempts"].get(attempt["attempt_id"], {})
             current_peer = dict(latest.get("cluster_submission") or {})
             current_peer.update({
                 key: peer[key] for key in (
@@ -1432,7 +1462,7 @@ def _materialize_rfd4_peer_output(
     )
     local_metadata.pop("result_collection_pending", None)
     write_json(child_run_dir / "metadata.json", local_metadata)
-    attempt_state = ledger.snapshot()["attempts"].get(attempt["attempt_id"], {})
+    attempt_state = _ledger_view(ledger)["attempts"].get(attempt["attempt_id"], {})
     peer_state = dict(attempt_state.get("cluster_submission") or peer)
     peer_state["collected_output"] = output
     peer_state["worker_node_id"] = remote_job.get("node_id")
@@ -1833,7 +1863,7 @@ def _create_rfd4_attempt_child(
         "ram_gb": float(resource_options.get("ram_gb") or 0),
         "scratch_gb": float(resource_options.get("scratch_gb") or 0),
     }
-    campaign_id = ledger.snapshot()["campaign_id"]
+    campaign_id = _ledger_view(ledger)["campaign_id"]
     with submission_tags(
         distributed_campaign_id=campaign_id,
         distributed_attempt_id=attempt["attempt_id"],
@@ -1874,7 +1904,7 @@ def _create_rfd4_attempt_child(
         cluster_remote=peer_execution,
     )
     if peer_execution:
-        current_attempt = ledger.snapshot()["attempts"][attempt["attempt_id"]]
+        current_attempt = _ledger_view(ledger)["attempts"][attempt["attempt_id"]]
         _submit_rfd4_peer_attempt(parent_run_dir, ledger, current_attempt, child_run_dir)
     else:
         spawn_worker_for_run(child_run_dir)
@@ -1916,7 +1946,7 @@ def _repair_rfd4_attempt_child(
     write_json(child_run_dir / "input.json", child_payload)
     metadata = read_json_raw(child_run_dir / "metadata.json")
     resource_request = metadata.get("resource_request") if isinstance(metadata.get("resource_request"), dict) else {}
-    campaign_id = CampaignLedger(_campaign_ledger_path(parent_run_dir)).snapshot()["campaign_id"]
+    campaign_id = CampaignLedger(_campaign_ledger_path(parent_run_dir)).view()["campaign_id"]
     mark_internal_job(
         child_run_dir, parent_run_dir=parent_run_dir,
         parent_task_group=parent_run_dir.parent.name,
@@ -2011,7 +2041,7 @@ def _create_attempt_child(
     }
     child_params["cpu_cores"] = resource_request["cpu_cores"]
     child_params["resource_request"] = resource_request
-    campaign_id = ledger.snapshot()["campaign_id"]
+    campaign_id = _ledger_view(ledger)["campaign_id"]
     with submission_tags(
         distributed_campaign_id=campaign_id,
         distributed_attempt_id=attempt["attempt_id"],
@@ -2111,7 +2141,7 @@ def _repair_attempt_child(
     child_payload["params"] = params
     child_payload["inputs"] = _attempt_child_inputs(parent_payload.get("inputs") or {}, params)
     write_json(child_run_dir / "input.json", child_payload)
-    campaign_id = CampaignLedger(_campaign_ledger_path(parent_run_dir)).snapshot()["campaign_id"]
+    campaign_id = CampaignLedger(_campaign_ledger_path(parent_run_dir)).view()["campaign_id"]
     child_raw = child_run_dir / "artifacts" / "raw" / "bindcraft2"
     parent_raw = parent_run_dir / "artifacts" / "raw" / "bindcraft2"
     child_raw.mkdir(parents=True, exist_ok=True)
@@ -2170,7 +2200,7 @@ def _find_unlinked_children(
 ) -> dict[str, Path]:
     from mn_molecular_design_studio.engine.workflow_engine.runtime import runs_root
 
-    state = state if state is not None else ledger.snapshot()
+    state = state if state is not None else _ledger_view(ledger)
     unlinked = {
         attempt_id for attempt_id, item in state["attempts"].items()
         if not item.get("child_run_dir") and item.get("status") not in {"completed", "failed", "interrupted", "cancelled", "not_started"}
@@ -2201,7 +2231,7 @@ def _attempt_child_paths(
 ) -> dict[str, Path]:
     from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
 
-    state = state if state is not None else ledger.snapshot()
+    state = state if state is not None else _ledger_view(ledger)
     found = _find_unlinked_children(ledger, state)
     children: dict[str, Path] = {}
     for attempt_id, attempt in state["attempts"].items():
@@ -2213,7 +2243,7 @@ def _attempt_child_paths(
 
 
 def _accepted_count(ledger: CampaignLedger, config: dict[str, Any]) -> int:
-    return _state_accepted_count(ledger.snapshot())
+    return _state_accepted_count(_ledger_view(ledger))
 
 
 def _collecting_attempt_count(active: list[dict[str, Any]]) -> int:
@@ -2268,7 +2298,7 @@ def _reconcile_attempts(
         read_bindcraft2_campaign_state = None
 
     ledger.assert_production_jobs()
-    state = ledger.snapshot()
+    state = _ledger_view(ledger)
     time_expired = time_progress(config, state["created_at"])["time_expired"]
     children = _attempt_child_paths(ledger, state)
     for attempt_id, attempt in list(state["attempts"].items()):
@@ -2308,7 +2338,7 @@ def _reconcile_attempts(
     # Authorization recovery above can create or update child submissions.
     # Refresh once before reconciliation, rather than re-reading the entire
     # growing ledger for every attempt below.
-    state = ledger.snapshot()
+    state = _ledger_view(ledger)
     active: list[dict[str, Any]] = []
     candidate_rows: list[dict[str, Any]] = []
     for attempt_id, attempt in state["attempts"].items():
@@ -2389,7 +2419,7 @@ def _reconcile_attempts(
                         ledger.transition(attempt_id, "queued", cluster_job_id=peer["cluster_job_id"], cluster_submission=peer)
                     else:
                         peer = _submit_rfd4_peer_attempt(parent_run_dir, ledger, attempt, child)
-                    state = ledger.snapshot()
+                    state = _ledger_view(ledger)
                     attempt = state["attempts"][attempt_id]
                     peer = dict(attempt.get("cluster_submission") or peer)
                 defer_remote_artifacts = config.get("remote_artifact_policy") == "defer_generated"
@@ -2509,13 +2539,13 @@ def _reconcile_attempts(
                 if not materialize(
                     parent_run_dir, ledger, attempt, child, peer, peer_output, peer_job,
                 ):
-                    latest = ledger.snapshot()["attempts"][attempt_id]
+                    latest = _ledger_view(ledger)["attempts"][attempt_id]
                     child_metadata.update(status="collecting", result_collection_pending=True)
                     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json
                     write_json(child / "metadata.json", child_metadata)
                     active.append({**latest, "worker_status": "collecting", "worker_node_id": peer.get("worker_node_id")})
                     continue
-                attempt = ledger.snapshot()["attempts"][attempt_id]
+                attempt = _ledger_view(ledger)["attempts"][attempt_id]
             elif peer_status in {"failed", "cancelled", "lost"}:
                 terminal = "cancelled" if peer_status == "cancelled" else "failed"
                 child_metadata.update(status=terminal, worker_error=peer_job.get("wait_reason") or peer_status, completed_at=utc_now())
@@ -2534,7 +2564,7 @@ def _reconcile_attempts(
                 child_metadata["result_collection_pending"] = collecting
                 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json
                 write_json(child / "metadata.json", child_metadata)
-                latest = ledger.snapshot()["attempts"][attempt_id]
+                latest = _ledger_view(ledger)["attempts"][attempt_id]
                 active.append({
                     **latest,
                     "worker_status": peer_status,
@@ -2632,7 +2662,7 @@ def _reconcile_attempts(
                     )
         elif attempt["status"] not in {"failed", "interrupted", "cancelled", "not_started"}:
             ledger.transition(attempt_id, "interrupted", child_run_dir=str(child), failure=f"Unexpected child status {status}")
-    state = ledger.snapshot()
+    state = _ledger_view(ledger)
     children = _attempt_child_paths(ledger, state)
     attempt_order = {
         attempt_id: attempt["ordinal"]
@@ -2678,7 +2708,7 @@ def _sync_parent_results(
     from mn_molecular_design_studio.engine.workflow_engine.core.candidates import write_candidates
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json
 
-    state = ledger.snapshot()
+    state = _ledger_view(ledger)
     shared, _generator_node = _shared_objective_runtime(parent_run_dir, state.get("config", {}))
     metadata = read_json_raw(parent_run_dir / "metadata.json")
     old_ids = metadata.get("distributed_candidate_ids") or []
@@ -2727,8 +2757,6 @@ def _sync_parent_results(
     acceptance_stage = next((stage for stage in state["config"].get("validation_stages", [])
                             if stage.get("workflow") == "analysis.validation_acceptance"), None)
     if acceptance_stage is not None:
-        from mn_molecular_design_studio.validation_acceptance import write_report
-
         decisions = [((row.get("raw_metadata") or {}).get("validation_acceptance") or {}) for row in enriched]
         decision_statuses = [str(row.get("status") or "not_evaluated") for row in decisions]
         acceptance_summary = {
@@ -2743,8 +2771,33 @@ def _sync_parent_results(
             "not_evaluated": sum(status == "not_evaluated" for status in decision_statuses),
             "source_measurements": "RFD4 native refold oracle and Studio geometry from the saved complex",
         }
-        write_report(parent_run_dir, enriched, acceptance_summary)
-        write_json(parent_run_dir / "artifacts" / "validation" / "acceptance_summary.json", acceptance_summary)
+        report_rows = []
+        for row, decision in zip(enriched, decisions):
+            provenance = ((row.get("raw_metadata") or {}).get("validation_acceptance_provenance") or {})
+            source_ids = row.get("parents") or (
+                [provenance["source_candidate_id"]] if provenance.get("source_candidate_id") else []
+            )
+            report_rows.append({
+                "candidate_id": row.get("candidate_id"),
+                "source_candidate_ids": source_ids,
+                "native_filter_status": decision.get("native_filter_status"),
+                **{key: decision.get(key) for key in (
+                    "status", "binder_format", "target_type", "ranking_metric", "ranking_value",
+                )},
+                "measurements": decision.get("measurements", {}),
+                "reasons": decision.get("reasons") or [],
+            })
+        report_digest = hashlib.sha256(json.dumps(
+            {"summary": acceptance_summary, "rows": report_rows},
+            sort_keys=True, default=str,
+        ).encode()).hexdigest()
+        report_path = parent_run_dir / "artifacts" / "validation" / "acceptance.csv"
+        if metadata.get("validation_acceptance_report_digest") != report_digest or not report_path.is_file():
+            from mn_molecular_design_studio.validation_acceptance import write_report
+
+            write_report(parent_run_dir, enriched, acceptance_summary)
+            write_json(parent_run_dir / "artifacts" / "validation" / "acceptance_summary.json", acceptance_summary)
+            metadata["validation_acceptance_report_digest"] = report_digest
     candidate_digest = hashlib.sha256(json.dumps(enriched, sort_keys=True, default=str).encode()).hexdigest()
     if (
         old_ids != candidate_ids
@@ -2838,7 +2891,7 @@ def _parent_progress(
     counters = ledger.counters()
     capability = generator_capabilities(str(config.get("generator_id") or "bindcraft2"))
     selected = _accepted_count(ledger, config)
-    state = ledger.snapshot()
+    state = _ledger_view(ledger)
     attempts_remaining = counters["designs_remaining"]
     validation_pending = _validation_pending_candidates(state, config)
     collecting = _collecting_attempt_count(active)
@@ -2889,7 +2942,7 @@ def _dispatch_attempts(
     objective_reserved_count: int = 0,
 ) -> None:
     ledger.assert_production_jobs()
-    state = ledger.snapshot()
+    state = _ledger_view(ledger)
     max_concurrent = int(config["max_concurrent_generation_jobs"])
     slots = max(0, max_concurrent - active_count)
     # Attempts are scheduler jobs; the design budget and objective are counted
@@ -2929,13 +2982,13 @@ def _dispatch_attempts(
         input_bytes = parent_input.read_bytes() if parent_input.is_file() else None
         source_input = {"parent_run_dir": str(parent_run_dir), "input_sha256": hashlib.sha256(input_bytes).hexdigest()} if input_bytes is not None else None
         native_configuration = json.loads(input_bytes) if input_bytes is not None else None
-        remaining_designs = int(config["max_attempts"]) - _authorized_design_count(ledger.snapshot())
+        remaining_designs = int(config["max_attempts"]) - _authorized_design_count(_ledger_view(ledger))
         job_designs = min(designs_per_job, max(0, remaining_designs))
         if job_designs <= 0:
             return
         predicted_attempt_id = None
         if shared:
-            ordinal = int(ledger.snapshot()["next_ordinal"])
+            ordinal = int(_ledger_view(ledger)["next_ordinal"])
             predicted_attempt_id = f"{state['campaign_id']}:a{ordinal:08d}"
             if not shared.reserve_attempt(
                 state["campaign_id"], predicted_attempt_id, generator_node,
@@ -2962,7 +3015,7 @@ def _dispatch_attempts(
                 attempt["attempt_id"], "failed",
                 failure=failure,
             )
-            child_text = ledger.snapshot()["attempts"][attempt["attempt_id"]].get("child_run_dir")
+            child_text = _ledger_view(ledger)["attempts"][attempt["attempt_id"]].get("child_run_dir")
             if child_text:
                 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import write_json
 
@@ -2972,7 +3025,7 @@ def _dispatch_attempts(
                     metadata.update(status="failed", worker_error=failure, completed_at=utc_now())
                     write_json(child / "metadata.json", metadata)
         if shared:
-            shared.sync_campaign(state["campaign_id"], generator_node, ledger.snapshot(), ledger.gpu_compute_seconds())
+            shared.sync_campaign(state["campaign_id"], generator_node, _ledger_view(ledger), ledger.gpu_compute_seconds())
 
 
 def _campaign_elapsed_seconds(state: dict[str, Any]) -> float:
@@ -3033,7 +3086,7 @@ def _campaign_compute_seconds(
         metadata = read_json_raw(child / "metadata.json")
         if metadata.get("status") in {"queued", "preparing", "running"}:
             total += _worker_gpu_seconds(metadata, include_active=True)
-    state = ledger.snapshot()
+    state = _ledger_view(ledger)
     for candidate in state["candidates"].values():
         attempt_id = str(candidate.get("attempt_id") or "")
         for stage_index, stage in (candidate.get("validation_stages") or {}).items():
@@ -3053,7 +3106,7 @@ def _shared_campaign_compute_seconds(
     ledger: CampaignLedger, children: dict[str, Path], active: list[dict[str, Any]],
 ) -> float:
     total = _campaign_compute_seconds(ledger, children, active)
-    state = ledger.snapshot()
+    state = _ledger_view(ledger)
     for candidate in state.get("candidates", {}).values():
         for stage in (candidate.get("validation_stages") or {}).values():
             if stage.get("status") not in {"queued", "preparing", "running", "submitting"} or not stage.get("run_dir"):
@@ -3066,7 +3119,7 @@ def _shared_campaign_compute_seconds(
 def _cancel_queued_attempts(ledger: CampaignLedger, children: dict[str, Path], reason: str) -> None:
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import stop_job
 
-    state = ledger.snapshot()
+    state = _ledger_view(ledger)
     for attempt_id, attempt in state["attempts"].items():
         if attempt["status"] not in {"authorized", "queued"}:
             continue
@@ -3136,7 +3189,7 @@ def _cancel_campaign_attempt(
 def _cancel_validation_runs(ledger: CampaignLedger, reason: str) -> None:
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import stop_job
 
-    state = ledger.snapshot()
+    state = _ledger_view(ledger)
     for candidate_id, candidate in state["candidates"].items():
         stages = dict(candidate.get("validation_stages") or {})
         changed = False
@@ -3161,7 +3214,7 @@ def _cancel_validation_runs(ledger: CampaignLedger, reason: str) -> None:
 def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: list[dict[str, Any]]) -> Path:
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import finish_job, read_json
 
-    state = ledger.snapshot()
+    state = _ledger_view(ledger)
     counters = ledger.counters()
     accepted = _accepted_count(ledger, state["config"])
     progress = objective_progress(state["config"], accepted, state["created_at"])
@@ -3176,7 +3229,7 @@ def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: l
     _sync_parent_results(parent_run_dir, ledger, _attempt_child_paths(ledger), candidates)
     persisted_summary = read_json(parent_run_dir / "artifacts" / "distributed_campaign" / "summary.json")
     validation_acceptance_summary = persisted_summary.get("validation_acceptance")
-    state = ledger.snapshot()
+    state = _ledger_view(ledger)
     reason = str(state.get("termination_reason") or "failed")
     generation_budget_exhausted = bool(
         state.get("generation_budget_exhausted")
@@ -3400,7 +3453,7 @@ def _submit_validation_stage(
     )
     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import submit_workflow_request
 
-    state = ledger.snapshot()
+    state = _ledger_view(ledger)
     campaign_id = state["campaign_id"]
     candidate_id = str(candidate["candidate_id"])
     existing = _validation_tagged_run(campaign_id, candidate_id, stage_index)
@@ -3639,10 +3692,10 @@ def _drive_validation(
     from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
 
     shared, generator_node = _shared_objective_runtime(parent_run_dir, config)
-    campaign_id = ledger.snapshot()["campaign_id"]
+    campaign_id = _ledger_view(ledger)["campaign_id"]
 
     candidate_rows = {str(row["candidate_id"]): row for row in candidates}
-    state = ledger.snapshot()
+    state = ledger.view()
     dispatch = dispatch and not time_progress(config, state["created_at"])["time_expired"]
     stage_specs = config["validation_stages"]
     active_count = _validation_active_count(state)
@@ -3990,7 +4043,7 @@ def _drive_validation(
                 failed_stage = True
                 break
 
-        latest = ledger.snapshot()["candidates"].get(candidate_id, {})
+        latest = _ledger_view(ledger)["candidates"].get(candidate_id, {})
         latest_stages = latest.get("validation_stages") or {}
         if not failed_stage and len(latest_stages) == len(stage_specs) and all(
             completed_stage_passed(stage_specs[index], latest_stages.get(str(index)) or {})
@@ -4001,7 +4054,7 @@ def _drive_validation(
             ledger.set_candidate_acceptance(candidate_id, validated="accepted", reason=accepted_reason)
             ledger.update_candidate(candidate_id, validation_decision_reason=accepted_reason)
     if shared:
-        final_state = ledger.snapshot()
+        final_state = _ledger_view(ledger)
         for candidate_id, record in final_state["candidates"].items():
             if record.get("native_acceptance") not in {"accepted", "unavailable"}:
                 continue
@@ -4011,7 +4064,7 @@ def _drive_validation(
                     campaign_id, candidate_id, acceptance,
                     str(record.get("validation_decision_reason") or record.get("decision_reason") or ""),
                 )
-    updated = ledger.snapshot()
+    updated = _ledger_view(ledger)
     by_id = {row.get("candidate_id"): row for row in candidates}
     for candidate_id, row in by_id.items():
         ledger_candidate = updated["candidates"].get(str(candidate_id), {})
@@ -4133,7 +4186,7 @@ def _apply_diversity(
         return candidates
     if not settled:
         return candidates
-    state = ledger.snapshot()
+    state = _ledger_view(ledger)
     candidate_by_id = {str(row.get("candidate_id")): row for row in candidates}
     ordered = sorted(
         state["candidates"].items(),
@@ -4199,7 +4252,7 @@ def _apply_diversity(
         qualified.append((candidate_id, row, similar_cluster))
         ledger.set_candidate_acceptance(candidate_id, diversity="accepted", reason=f"Diversity cluster {similar_cluster + 1}.")
         ledger.update_candidate(candidate_id, diversity_decision_reason=f"Diversity cluster {similar_cluster + 1}.")
-    state = ledger.snapshot()
+    state = _ledger_view(ledger)
     for candidate_id, row in candidate_by_id.items():
         ledger_candidate = state["candidates"].get(candidate_id, {})
         if ledger_candidate:
@@ -4235,7 +4288,7 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
     ledger = CampaignLedger.create(_campaign_ledger_path(parent_run_dir), config)
     with ledger.controller_lock():
         ledger.assert_production_jobs()
-        state = ledger.snapshot()
+        state = _ledger_view(ledger)
         update_status(
             parent_run_dir, "running",
             distributed_campaign_id=state["campaign_id"],
@@ -4244,11 +4297,11 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
         )
         if shared:
             shared.sync_campaign(
-                state["campaign_id"], str(generator_node), ledger.snapshot(),
+                state["campaign_id"], str(generator_node), _ledger_view(ledger),
                 _shared_campaign_compute_seconds(ledger, {}, []),
             )
         while True:
-            state = ledger.snapshot()
+            state = _ledger_view(ledger)
             if _design_budget_exhausted(state):
                 state = ledger.mark_generation_budget_exhausted()
             parent_metadata = read_json_raw(parent_run_dir / "metadata.json")
@@ -4257,7 +4310,7 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
             if parent_metadata.get("status") == "cancelled" or state.get("termination_reason") == "cancelled":
                 ledger.terminate("cancelled", detail="Campaign cancelled by user.")
                 children = _attempt_child_paths(ledger)
-                for attempt_id, attempt in ledger.snapshot()["attempts"].items():
+                for attempt_id, attempt in _ledger_view(ledger)["attempts"].items():
                     child = children.get(attempt_id)
                     if child is None or attempt.get("status") not in {"authorized", "queued", "running"}:
                         continue
@@ -4274,13 +4327,13 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
             children, active, candidates = _reconcile_attempts(ledger, parent_run_dir, config)
             if shared:
                 shared.sync_campaign(
-                    state["campaign_id"], str(generator_node), ledger.snapshot(),
+                    state["campaign_id"], str(generator_node), _ledger_view(ledger),
                     _shared_campaign_compute_seconds(ledger, children, active),
                 )
             # Downstream prediction workers resolve source_candidate_id from the
             # parent's normalized collection, so publish native receipts first.
             _sync_parent_results(parent_run_dir, ledger, children, candidates)
-            current_state = ledger.snapshot()
+            current_state = _ledger_view(ledger)
             compute_limit = config.get("max_compute_seconds")
             validation_dispatch_allowed = not (
                 time_progress(config, current_state["created_at"])["time_expired"]
@@ -4292,8 +4345,8 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
                 parent_run_dir, ledger, candidates, config,
                 dispatch=validation_dispatch_allowed,
             )
-            validation_pending = _validation_pending_candidates(ledger.snapshot(), config)
-            validation_active = _validation_active_count(ledger.snapshot())
+            validation_pending = _validation_pending_candidates(_ledger_view(ledger), config)
+            validation_active = _validation_active_count(_ledger_view(ledger))
             diversity_settled = not active and not validation_pending and not validation_active
             candidates = _apply_diversity(
                 parent_run_dir, ledger, candidates, config, settled=diversity_settled,
@@ -4303,7 +4356,7 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
             selected = _accepted_count(ledger, config)
             if shared:
                 shared_state = shared.sync_campaign(
-                    state["campaign_id"], str(generator_node), ledger.snapshot(),
+                    state["campaign_id"], str(generator_node), _ledger_view(ledger),
                     _shared_campaign_compute_seconds(ledger, children, active),
                 )
                 shared_summary = shared.summary()
@@ -4322,10 +4375,10 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
                     _sync_parent_results(parent_run_dir, ledger, children, candidates)
                     if shared:
                         shared.sync_campaign(
-                            state["campaign_id"], str(generator_node), ledger.snapshot(),
+                            state["campaign_id"], str(generator_node), _ledger_view(ledger),
                             _shared_campaign_compute_seconds(ledger, children, active),
                         )
-                    if not active and not _validation_active_count(ledger.snapshot()):
+                    if not active and not _validation_active_count(_ledger_view(ledger)):
                         reason = {
                             "target_reached": "shared_target_reached",
                             "budget_exhausted": "budget_exhausted",
@@ -4341,8 +4394,8 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
                     _parent_progress(parent_run_dir, ledger, config, active)
                     time.sleep(float(config["poll_interval_seconds"]))
                     continue
-                local_pending = _validation_pending_candidates(ledger.snapshot(), config)
-                if shared.branch_budget_exhausted(str(generator_node)) and not active and not local_pending and not _validation_active_count(ledger.snapshot()):
+                local_pending = _validation_pending_candidates(_ledger_view(ledger), config)
+                if shared.branch_budget_exhausted(str(generator_node)) and not active and not local_pending and not _validation_active_count(_ledger_view(ledger)):
                     ledger.terminate(
                         "budget_exhausted",
                         detail=f"Generator branch {generator_node} reached its shared attempt limit.",
@@ -4358,13 +4411,13 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
                 children, active, candidates = _reconcile_attempts(ledger, parent_run_dir, config)
                 _sync_parent_results(parent_run_dir, ledger, children, candidates)
                 candidates = _drive_validation(parent_run_dir, ledger, candidates, config)
-                diversity_settled = not active and not _validation_pending_candidates(ledger.snapshot(), config) and not _validation_active_count(ledger.snapshot())
+                diversity_settled = not active and not _validation_pending_candidates(_ledger_view(ledger), config) and not _validation_active_count(_ledger_view(ledger))
                 candidates = _apply_diversity(
                     parent_run_dir, ledger, candidates, config, settled=diversity_settled,
                 )
                 _sync_parent_results(parent_run_dir, ledger, children, candidates)
                 _parent_progress(parent_run_dir, ledger, config, active)
-                pending_validation = _validation_pending_candidates(ledger.snapshot(), config)
+                pending_validation = _validation_pending_candidates(_ledger_view(ledger), config)
                 selected = _accepted_count(ledger, config)
                 if not active and not pending_validation and count_reached(config, selected):
                     ledger.terminate("target_reached", detail=f"Reached {selected} {'generated' if config.get('objective_type') == 'generated' else 'accepted'} candidates.")
@@ -4379,26 +4432,26 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
                 candidates = _drive_validation(
                     parent_run_dir, ledger, candidates, config, dispatch=False,
                 )
-                diversity_settled = not active and not _validation_active_count(ledger.snapshot())
+                diversity_settled = not active and not _validation_active_count(_ledger_view(ledger))
                 candidates = _apply_diversity(
                     parent_run_dir, ledger, candidates, config, settled=diversity_settled,
                 )
                 _sync_parent_results(parent_run_dir, ledger, children, candidates)
                 _parent_progress(parent_run_dir, ledger, config, active)
-                if not active and not _validation_active_count(ledger.snapshot()):
+                if not active and not _validation_active_count(_ledger_view(ledger)):
                     reason = "runtime_exhausted" if runtime_exhausted else "compute_exhausted"
                     detail = "Configured runtime budget expired." if runtime_exhausted else "Configured GPU compute budget expired."
                     ledger.terminate(reason, detail=detail)
                     return _finish_campaign(parent_run_dir, ledger, candidates)
             else:
-                cycle_ready = _generation_cycle_ready(active, ledger.snapshot(), config)
+                cycle_ready = _generation_cycle_ready(active, _ledger_view(ledger), config)
                 if cycle_ready:
                     _dispatch_attempts(
                         parent_run_dir, ledger, config,
                         active_count=_generation_slot_count(active),
                         accepted_count=selected,
                         objective_reserved_count=_objective_reserved_design_count(
-                            ledger.snapshot(), active, config,
+                            _ledger_view(ledger), active, config,
                         ),
                     )
                     # Newly created child jobs are scheduler-owned immediately,
@@ -4407,7 +4460,7 @@ def _run_distributed_campaign(parent_run_dir: Path, expected_generator_id: str) 
                     _sync_parent_results(parent_run_dir, ledger, children, candidates)
                     candidates = _drive_validation(parent_run_dir, ledger, candidates, config)
                     _sync_parent_results(parent_run_dir, ledger, children, candidates)
-                state = ledger.snapshot()
+                state = _ledger_view(ledger)
                 if _design_budget_exhausted(state):
                     state = ledger.mark_generation_budget_exhausted()
                 if (
@@ -4460,7 +4513,7 @@ def cancel_distributed_campaign(parent_run_dir: Path, reason: str = "Campaign ca
 
     children = _attempt_child_paths(ledger)
     for attempt_id, child in children.items():
-        attempt = ledger.snapshot()["attempts"].get(attempt_id, {})
+        attempt = _ledger_view(ledger)["attempts"].get(attempt_id, {})
         status = str(read_json_raw(child / "metadata.json").get("status") or "")
         if status in {"queued", "preparing", "running"}:
             _cancel_campaign_attempt(ledger, attempt, child, reason)
