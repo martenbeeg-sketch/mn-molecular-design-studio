@@ -2031,6 +2031,105 @@ def test_rfd4_candidate_reconciliation_maps_mmcif_author_chain_to_label_chain(
     }]
 
 
+def test_materialized_deferred_rfd4_candidates_rebuild_results_without_double_counting(
+    tmp_path, monkeypatch, design_source_factory,
+):
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    root, parent = _parent_run(tmp_path, monkeypatch, {
+        "generator_id": "rfd4_proteina", "objective_type": "accepted",
+        "acceptance_level": "validated", "accepted_target": 2, "max_attempts": 2,
+        "remote_artifact_policy": "defer_accepted",
+    })
+    (parent / "worker_request.json").write_text("{}", encoding="utf-8")
+    jobs.write_json(parent / "metadata.json", {"status": "completed"})
+    config = distributed_campaign.validate_campaign_config({
+        "generator_id": "rfd4_proteina", "objective_type": "accepted",
+        "acceptance_level": "validated", "accepted_target": 2, "max_attempts": 2,
+        "remote_artifact_policy": "defer_accepted",
+        "validation_stages": [{
+            "workflow": "analysis.validation_acceptance",
+            "acceptance_policy": {
+                "schema": "studio.validation-acceptance.v1",
+                "binder_format": "miniprotein", "target_type": "fasta_idr",
+                "mandatory_filters": [{
+                    "field": "common.confidence.generator.complex.iptm",
+                    "operator": ">=", "value": 0.7,
+                }],
+                "informational_scores": [],
+            },
+        }],
+    })
+    campaign = CampaignLedger.create(
+        parent / "artifacts/distributed_campaign/ledger.json", config,
+        campaign_id="deferred-rfd4-results-repair",
+    )
+    attempts = campaign.authorize(2, batch_id="remote-batch")
+    children = {}
+    for index, attempt in enumerate(attempts, start=1):
+        child, candidate = design_source_factory(root / "design" / f"remote-child-{index}")
+        target_path = child / "target.cif"
+        target_path.write_bytes((child / "designed.cif").read_bytes())
+        candidate.update(
+            source_tool="rfd4_proteina", target_pdb=str(target_path),
+            raw_metadata={"validation_acceptance": {
+                "status": "accepted", "binder_format": "miniprotein",
+                "target_type": "fasta_idr", "measurements": {"iptm": 0.82},
+                "reasons": [],
+            }},
+        )
+        (child / "artifacts/normalized_candidates/candidates.jsonl").write_text(
+            json.dumps(candidate) + "\n", encoding="utf-8",
+        )
+        jobs.write_json(child / "input.json", {"params": {
+            "target_structure": str(target_path), "target_chains": ["A"],
+            "length_min": 5, "length_max": 5,
+        }})
+        jobs.write_json(child / "metadata.json", {
+            "status": "completed", "deferred_accepted_materialized": True,
+            "deferred_accepted_candidate_count": 1,
+        })
+        campaign.transition(attempt["attempt_id"], "running", child_run_dir=str(child))
+        campaign.record_deferred_receipt(
+            attempt["attempt_id"], f"receipt-{index}",
+            native_state={"engine": "rfd4_proteina", "output_storage": "worker_local"},
+            native_output_ids=[], candidate_records=[], candidate_count=3,
+            evidence={"candidate_count": 3, "acceptance_counts": {
+                "accepted": 1, "rejected": 2, "unresolved": 0, "not_evaluated": 0,
+            }},
+        )
+        children[attempt["attempt_id"]] = child
+    campaign.terminate("target_reached", detail="Reached two accepted candidates.")
+
+    assert distributed_campaign.can_resume_campaign_finalization(parent)
+    reconciled_children, active, candidates = distributed_campaign._reconcile_attempts(
+        campaign, parent, config,
+    )
+    assert active == []
+    assert reconciled_children == children
+    assert len(candidates) == 2
+    assert len({row["candidate_id"] for row in candidates}) == 2
+    assert {row["raw_metadata"]["native_candidate_id"] for row in candidates} == {"passing-design"}
+
+    distributed_campaign._sync_parent_results(parent, campaign, children, candidates)
+
+    saved_rows = read_candidates(parent)
+    summary = jobs.read_json(parent / "artifacts/distributed_campaign/summary.json")
+    acceptance = summary["validation_acceptance"]
+    assert len(saved_rows) == 2
+    assert summary["candidate_count"] == 6
+    assert summary["materialized_candidate_count"] == 2
+    assert summary["materialized_deferred_candidate_count"] == 2
+    assert summary["deferred_candidate_count"] == 4
+    assert acceptance["candidate_count"] == 6
+    assert acceptance["accepted"] == 2
+    assert acceptance["rejected"] == 4
+    assert acceptance["accepted_structures_transferred"] == 2
+    assert acceptance["rejected_structures_transferred"] == 0
+    assert not distributed_campaign.can_resume_campaign_finalization(parent)
+
+
 def test_rfd4_campaign_stop_routes_through_global_child_cancellation(tmp_path, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.core import central_scheduler, jobs
 

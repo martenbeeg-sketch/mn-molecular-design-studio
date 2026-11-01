@@ -2325,9 +2325,16 @@ def _accepted_count(ledger: CampaignLedger, config: dict[str, Any]) -> int:
 
 
 def can_resume_campaign_finalization(run_dir: str | Path) -> bool:
-    """Allow a failed parent to resume collection only after generation is terminal."""
+    """Allow safe finalization recovery after generation is terminal.
+
+    A completed parent can still need repair when accepted worker artifacts were
+    collected but a controller bug left the campaign CandidateSet empty. In
+    that case, resuming the controller only replays reconciliation from its
+    durable ledger and local receipts; it must never authorize new attempts.
+    """
     run_dir = Path(run_dir).expanduser()
-    if read_json_raw(run_dir / "metadata.json").get("status") != "failed":
+    parent_status = str(read_json_raw(run_dir / "metadata.json").get("status") or "")
+    if parent_status not in {"failed", "completed"}:
         return False
     ledger_path = _campaign_ledger_path(run_dir)
     if not ledger_path.is_file() or not (run_dir / "worker_request.json").is_file():
@@ -2349,22 +2356,43 @@ def can_resume_campaign_finalization(run_dir: str | Path) -> bool:
 
     children = _attempt_child_paths(ledger, state)
     has_accepted_output = False
+    accepted_expected = 0
+    accepted_materialized = 0
     for receipt in state.get("deferred_outputs", {}).values():
         accepted_count = int((receipt.get("evidence") or {}).get("acceptance_counts", {}).get("accepted") or 0)
         if accepted_count <= 0:
             continue
         has_accepted_output = True
+        accepted_expected += accepted_count
         attempt_id = str(receipt.get("attempt_id") or "")
         attempt = state.get("attempts", {}).get(attempt_id) or {}
         child = children.get(attempt_id)
         if child is None:
             return False
-        if read_json_raw(child / "metadata.json").get("deferred_accepted_materialized"):
+        child_metadata = read_json_raw(child / "metadata.json")
+        if child_metadata.get("deferred_accepted_materialized"):
+            accepted_materialized += int(child_metadata.get("deferred_accepted_candidate_count") or 0)
             continue
+        if parent_status == "completed":
+            # A completed campaign cannot resume while accepted files still
+            # need fetching; only expose the repair action for local receipts.
+            return False
         peer = attempt.get("cluster_submission") if isinstance(attempt.get("cluster_submission"), dict) else {}
         if not peer.get("cluster_job_id") or not peer.get("manifest"):
             return False
-    return has_accepted_output
+    if not has_accepted_output:
+        return False
+    if parent_status == "completed":
+        try:
+            from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+
+            existing_count = len(read_candidates(
+                run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+            ))
+        except (OSError, ValueError, RuntimeError):
+            existing_count = 0
+        return accepted_materialized >= accepted_expected and existing_count < accepted_expected
+    return True
 
 
 def _collecting_attempt_count(active: list[dict[str, Any]]) -> int:
@@ -2520,12 +2548,6 @@ def _reconcile_attempts(
         # work proportional to the entire campaign history without changing
         # its execution record.
         if attempt.get("status") == "completed":
-            child = children.get(attempt_id)
-            child_metadata = read_json_raw(child / "metadata.json") if child else {}
-            if child and child_metadata.get("deferred_accepted_materialized"):
-                candidate_rows.extend(_rfd4_candidate_rows(
-                    child, state["campaign_id"], attempt, attempt.get("native_state") or {},
-                ))
             continue
         child = children.get(attempt_id)
         if child is None:
@@ -2915,7 +2937,41 @@ def _reconcile_attempts(
             recovered = _rfd4_candidate_rows(child, state["campaign_id"], attempt, attempt.get("native_state") or {})
         else:
             raise ValueError(f"No campaign recovery adapter is registered for {generator_id}.")
-        candidate_rows.extend(row for row in recovered if str(row.get("candidate_id") or "") not in known_ids)
+        fresh = [row for row in recovered if str(row.get("candidate_id") or "") not in known_ids]
+        candidate_rows.extend(fresh)
+        known_ids.update(str(row.get("candidate_id") or "") for row in fresh)
+
+    # Deferred receipts intentionally keep candidate payloads off the
+    # coordinator ledger. Once accepted-only structures have been fetched,
+    # recover those rows from the local attempt artifacts here. Keep rejected
+    # designs count-only and preserve native IDs inside provenance.
+    for receipt in state.get("deferred_outputs", {}).values():
+        attempt_id = str(receipt.get("attempt_id") or "")
+        attempt = state["attempts"].get(attempt_id) or {}
+        child = children.get(attempt_id)
+        if attempt.get("status") != "completed" or child is None:
+            continue
+        child_metadata = read_json_raw(child / "metadata.json")
+        if not child_metadata.get("deferred_accepted_materialized"):
+            continue
+        if generator_id == "bindcraft2":
+            recovered = _native_candidate_rows(
+                child, state["campaign_id"], attempt, attempt.get("native_state") or {},
+            )
+        elif generator_id == "rfd4_proteina":
+            recovered = _rfd4_candidate_rows(
+                child, state["campaign_id"], attempt, attempt.get("native_state") or {},
+            )
+        else:
+            raise ValueError(f"No campaign recovery adapter is registered for {generator_id}.")
+        fresh = [row for row in recovered if str(row.get("candidate_id") or "") not in known_ids]
+        candidate_rows.extend(fresh)
+        known_ids.update(str(row.get("candidate_id") or "") for row in fresh)
+
+    candidate_rows.sort(key=lambda row: (
+        attempt_order.get(str(((row.get("raw_metadata") or {}).get("distributed_campaign") or {}).get("attempt_id") or ""), 0),
+        str(row.get("candidate_id") or ""),
+    ))
     return children, active, candidate_rows
 
 
@@ -2977,10 +3033,32 @@ def _sync_parent_results(
         enriched.append(row)
     counters = ledger.counters()
     acceptance_summary = None
+    deferred_receipts = [
+        row for row in state.get("deferred_outputs", {}).values()
+        if row.get("status") == "deferred"
+    ]
+    deferred_attempt_ids = {str(row.get("attempt_id") or "") for row in deferred_receipts}
+    materialized_deferred_attempt_ids = set()
+    for receipt in deferred_receipts:
+        attempt_id = str(receipt.get("attempt_id") or "")
+        child = children.get(attempt_id)
+        if child and read_json_raw(child / "metadata.json").get("deferred_accepted_materialized"):
+            materialized_deferred_attempt_ids.add(attempt_id)
+    deferred_total = sum(int(row.get("candidate_count") or 0) for row in deferred_receipts)
+    decisions = [
+        ((candidate.get("raw_metadata") or {}).get("validation_acceptance") or {})
+        for candidate in enriched
+    ]
+    deferred_materialized_rows = [
+        (row, decision) for row, decision in zip(enriched, decisions)
+        if str(((row.get("raw_metadata") or {}).get("distributed_campaign") or {}).get("attempt_id") or "")
+        in deferred_attempt_ids
+    ]
+    materialized_deferred_count = len(deferred_materialized_rows)
+    deferred_remaining = max(0, deferred_total - materialized_deferred_count)
     acceptance_stage = next((stage for stage in state["config"].get("validation_stages", [])
                             if stage.get("workflow") == "analysis.validation_acceptance"), None)
     if acceptance_stage is not None:
-        decisions = [((row.get("raw_metadata") or {}).get("validation_acceptance") or {}) for row in enriched]
         decision_statuses = [str(row.get("status") or "not_evaluated") for row in decisions]
         acceptance_summary = {
             "workflow": "analysis.validation_acceptance",
@@ -2995,27 +3073,40 @@ def _sync_parent_results(
             "source_measurements": "RFD4 native refold oracle and Studio geometry from the saved complex",
         }
         if state["config"].get("remote_artifact_policy") == "defer_accepted":
-            deferred_receipts = [
-                row for row in state.get("deferred_outputs", {}).values()
-                if row.get("status") == "deferred"
-            ]
             if deferred_receipts:
-                deferred_attempt_ids = {str(row.get("attempt_id") or "") for row in deferred_receipts}
-                local_statuses = [
-                    str(decision.get("status") or "not_evaluated")
-                    for row, decision in zip(enriched, decisions)
+                local_decisions = [
+                    decision for row, decision in zip(enriched, decisions)
                     if str(((row.get("raw_metadata") or {}).get("distributed_campaign") or {}).get("attempt_id") or "")
                     not in deferred_attempt_ids
                 ]
-                deferred_evidence = [row.get("evidence") or {} for row in deferred_receipts]
+                local_statuses = [str(item.get("status") or "not_evaluated") for item in local_decisions]
+                deferred_evidence_by_attempt = {
+                    str(row.get("attempt_id") or ""): row.get("evidence") or {}
+                    for row in deferred_receipts
+                }
+                deferred_materialized_statuses: dict[str, list[str]] = {}
+                for row, decision in deferred_materialized_rows:
+                    attempt_id = str(((row.get("raw_metadata") or {}).get("distributed_campaign") or {}).get("attempt_id") or "")
+                    deferred_materialized_statuses.setdefault(attempt_id, []).append(
+                        str(decision.get("status") or "not_evaluated")
+                    )
+                deferred_evidence = list(deferred_evidence_by_attempt.values())
+                deferred_accepted = 0
+                for attempt_id, evidence in deferred_evidence_by_attempt.items():
+                    if attempt_id in materialized_deferred_attempt_ids:
+                        deferred_accepted += sum(
+                            status == "accepted"
+                            for status in deferred_materialized_statuses.get(attempt_id, [])
+                        )
+                    else:
+                        deferred_accepted += int(evidence.get("acceptance_counts", {}).get("accepted") or 0)
                 acceptance_summary.update(
                     candidate_count=(
-                        len(local_statuses)
-                        + sum(int(item.get("candidate_count") or 0) for item in deferred_evidence)
+                        len(local_decisions) + deferred_total
                     ),
                     accepted=(
                         sum(status == "accepted" for status in local_statuses)
-                        + sum(int(item.get("acceptance_counts", {}).get("accepted") or 0) for item in deferred_evidence)
+                        + deferred_accepted
                     ),
                     rejected=(
                         sum(status == "rejected" for status in local_statuses)
@@ -3030,6 +3121,7 @@ def _sync_parent_results(
                         + sum(int(item.get("acceptance_counts", {}).get("not_evaluated") or 0) for item in deferred_evidence)
                     ),
                     rejected_structures_transferred=0,
+                    accepted_structures_transferred=materialized_deferred_count,
                 )
         report_rows = []
         for row, decision in zip(enriched, decisions):
@@ -3101,6 +3193,7 @@ def _sync_parent_results(
         }
         for row in state.get("deferred_outputs", {}).values()
     ]
+    result_candidate_count = len(enriched) + deferred_total - materialized_deferred_count
     summary = {
         "schema_version": 1,
         "campaign_id": state["campaign_id"],
@@ -3116,11 +3209,13 @@ def _sync_parent_results(
         "counters": counters,
         "gpu_compute_seconds": ledger.gpu_compute_seconds(),
         "attempts": attempts,
-        "deferred_candidate_count": counters.get("deferred_candidates", 0),
+        "deferred_candidate_count": deferred_remaining,
+        "deferred_candidate_total": deferred_total,
         "deferred_outputs": deferred_outputs,
         **({"execution_job_accounting": ledger.execution_job_summary()} if state["schema_version"] == 2 else {}),
-        "candidate_count": len(enriched) + counters.get("deferred_candidates", 0),
+        "candidate_count": result_candidate_count,
         "materialized_candidate_count": len(enriched),
+        "materialized_deferred_candidate_count": materialized_deferred_count,
         "candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl",
         **({"validation_acceptance": acceptance_summary} if acceptance_summary is not None else {}),
         **({"shared_campaign": shared.summary()} if shared else {}),
@@ -3131,8 +3226,8 @@ def _sync_parent_results(
         "termination_reason": state.get("termination_reason"),
         "generation_budget_exhausted": summary["generation_budget_exhausted"],
         "counters": summary["counters"],
-        "candidate_count": len(enriched) + counters.get("deferred_candidates", 0),
-        "deferred_candidate_count": counters.get("deferred_candidates", 0),
+        "candidate_count": result_candidate_count,
+        "deferred_candidate_count": deferred_remaining,
         "materialized_candidate_count": len(enriched),
         **({"shared_campaign": shared.summary()} if shared else {}),
     }

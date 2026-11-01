@@ -25,15 +25,15 @@ def render_campaign_lifecycle_controls(
     folder = Path(run_dir)
     resumable = (folder / "worker_request.json").is_file()
     normalized = str(status or "").casefold()
-    failed_finalization_recoverable = False
-    if normalized == "failed" and resumable:
+    finalization_recoverable = False
+    if normalized in {"failed", "completed"} and resumable:
         try:
             from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import (
                 can_resume_campaign_finalization,
             )
-            failed_finalization_recoverable = can_resume_campaign_finalization(folder)
+            finalization_recoverable = can_resume_campaign_finalization(folder)
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-            failed_finalization_recoverable = False
+            finalization_recoverable = False
     if normalized in _ACTIVE:
         columns = st.columns(2 if resumable else 1)
         if resumable and columns[0].button("Pause campaign controller", key="campaign-pause-" + reference):
@@ -57,8 +57,12 @@ def render_campaign_lifecycle_controls(
                 st.rerun()
         if resumable:
             st.caption("Pausing stops the controller from authorizing attempts; cancel terminates the campaign and cannot be resumed.")
-    elif normalized in _PAUSED or failed_finalization_recoverable:
-        resume_label = "Resume campaign" if normalized in _PAUSED else "Retry campaign finalization"
+    elif normalized in _PAUSED or finalization_recoverable:
+        resume_label = (
+            "Resume campaign" if normalized in _PAUSED else
+            "Repair campaign Results" if normalized == "completed" else
+            "Retry campaign finalization"
+        )
         if resumable and st.button(resume_label, key="campaign-resume-" + reference):
             try:
                 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import resume_job
@@ -67,7 +71,11 @@ def render_campaign_lifecycle_controls(
             except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
                 st.error(f"Could not resume the campaign: {exc}")
             else:
-                st.success("Campaign controller resumed from its saved ledger and worker receipts.")
+                st.success(
+                    "Campaign Results repair started from already collected accepted outputs."
+                    if normalized == "completed" else
+                    "Campaign controller resumed from its saved ledger and worker receipts."
+                )
                 st.rerun()
         elif not resumable:
             st.info("This campaign has no saved worker request and cannot be resumed in place.")

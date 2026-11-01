@@ -252,6 +252,19 @@ def test_resumable_actions_reuse_worker_services_without_starting_a_worker(api_d
     assert response.status_code == 202, response.text
     assert calls[-1] == (failed_run, {})
 
+    completed_run = candidate_run(data, tool="completed_campaign", status="completed", success=True)
+    (completed_run / "worker_request.json").write_text("{}")
+    monkeypatch.setattr(
+        distributed_campaign, "can_resume_campaign_finalization",
+        lambda folder: Path(folder) == completed_run,
+    )
+    completed_path = "/api/v1/executions/local:design:" + completed_run.name + "/actions"
+    available = {a["action"]: a["enabled"] for a in client.get(completed_path).json()["items"]}
+    assert available["resume"] is True
+    response = client.post(completed_path, json={"action": "resume"})
+    assert response.status_code == 202, response.text
+    assert calls[-1] == (completed_run, {})
+
 
 def test_candidate_presentation_viewer_and_private_metric_exports(api_data):
     data, client = api_data, api_data["client"]
