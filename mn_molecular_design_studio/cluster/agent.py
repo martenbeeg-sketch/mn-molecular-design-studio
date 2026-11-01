@@ -382,7 +382,9 @@ class Agent:
                 self._published[row["task_group"] + "/" + row["run_id"]] = tuple(row["_signature"])
         with locked():
             capture_identity()
-            Replica().capture_jobs()
+            replica = Replica()
+            replica.compact_legacy_job_payloads()
+            replica.capture_jobs()
         for peer in config.load().get("peers", []):
             try:
                 # Job status/count summaries are an immediate path around the

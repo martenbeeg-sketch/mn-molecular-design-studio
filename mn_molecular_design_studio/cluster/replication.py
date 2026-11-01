@@ -153,6 +153,26 @@ class Replica:
                 if not previous or json.loads(previous[0]) != value:
                     self._write(db, key, 'job', value)
 
+    def compact_legacy_job_payloads(self):
+        """Remove mirrored file manifests left by versions before peer compaction."""
+        with self.db() as db:
+            marker = db.execute(
+                "SELECT value FROM state WHERE key='legacy_job_payloads_compacted_v1'"
+            ).fetchone()
+            if marker:
+                return 0
+            changed = db.execute(
+                "UPDATE records SET value=json_remove(value,'$.artifacts','$.request_summary') "
+                "WHERE kind='job' AND json_valid(value) "
+                "AND (json_type(value,'$.artifacts') IS NOT NULL "
+                "OR json_type(value,'$.request_summary') IS NOT NULL)"
+            ).rowcount
+            db.execute(
+                "INSERT OR REPLACE INTO state VALUES ('legacy_job_payloads_compacted_v1',?)",
+                (encoded(True),),
+            )
+            return changed
+
     def export(self, since=0, limit=500, *, include_molecular=True):
         if type(since) is not int or since < 0 or type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("Invalid synchronization cursor.")
@@ -229,7 +249,23 @@ class Replica:
                 # campaign result collection during a large synchronization catch-up.
                 with locked():
                     with self.db() as db:
-                        previous = db.execute("SELECT * FROM records WHERE key=?", (key,)).fetchone()
+                        previous = db.execute(
+                            "SELECT author,counter,json_extract(value,'$.local_reference') "
+                            "AS local_reference,value FROM records WHERE key=?", (key,)
+                        ).fetchone()
+                        incoming_local_reference = (
+                            kind == 'job' and isinstance(value, dict) and value.get('local_reference')
+                        )
+                        # Most catch-up pages contain already-seen job revisions.
+                        # Check the Lamport version before decoding their old JSON;
+                        # legacy rows may contain large artifact manifests that
+                        # otherwise made an unchanged 50-row page take >15 seconds.
+                        promote_candidate = (
+                            previous and incoming_local_reference and not previous['local_reference']
+                        )
+                        if (previous and not promote_candidate
+                                and (counter, author) <= (previous['counter'], previous['author'])):
+                            continue
                         old = json.loads(previous['value']) if previous else None
                         if kind == 'job' and value is not None:
                             # A completed purge receipt on this workstation must

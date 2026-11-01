@@ -266,6 +266,42 @@ def test_job_replication_omits_large_local_request_payload(peers):
         assert 'request_summary' not in imported
 
 
+def test_legacy_job_payloads_are_compacted_once(peers):
+    nodes,on=peers
+    with on(0):
+        replica=Replica()
+        with replica.db() as db:
+            replica._write(db,'job:legacy-manifest','job',{
+                'cluster_job_id':'legacy-manifest',
+                'artifacts':[{'relative_path':'artifacts/large.cif','sha256':'x'*64} for _ in range(100)],
+                'request_summary':{'inline_structure':'Y'*10000},
+            },author=nodes[0]['id'])
+        assert replica.compact_legacy_job_payloads()==1
+        with replica.db() as db:
+            value=json.loads(db.execute("SELECT value FROM records WHERE key='job:legacy-manifest'").fetchone()[0])
+            assert 'artifacts' not in value and 'request_summary' not in value
+        assert replica.compact_legacy_job_payloads()==0
+
+
+def test_stale_job_replication_skips_large_old_payload_before_store_io(peers,monkeypatch):
+    nodes,on=peers
+    with on(0):
+        replica=Replica()
+        with replica.db() as db:
+            replica._write(db,'job:stale-large','job',{
+                'cluster_job_id':'stale-large','local_reference':'design/run',
+                'artifacts':[{'relative_path':'artifacts/large.cif'} for _ in range(1000)],
+            },author=nodes[0]['id'],counter=100)
+        from mn_molecular_design_studio.cluster.store import Store
+        monkeypatch.setattr(Store,'__init__',lambda self: None)
+        monkeypatch.setattr(Store,'nodes',lambda self: [{'id':node['id']} for node in nodes])
+        monkeypatch.setattr(Store,'connect',lambda self: (_ for _ in ()).throw(AssertionError('stale record reached Store I/O')))
+        assert replica.receive([{
+            'key':'job:stale-large','kind':'job','author':nodes[0]['id'],'counter':99,
+            'value':{'cluster_job_id':'stale-large','local_reference':'design/run'},
+        }])==0
+
+
 def test_molecular_replica_page_reuses_connection_and_keeps_rows_atomic(peers, monkeypatch):
     nodes, on = peers
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
