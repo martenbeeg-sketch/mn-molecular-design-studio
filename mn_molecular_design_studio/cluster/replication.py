@@ -143,11 +143,28 @@ class Replica:
                 if not previous or json.loads(previous[0]) != value:
                     self._write(db, key, 'job', value)
 
-    def export(self, since=0, limit=500):
+    def export(self, since=0, limit=500, *, include_molecular=True):
         if type(since) is not int or since < 0 or type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("Invalid synchronization cursor.")
+        if type(include_molecular) is not bool:
+            raise ValueError("Invalid Molecular Database sharing setting.")
+        molecular_kinds = ("molecule_group", "molecule_entry", "external_library")
         with self.db() as db:
-            rows = db.execute("SELECT * FROM records WHERE seq>? ORDER BY seq LIMIT ?", (since, limit)).fetchall()
+            if include_molecular:
+                rows = db.execute("SELECT * FROM records WHERE seq>? ORDER BY seq LIMIT ?", (since, limit)).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT * FROM records WHERE seq>? AND kind NOT IN (?,?,?) ORDER BY seq LIMIT ?",
+                    (since, *molecular_kinds, limit),
+                ).fetchall()
+                # When the filtered page is short, advance across the trailing
+                # excluded rows too. Otherwise a peer with no remaining job or
+                # identity records would repeatedly scan the molecular backlog.
+                if len(rows) < limit:
+                    last_seq = db.execute("SELECT coalesce(max(seq),?) FROM records", (since,)).fetchone()[0]
+                    cursor = max(since, int(last_seq))
+                else:
+                    cursor = rows[-1]["seq"]
         records = []
         for row in rows:
             value = json.loads(row['value'])
@@ -158,7 +175,12 @@ class Replica:
                 value.pop('request_summary', None)
             records.append(dict(key=row['key'], kind=row['kind'], author=row['author'],
                                 counter=row['counter'], value=value))
-        return {'epoch': self.epoch, 'records': records, 'cursor': rows[-1]['seq'] if rows else since, 'more': len(rows) == limit}
+        return {
+            'epoch': self.epoch,
+            'records': records,
+            'cursor': cursor if not include_molecular else rows[-1]['seq'] if rows else since,
+            'more': len(rows) == limit,
+        }
 
     def receive(self, records):
         if not isinstance(records, list) or len(records) > 500:
@@ -342,8 +364,10 @@ def capture_identity():
 def sync_peer(peer, snapshot, jobs=None):
     from . import transport
     replica = Replica()
-    from mn_molecular_design_studio.molecular_database_peer import capture
-    capture(replica)
+    share_molecular_database = config.load().get("share_molecular_database", True)
+    if share_molecular_database:
+        from mn_molecular_design_studio.molecular_database_peer import capture
+        capture(replica)
     state = replica.state('peer:'+peer['id'], {'push':0, 'pull':0})
     job_rows = jobs if isinstance(jobs, list) else []
     responses = []
@@ -363,19 +387,31 @@ def sync_peer(peer, snapshot, jobs=None):
         Store().pulse(peer['id'], response['snapshot'])
     if state.get('epoch') != response['epoch']:
         state = {'push':0, 'pull':0, 'epoch':response['epoch']}
+    # Keep the full-sharing cursor parked while sharing is disabled. The
+    # filtered cursor skips old library metadata without losing the ability to
+    # resume full replication if an administrator enables it later.
+    cursor_name = "push" if share_molecular_database else "push_without_molecular"
+    pull_cursor_name = "pull" if share_molecular_database else "pull_without_molecular"
+    if not share_molecular_database:
+        state.setdefault(cursor_name, state.get("push", 0))
+        state.setdefault(pull_cursor_name, state.get("pull", 0))
     # Independent durable cursors let a machine catch up after any length of outage.
     for _ in range(20):
-        page = replica.export(state['push'])
+        page = replica.export(state[cursor_name], include_molecular=share_molecular_database)
         if page['records']:
             transport.node_request('/peer/records', {'records':page['records']}, method='POST', base_url=peer['url'], timeout=15)
-        state['push'] = page['cursor']
+        state[cursor_name] = page['cursor']
         replica.set_state('peer:'+peer['id'],state)
         if not page['more']:
             break
     for _ in range(20):
-        page = transport.node_request('/peer/records?since='+str(state['pull']), base_url=peer['url'], timeout=15)
+        page = transport.node_request(
+            '/peer/records?since='+str(state[pull_cursor_name])
+            + ("&include_molecular=true" if share_molecular_database else "&include_molecular=false"),
+            base_url=peer['url'], timeout=15,
+        )
         replica.receive(page['records'])
-        state['pull'] = page['cursor']
+        state[pull_cursor_name] = page['cursor']
         replica.set_state('peer:'+peer['id'],state)
         if not page['more']:
             break

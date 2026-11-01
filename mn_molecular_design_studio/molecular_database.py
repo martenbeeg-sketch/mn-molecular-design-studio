@@ -27,6 +27,7 @@ IMPORT_METHODS = {"user_uploads": "User uploads", "tool_inputs": "Tool inputs", 
 COLLECTION_KINDS = {"curated", "generated", "inputs", "evaluation", "intermediate"}
 _SMOKE_TEST_GROUP = re.compile(r"(?<![a-z0-9])(smoke|test|testing)(?![a-z0-9])", re.IGNORECASE)
 _SYNC_TIMES: dict[str, float] = {}
+_CAPTURE_REVISION_SCHEMA_READY: set[str] = set()
 
 
 def _json(value):
@@ -39,6 +40,62 @@ def _now():
 
 def _id(prefix, value):
     return prefix + hashlib.sha256(str(value).encode()).hexdigest()[:32]
+
+
+def _local_capture_revision_triggers(connection):
+    """Track local library edits without invalidating capture on peer imports."""
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS molecular_database_sync_state ("
+            "singleton INTEGER PRIMARY KEY CHECK(singleton=1), "
+            "local_revision INTEGER NOT NULL DEFAULT 0)"
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO molecular_database_sync_state(singleton,local_revision) VALUES (1,0)"
+        )
+
+        def local_json(expression):
+            return (
+                f"(CASE WHEN json_valid({expression}) "
+                f"THEN COALESCE(json_extract({expression}, '$._replica_node'), '') "
+                f"ELSE '' END = '')"
+            )
+
+        def group_is_local(row):
+            return local_json(f"(SELECT origin FROM molecule_groups WHERE id={row}.group_id)")
+
+        triggers = {}
+        triggers["molecule_groups"] = {
+            "insert": local_json("NEW.origin"),
+            "update": f"({local_json('NEW.origin')} OR {local_json('OLD.origin')})",
+            "delete": local_json("OLD.origin"),
+        }
+        for table in ("molecule_members", "molecule_structures", "molecule_observations", "molecule_sources"):
+            triggers[table] = {
+                "insert": group_is_local("NEW"),
+                "update": f"({group_is_local('NEW')} OR {group_is_local('OLD')})",
+                "delete": group_is_local("OLD"),
+            }
+        triggers["external_library_records"] = {
+            "insert": local_json("NEW.record_json"),
+            "update": f"({local_json('NEW.record_json')} OR {local_json('OLD.record_json')})",
+            "delete": local_json("OLD.record_json"),
+        }
+        for table, conditions in triggers.items():
+            for action, condition in conditions.items():
+                event = action.upper()
+                name = f"molecular_capture_revision_{table}_{action}"
+                connection.execute(
+                    f"CREATE TRIGGER IF NOT EXISTS {name} AFTER {event} ON {table} "
+                    f"WHEN {condition} BEGIN "
+                    "UPDATE molecular_database_sync_state SET local_revision=local_revision+1 WHERE singleton=1; "
+                    "END"
+                )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
 
 
 class MolecularDatabase:
@@ -136,6 +193,10 @@ class MolecularDatabase:
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
         ''')
+        schema_key = str(self.path.resolve())
+        if schema_key not in _CAPTURE_REVISION_SCHEMA_READY:
+            _local_capture_revision_triggers(connection)
+            _CAPTURE_REVISION_SCHEMA_READY.add(schema_key)
         from mn_molecular_design_studio.evaluations import install_schema
         install_schema(connection)
         try:

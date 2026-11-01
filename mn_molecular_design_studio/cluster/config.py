@@ -55,7 +55,7 @@ def load() -> dict:
         payload = {}
     return {"mode": "disabled", "name": socket.gethostname(), "coordinator_url": "",
             "node_token": "", "default_placement": "local", "heartbeat_seconds": 15,
-            "accept_jobs": True, "peers": [], **payload}
+            "accept_jobs": True, "share_molecular_database": True, "peers": [], **payload}
 
 
 def identity() -> str:
@@ -86,6 +86,8 @@ def save(changes: dict) -> dict:
             raise ValueError("Enter the coordinator HTTP(S) address, including its port.")
     if type(config["accept_jobs"]) is not bool:
         raise ValueError("Accept jobs must be enabled or disabled.")
+    if type(config["share_molecular_database"]) is not bool:
+        raise ValueError("Molecular Database sharing must be enabled or disabled.")
     if config["default_placement"] not in {"local", "auto"}:
         raise ValueError("Default placement must be local or auto.")
     peers = config.get("peers", [])

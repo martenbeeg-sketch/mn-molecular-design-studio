@@ -315,13 +315,21 @@ def install(app, current_user, admin_user):
         return {"node_id":config.identity(), "snapshot":snapshot, "epoch":replica.epoch, "reference_probes":store.reference_probes()}
 
     @router.get("/node/peer/records")
-    def peer_records(response: Response, since: int = Query(0, ge=0), actor=Depends(node), replica=Depends(peer_replica)):
+    def peer_records(response: Response, since: int = Query(0, ge=0), include_molecular: bool = Query(True), actor=Depends(node), replica=Depends(peer_replica)):
         response.headers["Cache-Control"] = "no-store"
-        return call(replica.export, since)
+        sharing_enabled = config.load().get("share_molecular_database", True)
+        return call(replica.export, since, include_molecular=include_molecular and sharing_enabled)
 
     @router.post("/node/peer/records")
     def receive_records(payload: dict = Body(...), actor=Depends(node), replica=Depends(peer_replica)):
-        return {"accepted":call(replica.receive, payload.get("records"))}
+        records = payload.get("records")
+        if not config.load().get("share_molecular_database", True) and isinstance(records, list):
+            records = [
+                record for record in records
+                if not isinstance(record, dict)
+                or record.get("kind") not in {"molecule_group", "molecule_entry", "external_library"}
+            ]
+        return {"accepted":call(replica.receive, records)}
 
     @router.post("/node/heartbeat")
     def heartbeat(payload: dict = Body(...), actor=Depends(node), store=Depends(coordinator)):

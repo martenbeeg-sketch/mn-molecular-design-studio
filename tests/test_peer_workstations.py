@@ -413,6 +413,30 @@ def test_peer_metadata_routes_require_machine_credentials_and_keep_user_endpoint
         assert response.status_code==403
 
 
+def test_disabled_molecular_sharing_filters_peer_routes_both_directions(peers):
+    nodes,on=peers
+    from mn_molecular_design_studio import api
+    with on(1):
+        config.save({'share_molecular_database':False})
+        replica=Replica()
+        with replica.db() as db:
+            replica._write(db,'molecule_group:private','molecule_group',{'private':True})
+            replica._write(db,'project:shared','project',{'name':'shared'})
+        headers={'Authorization':'Bearer '+nodes[0]['token']}
+        with TestClient(api.app) as client:
+            exported=client.get('/api/v1/cluster/node/peer/records?include_molecular=true',headers=headers)
+            assert exported.status_code==200
+            assert [row['kind'] for row in exported.json()['records']]==['project']
+            received=client.post(
+                '/api/v1/cluster/node/peer/records',headers=headers,
+                json={'records':[{'key':'molecule_group:remote','kind':'molecule_group',
+                                  'author':nodes[0]['id'],'counter':1,'value':{'remote':True}}]},
+            )
+            assert received.status_code==200 and received.json()['accepted']==0
+        with replica.db() as db:
+            assert db.execute("SELECT 1 FROM records WHERE key='molecule_group:remote'").fetchone() is None
+
+
 def test_peer_heartbeat_publishes_changed_jobs_without_waiting_for_replica_cursor(peers):
     nodes,on=peers
     user,project=account(on)
@@ -446,16 +470,33 @@ def test_molecular_database_peer_capture_skips_unchanged_database(monkeypatch, t
     cluster_home.mkdir()
     monkeypatch.setattr(config, 'home', lambda: cluster_home)
     database = MolecularDatabase(tmp_path / 'database')
-    with database.connection():
-        pass
     replica = Replica()
     node_id = str(uuid.uuid4())
+    timestamp = '2026-01-01T00:00:00+00:00'
+
+    def add_group(group_id, origin):
+        with database.connection() as connection:
+            connection.execute(
+                'INSERT INTO molecule_groups '
+                '(id,name,owner_id,project_id,import_method,origin,schema_json,created_at,updated_at) '
+                'VALUES (?,?,?,?,?,?,?,?,?)',
+                (group_id, group_id, 'owner', '', 'tool_output', json.dumps(origin), '{}', timestamp, timestamp),
+            )
+
+    add_group('local-one', {})
 
     assert capture(replica, database=database, node_id=node_id) is True
     assert capture(replica, database=database, node_id=node_id) is False
 
-    with database.connection() as connection:
-        connection.execute('CREATE TABLE capture_probe (value TEXT)')
+    # Receiving peer-owned library data changes the SQLite files, but must not
+    # invalidate the local-source snapshot or trigger a full library rescan.
+    add_group('remote-one', {'_replica_node': str(uuid.uuid4()), '_replica_group': 'remote-one'})
+    assert capture(replica, database=database, node_id=node_id) is False
+
+    with replica.db() as connection:
+        assert connection.execute("SELECT 1 FROM records WHERE key LIKE '%remote-one'").fetchone() is None
+
+    add_group('local-two', {})
 
     assert capture(replica, database=database, node_id=node_id) is True
     assert capture(replica, database=database, node_id=node_id) is False
@@ -637,6 +678,41 @@ def test_incremental_sync_catches_up_after_disconnection_without_duplicate_recor
         assert workspace.validate_project_id(new['id'])==new['id']
         with Replica().db() as db:
             assert db.execute('SELECT count(*) FROM records WHERE key=?',('project:'+new['id'],)).fetchone()[0]==1
+
+
+def test_filtered_replication_skips_molecular_rows_and_advances_cursor(peers):
+    nodes,on=peers
+    with on(0):
+        replica=Replica()
+        with replica.db() as db:
+            replica._write(db,'molecule_group:old','molecule_group',{'group':'old'})
+            replica._write(db,'project:visible','project',{'name':'visible'})
+            replica._write(db,'molecule_entry:old','molecule_entry',{'entry':'old'})
+            replica._write(db,'external_library:old','external_library',{'entry':'legacy'})
+
+        full=replica.export()
+        assert [row['kind'] for row in full['records']]==[
+            'molecule_group','project','molecule_entry','external_library',
+        ]
+
+        filtered=replica.export(include_molecular=False)
+        assert [row['kind'] for row in filtered['records']]==['project']
+        assert filtered['cursor']==full['cursor']
+        assert filtered['more'] is False
+
+        # New non-molecular metadata remains visible after the filtered cursor;
+        # skipped library records are not rescanned on each heartbeat.
+        with replica.db() as db:
+            replica._write(db,'job:visible','job',{'status':'completed'})
+        next_page=replica.export(filtered['cursor'],include_molecular=False)
+        assert [row['kind'] for row in next_page['records']]==['job']
+
+
+def test_molecular_replication_setting_must_be_boolean(peers):
+    nodes,on=peers
+    with on(0):
+        with pytest.raises(ValueError,match='Molecular Database sharing'):
+            config.save({'share_molecular_database':'false'})
 
 
 def test_migration_preserves_identity_and_backs_up_accounts_and_registry(peers,tmp_path):

@@ -190,16 +190,16 @@ def _digest(path):
 
 
 def _database_signature(database, replica):
-    """Return cheap file-level change markers for the local molecular DB."""
-    files = []
-    for path in (database.path, Path(str(database.path) + "-wal")):
-        try:
-            stat = path.stat()
-        except FileNotFoundError:
-            files.append(None)
-            continue
-        files.append({"inode": stat.st_ino, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
-    return {"path": str(database.path), "files": files, "replica_epoch": replica.epoch}
+    """Return a revision that changes only when this workstation edits its library."""
+    with database.connection() as connection:
+        row = connection.execute(
+            "SELECT local_revision FROM molecular_database_sync_state WHERE singleton=1"
+        ).fetchone()
+    return {
+        "path": str(database.path),
+        "local_revision": int(row["local_revision"] if row else 0),
+        "replica_epoch": replica.epoch,
+    }
 
 
 def capture(replica, *, database=None, node_id=None):
@@ -248,13 +248,27 @@ def capture(replica, *, database=None, node_id=None):
                 value = {"node_id": node_id, "group_id": group["id"], "molecule": dict(molecule), "member": dict(member), "structures": structures, "observations": observations, "sources": sources}
                 values[f"molecule_entry:{node_id}:{group['id']}:{member['molecule_id']}"] = ("molecule_entry", value)
     with replica.db() as connection:
-        previous = {row["key"]: row for row in connection.execute("SELECT * FROM records WHERE kind IN ('molecule_group','molecule_entry','external_library') AND author=?", (node_id,))}
         for key, (kind, value) in values.items():
-            if key not in previous or json.loads(previous[key]["value"]) != value:
+            previous = connection.execute("SELECT value FROM records WHERE key=?", (key,)).fetchone()
+            if not previous or json.loads(previous["value"]) != value:
                 replica._write(connection, key, kind, value, author=node_id)
-        for key, row in previous.items():
-            if key not in values and json.loads(row["value"]) is not None:
-                replica._write(connection, key, row["kind"], None, author=node_id)
+
+        # Stream the prior source snapshot in bounded pages. A stale replica may
+        # have hundreds of thousands of rows, so holding its full JSON payloads
+        # in a Python dict during a routine capture caused multi-gigabyte peaks.
+        last_key = ""
+        while True:
+            previous_rows = connection.execute(
+                "SELECT key,kind FROM records WHERE kind IN ('molecule_group','molecule_entry','external_library') "
+                "AND author=? AND key>? AND value!='null' ORDER BY key LIMIT 500",
+                (node_id, last_key),
+            ).fetchall()
+            if not previous_rows:
+                break
+            for row in previous_rows:
+                last_key = row["key"]
+                if row["key"] not in values:
+                    replica._write(connection, row["key"], row["kind"], None, author=node_id)
 
     # The source database can change while it is being scanned. Save a marker
     # only when the before/after file state matches; otherwise the next peer
