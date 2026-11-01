@@ -649,7 +649,7 @@ NODE_CATALOG.update({
         accepts=["backbone", "sequence", "prediction", "candidates"], output="candidates", fields=[
             field("deduplication", "Sequence deduplication", "mark_duplicates", kind="select", options=["keep_all", "mark_duplicates"], section="basic")]),
     "shared_filter": _spec("shared_filter", "Shared scientific filters", "Collection", "Keep every decision; route sequence-ready, eligible variants to prediction.",
-        accepts=["candidates", "sequence", "prediction"], output="sequence", fields=[
+        accepts=["candidates"], output="sequence", fields=[
             field("binder_format", "Binder format", "miniprotein", kind="select", options=["miniprotein", "large_protein", "peptide", "cyclic_peptide", "vhh", "scfv", "fab", "arp", "other"], section="basic"),
             field("target_type", "Target type", "structured", kind="select", options=["structured", "fasta_idr"], section="basic"),
             field("rules", "Scientific threshold rules", [], kind="json", section="basic"),
@@ -665,6 +665,25 @@ NODE_CATALOG.update({
             field("ranking_rules", "Ordered ranking measurements", [], kind="json", section="basic"),
             field("limit", "Selected candidates per comparable protocol (0 = unlimited)", 0, minimum=0, maximum=10000, section="basic"),
             field("unique_sequences", "Select one representative per exact sequence and protocol", True, kind="boolean", section="basic")]),
+    "campaign_stop": _spec("campaign_stop", "Campaign Stop", "Campaign control",
+        "Apply the existing distributed campaign controller to the compatible generator upstream of the Validation & Acceptance filter. Stop when the passing target, design-attempt cap, or configured time limit is reached.",
+        accepts=["candidates", "sequence", "prediction"], output="sequence", color="#6b806e", fields=[
+            field("passing_design_target", "Passing designs to collect", 100, minimum=1, maximum=1000000, section="basic"),
+            field("max_design_attempts", "Maximum design attempts", 100000, minimum=1, maximum=10000000, section="basic",
+                  help="Hard cap on requested design outputs, including rejected and unresolved designs."),
+            field("designs_per_job", "Designs per native job", 1, minimum=1, maximum=10000, section="basic",
+                  help="Native design count requested by each distributed job. This is distinct from the model's internal GPU microbatch size."),
+            field("cpu_cores_per_job", "CPU cores per native job", 8, minimum=1, maximum=256, section="basic"),
+            field("max_concurrent_generation_jobs", "Concurrent generation jobs", 4, minimum=1, maximum=128, section="basic"),
+            field("max_concurrent_validations", "Concurrent validation jobs", 4, minimum=1, maximum=128, section="basic"),
+            field("workstation_selection", "Workstation placement", "eligible", kind="select", options=["auto", "eligible", "local"], section="basic"),
+            field("gpu_selection", "GPU selection per workstation", "all", kind="text", section="basic",
+                  help="Use auto, eligible, all, or explicit device IDs such as 0 or 0,1."),
+            field("unique_accepted", "Deduplicate passing sequences across workstations", False, kind="boolean", section="basic",
+                  help="When enabled, sequence identities must be coordinated during the campaign and accepted-only artifact transfer is unavailable."),
+            field("max_runtime_hours", "Maximum runtime in hours (0 = no time limit)", 0.0, minimum=0.0, maximum=87600.0, section="basic"),
+            field("deadline_at", "Stop at absolute time (optional)", "", kind="text", section="basic",
+                  help="ISO 8601 date/time with timezone, for example 2026-11-02T08:30:00+01:00. The earlier of runtime and deadline applies.")]),
 })
 for _kind in ("candidate_merge", "candidate_analyzer"):
     NODE_CATALOG[_kind]["inputs"][0]["multiple"] = True
@@ -1724,6 +1743,109 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
     }
 
 
+def _compile_campaign_stop(graph: dict, nodes: dict, incoming: dict) -> dict[str, dict]:
+    """Compile visible stop controls onto each existing native campaign adapter.
+
+    The stop node is a graph-level configuration surface, not a second
+    scheduler. The upstream shared-filter policy is copied unchanged into the
+    registered generator campaign adapter, which owns dispatch, receipts,
+    recovery, stopping and accepted-artifact collection.
+    """
+    stop_nodes = [node_id for node_id, node in nodes.items()
+                  if node["data"]["kind"] == "campaign_stop"]
+    if not stop_nodes:
+        return {}
+    if graph.get("shared_campaign"):
+        raise ValueError("Use either Campaign Stop nodes or the Shared campaign panel for this graph, not both.")
+    if len(stop_nodes) > 1:
+        raise ValueError("Add one Campaign Stop node per graph campaign. Separate native campaign runs can use separate pipeline graphs.")
+
+    from mn_molecular_design_studio.validation_acceptance import campaign_policy_from_node
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import validate_campaign_config
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.generator_capabilities import generator_capabilities
+
+    stop_id = stop_nodes[0]
+    parents = incoming[stop_id]
+    if len(parents) != 1 or nodes[parents[0]]["data"]["kind"] != "shared_filter":
+        raise ValueError("Connect Campaign Stop directly after a Shared scientific filters node.")
+    filter_id = parents[0]
+    pending, ancestors = list(incoming[filter_id]), set()
+    while pending:
+        ancestor = pending.pop()
+        if ancestor in ancestors:
+            continue
+        ancestors.add(ancestor)
+        pending.extend(incoming[ancestor])
+
+    design_ancestors = [ancestor for ancestor in ancestors
+                        if NODE_CATALOG[nodes[ancestor]["data"]["kind"]]["category"] in {"Design engine", "Design pipeline"}]
+    eligible = []
+    for ancestor in design_ancestors:
+        kind = nodes[ancestor]["data"]["kind"]
+        route = workflow_capability(kind)
+        if not route.get("route_registered") or not route.get("tool"):
+            continue
+        try:
+            capability = generator_capabilities(route["tool"])
+        except ValueError:
+            continue
+        if capability.campaign_adapter and "validated" in capability.supported_stopping_policies:
+            eligible.append((ancestor, kind, route, capability))
+    if len(eligible) != 1 or len(design_ancestors) != 1:
+        raise ValueError("Campaign Stop needs exactly one upstream design workflow with a verified validated-count campaign adapter.")
+
+    generator_id, kind, route, capability = eligible[0]
+    params = nodes[stop_id]["data"]["params"]
+    generator = nodes[generator_id]["data"]["params"]
+    if params["designs_per_job"] > params["max_design_attempts"]:
+        raise ValueError("Designs per native job cannot exceed the campaign design-attempt cap.")
+    policy = campaign_policy_from_node(nodes[filter_id]["data"]["params"])
+    runtime_hours = float(params["max_runtime_hours"])
+    deadline = str(params.get("deadline_at") or "").strip()
+    if runtime_hours < 0:
+        raise ValueError("Maximum runtime hours cannot be negative.")
+    campaign = copy.deepcopy(generator.get("distributed_campaign") or {})
+    campaign.update({
+        "enabled": True,
+        "generator_id": route["tool"],
+        "objective_type": "accepted",
+        "acceptance_level": "validated",
+        "unique_accepted": params["unique_accepted"],
+        "accepted_target": params["passing_design_target"],
+        "max_attempts": params["max_design_attempts"],
+        "native_designs_per_job": params["designs_per_job"],
+        "max_concurrent_generation_jobs": params["max_concurrent_generation_jobs"],
+        "max_concurrent_validations": params["max_concurrent_validations"],
+        "workstation_selection": params["workstation_selection"],
+        "gpu_selection": params["gpu_selection"],
+        "validation_stages": [{"workflow": "analysis.validation_acceptance", "acceptance_policy": policy}],
+        "remote_artifact_policy": "eager" if params["unique_accepted"] else "auto",
+        "seed": int(generator.get("seed") or campaign.get("seed") or 0),
+    })
+    if runtime_hours > 0:
+        campaign["max_runtime_seconds"] = int(round(runtime_hours * 3600))
+    else:
+        campaign.pop("max_runtime_seconds", None)
+    if deadline:
+        from mn_molecular_design_studio.campaign_objectives import timestamp
+        campaign["deadline_at"] = timestamp(deadline).isoformat()
+    else:
+        campaign.pop("deadline_at", None)
+    campaign.setdefault("batch_size", 1)
+    campaign.setdefault("max_concurrent_batches", 1)
+    campaign.setdefault("max_retries", 1)
+    campaign.setdefault("poll_interval_seconds", 2.0)
+    resources = copy.deepcopy(campaign.get("resources") or {})
+    resources["cpu_cores"] = params["cpu_cores_per_job"]
+    if capability.minimum_vram_gb is not None:
+        resources["min_vram_gb"] = max(float(resources.get("min_vram_gb", 0)), capability.minimum_vram_gb)
+    campaign["resources"] = resources
+    campaign = validate_campaign_config(campaign)
+    generator["distributed_campaign"] = campaign
+    return {stop_id: {"generator_node": generator_id, "generator_tool": route["tool"],
+                      "campaign": copy.deepcopy(campaign), "filter_node": filter_id}}
+
+
 def validate_graph(graph: dict, *, require_inputs=False) -> dict:
     graph = clean_graph(migrate_template_graph(graph))
     nodes = {n["id"]: n for n in graph["nodes"]}
@@ -1766,6 +1888,11 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
                 queue.append(dest)
     if len(order) != len(nodes):
         raise ValueError("A pipeline cannot contain a cycle. Connect steps in the order data should flow.")
+    for node_id, node in nodes.items():
+        if node["data"]["kind"] == "shared_filter" and (
+                len(incoming[node_id]) != 1
+                or nodes[incoming[node_id][0]]["data"]["kind"] != "candidate_merge"):
+            raise ValueError("Connect a Candidate collection before Shared scientific filters so every candidate has a validated identity and provenance.")
     output_types = {}
     output_formats = {}
     ligand_context = {}
@@ -1937,7 +2064,9 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
     shared_campaign = _validate_shared_campaign(graph, nodes, incoming)
     if shared_campaign:
         graph["shared_campaign"] = shared_campaign
-    return {"graph": graph, "order": order, "incoming": incoming, "outgoing": outgoing}
+    campaign_stops = _compile_campaign_stop(graph, nodes, incoming)
+    return {"graph": graph, "order": order, "incoming": incoming, "outgoing": outgoing,
+            "campaign_stops": campaign_stops}
 
 
 def fingerprint(kind: str, params: dict, upstream: list[str]) -> str:

@@ -817,9 +817,15 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                 st.info("Collect candidate structures and metrics from the connected branches. Existing results remain available when you edit the pipeline.")
             if kind == "filter":
                 st.caption("Choose native fields, common fields, or evidence/<stage>/<tool>/<metric>. Add a candidate ID before the metric to resolve repeated stages. Missing, failed and nonfinite required measurements cannot pass. Ranking and limits apply within recorded comparable protocols. All decisions and selected sequence/structure exports remain in this step's selection files.")
+            if kind == "campaign_stop":
+                st.info("This node uses the upstream Shared scientific filters policy to configure the existing native distributed campaign controller. The campaign stops at the first reached limit: passing-design target, maximum design attempts, runtime, or absolute deadline.")
+                st.caption("Native jobs retain their engine settings, job identities, retries and recovery. Designs per native job is separate from the model's internal GPU microbatch. Rejected structures remain on their producing workstation when the RFD4 accepted-only transfer path is available.")
             if kind in {"bindcraft2", "rfd4"}:
                 shared_campaign = graph.get("shared_campaign") if isinstance(graph.get("shared_campaign"), dict) else {}
-                if shared_campaign.get("enabled") and node["id"] in shared_campaign.get("generator_nodes", []):
+                has_stop_node = any(item.get("data", {}).get("kind") == "campaign_stop" for item in graph.get("nodes", []))
+                if has_stop_node:
+                    st.info("Campaign limits are configured in the connected Campaign Stop node. Keep this workflow's native stages and parameters here.")
+                elif shared_campaign.get("enabled") and node["id"] in shared_campaign.get("generator_nodes", []):
                     st.info("This branch uses the graph’s shared campaign objective and distributed budgets. Configure them in the Shared campaign panel. Scientific filtering is optional; passing-count goals use explicitly configured criteria.")
                 else:
                     with st.expander("Campaign objective (optional)", expanded=bool(values.get("distributed_campaign"))):

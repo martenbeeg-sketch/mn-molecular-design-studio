@@ -1249,3 +1249,149 @@ def test_passing_objective_references_optional_format_aware_filter_node():
     scope = graph.validate_graph(definition)['graph']['shared_campaign']
     assert 'acceptance_node' not in scope
     assert scope['validation_stages'] == []  # Optional filter remains an ordinary pipeline node.
+
+
+def test_campaign_stop_compiles_filter_and_limits_to_existing_native_rfd4_controller():
+    target, generator = node("target", "target"), node("rfd4", "rfd4")
+    generator["data"]["params"].update(
+        task="protein_binder", input_mode="condition_spec", seed=2026110101,
+        condition_spec="idr_peptide_binder:\n  input: idr_sequence_carrier.cif\n  contig: 70-110, /0, A1-70\n  conditions:\n    C_SEQ:\n      true:\n        - select: sel('A')\n",
+        options_json='{"filter_conditions":false,"folding_engine":"openfold3_jax","folding_recycles":5,"refold":true}',
+        num_designs=3000, length_min=70, length_max=110,
+    )
+    scientific_filter = node("shared_filter", "acceptance")
+    scientific_filter["data"]["params"].update(
+        binder_format="miniprotein", target_type="fasta_idr",
+        rules=[
+            {"field": "common.confidence.generator.complex.ptm", "operator": ">=", "value": .55},
+            {"field": "common.confidence.generator.complex.iptm", "operator": ">=", "value": .7},
+            {"field": "common.interface.native.rfd4_proteina.binder_residue_count_4a", "operator": ">=", "value": 7},
+            {"field": "common.geometry.native.rfd4_proteina.backbone_ca_clashes_2_5a", "operator": "<=", "value": 0},
+            {"field": "common.confidence.generator.interface.pae_norm31", "operator": "<=", "value": .35},
+        ],
+        informational_scores=["common.confidence.generator.complex.plddt", "common.confidence.generator.interface.ipae_coi"],
+    )
+    collection = node("candidate_merge", "collection")
+    stop = node("campaign_stop", "stop")
+    stop["data"]["params"].update(
+        passing_design_target=100, max_design_attempts=100000, designs_per_job=50,
+        max_concurrent_generation_jobs=4, max_concurrent_validations=4,
+        workstation_selection="eligible", gpu_selection="all", unique_accepted=False,
+        max_runtime_hours=12.5, deadline_at="2026-11-02T08:30:00+01:00",
+    )
+    results = node("results", "results")
+    definition = {
+        "schema_version": graph.SCHEMA, "id": "e" * 32, "name": "Tau IDR RFD4 acceptance run",
+        "workflow_mode": "native_complete", "nodes": [target, generator, collection, scientific_filter, stop, results],
+        "edges": [edge("target", "rfd4"), edge("rfd4", "collection"), edge("collection", "acceptance"),
+                  edge("acceptance", "stop"), edge("stop", "results")],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+
+    plan = graph.validate_graph(definition)
+    saved = plan["graph"]
+    campaign = next(item for item in saved["nodes"] if item["id"] == "rfd4")["data"]["params"]["distributed_campaign"]
+    assert plan["order"] == ["target", "rfd4", "collection", "acceptance", "stop", "results"]
+    assert plan["campaign_stops"]["stop"]["generator_tool"] == "rfd4_proteina"
+    assert campaign["accepted_target"] == 100
+    assert campaign["max_attempts"] == 100000
+    assert campaign["native_designs_per_job"] == 50
+    assert campaign["max_concurrent_generation_jobs"] == 4
+    assert campaign["max_concurrent_validations"] == 4
+    assert campaign["resources"]["cpu_cores"] == 8
+    assert campaign["resources"]["min_vram_gb"] == 16.0
+    assert campaign["workstation_selection"] == "eligible"
+    assert campaign["gpu_selection"] == "all"
+    assert campaign["max_runtime_seconds"] == 45000
+    assert campaign["deadline_at"] == "2026-11-02T07:30:00+00:00"
+    assert campaign["remote_artifact_policy"] == "defer_accepted"
+    acceptance_policy = campaign["validation_stages"][0]["acceptance_policy"]
+    assert [rule["field"] for rule in acceptance_policy["mandatory_filters"]] == [rule["field"] for rule in scientific_filter["data"]["params"]["rules"]]
+    assert acceptance_policy["informational_scores"] == scientific_filter["data"]["params"]["informational_scores"]
+    request = runner.node_request("rfd4", next(item for item in saved["nodes"] if item["id"] == "rfd4")["data"]["params"],
+                                  {"target": {"target_pdb": "/tmp/tau-idr.cif", "target_chains": ["A"]}},
+                                  "Tau IDR RFD4 campaign")
+    assert request["parameters"]["options"]["refold"] is True
+    assert request["parameters"]["distributed_campaign"]["max_attempts"] == 100000
+
+
+def test_campaign_stop_requires_filter_and_a_verified_upstream_campaign_adapter():
+    target, generator = node("target", "target"), node("pxdesign", "generator")
+    sequence = node("ligandmpnn", "sequence")
+    collection = node("candidate_merge", "collection")
+    stop, results = node("campaign_stop", "stop"), node("results", "results")
+    definition = {"schema_version": graph.SCHEMA, "id": "d" * 32,
+                  "nodes": [target, generator, sequence, collection, stop, results],
+                  "edges": [edge("target", "generator"), edge("generator", "sequence"),
+                            edge("sequence", "collection"), edge("collection", "stop"), edge("stop", "results")]}
+    with pytest.raises(ValueError, match="directly after a Shared scientific filters"):
+        graph.validate_graph(definition)
+
+    filter_node = node("shared_filter", "filter")
+    filter_node["data"]["params"]["rules"] = [{"field": "common.confidence.generator.complex.iptm", "operator": ">=", "value": .7}]
+    definition["nodes"] = [target, generator, sequence, collection, filter_node, stop, results]
+    definition["edges"] = [edge("target", "generator"), edge("generator", "sequence"), edge("sequence", "collection"),
+                            edge("collection", "filter"),
+                            edge("filter", "stop"), edge("stop", "results")]
+    with pytest.raises(ValueError, match="verified validated-count campaign adapter"):
+        graph.validate_graph(definition)
+
+
+def test_campaign_stop_executes_after_candidate_filter_and_reports_controller_counts(execution_harness, tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json
+    graph_data, _calls, _parents = execution_harness
+    target = next(item for item in graph_data["nodes"] if item["data"]["kind"] == "target")
+    target_path = Path(target["data"]["params"]["target_pdb"])
+    target["data"]["params"].update(target_chains="A", hotspots="", coldspots="")
+    generator = node("rfd4", "rfd4-campaign")
+    acceptance = node("shared_filter", "acceptance")
+    acceptance["data"]["params"].update(target_type="fasta_idr", rules=[
+        {"field": "iptm", "operator": ">=", "value": .7},
+    ])
+    collection, stop, results = node("candidate_merge", "collection"), node("campaign_stop", "stop"), node("results", "results")
+    stop["data"]["params"].update(passing_design_target=1, max_design_attempts=5, designs_per_job=1)
+    graph_data["name"] = "RFD4 IDR campaign stop runtime test"
+    graph_data["workflow_mode"] = "native_complete"
+    graph_data["nodes"] = [target, generator, collection, acceptance, stop, results]
+    graph_data["edges"] = [edge(target["id"], generator["id"]), edge(generator["id"], collection["id"]),
+                            edge(collection["id"], acceptance["id"]), edge(acceptance["id"], stop["id"]),
+                            edge(stop["id"], results["id"])]
+    from mn_molecular_design_studio import candidate_pipeline
+    monkeypatch.setattr(candidate_pipeline, "preflight", lambda *_args, **_kwargs: None)
+    candidate = {
+        "candidate_id": "rfd4-design-1", "source_tool": "rfd4_proteina",
+        "stage": "generation.backbone_sequence", "binder_sequence": "KLMNP",
+        "complex_pdb": str(target_path), "target_pdb": str(target_path),
+        "target_chains": ["A"], "binder_chains": ["B"], "metrics": {"iptm": .8},
+        "raw_metadata": {},
+    }
+    child = tmp_path / "rfd4-campaign-child"
+    child.mkdir()
+    normalized = child / "artifacts/normalized_candidates"
+    normalized.mkdir(parents=True)
+    (normalized / "candidates.jsonl").write_text(json.dumps(candidate) + "\n")
+    (child / "artifacts/distributed_campaign").mkdir(parents=True)
+    write_json(child / "artifacts/distributed_campaign/summary.json", {
+        "campaign_id": "campaign-fixture", "status": "target_reached",
+        "validation_acceptance": {"accepted": 1, "rejected": 0},
+        "counters": {"designs_started": 1, "designs_completed": 1},
+        "termination_reason": "accepted_target_reached",
+    })
+    write_json(child / "input.json", {"params": {}})
+    write_json(child / "result.json", {"success": True, "metrics": {"candidate_count": 1}})
+
+    def submit(_request, parent, _node, **_kwargs):
+        write_json(child / "metadata.json", {"status": "completed", "tool": "rfd4_proteina", "job_code": "RF-1",
+                                              "pipeline_parent_run_dir": str(parent)})
+        return child
+
+    monkeypatch.setattr(runner, "_submit", submit)
+    run = runner.run_graph_pipeline(graph_data, graph_data["name"], "owner", "project", reuse_completed=False)
+    result = read_json(run / "result.json")
+    stop_result = result["outputs"]["workflow_summary"]["campaign_stop"]["stop"]
+    assert result["success"] is True
+    assert len(result["outputs"]["candidates"]) == 1
+    assert stop_result["controller"] == "existing_native_distributed_campaign"
+    assert stop_result["generator_node"] == "rfd4-campaign"
+    assert stop_result["campaign_summary"]["validation_acceptance"] == {"accepted": 1, "rejected": 0}
+    assert stop_result["campaign_summary"]["termination_reason"] == "accepted_target_reached"

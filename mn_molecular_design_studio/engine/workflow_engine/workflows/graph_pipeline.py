@@ -1768,6 +1768,53 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         if kind == "filter":
                             output["review_candidates_jsonl"] = str(parent / "artifacts/pipeline_nodes" / node_id / "artifacts/selection/all_candidates.jsonl")
                         complete(node_id, output, key);progressed=True;continue
+                    if kind == "campaign_stop":
+                        stop_contract = plan.get("campaign_stops", {}).get(node_id, {})
+                        generator_node = stop_contract.get("generator_node")
+                        generator_state = node_states.get(generator_node, {}) if generator_node else {}
+                        campaign_run = str(generator_state.get("job_run_dir") or "")
+                        summary = {}
+                        if campaign_run:
+                            try:
+                                from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+                                campaign_path = resolve_stored_path(campaign_run, run_dir=parent, must_exist=True)
+                                summary_path = campaign_path / "artifacts/distributed_campaign/summary.json" if campaign_path else None
+                                raw_summary = read_json(summary_path) if summary_path else {}
+                                summary_fields = (
+                                    "campaign_id", "status", "objective_type", "objective_target", "objective_count",
+                                    "accepted_target", "acceptance_level", "candidate_count", "materialized_candidate_count",
+                                    "deferred_candidate_count", "generated_candidates", "validated_accepted_candidates",
+                                    "rejected_candidates", "designs_authorized", "designs_started", "designs_completed",
+                                    "execution_jobs_authorized", "execution_jobs_submitted", "execution_retries",
+                                    "gpu_compute_seconds", "validation_acceptance", "counters", "termination_reason",
+                                )
+                                summary = {key: raw_summary[key] for key in summary_fields if key in raw_summary}
+                            except (OSError, TypeError, ValueError):
+                                summary = {}
+                        stop_result = {
+                            "controller": "existing_native_distributed_campaign",
+                            "generator_node": generator_node,
+                            "generator_tool": stop_contract.get("generator_tool"),
+                            "passing_design_target": params["passing_design_target"],
+                            "max_design_attempts": params["max_design_attempts"],
+                            "designs_per_job": params["designs_per_job"],
+                            "cpu_cores_per_job": params["cpu_cores_per_job"],
+                            "max_concurrent_generation_jobs": params["max_concurrent_generation_jobs"],
+                            "max_concurrent_validations": params["max_concurrent_validations"],
+                            "workstation_selection": params["workstation_selection"],
+                            "gpu_selection": params["gpu_selection"],
+                            "unique_accepted": params["unique_accepted"],
+                            "max_runtime_hours": params["max_runtime_hours"],
+                            "deadline_at": params.get("deadline_at") or None,
+                            "campaign_summary": summary,
+                        }
+                        output = copy.deepcopy(source)
+                        output["campaign_stop"] = stop_result
+                        current["campaign_stop"] = stop_result
+                        complete(node_id, output, fingerprint(kind, {**params, "controller": stop_contract},
+                                                               [o["fingerprint"] for o in upstream]))
+                        progressed = True
+                        continue
                     if kind == "sabr":
                         from mn_molecular_design_studio import sabr_runtime
                         from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
@@ -1935,6 +1982,10 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         workflow_summary = dict(**describe(graph), candidate_count=len(candidates),
             stage_counts={key: value.get('stage_counts', {}) for key, value in node_states.items()},
             execution_plan=observed_execution_plan(graph, node_states))
+        campaign_stop_summaries = {node_id: value["campaign_stop"] for node_id, value in node_states.items()
+                                   if isinstance(value.get("campaign_stop"), dict)}
+        if campaign_stop_summaries:
+            workflow_summary["campaign_stop"] = campaign_stop_summaries
         shared_summary = shared_ledger.summary() if shared_ledger else None
         if shared_summary:
             workflow_summary["shared_campaign"] = shared_summary

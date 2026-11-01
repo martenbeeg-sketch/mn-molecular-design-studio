@@ -697,6 +697,60 @@ def test_rfd4_native_refold_acceptance_campaign_validates_through_workflow_api(a
     assert normalized_campaign["unique_accepted"] is False
 
 
+def test_campaign_stop_pipeline_validates_and_saves_through_studio_api(api_data):
+    from mn_molecular_design_studio.auth import user_input_root
+    from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, SCHEMA
+
+    data, client = api_data, api_data["client"]
+    target_path = user_input_root(data["admin"]["id"]) / "campaign-stop-target.pdb"
+    write_structure(target_path, chains=(("A", 12),))
+
+    def make(kind, identifier):
+        spec = NODE_CATALOG[kind]
+        return {"id": identifier, "type": "studio", "position": {"x": 0, "y": 0},
+                "data": {"kind": kind, "label": spec["label"],
+                         "params": {field["name"]: field["default"] for field in spec["fields"]}}}
+
+    target = make("target", "target")
+    target["data"]["params"].update(target_pdb=str(target_path), target_chains="A")
+    generator = make("rfd4", "generator")
+    generator["data"]["params"].update(options_json='{"refold":true}', num_designs=1000)
+    acceptance = make("shared_filter", "acceptance")
+    acceptance["data"]["params"].update(target_type="fasta_idr", rules=[
+        {"field": "common.confidence.generator.complex.iptm", "operator": ">=", "value": .7},
+    ])
+    collection = make("candidate_merge", "collection")
+    stop = make("campaign_stop", "stop")
+    stop["data"]["params"].update(passing_design_target=10, max_design_attempts=100,
+                                   designs_per_job=10, max_concurrent_generation_jobs=4,
+                                   max_concurrent_validations=2)
+    results = make("results", "results")
+    definition = {
+        "schema_version": SCHEMA, "id": "c" * 32, "name": "API Campaign Stop validation",
+        "workflow_mode": "native_complete", "nodes": [target, generator, collection, acceptance, stop, results],
+        "edges": [
+            {"id": "target-generator", "source": "target", "target": "generator"},
+            {"id": "generator-collection", "source": "generator", "target": "collection"},
+            {"id": "collection-acceptance", "source": "collection", "target": "acceptance"},
+            {"id": "acceptance-stop", "source": "acceptance", "target": "stop"},
+            {"id": "stop-results", "source": "stop", "target": "results"},
+        ],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+    payload = {"project_id": data["project"]["id"], "graph": definition}
+    validated = client.post("/api/v1/pipelines/validate", json=payload)
+    assert validated.status_code == 200, validated.text
+    assert validated.json()["valid"] is True
+    assert validated.json()["order"] == ["target", "generator", "collection", "acceptance", "stop", "results"]
+
+    saved = client.post("/api/v1/pipelines/save", json=payload)
+    assert saved.status_code == 200, saved.text
+    listing = client.get("/api/v1/pipelines", params={"project_id": data["project"]["id"]})
+    assert listing.status_code == 200, listing.text
+    stored = next(item["graph"] for item in listing.json() if item["graph"]["id"] == definition["id"])
+    assert [item["data"]["kind"] for item in stored["nodes"]] == ["target", "rfd4", "candidate_merge", "shared_filter", "campaign_stop", "results"]
+
+
 def test_validation_acceptance_saved_evidence_is_public_and_api_validated(api_data):
     data, client = api_data, api_data["client"]
     source = candidate_run(data, tool="rfd4_proteina")
