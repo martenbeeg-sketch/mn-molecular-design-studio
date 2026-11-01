@@ -146,6 +146,32 @@ def test_coordinator_history_hot_paths_use_partial_indexes(cluster):
     assert "cluster_commands_active_artifact_lookup" in details["active_artifact"]
 
 
+def test_existing_coordinator_jobs_migrate_data_state_column(monkeypatch, tmp_path):
+    import sqlite3
+
+    root = tmp_path / "legacy-cluster"
+    root.mkdir()
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(root))
+    connection = sqlite3.connect(root / "coordinator.sqlite3")
+    connection.execute(
+        "CREATE TABLE jobs (id TEXT PRIMARY KEY,node_id TEXT,local_ref TEXT,owner_id TEXT NOT NULL,"
+        "project_id TEXT NOT NULL,payload TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(node_id,local_ref))"
+    )
+    connection.execute(
+        "INSERT INTO jobs VALUES (?,?,?,?,?,?,?)",
+        ("job-a", "node-a", "design/run-a", "user-a", "project-a",
+         json.dumps({"status": "completed", "data_state": "not_found"}), "2026-10-01T00:00:00+00:00"),
+    )
+    connection.commit()
+    connection.close()
+
+    store = Store()
+
+    with store.connect() as db:
+        row = db.execute("SELECT data_state FROM jobs WHERE id='job-a'").fetchone()
+    assert row["data_state"] == "not_found"
+
+
 def test_agent_heartbeat_interval_stays_below_unreachable_threshold(monkeypatch):
     agent = Agent()
     monkeypatch.setattr(config, "load", lambda: {"heartbeat_seconds": 300})
@@ -554,7 +580,8 @@ def test_reference_reconciliation_does_not_materialize_large_job_payloads(cluste
     store, nodes, user, _, snapshot, _, _ = cluster
     node_id = nodes[0]["node_id"]
     row = {"task_group": "design", "run_id": "large-manifest", "owner_id": user["id"],
-           "project_id": "project-a", "status": "completed"}
+           "project_id": "project-a", "status": "running",
+           "resource_request": {"cpu_threads": 4, "gpu_ids": [0]}}
     store.heartbeat(node_id, snapshot, [row], known_references=["design/large-manifest"])
     job_id = config.job_id(node_id, "design/large-manifest")
     with store.connect() as db:
@@ -574,8 +601,11 @@ def test_reference_reconciliation_does_not_materialize_large_job_payloads(cluste
     store.heartbeat(node_id, snapshot, [], known_references=[])
 
     with store.connect() as db:
-        state = db.execute("SELECT json_extract(payload,'$.data_state') FROM jobs WHERE id=?", (job_id,)).fetchone()[0]
+        state = db.execute("SELECT data_state FROM jobs WHERE id=?", (job_id,)).fetchone()[0]
+        usage = Store._active_job_resource_usage(db, node_id)
     assert state == "not_found"
+    assert usage["busy_gpu_ids"] == {"0"}
+    assert usage["cpu_in_use"] == 4
     assert materialized_payload_sizes == []
 
 
@@ -782,7 +812,7 @@ def test_heartbeat_promotes_legacy_fallback_job_to_submission_id_and_replicates_
         "campaign_name": "smoke",
     }
     with store.connect() as db:
-        db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?)", (
+        db.execute("INSERT INTO jobs (id,node_id,local_ref,owner_id,project_id,payload,created_at) VALUES (?,?,?,?,?,?,?)", (
             fallback_id, remote["node_id"], local_ref, user["id"], "project-a", json.dumps(fallback), "2026-10-18T00:00:00+00:00",
         ))
     monkeypatch.setattr(config, "identity", lambda: remote["node_id"])
@@ -819,7 +849,7 @@ def test_heartbeat_backfills_legacy_empty_ownership_for_same_local_run(cluster):
         "status": "completed",
     }
     with store.connect() as db:
-        db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?)", (
+        db.execute("INSERT INTO jobs (id,node_id,local_ref,owner_id,project_id,payload,created_at) VALUES (?,?,?,?,?,?,?)", (
             jid, node["node_id"], local_ref, "", "", json.dumps(legacy), "2026-10-23T00:00:00+00:00",
         ))
 
@@ -848,7 +878,7 @@ def test_heartbeat_still_rejects_conflicting_ownership_for_same_local_run(cluste
         "status": "completed",
     }
     with store.connect() as db:
-        db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?)", (
+        db.execute("INSERT INTO jobs (id,node_id,local_ref,owner_id,project_id,payload,created_at) VALUES (?,?,?,?,?,?,?)", (
             jid, node["node_id"], local_ref, user["id"], "project-a", json.dumps(existing), "2026-10-23T00:00:00+00:00",
         ))
 
@@ -868,7 +898,7 @@ def test_replica_import_promotes_canonical_job_before_fallback_tombstone(cluster
     fallback = {"cluster_job_id": fallback_id, "node_id": remote["node_id"], "owner_id": user["id"],
                 "project_id": "project-a", "status": "completed", "local_reference": local_ref}
     with store.connect() as db:
-        db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?)", (
+        db.execute("INSERT INTO jobs (id,node_id,local_ref,owner_id,project_id,payload,created_at) VALUES (?,?,?,?,?,?,?)", (
             fallback_id, remote["node_id"], local_ref, user["id"], "project-a", json.dumps(fallback), "2026-10-18T00:00:00+00:00",
         ))
     monkeypatch.setattr(config, "identity", lambda: remote["node_id"])

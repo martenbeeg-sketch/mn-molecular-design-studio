@@ -52,6 +52,7 @@ class Store:
                     id TEXT PRIMARY KEY, node_id TEXT, local_ref TEXT,
                     owner_id TEXT NOT NULL, project_id TEXT NOT NULL,
                     payload TEXT NOT NULL, created_at TEXT NOT NULL,
+                    data_state TEXT NOT NULL DEFAULT 'present',
                     UNIQUE(node_id,local_ref));
                 CREATE TABLE IF NOT EXISTS submissions (
                     job_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
@@ -151,6 +152,13 @@ class Store:
                 )
             if "cancelled" not in {row[1] for row in db.execute("PRAGMA table_info(submissions)")}:
                 db.execute("ALTER TABLE submissions ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0")
+            if "data_state" not in {row[1] for row in db.execute("PRAGMA table_info(jobs)")}:
+                db.execute("ALTER TABLE jobs ADD COLUMN data_state TEXT NOT NULL DEFAULT 'present'")
+                # One-time migration only. Heartbeats now reconcile this
+                # compact field without reparsing artifact-heavy job payloads.
+                db.execute(
+                    "UPDATE jobs SET data_state=COALESCE(json_extract(payload,'$.data_state'),'present')"
+                )
         self.path.chmod(0o600)
 
     @contextmanager
@@ -272,8 +280,14 @@ class Store:
                 row.update(cluster_job_id=jid, node_id=node_id, local_reference=local_ref,
                            run_dir=config.artifact_uri(node_id, group, run), location=row.get("location") or raw.get("run_dir"),
                            data_state="present", wait_reason="")
-                db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET local_ref=excluded.local_ref,owner_id=excluded.owner_id,project_id=excluded.project_id,payload=excluded.payload",
-                           (jid, node_id, local_ref, str(row.get("owner_id") or ""), str(row.get("project_id") or ""), encoded(row), row.get("created_at") or stamp(self.clock())))
+                db.execute(
+                    "INSERT INTO jobs (id,node_id,local_ref,owner_id,project_id,payload,created_at,data_state) "
+                    "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                    "local_ref=excluded.local_ref,owner_id=excluded.owner_id,project_id=excluded.project_id,"
+                    "payload=excluded.payload,data_state=excluded.data_state",
+                    (jid, node_id, local_ref, str(row.get("owner_id") or ""), str(row.get("project_id") or ""),
+                     encoded(row), row.get("created_at") or stamp(self.clock()), str(row.get("data_state") or "present")),
+                )
                 if external_library_record is not None:
                     if row.get("tool") not in {"library_preparation", "library_centroids"}:
                         raise PermissionError("Only a library preparation job can publish external library metadata.")
@@ -283,19 +297,17 @@ class Store:
                 known = set(known_references)
                 # Job payloads can contain large artifact manifests. A node
                 # sends this compact reference list on every catalog heartbeat;
-                # materializing and decoding every full payload here caused
-                # repeated hundreds-of-megabytes allocations even when no
-                # file availability changed. Let SQLite inspect the one small
-                # JSON field and only rewrite payloads whose state changed.
+                # keep availability in its own column so reconciliation does
+                # not parse every full payload or rewrite unchanged jobs.
                 for old in db.execute(
-                    "SELECT id,local_ref,json_extract(payload,'$.data_state') AS data_state "
+                    "SELECT id,local_ref,data_state "
                     "FROM jobs WHERE node_id=? AND local_ref IS NOT NULL",
                     (node_id,),
                 ):
                     state = "present" if old["local_ref"] in known else "not_found"
                     if old["data_state"] != state:
                         db.execute(
-                            "UPDATE jobs SET payload=json_set(payload,'$.data_state',?) WHERE id=?",
+                            "UPDATE jobs SET data_state=? WHERE id=?",
                             (state, old["id"]),
                         )
         self.dispatch()
@@ -328,6 +340,7 @@ class Store:
         if not visible(row, user):
             raise LookupError("Job not found.")
         item = json.loads(row["payload"])
+        item["data_state"] = row.get("data_state") or item.get("data_state") or "present"
         node = next((n for n in (self.nodes() if nodes is None else nodes) if n["id"] == row["node_id"]), None)
         return self._present_job(item, node, transfer)
 
@@ -383,13 +396,15 @@ class Store:
             db.create_function("studio_casefold", 1, lambda value: str(value or "").casefold())
             total = int(db.execute("SELECT count(*) FROM job_search_index s" + where, db_values).fetchone()[0])
             rows = db.execute(
-                "SELECT j.id,j.node_id,j.local_ref,j.owner_id,j.project_id,j.created_at,"
+                "SELECT j.id,j.node_id,j.local_ref,j.owner_id,j.project_id,j.created_at,j.data_state,"
                 "json_remove(j.payload,'$.artifacts','$.request_summary') AS payload "
                 "FROM job_search_index s JOIN jobs j ON j.id=s.job_id" + where
                 + " ORDER BY s.created_at DESC,s.job_id DESC LIMIT ? OFFSET ?",
                 db_values + (limit, offset),
             ).fetchall()
         page = [(dict(raw), json.loads(raw["payload"])) for raw in rows]
+        for row, item in page:
+            item["data_state"] = row.get("data_state") or item.get("data_state") or "present"
         nodes = {node["id"]: node for node in self.nodes()}
         with self.connect() as db:
             transfers = {r["job_id"]: r for r in db.execute(
@@ -440,7 +455,11 @@ class Store:
                        "status": "waiting_for_workstation", "campaign_name": name, "created_at": stamp(self.clock()),
                        "tool": tool, "pipeline_name": pipeline_name, "job_code": jid[:5].upper(),
                        "request_summary": request["payload"], "wait_reason": "Waiting for a compatible workstation."}
-                db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?)", (jid, None, None, user["id"], request["project_id"], encoded(row), row["created_at"]))
+                db.execute(
+                    "INSERT INTO jobs (id,node_id,local_ref,owner_id,project_id,payload,created_at) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (jid, None, None, user["id"], request["project_id"], encoded(row), row["created_at"]),
+                )
                 db.execute("INSERT INTO submissions(job_id,owner_id,idempotency_key,fingerprint,request,requirements,origin_node,placement,affinity_node,command_id) VALUES (?,?,?,?,?,?,?,?,?,NULL)",
                            (jid, user["id"], key, fingerprint, encoded(request), encoded(requirements), origin_node, placement, affinity_node))
                 destination = request.get("organizer_output_directory")

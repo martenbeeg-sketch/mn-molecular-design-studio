@@ -264,7 +264,13 @@ class Replica:
                                 or superseded['project_id'] != project_id):
                             raise PermissionError("Synchronization found a conflicting identity for this workstation run.")
                         db.execute("DELETE FROM jobs WHERE id=?", (superseded['id'],))
-                db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET node_id=excluded.node_id,local_ref=excluded.local_ref,payload=excluded.payload", (identifier, value.get('node_id'), local_ref, owner_id, project_id, encoded(value), value.get('created_at','')))
+                db.execute(
+                    "INSERT INTO jobs (id,node_id,local_ref,owner_id,project_id,payload,created_at) "
+                    "VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                    "node_id=excluded.node_id,local_ref=excluded.local_ref,payload=excluded.payload",
+                    (identifier, value.get('node_id'), local_ref, owner_id, project_id,
+                     encoded(value), value.get('created_at','')),
+                )
             return
         from mn_molecular_design_studio import auth, workspace
         if kind == 'project':
