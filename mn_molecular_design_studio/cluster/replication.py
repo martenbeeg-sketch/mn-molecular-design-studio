@@ -179,10 +179,13 @@ class Replica:
         for row in rows:
             value = json.loads(row['value'])
             # Older replicas may still have a pre-compaction job record. Strip
-            # its full request payload on export too, so it cannot block the
-            # peer that first receives it or get re-gossiped to other peers.
+            # its full request and artifact manifests on export too, so it
+            # cannot block the peer that first receives it or get re-gossiped
+            # to other peers. These paths describe local files and the
+            # associated serialized manifests can be hundreds of KB per job.
             if row['kind'] == 'job' and isinstance(value, dict):
                 value.pop('request_summary', None)
+                value.pop('artifacts', None)
             records.append(dict(key=row['key'], kind=row['kind'], author=row['author'],
                                 counter=row['counter'], value=value))
         return {
@@ -425,8 +428,15 @@ def sync_peer(peer, snapshot, jobs=None):
         state.setdefault(cursor_name, state.get("push", 0))
         state.setdefault(pull_cursor_name, state.get("pull", 0))
     # Independent durable cursors let a machine catch up after any length of outage.
+    # A 500-row first-contact page can contain enough new job records to keep
+    # the receiver in SQLite/index-trigger work past the HTTP timeout. Small
+    # pages bound each request and let heartbeats make progress between peers.
+    replication_page_size = 50
     for _ in range(20):
-        page = replica.export(state[cursor_name], include_molecular=share_molecular_database)
+        page = replica.export(
+            state[cursor_name], limit=replication_page_size,
+            include_molecular=share_molecular_database,
+        )
         if page['records']:
             transport.node_request('/peer/records', {'records':page['records']}, method='POST', base_url=peer['url'], timeout=15)
         state[cursor_name] = page['cursor']
@@ -436,7 +446,8 @@ def sync_peer(peer, snapshot, jobs=None):
     for _ in range(20):
         page = transport.node_request(
             '/peer/records?since='+str(state[pull_cursor_name])
-            + ("&include_molecular=true" if share_molecular_database else "&include_molecular=false"),
+            + ("&include_molecular=true" if share_molecular_database else "&include_molecular=false")
+            + f"&limit={replication_page_size}",
             base_url=peer['url'], timeout=15,
         )
         replica.receive(page['records'])

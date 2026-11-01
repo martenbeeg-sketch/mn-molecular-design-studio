@@ -315,10 +315,10 @@ def install(app, current_user, admin_user):
         return {"node_id":config.identity(), "snapshot":snapshot, "epoch":replica.epoch, "reference_probes":store.reference_probes()}
 
     @router.get("/node/peer/records")
-    def peer_records(response: Response, since: int = Query(0, ge=0), include_molecular: bool = Query(True), actor=Depends(node), replica=Depends(peer_replica)):
+    def peer_records(response: Response, since: int = Query(0, ge=0), limit: int = Query(500, ge=1, le=500), include_molecular: bool = Query(True), actor=Depends(node), replica=Depends(peer_replica)):
         response.headers["Cache-Control"] = "no-store"
         sharing_enabled = config.load().get("share_molecular_database", True)
-        return call(replica.export, since, include_molecular=include_molecular and sharing_enabled)
+        return call(replica.export, since, limit, include_molecular=include_molecular and sharing_enabled)
 
     @router.post("/node/peer/records")
     def receive_records(payload: dict = Body(...), actor=Depends(node), replica=Depends(peer_replica)):

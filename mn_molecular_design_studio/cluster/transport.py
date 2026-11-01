@@ -50,7 +50,13 @@ def request(path: str, payload=None, *, token: str = "", method: str = "GET", bi
             raise ValueError(str(message)) from exc
         raise ClusterUnavailable(f"Coordinator returned HTTP {exc.code}: {message}") from exc
     except (URLError, TimeoutError, OSError) as exc:
-        raise ClusterUnavailable("Coordinator is unavailable. Existing local jobs continue; remote status is last known.") from exc
+        # Keep the underlying socket failure visible in agent logs. The previous
+        # generic message hid the distinction between refusal, DNS, and a slow
+        # receiver, making a blocked peer catch-up difficult to diagnose.
+        detail = str(getattr(exc, "reason", exc)) or type(exc).__name__
+        raise ClusterUnavailable(
+            f"Coordinator request failed ({detail}). Existing local jobs continue; remote status is last known."
+        ) from exc
 
 
 def node_request(path: str, payload=None, **kwargs):

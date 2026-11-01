@@ -253,9 +253,11 @@ def test_job_replication_omits_large_local_request_payload(peers):
         with Replica().db() as db:
             Replica()._write(db,'job:legacy-large','job',{
                 'cluster_job_id':'legacy-large','request_summary':request_summary,
+                'artifacts':[{'relative_path':'artifacts/large.cif','sha256':'x'*64} for _ in range(1000)],
             },author=nodes[0]['id'])
         legacy=next(r for r in Replica().export()['records'] if r['key']=='job:legacy-large')
         assert 'request_summary' not in legacy['value']
+        assert 'artifacts' not in legacy['value']
         assert len(json.dumps(legacy,separators=(',',':'))) < 2*1024*1024
     transfer(on,0,1)
     with on(1):
@@ -707,6 +709,21 @@ def test_filtered_replication_skips_molecular_rows_and_advances_cursor(peers):
             replica._write(db,'job:visible','job',{'status':'completed'})
         next_page=replica.export(filtered['cursor'],include_molecular=False)
         assert [row['kind'] for row in next_page['records']]==['job']
+
+
+def test_peer_replication_page_limit_is_configurable(peers):
+    nodes,on=peers
+    from mn_molecular_design_studio import api
+    with on(1),TestClient(api.app) as client:
+        replica=Replica()
+        with replica.db() as db:
+            for index in range(8):
+                replica._write(db,f'project:page-{index}','project',{'id':f'page-{index}','name':'page'})
+        headers={'Authorization':'Bearer '+nodes[0]['token']}
+        response=client.get('/api/v1/cluster/node/peer/records?limit=3',headers=headers)
+        assert response.status_code==200
+        assert len(response.json()['records'])==3
+        assert response.json()['more'] is True
 
 
 def test_molecular_replication_setting_must_be_boolean(peers):
