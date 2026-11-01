@@ -99,6 +99,33 @@ def test_retry_preserves_attempt_identity_and_seed(tmp_path):
     assert campaign.counters()["attempts_authorized"] == 1
 
 
+def test_code_revision_refresh_is_technical_and_uses_a_new_peer_idempotency_key(tmp_path):
+    campaign=ledger(tmp_path)
+    attempt=campaign.authorize(1,batch_id="revision-refresh")[0]
+    child=tmp_path/'child'; child.mkdir()
+    (child/'command.json').write_text(json.dumps({'mode':'local_worker'}))
+    old_peer={'prepared_envelope':{'requirements':{'code_revision':'previous'}},'cluster_job_id':'old-job'}
+    campaign.transition(
+        attempt['attempt_id'],'queued',child_run_dir=str(child),
+        cluster_submission=old_peer,cluster_job_id='old-job',
+    )
+    retried=campaign.retry(attempt['attempt_id'],technical_retry='peer_code_revision_refresh')
+    assert retried['attempt_id']==attempt['attempt_id']
+    assert retried['seed']==attempt['seed']
+    assert retried['retry_count']==0
+    assert retried['peer_code_revision_refresh_count']==1
+    assert retried['technical_retry_history'][-1]['reason']=='peer_code_revision_refresh'
+    assert campaign.snapshot()['execution_jobs'][attempt['execution_job_id']]['current_execution_id'].endswith(':e0002')
+    refreshed=campaign.transition(
+        attempt['attempt_id'],'queued',cluster_submission={},cluster_job_id=None,
+        remote_submission_key=None,worker_node_id=None,worker_metadata={},placement_node_id=None,
+    )
+    assert refreshed['cluster_submission']=={} and refreshed.get('cluster_job_id') is None
+    base_key=distributed_campaign._rfd4_peer_submission_key('campaign-test',attempt,'rfd4_proteina')
+    refreshed_key=distributed_campaign._rfd4_peer_submission_key('campaign-test',refreshed,'rfd4_proteina')
+    assert refreshed_key!=base_key
+
+
 def test_rfd4_retry_is_only_safe_before_native_container_launch(tmp_path):
     child = tmp_path / "rfd4-child"
     child.mkdir()
@@ -2798,7 +2825,10 @@ def test_stale_unassigned_peer_request_is_detected_after_code_update(monkeypatch
 
     peer['prepared_envelope']['requirements']['code_revision'] = 'current-revision'
     assert not distributed_campaign._peer_submission_needs_revision_refresh(peer, remote_job)
+    peer['prepared_envelope']['requirements']['code_revision'] = 'previous-revision'
     remote_job['wait_reason'] = 'Waiting for an available GPU.'
+    assert distributed_campaign._peer_submission_needs_revision_refresh(peer, remote_job)
+    remote_job['status'] = 'running'
     assert not distributed_campaign._peer_submission_needs_revision_refresh(peer, remote_job)
 
 

@@ -997,7 +997,10 @@ class CampaignLedger(ExecutionJobLedgerMixin):
             _atomic_json(self.path, state)
             return dict(attempt)
 
-    def retry(self, attempt_id: str, *, child_run_dir: str | None = None) -> dict[str, Any]:
+    def retry(
+        self, attempt_id: str, *, child_run_dir: str | None = None,
+        technical_retry: str | None = None,
+    ) -> dict[str, Any]:
         with _locked(self.path):
             state = _read(self.path)
             attempt = state["attempts"].get(attempt_id)
@@ -1005,6 +1008,8 @@ class CampaignLedger(ExecutionJobLedgerMixin):
                 raise KeyError(f"Unknown campaign attempt: {attempt_id}")
             if attempt["status"] not in {"failed", "interrupted", "queued"}:
                 raise ValueError("Only failed, interrupted, or queued attempts can be retried.")
+            if technical_retry not in {None, "peer_code_revision_refresh"}:
+                raise ValueError("Unsupported non-scientific campaign retry reason.")
             if state["schema_version"] == 2:
                 job = state["execution_jobs"][attempt["execution_job_id"]]
                 if job["mode"] != "single_attempt_adapter":
@@ -1019,18 +1024,31 @@ class CampaignLedger(ExecutionJobLedgerMixin):
                         "command_sha256": hashlib.sha256(command_path.read_bytes()).hexdigest() if command_path.is_file() else None,
                     }
                 execution["submission_state"] = "interrupted"
-                _retry(state, job, f"adapter-retry:{int(attempt.get('retry_count', 0)) + 1}")
-            attempt["retry_count"] = int(attempt.get("retry_count", 0)) + 1
-            attempt.setdefault("retry_history", []).append({
+                if technical_retry:
+                    technical_count = int(attempt.get("peer_code_revision_refresh_count", 0)) + 1
+                    retry_key = f"technical:{technical_retry}:{technical_count}"
+                else:
+                    retry_key = f"adapter-retry:{int(attempt.get('retry_count', 0)) + 1}"
+                _retry(state, job, retry_key)
+            retry_event = {
                 "at": utc_now(), "child_run_dir": child_run_dir or attempt.get("child_run_dir"),
                 "seed": attempt["seed"],
-            })
+            }
+            if technical_retry:
+                attempt["peer_code_revision_refresh_count"] = int(attempt.get("peer_code_revision_refresh_count", 0)) + 1
+                attempt.setdefault("technical_retry_history", []).append({**retry_event, "reason": technical_retry})
+            else:
+                attempt["retry_count"] = int(attempt.get("retry_count", 0)) + 1
+                attempt.setdefault("retry_history", []).append(retry_event)
             attempt["child_run_dir"] = child_run_dir or attempt.get("child_run_dir")
             attempt["status"] = "queued"
             attempt["started_at"] = None
             attempt["completed_at"] = None
             state["updated_at"] = utc_now()
-            state["events"].append({"type": "attempt_retry", "attempt_id": attempt_id, "at": state["updated_at"]})
+            state["events"].append({
+                "type": "attempt_technical_retry" if technical_retry else "attempt_retry",
+                "attempt_id": attempt_id, "reason": technical_retry, "at": state["updated_at"],
+            })
             _atomic_json(self.path, state)
             return dict(attempt)
 
@@ -1323,6 +1341,14 @@ def _campaign_actor(parent_run_dir: Path) -> tuple[str, str, bool]:
     return owner_id, project_id, development_mode
 
 
+def _rfd4_peer_submission_key(campaign_id: str, attempt: dict[str, Any], generator_id: str) -> str:
+    identity = f"{campaign_id}:{attempt['attempt_id']}:{'rfd4' if generator_id == 'rfd4_proteina' else 'bindcraft2'}"
+    refresh_count = int(attempt.get("peer_code_revision_refresh_count") or 0)
+    if refresh_count:
+        identity += f":code-revision-refresh:{refresh_count}"
+    return hashlib.sha256(identity.encode()).hexdigest()
+
+
 def _submit_rfd4_peer_attempt(
     parent_run_dir: Path,
     ledger: CampaignLedger,
@@ -1340,9 +1366,7 @@ def _submit_rfd4_peer_attempt(
     peer = dict(attempt.get("cluster_submission") or {})
     peer.setdefault("manifest", str(child_run_dir / "artifacts" / "distributed_campaign" / "peer_submission.json"))
     peer.setdefault("transfers", {})
-    peer.setdefault("submission_key", hashlib.sha256(
-        f"{campaign_id}:{attempt['attempt_id']}:{'rfd4' if generator_id == 'rfd4_proteina' else 'bindcraft2'}".encode()
-    ).hexdigest())
+    peer.setdefault("submission_key", _rfd4_peer_submission_key(campaign_id, attempt, generator_id))
     owner_id, project_id, development_mode = _campaign_actor(parent_run_dir)
     child_payload = read_json(child_run_dir / "input.json")
     parameters = dict(child_payload.get("params") or {})
@@ -2569,9 +2593,8 @@ def _restore_peer_transfer_state(child_run_dir: Path, peer: dict[str, Any]) -> N
 
 
 def _peer_submission_needs_revision_refresh(peer: dict[str, Any], remote_job: dict[str, Any]) -> bool:
-    """Identify an unassigned job whose immutable request predates this code update."""
-    reason = str(remote_job.get("wait_reason") or "")
-    if "different Studio code revision" not in reason:
+    """Identify an unstarted queued job whose immutable request predates this code update."""
+    if remote_job.get("status") != "waiting_for_workstation":
         return False
     prepared = peer.get("prepared_envelope") or {}
     requirements = prepared.get("requirements") or {}
@@ -2787,20 +2810,36 @@ def _reconcile_attempts(
                 continue
             if (
                 peer_status == "waiting_for_workstation"
-                and not peer_job.get("node_id")
                 and _peer_submission_needs_revision_refresh(peer, peer_job)
                 and not time_expired
-                and int(attempt.get("retry_count", 0)) < int(config["max_retries"])
+                and int(attempt.get("peer_code_revision_refresh_count", 0)) < 1
                 and ledger.retry_is_safe(attempt)
             ):
-                # The immutable peer request predates the coordinated Studio
-                # update. Cancel only this unassigned job and retry the same
-                # authorized attempt/seed with a fresh capability manifest.
+                # This is a technical submission repair, not a new stochastic
+                # attempt. Retire the unassigned peer job, keep the same
+                # authorized attempt/seed, and clear its immutable prepared
+                # envelope/idempotency key so capabilities are recomputed.
+                old_cluster_job_id = str(peer.get("cluster_job_id") or peer_job.get("cluster_job_id") or "")
+                old_revision = str((peer.get("prepared_envelope") or {}).get("requirements", {}).get("code_revision") or "")
+                from mn_molecular_design_studio.cluster.capabilities import code_revision
+                refresh_history = list(attempt.get("peer_code_revision_refresh_history") or [])
+                refresh_history.append({
+                    "at": utc_now(), "old_cluster_job_id": old_cluster_job_id,
+                    "required_code_revision": old_revision, "replacement_code_revision": code_revision(),
+                    "reason": str(peer_job.get("wait_reason") or ""),
+                })
                 _cancel_campaign_attempt(
                     ledger, attempt, child,
                     "Refreshing an unstarted peer submission after a Studio code update.",
                 )
-                retried = ledger.retry(attempt_id)
+                ledger.retry(attempt_id, technical_retry="peer_code_revision_refresh")
+                retried = ledger.transition(
+                    attempt_id, "queued",
+                    peer_code_revision_refresh_history=refresh_history,
+                    cluster_submission={}, cluster_job_id=None,
+                    remote_submission_key=None, worker_node_id=None, worker_metadata={},
+                    placement_node_id=None,
+                )
                 try:
                     retry_child = _create_attempt_child(
                         parent_run_dir, ledger, retried, config,
