@@ -3533,7 +3533,10 @@ def _materialize_deferred_accepted_outputs(parent_run_dir: Path, ledger: Campaig
         ):
             complete = False
             continue
-        child_metadata = read_json(child / "metadata.json")
+        # Campaign child metadata can retain worker-local cluster:// paths.
+        # Finalization only needs this local boolean and must not resolve those
+        # paths on the coordinator after collecting the accepted artifacts.
+        child_metadata = read_json_raw(child / "metadata.json")
         child_metadata.update(
             deferred_output=True,
             deferred_accepted_materialized=True,

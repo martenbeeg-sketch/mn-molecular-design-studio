@@ -1656,7 +1656,10 @@ def test_deferred_accepted_finalization_fetches_only_the_accepted_collection(tmp
     attempt = ledger.authorize(1, batch_id="batch-1")[0]
     child = root / "design" / "remote-child"
     child.mkdir(parents=True)
-    jobs.write_json(child / "metadata.json", {"status": "completed"})
+    jobs.write_json(child / "metadata.json", {
+        "status": "completed",
+        "target_structure": "cluster://remote-node/design/remote-run/input/target.cif",
+    })
     peer = {"cluster_job_id": "peer-job", "manifest": str(child / "peer.json")}
     ledger.transition(
         attempt["attempt_id"], "running", child_run_dir=str(child),
@@ -1694,7 +1697,7 @@ def test_deferred_accepted_finalization_fetches_only_the_accepted_collection(tmp
     assert callable(observed["persist_transfers"])
     assert observed["accepted_output_only"] is True
     assert observed["materialized"] is True
-    saved = jobs.read_json(child / "metadata.json")
+    saved = jobs.read_json_raw(child / "metadata.json")
     assert saved["deferred_accepted_materialized"] is True
     assert saved["deferred_accepted_candidate_count"] == 2
     receipt = next(iter(ledger.snapshot()["deferred_outputs"].values()))
