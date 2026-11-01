@@ -281,12 +281,23 @@ class Store:
                     LibraryCatalog().import_remote_record(external_library_record, node_id=node_id)
             if known_references is not None and snapshot.get("storage_available", True):
                 known = set(known_references)
-                for old in db.execute("SELECT id,local_ref,payload FROM jobs WHERE node_id=? AND local_ref IS NOT NULL", (node_id,)).fetchall():
-                    data = json.loads(old["payload"])
+                # Job payloads can contain large artifact manifests. A node
+                # sends this compact reference list on every catalog heartbeat;
+                # materializing and decoding every full payload here caused
+                # repeated hundreds-of-megabytes allocations even when no
+                # file availability changed. Let SQLite inspect the one small
+                # JSON field and only rewrite payloads whose state changed.
+                for old in db.execute(
+                    "SELECT id,local_ref,json_extract(payload,'$.data_state') AS data_state "
+                    "FROM jobs WHERE node_id=? AND local_ref IS NOT NULL",
+                    (node_id,),
+                ):
                     state = "present" if old["local_ref"] in known else "not_found"
-                    if data.get("data_state") != state:
-                        data["data_state"] = state
-                        db.execute("UPDATE jobs SET payload=? WHERE id=?", (encoded(data), old["id"]))
+                    if old["data_state"] != state:
+                        db.execute(
+                            "UPDATE jobs SET payload=json_set(payload,'$.data_state',?) WHERE id=?",
+                            (state, old["id"]),
+                        )
         self.dispatch()
 
     def pulse(self, node_id, snapshot):
@@ -493,16 +504,21 @@ class Store:
         busy_gpu_ids = set()
         all_gpus_busy = False
         cpu_in_use = 0.0
-        rows = db.execute("SELECT payload FROM jobs WHERE node_id=?", (node_id,)).fetchall()
+        active_statuses = sorted(ACTIVE_RESOURCE_STATUSES)
+        rows = db.execute(
+            "SELECT json_extract(j.payload,'$.scheduler_resource_request') AS scheduler_resource_request,"
+            "json_extract(j.payload,'$.resource_request') AS resource_request,"
+            "json_extract(j.payload,'$.queue_resource') AS queue_resource,"
+            "json_extract(j.payload,'$.resource_allocation') AS resource_allocation "
+            "FROM job_search_index s JOIN jobs j ON j.id=s.job_id "
+            "WHERE s.node_id=? AND lower(s.status) IN (" + ",".join("?" for _ in active_statuses) + ")",
+            (node_id, *active_statuses),
+        )
         for row in rows:
             try:
-                job = json.loads(row["payload"])
+                request = json.loads(row["scheduler_resource_request"] or row["resource_request"] or "null")
             except (TypeError, json.JSONDecodeError):
-                continue
-            if str(job.get("status") or "").casefold() not in ACTIVE_RESOURCE_STATUSES:
-                continue
-
-            request = job.get("scheduler_resource_request") or job.get("resource_request")
+                request = None
             if isinstance(request, dict):
                 cpu_in_use += max(0.0, float(request.get("cpu_threads") or request.get("cpu_cores") or 0))
                 gpu_ids = request.get("gpu_ids")
@@ -515,7 +531,7 @@ class Store:
                     else:
                         busy_gpu_ids.update(re.findall(r"\d+", selected))
 
-            queue_resource = str(job.get("queue_resource") or "").strip().lower()
+            queue_resource = str(row["queue_resource"] or "").strip().lower()
             if queue_resource.startswith("gpu"):
                 selected = queue_resource.partition(":")[2].strip()
                 if not selected or selected in {"all", "any", "auto"}:
@@ -523,7 +539,7 @@ class Store:
                 else:
                     busy_gpu_ids.update(re.findall(r"\d+", selected))
 
-            allocation = str(job.get("resource_allocation") or "")
+            allocation = str(row["resource_allocation"] or "")
             match = re.search(r"(\d+(?:\.\d+)?)\s+CPU cores?", allocation, flags=re.IGNORECASE)
             if match and not (isinstance(request, dict) and (request.get("cpu_threads") or request.get("cpu_cores"))):
                 cpu_in_use += float(match.group(1))

@@ -550,6 +550,35 @@ def test_missing_results_are_unavailable_without_erasing_completed_status(cluste
     assert store.job(jid, user)["availability"] == "online"
 
 
+def test_reference_reconciliation_does_not_materialize_large_job_payloads(cluster, monkeypatch):
+    store, nodes, user, _, snapshot, _, _ = cluster
+    node_id = nodes[0]["node_id"]
+    row = {"task_group": "design", "run_id": "large-manifest", "owner_id": user["id"],
+           "project_id": "project-a", "status": "completed"}
+    store.heartbeat(node_id, snapshot, [row], known_references=["design/large-manifest"])
+    job_id = config.job_id(node_id, "design/large-manifest")
+    with store.connect() as db:
+        payload = json.loads(db.execute("SELECT payload FROM jobs WHERE id=?", (job_id,)).fetchone()[0])
+        payload["artifacts"] = [f"artifacts/{index:05d}/" + "x" * 128 for index in range(3000)]
+        db.execute("UPDATE jobs SET payload=? WHERE id=?", (json.dumps(payload), job_id))
+
+    original_loads = json.loads
+    materialized_payload_sizes = []
+
+    def track_large_payload_load(value, *args, **kwargs):
+        if isinstance(value, str) and len(value) > 100_000:
+            materialized_payload_sizes.append(len(value))
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr("mn_molecular_design_studio.cluster.store.json.loads", track_large_payload_load)
+    store.heartbeat(node_id, snapshot, [], known_references=[])
+
+    with store.connect() as db:
+        state = db.execute("SELECT json_extract(payload,'$.data_state') FROM jobs WHERE id=?", (job_id,)).fetchone()[0]
+    assert state == "not_found"
+    assert materialized_payload_sizes == []
+
+
 def test_reference_probes_drop_after_a_submission_is_rejected(cluster):
     store, nodes, user, needs, _, request, _ = cluster
     store.submit(request, needs, user, origin_node=nodes[0]["node_id"], placement="local")
