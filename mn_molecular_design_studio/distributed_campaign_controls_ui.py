@@ -58,7 +58,7 @@ def render_campaign_lifecycle_controls(
         if resumable:
             st.caption("Pausing stops the controller from authorizing attempts; cancel terminates the campaign and cannot be resumed.")
     elif normalized in _PAUSED or failed_finalization_recoverable:
-        resume_label = "Resume campaign" if normalized in _PAUSED else "Retry accepted-output collection"
+        resume_label = "Resume campaign" if normalized in _PAUSED else "Retry campaign finalization"
         if resumable and st.button(resume_label, key="campaign-resume-" + reference):
             try:
                 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import resume_job

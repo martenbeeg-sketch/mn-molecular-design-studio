@@ -107,7 +107,7 @@ def install(app, current_user, *, resolve_job, call):
                  "description": (
                      "Retry workstation acceptance after a compatibility failure; does not rerun a scientific calculation."
                      if name == "retry" else
-                     "Resume accepted-output collection after every campaign attempt has finished."
+                     "Resume finalization after campaign generation and accepted-output receipts are terminal."
                      if name == "resume" and row.get("status") == "failed" else
                      "Resource and job-state eligibility is checked again when requested."
                  )}

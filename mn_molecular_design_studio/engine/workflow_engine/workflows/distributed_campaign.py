@@ -2348,11 +2348,12 @@ def can_resume_campaign_finalization(run_dir: str | Path) -> bool:
         return False
 
     children = _attempt_child_paths(ledger, state)
-    has_pending_accepted_output = False
+    has_accepted_output = False
     for receipt in state.get("deferred_outputs", {}).values():
         accepted_count = int((receipt.get("evidence") or {}).get("acceptance_counts", {}).get("accepted") or 0)
         if accepted_count <= 0:
             continue
+        has_accepted_output = True
         attempt_id = str(receipt.get("attempt_id") or "")
         attempt = state.get("attempts", {}).get(attempt_id) or {}
         child = children.get(attempt_id)
@@ -2363,8 +2364,7 @@ def can_resume_campaign_finalization(run_dir: str | Path) -> bool:
         peer = attempt.get("cluster_submission") if isinstance(attempt.get("cluster_submission"), dict) else {}
         if not peer.get("cluster_job_id") or not peer.get("manifest"):
             return False
-        has_pending_accepted_output = True
-    return has_pending_accepted_output
+    return has_accepted_output
 
 
 def _collecting_attempt_count(active: list[dict[str, Any]]) -> int:
@@ -3575,7 +3575,9 @@ def _finish_campaign(parent_run_dir: Path, ledger: CampaignLedger, candidates: l
             detail=f"Reached {accepted} {'generated' if state['config'].get('objective_type') == 'generated' else 'accepted'} candidates.",
         )
     _sync_parent_results(parent_run_dir, ledger, _attempt_child_paths(ledger), candidates)
-    persisted_summary = read_json(parent_run_dir / "artifacts" / "distributed_campaign" / "summary.json")
+    # The compact summary contains worker-local artifact references in its
+    # provenance entries; this stage only reads scalar acceptance metadata.
+    persisted_summary = read_json_raw(parent_run_dir / "artifacts" / "distributed_campaign" / "summary.json")
     validation_acceptance_summary = persisted_summary.get("validation_acceptance")
     state = _ledger_view(ledger)
     reason = str(state.get("termination_reason") or "failed")

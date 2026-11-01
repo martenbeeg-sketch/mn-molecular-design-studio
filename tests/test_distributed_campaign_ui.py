@@ -411,7 +411,7 @@ def test_campaign_lifecycle_controls_offer_pause_resume_and_cancel_only_in_valid
     failed.session_state["run_dir"] = str(run_dir)
     failed.session_state["status"] = "failed"
     failed.run()
-    assert any(button.label == "Retry accepted-output collection" for button in failed.button)
+    assert any(button.label == "Retry campaign finalization" for button in failed.button)
     failed.button(key="campaign-resume-local:design:fixture").click().run()
     assert calls[-1] == ("resume", run_dir)
 

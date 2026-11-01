@@ -647,7 +647,37 @@ def test_failed_campaign_can_resume_only_deferred_accepted_output_collection(tmp
     metadata = jobs.read_json(child / "metadata.json")
     metadata["deferred_accepted_materialized"] = True
     jobs.write_json(child / "metadata.json", metadata)
+    assert distributed_campaign.can_resume_campaign_finalization(parent)
+    jobs.write_json(parent / "metadata.json", {"status": "completed"})
     assert not distributed_campaign.can_resume_campaign_finalization(parent)
+
+
+def test_campaign_finish_reads_summary_without_resolving_worker_local_paths(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    jobs.write_json(parent / "metadata.json", {"status": "running"})
+    ledger = CampaignLedger.create(
+        parent / "artifacts/distributed_campaign/ledger.json",
+        {"accepted_target": 1, "max_attempts": 1},
+        campaign_id="finish-worker-local-summary-campaign",
+    )
+    ledger.terminate("budget_exhausted", detail="Test campaign is complete.")
+    finished = []
+
+    def sync_results(parent_dir, *_args):
+        jobs.write_json(parent_dir / "artifacts/distributed_campaign/summary.json", {
+            "validation_acceptance": {"accepted": 0},
+            "provenance": {"worker_structure_path": "cluster://remote-node/design/remote-run/output/design.cif"},
+        })
+
+    monkeypatch.setattr(distributed_campaign, "_sync_parent_results", sync_results)
+    monkeypatch.setattr(jobs, "finish_job", lambda _path, success, result: finished.append((success, result)))
+
+    assert distributed_campaign._finish_campaign(parent, ledger, []) == parent
+    assert finished and finished[0][0] is True
+    assert finished[0][1]["metrics"]["validation_acceptance"] == {"accepted": 0}
 
 
 def test_collection_does_not_hold_generation_slot_but_reserves_objective_result(tmp_path, monkeypatch):
