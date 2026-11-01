@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import mmap
 import os
 import re
 import sqlite3
@@ -16,14 +18,24 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from mn_molecular_design_studio.engine.workflow_engine.core.job_identity import job_display_tool, job_name, job_tool
 
 _SCHEMA_LOCK = threading.Lock()
 _RECONCILE_LOCK = threading.Lock()
+_RECONCILE_SCHEDULE_LOCK = threading.Lock()
+_RECONCILE_SCHEDULED: set[str] = set()
 _SCHEMA_READY_PATH: Path | None = None
-_ROOT_SCAN_INTERVAL_SECONDS = 2.0
+# Reconciliation stats every run directory and refreshes artifacts only when
+# inputs/results change. A short interval made large Results trees contend with
+# every synchronous API request, so keep it bounded and let concurrent callers
+# use the last indexed snapshot while one scan is in progress.
+_ROOT_SCAN_INTERVAL_SECONDS = 10.0
+_RESULT_SUCCESS_UNSET = object()
+_RESULT_INLINE_READ_LIMIT = 8 * 1024 * 1024
+_RESULT_TAIL_READ_BYTES = 256 * 1024
+_LOG = logging.getLogger(__name__)
 
 
 def catalog_path() -> Path:
@@ -222,15 +234,73 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _job_payload(run_dir: Path) -> dict[str, Any]:
+def _read_result_index_fields(path: Path) -> tuple[Any, list[Any]]:
+    """Read only the compact fields needed by the job catalog.
+
+    Scientific result files can include every candidate structure and exceed
+    100 MB. Loading those files just to index ``success`` made the API retain a
+    large allocator high-water mark during Results reconciliation. Keep the
+    normal full read for small library jobs (which provide the worker detail
+    rows), and inspect only the result tail for the root-level success field in
+    large, pretty-printed results.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None, []
+    if size <= _RESULT_INLINE_READ_LIMIT:
+        result = _read_json(path)
+        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        workers = metrics.get("workers") if isinstance(metrics.get("workers"), list) else []
+        return result.get("success"), workers
+
+    try:
+        with path.open("rb") as handle:
+            if size > _RESULT_TAIL_READ_BYTES:
+                handle.seek(-_RESULT_TAIL_READ_BYTES, os.SEEK_END)
+            tail = handle.read(_RESULT_TAIL_READ_BYTES)
+    except OSError:
+        return None, []
+
+    # Studio writes indented JSON with two spaces per object depth. A root key
+    # is therefore at exactly two spaces, unlike nested success fields inside
+    # candidate records. Success is emitted after the potentially large output
+    # payload, so this bounded tail read normally finds it without touching the
+    # candidate data. mmap provides a low-allocation fallback for older files
+    # whose success key is not in the final 256 KiB.
+    success_pattern = re.compile(rb'(?m)^  "success"\s*:\s*(true|false|null)\b')
+    match = success_pattern.search(tail)
+    if match is None:
+        try:
+            with path.open("rb") as handle:
+                with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+                    match = success_pattern.search(mapped)
+        except (OSError, ValueError):
+            match = None
+    if match is None:
+        return None, []
+    token = match.group(1)
+    success = True if token == b"true" else False if token == b"false" else None
+    return success, []
+
+
+def _job_payload(
+    run_dir: Path,
+    *,
+    cached_result_success: object = _RESULT_SUCCESS_UNSET,
+) -> dict[str, Any]:
     metadata = _read_json(run_dir / "metadata.json")
     inputs = _read_json(run_dir / "input.json")
-    result = _read_json(run_dir / "result.json")
+    worker_metrics: list[Any] = []
+    if cached_result_success is _RESULT_SUCCESS_UNSET:
+        result_success, worker_metrics = _read_result_index_fields(run_dir / "result.json")
+    else:
+        result_success = cached_result_success
     params = inputs.get("params") if isinstance(inputs.get("params"), dict) else {}
     status = str(metadata.get("status") or "").casefold()
     if not status:
-        status = "completed" if result.get("success") else "unknown"
-    if result.get("success") is False and status not in {
+        status = "completed" if result_success else "unknown"
+    if result_success is False and status not in {
         "running", "queued", "preparing", "pending", "starting", "cancelling", "cancel_requested",
         "paused", "holding", "stopped", "cancelled",
     }:
@@ -257,11 +327,9 @@ def _job_payload(run_dir: Path) -> dict[str, Any]:
         if pipeline_parent or is_visual_pipeline
         else ""
     )
-    result_metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
     # Keep the worker rows used by the distributed-library dialog available
     # in the compact job catalog. Avoid copying arbitrary result metrics into
     # every catalog response; some workflows retain large result summaries.
-    worker_metrics = result_metrics.get("workers") if isinstance(result_metrics.get("workers"), list) else []
     from mn_molecular_design_studio.logical_runs import IDENTITY_FIELDS
     identity = {key: metadata[key] for key in IDENTITY_FIELDS if key in metadata}
     for key in ("campaign_group_id", "campaign_group_name"):
@@ -299,7 +367,7 @@ def _job_payload(run_dir: Path) -> dict[str, Any]:
         "queue_wait_started_at": str(metadata.get("queue_wait_started_at") or ""),
         "worker_started_at": str(metadata.get("worker_started_at") or ""),
         "completed_at": str(metadata.get("completed_at") or ""),
-        "success": result.get("success"),
+        "success": result_success,
         "hidden": bool(metadata.get("hidden")),
         "capacity_parent": bool(metadata.get("capacity_parent_run_id") or metadata.get("capacity_parent")),
         # Only Studio identity metadata is used here. Scheduler/worker owner IDs
@@ -313,8 +381,7 @@ def _job_payload(run_dir: Path) -> dict[str, Any]:
     }
 
 
-def _artifact_rows(root: Path, run_dir: Path) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+def _artifact_rows(root: Path, run_dir: Path) -> Iterator[dict[str, Any]]:
     for base, dirs, files in os.walk(run_dir, followlinks=False):
         dirs[:] = [name for name in dirs if not (Path(base) / name).is_symlink()]
         for name in files:
@@ -325,14 +392,13 @@ def _artifact_rows(root: Path, run_dir: Path) -> list[dict[str, Any]]:
                 stat = resolved.stat()
             except (OSError, ValueError):
                 continue
-            rows.append({
+            yield {
                 "relative_path": relative,
                 "name": resolved.name,
                 "kind": resolved.suffix.lower().lstrip(".") or "file",
                 "size_bytes": stat.st_size,
                 "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds"),
-            })
-    return rows
+            }
 
 
 def _upsert(root: Path, run_dir: Path, *, refresh_artifacts: bool) -> None:
@@ -341,8 +407,24 @@ def _upsert(root: Path, run_dir: Path, *, refresh_artifacts: bool) -> None:
     relative = run_dir.relative_to(root).as_posix()
     if len(Path(relative).parts) < 2:
         return
-    row = _job_payload(run_dir)
     root_id = _root_id(root)
+    task_group, run_id = run_dir.parent.name, run_dir.name
+    result_mtime_ns = _mtime(run_dir / "result.json")
+    cached_result_success: object = _RESULT_SUCCESS_UNSET
+    with _connection() as connection:
+        previous = connection.execute(
+            "SELECT success, result_mtime_ns FROM jobs "
+            "WHERE storage_root_id=? AND task_group=? AND run_id=?",
+            (root_id, task_group, run_id),
+        ).fetchone()
+    if previous and int(previous["result_mtime_ns"]) == result_mtime_ns:
+        cached_result_success = (
+            None if previous["success"] is None else bool(previous["success"])
+        )
+    # Result files can contain very large scientific outputs. Metadata changes
+    # frequently while a run is active; don't parse an unchanged result.json on
+    # every such update. Its success value is already indexed in SQLite.
+    row = _job_payload(run_dir, cached_result_success=cached_result_success)
     values = (
         root_id, row["task_group"], row["run_id"], relative, row["job_code"], row["job_type"], row["tool"],
         row["status"], row["queue_resource"], row["resource_allocation"], row["scheduler_wait_reason"],
@@ -385,10 +467,10 @@ def _upsert(root: Path, run_dir: Path, *, refresh_artifacts: bool) -> None:
             connection.executemany(
                 "INSERT OR REPLACE INTO job_artifacts(job_id, relative_path, name, kind, size_bytes, modified_at) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                [
+                (
                     (job_id, a["relative_path"], a["name"], a["kind"], a["size_bytes"], a["modified_at"])
                     for a in _artifact_rows(root, run_dir)
-                ],
+                ),
             )
 
 
@@ -446,10 +528,64 @@ def _reconcile_locked(root: Path) -> None:
         connection.execute("UPDATE storage_roots SET last_scanned_at=? WHERE id=?", (_now(), root_id))
 
 
-def reconcile(root: Path | None = None) -> None:
+def _reconcile_in_background(root: Path, root_key: str) -> None:
+    try:
+        if not _RECONCILE_LOCK.acquire(blocking=False):
+            return
+        try:
+            _reconcile_locked(root)
+        finally:
+            _RECONCILE_LOCK.release()
+    except Exception:
+        _LOG.exception("Results catalog reconciliation failed for %s", root)
+    finally:
+        with _RECONCILE_SCHEDULE_LOCK:
+            _RECONCILE_SCHEDULED.discard(root_key)
+
+
+def reconcile(root: Path | None = None, *, wait: bool = True) -> None:
     selected_root = (root or _results_root()).expanduser().resolve()
-    with _RECONCILE_LOCK:
+    if not wait:
+        root_key = str(selected_root)
+        with _RECONCILE_SCHEDULE_LOCK:
+            if root_key in _RECONCILE_SCHEDULED:
+                return
+            _RECONCILE_SCHEDULED.add(root_key)
+        thread = threading.Thread(
+            target=_reconcile_in_background,
+            args=(selected_root, root_key),
+            name="studio-results-catalog",
+            daemon=True,
+        )
+        try:
+            thread.start()
+        except RuntimeError:
+            with _RECONCILE_SCHEDULE_LOCK:
+                _RECONCILE_SCHEDULED.discard(root_key)
+            _LOG.exception("Could not start Results catalog reconciliation for %s", selected_root)
+        return
+    # search_jobs is called by both the UI and cluster heartbeats. Waiting on a
+    # long artifact reconciliation here can occupy every FastAPI sync worker.
+    # Concurrent callers can serve the current catalog while an explicit
+    # maintenance operation completes its requested synchronous scan.
+    if not _RECONCILE_LOCK.acquire(blocking=False):
+        return
+    try:
         _reconcile_locked(selected_root)
+    finally:
+        _RECONCILE_LOCK.release()
+
+
+def _reconcile_for_read(root: Path) -> None:
+    """Keep read paths responsive when a populated catalog needs refreshing."""
+    with _connection() as connection:
+        indexed = connection.execute(
+            "SELECT 1 FROM jobs WHERE storage_root_id=? LIMIT 1", (_root_id(root),)
+        ).fetchone()
+    # A first index must be visible to the caller. Once the catalog has a
+    # usable snapshot, refresh it off-thread so a large Results tree cannot
+    # block the UI/API request that triggered the refresh.
+    reconcile(root, wait=indexed is None)
 
 
 def update_job_project(run_dir: str | Path) -> None:
@@ -553,7 +689,7 @@ def search_jobs(
             raise ValueError("cursor must be a non-negative offset returned by this endpoint")
         offset = cursor_offset
     root = _results_root()
-    reconcile(root)
+    _reconcile_for_read(root)
     clauses = ["j.storage_root_id=?"]
     params: list[Any] = [_root_id(root)]
     if not include_hidden:
@@ -658,7 +794,7 @@ def job_list_facets(
     access_admin: bool = False,
 ) -> dict[str, list[str]]:
     root = _results_root()
-    reconcile(root)
+    _reconcile_for_read(root)
     params: list[Any] = [_root_id(root)]
     clauses = ["storage_root_id=?", "hidden=0", "capacity_parent=0"]
     if not access_admin:
@@ -685,7 +821,7 @@ def job_list_facets(
 def get_job_access_record(task_group: str, run_id: str) -> dict[str, Any] | None:
     """Read the catalog identity fields used to authorize a particular run."""
     root = _results_root()
-    reconcile(root)
+    _reconcile_for_read(root)
     with _connection() as connection:
         row = connection.execute(
             "SELECT owner_id, project_id, task_group, run_id, run_relative_path FROM jobs "
@@ -707,7 +843,7 @@ def path_is_within_accessible_job(
     if access_admin:
         return True
     root = _results_root()
-    reconcile(root)
+    _reconcile_for_read(root)
     project_ids = sorted({value for value in (accessible_project_ids or []) if value})
     access_clauses = ["j.owner_id=?"]
     clauses = ["j.storage_root_id=?"]
@@ -734,7 +870,7 @@ def path_is_within_accessible_job(
 
 def job_artifacts(task_group: str, run_id: str) -> list[dict[str, Any]]:
     root = _results_root()
-    reconcile(root)
+    _reconcile_for_read(root)
     with _connection() as connection:
         rows = connection.execute(
             "SELECT a.* FROM job_artifacts a JOIN jobs j ON j.id=a.job_id "
