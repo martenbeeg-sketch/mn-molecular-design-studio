@@ -90,17 +90,22 @@ def install(app, current_user, *, resolve_job, call):
         else:
             resumable = (Path(row["run_dir"]) / "worker_request.json").is_file()
             campaign_finalization_recovery = False
+            campaign_generation_recovery = False
             if resumable and row.get("status") in {"failed", "completed"}:
                 try:
                     from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import (
                         can_resume_campaign_finalization,
+                        can_resume_rfd4_campaign_generation,
                     )
                     campaign_finalization_recovery = can_resume_campaign_finalization(row["run_dir"])
+                    campaign_generation_recovery = can_resume_rfd4_campaign_generation(row["run_dir"])
                 except (OSError, RuntimeError, ValueError, KeyError, TypeError):
                     campaign_finalization_recovery = False
+                    campaign_generation_recovery = False
             enabled = {"inspect": True, "hide": not row.get("hidden"), "restore": bool(row.get("hidden")),
                        "cancel": active or row.get("status") == "paused", "pause": active and resumable,
-                       "resume": row.get("status") in {"paused", "stopped"} and resumable or campaign_finalization_recovery}
+                       "resume": row.get("status") in {"paused", "stopped"} and resumable
+                       or campaign_finalization_recovery or campaign_generation_recovery}
         return [{"action": name, "enabled": bool(available), "parameters_schema": {
                     "type": "object", "properties": ACTION_PARAMETERS[name], "additionalProperties": False,
                     "required": list(ACTION_PARAMETERS[name]) if name in {"artifact", "change_gpu"} else []},
@@ -109,6 +114,8 @@ def install(app, current_user, *, resolve_job, call):
                      if name == "retry" else
                     "Resume finalization after campaign generation and accepted-output receipts are terminal."
                     if name == "resume" and row.get("status") == "failed" else
+                    "Retry RFD4 batches proven never to have launched and continue within the original design budget."
+                    if name == "resume" and campaign_generation_recovery else
                     "Repair missing campaign Results from already collected accepted outputs; no generation attempts will be launched."
                     if name == "resume" and row.get("status") == "completed" else
                     "Resource and job-state eligibility is checked again when requested."
@@ -192,7 +199,17 @@ def install(app, current_user, *, resolve_job, call):
         elif payload.action == "resume":
             if "gpu_device" in params and not isinstance(params["gpu_device"], str):
                 raise HTTPException(422, "gpu_device must be a string.")
-            call(jobs.resume_job, folder, **params)
+            try:
+                from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import (
+                    can_resume_rfd4_campaign_generation,
+                    resume_rfd4_campaign_generation,
+                )
+                if can_resume_rfd4_campaign_generation(folder):
+                    call(resume_rfd4_campaign_generation, folder)
+                else:
+                    call(jobs.resume_job, folder, **params)
+            except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
+                raise HTTPException(409, f"Could not safely resume this campaign: {exc}") from exc
         return {"reference": reference, "action": payload.action, "status": "accepted"}
 
     app.include_router(router)

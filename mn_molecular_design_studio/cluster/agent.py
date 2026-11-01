@@ -352,7 +352,7 @@ class Agent:
 
     def peer_heartbeat(self):
         from .store import Store
-        from .replication import Replica, capture_identity, sync_peer, locked
+        from .replication import Replica, _changed_peer_jobs, capture_identity, sync_peer, locked
         store = Store()
         self._restore_published_signatures(store)
         # Reconcile completed purges before rebuilding the catalog or publishing
@@ -373,6 +373,7 @@ class Agent:
         store.heartbeat(self.node_id, snapshot, [])
 
         jobs = self.catalog() if self.storage_online() else []
+        peer_jobs = _changed_peer_jobs(jobs, self._published)
         for index in range(0, max(1, len(jobs)), 1000):
             batch = jobs[index:index+1000]
             known = sorted(self._known_references) if index + 1000 >= len(jobs) and self.storage_online() else None
@@ -384,7 +385,10 @@ class Agent:
             Replica().capture_jobs()
         for peer in config.load().get("peers", []):
             try:
-                sync_peer(peer, snapshot, jobs)
+                # Job status/count summaries are an immediate path around the
+                # durable replication cursor, but unchanged catalog rows do
+                # not need to be resent every 15-second heartbeat.
+                sync_peer(peer, snapshot, peer_jobs)
             except Exception as exc:
                 log.warning("Workstation %s synchronization paused: %s", peer.get("name",peer["id"]), exc)
         config.atomic_json(config.home() / "agent-status.json", {"last_heartbeat":time.time(), "node_id":self.node_id, "online":True})

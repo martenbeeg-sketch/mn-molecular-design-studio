@@ -111,6 +111,62 @@ def test_rfd4_retry_is_only_safe_before_native_container_launch(tmp_path):
     assert not distributed_campaign._rfd4_retry_safe(child)
 
 
+def test_rfd4_budget_recovers_only_confirmed_prelaunch_failure(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs, local_worker
+
+    parent=tmp_path/'parent'
+    campaign_dir=parent/'artifacts'/'distributed_campaign'
+    campaign_dir.mkdir(parents=True)
+    jobs.write_json(parent/'metadata.json',{'status':'completed'})
+    jobs.write_json(parent/'result.json',{'success':False})
+    jobs.write_json(parent/'worker_request.json',{'kind':'distributed_campaign','kwargs':{}})
+    policy={
+        'schema':'studio.validation-acceptance.v1','target_type':'fasta_idr','binder_format':'miniprotein',
+        'mandatory_filters':[{'metric_id':'rfd4_native_iptm','field':'common.confidence.generator.complex.iptm','operator':'>=','value':0.7}],
+        'informational_scores':[],'ranking_metric':'',
+    }
+    config=distributed_campaign.validate_campaign_config({
+        'generator_id':'rfd4_proteina','accepted_target':1,'max_attempts':50,
+        'native_designs_per_job':50,'max_retries':1,'acceptance_level':'validated',
+        'remote_artifact_policy':'defer_accepted',
+        'validation_stages':[{'workflow':'analysis.validation_acceptance','acceptance_policy':policy}],
+    })
+    campaign=CampaignLedger.create(campaign_dir/'ledger.json',config,campaign_id='prelaunch-recovery')
+    attempt=campaign.authorize(
+        1,batch_id='batch-1',requested_designs=50,
+        source_input={'identity':'saved-target','verified':True},native_configuration={'workflow':'rfd4_proteina'},
+    )[0]
+    child=tmp_path/'failed-child'
+    child.mkdir()
+    jobs.write_json(child/'command.json',{'mode':'local_worker','command':[]})
+    failure='OperationalError: table jobs has 8 columns but 7 values were supplied'
+    campaign.transition(attempt['attempt_id'],'failed',child_run_dir=str(child),failure=failure)
+    campaign.terminate('budget_exhausted',detail='Old coordinator schema prevented submission.')
+
+    state=campaign.snapshot()
+    saved=state['attempts'][attempt['attempt_id']]
+    assert distributed_campaign._confirmed_unstarted_rfd4_attempt(state,saved)
+    assert distributed_campaign._authorized_design_count(state)==0
+    uncertain=dict(saved,failure='Submission response was lost; launch state is unknown.')
+    assert not distributed_campaign._confirmed_unstarted_rfd4_attempt(state,uncertain)
+    assert distributed_campaign._authorized_design_count({
+        **state,'attempts':{attempt['attempt_id']:uncertain},
+    })==50
+
+    assert distributed_campaign.can_resume_rfd4_campaign_generation(parent)
+    spawned=[]
+    monkeypatch.setattr(local_worker,'spawn_worker_for_run',lambda path:spawned.append(path))
+    resumed=distributed_campaign.resume_rfd4_campaign_generation(parent)
+    final=campaign.snapshot()
+    assert resumed['retried_attempt_ids']==[attempt['attempt_id']]
+    assert resumed['design_budget_used']==50 and resumed['design_budget_remaining']==0
+    assert final['status']=='running' and final['termination_reason'] is None
+    assert final['attempts'][attempt['attempt_id']]['status']=='queued'
+    assert final['attempts'][attempt['attempt_id']]['retry_count']==1
+    assert spawned==[parent]
+    assert jobs.read_json(parent/'metadata.json')['status']=='queued'
+
+
 def test_gpu_compute_receipts_are_durable_and_idempotent(tmp_path):
     campaign = ledger(tmp_path, max_attempts=1, target=1)
     attempt = campaign.authorize(1, batch_id="b1")[0]

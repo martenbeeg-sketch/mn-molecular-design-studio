@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from mn_molecular_design_studio import auth, workspace
 from mn_molecular_design_studio.cluster import config, service, transport
 from mn_molecular_design_studio.cluster.agent import Agent
-from mn_molecular_design_studio.cluster.replication import Replica, capture_identity, sync_peer
+from mn_molecular_design_studio.cluster.replication import Replica, _changed_peer_jobs, capture_identity, sync_peer
 from mn_molecular_design_studio.cluster.store import Store
 
 PASSWORD = 'a-long-local-password'
@@ -528,7 +528,8 @@ def test_peer_agent_sends_changed_job_rows_to_each_peer(peers,monkeypatch):
                             lambda peer,snapshot,jobs=None:sent.append((peer['id'],jobs)))
         Agent().peer_heartbeat()
         assert {node_id for node_id,_ in sent}=={nodes[0]['id'],nodes[2]['id']}
-        assert all(jobs==[row] for _,jobs in sent)
+        assert all(len(jobs)==1 for _,jobs in sent)
+        assert all(jobs[0]['artifacts']==[] and jobs[0]['request_summary']=={} for _,jobs in sent)
 
 
 def test_peer_agent_restores_local_job_sync_signatures_after_restart(peers):
@@ -713,6 +714,46 @@ def test_molecular_replication_setting_must_be_boolean(peers):
     with on(0):
         with pytest.raises(ValueError,match='Molecular Database sharing'):
             config.save({'share_molecular_database':'false'})
+
+
+def test_peer_job_mirror_keeps_counts_but_omits_artifact_catalogs(peers):
+    nodes,on=peers
+    with on(0):
+        job={
+            'cluster_job_id':'local-job','task_group':'design','run_id':'run-one',
+            'owner_id':'owner','project_id':'project','status':'completed',
+            'candidate_summary':{'candidate_count':50,'acceptance_counts':{'accepted':4,'rejected':46}},
+            'artifacts':[{'relative_path':f'artifacts/structures/{index}.cif',
+                          'sha256':'a'*64,'size':1024} for index in range(3000)],
+            'request_summary':{'parameters':{'input_structure':'large-inline-payload'}},
+        }
+        with Store().connect() as db:
+            db.execute(
+                'INSERT INTO jobs (id,node_id,local_ref,owner_id,project_id,payload,created_at) '
+                'VALUES (?,?,?,?,?,?,?)',
+                ('local-job',nodes[0]['id'],'design/run-one','owner','project',json.dumps(job),'now'),
+            )
+        replica=Replica()
+        replica.capture_jobs()
+        with replica.db() as db:
+            record=db.execute("SELECT value FROM records WHERE key='job:local-job'").fetchone()
+        mirrored=json.loads(record['value'])
+        assert mirrored['candidate_summary']==job['candidate_summary']
+        assert 'artifacts' not in mirrored
+        assert 'request_summary' not in mirrored
+        assert len(json.dumps(mirrored))<2000
+
+
+def test_peer_heartbeat_sends_only_changed_compact_job_rows():
+    rows=[
+        {'task_group':'design','run_id':'a','_signature':[1,2],
+         'artifacts':[{'relative_path':'artifacts/large.cif'}],
+         'request_summary':{'input_structure':'do-not-send'}},
+        {'task_group':'analysis','run_id':'b','_signature':[3]},
+    ]
+    changed=_changed_peer_jobs(rows,{'design/a':(1,2)})
+    assert len(changed)==1 and changed[0]['run_id']=='b'
+    assert changed[0]['artifacts']==[] and changed[0]['request_summary']=={}
 
 
 def test_migration_preserves_identity_and_backs_up_accounts_and_registry(peers,tmp_path):

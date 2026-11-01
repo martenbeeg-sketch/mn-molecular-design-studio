@@ -413,8 +413,57 @@ def _state_accepted_count(state: dict[str, Any]) -> int:
 
 
 def _authorized_design_count(state: dict[str, Any]) -> int:
-    """Count bounded native design requests, independent of dispatched job count."""
-    return sum(int(attempt.get("requested_designs") or 1) for attempt in state.get("attempts", {}).values())
+    """Count designs reserved or actually exposed to native generation.
+
+    A failed submission can only release budget when durable evidence proves
+    the RFD4 native engine never launched. Ambiguous or post-launch outcomes
+    remain charged so retries cannot exceed the configured scientific budget.
+    """
+    return sum(
+        int(attempt.get("requested_designs") or 1)
+        for attempt in state.get("attempts", {}).values()
+        if not _confirmed_unstarted_rfd4_attempt(state, attempt)
+    )
+
+
+def _confirmed_unstarted_rfd4_attempt(state: dict[str, Any], attempt: dict[str, Any]) -> bool:
+    if (
+        str(state.get("config", {}).get("generator_id") or "") != "rfd4_proteina"
+        or attempt.get("status") not in {"failed", "interrupted", "cancelled", "not_started"}
+        or attempt.get("native_started") is True
+        or attempt.get("receipts")
+        or attempt.get("output_receipts")
+    ):
+        return False
+    job = state.get("execution_jobs", {}).get(str(attempt.get("execution_job_id") or ""), {})
+    if job.get("output_receipts"):
+        return False
+    execution = next(
+        (item for item in job.get("executions", [])
+         if item.get("execution_id") == job.get("current_execution_id")),
+        {},
+    )
+    if execution.get("output_receipts") or execution.get("resource_allocation") or execution.get("worker_identity"):
+        return False
+    peer = attempt.get("cluster_submission") if isinstance(attempt.get("cluster_submission"), dict) else {}
+    if attempt.get("worker_node_id") or peer.get("worker_node_id"):
+        return False
+    child_text = str(attempt.get("child_run_dir") or "")
+    if not child_text or not _rfd4_retry_safe(Path(child_text)):
+        return False
+    cluster_job_id = attempt.get("cluster_job_id") or peer.get("cluster_job_id")
+    if cluster_job_id:
+        return (
+            attempt.get("status") in {"cancelled", "not_started"}
+            and str(attempt.get("failure") or peer.get("wait_reason") or "")
+            == "Cancelled before the workstation accepted this job."
+        )
+    # This is the exact pre-insert schema failure from the older coordinator.
+    # Other failures with no returned job ID remain charged unless a later
+    # reconciliation adds an explicit no-launch receipt.
+    return str(attempt.get("failure") or "").startswith(
+        "OperationalError: table jobs has 8 columns but 7 values were supplied"
+    )
 
 
 def _design_budget_exhausted(state: dict[str, Any]) -> bool:
@@ -1189,6 +1238,33 @@ class CampaignLedger(ExecutionJobLedgerMixin):
             state["events"].append({
                 "type": "campaign_terminated", "reason": reason,
                 "detail": detail, "at": state["updated_at"],
+            })
+            _atomic_json(self.path, state)
+            return state
+
+    def reopen_budget_exhausted(self) -> dict[str, Any]:
+        """Resume only after proven pre-launch failures free part of the cap."""
+        with _locked(self.path):
+            state = _read(self.path)
+            if state.get("status") != "completed" or state.get("termination_reason") != "budget_exhausted":
+                raise ValueError("Only a budget-exhausted campaign can be reopened.")
+            if _authorized_design_count(state) >= int(state["config"]["max_attempts"]):
+                raise ValueError("No native design budget was recovered from confirmed pre-launch failures.")
+            if any(attempt.get("status") in {"authorized", "queued", "running"}
+                   for attempt in state.get("attempts", {}).values()):
+                raise ValueError("The campaign still has unresolved active attempts.")
+            now = utc_now()
+            state["status"] = "running"
+            state["termination_reason"] = None
+            state.pop("termination_detail", None)
+            state.pop("terminated_at", None)
+            state["generation_budget_exhausted"] = False
+            state.pop("generation_budget_exhausted_at", None)
+            state["updated_at"] = now
+            state["events"].append({
+                "type": "campaign_resumed_after_prelaunch_failures",
+                "design_budget_used": _authorized_design_count(state),
+                "at": now,
             })
             _atomic_json(self.path, state)
             return state
@@ -2318,6 +2394,61 @@ def _attempt_child_paths(
         if child is not None and child.is_dir():
             children[attempt_id] = child
     return children
+
+
+def can_resume_rfd4_campaign_generation(run_dir: str | Path) -> bool:
+    """Return whether a capped RFD4 run has budget freed by proven non-starts."""
+    run_dir = Path(run_dir).expanduser()
+    parent_status = str(read_json_raw(run_dir / "metadata.json").get("status") or "")
+    ledger_path = _campaign_ledger_path(run_dir)
+    if parent_status not in {"failed", "completed"} or not ledger_path.is_file():
+        return False
+    if not (run_dir / "worker_request.json").is_file():
+        return False
+    state = _ledger_view(CampaignLedger(ledger_path))
+    return bool(
+        state.get("schema_version") == 2
+        and state.get("status") == "completed"
+        and state.get("termination_reason") == "budget_exhausted"
+        and str(state.get("config", {}).get("generator_id") or "") == "rfd4_proteina"
+        and _authorized_design_count(state) < int(state["config"]["max_attempts"])
+    )
+
+
+def resume_rfd4_campaign_generation(run_dir: str | Path) -> dict[str, Any]:
+    """Retry confirmed pre-launch RFD4 failures, then resume within the saved cap."""
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import prepare_job_for_resume
+    from mn_molecular_design_studio.engine.workflow_engine.core.local_worker import spawn_worker_for_run
+
+    run_dir = Path(run_dir).expanduser().resolve()
+    ledger = CampaignLedger(_campaign_ledger_path(run_dir))
+    retried: list[str] = []
+    with ledger.controller_lock():
+        state = _ledger_view(ledger)
+        if not can_resume_rfd4_campaign_generation(run_dir):
+            raise ValueError("This campaign has no safely recoverable RFD4 design budget.")
+        retryable = [
+            attempt for attempt in state.get("attempts", {}).values()
+            if attempt.get("status") in {"failed", "interrupted"}
+            and _confirmed_unstarted_rfd4_attempt(state, attempt)
+            and int(attempt.get("retry_count", 0)) < int(state["config"].get("max_retries", 0))
+            and ledger.retry_is_safe(attempt)
+        ]
+        ledger.reopen_budget_exhausted()
+        for attempt in retryable:
+            retried_attempt = ledger.retry(str(attempt["attempt_id"]))
+            retried.append(str(retried_attempt["attempt_id"]))
+    prepare_job_for_resume(run_dir)
+    spawn_worker_for_run(run_dir)
+    state = _ledger_view(ledger)
+    used = _authorized_design_count(state)
+    return {
+        "campaign_id": state["campaign_id"],
+        "retried_attempt_ids": retried,
+        "design_budget_used": used,
+        "design_budget_remaining": max(0, int(state["config"]["max_attempts"]) - used),
+        "status": state["status"],
+    }
 
 
 def _accepted_count(ledger: CampaignLedger, config: dict[str, Any]) -> int:

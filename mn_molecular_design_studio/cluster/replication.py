@@ -120,23 +120,33 @@ class Replica:
     def capture_jobs(self):
         own = config.identity()
         with Store().connect() as db:
-            rows = db.execute("SELECT j.*,s.origin_node FROM jobs j LEFT JOIN submissions s ON s.job_id=j.id WHERE (j.node_id=? AND j.local_ref IS NOT NULL) OR (s.origin_node=? AND j.local_ref IS NULL)", (own, own)).fetchall()
+            rows = db.execute(
+                "SELECT j.id,j.local_ref,j.created_at,s.origin_node,"
+                "json_remove(j.payload,'$.request_summary','$.artifacts') AS payload "
+                "FROM jobs j LEFT JOIN submissions s ON s.job_id=j.id "
+                "WHERE (j.node_id=? AND j.local_ref IS NOT NULL) "
+                "OR (s.origin_node=? AND j.local_ref IS NULL)",
+                (own, own),
+            ).fetchall()
         current = {}
         for row in rows:
             value = json.loads(row['payload'])
-            # This field contains the complete submitted workflow payload. It
-            # can include large inline structures and is neither needed for
-            # the shared job table nor appropriate to copy to every peer.
-            # Keep it in the owning workstation's job catalog, but replicate
-            # only the compact job metadata and artifact inventory.
+            # Keep full requests and file manifests on their owning/coordinator
+            # store. Peer mirrors need status and count summaries; sending the
+            # artifact path catalog on every heartbeat copied over 100 MB per
+            # workstation in this installation.
             value.pop('request_summary', None)
+            value.pop('artifacts', None)
             if not row['local_ref']:
                 value['submission_origin'] = own
             current['job:' + row['id']] = value
         with self.db() as db:
-            previous = db.execute("SELECT key,value FROM records WHERE kind='job' AND author=?", (own,)).fetchall()
+            previous = db.execute(
+                "SELECT key FROM records WHERE kind='job' AND author=? AND value!='null'",
+                (own,),
+            ).fetchall()
             for record in previous:
-                if record['key'] not in current and json.loads(record['value']) is not None:
+                if record['key'] not in current:
                     self._write(db, record['key'], 'job', None)
             for key, value in current.items():
                 previous = db.execute("SELECT value FROM records WHERE key=?", (key,)).fetchone()
@@ -342,6 +352,25 @@ class Replica:
                     raise ValueError("Membership identity cannot change.")
                 else:
                     db.execute('INSERT OR REPLACE INTO project_memberships VALUES (?,?,?,?)', tuple(value[k] for k in ('project_id','user_id','granted_by','granted_at')))
+
+
+def _changed_peer_jobs(jobs, published):
+    """Return only catalog rows whose compact status projection changed."""
+    changed = []
+    for row in jobs:
+        if not isinstance(row, dict):
+            continue
+        reference = str(row.get('task_group') or '') + '/' + str(row.get('run_id') or '')
+        signature = tuple(row.get('_signature') or ())
+        if reference != '/' and published.get(reference) != signature:
+            compact = dict(row)
+            # Store.heartbeat merges sparse rows over older payloads. Empty
+            # these two local-only fields explicitly so an earlier mirrored
+            # manifest/input cannot remain in the peer catalog indefinitely.
+            compact['artifacts'] = []
+            compact['request_summary'] = {}
+            changed.append(compact)
+    return changed
 
 
 def capture_identity():

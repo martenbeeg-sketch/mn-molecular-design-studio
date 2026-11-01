@@ -26,14 +26,18 @@ def render_campaign_lifecycle_controls(
     resumable = (folder / "worker_request.json").is_file()
     normalized = str(status or "").casefold()
     finalization_recoverable = False
+    generation_recoverable = False
     if normalized in {"failed", "completed"} and resumable:
         try:
             from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import (
                 can_resume_campaign_finalization,
+                can_resume_rfd4_campaign_generation,
             )
             finalization_recoverable = can_resume_campaign_finalization(folder)
+            generation_recoverable = can_resume_rfd4_campaign_generation(folder)
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
             finalization_recoverable = False
+            generation_recoverable = False
     if normalized in _ACTIVE:
         columns = st.columns(2 if resumable else 1)
         if resumable and columns[0].button("Pause campaign controller", key="campaign-pause-" + reference):
@@ -57,21 +61,29 @@ def render_campaign_lifecycle_controls(
                 st.rerun()
         if resumable:
             st.caption("Pausing stops the controller from authorizing attempts; cancel terminates the campaign and cannot be resumed.")
-    elif normalized in _PAUSED or finalization_recoverable:
+    elif normalized in _PAUSED or finalization_recoverable or generation_recoverable:
         resume_label = (
             "Resume campaign" if normalized in _PAUSED else
+            "Resume unfinished design batches" if generation_recoverable else
             "Repair campaign Results" if normalized == "completed" else
             "Retry campaign finalization"
         )
         if resumable and st.button(resume_label, key="campaign-resume-" + reference):
             try:
-                from mn_molecular_design_studio.engine.workflow_engine.core.jobs import resume_job
-
-                resume_job(folder)
+                if generation_recoverable:
+                    from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import (
+                        resume_rfd4_campaign_generation,
+                    )
+                    resume_rfd4_campaign_generation(folder)
+                else:
+                    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import resume_job
+                    resume_job(folder)
             except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
                 st.error(f"Could not resume the campaign: {exc}")
             else:
                 st.success(
+                    "Campaign resumed: confirmed pre-launch failures were retried, and new batches remain bounded by the original design budget."
+                    if generation_recoverable else
                     "Campaign Results repair started from already collected accepted outputs."
                     if normalized == "completed" else
                     "Campaign controller resumed from its saved ledger and worker receipts."
