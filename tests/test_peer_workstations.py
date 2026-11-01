@@ -388,6 +388,30 @@ def test_peer_heartbeat_publishes_changed_jobs_without_waiting_for_replica_curso
         assert row['node_id']==nodes[0]['id']
 
 
+def test_molecular_database_peer_capture_skips_unchanged_database(monkeypatch, tmp_path):
+    from mn_molecular_design_studio.cluster import config
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    from mn_molecular_design_studio.molecular_database_peer import capture
+
+    cluster_home = tmp_path / 'cluster'
+    cluster_home.mkdir()
+    monkeypatch.setattr(config, 'home', lambda: cluster_home)
+    database = MolecularDatabase(tmp_path / 'database')
+    with database.connection():
+        pass
+    replica = Replica()
+    node_id = str(uuid.uuid4())
+
+    assert capture(replica, database=database, node_id=node_id) is True
+    assert capture(replica, database=database, node_id=node_id) is False
+
+    with database.connection() as connection:
+        connection.execute('CREATE TABLE capture_probe (value TEXT)')
+
+    assert capture(replica, database=database, node_id=node_id) is True
+    assert capture(replica, database=database, node_id=node_id) is False
+
+
 def test_peer_account_reads_do_not_wait_for_metadata_replication(peers,monkeypatch):
     _,on=peers
     with on(1):

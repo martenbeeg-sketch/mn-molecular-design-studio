@@ -188,10 +188,34 @@ def _digest(path):
     return _DIGESTS[key]
 
 
+def _database_signature(database, replica):
+    """Return cheap file-level change markers for the local molecular DB."""
+    files = []
+    for path in (database.path, Path(str(database.path) + "-wal")):
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            files.append(None)
+            continue
+        files.append({"inode": stat.st_ino, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
+    return {"path": str(database.path), "files": files, "replica_epoch": replica.epoch}
+
+
 def capture(replica, *, database=None, node_id=None):
     from mn_molecular_design_studio.cluster import config
     database = database or MolecularDatabase()
     node_id = node_id or config.identity()
+    cache_path = config.home() / "molecular-database-peer-capture.json"
+    cache_key = hashlib.sha256(f"{node_id}\0{database.path}".encode()).hexdigest()
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        cache = {}
+    signature = _database_signature(database, replica)
+    previous = cache.get(cache_key) if isinstance(cache, dict) else None
+    if isinstance(previous, dict) and previous.get("signature") == signature:
+        return False
+
     values = {}
     with database.connection() as connection:
         for row in connection.execute("SELECT id,record_json FROM external_library_records"):
@@ -230,6 +254,15 @@ def capture(replica, *, database=None, node_id=None):
         for key, row in previous.items():
             if key not in values and json.loads(row["value"]) is not None:
                 replica._write(connection, key, row["kind"], None, author=node_id)
+
+    # The source database can change while it is being scanned. Save a marker
+    # only when the before/after file state matches; otherwise the next peer
+    # heartbeat will reconcile it again.
+    after = _database_signature(database, replica)
+    if after == signature:
+        cache[cache_key] = {"signature": signature}
+        config.atomic_json(cache_path, cache)
+    return True
 
 
 def apply_record(kind, key, value, author, *, database=None):
