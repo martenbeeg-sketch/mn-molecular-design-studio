@@ -537,7 +537,7 @@ def test_rfd4_accepted_only_materialization_uses_summary_and_campaign_target(tmp
     attempt = ledger.authorize(1, batch_id="batch")[0]
     child = tmp_path / "design" / "child"
     child.mkdir(parents=True)
-    jobs.write_json(child / "metadata.json", {"status": "queued"})
+    jobs.write_json(child / "metadata.json", {"status": "completed"})
 
     manifest = tmp_path / "peer" / "submission.json"
     collected = manifest.with_suffix(".collected")
@@ -571,7 +571,7 @@ def test_rfd4_accepted_only_materialization_uses_summary_and_campaign_target(tmp
     monkeypatch.setattr(candidate_batches, "_artifact", artifact)
     peer = {"manifest": str(manifest), "cluster_job_id": "peer-job", "accepted_output_only": True}
     ledger.transition(
-        attempt["attempt_id"], "queued", child_run_dir=str(child),
+        attempt["attempt_id"], "completed", child_run_dir=str(child),
         cluster_job_id="peer-job", cluster_submission=peer,
     )
     summary = {
@@ -592,6 +592,7 @@ def test_rfd4_accepted_only_materialization_uses_summary_and_campaign_target(tmp
     assert result["metrics"]["candidate_count"] == 50
     assert result["metrics"]["accepted_candidate_count"] == 1
     assert result["metrics"]["accepted_output_only"] is True
+    assert ledger.snapshot()["attempts"][attempt["attempt_id"]]["status"] == "completed"
     assert "candidates" not in result["outputs"]
     assert "result.json" not in requested
     assert "native_execution.json" not in requested

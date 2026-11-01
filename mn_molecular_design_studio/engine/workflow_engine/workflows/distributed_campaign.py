@@ -1204,6 +1204,14 @@ def _ledger_view(ledger: Any) -> dict[str, Any]:
     return view() if callable(view) else ledger.snapshot()
 
 
+def _materialization_attempt_status(ledger: CampaignLedger, attempt_id: str) -> str:
+    """Keep a terminal attempt terminal while its deferred artifacts are fetched."""
+    status = str(_ledger_view(ledger).get("attempts", {}).get(attempt_id, {}).get("status") or "")
+    if status in {"completed", "failed", "interrupted", "cancelled", "not_started"}:
+        return status
+    return "running"
+
+
 def _gpu_for_attempt(config: dict[str, Any], ordinal: int) -> str:
     selection = str(config.get("gpu_selection") or "auto").strip().lower().removeprefix("device=")
     if selection in {"all", "auto", "eligible"}:
@@ -1527,7 +1535,8 @@ def _materialize_rfd4_peer_output(
     peer_state["resource_allocation"] = allocation
     peer_state["transfers"] = deepcopy(peer.get("transfers", {}))
     ledger.transition(
-        attempt["attempt_id"], "running", cluster_submission=peer_state,
+        attempt["attempt_id"], _materialization_attempt_status(ledger, attempt["attempt_id"]),
+        cluster_submission=peer_state,
         worker_node_id=remote_job.get("node_id"), resource_allocation=allocation,
         remote_completed_at=remote_metadata.get("completed_at"),
     )
@@ -1545,7 +1554,8 @@ def _materialize_bindcraft2_peer_output(parent_run_dir, ledger, attempt, child_r
     user = candidate_batches.actor(owner_id, project_id, allow_development=development_mode)
     relative = "artifacts/raw/bindcraft2/output/.campaign_state.json"
     state_path = candidate_batches._artifact(peer, str(peer["cluster_job_id"]), relative, user, collected)
-    ledger.transition(attempt["attempt_id"], "running", cluster_submission=peer,
+    ledger.transition(attempt["attempt_id"], _materialization_attempt_status(ledger, attempt["attempt_id"]),
+                      cluster_submission=peer,
                       child_run_dir=str(child_run_dir), worker_node_id=remote_job.get("node_id"))
     if state_path is None:
         return False
@@ -1584,7 +1594,8 @@ def _materialize_bindcraft2_peer_output(parent_run_dir, ledger, attempt, child_r
                     remote_execution_node_id=remote_job.get("node_id"), remote_status="completed")
     metadata.pop("result_collection_pending", None)
     write_json(child_run_dir / "metadata.json", metadata)
-    ledger.transition(attempt["attempt_id"], "running", cluster_submission=peer,
+    ledger.transition(attempt["attempt_id"], _materialization_attempt_status(ledger, attempt["attempt_id"]),
+                      cluster_submission=peer,
                       worker_node_id=remote_job.get("node_id"), resource_allocation=allocation)
     return True
 
