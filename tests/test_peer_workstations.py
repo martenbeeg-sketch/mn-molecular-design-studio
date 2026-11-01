@@ -264,6 +264,55 @@ def test_job_replication_omits_large_local_request_payload(peers):
         assert 'request_summary' not in imported
 
 
+def test_molecular_replica_page_reuses_connection_and_keeps_rows_atomic(peers, monkeypatch):
+    nodes, on = peers
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+
+    opened = 0
+    applied_connections = []
+    original_connection = MolecularDatabase.connection
+
+    @contextmanager
+    def counted_connection(database):
+        nonlocal opened
+        opened += 1
+        with original_connection(database) as connection:
+            yield connection
+
+    def apply(self, kind, key, value, author, *, molecule_connection=None):
+        applied_connections.append(molecule_connection)
+        with molecule_connection:
+            molecule_connection.execute(
+                'CREATE TABLE IF NOT EXISTS replication_page_test (key TEXT PRIMARY KEY)'
+            )
+            molecule_connection.execute(
+                'INSERT INTO replication_page_test VALUES (?)', (key,)
+            )
+            if key.endswith(':reject'):
+                raise ValueError('simulated invalid molecular row')
+
+    monkeypatch.setattr(MolecularDatabase, 'connection', counted_connection)
+    monkeypatch.setattr(Replica, '_apply', apply)
+    with on(1):
+        author = nodes[0]['id']
+        records = [
+            {'key': f'molecule_entry:{author}:group:reject', 'kind': 'molecule_entry',
+             'author': author, 'counter': 1, 'value': {}},
+            {'key': f'molecule_entry:{author}:group:accept', 'kind': 'molecule_entry',
+             'author': author, 'counter': 2, 'value': {}},
+        ]
+        assert Replica().receive(records) == 1
+        assert opened == 1
+        assert len(applied_connections) == 2
+        assert applied_connections[0] is applied_connections[1]
+
+        database_path = MolecularDatabase().path
+        import sqlite3
+        with sqlite3.connect(database_path) as connection:
+            rows = connection.execute('SELECT key FROM replication_page_test').fetchall()
+        assert rows == [(records[1]['key'],)]
+
+
 def test_agent_starts_when_every_other_machine_and_local_api_are_unavailable(peers,monkeypatch):
     _,on=peers
     def offline(*a,**k):

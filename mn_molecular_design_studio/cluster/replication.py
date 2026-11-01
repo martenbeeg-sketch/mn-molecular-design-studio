@@ -13,7 +13,7 @@ from functools import wraps
 import sqlite3
 import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 
 from . import config
@@ -166,51 +166,65 @@ class Replica:
         known = {n['id'] for n in Store().nodes()} | {config.identity()}
         accepted = 0
         capture_identity()
-        for record in records:
-            if not isinstance(record, dict) or set(record) != {'key','kind','author','counter','value'}:
-                raise ValueError("Invalid peer metadata record.")
-            key, kind, author, counter, value = (record[k] for k in ('key','kind','author','counter','value'))
-            if author not in known or kind not in IDENTITY_KINDS | {'job', 'molecule_group', 'molecule_entry', 'external_library'} or not isinstance(key, str) or not key.startswith(kind + ':') or len(key) > 300 or type(counter) is not int or not 0 < counter < 2**62:
-                raise ValueError("Invalid metadata authority or version.")
-            if len(encoded(record)) > 2 * 1024 * 1024:
-                raise ValueError("Metadata record exceeds 2 MB.")
-            # Apply each record under the replica lock, then release it before
-            # moving to the next. A peer page can contain hundreds of entries;
-            # holding the lock for the full page blocked account reads and
-            # campaign result collection during a large synchronization catch-up.
-            with locked():
-                with self.db() as db:
-                    previous = db.execute("SELECT * FROM records WHERE key=?", (key,)).fetchone()
-                    old = json.loads(previous['value']) if previous else None
-                    if kind == 'job' and value is not None:
-                        # A completed purge receipt on this workstation must
-                        # win over a stale job record replayed by a peer.
-                        with Store().connect() as store_db:
-                            purged = store_db.execute(
-                                "SELECT 1 FROM commands WHERE job_id=? AND kind='purge' AND status='completed' "
-                                "AND json_extract(response,'$.status')='purged' LIMIT 1",
-                                (key.split(':', 1)[1],),
-                            ).fetchone()
-                        if purged:
+        # A 500-record page can be mostly molecular-library snapshots. Opening
+        # the molecular DB per row re-runs its schema setup hundreds of times
+        # during peer catch-up. Reuse one connection for the page, while
+        # apply_record still commits or rolls back each row independently.
+        has_molecular_entries = any(
+            isinstance(record, dict) and record.get('kind') in {'molecule_group', 'molecule_entry'}
+            for record in records
+        )
+        if has_molecular_entries:
+            from mn_molecular_design_studio.molecular_database import MolecularDatabase
+            molecule_context = MolecularDatabase().connection()
+        else:
+            molecule_context = nullcontext(None)
+        with molecule_context as molecule_connection:
+            for record in records:
+                if not isinstance(record, dict) or set(record) != {'key','kind','author','counter','value'}:
+                    raise ValueError("Invalid peer metadata record.")
+                key, kind, author, counter, value = (record[k] for k in ('key','kind','author','counter','value'))
+                if author not in known or kind not in IDENTITY_KINDS | {'job', 'molecule_group', 'molecule_entry', 'external_library'} or not isinstance(key, str) or not key.startswith(kind + ':') or len(key) > 300 or type(counter) is not int or not 0 < counter < 2**62:
+                    raise ValueError("Invalid metadata authority or version.")
+                if len(encoded(record)) > 2 * 1024 * 1024:
+                    raise ValueError("Metadata record exceeds 2 MB.")
+                # Apply each record under the replica lock, then release it before
+                # moving to the next. A peer page can contain hundreds of entries;
+                # holding the lock for the full page blocked account reads and
+                # campaign result collection during a large synchronization catch-up.
+                with locked():
+                    with self.db() as db:
+                        previous = db.execute("SELECT * FROM records WHERE key=?", (key,)).fetchone()
+                        old = json.loads(previous['value']) if previous else None
+                        if kind == 'job' and value is not None:
+                            # A completed purge receipt on this workstation must
+                            # win over a stale job record replayed by a peer.
+                            with Store().connect() as store_db:
+                                purged = store_db.execute(
+                                    "SELECT 1 FROM commands WHERE job_id=? AND kind='purge' AND status='completed' "
+                                    "AND json_extract(response,'$.status')='purged' LIMIT 1",
+                                    (key.split(':', 1)[1],),
+                                ).fetchone()
+                            if purged:
+                                continue
+                        # Once accepted, execution-machine ownership outranks origin placeholders.
+                        promote = kind == 'job' and value and value.get('local_reference') and not (old or {}).get('local_reference')
+                        if kind == 'job' and (old or {}).get('local_reference') and not (value or {}).get('local_reference'):
                             continue
-                    # Once accepted, execution-machine ownership outranks origin placeholders.
-                    promote = kind == 'job' and value and value.get('local_reference') and not (old or {}).get('local_reference')
-                    if kind == 'job' and (old or {}).get('local_reference') and not (value or {}).get('local_reference'):
-                        continue
-                    if previous and not promote and (counter, author) <= (previous['counter'], previous['author']):
-                        continue
-                    try:
-                        token = _importing.set(True)
+                        if previous and not promote and (counter, author) <= (previous['counter'], previous['author']):
+                            continue
                         try:
-                            self._apply(kind, key, value, author)
-                        finally:
-                            _importing.reset(token)
-                    except (ValueError, PermissionError, sqlite3.IntegrityError) as exc:
-                        db.execute("INSERT OR REPLACE INTO conflicts VALUES (?,?,?)", (key, encoded(record), str(exc)))
-                        continue
-                    self._write(db, key, kind, value, author=author, counter=counter)
-                    db.execute("DELETE FROM conflicts WHERE key=?", (key,))
-                    accepted += 1
+                            token = _importing.set(True)
+                            try:
+                                self._apply(kind, key, value, author, molecule_connection=molecule_connection)
+                            finally:
+                                _importing.reset(token)
+                        except (ValueError, PermissionError, sqlite3.IntegrityError) as exc:
+                            db.execute("INSERT OR REPLACE INTO conflicts VALUES (?,?,?)", (key, encoded(record), str(exc)))
+                            continue
+                        self._write(db, key, kind, value, author=author, counter=counter)
+                        db.execute("DELETE FROM conflicts WHERE key=?", (key,))
+                        accepted += 1
         return accepted
 
     def retry_conflicts(self):
@@ -219,11 +233,11 @@ class Replica:
         for row in rows:
             self.receive([json.loads(row[0])])
 
-    def _apply(self, kind, key, value, author):
+    def _apply(self, kind, key, value, author, *, molecule_connection=None):
         identifier = key.split(':', 1)[1]
         if kind in {'molecule_group', 'molecule_entry', 'external_library'}:
             from mn_molecular_design_studio.molecular_database_peer import apply_record
-            apply_record(kind, key, value, author)
+            apply_record(kind, key, value, author, connection=molecule_connection)
             return
         if kind == 'job':
             if value is None:

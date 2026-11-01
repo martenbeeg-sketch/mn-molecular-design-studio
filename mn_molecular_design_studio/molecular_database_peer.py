@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from contextlib import contextmanager
 from pathlib import Path
 from fastapi import Request
 
@@ -265,7 +266,18 @@ def capture(replica, *, database=None, node_id=None):
     return True
 
 
-def apply_record(kind, key, value, author, *, database=None):
+@contextmanager
+def _record_transaction(database, shared_connection):
+    """Use one page connection while keeping each replicated row atomic."""
+    if shared_connection is None:
+        with database.connection() as connection:
+            yield connection
+        return
+    with shared_connection:
+        yield shared_connection
+
+
+def apply_record(kind, key, value, author, *, database=None, connection=None):
     database = database or MolecularDatabase()
     if not isinstance(kind, str) or kind not in KINDS or not isinstance(author, str) or not author:
         raise ValueError("Invalid molecular peer record authority.")
@@ -324,7 +336,7 @@ def apply_record(kind, key, value, author, *, database=None):
     if not original_group or (kind == "molecule_entry" and not molecule_id):
         raise ValueError("Invalid molecular peer record key.")
     group_id = _id("peer-", author + ":" + original_group)
-    with database.connection() as connection:
+    with _record_transaction(database, connection) as connection:
         if kind == "molecule_group":
             if value is None:
                 if not _owned_group(connection, group_id, author, original_group):
