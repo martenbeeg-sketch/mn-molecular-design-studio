@@ -229,6 +229,7 @@ def test_local_execution_actions_and_results_preserve_identity(api_data, monkeyp
 
 def test_resumable_actions_reuse_worker_services_without_starting_a_worker(api_data, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import distributed_campaign
     data, client = api_data, api_data["client"]
     run = candidate_run(data, status="paused", success=None)
     (run / "worker_request.json").write_text("{}")
@@ -240,6 +241,16 @@ def test_resumable_actions_reuse_worker_services_without_starting_a_worker(api_d
     response = client.post(path, json={"action": "resume", "parameters": {"gpu_device": "1"}})
     assert response.status_code == 202, response.text
     assert calls == [(run, {"gpu_device": "1"})]
+
+    failed_run = candidate_run(data, tool="failed_campaign", status="failed", success=False)
+    (failed_run / "worker_request.json").write_text("{}")
+    monkeypatch.setattr(distributed_campaign, "can_resume_campaign_finalization", lambda folder: Path(folder) == failed_run)
+    failed_path = "/api/v1/executions/local:design:" + failed_run.name + "/actions"
+    available = {a["action"]: a["enabled"] for a in client.get(failed_path).json()["items"]}
+    assert available["resume"] is True
+    response = client.post(failed_path, json={"action": "resume"})
+    assert response.status_code == 202, response.text
+    assert calls[-1] == (failed_run, {})
 
 
 def test_candidate_presentation_viewer_and_private_metric_exports(api_data):

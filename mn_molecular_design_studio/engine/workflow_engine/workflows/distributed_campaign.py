@@ -2324,6 +2324,49 @@ def _accepted_count(ledger: CampaignLedger, config: dict[str, Any]) -> int:
     return _state_accepted_count(_ledger_view(ledger))
 
 
+def can_resume_campaign_finalization(run_dir: str | Path) -> bool:
+    """Allow a failed parent to resume collection only after generation is terminal."""
+    run_dir = Path(run_dir).expanduser()
+    if read_json_raw(run_dir / "metadata.json").get("status") != "failed":
+        return False
+    ledger_path = _campaign_ledger_path(run_dir)
+    if not ledger_path.is_file() or not (run_dir / "worker_request.json").is_file():
+        return False
+    ledger = CampaignLedger(ledger_path)
+    state = _ledger_view(ledger)
+    if (
+        state.get("status") != "completed"
+        or state.get("termination_reason") not in {
+            "target_reached", "shared_target_reached", "budget_exhausted",
+            "runtime_exhausted", "compute_exhausted", "shared_budget_exhausted",
+            "shared_branch_budget_exhausted",
+        }
+        or state.get("config", {}).get("remote_artifact_policy") != "defer_accepted"
+        or any(attempt.get("status") not in {"completed", "failed", "interrupted", "cancelled", "not_started"}
+               for attempt in state.get("attempts", {}).values())
+    ):
+        return False
+
+    children = _attempt_child_paths(ledger, state)
+    has_pending_accepted_output = False
+    for receipt in state.get("deferred_outputs", {}).values():
+        accepted_count = int((receipt.get("evidence") or {}).get("acceptance_counts", {}).get("accepted") or 0)
+        if accepted_count <= 0:
+            continue
+        attempt_id = str(receipt.get("attempt_id") or "")
+        attempt = state.get("attempts", {}).get(attempt_id) or {}
+        child = children.get(attempt_id)
+        if child is None:
+            return False
+        if read_json_raw(child / "metadata.json").get("deferred_accepted_materialized"):
+            continue
+        peer = attempt.get("cluster_submission") if isinstance(attempt.get("cluster_submission"), dict) else {}
+        if not peer.get("cluster_job_id") or not peer.get("manifest"):
+            return False
+        has_pending_accepted_output = True
+    return has_pending_accepted_output
+
+
 def _collecting_attempt_count(active: list[dict[str, Any]]) -> int:
     """Count completed remote jobs whose outputs are still being collected."""
     return sum(item.get("worker_status") == "collecting" for item in active)

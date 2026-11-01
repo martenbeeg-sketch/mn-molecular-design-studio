@@ -603,6 +603,53 @@ def test_rfd4_accepted_only_materialization_uses_summary_and_campaign_target(tmp
     assert "accepted structure" in (child / "artifacts/rfd4_proteina/output/accepted.cif").read_text()
 
 
+def test_failed_campaign_can_resume_only_deferred_accepted_output_collection(tmp_path):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    jobs.write_json(parent / "metadata.json", {"status": "failed"})
+    (parent / "worker_request.json").write_text("{}", encoding="utf-8")
+    ledger = CampaignLedger.create(
+        parent / "artifacts/distributed_campaign/ledger.json",
+        {"generator_id": "rfd4_proteina", "accepted_target": 1, "max_attempts": 1,
+         "acceptance_level": "validated", "validation_stages": [{
+             "workflow": "analysis.validation_acceptance",
+             "acceptance_policy": {
+                 "schema": "studio.validation-acceptance.v1",
+                 "binder_format": "miniprotein", "target_type": "fasta_idr",
+                 "mandatory_filters": [{
+                     "field": "common.confidence.generator.complex.iptm",
+                     "operator": ">=", "value": 0.7,
+                 }],
+                 "informational_scores": [],
+             },
+         }]},
+        campaign_id="resume-accepted-output-campaign",
+    )
+    attempt = ledger.authorize(1, batch_id="batch")[0]
+    child = tmp_path / "design" / "child"
+    child.mkdir(parents=True)
+    jobs.write_json(child / "metadata.json", {"status": "completed"})
+    peer = {"cluster_job_id": "peer-job", "manifest": str(tmp_path / "peer" / "submission.json")}
+    ledger.transition(
+        attempt["attempt_id"], "completed", child_run_dir=str(child),
+        cluster_job_id="peer-job", cluster_submission=peer,
+    )
+    ledger.record_deferred_receipt(
+        attempt["attempt_id"], "accepted-output-receipt", native_state={"engine": "rfd4_proteina"},
+        native_output_ids=[], candidate_records=[], candidate_count=3,
+        evidence={"acceptance_counts": {"accepted": 1, "rejected": 2, "unresolved": 0, "not_evaluated": 0}},
+    )
+    ledger.terminate("target_reached", detail="Reached 1 accepted candidate.")
+
+    assert distributed_campaign.can_resume_campaign_finalization(parent)
+    metadata = jobs.read_json(child / "metadata.json")
+    metadata["deferred_accepted_materialized"] = True
+    jobs.write_json(child / "metadata.json", metadata)
+    assert not distributed_campaign.can_resume_campaign_finalization(parent)
+
+
 def test_collection_does_not_hold_generation_slot_but_reserves_objective_result(tmp_path, monkeypatch):
     config = distributed_campaign.validate_campaign_config({
         "generator_id": "rfd4_proteina", "objective_type": "generated",

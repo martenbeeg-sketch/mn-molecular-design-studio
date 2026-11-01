@@ -370,6 +370,7 @@ def test_selected_shared_branch_uses_graph_objective_instead_of_independent_camp
 def test_campaign_lifecycle_controls_offer_pause_resume_and_cancel_only_in_valid_states(tmp_path, monkeypatch):
     from streamlit.testing.v1 import AppTest
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import distributed_campaign
 
     run_dir = tmp_path / "campaign-run"
     run_dir.mkdir()
@@ -403,6 +404,15 @@ def test_campaign_lifecycle_controls_offer_pause_resume_and_cancel_only_in_valid
     assert any(button.label == "Resume campaign" for button in paused.button)
     assert not any(button.label == "Cancel campaign" for button in paused.button)
     paused.button(key="campaign-resume-local:design:fixture").click().run()
+    assert calls[-1] == ("resume", run_dir)
+
+    monkeypatch.setattr(distributed_campaign, "can_resume_campaign_finalization", lambda folder: Path(folder) == run_dir)
+    failed = AppTest.from_string(script)
+    failed.session_state["run_dir"] = str(run_dir)
+    failed.session_state["status"] = "failed"
+    failed.run()
+    assert any(button.label == "Retry accepted-output collection" for button in failed.button)
+    failed.button(key="campaign-resume-local:design:fixture").click().run()
     assert calls[-1] == ("resume", run_dir)
 
     terminal = AppTest.from_string(script)
