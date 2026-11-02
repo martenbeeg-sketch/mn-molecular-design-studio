@@ -193,6 +193,18 @@ def test_saved_evidence_acceptance_preserves_rfd4_ids_and_never_predicts(tmp_pat
     assert (output_dir / "artifacts/analysis/acceptance_measurements.csv").is_file()
 
 
+def test_validation_report_exposes_rfd4_native_pass_only_with_complete_metrics():
+    policy = {"binder_format": "miniprotein", "target_type": "structured",
+              "mandatory_filters": [], "informational_scores": []}
+    passed = {"metrics": {"ppi.pass": 1.0, "ppi.all_metrics_present": 1.0}}
+    failed = {"metrics": {"ppi.pass": 0.0, "ppi.all_metrics_present": 1.0}}
+    incomplete = {"metrics": {"ppi.pass": 1.0, "ppi.all_metrics_present": 0.0}}
+
+    assert evaluate_candidate(passed, policy)["native_filter_status"] == "passed"
+    assert evaluate_candidate(failed, policy)["native_filter_status"] == "failed"
+    assert evaluate_candidate(incomplete, policy)["native_filter_status"] == "unavailable · native PPI metrics incomplete"
+
+
 def test_ipae_and_ipsae_are_not_offered_as_interchangeable_filters():
     boltz = dict(available_metrics("miniprotein", "structured", "complex", engine="boltz2"))
     af3 = dict(available_metrics("miniprotein", "structured", "complex", engine="alphafold3"))

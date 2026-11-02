@@ -783,7 +783,14 @@ def test_validation_acceptance_saved_evidence_is_public_and_api_validated(api_da
     assert "candidate_limit" in rejected.text
 
 
-def test_validation_acceptance_api_runs_saved_rfd4_evidence_without_prediction(api_data, monkeypatch):
+@pytest.mark.parametrize(("ppi_pass", "all_metrics_present", "expected_native_status"), [
+    (1.0, 1.0, "passed"),
+    (0.0, 1.0, "failed"),
+    (0.0, 0.0, "unavailable · native PPI metrics incomplete"),
+])
+def test_validation_acceptance_api_runs_saved_rfd4_evidence_without_prediction(
+    api_data, monkeypatch, ppi_pass, all_metrics_present, expected_native_status,
+):
     data, client = api_data, api_data["client"]
     source = candidate_run(data, tool="rfd4_proteina")
     candidates = source / "artifacts/normalized_candidates/candidates.jsonl"
@@ -793,8 +800,8 @@ def test_validation_acceptance_api_runs_saved_rfd4_evidence_without_prediction(a
         "oracle_ppi.overall_iptm": 78.0,
         "oracle_ppi.overall_plddt": 81.65,
         "oracle_ppi.ipae_coi": 17.48,
-        "ppi.pass": 0.0,
-        "ppi.all_metrics_present": 0.0,
+        "ppi.pass": ppi_pass,
+        "ppi.all_metrics_present": all_metrics_present,
     }
     candidates.write_text(json.dumps(row) + "\n")
     from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation
@@ -836,7 +843,7 @@ def test_validation_acceptance_api_runs_saved_rfd4_evidence_without_prediction(a
                 / "artifacts/normalized_candidates/candidates.jsonl").read_text()
     output_candidate = json.loads(filtered)
     assert output_candidate["candidate_id"] == "generated-1"
-    assert output_candidate["raw_metadata"]["validation_acceptance"]["native_filter_status"] == "unavailable · native PPI metrics incomplete"
+    assert output_candidate["raw_metadata"]["validation_acceptance"]["native_filter_status"] == expected_native_status
 
 
 def test_validation_acceptance_api_filters_saved_prediction_pae_from_cofold_run(api_data, monkeypatch):

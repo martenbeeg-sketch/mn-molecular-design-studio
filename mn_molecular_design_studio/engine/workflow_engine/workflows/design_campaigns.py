@@ -25,6 +25,7 @@ from mn_molecular_design_studio.engine.workflow_engine.core.scheduler import app
 from mn_molecular_design_studio.engine.workflow_engine.core.local_worker import spawn_worker_for_run
 from mn_molecular_design_studio.engine.workflow_engine.runtime import runs_root
 from mn_molecular_design_studio.engine.workflow_engine.workflows.analysis import _run_ipsae
+from mn_molecular_design_studio.native_filter_metrics import native_filter_evidence
 from mn_molecular_design_studio.engine.workflow_engine.workflows.design import (
     default_target_contig,
     run_bindcraft,
@@ -426,16 +427,7 @@ def _first_metric(metrics: dict[str, Any], names: tuple[str, ...], default: floa
 
 
 def _native_pass(candidate: dict[str, Any]) -> bool | None:
-    metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
-    for name in ("native_pass_filters", "pass_filters", "passes_filters", "passed_filters"):
-        value = metrics.get(name)
-        if isinstance(value, bool):
-            return value
-        if str(value).strip().lower() in {"true", "pass", "passed", "1", "yes"}:
-            return True
-        if str(value).strip().lower() in {"false", "fail", "failed", "0", "no"}:
-            return False
-    return None
+    return native_filter_evidence(candidate)["value"]
 
 
 def _candidate_sort_key(candidate: dict[str, Any]) -> tuple[float, ...]:

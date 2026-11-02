@@ -23,6 +23,20 @@ def structure(path, binder="GGG", target="AAA"):
     return str(path)
 
 
+def test_candidate_set_reads_complete_rfd4_native_filter_but_not_incomplete_decisions():
+    passed = {"metrics": {"ppi.pass": 1.0, "ppi.all_metrics_present": 1.0}}
+    failed = {"metrics": {"ppi.pass": 0.0, "ppi.all_metrics_present": 1.0}}
+    incomplete = {"metrics": {"ppi.pass": 1.0, "ppi.all_metrics_present": 0.0}}
+    missing = {"metrics": {}}
+    invalid = {"metrics": {"native_pass_filters": "unknown"}}
+
+    assert cs.native_filter(passed) == "passed"
+    assert cs.native_filter(failed) == "failed"
+    assert cs.native_filter(incomplete) == "unavailable"
+    assert cs.native_filter(missing) == "not_evaluated"
+    assert cs.native_filter(invalid) == "invalid_metadata"
+
+
 @pytest.fixture
 def collection_harness(tmp_path, monkeypatch):
     from mn_molecular_design_studio import workspace, cache_provenance, runtime

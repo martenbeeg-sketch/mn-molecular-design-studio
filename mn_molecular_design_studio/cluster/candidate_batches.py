@@ -287,6 +287,7 @@ def poll_summary(batch, *, owner_id, project_id, allow_development=False):
         eligible_count = summary.get("eligible_count")
         native_counts = summary.get("native_filter_counts")
         acceptance_counts = summary.get("acceptance_counts")
+        native_vs_acceptance = summary.get("native_filter_vs_acceptance")
         if (type(count) is not int or count < 0 or type(eligible_count) is not int or not 0 <= eligible_count <= count
                 or not isinstance(native_counts, dict)
                 or not isinstance(acceptance_counts, dict)
@@ -297,6 +298,21 @@ def poll_summary(batch, *, owner_id, project_id, allow_development=False):
                        for key in ("accepted", "rejected", "unresolved", "not_evaluated"))
                 or sum(acceptance_counts[key] for key in ("accepted", "rejected", "unresolved", "not_evaluated")) != count):
             return "summary_unavailable", job
+        if native_vs_acceptance is not None:
+            expected_acceptance = {"accepted", "rejected", "unresolved", "not_evaluated"}
+            expected_native = {"passed", "failed", "unavailable"}
+            if (not isinstance(native_vs_acceptance, dict)
+                    or set(native_vs_acceptance) != expected_native
+                    or any(not isinstance(native_vs_acceptance.get(key), dict)
+                           or set(native_vs_acceptance[key]) != expected_acceptance
+                           or any(type(value) is not int or value < 0
+                                  for value in native_vs_acceptance[key].values())
+                           for key in expected_native)
+                    or any(sum(native_vs_acceptance[key].values()) != native_counts.get(key)
+                           for key in expected_native)
+                    or any(sum(native_vs_acceptance[native].get(key, 0) for native in expected_native)
+                           > acceptance_counts.get(key, 0) for key in expected_acceptance)):
+                return "summary_unavailable", job
         if summary.get("acceptance_evaluation") == "worker_local_saved_evidence":
             # Completion heartbeats carry aggregate counts only. Candidate
             # identities and structures remain on the producer until final

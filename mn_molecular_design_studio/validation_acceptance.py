@@ -14,6 +14,7 @@ import operator
 from pathlib import Path
 
 from mn_molecular_design_studio.measurement_status import RANGES, finite_number
+from mn_molecular_design_studio.native_filter_metrics import native_filter_evidence
 from mn_molecular_design_studio.output_vocabulary import DEFINITIONS, PREFIX, candidate_output, metric_value
 from mn_molecular_design_studio.prediction_measurements import PAE_MATRIX_ENGINES, SCALAR_SCORE_ALIASES
 
@@ -480,22 +481,10 @@ def evaluate_candidate(candidate: dict, policy: dict) -> dict:
     else:
         status = "not_evaluated"
     rank = measurements.get(policy["ranking_metric"]) if policy["ranking_metric"] else None
-    native_metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
-    native_status = native_metrics.get("native_pass_filters", native_metrics.get("pass_filters"))
-    source_candidate = (candidate.get("raw_metadata") or {}).get("source_candidate")
-    source_metrics = native_metrics
-    if isinstance(source_candidate, dict):
-        source_metrics = source_candidate.get("metrics") if isinstance(source_candidate.get("metrics"), dict) else source_metrics
-    if native_status is None:
-        native_status = source_metrics.get("native_pass_filters", source_metrics.get("pass_filters"))
-        if native_status is None and isinstance(source_candidate, dict) and (source_candidate.get("raw_metadata") or {}).get("bindcraft_output_kind"):
-            native_status = (source_candidate["raw_metadata"]["bindcraft_output_kind"] == "Accepted")
-        if native_status is None and "ppi.pass" in source_metrics:
-            all_metrics_present = source_metrics.get("ppi.all_metrics_present")
-            if all_metrics_present not in (1, 1.0, True):
-                native_status = "unavailable · native PPI metrics incomplete"
-            else:
-                native_status = "passed" if source_metrics["ppi.pass"] in (1, 1.0, True) else "failed"
+    native_evidence = native_filter_evidence(candidate)
+    native_status = native_evidence["status"]
+    if native_evidence["status"] == "unavailable" and native_evidence["source"] == "ppi.pass":
+        native_status = f"unavailable · {native_evidence['reason']}"
     return {"status": status, "reasons": reasons, "measurements": measurements,
             "binder_format": policy["binder_format"], "target_type": policy["target_type"],
             "ranking_metric": policy["ranking_metric"] or None,

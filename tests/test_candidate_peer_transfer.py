@@ -84,6 +84,11 @@ def test_poll_summary_accepts_count_only_filter_results_without_design_metadata(
         "schema_version": 1, "status": "complete", "candidate_count": 4, "eligible_count": 4,
         "native_filter_counts": {"passed": 0, "failed": 0, "unavailable": 4},
         "acceptance_counts": {"accepted": 2, "rejected": 2, "unresolved": 0, "not_evaluated": 0},
+        "native_filter_vs_acceptance": {
+            "passed": {"accepted": 0, "rejected": 0, "unresolved": 0, "not_evaluated": 0},
+            "failed": {"accepted": 0, "rejected": 0, "unresolved": 0, "not_evaluated": 0},
+            "unavailable": {"accepted": 2, "rejected": 2, "unresolved": 0, "not_evaluated": 0},
+        },
         "acceptance_evaluation": "worker_local_saved_evidence",
     }
 

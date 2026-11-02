@@ -23,6 +23,7 @@ from mn_molecular_design_studio.engine.workflow_engine.core.candidates import no
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, write_json
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_managed_paths, resolve_stored_path
 from mn_molecular_design_studio.measurement_status import finite_number, RANGES
+from mn_molecular_design_studio.native_filter_metrics import native_filter_evidence
 
 SCHEMA = "studio.candidate-set.v1"
 KINDS = {"candidate_merge", "shared_filter", "candidate_analyzer", "candidate_rank"}
@@ -114,17 +115,13 @@ def sequence_state(row):
 
 
 def native_filter(row):
-    metrics = row.get("metrics", {})
-    value = metrics.get("native_pass_filters")
-    if type(value) is bool:
-        return "passed" if value else "failed"
-    if value is not None:
-        return "invalid_metadata"
-    campaign = row.get("raw_metadata", {}).get("distributed_campaign", {})
-    value = campaign.get("native_acceptance")
-    if value in {"accepted", "rejected"}:
-        return "passed" if value == "accepted" else "failed"
-    return "not_evaluated" if value in {None, "unavailable"} else "unresolved"
+    evidence = native_filter_evidence(row)
+    if evidence["status"] == "unavailable":
+        if evidence["source"] is None:
+            return "not_evaluated"
+        if evidence["reason"] in {"native filter value is not boolean", "native PPI pass value is invalid"}:
+            return "invalid_metadata"
+    return evidence["status"]
 
 
 def artifact_evidence(row):

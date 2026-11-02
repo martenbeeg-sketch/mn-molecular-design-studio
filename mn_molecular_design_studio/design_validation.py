@@ -21,6 +21,7 @@ from Bio.SeqUtils import seq1
 from mn_molecular_design_studio.engine.workflow_engine.core.candidates import _parse_structure, read_candidates
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+from mn_molecular_design_studio.native_filter_metrics import native_filter_evidence
 
 CHAIN_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
@@ -123,16 +124,6 @@ def _candidate_structure(run_dir: Path, candidate: dict) -> Path:
     raise ValueError("The designed structure file is unavailable.")
 
 
-def _filter_flag(value: Any) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)) and value in (0, 1):
-        return bool(value)
-    if isinstance(value, str):
-        return {"true": True, "1": True, "false": False, "0": False}.get(value.strip().lower())
-    return None
-
-
 def candidate_passes_filters(candidate: dict) -> bool:
     """Require affirmative overall filter evidence; unknown is not a pass."""
     metrics = candidate.get("metrics") or {}
@@ -145,15 +136,12 @@ def candidate_passes_filters(candidate: dict) -> bool:
         "generation_only", "generator_trajectory",
     }:
         return False
-    flags = [_filter_flag(metrics.get(key)) for key in ("native_pass_filters", "pass_filters")]
-    if False in flags:
+    native_filter = native_filter_evidence(candidate)["value"]
+    if native_filter is False:
         return False
-    if True in flags:
+    if native_filter is True:
         return True
-    # Older BindCraft results identify acceptance by the native output pool.
-    # A successful process or a ranked/generated structure alone is insufficient.
-    return (candidate.get("source_tool") == "bindcraft"
-            and raw.get("bindcraft_output_kind") == "Accepted")
+    return False
 
 
 def design_candidates(run_dir: Path, *, require_passing: bool = True) -> list[dict]:

@@ -206,6 +206,27 @@ def test_worker_heartbeat_publishes_counts_without_candidate_identities_or_struc
     assert "private coordinates" not in json.dumps(summary)
 
 
+def test_worker_candidate_summary_counts_rfd4_native_ppi_decisions(tmp_path):
+    run = tmp_path / "design" / "rfd4-native-summary"
+    candidates = run / "artifacts/normalized_candidates"
+    candidates.mkdir(parents=True)
+    rows = [
+        {"candidate_id": "native-pass", "source_tool": "rfd4_proteina", "stage": "complex_refolding",
+         "metrics": {"ppi.pass": 1.0, "ppi.all_metrics_present": 1.0}},
+        {"candidate_id": "native-fail", "source_tool": "rfd4_proteina", "stage": "complex_refolding",
+         "metrics": {"ppi.pass": 0.0, "ppi.all_metrics_present": 1.0}},
+        {"candidate_id": "native-incomplete", "source_tool": "rfd4_proteina", "stage": "complex_refolding",
+         "metrics": {"ppi.pass": 1.0, "ppi.all_metrics_present": 0.0}},
+    ]
+    (candidates / "candidates.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    summary = _candidate_summary(run, {"tool": "rfd4_proteina"})
+
+    assert summary["native_filter_counts"] == {"passed": 1, "failed": 1, "unavailable": 1}
+    assert not any(candidate_id in json.dumps(summary) for candidate_id in
+                   ("native-pass", "native-fail", "native-incomplete"))
+
+
 def test_worker_acceptance_is_count_only_and_keeps_only_accepted_rows_for_final_collection(tmp_path, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.workflows import distributed_campaign
 
@@ -214,9 +235,11 @@ def test_worker_acceptance_is_count_only_and_keeps_only_accepted_rows_for_final_
     candidates.mkdir(parents=True)
     rows = [
         {"candidate_id": "private-pass", "source_tool": "rfd4_proteina", "stage": "complex_refolding",
-         "binder_sequence": "ACDEFG", "complex_pdb": "artifacts/structures/pass.cif", "metrics": {}},
+         "binder_sequence": "ACDEFG", "complex_pdb": "artifacts/structures/pass.cif",
+         "metrics": {"ppi.pass": 1.0, "ppi.all_metrics_present": 1.0}},
         {"candidate_id": "private-reject", "source_tool": "rfd4_proteina", "stage": "complex_refolding",
-         "binder_sequence": "GGGGGG", "complex_pdb": "artifacts/structures/reject.cif", "metrics": {}, "raw_metadata": {}},
+         "binder_sequence": "GGGGGG", "complex_pdb": "artifacts/structures/reject.cif",
+         "metrics": {"ppi.pass": 0.0, "ppi.all_metrics_present": 1.0}, "raw_metadata": {}},
     ]
     (candidates / "candidates.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
     monkeypatch.setattr(distributed_campaign, "_native_acceptance_geometry", lambda *_args: None)
@@ -233,6 +256,11 @@ def test_worker_acceptance_is_count_only_and_keeps_only_accepted_rows_for_final_
 
     assert summary["candidate_count"] == 2
     assert summary["acceptance_counts"] == {"accepted": 1, "rejected": 1, "unresolved": 0, "not_evaluated": 0}
+    assert summary["native_filter_vs_acceptance"] == {
+        "passed": {"accepted": 1, "rejected": 0, "unresolved": 0, "not_evaluated": 0},
+        "failed": {"accepted": 0, "rejected": 1, "unresolved": 0, "not_evaluated": 0},
+        "unavailable": {"accepted": 0, "rejected": 0, "unresolved": 0, "not_evaluated": 0},
+    }
     assert not ({"candidates", "accepted_candidate_ids", "accepted_sequence_hashes"} & set(summary))
     assert "private-pass" not in json.dumps(summary)
     assert "ACDEFG" not in json.dumps(summary)

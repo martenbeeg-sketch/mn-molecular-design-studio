@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import bundles, capabilities, config, context, progress as job_progress, transport
+from mn_molecular_design_studio.native_filter_metrics import native_filter_evidence
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +85,9 @@ def _candidate_summary(run: Path, job: dict, acceptance_policy: dict | None = No
         return {"schema_version": 1, "status": "unavailable", "candidate_count": None}
     counts = {"passed": 0, "failed": 0, "unavailable": 0}
     acceptance = {"accepted": 0, "rejected": 0, "unresolved": 0, "not_evaluated": 0}
+    native_vs_acceptance = ({native: dict.fromkeys(acceptance, 0)
+                             for native in ("passed", "failed", "unavailable")}
+                            if acceptance_policy else None)
     candidate_count = 0
     eligible_count = 0
     accepted_rows = []
@@ -95,7 +99,6 @@ def _candidate_summary(run: Path, job: dict, acceptance_policy: dict | None = No
                 row = json.loads(line)
                 if not isinstance(row, dict) or not str(row.get("candidate_id") or "").strip():
                     raise ValueError("Normalized candidate row has no stable identity.")
-                metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
                 raw = row.get("raw_metadata")
                 if not isinstance(raw, dict):
                     raw = {}
@@ -109,13 +112,7 @@ def _candidate_summary(run: Path, job: dict, acceptance_policy: dict | None = No
                 )
                 if eligible:
                     eligible_count += 1
-                    filter_value = metrics.get("native_pass_filters", metrics.get("pass_filters"))
-                    if filter_value is None and str(row.get("source_tool") or job.get("tool") or "") == "bindcraft":
-                        kind = str(raw.get("bindcraft_output_kind") or "").casefold()
-                        filter_value = True if kind == "accepted" else False if kind in {"rejected", "filtered"} else None
-                    if isinstance(filter_value, str):
-                        filter_value = {"true": True, "1": True, "pass": True, "passed": True,
-                                        "false": False, "0": False, "fail": False, "failed": False}.get(filter_value.casefold())
+                    filter_value = native_filter_evidence(row)["value"]
                     counts["passed" if filter_value is True else "failed" if filter_value is False else "unavailable"] += 1
                     if acceptance_policy:
                         from mn_molecular_design_studio.engine.workflow_engine.workflows.distributed_campaign import (
@@ -129,7 +126,11 @@ def _candidate_summary(run: Path, job: dict, acceptance_policy: dict | None = No
                         )
                         raw["validation_acceptance"] = decision
                         status = str(decision.get("status") or "unresolved")
-                        acceptance[status if status in acceptance else "not_evaluated"] += 1
+                        status = status if status in acceptance else "not_evaluated"
+                        acceptance[status] += 1
+                        native_status = ("passed" if filter_value is True else
+                                         "failed" if filter_value is False else "unavailable")
+                        native_vs_acceptance[native_status][status] += 1
                         if status == "accepted":
                             accepted_rows.append(row)
                         candidate_count += 1
@@ -158,6 +159,7 @@ def _candidate_summary(run: Path, job: dict, acceptance_policy: dict | None = No
     }
     if acceptance_policy:
         summary["acceptance_evaluation"] = "worker_local_saved_evidence"
+        summary["native_filter_vs_acceptance"] = native_vs_acceptance
     return summary
 
 

@@ -2924,6 +2924,7 @@ def _reconcile_attempts(
                         "candidate_count": deferred_count,
                         "eligible_count": int(summary.get("eligible_count") or 0),
                         "native_filter_counts": summary.get("native_filter_counts", {}),
+                        "native_filter_vs_acceptance": summary.get("native_filter_vs_acceptance", {}),
                         "acceptance_counts": summary.get("acceptance_counts", {}),
                         "acceptance_evaluation": summary.get("acceptance_evaluation"),
                         "transferred_candidate_data": False,
