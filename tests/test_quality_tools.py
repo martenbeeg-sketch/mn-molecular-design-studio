@@ -274,6 +274,121 @@ def test_ligand_preparation_rejects_ambiguous_copies_and_uses_a_selected_chain(t
     assert analyzed["molecule_ids"] == original["molecule_ids"]
 
 
+def test_ligand_preparation_matches_long_mmcif_component_after_pdb_export(tmp_path):
+    import gemmi
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.quality_ligands import prepare
+    from mn_molecular_design_studio.molecule_imports import parse_structure
+    from mn_molecular_design_studio.evaluations import file_digest
+
+    assets = Path(__file__).resolve().parents[1] / "mn_molecular_design_studio/assets/vina"
+    smiles = json.loads((assets / "imatinib.json").read_text())[0]["smiles"]
+    structure = gemmi.read_structure(str(assets / "1iep.pdb"))
+    for model in structure:
+        for chain in model:
+            for residue in chain:
+                if chain.name == "B" and residue.name == "STI":
+                    residue.name = "LIG_LONG"
+    source = tmp_path / "long-component-id.cif"
+    structure.make_mmcif_document().write_file(str(source))
+    components = parse_structure(source.read_bytes(), source.name, include_ligands=True)[0]["components"]
+    candidate = {"complex_pdb": str(source), "raw_metadata": {"components": components}}
+    item = {"id": "item_000000", "candidate_id": "long-ccd"}
+
+    prepare(item, candidate, tmp_path / "prepared", ligand_selection={
+        "chain": "B", "residue_key": "B:202", "ccd": "LIG_LONG", "smiles": smiles,
+    })
+
+    assert item["ligand_identity"]["ccd"] == "LIG_LONG"
+    assert item["ligand_identity"]["chain"] == "B"
+    assert item["ligand_identity"]["residue_key"] == "B:202"
+    assert item["source_structure_digest"] == file_digest(source)
+    assert item["ligand_pose_digest"] != item["receptor_digest"]
+
+
+def test_ligand_workflow_runs_exact_pose_through_existing_batch_and_records_provenance(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.molecule_imports import parse_structure
+    from mn_molecular_design_studio.evaluations import file_digest
+
+    source = tmp_path / "prediction" / "protein-ligand"
+    structure_dir = source / "artifacts" / "output"
+    structure_dir.mkdir(parents=True)
+    assets = Path(__file__).resolve().parents[1] / "mn_molecular_design_studio/assets/vina"
+    structure = structure_dir / "1iep.pdb"
+    shutil.copyfile(assets / "1iep.pdb", structure)
+    ligand_smiles = json.loads((assets / "imatinib.json").read_text())[0]["smiles"]
+    components = parse_structure(structure.read_bytes(), structure.name, include_ligands=True)[0]["components"]
+    for component in components:
+        if component.get("type") == "small_molecule" and component.get("ccd") == "STI":
+            component["smiles"] = ligand_smiles
+    candidate = {
+        "candidate_id": "saved-1iep", "complex_pdb": str(structure),
+        "raw_metadata": {"components": components, "ligand_smiles": ligand_smiles,
+                         "compound_id": "STI-571", "compound_name": "Imatinib"},
+    }
+    candidate_path = source / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+    candidate_path.parent.mkdir(parents=True)
+    candidate_path.write_text(json.dumps(candidate) + "\n")
+    run = tmp_path / "analysis" / "plip-run"
+    run.mkdir(parents=True)
+    monkeypatch.setattr(quality, "_analysis_job", lambda *a, **k: SimpleNamespace(run_dir=run))
+    monkeypatch.setattr(quality, "_allocated_cpu_cores", lambda *a: 1)
+    monkeypatch.setattr(quality, "apply_docker_cpu_limits_to_steps", lambda run, steps: steps)
+    monkeypatch.setattr(quality, "docker_user_args", lambda: [])
+    monkeypatch.setattr(quality, "finish_job", lambda *a: None)
+
+    def fake(command, **kwargs):
+        if command[:3] == ["docker", "image", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout="sha256:test-image\n")
+        (run / "artifacts/analysis/batch_status.json").write_text(json.dumps({"items": [
+            {"id": "item_000000", "status": "completed", "metrics": {"plip_hbond_count": 2}},
+        ]}))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(quality.subprocess, "run", fake)
+    selection = {"chain": "A", "residue_key": "A:201", "ccd": "STI", "smiles": ligand_smiles}
+    result = quality.run_plip(
+        source, candidate_path, candidate_ids=["saved-1iep"], selected_structure_path=structure,
+        selected_model_id="1", ligand_selection=selection,
+    )
+
+    manifest = json.loads((run / "artifacts/analysis/batch_manifest.json").read_text())
+    item = manifest["items"][0]
+    assert result == run
+    assert manifest["selection"]["ligand_selection"] == selection
+    assert item["source_structure_digest"] == file_digest(structure)
+    assert item["model_id"] == "1"
+    assert item["ligand_selection"] == selection
+    assert item["ligand_identity"] == {"chain": "A", "residue_key": "A:201", "ccd": "STI",
+                                        "smiles": item["ligand_identity"]["smiles"]}
+    assert item["ligand_provenance"]["source_structure_digest"] == file_digest(structure)
+    assert item["ligand_provenance"]["pose_coordinates_sha256"] == item["ligand_pose_digest"]
+    assert item["ligand_provenance"]["receptor_coordinates_sha256"] == item["receptor_digest"]
+    assert item["receptor_digest"] != item["ligand_pose_digest"]
+    analyzed = json.loads((run / "artifacts/normalized_candidates/candidates.jsonl").read_text().splitlines()[0])
+    assert analyzed["raw_metadata"]["ligand_provenance"] == item["ligand_provenance"]
+    assert analyzed["metrics"]["qc_status"] == "completed"
+
+
+@pytest.mark.parametrize("runner,tool", [
+    (quality.run_plip, "plip"), (quality.run_pandamap, "pandamap"),
+    (quality.run_posebusters, "posebusters"),
+])
+def test_ligand_workflow_adapters_accept_context_selection_and_reject_interface_groups(monkeypatch, tmp_path, runner, tool):
+    captured = {}
+    monkeypatch.setattr(quality, "run_quality", lambda *args, **kwargs: captured.update(tool=kwargs.pop("tool"), kwargs=kwargs) or tmp_path)
+    selection = {"chain": "A", "residue_key": "A:201", "ccd": "STI", "smiles": "CC"}
+    path = tmp_path / "structure.pdb"
+    result = runner(tmp_path, tmp_path / "candidates.jsonl", candidate_ids=["candidate-1"],
+                    selected_structure_path=path, selected_model_id="model-2", ligand_selection=selection)
+    assert result == tmp_path
+    assert captured == {"tool": tool, "kwargs": {
+        "settings": {}, "cpu_cores": 4, "candidate_ids": ["candidate-1"],
+        "selected_structure_path": path, "selected_model_id": "model-2", "ligand_selection": selection,
+    }}
+    with pytest.raises(ValueError, match="does not accept protein interface chain groups"):
+        runner(tmp_path, tmp_path / "candidates.jsonl", binder_chains=["A"])
+
+
 @pytest.mark.skipif(os.environ.get("MDS_QC_DOCKER_TESTS") != "1", reason="Set MDS_QC_DOCKER_TESTS=1 to exercise installed QC containers.")
 @pytest.mark.parametrize("tool", [key for key, profile in TOOLS.items() if not profile.get("gpu")])
 def test_real_container_batch(tool, tmp_path, design_source_factory):

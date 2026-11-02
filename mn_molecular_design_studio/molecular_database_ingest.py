@@ -831,9 +831,19 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         database_subject = None
         if database_source is not None:
             database_subject = _database_analysis_subject(database, user, owner, project, database_source)
-            files = record.get("files") or []
-            if (database_subject is None or not files
-                    or _file_sha256(files[0].get("path") or "") != database_subject["structure_digest"]):
+            selection = raw_candidate.get("complex_analysis_selection")
+            selection = selection if isinstance(selection, dict) else {}
+            source_selection_digest = str(
+                selection.get("source_structure_digest") or selection.get("structure_digest") or ""
+            )
+            # Evaluators may protonate, normalize, or convert the selected
+            # structure before emitting their analysis complex. That output
+            # is expected to differ byte-for-byte from the saved Database
+            # representation. Validate lineage against the original source
+            # digest instead; _database_analysis_subject has already checked
+            # the exact accessible representation and its stored digest.
+            if (database_subject is None or not (record.get("files") or [])
+                    or (source_selection_digest and source_selection_digest != database_subject["structure_digest"])):
                 log.warning("Skipped Database evaluation projection for %s: its source structure is no longer an exact accessible representation.", run_dir)
                 continue
         campaign_filter = raw_candidate.get("distributed_campaign") if isinstance(raw_candidate.get("distributed_campaign"), dict) else {}
@@ -989,6 +999,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                 "source_molecule_id": database_subject["molecule_id"],
                 "source_structure_id": database_subject["structure_id"],
                 "source_group_id": database_subject["group_id"],
+                "source_structure_digest": database_subject["structure_digest"],
                 "representation_id": database_subject["structure_id"],
                 "structure_digest": database_subject["structure_digest"],
                 "is_representative": True,

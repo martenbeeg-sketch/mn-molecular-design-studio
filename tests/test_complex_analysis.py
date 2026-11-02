@@ -553,6 +553,87 @@ render_complex_analysis_workspace(
         assert parameters["target_chains"] == ["A"]
 
 
+@pytest.mark.parametrize("workflow_id", ["analysis.plip", "analysis.pandamap", "analysis.posebusters"])
+def test_contextual_ligand_workflows_submit_exact_residue_without_interface_groups(
+    tmp_path, monkeypatch, workflow_id,
+):
+    database = _isolated_database(tmp_path, monkeypatch)
+    from mn_molecular_design_studio import complex_analysis_ui, molecular_database
+    source_run = tmp_path / "workspace" / "runs" / "prediction" / "ligand-source"
+    source_run.mkdir(parents=True)
+    structure_path = source_run / "model-2.pdb"
+    structure_path.write_bytes(_complex_pdb("small_molecule"))
+    smiles = "CCO"
+    ligand_component = {"id": "ligand-residue", "type": "small_molecule", "chain": "L_1",
+                        "source_chain": "L", "residue_key": "L:1", "ccd": "LIG", "label": "Ethanol"}
+    candidate = {
+        "candidate_id": "saved-ligand-42", "model_index": 2, "complex_pdb": "model-2.pdb",
+        "raw_metadata": {"components": [{**ligand_component, "smiles": smiles}],
+                         "ligand_smiles": smiles},
+    }
+    candidate_file = source_run / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+    candidate_file.parent.mkdir(parents=True)
+    candidate_file.write_text(json.dumps(candidate) + "\n")
+    (source_run / "metadata.json").write_text(json.dumps({"tool": "ligand-predictor", "status": "completed"}))
+    (source_run / "input.json").write_text(json.dumps({"tool": "ligand-predictor", "params": {}}))
+    (source_run / "result.json").write_text(json.dumps({"success": True, "metrics": {}}))
+    (source_run / "molecular_design_studio.json").write_text(json.dumps({
+        "studio_owner_id": USER["id"], "project_id": "test-project",
+    }))
+    job = {"task_group": "prediction", "run_id": "ligand-source", "status": "completed",
+           "tool": "ligand-predictor", "run_dir": str(source_run), "project_id": "test-project"}
+    option = {"path": structure_path, "relative_path": "model-2.pdb", "candidate": candidate,
+              "candidate_id": candidate["candidate_id"], "label": "Model 2"}
+    components = [
+        {"id": "protein-A", "type": "protein", "source_chain": "A", "chain": "A", "label": "Protein A", "residue_key": "A:1"},
+        ligand_component,
+    ]
+    monkeypatch.setattr(molecular_database, "MolecularDatabase", lambda: database)
+    monkeypatch.setattr(complex_analysis_ui, "_accessible_result_jobs", lambda user: [job])
+    monkeypatch.setattr(complex_analysis_ui, "_job_structure_options", lambda user, selected_job: [option])
+    monkeypatch.setattr(complex_analysis_ui, "component_inventory", lambda *args, **kwargs: components)
+    monkeypatch.setattr(complex_analysis_ui, "_show_structure", lambda *args, **kwargs: None)
+    monkeypatch.setattr(complex_analysis_ui, "_show_human_review", lambda *args, **kwargs: None)
+    monkeypatch.setattr(complex_analysis_ui, "_matching_biotite_jobs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(complex_analysis_ui, "_matching_contextual_jobs", lambda *args, **kwargs: [])
+    key = hashlib.sha256(b"prediction/ligand-source:model-2.pdb").hexdigest()[:14]
+    script = f'''\
+import streamlit as st
+from mn_molecular_design_studio.complex_analysis_ui import render_complex_analysis_workspace
+def schema_provider(workflow):
+    return {{"workflow": workflow, "schema_version": 1, "parameters": []}}
+def submit(schema, workflow, parameters, project, settings, title):
+    st.session_state["submitted_workflow"] = workflow
+    st.session_state["submitted_parameters"] = parameters
+    st.session_state["submitted_project"] = project
+    st.session_state["last_submitted_job"] = {{"run_id":"analysis-ligand-1"}}
+st.session_state["complex-analysis-source-kind"] = "Results"
+render_complex_analysis_workspace(
+    {USER!r}, workflow_schema=schema_provider,
+    project_selector=lambda prefix, **kwargs: "test-project", submit=submit,
+)
+'''
+    app = AppTest.from_string(script, default_timeout=15).run()
+    assert not app.exception
+    button_key = f"complex-analysis-run-{workflow_id.replace('.', '-')}-{key}"
+    button = app.button(key=button_key)
+    assert button is not None and not button.disabled
+    button.click().run()
+
+    assert not app.exception
+    parameters = app.session_state["submitted_parameters"]
+    assert app.session_state["submitted_workflow"] == workflow_id
+    assert app.session_state["submitted_project"] == "test-project"
+    assert parameters["candidate_ids"] == [candidate["candidate_id"]]
+    assert parameters["selected_structure_path"] == str(structure_path.resolve())
+    assert parameters["selected_model_id"] == "2"
+    assert parameters["source_job"] == "prediction/ligand-source"
+    assert parameters["ligand_selection"] == {
+        "chain": "L", "residue_key": "L:1", "ccd": "LIG", "smiles": smiles,
+    }
+    assert "binder_chains" not in parameters and "target_chains" not in parameters
+
+
 def test_contextual_matching_reuses_only_exact_accessible_evaluations(tmp_path, monkeypatch):
     from mn_molecular_design_studio import auth, complex_analysis_ui, job_catalog
 
@@ -746,6 +827,113 @@ def test_database_analysis_source_is_exact_and_does_not_create_a_prediction_job(
                                      workflow_id="analysis.biotite_interface")
 
 
+def test_database_ligand_adapter_keeps_exact_ligand_identity_and_drops_interface_groups(tmp_path, monkeypatch):
+    database = _isolated_database(tmp_path, monkeypatch)
+    from mn_molecular_design_studio.complex_analysis_sources import (
+        apply_database_analysis_source, authorize_database_structure, build_database_analysis_source,
+    )
+    from mn_molecular_design_studio.evaluations import file_digest
+    assets = Path(__file__).resolve().parents[1] / "mn_molecular_design_studio/assets/vina"
+    smiles = json.loads((assets / "imatinib.json").read_text())[0]["smiles"]
+    parsed = molecule_imports.parse_structure((assets / "1iep.pdb").read_bytes(), "1iep.pdb", include_ligands=True)[0]
+    for component in parsed["components"]:
+        if component.get("type") == "small_molecule" and component.get("ccd") == "STI":
+            component["smiles"] = smiles
+    imported = database.import_records(USER, [parsed], name="Saved protein-ligand reference")
+    record = database.list_molecules(USER, molecule_ids=imported["molecule_ids"])["items"][0]
+    structure = record["representations"][0]
+    ligand_selection = {"chain": "A", "residue_key": "A:201", "ccd": "STI", "smiles": smiles}
+    selector = {"molecule_id": record["id"], "structure_id": structure["id"],
+                "group_id": imported["group_id"], "model_id": structure["id"],
+                "binder_chains": [], "target_chains": [], "ligand_selection": ligand_selection}
+
+    authorized = authorize_database_structure(USER, selector, project_id=None, database=database,
+                                              workflow_id="analysis.plip")
+    bundle = build_database_analysis_source(USER, selector, workflow_id="analysis.plip",
+                                            project_id=None, database=database)
+    adapted = apply_database_analysis_source({
+        "schema_version": 1, "workflow": "analysis.plip", "database_source": selector,
+        "parameters": {"binder_chains": [], "target_chains": [], "cpu_cores": 2},
+    }, USER, None)
+    candidate = json.loads(Path(bundle["candidates_jsonl"]).read_text().splitlines()[0])
+
+    assert authorized["ligand_selection"]["chain"] == "A"
+    assert authorized["ligand_selection"]["residue_key"] == "A:201"
+    assert authorized["ligand_selection"]["ccd"] == "STI"
+    assert authorized["ligand_selection"]["smiles"] == smiles
+    assert authorized["structure_digest"] == file_digest(authorized["structure_path"])
+    assert bundle["source_manifest"]["ligand_selection"] == authorized["ligand_selection"]
+    assert candidate["raw_metadata"]["complex_analysis_selection"]["ligand_selection"] == authorized["ligand_selection"]
+    assert adapted["workflow"] == "analysis.plip"
+    assert adapted["parameters"]["ligand_selection"] == authorized["ligand_selection"]
+    assert "binder_chains" not in adapted["parameters"] and "target_chains" not in adapted["parameters"]
+
+    wrong_identity = {**selector, "ligand_selection": {**ligand_selection, "smiles": "CC"}}
+    with pytest.raises(ValueError, match="does not match the saved Database component"):
+        authorize_database_structure(USER, wrong_identity, project_id=None, database=database,
+                                     workflow_id="analysis.plip")
+
+
+def test_ligand_workflow_reuses_evaluation_with_prepared_digest_and_exact_source_digest(tmp_path, monkeypatch):
+    database = _isolated_database(tmp_path, monkeypatch)
+    assets = Path(__file__).resolve().parents[1] / "mn_molecular_design_studio/assets/vina"
+    smiles = json.loads((assets / "imatinib.json").read_text())[0]["smiles"]
+    imported_record = molecule_imports.parse_structure(
+        (assets / "1iep.pdb").read_bytes(), "1iep.pdb", include_ligands=True,
+    )[0]
+    for component in imported_record["components"]:
+        if component.get("type") == "small_molecule" and component.get("ccd") == "STI":
+            component["smiles"] = smiles
+    imported = database.import_records(USER, [imported_record], name="Saved protein-ligand reference")
+    record = database.list_molecules(USER, molecule_ids=imported["molecule_ids"])["items"][0]
+    structure = record["representations"][0]
+    source_digest = hashlib.sha256(Path(structure["path"]).read_bytes()).hexdigest()
+    ligand_selection = {"chain": "A", "residue_key": "A:201", "ccd": "STI", "smiles": smiles}
+    observation_id = database.add_observation(
+        imported["group_id"], record["id"], "plip", "plip-run",
+        {"plip_success": True, "plip_interaction_count": 2},
+        context={
+            "representation_id": structure["id"],
+            "structure_digest": "prepared-evaluator-complex-digest",
+            "source_structure_digest": source_digest,
+            "candidate": {"candidate_id": "selected-ligand-pose", "source_tool": "plip", "stage": "analysis",
+                          "raw_metadata": {"complex_analysis_selection": {"ligand_selection": ligand_selection}}},
+        },
+    )
+    from mn_molecular_design_studio.evaluations import evaluation_descriptor
+    saved_observation = next(item for item in database.list_molecules(
+        USER, molecule_ids=[record["id"]], collection="all", limit=1,
+    )["items"][0]["observations"] if item["id"] == observation_id)
+    evaluation_id = evaluation_descriptor(saved_observation)["id"]
+    selector = {
+        "molecule_id": record["id"], "structure_id": structure["id"],
+        "group_id": imported["group_id"], "model_id": structure["id"],
+        "evaluation_id": evaluation_id, "binder_chains": [], "target_chains": [],
+        "ligand_selection": ligand_selection,
+    }
+
+    from mn_molecular_design_studio.complex_analysis_sources import authorize_database_structure
+    authorized = authorize_database_structure(USER, selector, project_id=None, database=database,
+                                              workflow_id="analysis.pandamap")
+
+    assert authorized["structure_id"] == structure["id"]
+    assert authorized["structure_digest"] == source_digest
+    assert authorized["evaluation_id"] == evaluation_id
+    assert authorized["ligand_selection"] == ligand_selection
+
+    bad_context = {**saved_observation["context"], "source_structure_digest": "0" * 64}
+    database.add_observation(
+        imported["group_id"], record["id"], "plip", "plip-run-wrong-source",
+        {"plip_success": True}, context={**bad_context, "candidate": saved_observation["context"]["candidate"]},
+    )
+    latest = database.list_molecules(USER, molecule_ids=[record["id"]], collection="all", limit=1)["items"][0]
+    bad_observation = next(item for item in latest["observations"] if item["run_id"] == "plip-run-wrong-source")
+    bad_selector = {**selector, "evaluation_id": evaluation_descriptor(bad_observation)["id"]}
+    with pytest.raises(ValueError, match="different structure representation"):
+        authorize_database_structure(USER, bad_selector, project_id=None, database=database,
+                                     workflow_id="analysis.pandamap")
+
+
 def test_database_workspace_submits_direct_analysis_with_stable_source_ids(tmp_path, monkeypatch):
     database = _isolated_database(tmp_path, monkeypatch)
     imported_record = molecule_imports.parse_structure(_complex_pdb("protein"), "imported-ppi.pdb")[0]
@@ -833,7 +1021,88 @@ def test_database_analysis_ingestion_attaches_evaluation_to_exact_existing_repre
     assert len(evaluations) == 1
     assert evaluations[0]["context"]["representation_id"] == structure["id"]
     assert evaluations[0]["context"]["structure_digest"] == adapter["source"]["structure_digest"]
+    assert evaluations[0]["context"]["source_structure_digest"] == adapter["source"]["structure_digest"]
     assert len(after["representations"]) == 1
+
+
+def test_database_ligand_analysis_ingestion_keeps_original_digest_after_evaluator_preparation(tmp_path, monkeypatch):
+    database = _isolated_database(tmp_path, monkeypatch)
+    from mn_molecular_design_studio.complex_analysis_sources import build_database_analysis_source
+    assets = Path(__file__).resolve().parents[1] / "mn_molecular_design_studio/assets/vina"
+    smiles = json.loads((assets / "imatinib.json").read_text())[0]["smiles"]
+    imported_record = molecule_imports.parse_structure(
+        (assets / "1iep.pdb").read_bytes(), "1iep.pdb", include_ligands=True,
+    )[0]
+    for component in imported_record["components"]:
+        if component.get("type") == "small_molecule" and component.get("ccd") == "STI":
+            component["smiles"] = smiles
+    imported = database.import_records(USER, [imported_record], name="Saved protein-ligand reference")
+    record = database.list_molecules(USER, molecule_ids=imported["molecule_ids"])["items"][0]
+    structure = record["representations"][0]
+    ligand_selection = {"chain": "A", "residue_key": "A:201", "ccd": "STI", "smiles": smiles}
+    adapter = build_database_analysis_source(USER, {
+        "molecule_id": record["id"], "structure_id": structure["id"], "group_id": imported["group_id"],
+        "model_id": structure["id"], "binder_chains": [], "target_chains": [],
+        "ligand_selection": ligand_selection,
+    }, workflow_id="analysis.plip", project_id=None, database=database)
+    source_digest = adapter["source"]["structure_digest"]
+    prepared_output = tmp_path / "plip-prepared-complex.pdb"
+    selected_structure = Path(adapter["selected_structure_path"])
+    prepared_output.write_bytes(b"REMARK PLIP evaluator-prepared complex\n" + selected_structure.read_bytes())
+    candidate = json.loads(Path(adapter["candidates_jsonl"]).read_text().splitlines()[0])
+    candidate.update({
+        "candidate_id": candidate["candidate_id"] + "_plip",
+        "source_tool": "plip", "stage": "analysis", "complex_pdb": str(prepared_output),
+        "metrics": {"plip_success": True, "plip_interaction_count": 8.0, "qc_status": "completed"},
+        "raw_metadata": {
+            **candidate["raw_metadata"],
+            "analysis_subject": "ligand",
+            "complex_analysis_selection": {
+                **candidate["raw_metadata"]["complex_analysis_selection"],
+                "structure_digest": source_digest,
+                "ligand_selection": ligand_selection,
+            },
+            "structure_digest": hashlib.sha256(prepared_output.read_bytes()).hexdigest(),
+        },
+    })
+    run = tmp_path / "workspace" / "runs" / "analysis" / "database-plip-evaluation"
+    candidate_path = run / "artifacts/normalized_candidates/candidates.jsonl"
+    candidate_path.parent.mkdir(parents=True)
+    candidate_path.write_text(json.dumps(candidate) + "\n")
+    (run / "molecular_design_studio.json").write_text(json.dumps({
+        "application": "mn-molecular-design-studio", "studio_owner_id": USER["id"], "project_id": None,
+    }))
+    (run / "metadata.json").write_text(json.dumps({
+        "status": "completed", "tool": "plip", "upstream_source_kind": "database",
+    }))
+    (run / "input.json").write_text(json.dumps({"tool": "plip", "params": {"ligand_selection": ligand_selection}}))
+    (run / "result.json").write_text(json.dumps({"success": True, "execution_status": "completed"}))
+
+    from mn_molecular_design_studio.molecular_database_ingest import ingest_run
+    assert ingest_run(run, database=database, force=True) == 1
+
+    after = database.list_molecules(USER, molecule_ids=[record["id"]])["items"][0]
+    evaluations = [item for item in after["observations"] if item.get("namespace") == "plip"]
+    assert len(evaluations) == 1
+    assert evaluations[0]["context"]["representation_id"] == structure["id"]
+    assert evaluations[0]["context"]["source_structure_digest"] == source_digest
+    assert evaluations[0]["context"]["structure_digest"] != source_digest
+    assert evaluations[0]["context"]["candidate"]["raw_metadata"]["database_source"]["structure_id"] == structure["id"]
+    assert len(after["representations"]) == 1
+
+    bad_run = tmp_path / "workspace" / "runs" / "analysis" / "database-plip-bad-provenance"
+    bad_candidate = json.loads(json.dumps(candidate))
+    bad_candidate["raw_metadata"]["complex_analysis_selection"]["structure_digest"] = "0" * 64
+    bad_candidate_path = bad_run / "artifacts/normalized_candidates/candidates.jsonl"
+    bad_candidate_path.parent.mkdir(parents=True)
+    bad_candidate_path.write_text(json.dumps(bad_candidate) + "\n")
+    for name in ("molecular_design_studio.json", "metadata.json", "input.json", "result.json"):
+        (bad_run / name).write_text((run / name).read_text())
+
+    assert ingest_run(bad_run, database=database, force=True) == 0
+    after_bad = database.list_molecules(USER, molecule_ids=[record["id"]])["items"][0]
+    assert len([item for item in after_bad["observations"] if item.get("namespace") == "plip"]) == 1
+    assert len(after_bad["representations"]) == 1
 
 
 def test_interface_clustering_collection_stages_authorized_results_and_database_sources(tmp_path, monkeypatch):

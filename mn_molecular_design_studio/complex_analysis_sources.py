@@ -24,12 +24,16 @@ _WORKFLOWS = {
     "analysis.pep_patch",
     "analysis.interface_clustering",
     "analysis.foldseek",
+    "analysis.plip",
+    "analysis.pandamap",
+    "analysis.posebusters",
 }
 _STRUCTURE_SUFFIXES = {".pdb", ".ent", ".cif", ".mmcif"}
 _SELECTION_FIELDS = {
     "molecule_id", "structure_id", "group_id", "evaluation_id", "model_id",
-    "binder_chains", "target_chains",
+    "binder_chains", "target_chains", "ligand_selection",
 }
+_LIGAND_WORKFLOWS = {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
 
 
 def _string(value: Any, field: str) -> str:
@@ -121,7 +125,13 @@ def authorize_database_structure(
     if selected_evaluation:
         context = selected_evaluation.get("context") if isinstance(selected_evaluation.get("context"), dict) else {}
         selected_representation = str(context.get("representation_id") or "")
-        selected_digest = str(context.get("structure_digest") or "")
+        # Evaluation outputs may describe a normalized/protonated analysis
+        # representation in structure_digest. When the evaluator records its
+        # input lineage, compare that original digest to the selected saved
+        # Database representation instead. The representation ID check above
+        # remains mandatory, so this does not allow an evaluation from another
+        # model/pose to authorize an analysis of the selected structure.
+        selected_digest = str(context.get("source_structure_digest") or context.get("structure_digest") or "")
         if selected_representation and selected_representation != structure_id:
             raise ValueError("Choose a structure associated with the selected Database evaluation.")
         if selected_digest and selected_digest != digest:
@@ -132,6 +142,46 @@ def authorize_database_structure(
     parsed = parse_structure(path.read_bytes(), path.name, include_ligands=True)
     components = list(parsed[0].get("components") or []) if parsed else []
     protein_chains, _ = _chain_ids(components)
+    ligand_selection = selection.get("ligand_selection")
+    if workflow_id in _LIGAND_WORKFLOWS:
+        if not isinstance(ligand_selection, dict) or set(ligand_selection) - {"chain", "residue_key", "ccd", "smiles"}:
+            raise ValueError("Select one protein-bound ligand with a supported identity.")
+        selected_residue = str(ligand_selection.get("residue_key") or "").strip()
+        selected_chain = str(ligand_selection.get("chain") or "").strip()
+        selected_ccd = str(ligand_selection.get("ccd") or "").strip().upper()
+        if not selected_residue or not selected_chain:
+            raise ValueError("A ligand selection must include its source chain and residue key.")
+        parsed_ligands = [item for item in components if str(item.get("type") or "").casefold() == "small_molecule"]
+        matches = [item for item in parsed_ligands
+                   if str(item.get("residue_key") or "") == selected_residue
+                   and str(item.get("residue_key") or "").split(":", 1)[0] == selected_chain
+                   and (not selected_ccd or str(item.get("ccd") or "").upper() == selected_ccd)]
+        if len(matches) != 1:
+            raise ValueError("The selected ligand residue is not unique in this saved structure.")
+        matching_record = next((item for item in (record.get("components") or [])
+            if str(item.get("type") or "").casefold() == "small_molecule"
+            and str(item.get("residue_key") or "") == selected_residue), {})
+        stored_smiles = str(matching_record.get("smiles") or "").strip()
+        requested_smiles = str(ligand_selection.get("smiles") or "").strip()
+        if not requested_smiles and stored_smiles:
+            requested_smiles = stored_smiles
+        if not str(ligand_selection.get("smiles") or "").strip():
+            if not requested_smiles:
+                raise ValueError("The saved ligand has no isomeric SMILES identity. Add its verified source identity before running PLIP, PandaMap, or PoseBusters.")
+        from rdkit import Chem
+        molecule = Chem.MolFromSmiles(requested_smiles)
+        if molecule is None:
+            raise ValueError("The selected ligand SMILES is invalid.")
+        if stored_smiles:
+            stored_molecule = Chem.MolFromSmiles(stored_smiles)
+            if (stored_molecule is None or Chem.MolToSmiles(molecule, isomericSmiles=True)
+                    != Chem.MolToSmiles(stored_molecule, isomericSmiles=True)):
+                raise ValueError("The selected ligand identity does not match the saved Database component.")
+        ligand_selection = {"chain": selected_chain, "residue_key": selected_residue,
+                            "ccd": selected_ccd or str(matches[0].get("ccd") or "").upper(),
+                            "smiles": Chem.MolToSmiles(molecule, isomericSmiles=True)}
+    elif ligand_selection is not None:
+        raise ValueError("Ligand selections are accepted only by PLIP, PandaMap, and PoseBusters.")
     binder_chains = [str(value).strip() for value in (selection.get("binder_chains") or []) if str(value).strip()]
     target_chains = [str(value).strip() for value in (selection.get("target_chains") or []) if str(value).strip()]
     for field, values in (("binder_chains", binder_chains), ("target_chains", target_chains)):
@@ -145,6 +195,9 @@ def authorize_database_structure(
     elif workflow_id == "analysis.foldseek":
         if len(binder_chains) != 1:
             raise ValueError("Foldseek requires exactly one selected protein chain per structure.")
+    elif workflow_id in _LIGAND_WORKFLOWS:
+        if binder_chains or target_chains:
+            raise ValueError("Protein-ligand workflows use a selected ligand residue and do not accept protein interface chain groups.")
     elif not binder_chains or not target_chains:
         raise ValueError("Select nonempty, disjoint protein chain groups for this analysis.")
     if workflow_id in {"analysis.rosetta", "analysis.ipsae"} and (
@@ -166,6 +219,7 @@ def authorize_database_structure(
         "structure_format": str(structure.get("format") or path.suffix.lstrip(".")),
         "binder_chains": binder_chains,
         "target_chains": target_chains,
+        "ligand_selection": ligand_selection or {},
         "record_name": str(record.get("name") or molecule_id),
         "record_components": record.get("components") or components,
         "parsed_components": components,
@@ -188,7 +242,7 @@ def build_database_analysis_source(
     )
     identity = {key: source[key] for key in (
         "kind", "molecule_id", "structure_id", "group_id", "project_id", "evaluation_id",
-        "model_id", "structure_digest", "binder_chains", "target_chains",
+        "model_id", "structure_digest", "binder_chains", "target_chains", "ligand_selection",
     )}
     bundle_id = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     bundle_dir = user_input_root(str(user["id"])) / "complex_analysis_sources" / bundle_id
@@ -210,6 +264,7 @@ def build_database_analysis_source(
         "model_id": source["model_id"],
         "binder_chains": source["binder_chains"],
         "target_chains": source["target_chains"],
+        "ligand_selection": source.get("ligand_selection") or {},
     }
     source_manifest = {
         "schema": "studio.complex_analysis_database_source.v1",
@@ -219,6 +274,7 @@ def build_database_analysis_source(
         "structure_path": str(staged_structure),
         "structure_label": source["structure_label"],
         "structure_format": source["structure_format"],
+        "ligand_selection": source.get("ligand_selection") or {},
     }
     (bundle_dir / "complex_analysis_source.json").write_text(
         json.dumps(source_manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8",
@@ -676,10 +732,15 @@ def apply_database_analysis_source(payload: dict, user: dict, project_id: str | 
         "candidate_ids": [adapter["candidate_id"]],
         "selected_structure_path": adapter["selected_structure_path"],
         "selected_model_id": adapter["selected_model_id"],
-        "binder_chains": list(adapter["source"]["binder_chains"]),
     })
-    if workflow_id != "analysis.pep_patch":
-        parameters["target_chains"] = list(adapter["source"]["target_chains"])
+    if workflow_id in _LIGAND_WORKFLOWS:
+        parameters.pop("binder_chains", None)
+        parameters.pop("target_chains", None)
+        parameters["ligand_selection"] = dict(adapter["source"]["ligand_selection"])
+    else:
+        parameters["binder_chains"] = list(adapter["source"]["binder_chains"])
+        if workflow_id != "analysis.pep_patch":
+            parameters["target_chains"] = list(adapter["source"]["target_chains"])
     result = {key: value for key, value in payload.items() if key != "database_source"}
     result["parameters"] = parameters
     return result

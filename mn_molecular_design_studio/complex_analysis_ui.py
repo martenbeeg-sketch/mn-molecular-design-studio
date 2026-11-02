@@ -321,6 +321,31 @@ def _protein_chain_ids(components: list[dict]) -> list[str]:
     })
 
 
+def _ligand_selection_for_component(component: dict, ligand_components: list[dict], metadata: dict) -> dict:
+    """Build an exact, pose-local selector with an explicit isomeric identity."""
+    residue_key = str(component.get("residue_key") or "")
+    # Imported component.chain may include an internal residue suffix (for
+    # example ``A_201``); residue_key retains the author chain separately.
+    chain = str(component.get("source_chain") or residue_key.split(":", 1)[0]
+                or component.get("chain") or "")
+    ccd = str(component.get("ccd") or "").upper()
+    smiles = str(component.get("smiles") or "").strip()
+    if not smiles:
+        stored = next((item for item in (metadata.get("components") or [])
+                       if isinstance(item, dict) and str(item.get("residue_key") or "") == residue_key
+                       and str(item.get("type") or "") == "small_molecule"), {})
+        smiles = str(stored.get("smiles") or "").strip()
+        ccd = ccd or str(stored.get("ccd") or "").upper()
+    if not smiles:
+        values = metadata.get("ligand_smiles")
+        if isinstance(values, str) and len(ligand_components) == 1:
+            smiles = values.strip()
+        elif isinstance(values, list) and len(values) == len(ligand_components):
+            value = values[ligand_components.index(component)]
+            smiles = str(value.get("smiles") or value.get("value") or "").strip() if isinstance(value, dict) else str(value or "").strip()
+    return {"chain": chain, "residue_key": residue_key, "ccd": ccd, "smiles": smiles}
+
+
 def _matching_biotite_jobs(user: dict, *, source_task_group: str, source_run_id: str,
                            candidate_id: str, structure_digest: str,
                            binder_chains: list[str], target_chains: list[str],
@@ -413,12 +438,13 @@ def _analysis_evaluation_id(run_dir: Path, user: dict, source_candidate_id: str,
 def _matching_contextual_jobs(user: dict, *, workflow_id: str, source_task_group: str,
                               source_run_id: str, candidate_id: str, structure_digest: str,
                               model_id: str, binder_chains: list[str], target_chains: list[str],
-                              parameters: dict) -> list[dict]:
+                              parameters: dict, ligand_selection: dict | None = None) -> list[dict]:
     """Find an exact reusable evaluation for one selected source pose."""
     from mn_molecular_design_studio.auth import accessible_project_ids, can_access_job
     from mn_molecular_design_studio.job_catalog import get_job_access_record, search_jobs
 
-    tool = {"analysis.ipsae": "ipsae", "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch"}.get(workflow_id)
+    tool = {"analysis.ipsae": "ipsae", "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
+            "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters"}.get(workflow_id)
     if not tool:
         return []
     rows = search_jobs(
@@ -439,7 +465,18 @@ def _matching_contextual_jobs(user: dict, *, workflow_id: str, source_task_group
         if (str(metadata.get("upstream_task_group") or "") != source_task_group
                 or str(metadata.get("upstream_run_id") or "") != source_run_id):
             continue
-        if workflow_id == "analysis.pep_patch":
+        if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}:
+            manifest = _read_json(run_dir / "artifacts" / "analysis" / "batch_manifest.json")
+            selection = manifest.get("selection") if isinstance(manifest.get("selection"), dict) else {}
+            item = next((candidate for candidate in manifest.get("items", [])
+                         if str(candidate.get("candidate_id") or "") == candidate_id
+                         and str(candidate.get("source_structure_digest") or "") == structure_digest
+                         and str(candidate.get("model_id") or selection.get("model_id") or "") == model_id
+                         and candidate.get("ligand_selection") == (ligand_selection or {})), None)
+            saved_parameters = {key: value for key, value in (manifest.get("settings") or {}).items()
+                                if key not in {"workers", "protocol_revision", "checkpoint_sha256"}}
+            saved_model_id = str(selection.get("model_id") or "")
+        elif workflow_id == "analysis.pep_patch":
             manifest = _read_json(run_dir / "artifacts" / "analysis" / "batch_manifest.json")
             selection = manifest.get("selection") if isinstance(manifest.get("selection"), dict) else {}
             item = next((candidate for candidate in manifest.get("items", [])
@@ -457,17 +494,24 @@ def _matching_contextual_jobs(user: dict, *, workflow_id: str, source_task_group
             saved_model_id = str(manifest.get("model_id") or "")
         if not item:
             continue
+        item_digest = (str(item.get("source_structure_digest") or "")
+                       if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
+                       else str(item.get("structure_digest") or ""))
         if (str(item.get("candidate_id") or "") != candidate_id
-                or str(item.get("structure_digest") or "") != structure_digest
+                or item_digest != structure_digest
                 or saved_model_id != model_id
-                or sorted(map(str, item.get("binder_chains") or [])) != desired_binder
-                or (workflow_id != "analysis.pep_patch"
+                or (workflow_id not in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
+                    and sorted(map(str, item.get("binder_chains") or [])) != desired_binder)
+                or (workflow_id not in {"analysis.pep_patch", "analysis.plip", "analysis.pandamap", "analysis.posebusters"}
                     and sorted(map(str, item.get("target_chains") or [])) != desired_target)
-                or saved_parameters != parameters):
+                or saved_parameters != parameters
+                or (workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
+                    and (selection.get("ligand_selection") != (ligand_selection or {})
+                         or item.get("ligand_selection") != (ligand_selection or {})))):
             continue
         status = str(row.get("status") or metadata.get("status") or "unknown").casefold()
         error = str(metadata.get("error") or "")
-        if workflow_id == "analysis.pep_patch" and status in {"completed", "succeeded"}:
+        if workflow_id in {"analysis.pep_patch", "analysis.plip", "analysis.pandamap", "analysis.posebusters"} and status in {"completed", "succeeded"}:
             batch = _read_json(run_dir / "artifacts" / "analysis" / "batch_status.json")
             batch_item = next((candidate for candidate in batch.get("items", []) if candidate.get("id") == item.get("id")), {})
             item_status = str(batch_item.get("status") or "").casefold()
@@ -590,7 +634,14 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
     status = str(evaluation.get("status") or "unknown").casefold()
     title = {"analysis.ipsae": "ipSAE & Structure Analysis",
              "analysis.rosetta": "Rosetta Interface Analysis",
-             "analysis.pep_patch": "PEP-Patch"}.get(workflow_id, workflow_id)
+             "analysis.pep_patch": "PEP-Patch", "analysis.plip": "PLIP interaction analysis",
+             "analysis.pandamap": "PandaMap interaction analysis",
+             "analysis.posebusters": "PoseBusters pose validation"}.get(workflow_id, workflow_id)
+    ligand_workflow = workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
+    if workflow_id in {"analysis.plip", "analysis.pandamap"}:
+        st.caption("Interaction analysis · reports contacts and interaction classes for the selected ligand pose and receptor.")
+    elif workflow_id == "analysis.posebusters":
+        st.caption("Structural/chemical pose validation · reports geometry and chemistry checks; it is not an interaction analysis.")
     st.caption(f"{title} · {status.title()} · {evaluation.get('job_code') or evaluation.get('run_id')}")
 
     @st.fragment(run_every=5 if status not in {"completed", "succeeded", "failed", "cancelled", "canceled"} else None)
@@ -610,7 +661,9 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
         import pandas as pd
         table_name = {"analysis.ipsae": "ipsae_metrics.csv",
                       "analysis.rosetta": "rosetta_metrics.csv",
-                      "analysis.pep_patch": "qc_metrics.csv"}[workflow_id]
+                      "analysis.pep_patch": "qc_metrics.csv",
+                      "analysis.plip": "qc_metrics.csv", "analysis.pandamap": "qc_metrics.csv",
+                      "analysis.posebusters": "qc_metrics.csv"}[workflow_id]
         metrics_path = run_dir / "artifacts" / "analysis" / table_name
         if status in {"completed", "succeeded"} and metrics_path.is_file():
             try:
@@ -638,12 +691,38 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
                     continue
                 with st.expander(f"Residue patch output · {path.name}"):
                     st.dataframe(frame, hide_index=False, use_container_width=True)
-    evaluator = {"analysis.ipsae": "ipsae", "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch"}.get(workflow_id, workflow_id)
+        if ligand_workflow and status in {"completed", "succeeded"}:
+            item = evaluation.get("selected_item") or {}
+            item_dir = run_dir / "artifacts" / "analysis" / str(item.get("id") or "")
+            csv_name = "full_checks.csv" if workflow_id == "analysis.posebusters" else "interactions.csv"
+            artifact_path = item_dir / csv_name
+            if artifact_path.is_file():
+                try:
+                    frame = pd.read_csv(artifact_path)
+                except (OSError, ValueError, pd.errors.ParserError):
+                    frame = pd.DataFrame()
+                with st.expander("Pose validation checks" if workflow_id == "analysis.posebusters" else "Ligand–receptor interaction records", expanded=True):
+                    if frame.empty:
+                        st.caption("The registered evaluator produced no tabular rows for this item.")
+                    else:
+                        st.dataframe(frame, hide_index=True, use_container_width=True)
+            report_path = item_dir / "report.json"
+            report = _read_json(report_path)
+            if report:
+                with st.expander("Native evaluator report", expanded=False):
+                    st.json(report)
+    evaluator = {"analysis.ipsae": "ipsae", "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
+                 "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters"}.get(workflow_id, workflow_id)
     evaluation_id = _analysis_evaluation_id(run_dir, user, source_candidate_id, evaluator=evaluator)
     if evaluation_id:
         st.success(f"Saved Evaluation · {evaluation_id}")
     with st.expander("Analysis provenance", expanded=False):
         if workflow_id == "analysis.pep_patch":
+            provenance = evaluation.get("manifest") or {}
+            selection = provenance.get("selection") or {}
+            item = evaluation.get("selected_item") or {}
+            scientific_parameters = provenance.get("settings") or {}
+        elif ligand_workflow:
             provenance = evaluation.get("manifest") or {}
             selection = provenance.get("selection") or {}
             item = evaluation.get("selected_item") or {}
@@ -666,8 +745,13 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
                                 ("molecule_id", "structure_id", "group_id", "evaluation_id", "model_id", "structure_digest")
                                 if key in (selection_database_source or database_source)},
             "source_candidate_id": item.get("candidate_id"),
-            "selected_structure_sha256": item.get("structure_digest"),
+            "selected_structure_sha256": item.get("source_structure_digest") or item.get("structure_digest"),
+            "analysis_complex_sha256": item.get("structure_digest") if ligand_workflow else "",
             "model_id": selection.get("model_id") or item.get("model_id"),
+            "ligand_selection": selection.get("ligand_selection") or item.get("ligand_selection") or {},
+            "ligand_identity": item.get("ligand_identity") or {},
+            "ligand_pose_sha256": item.get("ligand_pose_digest") or "",
+            "receptor_coordinates_sha256": item.get("receptor_digest") or "",
             "binder_chains": item.get("binder_chains") or [],
             "target_chains": item.get("target_chains") or [],
             "method": provenance.get("tool") or provenance.get("workflow"),
@@ -683,10 +767,12 @@ def _render_contextual_workflow(user: dict, *, workflow_id: str, schema: dict | 
                                 task_group: str, run_id: str, project_id: str,
                                 binder_chains: list[str], target_chains: list[str],
                                 scientific_parameters: dict, key: str, submit,
-                                unavailable: str = "") -> None:
+                                unavailable: str = "", ligand_selection: dict | None = None) -> None:
     title = {"analysis.ipsae": "ipSAE & Structure Analysis",
              "analysis.rosetta": "Rosetta Interface Analysis",
-             "analysis.pep_patch": "PEP-Patch"}.get(workflow_id, workflow_id)
+             "analysis.pep_patch": "PEP-Patch", "analysis.plip": "PLIP interaction analysis",
+             "analysis.pandamap": "PandaMap interaction analysis",
+             "analysis.posebusters": "PoseBusters pose validation"}.get(workflow_id, workflow_id)
     st.markdown(f"##### {title}")
     with st.container():
         if not schema:
@@ -712,7 +798,7 @@ def _render_contextual_workflow(user: dict, *, workflow_id: str, schema: dict | 
             user, workflow_id=workflow_id, source_task_group=task_group, source_run_id=run_id,
             candidate_id=candidate_id, structure_digest=digest, model_id=model_id,
             binder_chains=binder_chains, target_chains=target_chains,
-            parameters=scientific_parameters,
+            parameters=scientific_parameters, ligand_selection=ligand_selection,
         ) if digest else []
         current = next((item for item in existing if item["status"] in {"completed", "succeeded"}), None)
         if current is None:
@@ -738,7 +824,9 @@ def _render_contextual_workflow(user: dict, *, workflow_id: str, schema: dict | 
                 "selected_structure_path": str(structure_path),
                 "selected_model_id": model_id,
             }
-            if is_pep_patch:
+            if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}:
+                parameters["ligand_selection"] = dict(ligand_selection or {})
+            elif is_pep_patch:
                 parameters["binder_chains"] = list(binder_chains)
             else:
                 parameters["binder_chains"] = list(binder_chains)
@@ -762,13 +850,15 @@ def _render_contextual_workflow(user: dict, *, workflow_id: str, schema: dict | 
 
 def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: dict,
                                     candidate_id: str, model_id: str, binder_chains: list[str],
-                                    target_chains: list[str], parameters: dict) -> list[dict]:
+                                    target_chains: list[str], parameters: dict,
+                                    ligand_selection: dict | None = None) -> list[dict]:
     """Reuse only an accessible evaluation for this exact Database representation."""
     from mn_molecular_design_studio.auth import accessible_project_ids, can_access_job
     from mn_molecular_design_studio.job_catalog import get_job_access_record, search_jobs
 
     tool = {"analysis.biotite_interface": "biotite_interface", "analysis.ipsae": "ipsae",
-            "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch"}.get(workflow_id)
+            "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
+            "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters"}.get(workflow_id)
     if not tool:
         return []
     rows = search_jobs(tools=[tool], task_group="analysis", limit=1000, sort_by="active_desc",
@@ -789,7 +879,24 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
         saved_source = metadata.get("database_source") if isinstance(metadata.get("database_source"), dict) else {}
         if any(str(saved_source.get(key) or "") != str(source.get(key) or "") for key in identity_keys):
             continue
-        if workflow_id in {"analysis.biotite_interface", "analysis.pep_patch"}:
+        if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}:
+            manifest = _read_json(run_dir / "artifacts" / "analysis" / "batch_manifest.json")
+            selection = manifest.get("selection") if isinstance(manifest.get("selection"), dict) else {}
+            item = next((candidate for candidate in manifest.get("items", [])
+                         if str(candidate.get("candidate_id") or "") == candidate_id
+                         and str(candidate.get("source_structure_digest") or "") == str(source.get("structure_digest") or "")
+                         and str(candidate.get("model_id") or selection.get("model_id") or "") == model_id
+                         and candidate.get("ligand_selection") == (ligand_selection or {})), None)
+            if item is None:
+                continue
+            saved_model = str(selection.get("model_id") or "")
+            saved_binder, saved_target, item_binder, item_target = [], [], [], []
+            saved_parameters = {key: value for key, value in (manifest.get("settings") or {}).items()
+                                if key not in {"workers", "protocol_revision", "checkpoint_sha256"}}
+            selected_item = item
+            if selection.get("ligand_selection") != (ligand_selection or {}):
+                continue
+        elif workflow_id in {"analysis.biotite_interface", "analysis.pep_patch"}:
             manifest = _read_json(run_dir / "artifacts" / "analysis" / "batch_manifest.json")
             selection = manifest.get("selection") if isinstance(manifest.get("selection"), dict) else {}
             item = next((candidate for candidate in manifest.get("items", [])
@@ -825,7 +932,7 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
             continue
         status = str(row.get("status") or metadata.get("status") or "unknown").casefold()
         error = str(metadata.get("error") or "")
-        if workflow_id in {"analysis.biotite_interface", "analysis.pep_patch"} and status in {"completed", "succeeded"}:
+        if workflow_id in {"analysis.biotite_interface", "analysis.pep_patch", "analysis.plip", "analysis.pandamap", "analysis.posebusters"} and status in {"completed", "succeeded"}:
             batch = _read_json(run_dir / "artifacts" / "analysis" / "batch_status.json")
             item_status = next((candidate for candidate in batch.get("items", [])
                                 if candidate.get("id") == selected_item.get("id")), {})
@@ -860,7 +967,7 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
         st.caption("PEP-Patch evaluates hydrophobic and pH-specific electrostatic surface patches on a user-selected protein chain group.")
     st.markdown("##### Protein–ligand")
     if protein_ligand:
-        st.caption("PLIP, PandaMap, and PoseBusters are registered Studio workflows. Contextual launch for the selected pose is a subsequent integration phase.")
+        st.caption("PLIP and PandaMap measure ligand–receptor interactions. PoseBusters evaluates ligand-pose geometry and chemistry; its checks are not interaction scores.")
     else:
         st.caption("Not applicable to the selected components.")
     st.markdown("##### Protein–DNA/RNA")
@@ -1019,7 +1126,8 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
 
     schemas = {}
     schema_errors = {}
-    for workflow_id in ("analysis.rosetta", "analysis.ipsae", "analysis.pep_patch"):
+    for workflow_id in ("analysis.rosetta", "analysis.ipsae", "analysis.pep_patch",
+                        "analysis.plip", "analysis.pandamap", "analysis.posebusters"):
         try:
             schemas[workflow_id] = workflow_schema(workflow_id) if workflow_schema else None
             if not schemas[workflow_id]:
@@ -1078,6 +1186,37 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
             candidate_file=candidate_file, task_group=task_group, run_id=run_id, project_id=str(analysis_project or ""),
             binder_chains=list(pep_surface_chains), target_chains=[], scientific_parameters={"ph": round(float(ph), 3)},
             key=key, submit=submit, unavailable=schema_errors.get("analysis.pep_patch") or surface_unavailable)
+
+    if protein_ligand:
+        st.markdown("#### Protein–ligand analyses")
+        ligand_components = [item for item in components if str(item.get("type") or "").casefold() == "small_molecule"]
+        ligand_key = f"complex-analysis-results-ligand-{key}"
+        ligand_options = [item.get("id") for item in ligand_components]
+        ligand_labels = {item.get("id"): f"{item.get('label') or item.get('ccd') or 'Ligand'} · {item.get('residue_key') or item.get('source_chain')}"
+                         for item in ligand_components}
+        if st.session_state.get(ligand_key) not in ligand_options:
+            st.session_state[ligand_key] = ligand_options[0] if ligand_options else ""
+        selected_ligand_id = st.selectbox("Ligand residue", ligand_options,
+            format_func=lambda value: ligand_labels[value], key=ligand_key)
+        selected_ligand = next((item for item in ligand_components if item.get("id") == selected_ligand_id), {})
+        ligand_selection = _ligand_selection_for_component(selected_ligand, ligand_components, candidate_metadata)
+        ligand_unavailable = common_unavailable
+        if not ligand_selection.get("residue_key") or not ligand_selection.get("chain"):
+            ligand_unavailable = ligand_unavailable or "The selected ligand has no stable source chain and residue identity."
+        elif not ligand_selection.get("smiles"):
+            ligand_unavailable = ligand_unavailable or "The source does not preserve this ligand's isomeric SMILES identity. PLIP, PandaMap, and PoseBusters require a chemically matched ligand template; add a verified identity to the source record first."
+        st.caption(f"Selected ligand: {ligand_selection.get('ccd') or 'SMILES-defined'} · {ligand_selection.get('residue_key') or 'residue identity unavailable'} · receptor model {model_id}")
+        for workflow_id in ("analysis.plip", "analysis.pandamap"):
+            _render_contextual_workflow(user, workflow_id=workflow_id, schema=schemas.get(workflow_id),
+                job=job, selected=selected, candidate=candidate, structure_path=path, model_id=model_id,
+                candidate_file=candidate_file, task_group=task_group, run_id=run_id, project_id=str(analysis_project or ""),
+                binder_chains=[], target_chains=[], scientific_parameters={}, ligand_selection=ligand_selection,
+                key=key, submit=submit, unavailable=schema_errors.get(workflow_id) or ligand_unavailable)
+        _render_contextual_workflow(user, workflow_id="analysis.posebusters", schema=schemas.get("analysis.posebusters"),
+            job=job, selected=selected, candidate=candidate, structure_path=path, model_id=model_id,
+            candidate_file=candidate_file, task_group=task_group, run_id=run_id, project_id=str(analysis_project or ""),
+            binder_chains=[], target_chains=[], scientific_parameters={}, ligand_selection=ligand_selection,
+            key=key, submit=submit, unavailable=schema_errors.get("analysis.posebusters") or ligand_unavailable)
 
 
 def _show_component_groups(components: list[dict], key: str) -> None:
@@ -1208,7 +1347,8 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
     st.markdown("### Available analyses")
     st.caption("Choose a registered analysis explicitly. Opening a Database structure does not start calculations.")
     schemas, schema_errors = {}, {}
-    for workflow_id in ("analysis.biotite_interface", "analysis.rosetta", "analysis.ipsae", "analysis.pep_patch"):
+    for workflow_id in ("analysis.biotite_interface", "analysis.rosetta", "analysis.ipsae", "analysis.pep_patch",
+                        "analysis.plip", "analysis.pandamap", "analysis.posebusters"):
         try:
             schemas[workflow_id] = workflow_schema(workflow_id) if workflow_schema else None
             if not schemas[workflow_id]:
@@ -1263,7 +1403,35 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
             if len(binder_chains) != 1 or len(target_chains) != 1 else ""))
     elif {"protein", "small_molecule"} <= kinds:
         st.markdown("#### Protein–ligand")
-        st.info("The selected representation is a protein–ligand complex. Direct Database-source PLIP, PandaMap, and PoseBusters submissions are not yet connected to the structure-selection adapter.")
+        st.caption("PLIP and PandaMap report ligand–receptor interactions. PoseBusters checks pose geometry and chemistry; it does not report interaction strength.")
+        ligand_components = [item for item in components if str(item.get("type") or "").casefold() == "small_molecule"]
+        ligand_key = f"complex-analysis-db-ligand-{key}"
+        ligand_options = [item.get("id") for item in ligand_components]
+        ligand_labels = {item.get("id"): f"{item.get('label') or item.get('ccd') or 'Ligand'} · {item.get('residue_key') or item.get('source_chain')}"
+                         for item in ligand_components}
+        if st.session_state.get(ligand_key) not in ligand_options:
+            st.session_state[ligand_key] = ligand_options[0] if ligand_options else ""
+        selected_ligand_id = st.selectbox("Ligand residue", ligand_options,
+            format_func=lambda value: ligand_labels[value], key=ligand_key)
+        selected_ligand = next((item for item in ligand_components if item.get("id") == selected_ligand_id), {})
+        ligand_selection = _ligand_selection_for_component(selected_ligand, ligand_components, {"components": record.get("components") or []})
+        st.caption(f"Selected representation: {structure['id']} · model {model_id} · SHA256 {digest[:16]}")
+        unavailable = ""
+        if not ligand_selection.get("chain") or not ligand_selection.get("residue_key"):
+            unavailable = "The selected ligand has no stable source chain and residue identity."
+        elif not ligand_selection.get("smiles"):
+            unavailable = "The saved record does not preserve this ligand's isomeric SMILES identity. A verified source identity is required for topology matching."
+        for workflow_id in ("analysis.plip", "analysis.pandamap"):
+            _render_database_workflow(user, workflow_id, schemas.get(workflow_id), source, model_id, [], [], {},
+                key + "-" + workflow_id.rsplit(".", 1)[-1], submit, project_id,
+                schema_errors.get(workflow_id, "") or unavailable, structure_path=path,
+                structure_context=context, structure_components=components, viewer_key=f"complex-analysis-db-viewer-{structure['id']}",
+                ligand_selection=ligand_selection)
+        _render_database_workflow(user, "analysis.posebusters", schemas.get("analysis.posebusters"), source, model_id, [], [], {},
+            key + "-posebusters", submit, project_id,
+            schema_errors.get("analysis.posebusters", "") or unavailable, structure_path=path,
+            structure_context=context, structure_components=components, viewer_key=f"complex-analysis-db-viewer-{structure['id']}",
+            ligand_selection=ligand_selection)
     elif {"protein", "dna"} <= kinds or {"protein", "rna"} <= kinds:
         st.markdown("#### Protein–DNA/RNA")
         st.info("The selected representation contains protein and nucleic acid. The registered protein–protein interface workflows do not apply; no contextual DNA/RNA interaction evaluator is currently registered here.")
@@ -1292,9 +1460,11 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
                               unavailable: str = "", *, structure_path: Path | None = None,
                               structure_context: dict | None = None,
                               structure_components: list[dict] | None = None,
-                              viewer_key: str = "") -> None:
+                              viewer_key: str = "", ligand_selection: dict | None = None) -> None:
     title = {"analysis.biotite_interface": "Biotite Interface", "analysis.rosetta": "Rosetta Interface Analysis",
-             "analysis.ipsae": "ipSAE & Structure Analysis", "analysis.pep_patch": "PEP-Patch"}.get(workflow_id, workflow_id)
+             "analysis.ipsae": "ipSAE & Structure Analysis", "analysis.pep_patch": "PEP-Patch",
+             "analysis.plip": "PLIP interaction analysis", "analysis.pandamap": "PandaMap interaction analysis",
+             "analysis.posebusters": "PoseBusters pose validation"}.get(workflow_id, workflow_id)
     st.markdown(f"##### {title}")
     if not schema:
         st.info(unavailable or "The registered workflow schema is unavailable.")
@@ -1305,7 +1475,7 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
     candidate_id = "database-" + hashlib.sha256((str(source["molecule_id"]) + ":" + str(source["structure_id"])).encode()).hexdigest()[:24]
     matches = _matching_database_analysis_jobs(user, workflow_id=workflow_id, source=source,
         candidate_id=candidate_id, model_id=model_id, binder_chains=list(binder_chains),
-        target_chains=list(target_chains), parameters=parameters)
+        target_chains=list(target_chains), parameters=parameters, ligand_selection=ligand_selection)
     current = next((item for item in matches if item["status"] in {"completed", "succeeded"}), None)
     if current is None:
         current = next((item for item in matches if item["status"] not in {"failed", "cancelled", "canceled"}), None)
@@ -1347,7 +1517,8 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
                     "group_id": source["group_id"], "evaluation_id": source.get("evaluation_id", ""),
                     "model_id": model_id, "binder_chains": list(binder_chains),
                     "target_chains": list(target_chains),
-                }}, project_id, {}, title)
+                    **({"ligand_selection": dict(ligand_selection)} if ligand_selection else {}),
+                }, **({"ligand_selection": dict(ligand_selection)} if ligand_selection else {})}, project_id, {}, title)
             st.rerun()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             st.error(f"Could not start {title}: {exc}")
