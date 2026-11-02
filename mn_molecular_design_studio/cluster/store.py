@@ -756,7 +756,8 @@ class Store:
             counts = (job.get("candidate_summary") or {}).get("acceptance_counts") or {}
             if int(counts.get("accepted") or 0) < 1:
                 raise ValueError("This validation job has no explicitly accepted designs to promote.")
-        if kind == "purge" and job.get("status") not in TERMINAL:
+        orphaned_pause = job.get("status") == "paused" and job.get("data_state") == "not_found"
+        if kind == "purge" and job.get("status") not in TERMINAL and not orphaned_pause:
             raise ValueError("Only finished jobs can be permanently removed.")
         if kind == "change_gpu":
             if job.get("status") != "waiting_for_workstation" or job.get("local_reference"):
@@ -864,6 +865,16 @@ class Store:
                 }
         if kind == "purge":
             with self.connect() as db:
+                if orphaned_pause:
+                    # A paused record whose workstation has confirmed that its
+                    # run directory is absent cannot be resumed there. Drop a
+                    # stale queued cancel before asking the agent to verify and
+                    # clean the orphaned coordinator record.
+                    db.execute(
+                        "UPDATE commands SET status='cancelled',error='Superseded by orphaned-run purge' "
+                        "WHERE job_id=? AND kind='cancel' AND status='queued'",
+                        (job["cluster_job_id"],),
+                    )
                 existing = db.execute(
                     "SELECT id,status FROM commands WHERE job_id=? AND kind='purge' "
                     "AND status IN ('queued','claimed') ORDER BY created_at DESC LIMIT 1",
@@ -890,9 +901,10 @@ class Store:
             return {"job_id": job["cluster_job_id"], "cancelled_transfers": int(cursor.rowcount)}
 
     def purge_context(self, jid, user):
-        """Return the terminal job and staging command needed for local cleanup."""
+        """Return a terminal job or confirmed missing-folder pause for cleanup."""
         job = self.job(jid, user)
-        if job.get("status") not in TERMINAL:
+        orphaned_pause = job.get("status") == "paused" and job.get("data_state") == "not_found"
+        if job.get("status") not in TERMINAL and not orphaned_pause:
             raise ValueError("Only finished jobs can be permanently removed.")
         with self.connect() as db:
             submission = db.execute(
@@ -907,7 +919,7 @@ class Store:
         }
 
     def purge_metadata(self, jid, user):
-        """Remove coordinator records for an already-cleaned terminal job."""
+        """Remove coordinator records after terminal or missing-folder cleanup."""
         job_id = str(jid).removeprefix("cluster:")
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -915,7 +927,8 @@ class Store:
             if not visible(row, user):
                 raise LookupError("Job not found.")
             payload = json.loads(row["payload"])
-            if payload.get("status") not in TERMINAL:
+            orphaned_pause = payload.get("status") == "paused" and row.get("data_state") == "not_found"
+            if payload.get("status") not in TERMINAL and not orphaned_pause:
                 raise ValueError("Only finished jobs can be permanently removed.")
             submission = db.execute(
                 "SELECT request FROM submissions WHERE job_id=?", (job_id,)

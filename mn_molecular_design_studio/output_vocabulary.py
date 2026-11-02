@@ -219,6 +219,11 @@ MEASURES.extend([
         "saved RFD4 generated complex", "Studio interchain Cα pair count at ≤2.5 Å",
         ("rfd4_native_backbone_ca_clashes_2_5a",), minimum=0,
         engines=("rfd4_proteina",), stages=("generation.backbone_sequence",)),
+    Measure("geometry.native.rfd4_proteina.target_aligned_binder_pose_rmsd",
+        "RFD4 native OF3 refold · target-backbone-aligned binder RMSD", "Å",
+        "binder Cα atoms in the target frame", "RFD4 native OF3 refold comparison; aligns target backbone and measures binder RMSD without fitting the binder",
+        ("refolded_target_backbone_aligned_binder_rmsd.rmsd",), "lower", minimum=0,
+        engines=("rfd4_proteina",), stages=("generation.backbone_sequence",)),
 ])
 for model in sorted(MPNN_ENGINES):
     for key, label, aliases, unit, direction, transform, maximum in (
@@ -370,6 +375,8 @@ MEASURES.extend([
         ("structure_complex_ca_bfactor_mean",), engines=("ipsae",), stages=("analysis",)),
     Measure("geometry.analysis.binder.design_to_cofold_fitted_ca_rmsd", "Binder design-to-cofold fitted Cα RMSD", "Å", "sequence-aligned binder C-alpha atoms", "Design and predicted binder matched by global sequence alignment; optimal binder-only superposition. Does not measure target-relative pose RMSD",
         ("structure_binder_design_to_cofold_fitted_ca_rmsd",), "lower", minimum=0, engines=("ipsae",), stages=("analysis",)),
+    Measure("geometry.analysis.ipsae_structure.target_aligned_binder_pose_ca_rmsd", "ipSAE & Structure Analysis · target-aligned binder-pose Cα RMSD", "Å", "sequence-aligned binder Cα atoms in target frame", "Design and cofold target Cα atoms are sequence-matched and superposed; binder Cα RMSD is measured in that target frame without fitting the binder",
+        ("structure_target_aligned_binder_pose_ca_rmsd",), "lower", minimum=0, engines=("ipsae",), stages=("analysis",)),
     Measure("interface.analysis.hotspots.contact_fraction_found", "ipSAE analysis · hotspot contact fraction (found residues)", "fraction", "configured target hotspots found in predicted structure", "Fraction of located configured hotspots within the configured heavy-atom distance cutoff",
         ("structure_hotspot_contact_fraction_found",), "higher", minimum=0, maximum=1, engines=("ipsae",), stages=("analysis",)),
     Measure("interface.analysis.hotspots.contact_fraction_requested", "ipSAE analysis · hotspot contact fraction (requested residues)", "fraction", "all configured target hotspots", "Contacted configured hotspots divided by requested hotspots; missing target residues do not count as contacts",

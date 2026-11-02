@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -178,6 +179,20 @@ def test_campaign_results_summarize_shared_and_varying_parameters(monkeypatch):
     monkeypatch.setattr(ui.st, "session_state", state)
     ui._request_results_pipeline_results("campaign-results-click", [{"kind": "campaign", "members": members}])
     assert state["cluster-results-campaign-details-request"] == members
+
+
+def test_grouped_run_elapsed_is_parallel_wall_time_and_recovers_active_runs():
+    finished = [
+        {"status": "completed", "worker_started_at": "2026-11-02T10:00:00Z", "completed_at": "2026-11-02T10:12:00Z"},
+        {"status": "completed", "worker_started_at": "2026-11-02T10:03:00Z", "completed_at": "2026-11-02T10:20:00Z"},
+    ]
+    assert ui._campaign_wall_elapsed(finished) == "20m 00s wall"
+
+    in_progress = [*finished, {"status": "running", "worker_started_at": "2026-11-02T10:04:00Z"}]
+    assert ui._campaign_wall_elapsed(
+        in_progress, now=datetime(2026, 11, 2, 10, 20, tzinfo=timezone.utc),
+    ) == "Running · 20m 00s wall"
+    assert ui._campaign_wall_elapsed([{"status": "completed"}]) == "—"
 
 
 def test_campaign_candidate_results_show_measured_values_and_keep_native_metrics_distinct():

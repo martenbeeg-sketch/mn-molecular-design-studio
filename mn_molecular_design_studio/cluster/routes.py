@@ -112,7 +112,11 @@ def install(app, current_user, admin_user):
         """Permanently remove a finished run from its owning workstation."""
         actor = service.user_record(user)
         existing = call(store.job, job_id, actor)
-        if existing.get("status") not in TERMINAL:
+        orphaned_pause = (
+            existing.get("status") == "paused"
+            and existing.get("data_state") == "not_found"
+        )
+        if existing.get("status") not in TERMINAL and not orphaned_pause:
             raise HTTPException(409, "Only finished jobs can be permanently removed.")
         context = call(store.purge_context, job_id, actor)
         job = context["job"]
@@ -158,6 +162,23 @@ def install(app, current_user, admin_user):
             if (job.get("task_group") and job["task_group"] != task_group
                     or job.get("run_id") and job["run_id"] != run_id):
                 raise HTTPException(409, "The job's local run reference does not match its indexed identity.")
+
+            from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json_raw, runs_root
+            root = runs_root().expanduser().resolve()
+            unresolved_dir = root / task_group / run_id
+            if unresolved_dir.is_symlink():
+                raise HTTPException(409, "The run path cannot be a symbolic link.")
+            run_dir = unresolved_dir.resolve()
+            try:
+                run_dir.relative_to(root)
+            except ValueError as exc:
+                raise HTTPException(422, "The job's local run reference is outside the Results directory.") from exc
+            if run_dir.exists():
+                if run_dir.is_symlink() or not run_dir.is_dir():
+                    raise HTTPException(409, "The run path is not safe to purge.")
+                metadata = read_json_raw(run_dir / "metadata.json")
+                if str(metadata.get("status") or "").casefold() not in TERMINAL:
+                    raise HTTPException(409, "The run directory is not terminal; it cannot be purged.")
 
             from mn_molecular_design_studio.molecular_database_results import remove_run_records
             database_result = call(

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -47,6 +48,8 @@ class TargetSource:
     path: Path | None = None
     name: str = ""
     owner_id: str = "local"
+    molecule_id: str = ""
+    structure_id: str = ""
 
 
 @dataclass
@@ -326,6 +329,64 @@ def _mmcif_sequence_entries_by_chain(path: Path) -> dict[str, list[tuple[int, st
     }
 
 
+def saved_protein_structure_options(database, user, *, project_id="", query="", limit=100):
+    """Return accessible saved protein structures for a reusable target picker."""
+    requests = []
+    if project_id:
+        requests.append({"scope": "all", "project_id": project_id, "collection": "all"})
+    # Include targets from other projects the user can access as well as their
+    # personal records. MolecularDatabase enforces project and ownership access.
+    requests.append({"scope": "all", "collection": "all"})
+    records_by_id = {}
+    for request in requests:
+        result = database.list_molecules(
+            user, molecule_type="protein", query=query, limit=limit, **request,
+        )
+        for record in result.get("items", []):
+            records_by_id.setdefault(str(record.get("id") or ""), record)
+
+    options = []
+    seen_structures = set()
+    for record in records_by_id.values():
+        protein_chains = [str(component.get("chain") or "?")
+                          for component in record.get("components", [])
+                          if component.get("type") == "protein"]
+        if not protein_chains:
+            continue
+        groups = [str(group.get("name") or "") for group in record.get("groups", [])]
+        group_label = ", ".join(dict.fromkeys(name for name in groups if name))
+        for structure in record.get("structures", []):
+            structure_id = str(structure.get("id") or "")
+            structure_format = str(structure.get("format") or "").lower()
+            if not structure_id or structure_id in seen_structures or structure_format not in {"pdb", "ent", "cif", "mmcif"}:
+                continue
+            seen_structures.add(structure_id)
+            name = str(record.get("name") or "Saved protein")
+            chain_text = ", ".join(protein_chains)
+            label = f"{name} · chain{'s' if len(protein_chains) != 1 else ''} {chain_text} · {structure_format.upper()}"
+            if group_label:
+                label += f" · {group_label}"
+            options.append({
+                "molecule_id": str(record["id"]), "structure_id": structure_id,
+                "name": name, "label": label, "format": structure_format,
+                "chains": protein_chains,
+            })
+    return sorted(options, key=lambda item: item["label"].casefold())
+
+
+def _saved_target_options(owner_id, project_id, query):
+    user = st.session_state.get("_molecular_database_user")
+    if not isinstance(user, dict) or str(user.get("id") or "") != str(owner_id or ""):
+        return []
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    try:
+        return saved_protein_structure_options(
+            MolecularDatabase(), user, project_id=project_id, query=query, limit=100,
+        )
+    except (OSError, ValueError, PermissionError, sqlite3.Error):
+        return []
+
+
 def render_target_source(
     *,
     key_prefix: str,
@@ -344,8 +405,59 @@ def render_target_source(
     fetched_path_key: str | None = None,
     fetched_name_key: str | None = None,
     owner_id: str = "local",
+    allow_saved_targets: bool = False,
+    project_id: str = "",
+    initial_molecule_id: str = "",
+    initial_structure_id: str = "",
 ) -> TargetSource:
     """Render reusable PDB accession and structure upload controls."""
+    if allow_saved_targets:
+        with st.expander("Select from My targets", expanded=True):
+            st.caption("Search your saved protein structures and structures in the selected project. Selecting one makes a local input copy; the Database record is unchanged.")
+            query = st.text_input(
+                "Search saved protein targets",
+                placeholder="Search by target name or sequence",
+                key=f"{key_prefix}-saved-target-search",
+            ).strip()
+            saved_options = _saved_target_options(owner_id, project_id, query)
+            option_by_id = {item["structure_id"]: item for item in saved_options}
+            choices = [""] + list(option_by_id)
+            query_key = hashlib.sha1(query.casefold().encode()).hexdigest()[:10]
+            choice_key = f"{key_prefix}-saved-target-choice-{query_key}"
+            if choice_key not in st.session_state:
+                preferred = str(initial_structure_id or "")
+                if preferred not in option_by_id:
+                    preferred = next((item["structure_id"] for item in saved_options
+                                      if item["molecule_id"] == str(initial_molecule_id or "")), "")
+                st.session_state[choice_key] = preferred if preferred in option_by_id else ""
+            selected_structure_id = st.selectbox(
+                "Saved protein structure", choices,
+                format_func=lambda value: "Use PDB code or upload instead" if not value else option_by_id[value]["label"],
+                key=choice_key,
+            )
+            if not saved_options:
+                st.caption("No saved protein structures match this search. You can still fetch a PDB or upload a structure below.")
+            if selected_structure_id:
+                selected = option_by_id[selected_structure_id]
+                materialized_key = f"{key_prefix}-saved-target-materialized-{selected_structure_id}"
+                materialized_path = Path(str(st.session_state.get(materialized_key) or ""))
+                if not materialized_path.is_file():
+                    user = st.session_state.get("_molecular_database_user")
+                    try:
+                        from mn_molecular_design_studio.molecular_database import MolecularDatabase
+                        materialized_path = Path(MolecularDatabase().structure_file(
+                            user, selected_structure_id, materialize=True,
+                        ))
+                        st.session_state[materialized_key] = str(materialized_path)
+                    except (OSError, ValueError, PermissionError, sqlite3.Error) as exc:
+                        st.error(f"Could not open this saved target structure: {exc}")
+                        return TargetSource(owner_id=owner_id)
+                st.caption("Using the saved database structure. Studio materializes a local input copy; the database record is unchanged.")
+                return TargetSource(
+                    materialized_path, selected["name"], owner_id,
+                    molecule_id=selected["molecule_id"], structure_id=selected_structure_id,
+                )
+
     pdb_code = ""
     fetch_clicked = False
     if fetch_enabled:
@@ -569,9 +681,17 @@ def render_target_editor(
     st.success(f"{source.name or label} loaded · {source.path.name}")
     chain_suffix = "-prefer-target-chain-b" if prefer_chain_b else ""
     chain_key = f"{key_prefix}-chains-" + _hash(str(source.path) + chain_suffix)
+    preferred = "B" if prefer_chain_b and "B" in chain_options else chain_options[0]
     if chain_key not in st.session_state:
-        preferred = "B" if prefer_chain_b and "B" in chain_options else chain_options[0]
         st.session_state[chain_key] = [preferred]
+    else:
+        current_chains = st.session_state[chain_key]
+        if isinstance(current_chains, str):
+            current_chains = [item for item in re.split(r"[\s,;]+", current_chains) if item]
+        current_chains = [chain for chain in (current_chains or []) if chain in chain_options]
+        if not current_chains and st.session_state[chain_key]:
+            current_chains = [preferred]
+        st.session_state[chain_key] = current_chains
     target.chains = st.multiselect(chain_selection_label or f"{label} chains", chain_options, key=chain_key, disabled=chain_selection_disabled)
 
     if is_mmcif:

@@ -17,7 +17,7 @@ import { createStructureRepresentationParams } from "molstar/lib/mol-plugin-stat
 import { StructureElement } from "molstar/lib/mol-model/structure";
 import { PLDDTConfidenceColorThemeProvider } from "molstar/lib/extensions/model-archive/quality-assessment/color/plddt";
 import { getColorListFromName } from 'molstar/lib/mol-util/color/lists';
-import { Vec3 } from "molstar/lib/mol-math/linear-algebra";
+import { Mat4, Vec3 } from "molstar/lib/mol-math/linear-algebra";
 import { Sphere3D } from "molstar/lib/mol-math/geometry";
 
 import "./assets/style.css";
@@ -528,6 +528,17 @@ function MolstarCustomComponent(props: Props) {
           }
         }
       }
+    }
+
+    if (structureToLoad.transform_matrix) {
+      // This is a validated, externally supplied display transform. The
+      // viewer never estimates or fits a transform from structure contents.
+      const matrix = Mat4.ofRows(structureToLoad.transform_matrix as any);
+      const update = plugin.state.data.build().to(structure).insert(
+        StateTransforms.Model.TransformStructureConformation,
+        { transform: { name: "matrix", params: { data: matrix, transpose: false } } },
+      );
+      await plugin.runTask(plugin.state.data.updateTree(update));
     }
 
     return [model, structure, polymer];

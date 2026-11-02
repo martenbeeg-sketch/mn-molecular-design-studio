@@ -16,7 +16,7 @@ from typing import Any, Literal
 import yaml
 
 from mn_molecular_design_studio import cofolding_msa
-from mn_molecular_design_studio import design_validation, structure_templates
+from mn_molecular_design_studio import design_validation, structure_templates, localfold
 
 from mn_molecular_design_studio.engine.workflow_engine.core.candidates import (
     STAGE_COMPLEX_REFOLDING,
@@ -75,6 +75,16 @@ ESMFOLD2_PARAMETER_FIELDS = (
 )
 
 ENGINE_PROFILES: dict[str, dict[str, Any]] = {
+    "localfold": {
+        "label": "LocalFold", "code_version": f"sokrypton/alphafold3 {localfold.SOURCE_COMMIT[:7]} · JAX 0.10.2",
+        "optimized": False, "image": localfold.IMAGE, "api_engine": "localfold",
+        "modes": ("off",), "gpu_count": {}, "input_kind": "af3_json",
+        "molecule_inputs": ("dna_sequences", "rna_sequences", "ligand_ccd_codes", "ligand_smiles"),
+        "default_recycles": 10, "default_samples": 5, "max_samples": 1000,
+        "input_summary": "LocalFold’s web models and additional models supported by Sokrypton’s JAX fork, with shared reference weights.",
+        "settings": localfold.SETTINGS, "terms": True,
+        "supports_cyclic": True, "supports_modifications": True, "supports_msa_upload": True,
+    },
     "alphafold3": {
         "label": "AlphaFold3 JAX · official weights",
         "code_version": "AlphaFold3 3.1.14",
@@ -438,6 +448,14 @@ for _engine, _profile in ENGINE_PROFILES.items():
         )
         _profile["fixed_settings"] = (*_profile.get("fixed_settings", ()), msa_note)
         continue
+    if _engine == "localfold":
+        # LocalFold owns a model-aware alignment selector and MSA depth.
+        # Keep those fields visible instead of replacing them with the generic
+        # boolean MSA toggle used by the other adapters.
+        _profile["settings"] = tuple(
+            dict(field) for field in _profile.get("settings", ()) if field["key"] != "use_msa"
+        )
+        continue
     _profile["legacy_settings"] = (*_profile.get("legacy_settings", ()), *(dict(field) for field in _profile.get("settings", ()) if field["key"] in {"use_msa_server", "msa_mode"}))
     _fields = [dict(field) for field in _profile.get("settings", ()) if field["key"] not in {"use_msa_server", "msa_mode"}]
     _fields = [field for field in _fields if field["key"] != "use_msa"]
@@ -455,7 +473,7 @@ for _engine, _profile in ENGINE_PROFILES.items():
 
 
 PredictionEngine = Literal[
-    "alphafold3", "af3_torch", "openfold3_jax", "boltz2", "protenix_v2",
+    "localfold", "alphafold3", "af3_torch", "openfold3_jax", "boltz2", "protenix_v2",
     "rf3_foundry", "esmfold", "esmfold2", "esmfold2_fast", "chai1", "atlasfold",
     "openfold3_ob0", "opendde_native", "protenix_v1", "colabfold", "boltzgen_fold", "mol1",
 ]
@@ -575,12 +593,15 @@ def _normalize_boltz_chain_options(
     ligand_smiles: list[dict[str, str]],
     supported: bool,
     task_index: int,
+    allow_nucleic: bool = False,
 ) -> dict[str, dict[str, Any]]:
     if raw_options in (None, []):
         return {}
     if not isinstance(raw_options, list):
         raise ValueError(f"Task {task_index} molecule_chain_options must be a list.")
     protein_by_id = {row["id"]: row for row in proteins}
+    if allow_nucleic:
+        protein_by_id.update({row['id']: row for row in [*dna, *rna]})
     normalized: dict[str, dict[str, Any]] = {}
     for row in raw_options:
         if not isinstance(row, dict):
@@ -636,9 +657,12 @@ def _normalize_boltz_chain_options(
             "modifications": modifications,
             "msa_a3m_text": msa_text,
             "use_msa": row.get("use_msa", True),
+            "use_template": row.get("use_template", True),
         }
         if type(normalized[chain_id]["use_msa"]) is not bool:
             raise ValueError(f"Task {task_index} chain {chain_id} use_msa must be true or false.")
+        if type(normalized[chain_id]["use_template"]) is not bool:
+            raise ValueError(f"Task {task_index} chain {chain_id} use_template must be true or false.")
     return normalized
 
 
@@ -1415,7 +1439,38 @@ def _stage_native_input_without_msa(
 
     if kind == "af3_json":
         path = input_dir / f"{item_id}.json"
-        _write_json(path, _af3_json(job_name, proteins, dna, rna, ligand_ccd_codes, ligand_smiles, seed))
+        payload = _af3_json(job_name, proteins, dna, rna, ligand_ccd_codes, ligand_smiles, seed)
+        if api_engine == "localfold":
+            for entity in payload["sequences"]:
+                for polymer_kind in ('protein', 'dna', 'rna'):
+                    if polymer_kind not in entity:
+                        continue
+                    polymer = entity[polymer_kind]
+                    chain_id = polymer['id'][0] if isinstance(polymer['id'], list) else polymer['id']
+                    position_key, code_key = ('ptmPosition', 'ptmType') if polymer_kind == 'protein' else ('basePosition', 'modificationType')
+                    polymer["modifications"] = [
+                        {position_key: row["position"], code_key: row["ccd"]}
+                        for row in (molecule_chain_options or {}).get(chain_id, {}).get("modifications", [])
+                    ]
+            bonds = [row['bond'] for row in restraints or [] if 'bond' in row]
+            if bonds:
+                payload['bondedAtomPairs'] = [[row['atom1'], row['atom2']] for row in bonds]
+            crosslinks = [row['crosslink'] for row in restraints or [] if 'crosslink' in row]
+            if crosslinks:
+                payload['crosslinks'] = [
+                    {'name': row['name'], 'residue_pairs': [[row['residue1'], row['residue2']]]}
+                    for row in crosslinks
+                ]
+            constraints = []
+            for row in restraints or []:
+                for kind in ('contact', 'pocket'):
+                    if kind in row:
+                        details = {key: value for key, value in row[kind].items() if key not in {'force', 'max_distance'}}
+                        details['maxDistance'] = row[kind]['max_distance']
+                        constraints.append({kind: details})
+            if constraints:
+                payload['constraints'] = constraints
+        _write_json(path, payload)
         return path, {}
     if kind == "mol1_json":
         path = input_dir / f"{item_id}.json"
@@ -1588,11 +1643,22 @@ def _stage_native_input(run_dir: Path, *, prepare_msas: bool = False, msa_depth:
     kind = profile["input_kind"]
     path, details = _stage_native_input_without_msa(
         run_dir, **kwargs, auto_msa=prepare_msas and enabled, msa_depth=msa_depth)
-    details["msa_source"] = "reference_then_colabfold" if enabled else "single_sequence"
+    details["msa_source"] = (
+        "reference_then_colabfold" if enabled and allow_msa_server else
+        "reference_only" if enabled else "single_sequence"
+    )
     if structure_uploads:
-        details.update(structure_templates.stage_templates(
-            run_dir, path, item_id=kwargs["item_id"], profile=profile,
-            proteins=kwargs["proteins"], uploads=structure_uploads))
+        template_proteins = kwargs["proteins"]
+        if profile.get("api_engine") == "localfold":
+            chain_options = kwargs.get("molecule_chain_options") or {}
+            template_proteins = [
+                protein for protein in template_proteins
+                if chain_options.get(protein["id"], {}).get("use_template", True)
+            ]
+        if template_proteins:
+            details.update(structure_templates.stage_templates(
+                run_dir, path, item_id=kwargs["item_id"], profile=profile,
+                proteins=template_proteins, uploads=structure_uploads))
     if kind == "boltzgen" and not binder_use_msa:
         destination = Path(details["target_msa"]).parent / 'Z.a3m'
         destination.write_text(f'>query\n{kwargs["binder_sequence"]}\n')
@@ -1715,8 +1781,22 @@ def _batch_options(
     engine = profile["api_engine"]
     recycle_count = int(num_recycles)
     settings = engine_options or {}
-    use_msa = bool(settings.get("use_msa", True) and profile.get("supports_msa"))
+    use_msa = bool(
+        settings.get("msa_mode") != "single_sequence" and profile.get("supports_msa")
+        if engine == "localfold" else
+        settings.get("use_msa", True) and profile.get("supports_msa")
+    )
     msa_depth = int(settings.get("max_msa_seqs", 1024)) if use_msa else 1
+    if engine == "localfold":
+        model = str(settings.get("model", "alphafold3"))
+        keys = {field["key"] for field in localfold.SETTINGS} - {
+            "accept_helixfold3_terms", "msa_mode", "max_msa_seqs", "max_extra_msa_seqs", "seed",
+        }
+        options = {**{key: value for key, value in settings.items() if key in keys},
+                   "num_recycles": recycle_count, "num_msa": msa_depth}
+        if model.startswith("af2_"):
+            options["num_extra_msa"] = int(settings.get("max_extra_msa_seqs", 1024))
+        return options
     if engine == "alphafold3":
         return {
             "model": settings.get("model", "alphafold3"),
@@ -1910,6 +1990,15 @@ def _mol1_pae_path(structure_path: Path, task: dict[str, Any]) -> Path | None:
     return path
 
 
+def _localfold_pae_path(structure_path: Path, model: str) -> Path | None:
+    """Locate LocalFold's native full-confidence sidecar for this sample."""
+    if model == "bioemu2":
+        return None
+    base = structure_path.stem.removesuffix("_model")
+    path = structure_path.with_name(f"{base}_confidences.json")
+    return path if path.is_file() else None
+
+
 def _metric_float(value: Any) -> float | None:
     try:
         result = float(value)
@@ -1978,9 +2067,16 @@ def _validate_engine_options(profile: dict[str, Any], values: dict[str, Any] | N
     supplied = values or {}
     if not isinstance(supplied, dict):
         raise ValueError("Engine-specific settings must be an object.")
+    if profile.get("api_engine") == "localfold" and supplied.get("msa_mode") == "mmseqs2_server":
+        # Preserve saved/API requests made before "automatic" became the
+        # cache-first mode name.
+        supplied = {**supplied, "msa_mode": "automatic"}
     definitions = {field["key"]: field for field in (*profile.get("settings", ()), *profile.get("legacy_settings", ()))}
     legacy_keys = {field["key"] for field in profile.get("legacy_settings", ())}
-    unknown = sorted(set(supplied) - set(definitions))
+    unknown_keys = set(supplied) - set(definitions)
+    if profile.get("api_engine") == "localfold":
+        unknown_keys.discard("use_msa")
+    unknown = sorted(unknown_keys)
     if unknown:
         raise ValueError(f"{profile['label']} does not support these editable settings: {', '.join(unknown)}.")
     normalized: dict[str, Any] = {}
@@ -2007,10 +2103,26 @@ def _validate_engine_options(profile: dict[str, Any], values: dict[str, Any] | N
                 raise ValueError(
                     f"{field['label']} must be an integer from {field['min']} to {field['max']}."
                 )
+        elif field_type == "text":
+            if not isinstance(value, str) or len(value.encode("utf-8")) > 20 * 1024 * 1024:
+                raise ValueError(f"{field['label']} must be text smaller than 20 MB.")
         else:
             raise ValueError(f"{field['label']} has an unsupported setting type.")
         normalized[key] = value
-    if "msa_mode" in supplied:
+    if profile.get("api_engine") == "localfold":
+        # Older saved LocalFold requests used use_msa. Keep accepting them,
+        # while the current UI exposes automatic, reference-only, and
+        # single-sequence alignment modes.
+        legacy_use_msa = supplied.get("use_msa")
+        if legacy_use_msa is not None and type(legacy_use_msa) is not bool:
+            raise ValueError("Use multiple sequence alignment must be true or false.")
+        if legacy_use_msa is False:
+            normalized["msa_mode"] = "single_sequence"
+        normalized["use_msa"] = (
+            normalized.get("msa_mode", "automatic") != "single_sequence"
+            and bool(profile.get("supports_msa"))
+        )
+    elif "msa_mode" in supplied:
         normalized["use_msa"] = supplied["msa_mode"] != "single_sequence"
     return normalized
 
@@ -2034,7 +2146,7 @@ def _prepare_prediction(
     optimization_mode: OptimizationMode = "off",
     job_name: str = "optimized-prediction",
     seed: int = 0,
-    samples: int = 3,
+    samples: int | None = None,
     num_recycles: int | None = None,
     cpu_cores: int = 4,
     gpu_device: str = "0",
@@ -2065,6 +2177,13 @@ def _prepare_prediction(
 ) -> _PreparedPrediction:
     """Normalize and check prediction inputs without starting a job or fetching MSAs."""
     profile = ENGINE_PROFILES[str(engine)]
+    if str(engine) == "localfold":
+        model = engine_options.get("model", "alphafold3") if isinstance(engine_options, dict) else "alphafold3"
+        profile = localfold.profile_for(profile, str(model))
+    if samples is None:
+        samples = int(profile.get("default_samples", 3))
+    else:
+        samples = int(samples)
     selected_mode = str(optimization_mode)
     recycle_count = int(profile.get("default_recycles", 10) if num_recycles is None else num_recycles)
     if selected_mode not in profile["modes"]:
@@ -2082,8 +2201,9 @@ def _prepare_prediction(
         raise ValueError(f"{profile['label']} supports between 1 and {max_samples} sample(s) per input.")
     if profile["api_engine"] == "boltzgen_fold_opt_msa" and selected_mode in {"exact", "fast"} and int(samples) < 2:
         raise ValueError(f"BoltzGen Fold {selected_mode} mode requires at least 2 samples.")
-    if not 1 <= recycle_count <= 100:
-        raise ValueError("Recycle count must be between 1 and 100.")
+    min_recycles = 0 if profile.get("api_engine") == "localfold" else 1
+    if not min_recycles <= recycle_count <= 100:
+        raise ValueError(f"Recycle count must be between {min_recycles} and 100.")
     if not 1 <= int(cpu_cores) <= 256:
         raise ValueError("CPU cores must be between 1 and 256.")
 
@@ -2267,7 +2387,8 @@ def _prepare_prediction(
             raw_task.get("molecule_chain_options", []),
             proteins=task_proteins, dna=dna_chains, rna=rna_chains,
             ligand_ccd_codes=ccd_entities, ligand_smiles=smiles_entities,
-            supported=supports_boltz_features, task_index=index,
+            supported=supports_boltz_features or str(engine) == "localfold", task_index=index,
+            allow_nucleic=str(engine) == 'localfold',
         )
         if selected_options.get("use_msa", True) and profile["input_kind"] in {"boltz_yaml", "multimer_fasta", "chai1_json"}:
             msa_policy_by_sequence = {}
@@ -2276,11 +2397,12 @@ def _prepare_prediction(
                 previous = msa_policy_by_sequence.setdefault(chain["sequence"], policy)
                 if previous != policy:
                     raise ValueError(f"Task {index}: this engine shares MSAs between identical sequences. Turn target MSA off when the target and binder sequences are identical.")
-        restraints = _normalize_boltz_restraints(
+        restraint_normalizer = localfold.normalize_restraints if str(engine) == 'localfold' else _normalize_boltz_restraints
+        restraints = restraint_normalizer(
             raw_task.get("restraints", []),
             proteins=task_proteins, dna=dna_chains, rna=rna_chains,
             ligand_ccd_codes=ccd_entities, ligand_smiles=smiles_entities,
-            supported=supports_boltz_features, task_index=index,
+            **({'model': selected_options['model']} if str(engine) == 'localfold' else {'supported': supports_boltz_features}), task_index=index,
         )
         raw_yaml_proteins = [
             row.get("protein") for row in raw_boltz_yaml.get("sequences", [])
@@ -2363,6 +2485,8 @@ def _prepare_prediction(
                 + ", ".join(missing_msa_chains)
                 + ". Upload an A3M for each protein chain or turn MSA search on."
             )
+    if str(engine) == "localfold":
+        localfold.validate_tasks(selected_options, normalized_tasks, samples=int(samples), seed=seed)
     requested_gpu_count = _profile_gpu_count(profile, selected_mode)
     if any(task["structure_templates"] for task in normalized_tasks):
         if engine == "openfold3_ob0":
@@ -2491,7 +2615,7 @@ def run_optimized_prediction(
     optimization_mode: OptimizationMode = "off",
     job_name: str = "optimized-prediction",
     seed: int = 0,
-    samples: int = 3,
+    samples: int | None = None,
     num_recycles: int | None = None,
     cpu_cores: int = 4,
     gpu_device: str = "0",
@@ -2560,6 +2684,8 @@ def run_optimized_prediction(
     profile = prepared.profile
     selected_mode = prepared.selected_mode
     recycle_count = prepared.recycle_count
+    if samples is None:
+        samples = int(profile.get("default_samples", 3))
     seed = prepared.seed
     clean_name = prepared.clean_name
     selected_options = prepared.selected_options
@@ -2657,8 +2783,17 @@ def run_optimized_prediction(
                     boltz_custom_msas=task["boltz_custom_msas"],
                     affinity_binder=task["affinity_binder"],
                     prepare_msas=True,
-                    msa_depth=int(selected_options.get("max_msa_seqs", selected_options.get("external_msa_max_seqs", 1024))),
-                    allow_msa_server=bool(selected_options.get("use_msa_server", True)) if engine == "boltz2" else True,
+                    msa_depth=(
+                        int(selected_options.get("max_msa_seqs", 1024))
+                        + int(selected_options.get("max_extra_msa_seqs", 0))
+                        if engine == "localfold" and selected_options["model"].startswith("af2_")
+                        else int(selected_options.get("max_msa_seqs", selected_options.get("external_msa_max_seqs", 1024)))
+                    ),
+                    allow_msa_server=(
+                        selected_options.get("msa_mode") == "automatic"
+                        if engine == "localfold" else
+                        bool(selected_options.get("use_msa_server", True)) if engine == "boltz2" else True
+                    ),
                     structure_uploads=task["structure_templates"], binder_use_msa=task["binder_use_msa"],
                 )
             manifest_items.append({
@@ -2729,6 +2864,8 @@ def run_optimized_prediction(
         else:
             reference = Path(reference_root()).expanduser().resolve()
             cache = Path(os.getenv("MN_MOLECULAR_DESIGN_STUDIO_CACHE_DIR", str(reference / "mn-cofolding" / "cache"))).expanduser().resolve()
+            if profile["api_engine"] == "localfold":
+                cache = localfold.prepare_references(reference)
             boltz_cache = reference / "boltz_models"
             if profile["api_engine"] == "boltz2":
                 required_boltz_files = (
@@ -2760,9 +2897,12 @@ def run_optimized_prediction(
                 )
             cache.mkdir(parents=True, exist_ok=True)
             command.extend((
-                "--mount", f"type=bind,src={cache},dst=/cache",
+                "--mount", f"type=bind,src={cache},dst={'/reference/localfold' if profile['api_engine'] == 'localfold' else '/cache'}",
                 "--mount", f"type=bind,src={reference},dst=/reference,readonly",
             ))
+            if profile["api_engine"] == "localfold":
+                for variable in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+                    command.extend(("--env", f"{variable}={int(cpu_cores)}"))
             if profile["api_engine"] == "af3_torch":
                 # The image intentionally ships without model parameters. Reuse the
                 # converted OpenFold3 P2 weights stored by MN Cofolding, matching its
@@ -2789,6 +2929,8 @@ def run_optimized_prediction(
             )
             if runner_yamls:
                 options["runner_yamls"] = runner_yamls
+            if profile["api_engine"] == "localfold":
+                options["cyclic"] = ",".join(chain_id for chain_id, row in normalized_tasks[0]["molecule_chain_options"].items() if row["cyclic"])
             if chai_template_hits:
                 hits_path = raw_root / "inputs/all_template_hits.m8"
                 hits_path.write_text("".join((job.run_dir / value.removeprefix("/work/")).read_text() for value in chai_template_hits))
@@ -2842,7 +2984,7 @@ def run_optimized_prediction(
             stdout.flush()
             from mn_molecular_design_studio.native_execution import prediction_contract, record_process
             execution = prediction_contract(engine, len(normalized_tasks), seeds=selected_options.get("seed_count", 1),
-                                            samples=int(samples), mode=selected_mode)
+                                            samples=localfold.outputs_per_seed(selected_options, int(samples)) if engine == "localfold" else int(samples), mode=selected_mode)
             process = record_process(job.run_dir, command, native_invocations=1 if engine == "esmfold" else None,
                                      candidate_ids=[task.get("source_candidate_id") or task["id"] for task in normalized_tasks],
                                      gpu_slots=requested_gpu_count, runner=subprocess.run,
@@ -2874,11 +3016,11 @@ def run_optimized_prediction(
         native = batch_result.get("execution", {})
         commands = native.get("commands") or ([native["command"]] if native.get("command") else None)
         if commands is not None:
-            receipt['processes'][-1]['native_invocations'] = len(commands) if engine in {'boltz2', 'protenix_v2'} else None
+            receipt['processes'][-1]['native_invocations'] = len(commands) if engine in {'boltz2', 'protenix_v2', 'localfold'} else None
             native_counts = [p.get('native_invocations') for p in receipt['processes']]
             receipt["native_invocations"] = sum(native_counts) if all(n is not None for n in native_counts) else None
             receipt["native_commands"] = commands
-            receipt["native_count_basis"] = "image-side process launch receipt and verified model lifecycle" if engine in {'boltz2', 'protenix_v2'} else "image-side launcher receipt; inner model lifecycle unverified"
+            receipt["native_count_basis"] = "image-side process launch receipt and verified model lifecycle" if engine in {'boltz2', 'protenix_v2', 'localfold'} else "image-side launcher receipt; inner model lifecycle unverified"
         else:
             receipt["native_count_basis"] = "direct native CLI" if engine == "esmfold" else "image-side receipt unavailable"
         write_json(job.run_dir / "native_execution.json", receipt)
@@ -2935,12 +3077,14 @@ def run_optimized_prediction(
                 structure_path = restore_prediction_ccd_names(native_structure_path, task)
                 identity_check = verify_prediction_structure(structure_path, task)
                 structures.append(structure_path)
-                pae_path = next((value for value in (
+                pae_candidates = (
                     native_structure_path.with_name(f"pae_{native_structure_path.stem}.npz"),
                     native_structure_path.with_name(f"{native_structure_path.stem}_pae.npz"),
                     native_structure_path.with_name(f"{native_structure_path.stem}_pae.json"),
                     native_structure_path.with_name(f"pae_{native_structure_path.stem}.json"),
-                ) if value.is_file()), mol1_pae_path)
+                )
+                native_localfold_pae = _localfold_pae_path(native_structure_path, selected_options["model"]) if engine == "localfold" else None
+                pae_path = next((value for value in pae_candidates if value.is_file()), native_localfold_pae or mol1_pae_path)
                 metrics = {
                     "plddt_mean": _mean_plddt(structure_path),
                     "binder_plddt": _mean_plddt(structure_path, binder_chains) if profile["api_engine"] == "mol1" and binder_chains else None,
@@ -2969,6 +3113,9 @@ def run_optimized_prediction(
                     except (OSError, ValueError, KeyError, StopIteration) as exc:
                         metrics["interface_filter_measurement_error"] = str(exc)
                 metrics = {key: value for key, value in metrics.items() if value is not None}
+                if engine == "localfold" and selected_options["model"] == "bioemu2":
+                    for key in ("plddt_mean", "binder_structure_ca_plddt", "target_structure_ca_plddt", "ptm", "iptm", "ranking_score"):
+                        metrics.pop(key, None)
                 candidates.append({
                     "candidate_id": f"{job.run_id}_{engine}_{task['index']:02d}_{sample_index:03d}",
                     "stage": candidate_stage,
@@ -2983,17 +3130,21 @@ def run_optimized_prediction(
                         "scientific_contract": task["scientific_contract"],
                         "native_prediction_structure": str(native_structure_path),
                         "pae_path": str(pae_path) if pae_path else None,
+                        **({"pae_available": bool(pae_path)} if engine == "localfold" else {}),
                         "identity_check": identity_check,
                         "molecule_chain_options": task["molecule_chain_options"],
                         "engine": engine, "image": profile["image"], "api_engine": profile["api_engine"],
+                        **({"model_name": selected_options["model"], "model_label": localfold.MODELS[selected_options["model"]]["label"],
+                            "weights_precision": "original" if selected_options["model"] == "alphafold3" or selected_options["model"].startswith("af2_") else selected_options["weights_precision"], "source_commit": localfold.SOURCE_COMMIT,
+                            "confidence_available": selected_options["model"] != "bioemu2"} if engine == "localfold" else {}),
                         "optimization_mode": selected_mode, "seed": int(seed),
                         **installed_engine,
                         "input_provenance": str(raw_root / "execution_inputs.json"),
                         "checkpoint_provenance": checkpoint_provenance,
                         "engine_version": profile.get("code_version"),
                         "conditioning_mode": "target_template" if (task.get("structure_templates") or task.get("boltz_templates") or task.get("target_pdb_text")) else "sequence_only",
-                        "effective_settings": {"samples_per_item": int(samples), "seed": int(seed), **options} if profile["api_engine"] in {"boltz2", "mol1"} else {},
-                        "execution_manifest": str(manifest_path) if profile["api_engine"] in {"boltz2", "mol1"} else None,
+                        "effective_settings": {"samples_per_item": int(samples), "seed": int(seed), **options} if profile["api_engine"] in {"boltz2", "mol1", "localfold"} else {},
+                        "execution_manifest": str(manifest_path) if profile["api_engine"] in {"boltz2", "mol1", "localfold"} else None,
                         "native_execution": batch_result.get("execution", {}),
                         "prediction_protocol": {"engine": engine, "image": profile["image"], "optimization_mode": selected_mode,
                             "samples": int(samples), "seed": int(seed),

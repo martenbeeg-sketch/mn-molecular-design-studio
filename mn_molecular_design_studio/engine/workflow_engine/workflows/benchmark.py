@@ -3922,18 +3922,31 @@ def _parse_json_list(value: Any) -> list[str]:
     return [token.strip() for token in re.split(r"[,;\s]+", text) if token.strip()]
 
 
-def _structure_ca_atoms(structure: object, chains: list[str]) -> list[object]:
-    model = next(structure.get_models(), None)
-    if model is None:
-        return []
+def _structure_ca_atom_rows(structure: object, chains: list[str]) -> tuple[list[object], list[tuple[str, int, str, str]], str | None]:
+    models = list(structure.get_models())
+    if not models:
+        return [], [], "structure contains no coordinate model"
+    if len(models) != 1:
+        return [], [], f"structure contains {len(models)} models; select a single-model representation"
+    model = models[0]
+    if not chains or len(chains) != len(set(chains)):
+        return [], [], "chain selection is empty or contains duplicate identifiers"
     atoms: list[object] = []
+    residue_keys: list[tuple[str, int, str, str]] = []
     for chain_id in chains:
         if chain_id not in model:
-            continue
+            return [], [], f"selected chain {chain_id!r} is missing"
         for residue in model[chain_id]:
-            if getattr(residue, "id", ("",))[0] == " " and "CA" in residue:
-                atoms.append(residue["CA"])
-    return atoms
+            if getattr(residue, "id", ("",))[0] != " ":
+                continue
+            if "CA" not in residue:
+                return [], [], f"selected chain {chain_id!r} contains a residue without a Cα atom"
+            atoms.append(residue["CA"])
+            residue_keys.append((
+                str(chain_id), int(residue.id[1]), str(residue.id[2]).strip(),
+                str(residue.resname).strip().upper(),
+            ))
+    return atoms, residue_keys, None
 
 
 def _target_aligned_binder_pose_metrics(
@@ -3950,33 +3963,89 @@ def _target_aligned_binder_pose_metrics(
     parser = PDBParser(QUIET=True)
     reference = parser.get_structure("reference", str(reference_pdb))
     prediction = parser.get_structure("prediction", str(prediction_pdb))
-    reference_target_atoms = _structure_ca_atoms(reference, reference_target_chains)
-    prediction_target_atoms = _structure_ca_atoms(prediction, prediction_target_chains)
-    target_count = min(len(reference_target_atoms), len(prediction_target_atoms))
+    if list(reference_target_chains) != list(prediction_target_chains):
+        return {
+            "target_aligned_binder_rmsd": None,
+            "target_alignment_rmsd": None,
+            "target_alignment_ca_count": 0,
+            "binder_ca_count": 0,
+            "pose_rmsd_status": "target alignment unavailable: target chain correspondence is not explicit",
+            "target_alignment_mapping_status": "unavailable: target chain lists differ",
+            "binder_mapping_status": "not checked",
+        }
+    reference_target_atoms, reference_target_keys, reference_target_error = _structure_ca_atom_rows(reference, reference_target_chains)
+    prediction_target_atoms, prediction_target_keys, prediction_target_error = _structure_ca_atom_rows(prediction, prediction_target_chains)
+    target_count = len(reference_target_atoms)
+    target_mapping_error = reference_target_error or prediction_target_error
+    if not target_mapping_error and reference_target_keys != prediction_target_keys:
+        target_mapping_error = (
+            "ordered target residue identifiers, insertion codes, or residue names differ; "
+            "no explicit residue correspondence is available"
+        )
+    if target_mapping_error:
+        return {
+            "target_aligned_binder_rmsd": None,
+            "target_alignment_rmsd": None,
+            "target_alignment_ca_count": 0,
+            "binder_ca_count": 0,
+            "pose_rmsd_status": f"target alignment unavailable: {target_mapping_error}",
+            "target_alignment_mapping_status": "unavailable",
+            "binder_mapping_status": "not checked",
+        }
     if target_count < 3:
         return {
             "target_aligned_binder_rmsd": None,
             "target_alignment_rmsd": None,
             "target_alignment_ca_count": target_count,
             "binder_ca_count": 0,
-            "pose_rmsd_status": f"target alignment skipped: {target_count} shared target CA atoms",
+            "pose_rmsd_status": f"target alignment unavailable: only {target_count} verified corresponding target Cα atoms",
+            "target_alignment_mapping_status": "verified by identical chain and author residue identifiers",
+            "binder_mapping_status": "not checked",
         }
     superimposer = Superimposer()
-    superimposer.set_atoms(reference_target_atoms[:target_count], prediction_target_atoms[:target_count])
+    superimposer.set_atoms(reference_target_atoms, prediction_target_atoms)
     superimposer.apply(prediction.get_atoms())
-    reference_binder_atoms = _structure_ca_atoms(reference, reference_binder_chains)
-    prediction_binder_atoms = _structure_ca_atoms(prediction, prediction_binder_chains)
-    binder_count = min(len(reference_binder_atoms), len(prediction_binder_atoms))
+    if list(reference_binder_chains) != list(prediction_binder_chains):
+        return {
+            "target_aligned_binder_rmsd": None,
+            "target_alignment_rmsd": float(superimposer.rms),
+            "target_alignment_ca_count": target_count,
+            "binder_ca_count": 0,
+            "pose_rmsd_status": "binder comparison unavailable: binder chain correspondence is not explicit",
+            "target_alignment_mapping_status": "verified by identical chain and author residue identifiers",
+            "binder_mapping_status": "unavailable: binder chain lists differ",
+        }
+    reference_binder_atoms, reference_binder_keys, reference_binder_error = _structure_ca_atom_rows(reference, reference_binder_chains)
+    prediction_binder_atoms, prediction_binder_keys, prediction_binder_error = _structure_ca_atom_rows(prediction, prediction_binder_chains)
+    binder_count = len(reference_binder_atoms)
+    binder_mapping_error = reference_binder_error or prediction_binder_error
+    if not binder_mapping_error and reference_binder_keys != prediction_binder_keys:
+        binder_mapping_error = (
+            "ordered binder residue identifiers, insertion codes, or residue names differ; "
+            "no explicit residue correspondence is available"
+        )
+    if binder_mapping_error:
+        return {
+            "target_aligned_binder_rmsd": None,
+            "target_alignment_rmsd": float(superimposer.rms),
+            "target_alignment_ca_count": target_count,
+            "binder_ca_count": 0,
+            "pose_rmsd_status": f"binder comparison unavailable: {binder_mapping_error}",
+            "target_alignment_mapping_status": "verified by identical chain and author residue identifiers",
+            "binder_mapping_status": "unavailable",
+        }
     if binder_count < 3:
         return {
             "target_aligned_binder_rmsd": None,
             "target_alignment_rmsd": float(superimposer.rms),
             "target_alignment_ca_count": target_count,
             "binder_ca_count": binder_count,
-            "pose_rmsd_status": f"binder RMSD skipped: {binder_count} shared binder CA atoms",
+            "pose_rmsd_status": f"binder comparison unavailable: only {binder_count} verified corresponding binder Cα atoms",
+            "target_alignment_mapping_status": "verified by identical chain and author residue identifiers",
+            "binder_mapping_status": "verified by identical chain and author residue identifiers",
         }
     total = 0.0
-    for fixed_atom, moving_atom in zip(reference_binder_atoms[:binder_count], prediction_binder_atoms[:binder_count]):
+    for fixed_atom, moving_atom in zip(reference_binder_atoms, prediction_binder_atoms):
         delta = fixed_atom.coord - moving_atom.coord
         total += float((delta * delta).sum())
     return {
@@ -3985,6 +4054,8 @@ def _target_aligned_binder_pose_metrics(
         "target_alignment_ca_count": target_count,
         "binder_ca_count": binder_count,
         "pose_rmsd_status": "ok",
+        "target_alignment_mapping_status": "verified by identical chain and author residue identifiers",
+        "binder_mapping_status": "verified by identical chain and author residue identifiers",
     }
 
 

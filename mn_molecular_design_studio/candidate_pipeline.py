@@ -123,7 +123,7 @@ def new_pipeline(generators=None, predictors=None, sequence_designer="ligandmpnn
         optimization_enabled=False, **redesign_count)
     if mode == 'modular_design' and redesign_engine == 'ligandmpnn':
         nodes[-1]['data']['params'].update(model_type='soluble_mpnn', fix_interface_residues=True)
-    add("shared_filter", "shared-filter", 1720, 170)
+    add("shared_filter", "shared-filter", 1720, 170)["params"]["policy_profile"] = "custom"
     connect("collection", "sequence-preparation")
     connect("sequence-preparation", "optional-redesign")
     connect("optional-redesign", "shared-filter")

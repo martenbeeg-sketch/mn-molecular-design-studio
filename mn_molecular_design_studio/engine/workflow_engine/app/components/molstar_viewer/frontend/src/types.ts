@@ -40,6 +40,8 @@ export type StructureVisualization = {
     chains: ChainVisualization[] | null;
     docking_box?: { center: [number, number, number]; size: [number, number, number] } | null;
     trajectory?: { coordinates_base64: string; format: "xtc" } | null;
+    /** User-supplied moving-to-reference rigid transform; never estimated by the viewer. */
+    transform_matrix?: number[][] | null;
 };
 
 export type ColorParameters = {

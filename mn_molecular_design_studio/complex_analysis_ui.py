@@ -6,6 +6,7 @@ import hashlib
 import html
 import io
 import json
+import re
 from pathlib import Path
 import streamlit as st
 
@@ -205,7 +206,10 @@ def _accessible_result_jobs(user: dict) -> list[dict]:
         access_owner_id=str(user.get("id") or ""),
         accessible_project_ids=accessible_project_ids(user),
         access_admin=user.get("role") == "admin",
-        limit=300,
+        # Older completed Results are still valid analysis sources. Keep the
+        # contextual picker aligned with the job catalog's one-page maximum so
+        # existing runs remain reachable without making a separate registry.
+        limit=1000,
         sort_by="finished_desc",
     )["items"]
     return [row for row in rows if str(row.get("status") or "").casefold() in {"completed", "succeeded"} and row.get("success") is not False]
@@ -354,7 +358,7 @@ def _matching_biotite_jobs(user: dict, *, source_task_group: str, source_run_id:
             continue
         selection = manifest.get("selection") if isinstance(manifest.get("selection"), dict) else {}
         saved_model_id = str(selection.get("model_id") or "")
-        if model_id and saved_model_id and model_id != saved_model_id:
+        if saved_model_id != model_id:
             continue
         desired_binder, desired_target = sorted(map(str, binder_chains)), sorted(map(str, target_chains))
         selected_item = next((item for item in manifest.get("items", [])
@@ -381,7 +385,8 @@ def _matching_biotite_jobs(user: dict, *, source_task_group: str, source_run_id:
     return sorted(matches, key=lambda item: (rank.get(item["status"], 4), str(item.get("created_at") or "")), reverse=False)
 
 
-def _analysis_evaluation_id(run_dir: Path, user: dict, source_candidate_id: str) -> str:
+def _analysis_evaluation_id(run_dir: Path, user: dict, source_candidate_id: str, *,
+                            evaluator: str = "biotite_interface") -> str:
     """Resolve the persistent Evaluation descriptor created by normal Results ingestion."""
     try:
         from mn_molecular_design_studio.evaluations import evaluation_descriptor
@@ -389,23 +394,125 @@ def _analysis_evaluation_id(run_dir: Path, user: dict, source_candidate_id: str)
         records = list_run_molecules(run_dir, user)
     except (ImportError, OSError, PermissionError, ValueError):
         return ""
-    output_candidate_id = source_candidate_id + "_biotite_interface"
     for record in records:
         for observation in record.get("observations", []):
             try:
                 descriptor = evaluation_descriptor(observation)
             except (KeyError, TypeError, ValueError):
                 continue
-            candidate = (observation.get("context") or {}).get("candidate") or {}
-            if descriptor.get("evaluator") == "biotite_interface" and (
-                descriptor.get("candidate_id") == output_candidate_id
-                or candidate.get("candidate_id") == output_candidate_id
-            ):
+            candidate_context = (observation.get("context") or {}).get("candidate")
+            candidate = candidate_context if isinstance(candidate_context, dict) else {}
+            candidate_id = str(descriptor.get("candidate_id") or candidate.get("candidate_id") or "")
+            source_id = str(candidate.get("candidate_id") or "")
+            candidate_matches = candidate_id.startswith(source_candidate_id + "_") or source_id == source_candidate_id
+            if descriptor.get("evaluator") == evaluator and candidate_matches:
                 return str(descriptor.get("id") or "")
     return ""
 
 
-def _render_biotite_results(user: dict, evaluation: dict, *, source_candidate_id: str, key: str) -> None:
+def _matching_contextual_jobs(user: dict, *, workflow_id: str, source_task_group: str,
+                              source_run_id: str, candidate_id: str, structure_digest: str,
+                              model_id: str, binder_chains: list[str], target_chains: list[str],
+                              parameters: dict) -> list[dict]:
+    """Find an exact reusable evaluation for one selected source pose."""
+    from mn_molecular_design_studio.auth import accessible_project_ids, can_access_job
+    from mn_molecular_design_studio.job_catalog import get_job_access_record, search_jobs
+
+    tool = {"analysis.ipsae": "ipsae", "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch"}.get(workflow_id)
+    if not tool:
+        return []
+    rows = search_jobs(
+        tools=[tool], task_group="analysis", limit=1000, sort_by="active_desc",
+        access_owner_id=str(user.get("id") or ""),
+        accessible_project_ids=accessible_project_ids(user), access_admin=user.get("role") == "admin",
+    )["items"]
+    desired_binder = sorted(map(str, binder_chains))
+    desired_target = sorted(map(str, target_chains))
+    matches = []
+    for row in rows:
+        task_group = str(row.get("task_group") or "")
+        run_id = str(row.get("run_id") or "")
+        if not task_group or not run_id or not can_access_job(user, get_job_access_record(task_group, run_id)):
+            continue
+        run_dir = Path(str(row.get("run_dir") or "")).expanduser().resolve()
+        metadata = _read_json(run_dir / "metadata.json")
+        if (str(metadata.get("upstream_task_group") or "") != source_task_group
+                or str(metadata.get("upstream_run_id") or "") != source_run_id):
+            continue
+        if workflow_id == "analysis.pep_patch":
+            manifest = _read_json(run_dir / "artifacts" / "analysis" / "batch_manifest.json")
+            selection = manifest.get("selection") if isinstance(manifest.get("selection"), dict) else {}
+            item = next((candidate for candidate in manifest.get("items", [])
+                         if str(candidate.get("candidate_id") or "") == candidate_id
+                         and str(candidate.get("structure_digest") or "") == structure_digest
+                         and sorted(map(str, candidate.get("binder_chains") or [])) == desired_binder
+                         and not desired_target), None)
+            saved_parameters = {key: value for key, value in (manifest.get("settings") or {}).items()
+                                if key not in {"workers", "protocol_revision", "checkpoint_sha256"}}
+            saved_model_id = str(selection.get("model_id") or "")
+        else:
+            manifest = _read_json(run_dir / "artifacts" / "analysis" / "complex_analysis_selection.json")
+            item = manifest if manifest.get("schema") == "studio.complex_analysis_selection.v1" else None
+            saved_parameters = manifest.get("parameters") if isinstance(manifest.get("parameters"), dict) else {}
+            saved_model_id = str(manifest.get("model_id") or "")
+        if not item:
+            continue
+        if (str(item.get("candidate_id") or "") != candidate_id
+                or str(item.get("structure_digest") or "") != structure_digest
+                or saved_model_id != model_id
+                or sorted(map(str, item.get("binder_chains") or [])) != desired_binder
+                or (workflow_id != "analysis.pep_patch"
+                    and sorted(map(str, item.get("target_chains") or [])) != desired_target)
+                or saved_parameters != parameters):
+            continue
+        status = str(row.get("status") or metadata.get("status") or "unknown").casefold()
+        error = str(metadata.get("error") or "")
+        if workflow_id == "analysis.pep_patch" and status in {"completed", "succeeded"}:
+            batch = _read_json(run_dir / "artifacts" / "analysis" / "batch_status.json")
+            batch_item = next((candidate for candidate in batch.get("items", []) if candidate.get("id") == item.get("id")), {})
+            item_status = str(batch_item.get("status") or "").casefold()
+            error = str(batch_item.get("error") or error)
+            if item_status and item_status not in {"completed", "succeeded"}:
+                status = item_status
+        matches.append({**row, "status": status, "run_dir": run_dir,
+                        "manifest": manifest, "metadata": metadata, "selected_item": item, "error": error})
+    rank = {"completed": 0, "succeeded": 0, "running": 1, "starting": 1, "queued": 1,
+            "preparing": 1, "pending": 1, "failed": 2, "cancelled": 3, "canceled": 3}
+    return sorted(matches, key=lambda item: (rank.get(item["status"], 4), str(item.get("created_at") or "")))
+
+
+def _biotite_contact_residues(run_dir: Path, candidate_id: str) -> tuple[list[str], list[str], list[str]]:
+    """Return saved author-chain residue selectors from this exact batch item."""
+    manifest = _read_json(run_dir / "artifacts" / "analysis" / "batch_manifest.json")
+    item = next((row for row in manifest.get("items", [])
+                 if str(row.get("candidate_id") or "") == candidate_id), None)
+    if not item:
+        return [], [], []
+    contacts = _read_json(run_dir / "artifacts" / "analysis" / str(item.get("id") or "") / "contacts.json")
+    binder, target = set(), set()
+    for pair in contacts.get("residue_pairs", []):
+        if not isinstance(pair, dict):
+            continue
+        for destination, field in ((binder, "binder_residue"), (target, "target_residue")):
+            selector = str(pair.get(field) or "").strip()
+            # Keep unusual identifiers in the map, but pass only selectors
+            # supported by Mol*'s current auth-chain/sequence selection syntax.
+            if re.fullmatch(r"[^:\s]+:-?\d+", selector):
+                destination.add(selector)
+    binder_rows, target_rows = sorted(binder), sorted(target)
+    return binder_rows, target_rows, sorted(binder | target)
+
+
+def _active_biotite_highlights(viewer_key: str) -> list[str]:
+    residue_sets = st.session_state.get(f"{viewer_key}-biotite-residue-sets", {})
+    mode = st.session_state.get(f"{viewer_key}-biotite-highlight-mode", "No highlight")
+    selected = residue_sets.get(mode, []) if isinstance(residue_sets, dict) else []
+    return list(selected) if isinstance(selected, list) else []
+
+
+def _render_biotite_results(user: dict, evaluation: dict, *, source_candidate_id: str, key: str,
+                            structure_path: Path | None = None, structure_context: dict | None = None,
+                            structure_components: list[dict] | None = None, viewer_key: str = "") -> None:
     run_dir = Path(evaluation["run_dir"])
     from mn_molecular_design_studio.quality_ui import render_contact_maps, render_progress
 
@@ -438,6 +545,14 @@ def _render_biotite_results(user: dict, evaluation: dict, *, source_candidate_id
             st.markdown("##### Measurements saved by this evaluation")
             st.dataframe(frame, hide_index=True, use_container_width=True)
         render_contact_maps(run_dir, key + "-contact-map")
+        binder_residues, target_residues, all_residues = _biotite_contact_residues(run_dir, source_candidate_id)
+        if all_residues and structure_path is not None and viewer_key:
+            residue_sets = {"No highlight": [], "All interface residues": all_residues,
+                            "Binder side": binder_residues, "Target side": target_residues}
+            st.session_state[f"{viewer_key}-biotite-residue-sets"] = residue_sets
+            mode = st.selectbox("Highlight in structure viewer",
+                list(residue_sets), key=f"{viewer_key}-biotite-highlight-mode")
+            st.caption(f"{len(residue_sets[mode])} residues selected from the saved contact map; the structure viewer above will highlight them.")
         evaluation_id = _analysis_evaluation_id(run_dir, user, source_candidate_id)
         if evaluation_id:
             st.success(f"Saved Evaluation · {evaluation_id}")
@@ -446,10 +561,17 @@ def _render_biotite_results(user: dict, evaluation: dict, *, source_candidate_id
     with st.expander("Analysis provenance", expanded=False):
         manifest = evaluation.get("manifest") or {}
         item = evaluation.get("selected_item") or {}
+        metadata = evaluation.get("metadata") or {}
+        database_source = metadata.get("database_source") if isinstance(metadata.get("database_source"), dict) else {}
         st.json({
             "evaluation_run": f"{evaluation.get('task_group')}/{evaluation.get('run_id')}",
             "workflow": "analysis.biotite_interface",
-            "source_job": f"{evaluation.get('metadata', {}).get('upstream_task_group')}/{evaluation.get('metadata', {}).get('upstream_run_id')}",
+            "source_kind": metadata.get("upstream_source_kind") or "results",
+            "source_job": (f"{metadata.get('upstream_task_group')}/{metadata.get('upstream_run_id')}"
+                           if metadata.get("upstream_source_kind") != "database" else ""),
+            "database_source": {key: database_source.get(key) for key in
+                                ("molecule_id", "structure_id", "group_id", "evaluation_id", "model_id", "structure_digest")
+                                if key in database_source},
             "source_candidate_id": item.get("candidate_id"),
             "selected_structure_sha256": item.get("structure_digest"),
             "binder_chains": item.get("binder_chains") or [],
@@ -461,8 +583,265 @@ def _render_biotite_results(user: dict, evaluation: dict, *, source_candidate_id
         })
 
 
+def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str,
+                               source_candidate_id: str, key: str) -> None:
+    """Render existing metric tables and saved artifacts for a contextual workflow."""
+    run_dir = Path(evaluation["run_dir"])
+    status = str(evaluation.get("status") or "unknown").casefold()
+    title = {"analysis.ipsae": "ipSAE & Structure Analysis",
+             "analysis.rosetta": "Rosetta Interface Analysis",
+             "analysis.pep_patch": "PEP-Patch"}.get(workflow_id, workflow_id)
+    st.caption(f"{title} · {status.title()} · {evaluation.get('job_code') or evaluation.get('run_id')}")
+
+    @st.fragment(run_every=5 if status not in {"completed", "succeeded", "failed", "cancelled", "canceled"} else None)
+    def refresh_status():
+        latest = str(_read_json(run_dir / "metadata.json").get("status") or status).casefold()
+        st.metric("Analysis job status", latest.title())
+        if status not in {"completed", "succeeded", "failed", "cancelled", "canceled"} and latest in {"completed", "succeeded", "failed", "cancelled", "canceled"}:
+            st.rerun(scope="app")
+
+    refresh_status()
+    if workflow_id == "analysis.pep_patch":
+        from mn_molecular_design_studio.quality_ui import render_progress
+        render_progress(run_dir, status, key + "-progress")
+    if status in {"failed", "cancelled", "canceled"}:
+        st.error(evaluation.get("error") or "The analysis job did not complete. Review the existing Results logs before retrying.")
+    else:
+        import pandas as pd
+        table_name = {"analysis.ipsae": "ipsae_metrics.csv",
+                      "analysis.rosetta": "rosetta_metrics.csv",
+                      "analysis.pep_patch": "qc_metrics.csv"}[workflow_id]
+        metrics_path = run_dir / "artifacts" / "analysis" / table_name
+        if status in {"completed", "succeeded"} and metrics_path.is_file():
+            try:
+                frame = pd.read_csv(metrics_path)
+            except (OSError, ValueError, pd.errors.ParserError):
+                frame = pd.DataFrame()
+            if not frame.empty:
+                source_column = "source_candidate_id" if "source_candidate_id" in frame else "analysis_source_candidate_id"
+                if source_column in frame:
+                    selected_frame = frame[frame[source_column].astype(str) == source_candidate_id]
+                    if not selected_frame.empty:
+                        frame = selected_frame
+                st.markdown("##### Measurements saved by this evaluation")
+                st.dataframe(frame, hide_index=True, use_container_width=True)
+        if workflow_id == "analysis.pep_patch":
+            for path in sorted((run_dir / "artifacts" / "analysis").glob("item_*/patch_metrics.json")):
+                metrics = _read_json(path)
+                if metrics:
+                    with st.expander("PEP-Patch surface metrics"):
+                        st.json(metrics)
+            for path in sorted((run_dir / "artifacts" / "analysis").glob("item_*/residue_patches*.csv")):
+                try:
+                    frame = pd.read_csv(path, index_col=0)
+                except (OSError, ValueError, pd.errors.ParserError):
+                    continue
+                with st.expander(f"Residue patch output · {path.name}"):
+                    st.dataframe(frame, hide_index=False, use_container_width=True)
+    evaluator = {"analysis.ipsae": "ipsae", "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch"}.get(workflow_id, workflow_id)
+    evaluation_id = _analysis_evaluation_id(run_dir, user, source_candidate_id, evaluator=evaluator)
+    if evaluation_id:
+        st.success(f"Saved Evaluation · {evaluation_id}")
+    with st.expander("Analysis provenance", expanded=False):
+        if workflow_id == "analysis.pep_patch":
+            provenance = evaluation.get("manifest") or {}
+            selection = provenance.get("selection") or {}
+            item = evaluation.get("selected_item") or {}
+            scientific_parameters = provenance.get("settings") or {}
+        else:
+            provenance = _read_json(run_dir / "artifacts" / "analysis" / "complex_analysis_selection.json")
+            selection = provenance
+            item = provenance
+            scientific_parameters = provenance.get("parameters") or {}
+        metadata = evaluation.get("metadata") or {}
+        database_source = metadata.get("database_source") if isinstance(metadata.get("database_source"), dict) else {}
+        selection_database_source = selection.get("database_source") if isinstance(selection.get("database_source"), dict) else {}
+        st.json({
+            "evaluation_run": f"{evaluation.get('task_group')}/{evaluation.get('run_id')}",
+            "workflow": workflow_id,
+            "source_kind": metadata.get("upstream_source_kind") or "results",
+            "source_job": (f"{metadata.get('upstream_task_group')}/{metadata.get('upstream_run_id')}"
+                           if metadata.get("upstream_source_kind") != "database" else ""),
+            "database_source": {key: (selection_database_source or database_source).get(key) for key in
+                                ("molecule_id", "structure_id", "group_id", "evaluation_id", "model_id", "structure_digest")
+                                if key in (selection_database_source or database_source)},
+            "source_candidate_id": item.get("candidate_id"),
+            "selected_structure_sha256": item.get("structure_digest"),
+            "model_id": selection.get("model_id") or item.get("model_id"),
+            "binder_chains": item.get("binder_chains") or [],
+            "target_chains": item.get("target_chains") or [],
+            "method": provenance.get("tool") or provenance.get("workflow"),
+            "parameters": scientific_parameters,
+            "source_job_code": metadata.get("upstream_job_code"),
+            "evaluation_id": evaluation_id,
+        })
+
+
+def _render_contextual_workflow(user: dict, *, workflow_id: str, schema: dict | None,
+                                job: dict, selected: dict, candidate: dict,
+                                structure_path: Path, model_id: str, candidate_file: Path,
+                                task_group: str, run_id: str, project_id: str,
+                                binder_chains: list[str], target_chains: list[str],
+                                scientific_parameters: dict, key: str, submit,
+                                unavailable: str = "") -> None:
+    title = {"analysis.ipsae": "ipSAE & Structure Analysis",
+             "analysis.rosetta": "Rosetta Interface Analysis",
+             "analysis.pep_patch": "PEP-Patch"}.get(workflow_id, workflow_id)
+    st.markdown(f"##### {title}")
+    with st.container():
+        if not schema:
+            st.info(unavailable or "The registered workflow is unavailable in this page context.")
+            return
+        if unavailable:
+            st.info(unavailable)
+            return
+        if not candidate.get("candidate_id") or not candidate_file.is_file():
+            st.info("This Results artifact is not linked to a normalized source candidate; the registered analysis cannot preserve its source lineage.")
+            return
+        if not task_group or not run_id or not str(job.get("project_id") or ""):
+            st.info("The source Results job has no complete accessible project identity for a new workflow.")
+            return
+        if not project_id or project_id != str(job.get("project_id") or ""):
+            st.info("Select the source Results job's project so the workflow remains within its access boundary.")
+            return
+
+        digest = _structure_digest(structure_path)
+        candidate_id = str(candidate.get("candidate_id") or "")
+        is_pep_patch = workflow_id == "analysis.pep_patch"
+        existing = _matching_contextual_jobs(
+            user, workflow_id=workflow_id, source_task_group=task_group, source_run_id=run_id,
+            candidate_id=candidate_id, structure_digest=digest, model_id=model_id,
+            binder_chains=binder_chains, target_chains=target_chains,
+            parameters=scientific_parameters,
+        ) if digest else []
+        current = next((item for item in existing if item["status"] in {"completed", "succeeded"}), None)
+        if current is None:
+            current = next((item for item in existing if item["status"] not in {"failed", "cancelled", "canceled"}), None)
+        if current:
+            _render_contextual_results(user, current, workflow_id=workflow_id,
+                                       source_candidate_id=candidate_id, key=key)
+        elif existing:
+            failed = existing[0]
+            st.error(f"Previous matching analysis failed: {failed.get('error') or 'No per-item error was recorded.'}")
+            _render_contextual_results(user, failed, workflow_id=workflow_id,
+                                       source_candidate_id=candidate_id, key=key)
+        else:
+            st.caption("No matching evaluation is saved for this exact structure, model, chain selection, and method settings.")
+
+        if current and current["status"] in {"completed", "succeeded"}:
+            return
+        button_label = "Retry analysis" if existing else "Run analysis"
+        if st.button(button_label, type="primary", key=f"complex-analysis-run-{workflow_id.replace('.', '-')}-{key}", disabled=submit is None):
+            parameters = {
+                **scientific_parameters,
+                "candidate_ids": [candidate_id],
+                "selected_structure_path": str(structure_path),
+                "selected_model_id": model_id,
+            }
+            if is_pep_patch:
+                parameters["binder_chains"] = list(binder_chains)
+            else:
+                parameters["binder_chains"] = list(binder_chains)
+                parameters["target_chains"] = list(target_chains)
+            source_job = f"{task_group}/{run_id}"
+            st.session_state["complex-analysis-active"] = {
+                "kind": "results", "task_group": task_group, "run_id": run_id,
+                "candidate_id": candidate_id, "model_index": model_id,
+                "relative_path": selected["relative_path"],
+            }
+            before = st.session_state.get("last_submitted_job")
+            try:
+                submit(schema, workflow_id, {**parameters, "source_job": source_job},
+                       project_id, {}, title)
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                st.error(f"Could not start {title}: {exc}")
+                return
+            if st.session_state.get("last_submitted_job") != before:
+                st.rerun()
+
+
+def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: dict,
+                                    candidate_id: str, model_id: str, binder_chains: list[str],
+                                    target_chains: list[str], parameters: dict) -> list[dict]:
+    """Reuse only an accessible evaluation for this exact Database representation."""
+    from mn_molecular_design_studio.auth import accessible_project_ids, can_access_job
+    from mn_molecular_design_studio.job_catalog import get_job_access_record, search_jobs
+
+    tool = {"analysis.biotite_interface": "biotite_interface", "analysis.ipsae": "ipsae",
+            "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch"}.get(workflow_id)
+    if not tool:
+        return []
+    rows = search_jobs(tools=[tool], task_group="analysis", limit=1000, sort_by="active_desc",
+                       access_owner_id=str(user.get("id") or ""),
+                       accessible_project_ids=accessible_project_ids(user),
+                       access_admin=user.get("role") == "admin")["items"]
+    identity_keys = ("molecule_id", "structure_id", "group_id", "structure_digest", "model_id")
+    matches = []
+    desired_binder, desired_target = sorted(map(str, binder_chains)), sorted(map(str, target_chains))
+    for row in rows:
+        task_group, run_id = str(row.get("task_group") or ""), str(row.get("run_id") or "")
+        if not task_group or not run_id or not can_access_job(user, get_job_access_record(task_group, run_id)):
+            continue
+        run_dir = Path(str(row.get("run_dir") or "")).expanduser().resolve()
+        metadata = _read_json(run_dir / "metadata.json")
+        if str(metadata.get("upstream_source_kind") or "") != "database":
+            continue
+        saved_source = metadata.get("database_source") if isinstance(metadata.get("database_source"), dict) else {}
+        if any(str(saved_source.get(key) or "") != str(source.get(key) or "") for key in identity_keys):
+            continue
+        if workflow_id in {"analysis.biotite_interface", "analysis.pep_patch"}:
+            manifest = _read_json(run_dir / "artifacts" / "analysis" / "batch_manifest.json")
+            selection = manifest.get("selection") if isinstance(manifest.get("selection"), dict) else {}
+            item = next((candidate for candidate in manifest.get("items", [])
+                         if str(candidate.get("candidate_id") or "") == candidate_id
+                         and str(candidate.get("structure_digest") or "") == str(source.get("structure_digest") or "")), None)
+            if item is None:
+                continue
+            saved_model = str(selection.get("model_id") or "")
+            saved_binder = sorted(map(str, selection.get("binder_chains") or []))
+            saved_target = sorted(map(str, selection.get("target_chains") or []))
+            settings = manifest.get("settings") if isinstance(manifest.get("settings"), dict) else {}
+            if workflow_id == "analysis.biotite_interface":
+                saved_parameters = {"contact_distance": float(settings.get("contact_distance", 5.0))}
+                item_binder = sorted(map(str, item.get("binder_chains") or []))
+                item_target = sorted(map(str, item.get("target_chains") or []))
+            else:
+                saved_parameters = {"ph": float(settings.get("ph", 7.4))}
+                item_binder, item_target = saved_binder, []
+            selected_item = item
+        else:
+            manifest = _read_json(run_dir / "artifacts" / "analysis" / "complex_analysis_selection.json")
+            if manifest.get("schema") != "studio.complex_analysis_selection.v1":
+                continue
+            saved_model = str(manifest.get("model_id") or "")
+            saved_binder = sorted(map(str, manifest.get("binder_chains") or []))
+            saved_target = sorted(map(str, manifest.get("target_chains") or []))
+            saved_parameters = manifest.get("parameters") if isinstance(manifest.get("parameters"), dict) else {}
+            item_binder, item_target = saved_binder, saved_target
+            selected_item = manifest
+        if (saved_model != model_id or saved_binder != desired_binder or saved_target != desired_target
+                or item_binder != desired_binder or item_target != desired_target
+                or saved_parameters != parameters):
+            continue
+        status = str(row.get("status") or metadata.get("status") or "unknown").casefold()
+        error = str(metadata.get("error") or "")
+        if workflow_id in {"analysis.biotite_interface", "analysis.pep_patch"} and status in {"completed", "succeeded"}:
+            batch = _read_json(run_dir / "artifacts" / "analysis" / "batch_status.json")
+            item_status = next((candidate for candidate in batch.get("items", [])
+                                if candidate.get("id") == selected_item.get("id")), {})
+            selected_status = str(item_status.get("status") or "").casefold()
+            error = str(item_status.get("error") or error)
+            if selected_status and selected_status not in {"completed", "succeeded"}:
+                status = selected_status
+        matches.append({**row, "status": status, "run_dir": run_dir, "manifest": manifest,
+                        "metadata": metadata, "selected_item": selected_item, "error": error})
+    rank = {"completed": 0, "succeeded": 0, "running": 1, "starting": 1, "queued": 1,
+            "preparing": 1, "pending": 1, "failed": 2, "cancelled": 3, "canceled": 3}
+    return sorted(matches, key=lambda item: (rank.get(item["status"], 4), str(item.get("created_at") or "")))
+
+
 def _render_biotite_workspace(user: dict, job: dict, selected: dict, components: list[dict], *,
-                              workflow_schema, project_selector, submit) -> None:
+                              workflow_schema, project_selector, submit, viewer_key: str) -> None:
     st.markdown("#### Available analyses")
     protein_chains = _protein_chain_ids(components)
     protein_ligand = any(item.get("type") == "small_molecule" for item in components) and bool(protein_chains)
@@ -474,7 +853,11 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
         st.caption("Heavy-atom contacts and residue maps; geometric salt bridges; hydrogen bonds when explicit hydrogens are present. The result is structural evidence, not an experimental binding claim.")
     else:
         st.info("Biotite Interface is not applicable: this selected structure does not contain at least two protein chains.")
-    st.caption("ipSAE and Interface Clustering are already available in Studio. Contextual selection and launch for those workflows will follow this first Biotite integration; their existing inputs remain available in All Tools.")
+    if ppi_applicable:
+        st.caption("Rosetta Interface Analysis and ipSAE are available below through their registered Studio workflows. They currently require one selected chain per group; ipSAE-derived scores additionally require a saved pairwise PAE matrix.")
+    st.caption("Interface Clustering remains available from All Tools for compatible collections. Full-length context mapping, cross-run comparison, and specificity remain roadmap work.")
+    if protein_chains:
+        st.caption("PEP-Patch evaluates hydrophobic and pH-specific electrostatic surface patches on a user-selected protein chain group.")
     st.markdown("##### Protein–ligand")
     if protein_ligand:
         st.caption("PLIP, PandaMap, and PoseBusters are registered Studio workflows. Contextual launch for the selected pose is a subsequent integration phase.")
@@ -485,7 +868,7 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
         st.caption("The selected structure contains nucleic acid. No registered contextual analysis in this Biotite Interface slice evaluates protein–nucleic-acid interactions; capabilities will be listed as unavailable until a compatible existing workflow is connected.")
     else:
         st.caption("Not applicable to the selected components.")
-    if not ppi_applicable:
+    if not protein_chains:
         return
 
     candidate = selected.get("candidate") if isinstance(selected.get("candidate"), dict) else {}
@@ -495,122 +878,206 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
     run_id = str(job.get("run_id") or "")
     source_run_dir = Path(str(job.get("run_dir") or "")).expanduser().resolve()
     candidate_file = source_run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl"
-    workflow_id = "analysis.biotite_interface"
-    schema = None
-    unavailable = ""
-    try:
-        if workflow_schema is None:
-            raise RuntimeError("The workflow registry is unavailable in this page context.")
-        schema = workflow_schema(workflow_id)
-    except Exception as exc:
-        unavailable = f"The existing workflow could not be loaded: {exc}"
-    if not candidate_id:
-        unavailable = "This structure artifact has no normalized candidate identity in the selected Results job."
-    elif not candidate_file.is_file():
-        unavailable = "The selected Results job has no normalized candidate collection for the existing workflow."
-    elif _structure_suffix(path) not in {".pdb", ".ent", ".cif", ".mmcif"}:
-        unavailable = "Biotite Interface requires a PDB or mmCIF protein complex artifact."
-    elif not task_group or not run_id:
-        unavailable = "The source Results job identity is incomplete."
-    elif not str(job.get("project_id") or ""):
-        unavailable = "The source Results job has no project assignment; Studio requires an authorized project for a new workflow."
-
+    source_project = str(job.get("project_id") or "")
     candidate_metadata = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
-    candidate_binder = [str(value) for value in candidate.get("binder_chains") or []]
-    candidate_target = [str(value) for value in candidate.get("target_chains") or []]
-    if not candidate_binder:
-        candidate_binder = [str(value) for value in candidate_metadata.get("binder_chains") or []]
-    if not candidate_target:
-        candidate_target = [str(value) for value in candidate_metadata.get("target_chains") or []]
+    candidate_binder = [str(value) for value in candidate.get("binder_chains") or candidate_metadata.get("binder_chains") or []]
+    candidate_target = [str(value) for value in candidate.get("target_chains") or candidate_metadata.get("target_chains") or []]
     candidate_binder = [value for value in candidate_binder if value in protein_chains]
     candidate_target = [value for value in candidate_target if value in protein_chains and value not in candidate_binder]
     key = hashlib.sha256(f"{task_group}/{run_id}:{selected['relative_path']}".encode()).hexdigest()[:14]
-    a_key, b_key = f"complex-analysis-biotite-a-{key}", f"complex-analysis-biotite-b-{key}"
-    st.markdown("##### Configure Biotite Interface")
-    st.caption(f"Exact model/artifact: {candidate.get('candidate_id') or path.name} · {candidate.get('model_index') or candidate_metadata.get('model_index') or path.name}")
-    first, second = st.columns(2)
-    if a_key not in st.session_state:
-        st.session_state[a_key] = candidate_binder
-    if b_key not in st.session_state:
-        st.session_state[b_key] = candidate_target
-    binder_chains = first.multiselect("Interface chain group A", protein_chains,
-        key=a_key, help="The existing workflow calls this binder_chains; this label is only a group name and does not assert design or binding.")
-    target_chains = second.multiselect("Interface chain group B", protein_chains,
-        key=b_key, help="May contain one or more protein chains.")
-    parameters = {str(row.get("name")): row for row in (schema or {}).get("parameters", [])}
-    default_distance = float(parameters.get("contact_distance", {}).get("default", 5.0))
-    contact_distance = st.number_input("Contact distance (Å)", min_value=0.1, max_value=20.0,
-        value=default_distance, step=0.1, key=f"complex-analysis-biotite-cutoff-{key}")
-
-    invalid_selection = (not binder_chains or not target_chains or bool(set(binder_chains) & set(target_chains)))
-    if invalid_selection:
-        st.info("Choose two nonempty, disjoint protein chain groups to enable the existing interface workflow.")
-    if unavailable:
-        st.warning(f"Biotite Interface unavailable: {unavailable}")
-        return
-
-    project_prefix = f"complex-analysis-biotite-{key}"
-    source_project = str(job.get("project_id") or "")
-    project_key = f"{project_prefix}-project-id"
-    if project_selector:
-        if project_key not in st.session_state:
-            st.session_state[project_key] = source_project
-        analysis_project = project_selector(project_prefix, label="Analysis project", allow_create=False)
-    else:
-        analysis_project = source_project
-        st.caption(f"Analysis project: {source_project}")
-    if analysis_project != source_project:
-        st.warning("Select the source Results job's project. Studio requires analyses to remain in the source project's access boundary.")
-
-    distance_digest = _structure_digest(path)
     model_id = str(candidate.get("model_index") or candidate_metadata.get("model_index") or path.name)
-    existing = _matching_biotite_jobs(user, source_task_group=task_group, source_run_id=run_id,
-        candidate_id=candidate_id, structure_digest=distance_digest,
-        binder_chains=binder_chains, target_chains=target_chains,
-        contact_distance=float(contact_distance), model_id=model_id) if not invalid_selection and distance_digest else []
-    current = next((item for item in existing if item["status"] in {"completed", "succeeded"}), None)
-    if current is None:
-        current = next((item for item in existing if item["status"] not in {"failed", "cancelled", "canceled"}), None)
-    if current:
-        _render_biotite_results(user, current, source_candidate_id=candidate_id, key=key)
-    elif existing:
-        failed = existing[0]
-        st.error(f"Previous matching analysis failed: {failed.get('error') or 'No per-item error was recorded.'}")
-        _render_biotite_results(user, failed, source_candidate_id=candidate_id, key=key)
-    else:
-        st.caption("No matching Biotite Interface evaluation is saved for this exact structure, model, chain mapping, and contact distance.")
 
-    if current and current["status"] in {"completed", "succeeded"}:
-        return
-    button_label = "Retry analysis" if existing else "Run analysis"
-    disabled = bool(invalid_selection or not analysis_project or analysis_project != source_project or submit is None or schema is None)
-    if st.button(button_label, type="primary", disabled=disabled, key=f"complex-analysis-run-biotite-{key}"):
-        if not submit:
-            st.warning("Workflow submission is unavailable in this page context.")
-            return
-        st.session_state["complex-analysis-active"] = {
-            "kind": "results", "task_group": task_group, "run_id": run_id,
-            "candidate_id": candidate_id, "model_index": model_id,
-            "relative_path": selected["relative_path"],
-        }
-        workflow_parameters = {
-            "candidate_ids": [candidate_id],
-            "selected_structure_path": str(path),
-            "selected_model_id": model_id,
-            "binder_chains": list(binder_chains),
-            "target_chains": list(target_chains),
-            "contact_distance": float(contact_distance),
-        }
-        source_job = f"{task_group}/{run_id}"
-        before = st.session_state.get("last_submitted_job")
+    if ppi_applicable:
+        biotite_id = "analysis.biotite_interface"
+        biotite_schema = None
+        biotite_unavailable = ""
         try:
-            submit(schema, workflow_id, {**workflow_parameters, "source_job": source_job},
-                   str(analysis_project), {}, "Biotite Interface")
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            st.error(f"Could not start Biotite Interface: {exc}")
-            return
-        if st.session_state.get("last_submitted_job") != before:
-            st.rerun()
+            if workflow_schema is None:
+                raise RuntimeError("The workflow registry is unavailable in this page context.")
+            biotite_schema = workflow_schema(biotite_id)
+        except Exception as exc:
+            biotite_unavailable = f"The registered workflow could not be loaded: {exc}"
+        if not candidate_id:
+            biotite_unavailable = "This structure artifact has no normalized candidate identity in the selected Results job."
+        elif not candidate_file.is_file():
+            biotite_unavailable = "The selected Results job has no normalized candidate collection."
+        elif _structure_suffix(path) not in {".pdb", ".ent", ".cif", ".mmcif"}:
+            biotite_unavailable = "Biotite Interface requires a PDB or mmCIF protein complex artifact."
+        elif not task_group or not run_id:
+            biotite_unavailable = "The source Results job identity is incomplete."
+        elif not source_project:
+            biotite_unavailable = "The source Results job has no project assignment for a new workflow."
+        st.markdown("##### Interface chain groups")
+        st.caption(f"Exact model/artifact: {candidate_id or path.name} · {model_id}")
+        first, second = st.columns(2)
+        a_key, b_key = f"complex-analysis-interface-a-{key}", f"complex-analysis-interface-b-{key}"
+        if a_key not in st.session_state:
+            st.session_state[a_key] = candidate_binder
+        if b_key not in st.session_state:
+            st.session_state[b_key] = candidate_target
+        binder_chains = first.multiselect("Interface chain group A", protein_chains, key=a_key,
+            help="This group name does not assert design or experimental binding.")
+        target_chains = second.multiselect("Interface chain group B", protein_chains, key=b_key,
+            help="May contain one or more protein chains.")
+        schema_parameters = {str(row.get("name")): row for row in (biotite_schema or {}).get("parameters", [])}
+        default_distance = float(schema_parameters.get("contact_distance", {}).get("default", 5.0))
+        contact_distance = st.number_input("Biotite contact distance (Å)", min_value=0.1, max_value=20.0,
+            value=default_distance, step=0.1, key=f"complex-analysis-biotite-cutoff-{key}")
+        invalid_groups = (not binder_chains or not target_chains or bool(set(binder_chains) & set(target_chains)))
+        if invalid_groups:
+            st.info("Choose two nonempty, disjoint protein chain groups to enable the interface analyses.")
+        project_prefix = f"complex-analysis-{key}"
+        if project_selector:
+            project_key = f"{project_prefix}-project-id"
+            if project_key not in st.session_state:
+                st.session_state[project_key] = source_project
+            analysis_project = project_selector(project_prefix, label="Analysis project", allow_create=False)
+        else:
+            analysis_project = source_project
+            st.caption(f"Analysis project: {source_project or 'unavailable'}")
+        if analysis_project != source_project:
+            st.warning("Select the source Results job's project. Studio keeps analyses in the source project's access boundary.")
+
+        digest = _structure_digest(path)
+        contact_distance = round(float(contact_distance), 3)
+        existing = _matching_biotite_jobs(user, source_task_group=task_group, source_run_id=run_id,
+            candidate_id=candidate_id, structure_digest=digest, binder_chains=binder_chains,
+            target_chains=target_chains, contact_distance=contact_distance, model_id=model_id) if not invalid_groups and digest else []
+        current = next((item for item in existing if item["status"] in {"completed", "succeeded"}), None)
+        if current is None:
+            current = next((item for item in existing if item["status"] not in {"failed", "cancelled", "canceled"}), None)
+        if current:
+            _render_biotite_results(user, current, source_candidate_id=candidate_id, key=key,
+                structure_path=path, structure_context=candidate_metadata,
+                structure_components=components,
+                viewer_key=viewer_key)
+        elif existing:
+            failed = existing[0]
+            st.error(f"Previous matching analysis failed: {failed.get('error') or 'No per-item error was recorded.'}")
+            _render_biotite_results(user, failed, source_candidate_id=candidate_id, key=key,
+                structure_path=path, structure_context=candidate_metadata,
+                structure_components=components,
+                viewer_key=viewer_key)
+        elif not biotite_unavailable:
+            st.caption("No matching Biotite Interface evaluation is saved for this exact structure, model, chain mapping, and contact distance.")
+        if biotite_unavailable:
+            st.warning(f"Biotite Interface unavailable: {biotite_unavailable}")
+        elif not (current and current["status"] in {"completed", "succeeded"}):
+            button_label = "Retry analysis" if existing else "Run analysis"
+            disabled = bool(invalid_groups or not analysis_project or analysis_project != source_project or submit is None or biotite_schema is None)
+            if st.button(button_label, type="primary", disabled=disabled, key=f"complex-analysis-run-biotite-{key}"):
+                st.session_state["complex-analysis-active"] = {
+                    "kind": "results", "task_group": task_group, "run_id": run_id,
+                    "candidate_id": candidate_id, "model_index": model_id,
+                    "relative_path": selected["relative_path"],
+                }
+                workflow_parameters = {
+                    "candidate_ids": [candidate_id], "selected_structure_path": str(path),
+                    "selected_model_id": model_id, "binder_chains": list(binder_chains),
+                    "target_chains": list(target_chains), "contact_distance": contact_distance,
+                }
+                before = st.session_state.get("last_submitted_job")
+                try:
+                    submit(biotite_schema, biotite_id, {**workflow_parameters, "source_job": f"{task_group}/{run_id}"},
+                           str(analysis_project), {}, "Biotite Interface")
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    st.error(f"Could not start Biotite Interface: {exc}")
+                    return
+                if st.session_state.get("last_submitted_job") != before:
+                    st.rerun()
+        pep_surface_key = f"complex-analysis-pep-patch-chains-{key}"
+        if pep_surface_key not in st.session_state:
+            st.session_state[pep_surface_key] = candidate_binder or binder_chains
+        pep_surface_chains = st.multiselect("PEP-Patch surface chain group", protein_chains,
+            key=pep_surface_key, help="Choose the protein surface whose patches to evaluate.")
+    else:
+        binder_chains = []
+        target_chains = []
+        st.markdown("##### Protein surface group")
+        surface_key = f"complex-analysis-pep-patch-chains-{key}"
+        if surface_key not in st.session_state:
+            st.session_state[surface_key] = candidate_binder or protein_chains[:1]
+        pep_surface_chains = st.multiselect("Protein chains for PEP-Patch", protein_chains, key=surface_key)
+        binder_chains = list(pep_surface_chains)
+        analysis_project = source_project
+        if project_selector:
+            project_prefix = f"complex-analysis-{key}"
+            project_key = f"{project_prefix}-project-id"
+            if project_key not in st.session_state:
+                st.session_state[project_key] = source_project
+            analysis_project = project_selector(project_prefix, label="Analysis project", allow_create=False)
+
+    common_unavailable = ""
+    if not candidate_id:
+        common_unavailable = "This structure has no normalized candidate identity in its Results job."
+    elif not candidate_file.is_file():
+        common_unavailable = "The source Results job has no normalized candidate collection."
+    elif not source_project or not task_group or not run_id:
+        common_unavailable = "The source Results job lacks the project or stable job identity required for this workflow."
+    elif _structure_suffix(path) not in {".pdb", ".ent", ".cif", ".mmcif"}:
+        common_unavailable = "The selected analysis requires a PDB or mmCIF protein structure."
+
+    schemas = {}
+    schema_errors = {}
+    for workflow_id in ("analysis.rosetta", "analysis.ipsae", "analysis.pep_patch"):
+        try:
+            schemas[workflow_id] = workflow_schema(workflow_id) if workflow_schema else None
+            if not schemas[workflow_id]:
+                schema_errors[workflow_id] = "The workflow registry did not return this analysis schema."
+        except Exception as exc:
+            schema_errors[workflow_id] = f"The registered workflow is unavailable: {exc}"
+
+    if ppi_applicable:
+        role_unavailable = common_unavailable or ("Choose two nonempty, disjoint protein chain groups." if invalid_groups else "")
+        single_chain_unavailable = role_unavailable or (
+            "The registered workflow supports one selected chain in each group." if len(binder_chains) != 1 or len(target_chains) != 1 else ""
+        )
+        st.markdown("#### Protein–protein evaluations")
+        _render_contextual_workflow(user, workflow_id="analysis.rosetta", schema=schemas.get("analysis.rosetta"),
+            job=job, selected=selected, candidate=candidate, structure_path=path, model_id=model_id,
+            candidate_file=candidate_file, task_group=task_group, run_id=run_id, project_id=str(analysis_project or ""),
+            binder_chains=list(binder_chains), target_chains=list(target_chains), scientific_parameters={},
+            key=key, submit=submit, unavailable=schema_errors.get("analysis.rosetta") or single_chain_unavailable)
+        ipsae_schema = schemas.get("analysis.ipsae")
+        ipsae_parameters = {str(row.get("name")): row for row in (ipsae_schema or {}).get("parameters", [])}
+        with st.expander("Configure ipSAE parameters", expanded=False):
+            defaults = {name: float(ipsae_parameters.get(name, {}).get("default", value)) for name, value in {
+                "pae_cutoff": 10., "dist_cutoff": 10., "ipdae_contact_cutoff": 8.,
+                "structure_contact_cutoff": 4., "hotspot_contact_cutoff": 5.,
+            }.items()}
+            fields = st.columns(3)
+            ipsae_values = {}
+            for index, (name, default) in enumerate(defaults.items()):
+                ipsae_values[name] = round(float(fields[index % len(fields)].number_input(
+                    name.replace("_", " ").title() + (" (Å)" if name != "pae_cutoff" else " (Å)"),
+                    min_value=0.1, max_value=50.0, value=default, step=0.5,
+                    key=f"complex-analysis-ipsae-{name}-{key}")), 3)
+        candidate_pae = str(candidate_metadata.get("pae_path") or "")
+        pae_path = Path(candidate_pae).expanduser() if candidate_pae else None
+        if pae_path is not None and not pae_path.is_absolute():
+            pae_path = source_run_dir / pae_path
+        if pae_path is None or not pae_path.is_file():
+            st.caption("No saved pairwise PAE matrix was found for this model. The existing ipSAE workflow can still report structure metrics, while PAE-derived scores will be marked unavailable.")
+        _render_contextual_workflow(user, workflow_id="analysis.ipsae", schema=ipsae_schema,
+            job=job, selected=selected, candidate=candidate, structure_path=path, model_id=model_id,
+            candidate_file=candidate_file, task_group=task_group, run_id=run_id, project_id=str(analysis_project or ""),
+            binder_chains=list(binder_chains), target_chains=list(target_chains), scientific_parameters=ipsae_values,
+            key=key, submit=submit, unavailable=schema_errors.get("analysis.ipsae") or single_chain_unavailable)
+
+    if protein_chains:
+        pep_schema = schemas.get("analysis.pep_patch")
+        pep_parameters = {str(row.get("name")): row for row in (pep_schema or {}).get("parameters", [])}
+        default_ph = float(pep_parameters.get("ph", {}).get("default", 7.4))
+        ph = st.number_input("PEP-Patch pH", min_value=0.0, max_value=14.0, value=default_ph, step=0.1,
+                             key=f"complex-analysis-pep-patch-ph-{key}")
+        surface_unavailable = common_unavailable or ("Choose at least one protein chain for the surface calculation." if not pep_surface_chains else "")
+        if analysis_project != source_project:
+            surface_unavailable = "Select the source Results job's project to keep this workflow in its access boundary."
+        _render_contextual_workflow(user, workflow_id="analysis.pep_patch", schema=pep_schema,
+            job=job, selected=selected, candidate=candidate, structure_path=path, model_id=model_id,
+            candidate_file=candidate_file, task_group=task_group, run_id=run_id, project_id=str(analysis_project or ""),
+            binder_chains=list(pep_surface_chains), target_chains=[], scientific_parameters={"ph": round(float(ph), 3)},
+            key=key, submit=submit, unavailable=schema_errors.get("analysis.pep_patch") or surface_unavailable)
 
 
 def _show_component_groups(components: list[dict], key: str) -> None:
@@ -653,7 +1120,8 @@ def _show_component_groups(components: list[dict], key: str) -> None:
         st.rerun()
 
 
-def _show_structure(path: Path, context: dict, components: list[dict], *, key: str) -> None:
+def _show_structure(path: Path, context: dict, components: list[dict], *, key: str,
+                    highlighted_selections: list[str] | None = None) -> None:
     if path.stat().st_size > VIEWER_MAX_BYTES:
         st.info("This structure is over 50 MB. Download it from its source results or Database record to inspect it locally.")
         return
@@ -663,7 +1131,8 @@ def _show_structure(path: Path, context: dict, components: list[dict], *, key: s
         from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer.dataclasses import StructureVisualization
 
         molstar_custom_component(
-            [StructureVisualization(pdb=text, color="chain-id", representation_type="cartoon+ball-and-stick")],
+            [StructureVisualization(pdb=text, color="chain-id", representation_type="cartoon+ball-and-stick",
+                                    highlighted_selections=highlighted_selections)],
             key=key, height=650, show_controls=True, show_structure_tools=False,
         )
     except (ImportError, OSError, ValueError, TypeError) as exc:
@@ -713,10 +1182,182 @@ def _show_human_review(database, user: dict, *, source_kind: str, subject_id: st
         st.success(f"Review saved · {saved['updated_at']}")
 
 
-def _render_database_source(user: dict, opened: dict) -> None:
+def _render_database_analysis(user: dict, record: dict, structure: dict, path: Path,
+                              components: list[dict], evaluation_id: str, *,
+                              workflow_schema=None, submit=None) -> None:
+    protein_chains = sorted({str(item.get("source_chain") or "") for item in components
+                             if item.get("type") == "protein" and item.get("source_chain")})
+    kinds = {str(item.get("type") or "other") for item in components}
+    group_id = str(structure.get("group_id") or "")
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    db_group = MolecularDatabase().group(group_id, user)
+    project_id = str(db_group.get("project_id") or "")
+    context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
+    model_id = str(context.get("model_id") or context.get("model_index") or context.get("model") or structure.get("model_index") or structure["id"])
+    source = {
+        "molecule_id": str(record["id"]), "structure_id": str(structure["id"]),
+        "group_id": group_id, "evaluation_id": evaluation_id, "model_id": model_id,
+        "binder_chains": [], "target_chains": [],
+    }
+    digest = _structure_digest(path)
+    if not digest:
+        st.info("The selected structure cannot be checksummed, so contextual analysis is unavailable.")
+        return
+    source["structure_digest"] = digest
+    key = hashlib.sha256(f"database:{record['id']}:{structure['id']}".encode()).hexdigest()[:14]
+    st.markdown("### Available analyses")
+    st.caption("Choose a registered analysis explicitly. Opening a Database structure does not start calculations.")
+    schemas, schema_errors = {}, {}
+    for workflow_id in ("analysis.biotite_interface", "analysis.rosetta", "analysis.ipsae", "analysis.pep_patch"):
+        try:
+            schemas[workflow_id] = workflow_schema(workflow_id) if workflow_schema else None
+            if not schemas[workflow_id]:
+                schema_errors[workflow_id] = "The workflow registry did not return this analysis schema."
+        except Exception as exc:
+            schema_errors[workflow_id] = f"The registered workflow is unavailable: {exc}"
+
+    ppi = kinds == {"protein"} and len(protein_chains) >= 2
+    if ppi:
+        st.markdown("#### Protein–protein")
+        st.caption(f"Selected representation: {structure['id']} · model {model_id} · SHA256 {digest[:16]}")
+        left, right = st.columns(2)
+        group_a_key, group_b_key = f"complex-analysis-db-a-{key}", f"complex-analysis-db-b-{key}"
+        if group_a_key not in st.session_state:
+            st.session_state[group_a_key] = protein_chains[:1]
+        if group_b_key not in st.session_state:
+            st.session_state[group_b_key] = protein_chains[1:]
+        binder_chains = left.multiselect("Interface chain group A", protein_chains, key=group_a_key)
+        target_chains = right.multiselect("Interface chain group B", protein_chains, key=group_b_key)
+        source["binder_chains"], source["target_chains"] = list(binder_chains), list(target_chains)
+        invalid_groups = not binder_chains or not target_chains or bool(set(binder_chains) & set(target_chains))
+        if invalid_groups:
+            st.info("Choose nonempty, disjoint protein chain groups. Multi-chain groups are supported by Biotite Interface.")
+        interface_params = {"contact_distance": float(next((item.get("default", 5.0) for item in (schemas.get("analysis.biotite_interface") or {}).get("parameters", []) if item.get("name") == "contact_distance"), 5.0))}
+        interface_params["contact_distance"] = round(float(st.number_input(
+            "Biotite contact distance (Å)", min_value=0.1, max_value=20.0,
+            value=interface_params["contact_distance"], step=0.1, key=f"complex-analysis-db-biotite-cutoff-{key}")), 3)
+        def show_ppi(workflow_id: str, parameters: dict, unavailable: str = "") -> None:
+            _render_database_workflow(user, workflow_id, schemas.get(workflow_id), source, model_id,
+                                      binder_chains, target_chains, parameters, key, submit,
+                                      project_id, unavailable or ("Choose two nonempty, disjoint protein chain groups." if invalid_groups else ""),
+                                      structure_path=path, structure_context=context, structure_components=components,
+                                      viewer_key=f"complex-analysis-db-viewer-{structure['id']}")
+        show_ppi("analysis.biotite_interface", interface_params, schema_errors.get("analysis.biotite_interface", ""))
+        show_ppi("analysis.rosetta", {}, schema_errors.get("analysis.rosetta", "") or (
+            "The registered Rosetta workflow currently accepts exactly one chain in each group."
+            if len(binder_chains) != 1 or len(target_chains) != 1 else ""))
+        ipsae_schema = schemas.get("analysis.ipsae")
+        ipsae_schema_params = {str(item.get("name")): item for item in (ipsae_schema or {}).get("parameters", [])}
+        defaults = {name: float(ipsae_schema_params.get(name, {}).get("default", default)) for name, default in (
+            ("pae_cutoff", 10.), ("dist_cutoff", 10.), ("ipdae_contact_cutoff", 8.),
+            ("structure_contact_cutoff", 4.), ("hotspot_contact_cutoff", 5.))}
+        with st.expander("Configure ipSAE parameters", expanded=False):
+            fields = st.columns(3)
+            ipsae_params = {name: round(float(fields[index % len(fields)].number_input(
+                name.replace("_", " ").title() + " (Å)", min_value=0.1, max_value=50.0,
+                value=value, step=0.5, key=f"complex-analysis-db-ipsae-{name}-{key}")), 3)
+                for index, (name, value) in enumerate(defaults.items())}
+        st.caption("ipSAE can use saved structure geometry here. PAE-derived terms remain unavailable unless the source stores a compatible pairwise PAE matrix.")
+        show_ppi("analysis.ipsae", ipsae_params, schema_errors.get("analysis.ipsae", "") or (
+            "The registered ipSAE workflow currently accepts exactly one chain in each group."
+            if len(binder_chains) != 1 or len(target_chains) != 1 else ""))
+    elif {"protein", "small_molecule"} <= kinds:
+        st.markdown("#### Protein–ligand")
+        st.info("The selected representation is a protein–ligand complex. Direct Database-source PLIP, PandaMap, and PoseBusters submissions are not yet connected to the structure-selection adapter.")
+    elif {"protein", "dna"} <= kinds or {"protein", "rna"} <= kinds:
+        st.markdown("#### Protein–DNA/RNA")
+        st.info("The selected representation contains protein and nucleic acid. The registered protein–protein interface workflows do not apply; no contextual DNA/RNA interaction evaluator is currently registered here.")
+    else:
+        st.info("No compatible registered interaction analysis was identified for this component combination.")
+
+    if protein_chains:
+        st.markdown("#### Protein surface analysis")
+        pep_key = f"complex-analysis-db-pep-chains-{key}"
+        if pep_key not in st.session_state:
+            st.session_state[pep_key] = protein_chains[:1]
+        surface_chains = st.multiselect("PEP-Patch surface chain group", protein_chains, key=pep_key)
+        st.number_input("PEP-Patch pH", min_value=0.0, max_value=14.0, value=7.4, step=0.1,
+                        key=f"complex-analysis-db-pep-ph-{key}")
+        surface_source = {**source, "binder_chains": list(surface_chains), "target_chains": []}
+        _render_database_workflow(user, "analysis.pep_patch", schemas.get("analysis.pep_patch"),
+            surface_source, model_id, list(surface_chains), [],
+            {"ph": round(float(st.session_state[f"complex-analysis-db-pep-ph-{key}"]), 3)},
+            key + "-pep", submit, project_id,
+            schema_errors.get("analysis.pep_patch", "") or ("Choose at least one protein chain for the surface analysis." if not surface_chains else ""))
+
+
+def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None, source: dict,
+                              model_id: str, binder_chains: list[str], target_chains: list[str],
+                              parameters: dict, key: str, submit, project_id: str,
+                              unavailable: str = "", *, structure_path: Path | None = None,
+                              structure_context: dict | None = None,
+                              structure_components: list[dict] | None = None,
+                              viewer_key: str = "") -> None:
+    title = {"analysis.biotite_interface": "Biotite Interface", "analysis.rosetta": "Rosetta Interface Analysis",
+             "analysis.ipsae": "ipSAE & Structure Analysis", "analysis.pep_patch": "PEP-Patch"}.get(workflow_id, workflow_id)
+    st.markdown(f"##### {title}")
+    if not schema:
+        st.info(unavailable or "The registered workflow schema is unavailable.")
+        return
+    if unavailable:
+        st.info(unavailable)
+        return
+    candidate_id = "database-" + hashlib.sha256((str(source["molecule_id"]) + ":" + str(source["structure_id"])).encode()).hexdigest()[:24]
+    matches = _matching_database_analysis_jobs(user, workflow_id=workflow_id, source=source,
+        candidate_id=candidate_id, model_id=model_id, binder_chains=list(binder_chains),
+        target_chains=list(target_chains), parameters=parameters)
+    current = next((item for item in matches if item["status"] in {"completed", "succeeded"}), None)
+    if current is None:
+        current = next((item for item in matches if item["status"] not in {"failed", "cancelled", "canceled"}), None)
+    if current:
+        if workflow_id == "analysis.biotite_interface":
+            _render_biotite_results(user, current, source_candidate_id=candidate_id, key=key,
+                structure_path=structure_path, structure_context=structure_context,
+                structure_components=structure_components, viewer_key=viewer_key)
+        else:
+            _render_contextual_results(user, current, workflow_id=workflow_id,
+                                       source_candidate_id=candidate_id, key=key)
+    elif matches:
+        failed = matches[0]
+        st.error(f"Previous matching analysis failed: {failed.get('error') or 'No per-item error was recorded.'}")
+        if workflow_id == "analysis.biotite_interface":
+            _render_biotite_results(user, failed, source_candidate_id=candidate_id, key=key,
+                structure_path=structure_path, structure_context=structure_context,
+                structure_components=structure_components, viewer_key=viewer_key)
+        else:
+            _render_contextual_results(user, failed, workflow_id=workflow_id,
+                                       source_candidate_id=candidate_id, key=key)
+    else:
+        st.caption("No matching evaluation is saved for this exact Database structure, model, chain selection, and method settings.")
+    if current and current["status"] in {"completed", "succeeded"}:
+        return
+    if current and current["status"] not in {"failed", "cancelled", "canceled"}:
+        return
+    if st.button("Retry analysis" if matches else "Run analysis", type="primary", key=f"complex-analysis-db-run-{workflow_id.replace('.', '-')}-{key}", disabled=submit is None):
+        st.session_state["complex-analysis-active"] = {
+            "kind": "database", "molecule_id": source["molecule_id"],
+            "structure_id": source["structure_id"], "evaluation_id": source.get("evaluation_id", ""),
+        }
+        try:
+            submit(schema, workflow_id, {**parameters, "candidate_ids": [candidate_id],
+                "selected_structure_path": source.get("selected_structure_path"),
+                "selected_model_id": model_id, "binder_chains": list(binder_chains),
+                "target_chains": list(target_chains), "database_source": {
+                    "molecule_id": source["molecule_id"], "structure_id": source["structure_id"],
+                    "group_id": source["group_id"], "evaluation_id": source.get("evaluation_id", ""),
+                    "model_id": model_id, "binder_chains": list(binder_chains),
+                    "target_chains": list(target_chains),
+                }}, project_id, {}, title)
+            st.rerun()
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            st.error(f"Could not start {title}: {exc}")
+
+
+def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, submit=None) -> None:
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
 
     database = MolecularDatabase()
+    st.caption("Analyses launched from Database use the existing Studio workflow queue on this workstation; the selected structure stays linked to its Database record without creating a prediction Results job.")
     query = st.text_input("Search Database complexes", key="complex-analysis-db-query", placeholder="Name or sequence")
     page = database.list_molecules(user, collection="all", query=query, limit=1000)
     records = [item for item in page["items"] if item.get("representations") and len(item.get("components") or []) >= 2]
@@ -806,8 +1447,12 @@ def _render_database_source(user: dict, opened: dict) -> None:
     )
     component_rows = component_inventory(path.read_bytes(), path.name, record.get("components"))
     _show_components(component_rows)
-    _show_structure(path, structure.get("context") or {}, component_rows, key=f"complex-analysis-db-viewer-{structure_id}")
+    viewer_key = f"complex-analysis-db-viewer-{structure_id}"
+    _show_structure(path, structure.get("context") or {}, component_rows, key=viewer_key,
+                    highlighted_selections=_active_biotite_highlights(viewer_key))
     _show_component_groups(component_rows, structure_id)
+    _render_database_analysis(user, record, structure, path, component_rows, evaluation_id,
+                              workflow_schema=workflow_schema, submit=submit)
     associated = []
     for observation in record.get("observations", []):
         evaluation = next((item for known_observation, item in evaluation_by_id.values()
@@ -908,8 +1553,9 @@ def _render_results_source(user: dict, opened: dict, *, workflow_schema=None, pr
         st.error(f"Could not read the selected structure: {exc}")
         return
     _show_components(components)
-    _show_structure(selected["path"], candidate_metadata, components,
-                    key=f"complex-analysis-results-viewer-{selected_ref}-{structure_path}")
+    viewer_key = f"complex-analysis-results-viewer-{selected_ref}-{structure_path}"
+    _show_structure(selected["path"], candidate_metadata, components, key=viewer_key,
+                    highlighted_selections=_active_biotite_highlights(viewer_key))
     _show_component_groups(components, f"{selected_ref}-{structure_path}")
     if candidate:
         st.markdown("#### Existing model evaluation metadata")
@@ -940,7 +1586,8 @@ def _render_results_source(user: dict, opened: dict, *, workflow_schema=None, pr
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
     _render_biotite_workspace(user, job, selected, components,
                               workflow_schema=workflow_schema,
-                              project_selector=project_selector, submit=submit)
+                              project_selector=project_selector, submit=submit,
+                              viewer_key=viewer_key)
     _show_human_review(
         MolecularDatabase(), user, source_kind="results", subject_id=selected_ref,
         structure_ref=selected["relative_path"],
@@ -960,7 +1607,8 @@ def render_complex_analysis_workspace(user: dict, *, workflow_schema=None, proje
     source = st.radio("Source", ["Database", "Results"], horizontal=True, key="complex-analysis-source-kind")
     try:
         if source == "Database":
-            _render_database_source(user, active if active.get("kind") == "database" else {})
+            _render_database_source(user, active if active.get("kind") == "database" else {},
+                                    workflow_schema=workflow_schema, submit=submit)
         else:
             _render_results_source(user, active if active.get("kind") == "results" else {},
                                    workflow_schema=workflow_schema,
@@ -969,3 +1617,7 @@ def render_complex_analysis_workspace(user: dict, *, workflow_schema=None, proje
         st.warning("This record or job is unavailable or you do not have access to it.")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         st.error(f"Could not load this structure source: {html.escape(str(exc))}")
+    with st.expander("Compare saved complexes", expanded=False):
+        from mn_molecular_design_studio.complex_analysis_comparison_ui import render_comparison
+        render_comparison(user, workflow_schema=workflow_schema,
+                          project_selector=project_selector, submit=submit)

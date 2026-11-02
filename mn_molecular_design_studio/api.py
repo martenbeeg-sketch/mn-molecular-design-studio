@@ -370,7 +370,9 @@ def _guard_source_job(payload: dict[str, Any], user: dict[str, Any], *, project_
         )
 
 
-def _request_payload_and_project(payload: dict[str, Any], user: dict[str, Any]) -> tuple[dict[str, Any], str]:
+def _request_payload_and_project(
+    payload: dict[str, Any], user: dict[str, Any], *, allow_private_database_source: bool = False,
+) -> tuple[dict[str, Any], str | None]:
     from mn_molecular_design_studio.api_files import resolve_references
     try:
         request_payload = resolve_references(dict(payload), user)
@@ -382,13 +384,118 @@ def _request_payload_and_project(payload: dict[str, Any], user: dict[str, Any]) 
         if user.get("role") == "admin":
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         raise HTTPException(status_code=404, detail="Project not found.") from exc
-    if project_id is None:
+    has_database_source = isinstance(request_payload.get("database_source"), dict)
+    collections = [request_payload.get("interface_clustering_collection"),
+                   request_payload.get("foldseek_collection")]
+    private_database_collection = any(
+        isinstance(collection, dict)
+        and isinstance(collection.get("sources"), list)
+        and bool(collection["sources"])
+        and all(isinstance(item, dict) and str(item.get("kind") or "").casefold() == "database"
+                for item in collection["sources"])
+        for collection in collections
+    )
+    if project_id is None and not (allow_private_database_source and (has_database_source or private_database_collection)):
         raise HTTPException(status_code=422, detail="Select a project before submitting a job.")
+    if project_id is not None:
+        try:
+            require_project_access(user, project_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail="Project not found.") from exc
     try:
-        require_project_access(user, project_id)
-    except PermissionError as exc:
-        raise HTTPException(status_code=404, detail="Project not found.") from exc
+        from mn_molecular_design_studio.localfold import apply_user_terms_acceptance
+        request_payload = apply_user_terms_acceptance(request_payload, user_id=str(user.get("id") or ""))
+    except (OSError, ValueError):
+        # A saved-terms write failure must not prevent a request whose API body
+        # already carries the required explicit acceptance flag.
+        pass
     return request_payload, project_id
+
+
+def _prepare_database_analysis_request(request_payload: dict[str, Any], user: dict[str, Any], project_id: str | None) -> dict[str, Any]:
+    """Resolve a stable authorized Database structure into existing workflow inputs."""
+    if "database_source" not in request_payload:
+        return request_payload
+    from mn_molecular_design_studio.complex_analysis_sources import apply_database_analysis_source
+
+    try:
+        return apply_database_analysis_source(request_payload, user, project_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=404, detail="Database structure is unavailable or access was denied.") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Database structure is unavailable or access was denied.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail="Database structure could not be staged for analysis.") from exc
+
+
+def _prepare_interface_clustering_collection_request(
+    request_payload: dict[str, Any], user: dict[str, Any], project_id: str | None,
+) -> dict[str, Any]:
+    """Authorize stable saved-structure selectors and adapt them to QC inputs."""
+    selection = request_payload.get("interface_clustering_collection")
+    if selection is None:
+        return request_payload
+    if request_payload.get("workflow") != "analysis.interface_clustering":
+        raise HTTPException(status_code=422, detail="Saved structure collections are supported only by Interface Clustering.")
+    if request_payload.get("source_job"):
+        raise HTTPException(status_code=422, detail="Use either a Results source job or a saved structure collection, not both.")
+    parameters = request_payload.get("parameters")
+    if not isinstance(parameters, dict):
+        raise HTTPException(status_code=422, detail="Interface Clustering requires one parameter object.")
+    from mn_molecular_design_studio.complex_analysis_sources import build_interface_clustering_collection
+
+    try:
+        adapter = build_interface_clustering_collection(user, selection, project_id=project_id)
+    except (PermissionError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail="A selected saved structure is unavailable or access was denied.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail="The saved structure collection could not be staged for analysis.") from exc
+    updated = dict(request_payload)
+    updated.pop("interface_clustering_collection", None)
+    updated["parameters"] = {
+        **parameters,
+        "source_run_dir": adapter["source_run_dir"],
+        "candidates_jsonl": adapter["candidates_jsonl"],
+    }
+    return updated
+
+
+def _prepare_foldseek_collection_request(
+    request_payload: dict[str, Any], user: dict[str, Any], project_id: str | None,
+) -> dict[str, Any]:
+    """Resolve authorized Compare selectors into the registered Foldseek inputs."""
+    selection = request_payload.get("foldseek_collection")
+    if selection is None:
+        return request_payload
+    if request_payload.get("workflow") != "analysis.foldseek":
+        raise HTTPException(status_code=422, detail="Saved structure collections are supported by Foldseek only.")
+    if request_payload.get("source_job"):
+        raise HTTPException(status_code=422, detail="Use either a Results source job or a saved structure collection, not both.")
+    parameters = request_payload.get("parameters")
+    if not isinstance(parameters, dict):
+        raise HTTPException(status_code=422, detail="Foldseek requires one parameter object.")
+    from mn_molecular_design_studio.complex_analysis_sources import build_foldseek_collection
+
+    try:
+        adapter = build_foldseek_collection(user, selection, project_id=project_id)
+    except (PermissionError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail="A selected saved structure is unavailable or access was denied.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail="The Foldseek collection could not be staged for analysis.") from exc
+    updated = dict(request_payload)
+    updated.pop("foldseek_collection", None)
+    updated["parameters"] = {
+        **parameters,
+        "source_run_dir": adapter["source_run_dir"],
+        "candidates_jsonl": adapter["candidates_jsonl"],
+    }
+    return updated
 
 
 @app.get("/api/v1/health")
@@ -471,7 +578,13 @@ def validate_workflow(
     user: dict[str, Any] = Depends(_current_user),
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> dict[str, Any]:
-    request_payload, project_id = _request_payload_and_project(payload, user)
+    request_payload, project_id = _request_payload_and_project(payload, user, allow_private_database_source=True)
+    is_database_source = isinstance(request_payload.get("database_source"), dict)
+    is_interface_collection = isinstance(request_payload.get("interface_clustering_collection"), dict)
+    is_foldseek_collection = isinstance(request_payload.get("foldseek_collection"), dict)
+    request_payload = _prepare_database_analysis_request(request_payload, user, project_id)
+    request_payload = _prepare_interface_clustering_collection_request(request_payload, user, project_id)
+    request_payload = _prepare_foldseek_collection_request(request_payload, user, project_id)
     if str(request_payload.get("source_job") or "").startswith("run:"):
         from mn_molecular_design_studio import logical_runs, run_operations
         token = credentials.credentials if credentials else "development-mode" if is_development_mode() else ""
@@ -484,9 +597,15 @@ def validate_workflow(
                 "validation_scope": "all_selected_sources", "sources": validations}
     request_dir = _request_directory(user, base_dir)
     _validate_user_path_values(request_payload, user, request_dir)
-    remote = _cluster_submission(request_payload, project_id, user, request_dir, credentials, validate_only=True)
+    saved_collection = is_interface_collection or is_foldseek_collection
+    remote = None if is_database_source or saved_collection else _cluster_submission(request_payload, project_id, user, request_dir, credentials, validate_only=True)
     if remote is not None:
         return remote
+    if is_database_source or saved_collection:
+        # Database structure bundles are local to the owning Studio instance.
+        # Validate against the ordinary workflow schema after stripping the
+        # UI's placement envelope, just as submission does below.
+        request_payload.pop("execution", None)
     _guard_source_job(request_payload, user, project_id=project_id)
     return _with_request_file(request_payload, validate_workflow_request, base_dir=str(request_dir))
 
@@ -498,9 +617,17 @@ def workflow_placement_options(
     user: dict[str, Any] = Depends(_current_user),
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> dict[str, Any]:
-    request_payload, project_id = _request_payload_and_project(payload, user)
+    request_payload, project_id = _request_payload_and_project(payload, user, allow_private_database_source=True)
+    is_database_source = isinstance(request_payload.get("database_source"), dict)
+    is_interface_collection = isinstance(request_payload.get("interface_clustering_collection"), dict)
+    is_foldseek_collection = isinstance(request_payload.get("foldseek_collection"), dict)
+    request_payload = _prepare_database_analysis_request(request_payload, user, project_id)
+    request_payload = _prepare_interface_clustering_collection_request(request_payload, user, project_id)
+    request_payload = _prepare_foldseek_collection_request(request_payload, user, project_id)
     request_dir = _request_directory(user, base_dir)
     _validate_user_path_values(request_payload, user, request_dir)
+    if is_database_source or is_interface_collection or is_foldseek_collection:
+        return {"placement": "local", "candidates": []}
     from mn_molecular_design_studio.cluster.service import placement_options_from_api
     token = credentials.credentials if credentials else "development-mode" if is_development_mode() else ""
     return _call(
@@ -518,7 +645,15 @@ def submit_workflow(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> dict[str, Any]:
-    request_payload, project_id = _request_payload_and_project(payload, user)
+    request_payload, project_id = _request_payload_and_project(
+        payload, user, allow_private_database_source=True,
+    )
+    is_database_source = isinstance(request_payload.get("database_source"), dict)
+    is_interface_collection = isinstance(request_payload.get("interface_clustering_collection"), dict)
+    is_foldseek_collection = isinstance(request_payload.get("foldseek_collection"), dict)
+    request_payload = _prepare_database_analysis_request(request_payload, user, project_id)
+    request_payload = _prepare_interface_clustering_collection_request(request_payload, user, project_id)
+    request_payload = _prepare_foldseek_collection_request(request_payload, user, project_id)
     if str(request_payload.get("source_job") or "").startswith("run:"):
         from mn_molecular_design_studio import logical_runs, run_operations
         token = credentials.credentials if credentials else "development-mode" if is_development_mode() else ""
@@ -532,20 +667,33 @@ def submit_workflow(
     request_dir = _request_directory(user, base_dir)
     _validate_user_path_values(request_payload, user, request_dir)
     def perform():
-        remote = _cluster_submission(request_payload, project_id, user, request_dir, credentials)
+        # Database structure bundles are staged on the owning Studio instance.
+        # They use the normal local workflow queue; remote placement would
+        # either lose that authorized path or require staging it as a Results
+        # prediction artifact, which this source contract explicitly avoids.
+        saved_collection = is_interface_collection or is_foldseek_collection
+        remote = None if is_database_source or saved_collection else _cluster_submission(request_payload, project_id, user, request_dir, credentials)
         if remote is not None:
             return remote
+        if is_database_source or saved_collection:
+            # The existing scheduler request schema does not include the UI's
+            # placement/idempotency envelope. _submit_once has already
+            # consumed the idempotency key before this operation runs.
+            request_payload.pop("execution", None)
         _guard_source_job(request_payload, user, project_id=project_id)
         # Durable ownership tags must exist before a queued controller can
         # start. Distributed child submissions can race the post-submit
         # project marker written below, so they read these tags from metadata.
         from mn_molecular_design_studio.engine.workflow_engine.core.jobs import submission_tags
         with submission_tags(
-            studio_owner_id=str(user["id"]), studio_project_id=project_id,
+            studio_owner_id=str(user["id"]), studio_project_id=project_id or "",
             studio_development_mode=is_development_mode(),
         ):
             result = _with_request_file(request_payload, submit_workflow_request, base_dir=str(request_dir))
-        return mark_studio_job(result, project_id=project_id, owner_id=str(user["id"]))
+        return mark_studio_job(
+            result, project_id=project_id if project_id is not None else None,
+            owner_id=str(user["id"]), allow_private_source=project_id is None,
+        )
     return _submit_once(request_payload, project_id, user, "workflow", idempotency_key, perform)
 
 

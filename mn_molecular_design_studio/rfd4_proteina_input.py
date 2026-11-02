@@ -83,6 +83,45 @@ def _as_safe_yaml(payload: object) -> str:
     return yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, width=1000)
 
 
+def rebind_condition_spec_target(condition_spec: str, target_filename: str,
+                                 input_filenames=()) -> str:
+    """Point unlisted condition-spec inputs at the graph's selected target.
+
+    Explicit files in the RFD4 Input files field keep their names. Other input
+    references represent the connected Target Structure and follow its file
+    when a saved pipeline is reused with a different target.
+    """
+    try:
+        spec = yaml.safe_load(str(condition_spec or ""))
+    except yaml.YAMLError as exc:
+        raise ValueError("Invalid YAML/JSON condition file.") from exc
+    if not isinstance(spec, dict) or not spec:
+        raise ValueError("Provide a nonempty mapping of named designs.")
+    original_normalized = _as_safe_yaml(spec)
+    target_name = Path(str(target_filename or "")).name
+    if not target_name:
+        raise ValueError("The connected target needs a filename for the RFD4 condition specification.")
+    explicit_names = {Path(str(value)).name for value in input_filenames if str(value).strip()}
+
+    def rebind(value):
+        if isinstance(value, list):
+            return [rebind(item) for item in value]
+        if not isinstance(value, str) or not value.strip():
+            return value
+        name = Path(value).name
+        return value if name in explicit_names or name == target_name else target_name
+
+    global_args = spec.get("global_args")
+    if isinstance(global_args, dict) and "input" in global_args:
+        global_args["input"] = rebind(global_args["input"])
+    for name, entry in spec.items():
+        if name == "global_args" or not isinstance(entry, dict) or "input" not in entry:
+            continue
+        entry["input"] = rebind(entry["input"])
+    rebound = _as_safe_yaml(spec)
+    return str(condition_spec) if rebound == original_normalized else rebound
+
+
 def parse_idr_fasta(text: str) -> str:
     """Return one standard-amino-acid IDR sequence from FASTA or plain text."""
     value = str(text or "").strip()

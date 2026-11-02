@@ -304,7 +304,13 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
     key = f"{prefix}-{node_id}"
     if selected["data"]["kind"] == "target":
         path = resolve_stored_path(params.get("target_pdb"), must_exist=True) if params.get("target_pdb") else None
-        source = render_target_source(key_prefix=key, label="Target Structure", example_code="7QF4", allow_cif=True, upload_in_expander=True, owner_id=owner_id)
+        source = render_target_source(
+            key_prefix=key, label="Target Structure", example_code="7QF4",
+            allow_cif=True, upload_in_expander=True, owner_id=owner_id,
+            allow_saved_targets=True, project_id=project_id,
+            initial_molecule_id=params.get("target_source_molecule_id", ""),
+            initial_structure_id=params.get("target_source_structure_id", ""),
+        )
         if not source.path and path:
             source = TargetSource(path=path, name=path.stem, owner_id=owner_id)
         if source.path:
@@ -320,7 +326,12 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
                 st.caption("Coldspots are inherited only by generator engines that support them; each generator node shows its support status.")
                 render_target_coldspots(target, key_prefix=key, show_structure_tools=False, rerun_scope="fragment")
         if target.design_path and target.ready and target.valid_trim_ranges:
-            contexts[node_id] = {"target_pdb": str(target.design_path), "target_chains": ",".join(target.chains), "hotspots": target.hotspots, "coldspots": target.coldspots}
+            contexts[node_id] = {
+                "target_pdb": str(target.design_path), "target_chains": ",".join(target.chains),
+                "hotspots": target.hotspots, "coldspots": target.coldspots,
+                "target_source_molecule_id": source.molecule_id,
+                "target_source_structure_id": source.structure_id,
+            }
             params.update(contexts[node_id])
     elif selected["data"]["kind"] == "active_library":
         chosen = _render_active_library(params, key)
@@ -430,7 +441,9 @@ def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs):
         key = f"{prefix}-editor-{editor['id']}-{editor['revision']}"
         def render_input():
             return _render_node_input(working, owner_id, project_id, search_jobs, key, graph)
-        values, label, action, replacement_kind = render_node_form(working, graph, key=key, render_input=render_input, owner_id=owner_id)
+        values, label, action, replacement_kind, node_updates = render_node_form(
+            working, graph, key=key, render_input=render_input, owner_id=owner_id, include_node_updates=True,
+        )
         if action == "replace":
             try:
                 from mn_molecular_design_studio.pipeline_node_ui import replacement_node_data
@@ -440,13 +453,19 @@ def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs):
                 replacement_source["data"].update(params=values, label=label)
                 replacement = replacement_node_data(replacement_source, replacement_kind)
                 node["data"].update(replacement)
+                for name, value in node_updates.items():
+                    if name == "execution" and value is None:
+                        node["data"].pop(name, None)
+                    else:
+                        node["data"][name] = copy.deepcopy(value)
                 updated = clean_graph(updated)
                 validate_graph(updated)
                 if project_id:
                     submit_api("/api/v1/pipelines/save", {"project_id":project_id, "graph":updated})
                 st.session_state[prefix+"-graph"] = updated
                 st.session_state[prefix+"-settings-update"] = {
-                    "id":uuid.uuid4().hex, "node_id":node["id"], **replacement,
+                    "id":uuid.uuid4().hex, "node_id":node["id"],
+                    "data": {**replacement, **node_updates},
                 }
                 _close_node_editor(prefix)
                 st.rerun(scope="app")
@@ -465,11 +484,19 @@ def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs):
                 updated = copy.deepcopy(graph)
                 node = next(n for n in updated["nodes"] if n["id"] == selected["id"])
                 node["data"].update(params=values, label=label)
+                for name, value in node_updates.items():
+                    if name == "execution" and value is None:
+                        node["data"].pop(name, None)
+                    else:
+                        node["data"][name] = copy.deepcopy(value)
                 updated = clean_graph(updated)
                 if project_id:
                     submit_api("/api/v1/pipelines/save", {"project_id":project_id, "graph":updated})
                 st.session_state[prefix+"-graph"] = updated
-                st.session_state[prefix+"-settings-update"] = {"id":uuid.uuid4().hex, "node_id":node["id"], "params":values, "label":label}
+                st.session_state[prefix+"-settings-update"] = {
+                    "id":uuid.uuid4().hex, "node_id":node["id"],
+                    "data": {"params": values, "label": label, **node_updates},
+                }
                 _close_node_editor(prefix)
                 st.rerun(scope="app")
             except (ValueError, OSError, TypeError, KeyError) as exc:
@@ -481,8 +508,45 @@ def _activate_graph(prefix, graph):
     """Widget callback: replace the draft before its widgets are instantiated."""
     st.session_state[prefix+"-graph"] = copy.deepcopy(graph)
     st.session_state[prefix+"-reset"] = uuid.uuid4().hex
-    st.session_state[prefix+"-name"] = graph["name"]
     _close_node_editor(prefix)
+
+
+def _show_pipeline_save_as(prefix, project_id, submit_api):
+    """Create a separately named pipeline draft from the current canvas."""
+    if not st.session_state.get(prefix + "-save-as-open"):
+        return
+
+    @st.dialog("Save pipeline as…", width="small")
+    def dialog():
+        state_key = prefix + "-graph"
+        source = copy.deepcopy(st.session_state[state_key])
+        name = st.text_input("Pipeline name", value=f"{source['name']} copy", key=prefix + "-save-as-name-" + source["id"]).strip()
+        save_col, cancel_col = st.columns(2)
+        save = save_col.button("Save as…", key=prefix + "-save-as-submit", type="primary", use_container_width=True)
+        cancel = cancel_col.button("Cancel", key=prefix + "-save-as-cancel", use_container_width=True)
+        if cancel:
+            st.session_state[prefix + "-save-as-open"] = False
+            st.rerun()
+        if save:
+            if not project_id:
+                st.error("Choose a project before saving a pipeline.")
+                return
+            if not name:
+                st.error("Enter a pipeline name.")
+                return
+            duplicate = copy.deepcopy(source)
+            duplicate["id"] = uuid.uuid4().hex
+            duplicate["name"] = name
+            try:
+                submit_api("/api/v1/pipelines/save", {"project_id": project_id, "graph": duplicate})
+                _activate_graph(prefix, duplicate)
+                st.session_state[prefix + "-save-as-open"] = False
+                st.success(f"Saved as {name}.")
+                st.rerun()
+            except (ValueError, OSError, TypeError, KeyError) as exc:
+                st.error(str(exc))
+
+    dialog()
 
 
 def _activate_selected_template(prefix, templates):
@@ -492,112 +556,130 @@ def _activate_selected_template(prefix, templates):
         _activate_graph(prefix, new_graph(templates[selected]))
 
 
-def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jobs):
-    st.markdown("<style>.block-container{max-width:1900px;padding-top:1.35rem} [data-testid=stMainBlockContainer]{padding-left:2rem;padding-right:2rem}</style>", unsafe_allow_html=True)
-    project_col, new_col = st.columns([2, 1], vertical_alignment="bottom")
-    with project_col:
-        project_id = project_selector("visual-pipeline")
-    prefix = f"visual-pipeline-{project_id or 'unassigned'}"
-    state_key = prefix+"-graph"
-    definitions = list_definitions(owner_id, project_id) if project_id else []
-    if state_key not in st.session_state:
-        st.session_state[state_key] = copy.deepcopy(definitions[0]["graph"] if definitions else new_graph("targeted_protein_binder"))
-        st.session_state[prefix+"-reset"] = uuid.uuid4().hex
-        st.session_state[prefix+"-name"] = st.session_state[state_key]["name"]
-    pending=st.session_state.get('pipeline-pending-draft')
-    if pending and pending['project_id']==project_id:
-        _activate_graph(prefix,pending['graph'])
-        st.session_state.pop('pipeline-pending-draft',None)
-    current_graph = st.session_state[state_key]
-    migrated_graph = migrate_template_graph(current_graph)
-    if migrated_graph is not current_graph:
-        _activate_graph(prefix, migrated_graph)
-    with new_col:
-        st.caption("Choose an objective below to create an editable graph. Saved pipelines remain available.")
-    from mn_molecular_design_studio.scientific_tasks_ui import render_task_setup
-    created = render_task_setup(prefix)
-    if created is not None:
-        _activate_graph(prefix, created)
-    graph = st.session_state[state_key]
-    from mn_molecular_design_studio.scientific_tasks import TASKS, workload
-    task_id = graph.get("task_configuration", {}).get("task_id")
-    if task_id in TASKS:
-        st.caption(("Experimental · " if TASKS[task_id].get("experimental") else "Standard · ") + TASKS[task_id]["description"])
-        with st.expander("Configured workload"):
-            estimate = workload(graph)
-            for line in estimate["counts"]:
-                st.write(line)
-            st.caption(estimate["note"])
-    if graph.get("workflow_mode"):
-        from mn_molecular_design_studio.workflow_modes import describe
-        summary = describe(graph)
-        st.caption("Workflow: " + summary['effective_label'] + " · Starting preset: " + summary['preset_label'])
-        with st.expander("Scientific workflow operations and stages"):
-            st.json(summary)
-    from mn_molecular_design_studio.pipeline_graph import TEMPLATE_REFERENCES
-    if graph.get('template_id') in TEMPLATE_REFERENCES:
-        url,description=TEMPLATE_REFERENCES[graph['template_id']]
-        with st.expander('About this starting template'):
-            st.write(description)
-            st.markdown('[Author workflow recommendations]('+url+')')
-    name_col, reuse_col, gpu_col = st.columns([1.6, 1.25, .75], vertical_alignment="bottom")
-    graph["name"] = name_col.text_input("Pipeline name", key=prefix+"-name")
-    reuse = reuse_col.checkbox("Reuse unchanged completed steps", value=True, key=prefix+"-reuse", help="New runs can reuse successful steps in this project. Layout changes do not invalidate them.")
-    from mn_molecular_design_studio import candidate_execution
-    from mn_molecular_design_studio.cluster import config as cluster_config
-    from mn_molecular_design_studio.cluster.capabilities import gpu_details
-    execution_controls_ready = True
-    settings = candidate_execution.policy(graph.get('candidate_execution'))
-    nodes = []
-    if cluster_config.load()['mode'] in {'peer', 'coordinator'}:
-        from mn_molecular_design_studio.cluster.store import Store
-        nodes = Store().nodes()
-    devices = gpu_details()
-    selected_node = next((n for n in nodes if n['id'] == settings['placement']), None)
-    if selected_node:
-        devices = {str(g['gpu_id']): g for g in selected_node['snapshot'].get('resources', {}).get('gpus', [])}
-    gpu_values = {'Automatic': 'all', **{f"GPU {i} · {g.get('name', 'detected GPU')}": str(i) for i, g in devices.items()}}
-    gpu = gpu_col.selectbox('GPU assignment', list(gpu_values), key=prefix+'-gpu')
-    with st.expander('Candidate execution', expanded=settings['mode'] == 'sharded'):
-        enabled = st.checkbox('Distribute independent candidate batches', value=settings['mode'] == 'sharded', key=prefix+'-shards')
-        if enabled:
-            destinations = {'local': 'This workstation', 'auto': 'Automatic · eligible trusted workstations',
-                            **{n['id']: cluster_config.display_name(n['name']) + ' · ' + n['availability'] for n in nodes}}
-            placement = st.selectbox('Batch destination', list(destinations), format_func=destinations.get,
-                index=list(destinations).index(settings['placement']) if settings['placement'] in destinations else 0, key=prefix+'-batch-placement')
-            batch_size = st.number_input('Candidates per batch', min_value=1, max_value=10000, value=settings['batch_size'], key=prefix+'-batch-size')
-            in_flight = st.number_input('Maximum batches in flight', min_value=1, max_value=32, value=settings['max_in_flight'], key=prefix+'-batch-limit')
-            cpu_cores = st.number_input('CPU threads per batch', min_value=1, max_value=256, value=settings['cpu_cores'], key=prefix+'-batch-cpu')
-            ram = st.number_input('RAM per batch (GiB)', min_value=0., value=float(settings['ram_gb']), key=prefix+'-batch-ram')
-            vram = st.number_input('Minimum free VRAM per GPU (GiB)', min_value=0., value=float(settings['min_vram_gb']), key=prefix+'-batch-vram')
-            retries = st.number_input('Retries per failed batch', min_value=0, max_value=5, value=settings['retries'], key=prefix+'-batch-retries')
-            incremental = st.checkbox('Analyze completed batches while prediction continues (CPU)', value=settings['incremental_cpu'], key=prefix+'-batch-incremental')
-            partial = st.checkbox('Allow explicit partial candidate pools and missing branches', value=settings['failure_policy'] == 'partial', key=prefix+'-batch-partial')
-            settings.update(mode='sharded', placement=placement, batch_size=int(batch_size), max_in_flight=int(in_flight),
-                            min_vram_gb=vram, ram_gb=ram, cpu_cores=int(cpu_cores), retries=int(retries), incremental_cpu=incremental, failure_policy='partial' if partial else 'all')
+def _show_pipeline_resources(prefix, owner_id, project_id, submit_api):
+    """Canvas toolbar dialog for shared scheduler and workstation defaults."""
+    if not st.session_state.get(prefix + "-resources-open"):
+        return
+
+    @st.dialog("Pipeline resources", width="large")
+    def dialog():
+        from mn_molecular_design_studio import candidate_execution
+        from mn_molecular_design_studio.cluster import config as cluster_config
+
+        state_key = prefix + "-graph"
+        graph = copy.deepcopy(st.session_state[state_key])
+        settings = candidate_execution.policy(graph.get("candidate_execution"))
+        resource_key = prefix + "-" + graph["id"]
+        nodes = []
+        try:
+            if cluster_config.load()["mode"] in {"peer", "coordinator"}:
+                from mn_molecular_design_studio.cluster.store import Store
+                nodes = Store().nodes()
+        except (OSError, ValueError, KeyError, TypeError):
+            nodes = []
+
+        st.caption("These are pipeline-wide scheduler defaults. Open a canvas step's Configure dialog to override resources for that step.")
+        sharded = st.checkbox(
+            "Distribute compatible candidate batches",
+            value=settings["mode"] == "sharded", key=resource_key + "-resources-sharded",
+            help="Splits independent candidates into scheduler jobs. Engine-native batch size and design counts remain in each tool's settings.",
+        )
+        choices = {
+            "local": "This workstation",
+            "auto": "Automatic · compatible trusted workstations",
+            **{item["id"]: cluster_config.display_name(item["name"]) + " · " + item["availability"]
+               for item in nodes},
+        }
+        selected = settings.get("placement", "local")
+        settings["placement"] = st.selectbox(
+            "Workstation", list(choices), format_func=choices.get,
+            index=list(choices).index(selected) if selected in choices else 0,
+            key=resource_key + "-resources-placement",
+        )
+        left, middle, right = st.columns(3)
+        settings["gpu_device"] = left.text_input(
+            "GPU selector", value=settings.get("gpu_device", "all"), key=resource_key + "-resources-gpu",
+            help="Use all, auto, or explicit device indices such as 0 or 0,1.",
+        ).strip() or "all"
+        settings["cpu_cores"] = int(middle.number_input(
+            "CPU cores per job", min_value=1, max_value=256, value=settings["cpu_cores"], key=resource_key + "-resources-cpu",
+        ))
+        settings["min_vram_gb"] = float(right.number_input(
+            "Minimum free VRAM (GiB)", min_value=0., value=float(settings["min_vram_gb"]), key=resource_key + "-resources-vram",
+        ))
+
+        resources_ready = True
+        if sharded:
+            settings["mode"] = "sharded"
+            columns = st.columns(4)
+            settings["batch_size"] = int(columns[0].number_input(
+                "Candidates per scheduler batch", min_value=1, max_value=10000, value=settings["batch_size"], key=resource_key + "-resources-batch",
+            ))
+            settings["max_in_flight"] = int(columns[1].number_input(
+                "Concurrent batches", min_value=1, max_value=32, value=settings["max_in_flight"], key=resource_key + "-resources-concurrency",
+            ))
+            settings["ram_gb"] = float(columns[2].number_input(
+                "RAM per job (GiB)", min_value=0., value=float(settings["ram_gb"]), key=resource_key + "-resources-ram",
+            ))
+            settings["retries"] = int(columns[3].number_input(
+                "Retries per failed batch", min_value=0, max_value=5, value=settings["retries"], key=resource_key + "-resources-retries",
+            ))
+            settings["incremental_cpu"] = st.checkbox(
+                "Process completed batches while prediction continues (CPU)", value=settings["incremental_cpu"], key=resource_key + "-resources-incremental",
+            )
+            settings["failure_policy"] = "partial" if st.checkbox(
+                "Allow explicit partial candidate pools and missing branches", value=settings["failure_policy"] == "partial",
+                key=resource_key + "-resources-partial",
+            ) else "all"
             from mn_molecular_design_studio.campaign_objectives_ui import render_time_limits
-            st.caption('Optional dispatch limits below apply separately to each partitioned step, from its original start. The shared campaign objective controls the whole selected design scope.')
-            limits, limits_ready = render_time_limits(st, settings, key=prefix+'-batch-time')
-            execution_controls_ready = execution_controls_ready and limits_ready
-            if limits_ready:
-                for name in ('max_runtime_seconds', 'deadline_at'):
+            st.caption("Dispatch time limits apply to each partitioned step. Shared campaign objectives can set limits across selected design branches.")
+            limits, ready = render_time_limits(st, settings, key=resource_key + "-resources-time")
+            resources_ready = ready
+            if ready:
+                for name in ("max_runtime_seconds", "deadline_at"):
                     settings.pop(name, None)
                 settings.update(limits)
-            st.caption('Supported collection adapters and independent generation jobs use the existing scheduler. Batch destination applies to supported sharded nodes. Other nodes use the controller workstation. A single trajectory stays on one worker.')
         else:
-            settings['mode'] = 'native'
-            settings.pop('max_runtime_seconds', None)
-            settings.pop('deadline_at', None)
-        graph['candidate_execution'] = candidate_execution.policy(settings)
+            settings["mode"] = "native"
+            settings.pop("max_runtime_seconds", None)
+            settings.pop("deadline_at", None)
+
         if nodes:
-            st.dataframe([{'Workstation': cluster_config.display_name(n['name']), 'Status': n['availability'],
-                'Free GPUs': len(n['snapshot'].get('resources', {}).get('free_gpus', [])),
-                'Running allocations': n['snapshot'].get('resources', {}).get('reservations', 0),
-                'Free CPU threads': n['snapshot'].get('resources', {}).get('cpu_free', 0)} for n in nodes], hide_index=True)
-    if devices:
-        st.dataframe([{'GPU': i, 'Model': g.get('name', ''), 'Free VRAM GiB': g.get('free_vram_gb'),
-                           'Compute capability': g.get('compute_capability'), 'Utilization %': g.get('utilization_percent')}
-                          for i, g in devices.items()], hide_index=True)
+            with st.expander("Connected workstation availability", expanded=False):
+                st.dataframe([{
+                    "Workstation": cluster_config.display_name(item["name"]),
+                    "Status": item["availability"],
+                    "Free GPUs": len(item["snapshot"].get("resources", {}).get("free_gpus", [])),
+                    "Running allocations": item["snapshot"].get("resources", {}).get("reservations", 0),
+                    "Free CPU threads": item["snapshot"].get("resources", {}).get("cpu_free", 0),
+                } for item in nodes], hide_index=True, use_container_width=True)
+
+        apply_col, cancel_col = st.columns(2)
+        if cancel_col.button("Cancel", key=resource_key + "-resources-cancel", use_container_width=True):
+            st.session_state[prefix + "-resources-open"] = False
+            st.rerun()
+        if apply_col.button("Apply resource defaults", key=resource_key + "-resources-apply", type="primary", disabled=not resources_ready, use_container_width=True):
+            try:
+                graph["candidate_execution"] = candidate_execution.policy(settings)
+                normalized = clean_graph(graph)
+                if project_id:
+                    submit_api("/api/v1/pipelines/save", {"project_id": project_id, "graph": normalized})
+                st.session_state[state_key] = normalized
+                st.session_state[prefix + "-resources-open"] = False
+                if not project_id:
+                    st.info("Select a project to save these resource defaults.")
+                st.rerun()
+            except (ValueError, OSError, TypeError, KeyError) as exc:
+                st.error(str(exc))
+
+    dialog()
+
+
+def _render_shared_campaign_editor(prefix, graph):
+    """Render the optional shared objective editor inside the canvas Campaign dialog."""
+    ready = True
+    stage_error = None
+    time_ready = True
     from mn_molecular_design_studio.workflow_modes import capability as design_capability
     from mn_molecular_design_studio.engine.workflow_engine.workflows.generator_capabilities import generator_capabilities
     eligible_campaign_nodes = []
@@ -787,67 +869,58 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
             st.info('Choose at least one compatible design branch to enable the shared campaign objective.')
     else:
         graph.pop('shared_campaign', None)
-    with st.expander("Branch and processing settings", expanded=False):
-        from mn_molecular_design_studio.quality_tools import TOOLS as quality_tools
-        configurable = [n for n in graph['nodes']
-                        if NODE_CATALOG[n['data']['kind']]['category'] in {'Design engine', 'Design pipeline', 'Structure prediction', 'Sequence design', 'Analysis'}
-                        and not quality_tools.get(n['data']['kind'], {}).get('cohort')]
-        if configurable:
-            selected_id = st.selectbox('Pipeline branch or processing step', [n['id'] for n in configurable],
-                format_func=lambda value: next(n['data']['label'] + ' · ' + value for n in configurable if n['id'] == value),
-                key=prefix+'-processing-node-'+graph['id'])
-            selected = next(n for n in configurable if n['id'] == selected_id)
-            node_key = prefix + '-processing-' + graph['id'] + '-' + selected_id
-            data = selected['data']
-            category = NODE_CATALOG[data['kind']]['category']
-            if category in {'Design engine', 'Design pipeline', 'Structure prediction'}:
-                data['enabled'] = st.checkbox('Enable branch', value=data.get('enabled', True), key=node_key+'-enabled')
-                data['retained_run_dir'] = st.text_input('Reuse retained run from this project (optional)', value=data.get('retained_run_dir', ''), key=node_key+'-retained',
-                    help='Explicit read-only evidence reuse. Source native settings and hashes remain recorded; the tile controls apply to fresh execution.')
-            current_policy = candidate_execution.policy(data.get('execution', graph.get('candidate_execution')))
-            can_partition = candidate_execution.supports(data['kind'], {'candidates_jsonl': 'preview'})
-            if can_partition or graph.get('workflow_mode') and category in {'Design engine', 'Design pipeline'}:
-                distribute = can_partition and st.checkbox('Partition this step into batches', value=current_policy['mode'] == 'sharded', key=node_key+'-sharded')
-                if distribute:
-                    current_policy['batch_size'] = int(st.number_input('Candidates per batch for this step', min_value=1, max_value=10000, value=current_policy['batch_size'], key=node_key+'-size'))
-                    current_policy['max_in_flight'] = int(st.number_input('Maximum concurrent jobs for this step', min_value=1, max_value=32, value=current_policy['max_in_flight'], key=node_key+'-concurrency'))
-                    current_policy['mode'] = 'sharded'
-                else:
-                    current_policy['mode'] = 'native'
-                    current_policy.pop('max_runtime_seconds', None)
-                    current_policy.pop('deadline_at', None)
-                if distribute:
-                    from mn_molecular_design_studio.campaign_objectives_ui import render_time_limits
-                    st.caption('Optional dispatch limit for this step. Existing inputs are processed once; active batches finish and unused inputs remain unprocessed.')
-                    limits, limits_ready = render_time_limits(st, current_policy, key=node_key+'-time')
-                    execution_controls_ready = execution_controls_ready and limits_ready
-                    if limits_ready:
-                        for name in ('max_runtime_seconds', 'deadline_at'):
-                            current_policy.pop(name, None)
-                        current_policy.update(limits)
-                destinations = {'local': 'This workstation', 'auto': 'Automatic · eligible trusted workstations',
-                                **{n['id']: cluster_config.display_name(n['name']) + ' · ' + n['availability'] for n in nodes}}
-                current_policy['placement'] = st.selectbox('Workstation destination for this step', list(destinations), format_func=destinations.get,
-                    index=list(destinations).index(current_policy['placement']) if current_policy['placement'] in destinations else 0, key=node_key+'-placement')
-                selector = st.text_input('GPU selector for this step (blank = pipeline assignment)', value=current_policy.get('gpu_device', ''), key=node_key+'-gpu', help='Use auto, all, or explicit device indices such as 0 or 0,1. The existing scheduler verifies physical reservations.')
-                if selector.strip():
-                    current_policy['gpu_device'] = selector.strip()
-                else:
-                    current_policy.pop('gpu_device', None)
-                current_policy['cpu_cores'] = int(st.number_input('CPU cores per processing job', min_value=1, max_value=256, value=current_policy['cpu_cores'], key=node_key+'-cpu'))
-                current_policy['min_vram_gb'] = st.number_input('Minimum VRAM per GPU for this step (GiB)', min_value=0., value=float(current_policy['min_vram_gb']), key=node_key+'-vram')
-                data['execution'] = current_policy
-                st.caption('Candidate batches use the existing scheduler. Engine-native samples, sequence multiplicity and GPU microbatching remain in the tool controls. Per-step execution settings override the pipeline policy.')
-    with st.expander('Collection execution plan', expanded=False):
-        from mn_molecular_design_studio.candidate_pipeline import execution_plan
-        preview_count = int(st.number_input('Preview eligible candidates per processing tile', min_value=0, max_value=10000, value=5, key=prefix+'-execution-preview-count'))
-        counts = {n['id']: preview_count for n in graph['nodes'] if NODE_CATALOG[n['data']['kind']]['category'] in {'Structure prediction', 'Sequence design'}}
-        st.caption('Read-only forecast. Preview counts are independent inputs for each processing tile; generator yields and sequence eligibility remain unknown. Native invocations, containers and allocations are separate. Model initialization counts are source expectations, not timing measurements.')
-        st.dataframe(execution_plan(graph, counts), hide_index=True, use_container_width=True)
-        from mn_molecular_design_studio.native_execution import tool_inventory
-        st.caption('All registered generators, sequence-design tools, model variants and cofolders, including RFD4 operations. Unverified lifecycle entries do not claim native batching support.')
-        st.dataframe(tool_inventory(), hide_index=True, use_container_width=True)
-    with st.expander("Saved pipelines & versions", expanded=False):
+    return (not shared_enabled) or (bool(selected_branches) and time_ready and stage_error is None)
+
+
+def _show_pipeline_campaign(prefix, project_id, submit_api):
+    if not st.session_state.get(prefix + "-campaign-open"):
+        return
+
+    @st.dialog("Campaign objective", width="large")
+    def dialog():
+        state_key = prefix + "-graph"
+        graph = copy.deepcopy(st.session_state[state_key])
+        ready = _render_shared_campaign_editor(prefix, graph)
+        apply_col, cancel_col = st.columns(2)
+        if cancel_col.button("Cancel", key=prefix + "-campaign-cancel", use_container_width=True):
+            st.session_state[prefix + "-campaign-open"] = False
+            st.rerun()
+        if apply_col.button("Apply campaign objective", key=prefix + "-campaign-apply", type="primary", disabled=not ready, use_container_width=True):
+            try:
+                normalized = clean_graph(graph)
+                if project_id:
+                    submit_api("/api/v1/pipelines/save", {"project_id": project_id, "graph": normalized})
+                st.session_state[state_key] = normalized
+                st.session_state[prefix + "-campaign-open"] = False
+                st.rerun()
+            except (ValueError, OSError, TypeError, KeyError) as exc:
+                st.error(str(exc))
+
+    dialog()
+
+
+def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jobs):
+    st.markdown("<style>.block-container{max-width:1900px;padding-top:1.35rem} [data-testid=stMainBlockContainer]{padding-left:2rem;padding-right:2rem}</style>", unsafe_allow_html=True)
+    project_id = project_selector("visual-pipeline")
+    prefix = f"visual-pipeline-{project_id or 'unassigned'}"
+    state_key = prefix + "-graph"
+    definitions = list_definitions(owner_id, project_id) if project_id else []
+    if state_key not in st.session_state:
+        st.session_state[state_key] = copy.deepcopy(definitions[0]["graph"] if definitions else new_graph("targeted_protein_binder"))
+        st.session_state[prefix + "-reset"] = uuid.uuid4().hex
+    reuse_key = prefix + "-reuse"
+    st.session_state.setdefault(reuse_key, True)
+    pending = st.session_state.get("pipeline-pending-draft")
+    if pending and pending["project_id"] == project_id:
+        _activate_graph(prefix, pending["graph"])
+        st.session_state.pop("pipeline-pending-draft", None)
+    current_graph = st.session_state[state_key]
+    migrated_graph = migrate_template_graph(current_graph)
+    if migrated_graph is not current_graph:
+        _activate_graph(prefix, migrated_graph)
+
+    graph = st.session_state[state_key]
+    with st.expander("Saved pipelines & versions", expanded=True):
         if definitions:
             saved = st.selectbox("Saved draft", definitions, format_func=lambda d:f"{d['graph']['name']} · {d['versions']} saved versions", key=prefix+"-saved")
             st.button("Open saved draft", key=prefix+"-open", on_click=_activate_graph, args=(prefix, saved["graph"]))
@@ -856,7 +929,28 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
             version = st.selectbox("Version history", versions, format_func=lambda d:f"{d['saved_at'][:19].replace('T',' ')} UTC · {d['revision'][:10]}", key=prefix+"-version-"+graph["id"])
             st.button("Restore version into draft", key=prefix+"-restore", on_click=_activate_graph, args=(prefix, version["graph"]))
         if not definitions and not versions:
-            st.caption("Drafts save automatically after you select a project. Save version keeps an immutable copy.")
+            st.caption("Canvas edits autosave to the current draft. Use Save as… to create a separate pipeline; Save version keeps immutable history.")
+
+    from mn_molecular_design_studio.scientific_tasks_ui import render_legacy_recipe_selector
+    created = render_legacy_recipe_selector(prefix)
+    if created is not None:
+        _activate_graph(prefix, created)
+    graph = st.session_state[state_key]
+    reuse = bool(st.session_state.get(reuse_key, True))
+
+    from mn_molecular_design_studio import candidate_execution
+    from mn_molecular_design_studio.cluster import config as cluster_config
+    settings = candidate_execution.policy(graph.get("candidate_execution"))
+    graph["candidate_execution"] = settings
+    nodes = []
+    try:
+        if cluster_config.load()["mode"] in {"peer", "coordinator"}:
+            from mn_molecular_design_studio.cluster.store import Store
+            nodes = Store().nodes()
+    except (OSError, ValueError, KeyError, TypeError):
+        nodes = []
+    execution_controls_ready = True
+
     contexts = {}
     if not project_id:
         st.info("Choose a project before saving a pipeline version or running it. Each pipeline run is recorded under its selected project.")
@@ -867,6 +961,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         execution = _matching_execution(graph, read_json(last_path/"graph_snapshot.json"), read_json(last_path/"graph_execution.json"))
     value = _component()(graph=graph, catalog=NODE_CATALOG, active_study_layout=ACTIVE_LEARNING_LAYOUT,
                          active_execution_ready=graph.get("template_id") == "unidock_active_learning",
+                         reuse_completed=reuse,
                          reset_token=st.session_state[prefix+"-reset"], input_contexts=contexts,
                          execution=execution, settings_update=st.session_state.get(prefix+"-settings-update"),
                          key=prefix+"-canvas", default=None)
@@ -875,6 +970,10 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         if signature != st.session_state.get(prefix+"-last-value"):
             st.session_state[prefix+"-last-value"] = signature
             try:
+                component_reuse = value.get("reuse_completed", reuse)
+                if type(component_reuse) is bool:
+                    st.session_state[reuse_key] = component_reuse
+                reuse = bool(st.session_state.get(reuse_key, True))
                 component_graph = copy.deepcopy(value["graph"])
                 component_graph["candidate_execution"] = copy.deepcopy(graph["candidate_execution"])
                 for component_node in component_graph.get("nodes", []):
@@ -884,16 +983,13 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                     for branch_option in ('enabled', 'retained_run_dir', 'evidence_namespace'):
                         if branch_option in previous_node.get('data', {}):
                             component_node['data'][branch_option] = copy.deepcopy(previous_node['data'][branch_option])
-                if graph.get("template_id") and not component_graph.get("template_id"):
-                    component_graph["template_id"] = graph["template_id"]
-                if graph.get("workflow_mode"):
-                    component_graph["workflow_mode"] = graph["workflow_mode"]
-                if graph.get("task_configuration"):
-                    component_graph["task_configuration"] = copy.deepcopy(graph["task_configuration"])
-                if graph.get("shared_campaign"):
-                    component_graph["shared_campaign"] = copy.deepcopy(graph["shared_campaign"])
+                for field_name in ("template_id", "workflow_mode", "task_configuration", "shared_campaign"):
+                    if field_name in graph:
+                        component_graph[field_name] = copy.deepcopy(graph[field_name])
+                    else:
+                        component_graph.pop(field_name, None)
                 updated = _restore_component_parameters(component_graph, graph)
-                updated["name"] = graph["name"]
+                updated["name"] = component_graph.get("name") or graph["name"]
                 if project_id:
                     submit_api("/api/v1/pipelines/save", {"project_id": project_id, "graph": updated})
                 st.session_state[state_key] = graph = updated
@@ -902,6 +998,21 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                     st.session_state[prefix+"-handled-action"] = action["id"]
                     if action["type"] == "edit_node":
                         _open_node_editor(prefix, action.get("node_id"))
+                    elif action["type"] == "campaign":
+                        st.session_state[prefix + "-campaign-open"] = True
+                    elif action["type"] == "resources":
+                        st.session_state[prefix + "-resources-open"] = True
+                    elif action["type"] == "save":
+                        if not project_id:
+                            st.warning("Choose a project before saving a pipeline.")
+                        else:
+                            submit_api("/api/v1/pipelines/save", {"project_id": project_id, "graph": graph})
+                            st.success(f"Saved {graph['name']}.")
+                    elif action["type"] == "save_as":
+                        if not project_id:
+                            st.warning("Choose a project before saving a pipeline.")
+                        else:
+                            st.session_state[prefix + "-save-as-open"] = True
                     elif not project_id:
                         st.warning("Select a project before saving a version or running the pipeline.")
                     elif action["type"] == "save_version":
@@ -910,12 +1021,15 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                     elif action["type"] == "run":
                         if not execution_controls_ready:
                             raise ValueError('Correct the dispatch time limits before starting this pipeline.')
-                        result=submit_api("/api/v1/pipelines/run", {"project_id":project_id,"graph":graph,"reuse_completed":reuse,"gpu_device":gpu_values[gpu], **({"execution": {"placement": "local"}} if settings["mode"] == "sharded" else {})})
+                        result=submit_api("/api/v1/pipelines/run", {"project_id":project_id,"graph":graph,"reuse_completed":reuse,"gpu_device":"all"})
                         st.session_state[prefix+"-last-job"] = result["job"]
                         st.session_state["last_submitted_job"] = result["job"]
                         st.success(f"Pipeline queued · {result['job'].get('job_code') or result['job']['run_id']}")
             except (ValueError, OSError, TypeError, KeyError) as exc:
                 st.error(str(exc))
+    _show_pipeline_campaign(prefix, project_id, submit_api)
+    _show_pipeline_resources(prefix, owner_id, project_id, submit_api)
+    _show_pipeline_save_as(prefix, project_id, submit_api)
     _show_node_editor(prefix, owner_id=owner_id, project_id=project_id, submit_api=submit_api, search_jobs=search_jobs)
     try:
         plan=validate_graph(graph, require_inputs=True)

@@ -126,6 +126,24 @@ def verify_prediction_structure(path, task):
     structure = structures.read_structure(Path(path))
     actual = {key: structures.sequence(value) for key, value in structures.protein_chains(structure).items()}
     expected = {row['id']: row['sequence'] for row in task['proteins']}
+    # A declared modified residue (e.g. SEP) keeps its parent position in the
+    # query. Bio.SeqUtils.seq1 omits such residues; check the requested CCD
+    # identity explicitly before restoring the parent letter for comparison.
+    modified = {chain: row['modifications'] for chain, row in task.get('molecule_chain_options', {}).items()
+                if row.get('modifications') and chain in expected}
+    if modified:
+        import gemmi
+        native = gemmi.read_structure(str(path))[0]
+        for chain_id, modifications in modified.items():
+            residues = [res for chain in native if chain.name == chain_id for res in chain
+                        if gemmi.find_tabulated_residue(res.name).is_amino_acid() or 'CA' in res]
+            sequence = [gemmi.find_tabulated_residue(res.name).one_letter_code.upper() for res in residues]
+            for modification in modifications:
+                index = modification['position'] - 1
+                if index >= len(residues) or residues[index].name != modification['ccd']:
+                    raise ValueError(f'Prediction changed modified residue {chain_id}{index + 1}.')
+                sequence[index] = expected[chain_id][index]
+            actual[chain_id] = ''.join(sequence)
     if (expected or task.get("scientific_contract")) and actual != expected:
         raise ValueError(f'Prediction sequence/chain mismatch: expected {expected}, observed {actual}.')
     contract = task.get('scientific_contract') or {}

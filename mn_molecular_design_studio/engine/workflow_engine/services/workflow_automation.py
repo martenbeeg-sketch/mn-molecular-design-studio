@@ -352,10 +352,12 @@ def _json_default(value: Any) -> Any:
     return None
 
 
-def workflow_catalog(*, category: str | None = None) -> list[dict[str, Any]]:
+def workflow_catalog(*, category: str | None = None, workflow_id: str | None = None) -> list[dict[str, Any]]:
     """Return public workflow IDs and their request fields."""
     rows: list[dict[str, Any]] = []
     for spec in _SPECS:
+        if workflow_id is not None and spec.workflow_id != workflow_id:
+            continue
         group = spec.workflow_id.split(".", 1)[0]
         if category and group != category:
             continue
@@ -388,7 +390,7 @@ def workflow_schema(workflow_id: str) -> dict[str, Any]:
         spec = WORKFLOWS[workflow_id]
     except KeyError as exc:
         raise AutomationError(f"Unknown workflow '{workflow_id}'. Use 'workflow list' to see supported IDs.") from exc
-    row = next(item for item in workflow_catalog() if item["workflow"] == workflow_id)
+    row = workflow_catalog(workflow_id=workflow_id)[0]
     function = _get_function(spec)
     request_fields = ["schema_version", "workflow", "parameters", "resources"]
     if {"source_run_dir", "candidates_jsonl"}.issubset(inspect.signature(function).parameters) or workflow_id == "campaign.validation_sequence":
@@ -463,6 +465,10 @@ def workflow_schema(workflow_id: str) -> dict[str, Any]:
                 "maxItems": len(SCAFFOLDS), "uniqueItems": True, "items": {"enum": list(SCAFFOLDS)}}], "default": None}
     if "options_schema" in schema:
         schema["options_json_schema"] = parameters_schema(schema["options_schema"])
+    if workflow_id == 'refolding.optimized_prediction':
+        from mn_molecular_design_studio import localfold
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
+        schema['engine_contracts'] = {'localfold': localfold.api_contract(ENGINE_PROFILES['localfold'])}
     return schema
 
 

@@ -22,6 +22,15 @@ Other paths below are relative to `/api/v1`. Normal calls use
 the existing temporary-password change flow applies. Node credentials remain a
 separate internal contract.
 
+### LocalFold
+
+Use workflow `refolding.optimized_prediction` with `parameters.engine` set to
+`localfold` and `parameters.engine_options.model` set to the desired model.
+Its workflow schema exposes `engine_contracts.localfold` with all model choices,
+defaults, supported inputs, option fields and terms requirements. Validate with
+`POST /api/v1/workflows/validate`, then submit through `POST /api/v1/workflows`.
+See [LocalFold API requests](localfold.md#rest-api) for a complete request body.
+
 ## Private file handles
 
 Upload bytes to `POST /files?filename=input.pdb`. The upload streams to private

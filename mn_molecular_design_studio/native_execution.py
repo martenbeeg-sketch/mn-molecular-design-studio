@@ -62,7 +62,7 @@ def prediction_contract(engine, count, *, seeds=1, samples=1, mode="off"):
     profile = ENGINE_PROFILES[engine]
     # Inspected pinned image-side adapters. Other selectable tiles remain explicit
     # unknowns until their native launcher/model lifecycle has been verified.
-    known = engine in {"boltz2", "protenix_v2"}
+    known = engine in {"boltz2", "protenix_v2", "localfold"}
     per_job = seeds if engine == "boltz2" else 1 if known else None
     gpus = int(profile.get("gpu_count", {}).get(mode, 1))
     return dict(native_multi_input=True if known else None,
@@ -70,7 +70,7 @@ def prediction_contract(engine, count, *, seeds=1, samples=1, mode="off"):
                 docker_processes=1 if count else 0,
                 gpu_allocation_events=1 if count else 0,
                 gpu_slots=gpus if count else 0,
-                prediction_outputs=count * samples * (seeds if engine == "boltz2" else 1),
+                prediction_outputs=count * samples * (seeds if engine in {"boltz2", "localfold"} else 1),
                 model_initializations=(per_job if gpus == 1 else None) if count else 0,
                 count_basis="source-verified expectation" if known else "native lifecycle unverified",
                 model_reuse=("One model entrypoint per seed for the entire input directory; initialization repeats per seed/chunk."
@@ -105,8 +105,12 @@ def request_contract(request, count):
                                  'Caliby main model loads once; generated ensembles can initialize additional models per input.' if ensemble else
                                  'Model loads before the input loop; one initialization per chunk.'))
     if workflow == "refolding.optimized_prediction":
+        samples = p.get("samples", 1)
+        if p["engine"] == "localfold":
+            from mn_molecular_design_studio.localfold import outputs_per_seed
+            samples = outputs_per_seed(p.get("engine_options", {}), samples)
         return prediction_contract(p["engine"], count, seeds=p.get("engine_options", {}).get("seed_count", 1),
-                                   samples=p.get("samples", 1), mode=p.get("optimization_mode", "off"))
+                                   samples=samples, mode=p.get("optimization_mode", "off"))
     if workflow in {"sequence.mpnn", "sequence.ligandmpnn", "sequence.foundry_mpnn", "sequence.abmpnn"}:
         foundry = workflow == "sequence.foundry_mpnn" or p.get("backend") in {"auto", "foundry", None}
         return dict(native_multi_input=None if foundry else True,

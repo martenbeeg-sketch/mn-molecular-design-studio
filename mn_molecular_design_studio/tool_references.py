@@ -11,6 +11,7 @@ def _url(short: str, title: str, url: str) -> dict[str, str]:
 
 
 PAPERS = {
+    "localfold": _url("LocalFold", "LocalFold: sokrypton’s multi-model JAX fork of AlphaFold 3", "https://github.com/sokrypton/alphafold3"),
     "morgan": _doi("Morgan fingerprints", "Extended-Connectivity Fingerprints", "10.1021/ci100050t"),
     "butina": _doi("Butina clustering", "Unsupervised data base clustering based on daylight's fingerprint and Tanimoto similarity: a fast and automated way to cluster small and large data sets", "10.1021/ci9803381"),
     "scannet": _doi("ScanNet", "ScanNet: an interpretable geometric deep learning model for protein-protein interface prediction", "10.1038/s41592-022-01490-7"),
@@ -167,6 +168,7 @@ WORKFLOW_REFERENCES = {
 
 
 ENGINE_REFERENCES = {
+    "localfold": ["localfold"],
     "alphafold3": ["alphafold3"],
     "af3_torch": ["alphafold3"],
     "openfold3_jax": ["alphafold3"],

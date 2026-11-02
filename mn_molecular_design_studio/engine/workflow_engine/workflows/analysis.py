@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import copy
+import hashlib
 import json
 import math
 import os
@@ -224,6 +225,114 @@ def _analysis_source_candidates(source_run_dir: Path, candidates_jsonl: Path) ->
     return [enrich_candidate(source_run_dir, candidate) for candidate in candidates]
 
 
+def _select_complex_analysis_candidates(
+    source_run_dir: Path,
+    candidates: list[dict[str, Any]],
+    *,
+    candidate_ids: list[str] | None = None,
+    selected_structure_path: Path | str | None = None,
+    selected_model_id: str | None = None,
+    binder_chains: list[str] | None = None,
+    target_chains: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Apply an exact, authorized Results selection to an existing analysis input."""
+    if candidate_ids is not None:
+        requested = [str(value).strip() for value in candidate_ids if str(value).strip()]
+        if not requested or len(requested) != len(set(requested)):
+            raise ValueError("candidate_ids must contain one or more unique candidate IDs.")
+        by_id = {str(row.get("candidate_id") or ""): row for row in candidates}
+        missing = [identifier for identifier in requested if identifier not in by_id]
+        if missing:
+            raise ValueError("Selected candidate IDs are unavailable in the source collection: " + ", ".join(missing))
+        candidates = [by_id[identifier] for identifier in requested]
+    if selected_structure_path is not None and len(candidates) != 1:
+        raise ValueError("An exact selected structure can only be applied to one candidate per analysis request.")
+
+    normalized_groups: dict[str, list[str] | None] = {}
+    for name, chains in (("binder_chains", binder_chains), ("target_chains", target_chains)):
+        if chains is None:
+            normalized_groups[name] = None
+            continue
+        normalized = [str(chain).strip() for chain in chains if str(chain).strip()]
+        if not normalized or len(normalized) != len(set(normalized)):
+            raise ValueError(f"{name} must contain one or more unique chain identifiers.")
+        normalized_groups[name] = normalized
+    binder = normalized_groups["binder_chains"]
+    target = normalized_groups["target_chains"]
+    if binder is not None and target is not None and set(binder) & set(target):
+        raise ValueError("The two interface chain groups must not overlap.")
+
+    selected_structure = None
+    if selected_structure_path is not None:
+        source_root = Path(source_run_dir).expanduser().resolve()
+        selected_structure = Path(selected_structure_path).expanduser().resolve(strict=True)
+        try:
+            selected_structure.relative_to(source_root)
+        except ValueError as exc:
+            raise ValueError("The selected structure must belong to the authorized source Results job.") from exc
+        if not selected_structure.is_file():
+            raise ValueError("The selected structure is no longer available.")
+
+    for candidate in candidates:
+        if selected_structure is None and binder is None and target is None and not selected_model_id:
+            continue
+        raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+        if selected_structure is not None:
+            candidate["complex_pdb"] = str(selected_structure)
+        if binder is not None:
+            candidate["binder_chains"] = list(binder)
+        if target is not None:
+            candidate["target_chains"] = list(target)
+        try:
+            with Path(candidate.get("complex_pdb") or selected_structure).open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        except (OSError, TypeError, ValueError):
+            digest = ""
+        raw["complex_analysis_selection"] = {
+            "structure_path": str(selected_structure or candidate.get("complex_pdb") or ""),
+            "structure_digest": digest,
+            "model_id": str(selected_model_id or raw.get("model_index") or ""),
+            "candidate_id": str(candidate.get("candidate_id") or ""),
+            "binder_chains": list(candidate.get("binder_chains") or []),
+            "target_chains": list(candidate.get("target_chains") or []),
+        }
+        candidate["raw_metadata"] = raw
+    return candidates
+
+
+def _write_complex_analysis_selection(
+    job: Any,
+    source_run_dir: Path,
+    candidate: dict[str, Any],
+    *,
+    workflow: str,
+    parameters: dict[str, Any],
+) -> None:
+    """Persist exact pose and chain provenance for reuse and audit."""
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    selection = raw.get("complex_analysis_selection") if isinstance(raw.get("complex_analysis_selection"), dict) else None
+    if not selection:
+        return
+    source_metadata = read_json(Path(source_run_dir) / "metadata.json")
+    source_kind = str(source_metadata.get("source_kind") or "results")
+    source_manifest = read_json(Path(source_run_dir) / "complex_analysis_source.json") if source_kind == "database" else {}
+    write_json(job.run_dir / "artifacts" / "analysis" / "complex_analysis_selection.json", {
+        "schema": "studio.complex_analysis_selection.v1",
+        "workflow": workflow,
+        "source_kind": source_kind,
+        "source_task_group": str(source_metadata.get("task_group") or "") if source_kind != "database" else "",
+        "source_run_id": str(source_metadata.get("run_id") or "") if source_kind != "database" else "",
+        "database_source": source_manifest,
+        "candidate_id": selection.get("candidate_id"),
+        "structure_path": selection.get("structure_path"),
+        "structure_digest": selection.get("structure_digest"),
+        "model_id": selection.get("model_id"),
+        "binder_chains": selection.get("binder_chains") or [],
+        "target_chains": selection.get("target_chains") or [],
+        "parameters": parameters,
+    })
+
+
 def _analysis_job(
     source_run_dir: Path,
     candidates_jsonl: Path,
@@ -255,6 +364,27 @@ def _analysis_job(
     for field in ("studio_owner_id", "project_id", "studio_project_id", "studio_development_mode"):
         if not metadata.get(field) and source_identity.get(field):
             metadata[field] = source_identity[field]
+    source_kind = str(source_metadata.get("source_kind") or "results")
+    if source_kind == "database":
+        source_manifest = read_json(source_run_dir / "complex_analysis_source.json")
+        inherited_metadata.update({
+            "upstream_source_kind": "database",
+            "upstream_task_group": "",
+            "upstream_run_id": "",
+            "upstream_job_code": "",
+            "database_source": source_manifest,
+        })
+    elif source_kind == "complex_analysis_collection":
+        collection_manifest = read_json(source_run_dir / "complex_analysis_collection.json")
+        inherited_metadata.update({
+            "upstream_source_kind": "complex_analysis_collection",
+            "upstream_task_group": "",
+            "upstream_run_id": "",
+            "upstream_job_code": "",
+            "upstream_collection_id": str(collection_manifest.get("collection_id") or ""),
+        })
+    else:
+        inherited_metadata["upstream_source_kind"] = "results"
     write_json(job.run_dir / "metadata.json", {**metadata, **inherited_metadata})
     write_json(job.run_dir / "command.json", {"mode": mode, "command": [], "note": note})
     update_status(job.run_dir, "running")
@@ -796,6 +926,13 @@ def _parse_ipsae_row(path: Path) -> dict[str, Any]:
         "structure_binder_design_to_cofold_fitted_ca_rmsd",
         "structure_binder_rmsd_ca_count",
         "structure_binder_rmsd_alignment_coverage",
+        "target_aligned_pose_rmsd_status",
+        "target_aligned_pose_rmsd_error",
+        "structure_target_aligned_binder_pose_ca_rmsd",
+        "structure_target_alignment_ca_rmsd",
+        "structure_target_alignment_ca_count",
+        "structure_target_aligned_binder_ca_count",
+        "structure_target_aligned_binder_sequence_coverage",
         "hotspot_analysis_status",
         "hotspot_analysis_error",
         "interaction_preservation_status",
@@ -830,6 +967,7 @@ def _parse_ipsae_row(path: Path) -> dict[str, Any]:
             continue
         if key in {"binder_chain", "target_chain", "type", "engine", "pae_format", "structure_metrics_status",
                    "structure_metrics_error", "design_vs_cofold_rmsd_status", "design_vs_cofold_rmsd_error",
+                   "target_aligned_pose_rmsd_status", "target_aligned_pose_rmsd_error",
                    "structure_hotspots_contacted", "structure_hotspots_missing", "hotspot_analysis_status", "hotspot_analysis_error",
                    "interaction_preservation_status", "interaction_preservation_error"}:
             parsed[key] = value
@@ -1448,16 +1586,26 @@ def run_ipsae_analysis_contract(
     ipdae_contact_cutoff: float = 8.0,
     structure_contact_cutoff: float = 4.0,
     hotspot_contact_cutoff: float = 5.0,
+    selected_structure_path: Path | None = None,
+    selected_model_id: str | None = None,
+    binder_chains: list[str] | None = None,
+    target_chains: list[str] | None = None,
 ) -> Path:
     """Analyze saved complex PAE and structures without launching a predictor."""
     source_run_dir = Path(source_run_dir)
     candidates_jsonl = Path(candidates_jsonl)
     candidates = _analysis_source_candidates(source_run_dir, candidates_jsonl)
-    if candidate_ids is not None:
-        selected_ids = {str(value).strip() for value in candidate_ids if str(value).strip()}
-        candidates = [candidate for candidate in candidates if str(candidate.get("candidate_id") or "") in selected_ids]
-        if not candidates:
-            raise ValueError("None of the selected Database candidate IDs are present in this source run.")
+    candidates = _select_complex_analysis_candidates(
+        source_run_dir, candidates, candidate_ids=candidate_ids,
+        selected_structure_path=selected_structure_path, selected_model_id=selected_model_id,
+        binder_chains=binder_chains, target_chains=target_chains,
+    )
+    if selected_structure_path is not None and (
+        len(candidates[0].get("binder_chains") or []) != 1
+        or len(candidates[0].get("target_chains") or []) != 1
+    ):
+        raise ValueError("The current ipSAE adapter requires one selected protein chain in each interface group.")
+    selected_ids = {str(candidate.get("candidate_id") or "") for candidate in candidates}
     job = _analysis_job(
         source_run_dir,
         candidates_jsonl,
@@ -1466,10 +1614,20 @@ def run_ipsae_analysis_contract(
                 "ipdae_contact_cutoff": ipdae_contact_cutoff,
                 "structure_contact_cutoff": structure_contact_cutoff,
                 "hotspot_contact_cutoff": hotspot_contact_cutoff,
-                "candidate_ids": sorted(selected_ids) if candidate_ids is not None else None},
-        note="Calculate ipSAE and PAE-derived interface scores when a saved PAE matrix exists; also measure structure contacts, chain-scoped Cα B-factors, configured hotspot contacts, binder design-to-cofold fitted RMSD, and sequence-mapped designed-interface contact preservation when a separate design complex is available. No predictor is launched.",
+                "candidate_ids": sorted(selected_ids) if candidate_ids is not None else None,
+                "selected_structure_path": str(selected_structure_path or ""),
+                "selected_model_id": str(selected_model_id or ""),
+                "binder_chains": binder_chains, "target_chains": target_chains},
+        note="Calculate ipSAE and PAE-derived interface scores when a saved PAE matrix exists; also measure structure contacts, chain-scoped Cα B-factors, configured hotspot contacts, binder-only fitted RMSD, target-aligned binder-pose RMSD, and sequence-mapped designed-interface contact preservation when a separate design complex is available. Native RFD4 refold RMSD remains separately attributed. No predictor is launched.",
         mode="internal+docker",
     )
+    if selected_structure_path is not None and len(candidates) == 1:
+        _write_complex_analysis_selection(job, source_run_dir, candidates[0], workflow="analysis.ipsae", parameters={
+            "pae_cutoff": float(pae_cutoff), "dist_cutoff": float(dist_cutoff),
+            "ipdae_contact_cutoff": float(ipdae_contact_cutoff),
+            "structure_contact_cutoff": float(structure_contact_cutoff),
+            "hotspot_contact_cutoff": float(hotspot_contact_cutoff),
+        })
     inputs = [{**copy.deepcopy(candidate), "metrics": {}, "_measurement_source": candidate} for candidate in candidates]
     scored = _run_ipsae(source_run_dir, job.run_dir, inputs, pae_cutoff=float(pae_cutoff),
                         dist_cutoff=float(dist_cutoff), ipdae_contact_cutoff=float(ipdae_contact_cutoff),
@@ -1500,6 +1658,7 @@ def run_ipsae_analysis_contract(
                 "hotspot_contact_cutoff_angstrom": float(hotspot_contact_cutoff),
                 "structure_confidence_source": "saved complex C-alpha B-factors; kept distinct from predictor-native confidence summaries and not assumed to be pLDDT",
                 "binder_rmsd": "sequence-aligned binder C-alpha RMSD after optimal binder-only superposition; available only when a separate design structure is found",
+                "target_aligned_binder_pose_rmsd": "sequence-matched design and cofold complexes; align target C-alpha atoms, then measure binder C-alpha RMSD in that target frame without binder refitting",
                 "design_reference_found": bool(design_reference),
                 "design_complex_found": bool(design_complex),
                 "design_reference_structure": str(design_reference or ""),
@@ -1526,6 +1685,9 @@ def run_ipsae_analysis_contract(
                       "structure_complex_ca_bfactor_mean", "structure_hotspot_contact_fraction_found",
                       "structure_hotspot_contact_fraction_requested", "structure_hotspot_contacted_count",
                       "structure_hotspot_min_distance", "structure_binder_design_to_cofold_fitted_ca_rmsd",
+                      "structure_target_aligned_binder_pose_ca_rmsd", "structure_target_alignment_ca_rmsd",
+                      "structure_target_alignment_ca_count", "structure_target_aligned_binder_ca_count",
+                      "structure_target_aligned_binder_sequence_coverage",
                       "structure_design_interface_residue_contact_pairs", "structure_cofold_interface_residue_contact_pairs",
                       "structure_interface_contact_pairs_preserved", "structure_design_interaction_preservation_fraction",
                       "structure_interface_contact_jaccard", "structure_binder_interface_residue_preservation_fraction",
@@ -1537,21 +1699,41 @@ def run_rosetta_metrics_contract(
     source_run_dir: Path,
     candidates_jsonl: Path,
     nprocs: int | None = None,
+    candidate_ids: list[str] | None = None,
+    selected_structure_path: Path | None = None,
+    selected_model_id: str | None = None,
+    binder_chains: list[str] | None = None,
+    target_chains: list[str] | None = None,
 ) -> Path:
     """Score one-binder/one-target complex structures using the installed PyRosetta image."""
     source_run_dir = Path(source_run_dir)
     candidates_jsonl = Path(candidates_jsonl)
     nprocs = _allocated_cpu_cores(nprocs)
     candidates = _analysis_source_candidates(source_run_dir, candidates_jsonl)
+    candidates = _select_complex_analysis_candidates(
+        source_run_dir, candidates, candidate_ids=candidate_ids,
+        selected_structure_path=selected_structure_path, selected_model_id=selected_model_id,
+        binder_chains=binder_chains, target_chains=target_chains,
+    )
+    if selected_structure_path is not None and (
+        len(candidates[0].get("binder_chains") or []) != 1
+        or len(candidates[0].get("target_chains") or []) != 1
+    ):
+        raise ValueError("The current Rosetta interface scorer requires one selected protein chain in each interface group.")
     candidates = [{**copy.deepcopy(candidate), "metrics": {}, "_measurement_source": candidate} for candidate in candidates]
     job = _analysis_job(
         source_run_dir,
         candidates_jsonl,
         tool="rosetta_metrics",
-        params={"nprocs": nprocs},
+        params={"nprocs": nprocs, "candidate_ids": candidate_ids,
+                "selected_structure_path": str(selected_structure_path or ""),
+                "selected_model_id": str(selected_model_id or ""),
+                "binder_chains": binder_chains, "target_chains": target_chains},
         note="Calculate Rosetta interface, packing, SASA, hydrogen-bond, and binder surface metrics for saved complex structures.",
         mode="docker",
     )
+    if selected_structure_path is not None and len(candidates) == 1:
+        _write_complex_analysis_selection(job, source_run_dir, candidates[0], workflow="analysis.rosetta", parameters={})
     scoring_dir = job.run_dir / "artifacts" / "analysis" / "rosetta" / "inputs"
     source_pdb_dir = job.run_dir / "artifacts" / "analysis" / "rosetta" / "source_pdb"
     relaxed_dir = job.run_dir / "artifacts" / "analysis" / "rosetta" / "relaxed"

@@ -11,6 +11,7 @@ import csv
 import json
 import math
 import operator
+import re
 from pathlib import Path
 
 from mn_molecular_design_studio.measurement_status import RANGES, finite_number
@@ -104,6 +105,25 @@ def infer_binder_format(candidate: dict, workflow_parameters: dict | None = None
         return next(iter(configured))
     if configured:
         return None
+    # RFD4 condition-spec files are often the only task provenance retained
+    # by imported/native records. Their top-level key is the actual task ID.
+    pending = [parameters]
+    condition_tasks = set()
+    while pending:
+        item = pending.pop()
+        if isinstance(item, dict):
+            spec = item.get("condition_spec")
+            if isinstance(spec, str):
+                for task in FORMAT_ALIASES:
+                    if re.search(rf"(?m)^\s*{re.escape(task)}\s*:", spec, re.IGNORECASE):
+                        condition_tasks.add(FORMAT_ALIASES[task])
+            pending.extend(value for value in item.values() if isinstance(value, (dict, list, tuple)))
+        elif isinstance(item, (list, tuple)):
+            pending.extend(item)
+    if len(condition_tasks) == 1:
+        return next(iter(condition_tasks))
+    if condition_tasks:
+        return None
     # Native tool identities supply a format only where that workflow's
     # documented scope is unambiguous.
     tool = str(candidate.get("source_tool") or "").lower()
@@ -115,12 +135,20 @@ def infer_binder_format(candidate: dict, workflow_parameters: dict | None = None
 
 
 def infer_target_type(candidate: dict, workflow_parameters: dict | None = None) -> str | None:
-    """Read the source campaign's target representation when recorded."""
+    """Infer target context from provenance, input representation, or RFD4 task.
+
+    An explicit target type always wins. A condition-spec task marked IDR is
+    recognized even when its sequence-carrier is stored as a CIF; otherwise
+    FASTA inputs map to FASTA/IDR and coordinate inputs map to structured.
+    """
     raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
     values = [candidate.get("target_type"), raw.get("target_type")]
     params = workflow_parameters or {}
     pending = [params]
     fasta_path_found = False
+    coordinate_path_found = False
+    idr_task_found = False
+    coordinate_condition_found = False
     while pending:
         item = pending.pop()
         if isinstance(item, dict):
@@ -128,18 +156,43 @@ def infer_target_type(candidate: dict, workflow_parameters: dict | None = None) 
             values.extend(value if isinstance(value, list) else [value] if value is not None else [])
             for key in ("target_path", "target_fasta", "target_fasta_path", "target_sequence_file"):
                 path = item.get(key)
-                if isinstance(path, str) and Path(path).suffix.lower() in {".fa", ".fasta", ".faa"}:
+                if isinstance(path, str) and Path(path.strip()).suffix.lower() in {".fa", ".fasta", ".faa"}:
                     fasta_path_found = True
+            for key in ("target_pdb", "target_structure", "input_structure"):
+                path = item.get(key)
+                if isinstance(path, str) and Path(path.strip()).suffix.lower() in {
+                    ".pdb", ".ent", ".cif", ".mmcif", ".bcif",
+                }:
+                    coordinate_path_found = True
+            task = " ".join(str(item.get(key) or "") for key in ("task", "design_task", "target_task", "task_type")).lower()
+            if any(token in task for token in ("idr", "intrinsically disordered", "unstructured")):
+                idr_task_found = True
+            condition_spec = item.get("condition_spec")
+            if isinstance(condition_spec, str):
+                lowered = condition_spec.lower()
+                if re.search(r"(?m)^\s*[\w-]*idr[\w-]*\s*:", lowered) or "intrinsically disordered" in lowered:
+                    idr_task_found = True
+                if "c_crd:" in lowered or "c_crdgrp:" in lowered:
+                    coordinate_condition_found = True
             pending.extend(value for value in item.values() if isinstance(value, (dict, list)))
         elif isinstance(item, list):
             pending.extend(item)
     normalized = {TARGET_ALIASES[str(value).strip().lower()] for value in values
                   if str(value).strip().lower() in TARGET_ALIASES}
+    normalized.discard("auto")
     if len(normalized) > 1:
         return None
     if normalized:
         return next(iter(normalized))
-    return "fasta_idr" if fasta_path_found else None
+    if idr_task_found:
+        return "fasta_idr"
+    if coordinate_condition_found:
+        return "structured"
+    if fasta_path_found:
+        return "fasta_idr"
+    if coordinate_path_found:
+        return "structured"
+    return None
 
 # These are selectable definitions, not default quality thresholds. BindCraft2's
 # numeric defaults are checkpoint- and modality-specific and remain native
@@ -183,6 +236,7 @@ METRICS = {
     "ipsae_structure_binder_ca_bfactor_mean": {"label": "ipSAE & Structure Analysis · binder mean Cα B-factor (informational)", "field": PREFIX + "confidence.analysis.structure.binder_ca_bfactor_mean", "unit": "B-factor units", "direction": "", "modes": ("complex",), "engines": ("ipsae",), "informational_only": True},
     "ipsae_structure_target_ca_bfactor_mean": {"label": "ipSAE & Structure Analysis · target mean Cα B-factor (informational)", "field": PREFIX + "confidence.analysis.structure.target_ca_bfactor_mean", "unit": "B-factor units", "direction": "", "modes": ("complex",), "engines": ("ipsae",), "informational_only": True},
     "ipsae_binder_design_to_cofold_fitted_ca_rmsd": {"label": "Binder design-to-cofold fitted Cα RMSD", "field": PREFIX + "geometry.analysis.binder.design_to_cofold_fitted_ca_rmsd", "unit": "Å", "direction": "lower", "modes": ("complex",), "engines": ("ipsae",)},
+    "ipsae_target_aligned_binder_pose_rmsd": {"label": "ipSAE analysis · target-aligned binder-pose Cα RMSD", "field": PREFIX + "geometry.analysis.ipsae_structure.target_aligned_binder_pose_ca_rmsd", "unit": "Å", "direction": "lower", "modes": ("complex",), "engines": ("ipsae",), "informational_only": True},
     "ipsae_hotspot_contact_fraction_found": {"label": "Configured hotspot contact fraction (found residues)", "field": PREFIX + "interface.analysis.hotspots.contact_fraction_found", "unit": "fraction", "direction": "higher", "modes": ("complex",), "engines": ("ipsae",)},
     "ipsae_hotspot_contact_fraction_requested": {"label": "Configured hotspot contact fraction (requested residues)", "field": PREFIX + "interface.analysis.hotspots.contact_fraction_requested", "unit": "fraction", "direction": "higher", "modes": ("complex",), "engines": ("ipsae",)},
     "ipsae_hotspot_contacted_count": {"label": "Configured hotspot contacted count", "field": PREFIX + "interface.analysis.hotspots.contacted_count", "unit": "residues", "direction": "higher", "modes": ("complex",), "engines": ("ipsae",)},
@@ -194,6 +248,7 @@ METRICS = {
     "binder_self_consistency_rmsd": {"label": "Binder self-consistency RMSD", "field": PREFIX + "geometry.validation.binder.self_consistency_rmsd", "unit": "Å", "direction": "lower", "modes": ("complex", "binder")},
     "interface_residues_4a": {"label": "Binder interface residues · any heavy atom ≤4 Å", "field": PREFIX + "interface.validation.binder_residue_count_4a", "unit": "residues", "direction": "higher", "modes": ("complex",)},
     "backbone_clashes_2_5a": {"label": "Interchain Cα clashes ≤2.5 Å", "field": PREFIX + "geometry.validation.interface.backbone_ca_clashes_2_5a", "unit": "atom pairs", "direction": "lower", "modes": ("complex",)},
+    "rfd4_native_target_aligned_binder_pose_rmsd": {"label": "Source design · RFD4 OF3 target-backbone-aligned binder RMSD", "field": PREFIX + "geometry.native.rfd4_proteina.target_aligned_binder_pose_rmsd", "unit": "Å", "direction": "lower", "modes": ("complex",), "source_tools": ("rfd4_proteina",), "informational_only": True},
     "bindcraft2_ipdae": {"label": "Source design · BindCraft2 i_pDAE", "field": PREFIX + "confidence.native.bindcraft2.interface.ipdae", "unit": "0–1", "direction": "higher", "modes": ("complex",), "source_tools": ("bindcraft2",), "informational_only": True},
     "bindcraft2_ipae": {"label": "Source design · BindCraft2 normalized i_pAE", "field": PREFIX + "confidence.native.bindcraft2.interface.ipae_normalized", "unit": "0–1", "direction": "lower", "modes": ("complex",), "source_tools": ("bindcraft2",), "informational_only": True},
     "bindcraft2_bound_unbound_rmsd": {"label": "Source design · BindCraft2 Binder_RMSD", "field": PREFIX + "geometry.native.bindcraft2.bound_unbound_rmsd", "unit": "Å", "direction": "lower", "modes": ("complex",), "source_tools": ("bindcraft2",), "informational_only": True},
@@ -493,15 +548,48 @@ def evaluate_candidate(candidate: dict, policy: dict) -> dict:
             "native_filter_status": native_status}
 
 
-def campaign_policy_from_node(params: dict) -> dict:
-    """Use exactly the same policy as the graph Validation & Acceptance node."""
+def campaign_policy_from_node(params: dict, *, target_type: str | None = None,
+                              binder_format: str | None = None, source_tools=()) -> dict:
+    """Use the graph node's policy after resolving automatic target context."""
+    target_type = target_type or params.get("resolved_target_type") or params.get("target_type", "structured")
+    if target_type == "auto":
+        raise ValueError("Target type is set to Auto, but this pipeline does not identify a structured or FASTA / IDR target. Select the target type on the Target Structure node.")
+    binder_format = binder_format or params.get("resolved_binder_format") or params.get("binder_format", "miniprotein")
+    if binder_format == "auto":
+        raise ValueError("Binder format is set to Auto, but the connected design task does not identify one supported format. Select a task-specific format or choose it on the filter node.")
+    rules = params.get("rules", [])
+    reference_preset = None
+    profile = params.get("policy_profile", "custom")
+    if profile == "auto":
+        profile = "custom" if rules else "bindcraft2_reference"
+    if profile not in {"custom", "bindcraft2_reference"}:
+        raise ValueError(f"Unknown acceptance profile {profile!r}.")
+    if profile == "bindcraft2_reference":
+        tools = tuple(sorted(set(source_tools or params.get("source_tools") or [])))
+        engine = tools[0] if len(tools) == 1 else None
+        available = dict([
+            *available_metrics(binder_format, target_type, "complex", engine=engine, source_tools=tools),
+            *available_metrics(binder_format, target_type, "complex", engine=engine,
+                               source_tools=tools, informational=True),
+        ])
+        rules, inactive = bindcraft2_reference_policy(binder_format, target_type, "complex", available)
+        if not rules:
+            raise ValueError("The BindCraft2 reference profile has no compatible mandatory measurements for this binder format, target and connected evidence source. Choose Custom or add a compatible analysis/prediction step.")
+        reference_preset = {
+            "tool": "BindCraft2", "source": BINDCRAFT2_REFERENCE["version"],
+            "binder_format": binder_format, "target_type": target_type,
+            "source_tools": list(tools), "compatible_defaults": copy.deepcopy(rules),
+            "inactive_criteria": inactive,
+        }
     policy = normalize_policy({
-        "binder_format": params.get("binder_format", "miniprotein"),
-        "target_type": params.get("target_type", "structured"),
-        "mandatory_filters": params.get("rules", []),
+        "binder_format": binder_format,
+        "target_type": target_type,
+        "mandatory_filters": rules,
         "informational_scores": params.get("informational_scores", []),
         "ranking_metric": params.get("ranking_metric", ""),
     })
+    if reference_preset:
+        policy["reference_preset"] = reference_preset
     if not policy["mandatory_filters"]:
         raise ValueError("A passing-design campaign requires mandatory filters on its Validation & Acceptance node.")
     return policy

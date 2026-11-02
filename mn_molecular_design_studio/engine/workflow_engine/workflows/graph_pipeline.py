@@ -450,6 +450,9 @@ def _optimized_prediction_request(engine: str, params: dict, source: dict, name:
         from mn_molecular_design_studio.prediction_configuration import boltz_settings
         params = boltz_settings(params)
     profile = ENGINE_PROFILES[engine]
+    if engine == "localfold":
+        from mn_molecular_design_studio import localfold
+        profile = localfold.profile_for(profile, str(params.get("model", "alphafold3")))
     option_keys = {setting["key"] for setting in profile.get("settings", ())}
     engine_options = {
         setting["key"]: params[setting["key"]]
@@ -475,7 +478,7 @@ def _optimized_prediction_request(engine: str, params: dict, source: dict, name:
             "optimization_mode": params.get("optimization_mode", "off"),
             "job_name": name,
             "seed": int(params.get("seed", 0)),
-            "samples": int(params.get("samples", 1)),
+            "samples": int(params.get("samples", profile.get("default_samples", 1))),
             "num_recycles": int(params.get("num_recycles", profile.get("default_recycles", 10))),
             "cpu_cores": 4,
             **({"source_run_dir": source["run_dir"], "candidates_jsonl": source["candidates_jsonl"],
@@ -544,6 +547,11 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
             chains=target.get("target_chains") or []
             p["target_chains"]=[x for x in re.split(r"[,;\s]+",chains) if x] if isinstance(chains,str) else chains
             p["hotspots"]=target.get("hotspots","")
+            if p.get("input_mode") == "condition_spec" and p.get("target_structure"):
+                from mn_molecular_design_studio.rfd4_proteina_input import rebind_condition_spec_target
+                p["condition_spec"] = rebind_condition_spec_target(
+                    p.get("condition_spec", ""), Path(p["target_structure"]).name, p["input_files"],
+                )
             campaign=p.pop("distributed_campaign",None)
             if campaign is not None:
                 if p.get("task")!="protein_binder" or p.get("input_mode") not in {"guided","guided_binder","condition_spec"} or p["input_files"]:
@@ -734,6 +742,9 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
 
         engine = OPTIMIZED_PREDICTION_NODE_ENGINES[kind]
         profile = ENGINE_PROFILES[engine]
+        if engine == "localfold":
+            from mn_molecular_design_studio import localfold
+            profile = localfold.profile_for(profile, str(p.get("model", "alphafold3")))
         option_keys = {setting["key"] for setting in profile.get("settings", ())}
         engine_options = {
             setting["key"]: p[setting["key"]]
@@ -747,7 +758,7 @@ def node_request(kind: str, params: dict, source: dict, name: str) -> dict:
             "optimization_mode": p.get("optimization_mode", "off"),
             "job_name": name,
             "seed": int(p.get("seed", 0)),
-            "samples": int(p.get("samples", 1)),
+            "samples": int(p.get("samples", profile.get("default_samples", 1))),
             "num_recycles": int(p.get("num_recycles", profile.get("default_recycles", 10))),
             "cpu_cores": 4,
             "tasks": _optimized_prediction_tasks(engine, source, p),
@@ -1144,17 +1155,30 @@ def _cache_valid(output: dict) -> bool:
 def _child_analysis_output(child: Path, target: dict) -> dict:
     metadata = read_json(child / "metadata.json")
     result = read_json(child / "result.json")
-    return {
+    analysis_run = {
+        "run_dir": str(child),
+        "run_id": str(metadata.get("run_id") or child.name),
+        "task_group": str(metadata.get("task_group") or "detection"),
+        "job_code": str(metadata.get("job_code") or ""),
+        "success": result.get("success") is True,
+    }
+    output = {
         "analysis_run": {
-            "run_dir": str(child),
-            "run_id": str(metadata.get("run_id") or child.name),
-            "task_group": str(metadata.get("task_group") or "detection"),
-            "job_code": str(metadata.get("job_code") or ""),
-            "success": result.get("success") is True,
+            **analysis_run,
         },
         "target": copy.deepcopy(target),
         "candidate_count": 0,
     }
+    # Candidate-aware analyses publish one measured record per input design.
+    # Returning that collection lets downstream filters/Results consume the
+    # analysis while attach_stage preserves the input candidate identity.
+    candidates_path = child / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+    if candidates_path.is_file():
+        from mn_molecular_design_studio.candidate_sets import iter_candidates
+        source = {"run_dir": str(child), "candidates_jsonl": str(candidates_path)}
+        output.update(run_dir=str(child), candidates_jsonl=str(candidates_path),
+                      candidate_count=sum(1 for _ in iter_candidates(source)))
+    return output
 
 
 def cancel_graph_children(run_dir: Path) -> None:
@@ -1239,11 +1263,22 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         from mn_molecular_design_studio import candidate_sets
         category = NODE_CATALOG[nodes[node_id]["data"]["kind"]]["category"]
         source_parents = [outputs[p] for p in plan['incoming'][node_id] if p in outputs]
+        analysis_refs = []
+        seen_analysis_refs = set()
+        for item in [*source_parents, output]:
+            refs = [*(item.get("analysis_runs") or []), *([item["analysis_run"]] if item.get("analysis_run") else [])]
+            for ref in refs:
+                identity = (str(ref.get("task_group") or "detection"), str(ref.get("run_id") or ref.get("run_dir") or ""))
+                if identity not in seen_analysis_refs:
+                    seen_analysis_refs.add(identity)
+                    analysis_refs.append(ref)
         has_stage = category in {"Sequence design", "Structure prediction"} or category == "Analysis" and NODE_CATALOG[nodes[node_id]["data"]["kind"]].get("workflow")
         if output.get("candidates_jsonl") and source_parents and has_stage and not output.get("disabled"):
             output = candidate_sets.attach_stage(parent, node_id, output, source_parents[0], category=category,
                 scientific_key=key, settings=nodes[node_id]["data"]["params"],
                 evidence_namespace=nodes[node_id]["data"].get("evidence_namespace"))
+        if analysis_refs:
+            output["analysis_runs"] = analysis_refs
         from mn_molecular_design_studio.candidate_execution import inherit_partial_pool
         pool = inherit_partial_pool(output, [outputs[p] for p in plan['incoming'][node_id] if p in outputs],
                                     missing_branches=node_states.get(node_id, {}).get('missing_branches', []))
@@ -1389,6 +1424,20 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         persist(); progressed = True; continue
                 try:
                     kind, params = node["data"]["kind"], node["data"]["params"]
+                    if kind == "shared_filter":
+                        from mn_molecular_design_studio.pipeline_graph import (
+                            pipeline_filter_source_tools, resolve_pipeline_binder_format,
+                            resolve_pipeline_target_type,
+                        )
+                        params = {**params, "source_tools": pipeline_filter_source_tools(nodes, plan["incoming"], node_id)}
+                        if params.get("binder_format", "auto") == "auto":
+                            resolved_binder_format = resolve_pipeline_binder_format(nodes, plan["incoming"], node_id)
+                            if resolved_binder_format:
+                                params["resolved_binder_format"] = resolved_binder_format
+                        if params.get("target_type", "structured") == "auto":
+                            resolved_target_type = resolve_pipeline_target_type(nodes, plan["incoming"], node_id)
+                            if resolved_target_type:
+                                params["resolved_target_type"] = resolved_target_type
                     upstream = [outputs[p] for p in parents]
                     source = upstream[0] if upstream else {}
                     if any(item.get("run_sources") for item in upstream) and len(upstream) > 1:
@@ -1668,7 +1717,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         if not staged_target.exists():
                             shutil.copy2(target_path, staged_target)
                         output = {"target": {"target_pdb": str(staged_target), "target_chains": chains,
-                                             "hotspots": params["hotspots"], "coldspots": params.get("coldspots", "")}}
+                                             "hotspots": params["hotspots"], "coldspots": params.get("coldspots", ""),
+                                             "target_type": params.get("target_type", "auto")}}
                         if any(n["data"]["kind"] in candidate_sets.KINDS for n in nodes.values()):
                             output["target"]["identity"] = candidate_sets.target_identity(output["target"])
                         complete(node_id, output, key);progressed=True;continue

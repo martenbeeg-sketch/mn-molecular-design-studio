@@ -54,40 +54,45 @@ function Editor({args}){
   const activeStudy=initial.template_id==='unidock_active_learning';
   const fitPadding=activeStudy?.08:.4;
   const [nodes,setNodes]=useState(initial.nodes),[edges,setEdges]=useState(initial.edges);
+  const [pipelineName,setPipelineName]=useState(initial.name||'Untitled pipeline'),[reuseCompleted,setReuseCompleted]=useState(args.reuse_completed!==false);
   const [query,setQuery]=useState(''),[notice,setNotice]=useState(''),[selection,setSelection]=useState(null);
   const [palette,setPalette]=useState(!activeStudy),[focus,setFocus]=useState(false),[historyTick,setHistoryTick]=useState(0),[helpOpen,setHelpOpen]=useState(false),[showMap,setShowMap]=useState(false);
   const [fullscreen,setFullscreen]=useState(false),shellRef=useRef(null);
-  const base=useRef(initial),viewport=useRef(initial.viewport||{x:0,y:0,zoom:1}),reset=useRef(args.reset_token),lastSent=useRef('');
+  const base=useRef(initial),viewport=useRef(initial.viewport||{x:0,y:0,zoom:1}),reset=useRef(args.reset_token),lastSent=useRef(''),pipelineNameRef=useRef(pipelineName),reuseRef=useRef(reuseCompleted);
+  pipelineNameRef.current=pipelineName;reuseRef.current=reuseCompleted;
   const state=useRef({nodes,edges}),history=useRef({past:[],future:[]}),clipboard=useRef(null),dragSnapshot=useRef(null);
   const rf=useReactFlow(), initialized=useNodesInitialized(), fitPending=useRef(true); state.current={nodes,edges};
-  const snapshot=useCallback(()=>authored(state.current.nodes,state.current.edges,base.current,viewport.current),[]);
-  const emit=useCallback((action=null)=>{const graph=snapshot();lastSent.current=JSON.stringify(graph);post('streamlit:setComponentValue',{value:{graph,...(action?{action:{...(typeof action==='string'?{type:action}:action),id:uid()}}:{})}});},[snapshot]);
+  const snapshot=useCallback(()=>authored(state.current.nodes,state.current.edges,{...base.current,name:pipelineNameRef.current},viewport.current),[]);
+  const emit=useCallback((action=null)=>{const graph=snapshot();lastSent.current=JSON.stringify(graph);post('streamlit:setComponentValue',{value:{graph,reuse_completed:reuseRef.current,...(action?{action:{...(typeof action==='string'?{type:action}:action),id:uid()}}:{})}});},[snapshot]);
   const pushHistory=useCallback((snap=null)=>{const h=history.current;h.past.push(snap||snapshot());if(h.past.length>60)h.past.shift();h.future=[];setHistoryTick(x=>x+1);},[snapshot]);
-  const restore=useCallback(g=>{base.current={...base.current,name:g.name};setNodes(copy(g.nodes));setEdges(copy(g.edges));if(g.viewport){viewport.current=g.viewport;rf.setViewport(g.viewport);}},[rf]);
+  const restore=useCallback(g=>{base.current={...base.current,name:g.name};setPipelineName(g.name||'Untitled pipeline');setNodes(copy(g.nodes));setEdges(copy(g.edges));if(g.viewport){viewport.current=g.viewport;rf.setViewport(g.viewport);}},[rf]);
   const undo=useCallback(()=>{const h=history.current;if(!h.past.length)return;h.future.push(snapshot());restore(h.past.pop());setHistoryTick(x=>x+1);},[snapshot,restore]);
   const redo=useCallback(()=>{const h=history.current;if(!h.future.length)return;h.past.push(snapshot());restore(h.future.pop());setHistoryTick(x=>x+1);},[snapshot,restore]);
   useEffect(()=>{
-    if(reset.current!==args.reset_token){reset.current=args.reset_token;base.current=args.graph;setNodes(copy(args.graph.nodes));setEdges(copy(args.graph.edges));history.current={past:[],future:[]};setSelection(null);if(activeStudy)setPalette(false);viewport.current=args.graph.viewport;fitPending.current=true;}
+    if(reset.current!==args.reset_token){reset.current=args.reset_token;base.current=args.graph;setPipelineName(args.graph.name||'Untitled pipeline');setReuseCompleted(args.reuse_completed!==false);setNodes(copy(args.graph.nodes));setEdges(copy(args.graph.edges));history.current={past:[],future:[]};setSelection(null);if(activeStudy)setPalette(false);viewport.current=args.graph.viewport;fitPending.current=true;}
     base.current={...base.current,name:args.graph.name};
-  },[args.reset_token,args.graph.name,rf]);
+    if(args.graph.name!==pipelineNameRef.current)setPipelineName(args.graph.name||'Untitled pipeline');
+    if(args.reuse_completed!==reuseRef.current)setReuseCompleted(args.reuse_completed!==false);
+  },[args.reset_token,args.graph.name,args.reuse_completed,rf]);
   const settingsApplied=useRef(args.settings_update?.id);
   useEffect(()=>{
     const change=args.settings_update;
     if(!change||settingsApplied.current===change.id)return;
     settingsApplied.current=change.id;
     const current=state.current.nodes.find(n=>n.id===change.node_id);
-    if(!current||JSON.stringify(current.data.params)===JSON.stringify(change.params)&&current.data.label===change.label&&current.data.kind===(change.kind||current.data.kind)&&current.data.description===(change.description||current.data.description))return;
+    const data=change.data||Object.fromEntries(['params','label','kind','description','execution','enabled','retained_run_dir','evidence_namespace'].filter(k=>k in change).map(k=>[k,change[k]]));
+    if(!current||Object.entries(data).every(([key,value])=>JSON.stringify(current.data[key])===JSON.stringify(value)))return;
     pushHistory();
-    setNodes(prev=>prev.map(n=>n.id===change.node_id?{...n,data:{...n.data,...(change.kind?{kind:change.kind}:{}),...(change.description?{description:change.description}:{}),params:copy(change.params),label:change.label}}:n));
+    setNodes(prev=>prev.map(n=>n.id===change.node_id?{...n,data:{...n.data,...copy(data)}}:n));
   },[args.settings_update?.id,pushHistory]);
   useEffect(()=>{
     if(!args.input_contexts)return;
     setNodes(prev=>prev.map(n=>args.input_contexts[n.id]?{...n,data:{...n.data,params:{...n.data.params,...args.input_contexts[n.id]}}}:n));
   },[JSON.stringify(args.input_contexts)]);
   useEffect(()=>{
-    const timer=setTimeout(()=>{const g=snapshot(),serialized=JSON.stringify(g);if(serialized!==lastSent.current){lastSent.current=serialized;post('streamlit:setComponentValue',{value:{graph:g}});}},500);
+    const timer=setTimeout(()=>{const g=snapshot(),serialized=JSON.stringify(g);if(serialized!==lastSent.current){lastSent.current=serialized;post('streamlit:setComponentValue',{value:{graph:g,reuse_completed:reuseRef.current}});}},500);
     return()=>clearTimeout(timer);
-  },[nodes,edges,snapshot]);
+  },[nodes,edges,pipelineName,snapshot]);
   useEffect(()=>{if(initialized&&fitPending.current){const id=requestAnimationFrame(()=>{rf.fitView({padding:fitPadding,maxZoom:1});fitPending.current=false;});return()=>cancelAnimationFrame(id);}},[initialized,nodes,rf,args.reset_token,fitPadding]);
   useEffect(()=>{post('streamlit:setFrameHeight',{height:focus?950:760});},[focus]);
   useEffect(()=>{
@@ -233,7 +238,7 @@ function Editor({args}){
   });
   const categories=[...new Set(Object.values(catalog).map(s=>s.category))];
   return <div ref={shellRef} className={`editor-shell ${activeStudy?'active-study':''} ${focus?'focus-mode':''} ${fullscreen?'fullscreen-mode':''}`}>
-    <header className="editor-toolbar"><div className="toolbar-title"><span className="flow-symbol">◇</span><strong>{activeStudy?'Active learning study':'Pipeline canvas'}</strong><span className="draft-chip">Draft</span></div><div className="toolbar-actions"><button title="Undo (Ctrl+Z)" disabled={!history.current.past.length} onClick={undo}>↶</button><button title="Redo (Ctrl+Shift+Z)" disabled={!history.current.future.length} onClick={redo}>↷</button><span className="toolbar-divider"/><button onClick={layout} title="Arrange the current graph">Arrange</button><button title="Toggle canvas overview" onClick={()=>setShowMap(!showMap)}>Map</button><button title="Canvas shortcuts and help" onClick={()=>{setHelpOpen(!helpOpen);setSelection(null);}}>?</button><button onClick={()=>{setFocus(!focus);setTimeout(()=>rf.fitView({padding:fitPadding,duration:200}),80);}}>{focus?'Exit focus':'Focus canvas'}</button><button onClick={toggleFullscreen} title={fullscreen?'Exit fullscreen':'Enter fullscreen'}>{fullscreen?'Exit fullscreen':'⛶ Fullscreen'}</button><button onClick={()=>emit('save_version')}>Save version</button><button className="run-button" disabled={activeStudy&&!args.active_execution_ready} title={activeStudy&&!args.active_execution_ready?'Active-learning round execution is not connected yet. You can configure and save the workflow.':'Run this pipeline'} onClick={()=>emit('run')}>▶ Run pipeline</button></div></header>
+    <header className="editor-toolbar"><div className="toolbar-title"><span className="flow-symbol">◇</span><input className="pipeline-name-input" aria-label="Pipeline name" value={pipelineName} onChange={event=>setPipelineName(event.target.value)} onBlur={()=>setPipelineName(name=>name.trim()||'Untitled pipeline')} title="Pipeline name"/><span className="draft-chip">Draft</span><label className="toolbar-reuse" title="Reuse successful completed steps in new runs; layout changes do not invalidate them."><input type="checkbox" checked={reuseCompleted} onChange={event=>{setReuseCompleted(event.target.checked);reuseRef.current=event.target.checked;emit();}}/>Reuse completed steps</label></div><div className="toolbar-actions"><button title="Undo (Ctrl+Z)" disabled={!history.current.past.length} onClick={undo}>↶</button><button title="Redo (Ctrl+Shift+Z)" disabled={!history.current.future.length} onClick={redo}>↷</button><span className="toolbar-divider"/><button onClick={layout} title="Arrange the current graph">Arrange</button><button title="Toggle canvas overview" onClick={()=>setShowMap(!showMap)}>Map</button><button title="Canvas shortcuts and help" onClick={()=>{setHelpOpen(!helpOpen);setSelection(null);}}>?</button><button onClick={()=>{setFocus(!focus);setTimeout(()=>rf.fitView({padding:fitPadding,duration:200}),80);}}>{focus?'Exit focus':'Focus canvas'}</button><button onClick={toggleFullscreen} title={fullscreen?'Exit fullscreen':'Enter fullscreen'}>{fullscreen?'Exit fullscreen':'⛶ Fullscreen'}</button><button title="Configure campaign objective and stopping limits" onClick={()=>emit('campaign')}>Campaign</button><button title="Configure workstation, GPU and batching defaults" onClick={()=>emit('resources')}>Resources</button><button onClick={()=>emit('save')}>Save</button><button onClick={()=>emit('save_as')}>Save as…</button><button onClick={()=>emit('save_version')}>Save version</button><button className="run-button" disabled={activeStudy&&!args.active_execution_ready} title={activeStudy&&!args.active_execution_ready?'Active-learning round execution is not connected yet. You can configure and save the workflow.':'Run this pipeline'} onClick={()=>emit('run')}>▶ Run pipeline</button></div></header>
     <div className="workspace">
       {palette&&!canvasOnly&&<aside className="node-library"><div className="panel-heading"><span>Add a step</span><button onClick={()=>setPalette(false)} title="Hide library">‹</button></div><input aria-label="Search pipeline tools" placeholder="Search tools…" value={query} onChange={e=>setQuery(e.target.value)}/>{categories.map(category=>{const specs=Object.values(catalog).filter(s=>!s.hidden&&s.category===category&&`${s.label} ${s.description}`.toLowerCase().includes(query.toLowerCase()));return specs.length?<section key={category}><h3>{category}</h3>{specs.map(s=><button key={s.key} className="palette-tool" draggable onDragStart={e=>e.dataTransfer.setData('application/studio-node',s.key)} onClick={()=>addNode(s.key)} title={s.description}><span style={{color:s.color}}>◇</span><span>{s.label}</span><span className="add-plus">+</span></button>)}</section>:null;})}<p className="library-help">Drag a tool onto the canvas, or click to add it.</p></aside>}
       <main className="flow-region" onDragOver={e=>{e.preventDefault();e.dataTransfer.dropEffect='move';}} onDrop={e=>{e.preventDefault();const kind=e.dataTransfer.getData('application/studio-node');if(catalog[kind])addNode(kind,rf.screenToFlowPosition({x:e.clientX,y:e.clientY}));}}>

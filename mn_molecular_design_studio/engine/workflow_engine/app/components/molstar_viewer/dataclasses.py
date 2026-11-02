@@ -1,6 +1,51 @@
 import dataclasses
 import json
+import math
 from typing import Literal
+
+
+def validate_rigid_transform_matrix(matrix):
+    """Validate a user-supplied row-major rigid 4x4 transform.
+
+    Matrices use column vectors and map moving coordinates into the reference
+    frame. This validates matrix shape and rigid-transform form only; it does
+    not estimate a fit or assess whether the transform matches any residue
+    correspondence.
+    """
+    if not isinstance(matrix, (list, tuple)) or len(matrix) != 4:
+        raise ValueError("A transform must be a 4x4 matrix of rows.")
+    rows = []
+    for row in matrix:
+        if not isinstance(row, (list, tuple)) or len(row) != 4:
+            raise ValueError("A transform must be a 4x4 matrix of rows.")
+        try:
+            normalized = [float(value) for value in row]
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Transform values must be finite numbers.") from exc
+        if not all(math.isfinite(value) for value in normalized):
+            raise ValueError("Transform values must be finite numbers.")
+        rows.append(normalized)
+
+    tolerance = 1e-4
+    if any(abs(rows[3][index] - expected) > tolerance
+           for index, expected in enumerate((0.0, 0.0, 0.0, 1.0))):
+        raise ValueError("The last transform row must be [0, 0, 0, 1].")
+
+    rotation = [row[:3] for row in rows[:3]]
+    for first in range(3):
+        for second in range(3):
+            dot = sum(rotation[index][first] * rotation[index][second] for index in range(3))
+            expected = 1.0 if first == second else 0.0
+            if abs(dot - expected) > tolerance:
+                raise ValueError("The transform rotation must be orthonormal; scale and shear are unsupported.")
+    determinant = (
+        rotation[0][0] * (rotation[1][1] * rotation[2][2] - rotation[1][2] * rotation[2][1])
+        - rotation[0][1] * (rotation[1][0] * rotation[2][2] - rotation[1][2] * rotation[2][0])
+        + rotation[0][2] * (rotation[1][0] * rotation[2][1] - rotation[1][1] * rotation[2][0])
+    )
+    if abs(determinant - 1.0) > tolerance:
+        raise ValueError("The transform rotation must be proper (determinant +1); reflections are unsupported.")
+    return rows
 
 
 class EnhancedJSONEncoder(json.JSONEncoder):
@@ -97,8 +142,11 @@ class StructureVisualization:
     chains: list[ChainVisualization] | None = None
     docking_box: dict | None = None
     trajectory: dict | None = None
+    transform_matrix: list[list[float]] | None = None
 
     def __post_init__(self):
+        if self.transform_matrix is not None:
+            self.transform_matrix = validate_rigid_transform_matrix(self.transform_matrix)
         if self.chains:
             if isinstance(self.chains, ChainVisualization):
                 self.chains = [self.chains]

@@ -252,13 +252,14 @@ def mark_studio_job(
     *,
     project_id: str | None | object = _PROJECT_ID_UNSET,
     owner_id: str | None | object = _OWNER_ID_UNSET,
+    allow_private_source: bool = False,
 ) -> object:
     """Tag a newly created run so shared-folder legacy jobs remain distinguishable."""
     if not isinstance(result, dict):
         return result
     if project_id is not _PROJECT_ID_UNSET:
         project_id = validate_project_id(project_id)
-        if project_id is None:
+        if project_id is None and not allow_private_source:
             raise ValueError("Every Molecular Design Studio job must belong to a project.")
     job_result = result.get("job") if isinstance(result.get("job"), dict) else result
     if job_result.get("cluster_job_id"):

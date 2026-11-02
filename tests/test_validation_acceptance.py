@@ -20,6 +20,52 @@ def test_source_campaign_provenance_selects_binder_format_and_target_kind():
     assert infer_target_type(candidate, parameters) == "fasta_idr"
 
 
+def test_rfd4_task_selects_binder_format_without_guessing_generic_antibody():
+    assert infer_binder_format({}, {"task": "protein_binder"}) == "miniprotein"
+    assert infer_binder_format({}, {"task": "nanobody"}) == "vhh"
+    assert infer_binder_format({}, {"task": "antibody"}) is None
+    assert infer_binder_format({}, {"condition_spec": "nanobody:\n  input: target.cif\n"}) == "vhh"
+
+
+def test_target_type_auto_detects_structure_and_rfd4_idr_sequence_carriers():
+    assert infer_target_type({}, {"target": {"target_pdb": "target.cif", "target_type": "auto"}}) == "structured"
+    idr_condition = "idr_peptide_binder:\n  input: target_sequence_carrier.cif\n  conditions:\n    C_SEQ:\n      true: []\n"
+    assert infer_target_type({}, {"target": {"target_pdb": "target_sequence_carrier.cif", "target_type": "auto"},
+                                 "generator": {"condition_spec": idr_condition}}) == "fasta_idr"
+    structured_condition = "protein_binder:\n  input: target.cif\n  conditions:\n    C_CRD:\n      true: []\n"
+    assert infer_target_type({}, {"target": {"target_pdb": "target.cif", "target_type": "auto"},
+                                 "generator": {"condition_spec": structured_condition}}) == "structured"
+    assert infer_target_type({}, {"target": {"target_pdb": "target_sequence_carrier.cif", "target_type": "auto"}}) == "structured"
+
+
+def test_graph_bindcraft2_profile_resolves_criteria_from_target_and_source():
+    from mn_molecular_design_studio.validation_acceptance import campaign_policy_from_node
+
+    base = {"binder_format": "miniprotein", "policy_profile": "bindcraft2_reference",
+            "rules": [], "informational_scores": []}
+    structured = campaign_policy_from_node(base, target_type="structured", source_tools=["rfd4_proteina"])
+    idr = campaign_policy_from_node(base, target_type="fasta_idr", source_tools=["rfd4_proteina"])
+    assert structured["target_type"] == "structured"
+    assert structured["reference_preset"]["target_type"] == "structured"
+    assert idr["target_type"] == "fasta_idr"
+    assert idr["reference_preset"]["target_type"] == "fasta_idr"
+    assert {rule["field"] for rule in structured["mandatory_filters"]} == {
+        "common.confidence.generator.complex.ptm",
+        "common.confidence.generator.complex.iptm",
+        "common.interface.native.rfd4_proteina.binder_residue_count_4a",
+        "common.geometry.native.rfd4_proteina.backbone_ca_clashes_2_5a",
+        "common.confidence.generator.interface.pae_norm31",
+    }
+    vhh = campaign_policy_from_node(
+        {**base, "binder_format": "auto"}, target_type="structured",
+        binder_format="vhh", source_tools=["rfd4_proteina"],
+    )
+    assert vhh["binder_format"] == "vhh"
+    assert vhh["reference_preset"]["binder_format"] == "vhh"
+    assert any("Scaffold_Sequence_Retained_Fraction" in item
+               for item in vhh["reference_preset"]["inactive_criteria"])
+
+
 def test_format_is_not_guessed_from_sequence_length():
     candidate = {"source_tool": "unknown_generator", "binder_sequence": "A" * 15, "raw_metadata": {}}
     assert infer_binder_format(candidate, {}) is None
@@ -386,6 +432,27 @@ def test_unavailable_selected_measurement_is_unresolved_not_passed():
     })
     assert decision["status"] == "unresolved"
     assert decision["measurements"][field]["passed"] is None
+
+
+def test_rfd4_native_target_aligned_binder_rmsd_is_a_separate_normalized_measurement():
+    from mn_molecular_design_studio.output_vocabulary import candidate_output
+
+    candidate = {
+        "candidate_id": "rfd4-pose-rmsd",
+        "source_tool": "rfd4_proteina",
+        "stage": "generation.backbone_sequence",
+        "metrics": {
+            "generation_target_alignment_rmsd": 0.06,
+            "refolded_target_backbone_aligned_binder_rmsd.rmsd": 2.1095,
+        },
+        "raw_metadata": {},
+    }
+    output = candidate_output(candidate)
+
+    assert output["metrics"]["geometry.native.rfd4_proteina.target_aligned_binder_pose_rmsd"] == pytest.approx(2.1095)
+    assert output["metrics"]["geometry.target.alignment_rmsd"] == pytest.approx(0.06)
+    assert output["provenance"]["geometry.native.rfd4_proteina.target_aligned_binder_pose_rmsd"]["method"].startswith("RFD4 native OF3 refold")
+    assert METRICS["rfd4_native_target_aligned_binder_pose_rmsd"]["informational_only"] is True
 
 
 def test_acceptance_ui_uses_source_format_defaults_and_ipdae_ranking():

@@ -310,6 +310,9 @@ def enrich_candidate(run_dir: Path, candidate: dict) -> dict:
             payload = read_payload(path)
             scores.update(summary_metrics(sample_payload(structure, path, payload) if structure else payload))
     merged = {**summary_metrics(scores), **{key: value for key, value in metrics.items() if value is not None}}
+    if raw.get('confidence_available') is False:
+        for key in ('plddt_mean', 'binder_structure_ca_plddt', 'target_structure_ca_plddt', 'ptm', 'iptm', 'ranking_score', 'confidence_score'):
+            merged.pop(key, None)
     # Fill aliases even if the old adapter only saved the engine's native name.
     for key, value in summary_metrics(merged).items():
         merged[key] = value
@@ -317,7 +320,7 @@ def enrich_candidate(run_dir: Path, candidate: dict) -> dict:
     if native_rank:
         merged['native_rank'] = int(native_rank[1])
     raw['confidence_outputs'] = scores
-    if structure is not None and candidate.get("binder_chains") and candidate.get("target_chains"):
+    if raw.get('confidence_available') is not False and structure is not None and candidate.get("binder_chains") and candidate.get("target_chains"):
         pae_result = _saved_interface_pae(Path(run_dir), candidate, structure, files)
         if pae_result:
             pae_metrics, pae_provenance = pae_result

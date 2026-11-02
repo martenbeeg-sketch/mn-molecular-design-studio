@@ -253,3 +253,13 @@ def render_task_setup(prefix):
         if st.button("Open legacy recipe", key=prefix + "-open-legacy"):
             return new_graph(LEGACY_STARTER_TEMPLATES[legacy])
     return None
+
+
+def render_legacy_recipe_selector(prefix):
+    """Keep legacy graph starters available without duplicating canvas setup."""
+    with st.expander("Legacy pipeline recipes", expanded=False):
+        st.caption("Start from a saved-style recipe, then edit the inputs and tools directly on the canvas.")
+        legacy = st.selectbox("Legacy recipe", list(LEGACY_STARTER_TEMPLATES), key=prefix + "-legacy")
+        if st.button("Load recipe onto canvas", key=prefix + "-open-legacy"):
+            return new_graph(LEGACY_STARTER_TEMPLATES[legacy])
+    return None

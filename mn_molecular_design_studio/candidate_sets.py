@@ -360,8 +360,9 @@ def validate_settings(kind, params):
                 raise ValueError("Each scientific rule needs a field, comparison operator and finite value.")
     if kind == "shared_filter":
         from mn_molecular_design_studio.validation_acceptance import normalize_policy
-        normalize_policy({"binder_format": params.get("binder_format", "miniprotein"),
-                          "target_type": params.get("target_type", "structured"),
+        binder_format = params.get("binder_format", "miniprotein")
+        normalize_policy({"binder_format": binder_format if binder_format != "auto" else "miniprotein",
+                          "target_type": params.get("target_type", "auto") if params.get("target_type", "auto") != "auto" else "structured",
                           "mandatory_filters": params.get("rules", []),
                           "informational_scores": params.get("informational_scores", []),
                           "ranking_metric": params.get("ranking_metric", "")})
@@ -402,22 +403,59 @@ def observation(row, field, output=None):
 
 
 def shared_filter(parent, node_id, source, params):
-    from mn_molecular_design_studio.validation_acceptance import evaluate_candidate, normalize_policy
-    policy = normalize_policy({"binder_format": params.get("binder_format", "miniprotein"),
-                               "target_type": params.get("target_type", "structured"),
-                               "mandatory_filters": params.get("rules", []),
-                               "informational_scores": params.get("informational_scores", []),
-                               "ranking_metric": params.get("ranking_metric", "")})
-    acceptance_enabled = bool(policy["mandatory_filters"] or policy["informational_scores"] or policy["ranking_metric"])
+    from mn_molecular_design_studio.validation_acceptance import (
+        campaign_policy_from_node, evaluate_candidate, infer_binder_format, infer_target_type,
+    )
+    target_type = params.get("resolved_target_type") or params.get("target_type", "structured")
+    first_candidate = None
+    rows = iter_candidates(source)
+    if target_type == "auto":
+        target_type = infer_target_type({}, {"target": source.get("target") or {}})
+        first_candidate = next(rows, None)
+        if first_candidate:
+            candidate_type = infer_target_type(first_candidate, {"target": source.get("target") or {}})
+            if target_type and candidate_type and target_type != candidate_type:
+                raise ValueError("The connected target and candidate provenance disagree about target type. Set the Target Structure node explicitly.")
+            target_type = candidate_type or target_type
+        if target_type is None:
+            raise ValueError("Auto could not identify this target as structured or FASTA / IDR from the connected target and candidate provenance. Set Target type on the Target Structure node.")
+    acceptance_enabled = bool(params.get("rules") or params.get("informational_scores")
+                              or params.get("ranking_metric")
+                              or params.get("policy_profile") in {"auto", "bindcraft2_reference"})
     review_path = Path(parent) / "artifacts/pipeline_nodes" / node_id / "artifacts/candidate_set/all_candidates.jsonl"
     review_path.parent.mkdir(parents=True, exist_ok=True)
     counts = Counter()
     def passed():
         with review_path.open("w") as review:
-            for row in iter_candidates(source):
+            candidate_rows = iter_candidates(source)
+            if first_candidate is not None:
+                import itertools
+                candidate_rows = itertools.chain((first_candidate,), rows)
+            for row in candidate_rows:
+                if params.get("target_type") == "auto":
+                    candidate_type = infer_target_type(row, {"target": source.get("target") or {}})
+                    if candidate_type and candidate_type != target_type:
+                        raise ValueError("A merged CandidateSet contains multiple target types. Split structured and FASTA / IDR campaigns before filtering.")
                 info = metadata(row)
                 if not info:
                     raise ValueError("Shared filters require a CandidateSet merge first.")
+                binder_format = params.get("resolved_binder_format") or params.get("binder_format", "miniprotein")
+                if binder_format == "auto":
+                    binder_format = infer_binder_format(row)
+                if not binder_format:
+                    raise ValueError("Auto could not identify a binder format from the connected design task or candidate provenance. Choose a format on the Shared scientific filters node; generic antibody tasks are intentionally not guessed as VHH, scFv or Fab.")
+                candidate_tool = info.get("generator") or row.get("source_tool")
+                candidate_tools = [candidate_tool] if candidate_tool else params.get("source_tools", ())
+                effective_params = {**params, "binder_format": binder_format}
+                if (params.get("policy_profile", "custom") == "custom"
+                        and not params.get("rules") and not params.get("informational_scores")
+                        and not params.get("ranking_metric")):
+                    from mn_molecular_design_studio.validation_acceptance import normalize_policy
+                    policy = normalize_policy({"binder_format": binder_format, "target_type": target_type})
+                else:
+                    policy = campaign_policy_from_node(
+                        effective_params, target_type=target_type, source_tools=candidate_tools,
+                    )
                 decisions = []
                 retained = (row.get("raw_metadata") or {}).get("validation_acceptance") or {}
                 provenance = (row.get("raw_metadata") or {}).get("validation_acceptance_provenance") or {}
@@ -448,7 +486,9 @@ def shared_filter(parent, node_id, source, params):
                     status = "passed"
                 else:
                     status = next((v for v in ("invalid_metadata", "missing_evidence", "failed") if any(d["status"] == v for d in decisions)), "passed" if decisions else "not_evaluated")
-                info["shared_filter"] = dict(status=status, decisions=decisions, policy=copy.deepcopy(params),
+                info["shared_filter"] = dict(status=status, decisions=decisions, policy=copy.deepcopy(policy),
+                                              target_type_selection=params.get("target_type", "structured"),
+                                              resolved_target_type=target_type,
                                               acceptance_status=acceptance["status"] if acceptance else "not_evaluated")
                 info["eligible_for_prediction"] = status in {"passed", "not_evaluated"} and info.get("native_output_role") != "intermediate"
                 counts[status] += 1

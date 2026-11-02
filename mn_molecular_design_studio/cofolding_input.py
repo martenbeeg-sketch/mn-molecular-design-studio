@@ -31,6 +31,26 @@ def _get_editor() -> Any:
     return _editors[asset_hash]
 
 
+@lru_cache(maxsize=1)
+def _localfold_editor_profiles() -> dict[str, Any]:
+    """Ship model controls together so selecting a model needs no server round trip."""
+    from mn_molecular_design_studio import localfold
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.optimized_prediction import ENGINE_PROFILES
+    profiles = {}
+    for name in localfold.UI_MODEL_KEYS:
+        profile = localfold.profile_for(ENGINE_PROFILES['localfold'], name, ui=True)
+        profiles[name] = {
+            'prediction': prediction_settings_for(profile),
+            'types': ['protein', *(['dna', 'rna', 'ligand'] if profile['molecule_inputs'] else [])],
+            'ccd': bool(profile['molecule_inputs']), 'smiles': bool(profile['molecule_inputs']),
+            'cyclic': profile['supports_cyclic'], 'modifications': profile['supports_modifications'],
+            'bonds': profile['supports_bonds'], 'crosslinks': profile['supports_crosslinks'],
+            'contacts': profile['supports_contacts'], 'pockets': profile['supports_pockets'],
+            'msa': profile['supports_msa_upload'], 'templates': profile['supports_templates'],
+        }
+    return profiles
+
+
 @lru_cache(maxsize=128)
 def _smiles_preview(smiles: str) -> str:
     if not smiles or len(smiles) > 5000:
@@ -80,9 +100,13 @@ def model_to_payload(model: dict[str, Any]) -> dict[str, Any]:
     """Keep the visual editor independent of each engine's serialized schema."""
     cards = model.get("cards") or []
     settings = {**default_model()["settings"], **(model.get("settings") or {})}
+    localfold = "msa_mode" in (model.get("settings") or {})
+    global_use_msa = settings.get("msa_mode") != "single_sequence" if localfold else bool(settings["use_msa"])
     groups: dict[str, list[dict[str, Any]]] = {kind: [] for kind in ("protein", "dna", "rna", "ccd", "smiles")}
     errors = []
-    for card in cards:
+    for card_index, card in enumerate(cards):
+        if localfold and card.get('kind') in {'modification', 'bond', 'crosslink', 'contact', 'pocket'}:
+            continue
         kind = str(card.get("mode", "ccd")) if card.get("kind") == "ligand" else str(card.get("kind", "protein"))
         value = str(card.get("value") or "").strip()
         if kind not in groups:
@@ -101,31 +125,54 @@ def model_to_payload(model: dict[str, Any]) -> dict[str, Any]:
         if not 1 <= copies <= len(CHAIN_IDS):
             errors.append("Copies must be between 1 and 52.")
             continue
-        groups[kind].extend([{**card, "value": value}] * copies)
+        groups[kind].extend([{**card, "value": value, '_editor_card_index': card_index}] * copies)
     if sum(len(rows) for rows in groups.values()) > len(CHAIN_IDS):
         errors.append("Enter at most 52 chains and ligand copies.")
     options = []
     catalog = []
+    all_rows = [row for rows in groups.values() for row in rows][:len(CHAIN_IDS)]
+    extra_modifications: dict[int, list[dict]] = {}
+    for card in cards if localfold else []:
+        if card.get('kind') != 'modification':
+            continue
+        selected_chain = str(card.get('chain_id') or '')
+        target = next((row for index, row in enumerate(all_rows) if CHAIN_IDS[index] == selected_chain), None)
+        if target is None or target.get('kind') not in {'protein', 'dna', 'rna'}:
+            errors.append('Choose a protein, DNA or RNA chain for each modification.')
+            continue
+        extra_modifications.setdefault(target['_editor_card_index'], []).append({
+            'position': card.get('position', ''), 'code': str(card.get('code') or '').strip(),
+        })
     for kind, rows in groups.items():
         for row in rows:
             if len(catalog) >= len(CHAIN_IDS):
                 break
             chain_id = CHAIN_IDS[len(catalog)]
             catalog.append({"id": chain_id, "kind": kind, "sequence": row["value"]})
-            if kind == "protein":
-                modifications = row.get("modifications") or []
+            if kind == "protein" or localfold and kind in {'dna', 'rna'}:
+                modifications = [*(row.get("modifications") or []), *extra_modifications.get(row['_editor_card_index'], [])]
                 if any(not str(mod.get("code") or "").strip() for mod in modifications):
                     errors.append("Every modification needs a CCD code.")
+                modification_lines = []
+                for mod in modifications:
+                    try:
+                        position = int(mod.get('position', ''))
+                    except (ValueError, TypeError):
+                        errors.append('Every modification needs a residue position.')
+                        continue
+                    modification_lines.append(f"{position}, {str(mod.get('code') or '').strip()}")
                 options.append({
                     "id": chain_id, "cyclic": bool(row.get("cyclic")),
-                    "modifications_text": "\n".join(
-                        f"{int(mod.get('position', 1))}, {str(mod.get('code') or '').strip()}"
-                        for mod in modifications if str(mod.get("code") or "").strip()
-                    ),
+                    "modifications_text": "\n".join(modification_lines),
                     "msa_a3m_text": next((str(item.get("text") or "") for item in model.get("msa_files", [])
-                                           if item.get("chain_id") == chain_id), "") if settings["use_msa"] else "",
+                                           if item.get("chain_id") == chain_id), "")
+                    if global_use_msa and (not localfold or row.get("localfold_alignment") != "single_sequence") else "",
+                    **({
+                        "use_msa": global_use_msa and row.get("localfold_alignment") != "single_sequence",
+                        "use_template": str(row.get("localfold_use_template", True)).lower() != "false",
+                    } if localfold else {}),
                 })
-    if settings["use_msa"] and any(not item.get("chain_id") for item in model.get("msa_files", [])):
+    if global_use_msa and any(not item.get("chain_id") for item in model.get("msa_files", [])):
         errors.append("Assign each custom A3M file to a protein chain.")
     values: dict[str, Any] = {
         "protein_sequences": ":".join(row["value"] for row in groups["protein"]),
@@ -133,7 +180,14 @@ def model_to_payload(model: dict[str, Any]) -> dict[str, Any]:
         "rna_sequences": ":".join(row["value"] for row in groups["rna"]),
         "ligand_ccd_codes": ":".join(row["value"] for row in groups["ccd"]),
         "ligand_smiles": "\n".join(row["value"] for row in groups["smiles"]),
-        "molecule_chain_options": options, "restraints": model.get("restraints") or [],
+        "molecule_chain_options": options, "restraints": [*(model.get("restraints") or []), *([
+            {card['kind']: {key: (str(card.get(key) or '').replace(';', '\n') if key == 'contacts_input' else card.get(key)) for key in {
+                'bond': ('atom1', 'atom2'), 'crosslink': ('name', 'residue1', 'residue2'),
+                'contact': ('token1', 'token2', 'max_distance'),
+                'pocket': ('binder', 'contacts_input', 'max_distance'),
+            }[card['kind']]}}
+            for card in cards if card.get('kind') in {'bond', 'crosslink', 'contact', 'pocket'}
+        ] if localfold else [])],
         "boltz_templates": model.get("templates") or [],
         "template_distance_threshold": settings.get("template_distance_threshold") or None,
         "affinity_binder": settings.get("affinity_binder") if settings.get("predict_affinity") else "",
@@ -169,6 +223,7 @@ def render_molecule_editor(
     supports_examples: bool = True, supports_affinity: bool = False,
     supports_affinity_control: bool = False,
     supports_templates: bool = False,
+    localfold: bool = False,
     modes: tuple[str, ...] = ("off", "fast", "big"), can_submit: bool = False,
     prediction_settings: dict[str, Any] | None = None, settings_only: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], bool]:
@@ -180,15 +235,26 @@ def render_molecule_editor(
         allowed = {"protein", *[kind for kind, field in (("dna", "dna_sequences"), ("rna", "rna_sequences")) if field in supported_inputs]}
         if {"ligand_ccd_codes", "ligand_smiles"}.intersection(supported_inputs):
             allowed.add("small_molecule")
-        selected = render_molecule_picker(database_user, key=key_prefix, allowed_types=allowed)
+        selected = render_molecule_picker(database_user, key=key_prefix, allowed_types=allowed, lazy=localfold)
         if selected:
             set_editor_selection(key_prefix, selected)
+    if localfold:
+        # Remember which LocalFold form owns the selected model so the next
+        # rerun can build that model's matching controls before rendering it.
+        st.session_state["_localfold_active_editor_key"] = state_key
     initial = st.session_state.get(f"{key_prefix}-editor") or st.session_state.get(state_key)
+    if initial is None and localfold and key_prefix.startswith("optimized-localfold-"):
+        selected_model = str(st.session_state.get("localfold-model", "alphafold3"))
+        suffix = key_prefix.removeprefix("optimized-localfold-")
+        initial = st.session_state.get(f"optimized-localfold-{selected_model}-{suffix}-editor")
     if initial is None:
         initial = default_model()
         if prediction_settings:
             initial["settings"].update({field["key"]: field["default"] for field in prediction_settings["fields"]})
             initial["settings"]["samples"] = prediction_settings.get("samples", 5)
+    if localfold:
+        initial.setdefault('settings', {}).setdefault('msa_mode', 'automatic')
+        initial['settings'].setdefault('model', st.session_state.get('localfold-model', 'alphafold3'))
     if prediction_settings:
         for field in prediction_settings["fields"]:
             initial.setdefault("settings", {}).setdefault(field["key"], field["default"])
@@ -215,22 +281,41 @@ def render_molecule_editor(
         str(card["id"]): _smiles_preview(str(card["value"])) for card in initial.get("cards", [])
         if card.get("kind") == "ligand" and card.get("mode") == "smiles" and card.get("value")
     }
+    localfold_models = {}
+    if localfold:
+        from mn_molecular_design_studio import localfold as localfold_engine
+        for model_key in localfold_engine.UI_MODEL_KEYS:
+            spec = localfold_engine.MODELS[model_key]
+            no_msa = model_key in {'esmfold2_lm600m', 'esmfold2_lm300m'}
+            localfold_models[model_key] = {
+                **spec,
+                "no_msa": no_msa,
+                "samples": 1 if model_key.startswith("af2_") or model_key == "bioemu2" else 5,
+            }
+    capabilities = {
+        "types": ["protein", *[kind for kind, field in (("rna", "rna_sequences"), ("dna", "dna_sequences")) if field in supported_inputs],
+                  *(["ligand"] if {"ligand_ccd_codes", "ligand_smiles"}.intersection(supported_inputs) else [])],
+        "ccd": "ligand_ccd_codes" in supported_inputs, "smiles": "ligand_smiles" in supported_inputs,
+        "examples": supports_examples and not settings_only,
+        "ligand_examples": supports_examples and not settings_only and "ligand_smiles" in supported_inputs,
+        "affinity": supports_affinity and not settings_only and "ligand_smiles" in supported_inputs,
+        "affinity_control": supports_affinity_control and not settings_only and "ligand_smiles" in supported_inputs,
+        "cyclic": supports_cyclic, "modifications": supports_modifications,
+        "restraints": supports_restraints, "msa": supports_msa_upload,
+        "templates": supports_templates,
+        "localfold": localfold, "localfold_models": localfold_models,
+        "localfold_model": st.session_state.get('localfold-model', 'alphafold3') if localfold else '',
+        "localfold_profiles": _localfold_editor_profiles() if localfold else {},
+        "localfold_crosslinkers": localfold_engine.CROSSLINKERS if localfold else (),
+        "localfold_model_groups": localfold_engine.MODEL_UI_GROUPS if localfold else (),
+        "localfold_esmfold2_variants": localfold_engine.ESMFOLD2_VARIANTS if localfold else (),
+        "localfold_default_esmfold2_variant": localfold_engine.DEFAULT_ESMFOLD2_VARIANT if localfold else "",
+        "boltz": boltz_settings, "modes": modes, "can_submit": can_submit,
+        "prediction": prediction_settings, "settings_only": settings_only,
+    }
     model = _get_editor()(
         initial=initial, previews=previews, yaml_chains=yaml_chains, yaml_error=yaml_error,
-        capabilities={
-            "types": ["protein", *[kind for kind, field in (("rna", "rna_sequences"), ("dna", "dna_sequences")) if field in supported_inputs],
-                      *(["ligand"] if {"ligand_ccd_codes", "ligand_smiles"}.intersection(supported_inputs) else [])],
-            "ccd": "ligand_ccd_codes" in supported_inputs, "smiles": "ligand_smiles" in supported_inputs,
-            "examples": supports_examples and not settings_only,
-            "ligand_examples": supports_examples and not settings_only and "ligand_smiles" in supported_inputs,
-            "affinity": supports_affinity and not settings_only and "ligand_smiles" in supported_inputs,
-            "affinity_control": supports_affinity_control and not settings_only and "ligand_smiles" in supported_inputs,
-            "cyclic": supports_cyclic, "modifications": supports_modifications,
-            "restraints": supports_restraints, "msa": supports_msa_upload,
-            "templates": supports_templates,
-            "boltz": boltz_settings, "modes": modes, "can_submit": can_submit,
-            "prediction": prediction_settings, "settings_only": settings_only,
-        },
+        capabilities=capabilities,
         key=(f"{key_prefix}-editor-library-{st.session_state[key_prefix + '-library-epoch']}"
              if st.session_state.get(key_prefix + "-library-epoch") else f"{key_prefix}-editor"), default=initial,
     )
@@ -277,17 +362,22 @@ def prediction_settings_for(profile: dict[str, Any], *, extra_fields: tuple[dict
              "default": "off", "choices": [(mode, "None" if mode == "off" else mode.title()) for mode in profile["modes"]],
              "help": "Choose an inference profile available for this engine."}
         )
+    recycle_field = {
+        "key": "num_recycles", "label": "Number of recycles", "default": profile.get("default_recycles", 10),
+        "min": 1, "max": 100, "hidden": bool(profile.get("settings_replace_num_recycles")),
+        "help": "Refinement rounds, mapped to this engine's recycle, cycle or loop setting.",
+    }
+    if profile.get("api_engine") == "localfold":
+        recycle_field.update(type="select", min=0, choices=tuple((value, str(value)) for value in (0, 1, 2, 3, 6, 12, 24)))
     fields.extend([
-        {"key": "num_recycles", "label": "Number of recycles", "default": profile.get("default_recycles", 10),
-         "min": 1, "max": 100, "hidden": bool(profile.get("settings_replace_num_recycles")),
-         "help": "Refinement rounds, mapped to this engine's recycle, cycle or loop setting."},
+        recycle_field,
         *extra_fields,
         *profile.get("settings", ()),
         {"key": "cpu_cores", "label": "CPU cores", "default": 4, "min": 1, "max": 256},
         {"key": "prioritize", "label": "Prioritize in scheduler queue", "type": "bool", "default": False,
          "help": "Move this job ahead of normal queued work when resources become available."},
     ])
-    if profile.get("supports_seed", True):
+    if profile.get("supports_seed", True) and not any(field['key'] == 'seed' for field in fields):
         fields.insert(
             2 if len(profile["modes"]) > 1 else 1,
             {"key": "seed", "label": "Seed (0 for random)", "default": 0, "min": 0, "max": 2147483647,

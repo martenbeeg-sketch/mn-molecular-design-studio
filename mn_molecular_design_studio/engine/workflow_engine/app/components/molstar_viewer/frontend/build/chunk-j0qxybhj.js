@@ -34684,7 +34684,7 @@ var t2 = function() {
   } catch (t) {
     return !1;
   }
-}(), lt = !1;
+}(), ct = !1;
 var FO = [];
 function nhe(e) {
   if (!FO.includes(e))
@@ -34697,7 +34697,7 @@ function ohe(e) {
 }
 
 // node_modules/molstar/lib/mol-task/util/user-timing.js
-var T$e = typeof performance < "u" && !!performance.mark && performance.measure, fY = T$e && lt, E3;
+var T$e = typeof performance < "u" && !!performance.mark && performance.measure, fY = T$e && ct, E3;
 (function(e) {
   function t(a) {
     return `startTask${a.id}`;
@@ -72424,7 +72424,7 @@ function k2e(e, t, r, n, o) {
           break;
         }
       }
-      if (lt)
+      if (ct)
         console.log(`Finalized ${b} of ${g} programs (${d ? d.join(", ") : "all"}) in ${(Yo() - v).toFixed(2)} ms`);
       return h;
     },
@@ -77303,7 +77303,7 @@ function HCe(e, t, r, n, o, i, a, s) {
             for (let he = 0;he < ne.count; ++he)
               if (ne.counts[he] > 0)
                 ae.uniform("uDrawId", he), ae.offsetAttributes(Z, ne.baseInstances[he]), m.drawArraysInstanced(O, 0, ne.counts[he], ne.instanceCounts[he]);
-          if (lt) {
+          if (ct) {
             if (g)
               c.calls.multiDrawInstancedBase += 1;
             else if (h)
@@ -77325,7 +77325,7 @@ function HCe(e, t, r, n, o, i, a, s) {
           if (ne += he, ne >= q)
             break;
         }
-        if (lt)
+        if (ct)
           c.calls.drawInstanced += 1, c.calls.counts += j;
       }
       if (zr)
@@ -77617,18 +77617,18 @@ function kd(e, t, r) {
           let Y = H6(u, l.center);
           if (F) {
             if (Y + l.radius < E || Y - l.radius > R) {
-              if (lt)
+              if (ct)
                 f.culled.lod += b[A[U - 1] + 1] - b[A[L]];
               continue;
             }
           }
           if (!j6(d, l)) {
-            if (lt)
+            if (ct)
               f.culled.frustum += b[A[U - 1] + 1] - b[A[L]];
             continue;
           }
           if (m !== null && m(l)) {
-            if (lt)
+            if (ct)
               f.culled.occlusion += b[A[U - 1] + 1] - b[A[L]];
             continue;
           }
@@ -77640,18 +77640,18 @@ function kd(e, t, r) {
             let j = H6(u, l.center);
             if (F) {
               if (j + l.radius < E || j - l.radius > R) {
-                if (lt)
+                if (ct)
                   f.culled.lod += q;
                 continue;
               }
             }
             if (!j6(d, l)) {
-              if (lt)
+              if (ct)
                 f.culled.frustum += q;
               continue;
             }
             if (m !== null && j - l.radius < M && m(l)) {
-              if (lt)
+              if (ct)
                 f.culled.occlusion += q;
               continue;
             }
@@ -77676,18 +77676,18 @@ function kd(e, t, r) {
           if (G6(l, T, Y * 4), F) {
             let W = H6(u, l.center);
             if (W + l.radius < E || W - l.radius > R) {
-              if (lt)
+              if (ct)
                 f.culled.lod += b[A[ie - 1] + 1] - b[A[Z]];
               continue;
             }
           }
           if (!j6(d, l)) {
-            if (lt)
+            if (ct)
               f.culled.frustum += b[A[ie - 1] + 1] - b[A[Z]];
             continue;
           }
           if (m !== null && m(l)) {
-            if (lt)
+            if (ct)
               f.culled.occlusion += b[A[ie - 1] + 1] - b[A[Z]];
             continue;
           }
@@ -77699,18 +77699,18 @@ function kd(e, t, r) {
             let J = H6(u, l.center);
             if (F) {
               if (J + l.radius < E || J - l.radius > R) {
-                if (lt)
+                if (ct)
                   f.culled.lod += fe;
                 continue;
               }
             }
             if (!j6(d, l)) {
-              if (lt)
+              if (ct)
                 f.culled.frustum += fe;
               continue;
             }
             if (m !== null && J - l.radius < M && m(l)) {
-              if (lt)
+              if (ct)
                 f.culled.occlusion += fe;
               continue;
             }
@@ -94320,7 +94320,7 @@ function UU(e, t, r) {
 }
 
 // node_modules/molstar/lib/mol-plugin-state/transforms.js
-var ct = {
+var lt = {
   Data: lZ,
   Misc: cZ,
   Model: vQ,
@@ -96578,7 +96578,7 @@ function jR(e, t, r, n, o) {
   let { drawBuffers: i } = n.extensions;
   if (!i)
     throw Error("need WebGL draw buffers");
-  if (lt)
+  if (ct)
     n.timer.mark("calcTextureMeshColorSmoothing");
   let { gl: a, resources: s, state: l, extensions: { colorBufferHalfFloat: c, textureHalfFloat: u } } = n, d = e.colorType.endsWith("Instance"), m = er.fromSphere3D(er(), d ? e.boundingSphere : e.invariantBoundingSphere), f = 1 + t, g = er.expand(er(), m, x.create(f, f, f)), h = 1 / t, b = er.scale(er(), g, h), v = er.size(x(), b);
   x.ceil(v, v), x.add(v, v, x.create(2, 2, 2));
@@ -96605,7 +96605,7 @@ function jR(e, t, r, n, o) {
     i.COLOR_ATTACHMENT1
   ]);
   let { uCurrentSlice: O, uCurrentX: L, uCurrentY: U } = B.values;
-  if (lt)
+  if (ct)
     n.timer.mark("ColorAccumulate.render");
   Rht(n), l.viewport(0, 0, A, P), l.scissor(0, 0, A, P), a.clear(a.COLOR_BUFFER_BIT), D.update(U, 0);
   let z = 0, Y = 0, Z = 0;
@@ -96614,18 +96614,18 @@ function jR(e, t, r, n, o) {
       z -= E, Y += T, Z = 0, D.update(U, Y);
     D.update(L, Z), D.update(O, q), l.viewport(Z, Y, C, T), l.scissor(Z, Y, C, T), B.render(), ++z, Z += C;
   }
-  if (F.detachFramebuffer(R, 0), M.detachFramebuffer(R, 1), i.drawBuffers([a.COLOR_ATTACHMENT0, a.NONE]), lt)
+  if (F.detachFramebuffer(R, 0), M.detachFramebuffer(R, 1), i.drawBuffers([a.COLOR_ATTACHMENT0, a.NONE]), ct)
     n.timer.markEnd("ColorAccumulate.render");
-  if (lt)
+  if (ct)
     n.timer.mark("ColorNormalize.render");
   if (!o || $2e(o))
     o = s.texture("image-uint8", "rgba", "ubyte", "linear");
   o.define(A, P);
   let ie = Fht(n, F, M);
-  if (l.currentRenderItemId = -1, Oht(n), o.attachFramebuffer(R, 0), l.viewport(0, 0, A, P), l.scissor(0, 0, A, P), a.clear(a.COLOR_BUFFER_BIT), ie.render(), lt)
+  if (l.currentRenderItemId = -1, Oht(n), o.attachFramebuffer(R, 0), l.viewport(0, 0, A, P), l.scissor(0, 0, A, P), a.clear(a.COLOR_BUFFER_BIT), ie.render(), ct)
     n.timer.markEnd("ColorNormalize.render");
   let G = vr.create(S[0], S[1], S[2], h), W = d ? "volumeInstance" : "volume";
-  if (lt)
+  if (ct)
     n.timer.markEnd("calcTextureMeshColorSmoothing");
   return { texture: o, gridDim: v, gridTexDim: Fe.create(A, P), gridTransform: G, type: W };
 }
@@ -101238,7 +101238,7 @@ function K0t(e) {
 }
 var nz = new Uint8Array(4), SEe = new Int32Array(4);
 function CEe(e, t) {
-  if (lt)
+  if (ct)
     e.timer.mark("getHistopyramidSum");
   let { gl: r, state: n, resources: o } = e, i = Y0t(e, t);
   if (e.state.currentRenderItemId = -1, !e.namedFramebuffers[Jg])
@@ -101246,7 +101246,7 @@ function CEe(e, t) {
   let a = e.namedFramebuffers[Jg];
   if (!e.namedTextures[Jg])
     e.namedTextures[Jg] = Pr(r) ? o.texture("image-int32", "rgba", "int", "nearest") : o.texture("image-uint8", "rgba", "ubyte", "nearest"), e.namedTextures[Jg].define(1, 1);
-  if (e.namedTextures[Jg].attachFramebuffer(a, 0), K0t(e), n.viewport(0, 0, 1, 1), i.render(), r.finish(), e.readPixels(0, 0, 1, 1, Pr(r) ? SEe : nz), r.bindFramebuffer(r.FRAMEBUFFER, null), lt)
+  if (e.namedTextures[Jg].attachFramebuffer(a, 0), K0t(e), n.viewport(0, 0, 1, 1), i.render(), r.finish(), e.readPixels(0, 0, 1, 1, Pr(r) ? SEe : nz), r.bindFramebuffer(r.FRAMEBUFFER, null), ct)
     e.timer.markEnd("getHistopyramidSum");
   return Pr(r) ? SEe[0] : k2(nz[0], nz[1], nz[2]);
 }
@@ -101369,7 +101369,7 @@ function tyt(e, t) {
   return t.namedFramebuffers[r];
 }
 function TEe(e, t, r, n) {
-  if (lt)
+  if (ct)
     e.timer.mark("createHistogramPyramid");
   let { gl: o, state: i } = e, a = t.getWidth(), s = t.getHeight();
   if (a !== s || !ZS(a))
@@ -101399,7 +101399,7 @@ function TEe(e, t, r, n) {
       o.clear(o.COLOR_BUFFER_BIT);
     i.scissor(0, 0, n[0], n[1]), h.render(), m.bind(0), o.copyTexSubImage2D(o.TEXTURE_2D, 0, b, 0, 0, 0, A, A), m.unbind(0), b += A;
   }
-  if (o.finish(), lt)
+  if (o.finish(), ct)
     e.timer.markEnd("createHistogramPyramid");
   let v = Math.max(1, CEe(e, g[0].texture)), S = Math.ceil(v / Math.pow(2, l));
   return { pyramidTex: m, count: v, height: S, levels: l, scale: r };
@@ -101875,7 +101875,7 @@ function iyt(e) {
   r.disable(t.CULL_FACE), r.disable(t.BLEND), r.disable(t.DEPTH_TEST), r.enable(t.SCISSOR_TEST), r.depthMask(!1), r.colorMask(!0, !0, !0, !0), r.clearColor(0, 0, 0, 0);
 }
 function kEe(e, t, r, n, o, i) {
-  if (lt)
+  if (ct)
     e.timer.mark("calcActiveVoxels");
   let { gl: a, state: s, resources: l } = e, c = t.getWidth(), u = t.getHeight();
   if (!e.namedFramebuffers[Ey])
@@ -101886,7 +101886,7 @@ function kEe(e, t, r, n, o, i) {
   let m = e.namedTextures[Ey];
   m.define(c, u);
   let f = nyt(e, t, r, n, o, i);
-  if (e.state.currentRenderItemId = -1, m.attachFramebuffer(d, 0), iyt(e), s.viewport(0, 0, c, u), s.scissor(0, 0, c, u), a.clear(a.COLOR_BUFFER_BIT), s.scissor(0, 0, n[0], n[1]), f.render(), a.finish(), lt)
+  if (e.state.currentRenderItemId = -1, m.attachFramebuffer(d, 0), iyt(e), s.viewport(0, 0, c, u), s.scissor(0, 0, c, u), a.clear(a.COLOR_BUFFER_BIT), s.scissor(0, 0, n[0], n[1]), f.render(), a.finish(), ct)
     e.timer.markEnd("calcActiveVoxels");
   return m;
 }
@@ -101958,7 +101958,7 @@ function uyt(e, t, r, n, o, i, a, s, l, c, u, d, m, f, g, h) {
   let { drawBuffers: b } = e.extensions;
   if (!b)
     throw Error("need WebGL draw buffers");
-  if (lt)
+  if (ct)
     e.timer.mark("createIsosurfaceBuffers");
   let { gl: v, state: S, resources: C, extensions: T } = e, { pyramidTex: w, height: A, levels: P, scale: E, count: R } = n, F = w.getWidth();
   if (!e.namedFramebuffers[Q2])
@@ -101985,15 +101985,15 @@ function uyt(e, t, r, n, o, i, a, s, l, c, u, d, m, f, g, h) {
     b.COLOR_ATTACHMENT0,
     b.COLOR_ATTACHMENT1,
     b.COLOR_ATTACHMENT2
-  ]), cyt(e), S.viewport(0, 0, F, A), v.clear(v.COLOR_BUFFER_BIT), B.render(), v.finish(), lt)
+  ]), cyt(e), S.viewport(0, 0, F, A), v.clear(v.COLOR_BUFFER_BIT), B.render(), v.finish(), ct)
     e.timer.markEnd("createIsosurfaceBuffers");
   return { vertexTexture: f, groupTexture: g, normalTexture: h, vertexCount: R };
 }
 function jw(e, t, r, n, o, i, a, s, l, c, u, d, m, f, g) {
-  if (lt)
+  if (ct)
     e.timer.mark("extractIsosurface");
   let h = kEe(e, t, r, n, s, i), b = TEe(e, h, i, n), v = uyt(e, h, t, b, r, n, o, a, s, l, c, u, d, m, f, g);
-  if (lt)
+  if (ct)
     e.timer.markEnd("extractIsosurface");
   return v;
 }
@@ -103241,9 +103241,9 @@ var iPe = Sf.create({
   setup(e, t, r) {
     let n = r.state.data, o = !e.target || e.target === "all" ? An.RootRef : e.target, i = n.select(Hr.Generators.ofType(ve.Molecule.Structure.Representation3D, o)), a = n.build(), s = !1;
     for (let l of i) {
-      if (n.select(Hr.Generators.ofTransformer(ct.Representation.UnwindStructureAssemblyRepresentation3D, l.transform.ref)).length > 0)
+      if (n.select(Hr.Generators.ofTransformer(lt.Representation.UnwindStructureAssemblyRepresentation3D, l.transform.ref)).length > 0)
         continue;
-      s = !0, a.to(l).apply(ct.Representation.UnwindStructureAssemblyRepresentation3D, { t: 0 }, { tags: "animate-assembly-unwind" });
+      s = !0, a.to(l).apply(lt.Representation.UnwindStructureAssemblyRepresentation3D, { t: 0 }, { tags: "animate-assembly-unwind" });
     }
     if (!s)
       return;
@@ -103259,7 +103259,7 @@ var iPe = Sf.create({
     return i.commit();
   },
   async apply(e, t, r) {
-    let n = r.plugin.state.data, o = !r.params.target || r.params.target === "all" ? An.RootRef : r.params.target, i = n.select(Hr.Generators.ofTransformer(ct.Representation.UnwindStructureAssemblyRepresentation3D, o));
+    let n = r.plugin.state.data, o = !r.params.target || r.params.target === "all" ? An.RootRef : r.params.target, i = n.select(Hr.Generators.ofTransformer(lt.Representation.UnwindStructureAssemblyRepresentation3D, o));
     if (i.length === 0)
       return { kind: "finished" };
     let a = n.build(), s = (t.current - t.lastApplied) / r.params.durationInMs, l = e.t + s, c = !1;
@@ -103334,7 +103334,7 @@ var cPe = Sf.create({
     })
   }),
   canApply(e) {
-    let t = e.state.data, r = t.select(Hr.Generators.ofTransformer(ct.Model.ModelFromTrajectory));
+    let t = e.state.data, r = t.select(Hr.Generators.ofTransformer(lt.Model.ModelFromTrajectory));
     for (let n of r) {
       let o = Hr.findAncestorOfType(t.tree, t.cells, n.transform.ref, ve.Molecule.Trajectory);
       if (o && o.obj && o.obj.data.frameCount > 1)
@@ -103347,7 +103347,7 @@ var cPe = Sf.create({
     if (((r = e.duration) === null || r === void 0 ? void 0 : r.name) === "fixed")
       return { kind: "fixed", durationMs: e.duration.params.durationInS * 1000 };
     else if (e.duration.name === "computed") {
-      let n = t.state.data, o = n.select(Hr.Generators.ofTransformer(ct.Model.ModelFromTrajectory)), i = 0;
+      let n = t.state.data, o = n.select(Hr.Generators.ofTransformer(lt.Model.ModelFromTrajectory)), i = 0;
       for (let a of o) {
         let s = Hr.findAncestorOfType(n.tree, n.cells, a.transform.ref, ve.Molecule.Trajectory);
         if (!s || !s.obj)
@@ -103363,7 +103363,7 @@ var cPe = Sf.create({
   async apply(e, t, r) {
     if (r.params.duration.name === "sequential" && t.current > 0 && t.current - t.lastApplied < 1000 / r.params.duration.params.maxFps)
       return { kind: "skip" };
-    let n = r.plugin.state.data, o = n.select(Hr.Generators.ofTransformer(ct.Model.ModelFromTrajectory));
+    let n = r.plugin.state.data, o = n.select(Hr.Generators.ofTransformer(lt.Model.ModelFromTrajectory));
     if (o.length === 0)
       return { kind: "finished" };
     let i = n.build(), a = r.params, s = e.palindromeDirections || {}, l = !1, c = !0;
@@ -104382,26 +104382,26 @@ var fz;
       let H = Vn(Le.values.alpha.ref.value * Le.state.alphaFactor, 0, 1), re = ((Oe = Le.values.dXrayShaded) === null || Oe === void 0 ? void 0 : Oe.ref.value) === "on" || ((ze = Le.values.dXrayShaded) === null || ze === void 0 ? void 0 : ze.ref.value) === "inverted";
       return H !== 0 && (H < 1 || Le.values.transparencyAverage.ref.value > 0 || Le.values.dGeometryType.ref.value === "directVolume" || ((et = Le.values.dPointStyle) === null || et === void 0 ? void 0 : et.ref.value) === "fuzzy" || Le.values.dGeometryType.ref.value === "text" || Le.values.dGeometryType.ref.value === "image" || re);
     }, ae = (Le, Oe, ze, et) => {
-      if (lt)
+      if (ct)
         o.timer.mark("Renderer.renderPick");
       s.disable(a.BLEND), s.enable(a.DEPTH_TEST), s.depthMask(!0), te(Le, Oe, null, r.All, !1), D.updateIfChanged(q.uPickType, et);
       let { renderables: H } = Le;
       for (let re = 0, Te = H.length;re < Te; ++re)
         if (!H[re].state.colorOnly)
           fe(H[re], ze, t.None);
-      if (lt)
+      if (ct)
         o.timer.markEnd("Renderer.renderPick");
     }, ne = (Le, Oe) => {
-      if (lt)
+      if (ct)
         o.timer.mark("Renderer.renderDepth");
       s.disable(a.BLEND), s.enable(a.DEPTH_TEST), s.depthMask(!0), te(Le, Oe, null, r.All, !1);
       let { renderables: ze } = Le;
       for (let et = 0, H = ze.length;et < H; ++et)
         fe(ze[et], "depth", t.None);
-      if (lt)
+      if (ct)
         o.timer.markEnd("Renderer.renderDepth");
     }, he = (Le, Oe) => {
-      if (lt)
+      if (ct)
         o.timer.mark("Renderer.renderDepthOpaque");
       s.disable(a.BLEND), s.enable(a.DEPTH_TEST), s.depthMask(!0), te(Le, Oe, null, r.Opaque, !1);
       let { renderables: ze } = Le;
@@ -104410,10 +104410,10 @@ var fz;
         if (me(re))
           fe(re, "depth", t.None);
       }
-      if (lt)
+      if (ct)
         o.timer.markEnd("Renderer.renderDepthOpaque");
     }, oe = (Le, Oe) => {
-      if (lt)
+      if (ct)
         o.timer.mark("Renderer.renderDepthOpaqueBack");
       s.disable(a.BLEND), s.enable(a.DEPTH_TEST), s.depthMask(!0), s.depthFunc(a.GREATER), te(Le, Oe, null, r.Opaque, !1);
       let { renderables: ze } = Le;
@@ -104422,10 +104422,10 @@ var fz;
         if (me(re))
           fe(re, "depth", t.BlendedBack);
       }
-      if (s.depthFunc(a.LESS), lt)
+      if (s.depthFunc(a.LESS), ct)
         o.timer.markEnd("Renderer.renderDepthOpaqueBack");
     }, ge = (Le, Oe, ze) => {
-      if (lt)
+      if (ct)
         o.timer.mark("Renderer.renderDepthTransparent");
       s.disable(a.BLEND), s.enable(a.DEPTH_TEST), s.depthMask(!0), te(Le, Oe, ze, r.Transparent, !1);
       let { renderables: et } = Le;
@@ -104434,10 +104434,10 @@ var fz;
         if (Q(Te))
           fe(Te, "depth", t.None);
       }
-      if (lt)
+      if (ct)
         o.timer.markEnd("Renderer.renderDepthTransparent");
     }, Ie = (Le, Oe) => {
-      if (lt)
+      if (ct)
         o.timer.mark("Renderer.renderMarkingDepth");
       s.disable(a.BLEND), s.enable(a.DEPTH_TEST), s.depthMask(!0), te(Le, Oe, null, r.All, !1), D.updateIfChanged(q.uMarkingType, rB.Depth);
       let { renderables: ze } = Le;
@@ -104446,20 +104446,20 @@ var fz;
         if (Vn(re.values.alpha.ref.value * re.state.alphaFactor, 0, 1) !== 0 && re.values.transparencyAverage.ref.value !== 1 && re.values.markerAverage.ref.value !== 1)
           fe(ze[et], "marking", t.None);
       }
-      if (lt)
+      if (ct)
         o.timer.markEnd("Renderer.renderMarkingDepth");
     }, je = (Le, Oe, ze) => {
-      if (lt)
+      if (ct)
         o.timer.mark("Renderer.renderMarkingMask");
       s.disable(a.BLEND), s.enable(a.DEPTH_TEST), s.depthMask(!0), te(Le, Oe, ze, r.All, !!ze), D.updateIfChanged(q.uMarkingType, rB.Mask);
       let { renderables: et } = Le;
       for (let H = 0, re = et.length;H < re; ++H)
         if (et[H].values.markerAverage.ref.value > 0)
           fe(et[H], "marking", t.None);
-      if (lt)
+      if (ct)
         o.timer.markEnd("Renderer.renderMarkingMask");
     }, ue = (Le, Oe) => {
-      if (lt)
+      if (ct)
         o.timer.mark("Renderer.renderEmissive");
       s.disable(a.BLEND), s.enable(a.DEPTH_TEST), s.depthMask(!0), te(Le, Oe, null, r.Opaque, !1);
       let { renderables: ze } = Le;
@@ -104468,10 +104468,10 @@ var fz;
         if (me(re))
           fe(re, "emissive", t.None);
       }
-      if (lt)
+      if (ct)
         o.timer.markEnd("Renderer.renderEmissive");
     }, de = (Le, Oe) => {
-      if (lt)
+      if (ct)
         o.timer.mark("Renderer.renderTracing");
       s.disable(a.BLEND), s.enable(a.DEPTH_TEST), s.depthMask(!0), te(Le, Oe, null, r.Opaque, !1);
       let { renderables: ze } = Le;
@@ -104480,7 +104480,7 @@ var fz;
         if (me(re))
           fe(re, "tracing", t.None);
       }
-      if (lt)
+      if (ct)
         o.timer.markEnd("Renderer.renderTracing");
     }, Se = (Le, Oe) => {
       if (Le.hasOpaque)
@@ -104488,7 +104488,7 @@ var fz;
       if (Le.opacityAverage < 1)
         $e(Le, Oe);
     }, Re = (Le, Oe) => {
-      if (lt)
+      if (ct)
         o.timer.mark("Renderer.renderOpaque");
       s.disable(a.BLEND), s.enable(a.DEPTH_TEST), s.depthMask(!0), te(Le, Oe, null, r.Opaque, !1);
       let { renderables: ze } = Le;
@@ -104497,11 +104497,11 @@ var fz;
         if (me(re))
           fe(re, "color", t.None);
       }
-      if (lt)
+      if (ct)
         o.timer.markEnd("Renderer.renderOpaque");
     }, $e = (Le, Oe) => {
       var ze, et;
-      if (lt)
+      if (ct)
         o.timer.mark("Renderer.renderBlendedTransparent");
       if (g)
         s.blendFunc(a.ONE, a.ONE_MINUS_SRC_ALPHA);
@@ -104519,7 +104519,7 @@ var fz;
           } else
             fe(Xe, "color", t.None);
       }
-      if (lt)
+      if (ct)
         o.timer.markEnd("Renderer.renderBlendedTransparent");
     };
     return {
@@ -104552,7 +104552,7 @@ var fz;
       renderOpaque: Re,
       renderBlendedTransparent: $e,
       renderVolume: (Le, Oe, ze) => {
-        if (lt)
+        if (ct)
           o.timer.mark("Renderer.renderVolume");
         s.blendFunc(a.ONE, a.ONE_MINUS_SRC_ALPHA), s.enable(a.BLEND), s.disable(a.DEPTH_TEST), s.depthMask(!1), te(Le, Oe, ze, r.Transparent, !1);
         let { renderables: et } = Le;
@@ -104561,11 +104561,11 @@ var fz;
           if (Te.values.dGeometryType.ref.value === "directVolume")
             fe(Te, "color", t.None);
         }
-        if (lt)
+        if (ct)
           o.timer.markEnd("Renderer.renderVolume");
       },
       renderWboitTransparent: (Le, Oe, ze) => {
-        if (lt)
+        if (ct)
           o.timer.mark("Renderer.renderWboitTransparent");
         te(Le, Oe, ze, r.Transparent, !1);
         let { renderables: et } = Le;
@@ -104574,11 +104574,11 @@ var fz;
           if (Q(Te))
             fe(Te, "color", t.None);
         }
-        if (lt)
+        if (ct)
           o.timer.markEnd("Renderer.renderWboitTransparent");
       },
       renderDpoitTransparent: (Le, Oe, ze, et) => {
-        if (lt)
+        if (ct)
           o.timer.mark("Renderer.renderDpoitTransparent");
         s.enable(a.BLEND), TM(v, "tDpoitDepth", et.depth), TM(v, "tDpoitFrontColor", et.frontColor), TM(v, "tDpoitBackColor", et.backColor), te(Le, Oe, ze, r.Transparent, !1);
         let { renderables: H } = Le;
@@ -104587,7 +104587,7 @@ var fz;
           if (Q(Xe))
             fe(Xe, "color", t.None);
         }
-        if (lt)
+        if (ct)
           o.timer.markEnd("Renderer.renderDpoitTransparent");
       },
       setProps: (Le) => {
@@ -106612,13 +106612,13 @@ class PJ {
       this.renderable.update();
   }
   render(e, t) {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("FxaaPass.render");
     if (t)
       t.bind();
     else
       this.webgl.bindDrawingBuffer();
-    if (this.updateState(e), this.renderable.render(), lt)
+    if (this.updateState(e), this.renderable.render(), ct)
       this.webgl.timer.markEnd("FxaaPass.render");
   }
 }
@@ -107122,13 +107122,13 @@ class DJ {
       D.update(this.blendRenderable.values.tColor, e), this.blendRenderable.update();
   }
   render(e, t) {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("SmaaPass.render");
     if (this.edgesTarget.bind(), this.updateState(e), this.edgesRenderable.render(), this.weightsTarget.bind(), this.updateState(e), this.weightsRenderable.render(), t)
       t.bind();
     else
       this.webgl.bindDrawingBuffer();
-    if (this.updateState(e), this.blendRenderable.render(), lt)
+    if (this.updateState(e), this.blendRenderable.render(), ct)
       this.webgl.timer.markEnd("SmaaPass.render");
   }
 }
@@ -107586,9 +107586,9 @@ class kJ {
       return;
     if (this.renderable.values.dVariant.ref.value === "image")
       this.updateImageScaling();
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("BackgroundPass.render");
-    if (this.renderable.render(), lt)
+    if (this.renderable.render(), ct)
       this.webgl.timer.markEnd("BackgroundPass.render");
   }
   dispose() {
@@ -107897,13 +107897,13 @@ class MJ {
       this.renderable.update();
   }
   render(e, t) {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("CasPass.render");
     if (t)
       t.bind();
     else
       this.webgl.bindDrawingBuffer();
-    if (this.updateState(e), this.renderable.render(), lt)
+    if (this.updateState(e), this.renderable.render(), ct)
       this.webgl.timer.markEnd("CasPass.render");
   }
 }
@@ -108095,13 +108095,13 @@ class Dy {
       this.renderable.update();
   }
   render(e, t) {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("DofPass.render");
     if (t)
       t.bind();
     else
       this.webgl.bindDrawingBuffer();
-    if (this.updateState(e), this.renderable.render(), lt)
+    if (this.updateState(e), this.renderable.render(), ct)
       this.webgl.timer.markEnd("DofPass.render");
   }
 }
@@ -108322,7 +108322,7 @@ class rC {
     D.update(this.compositeRenderable.values.uBloomRadius, n.radius), D.update(this.compositeRenderable.values.uBloomStrength, n.strength);
   }
   render(e, t) {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("BloomPass.render");
     let { gl: r, state: n } = this.webgl, { x: o, y: i, width: a, height: s } = e;
     n.viewport(o, i, a, s), n.scissor(o, i, a, s), n.enable(r.SCISSOR_TEST), n.disable(r.BLEND), n.disable(r.DEPTH_TEST), n.depthMask(!1), this.luminosityTarget.bind(), this.luminosityRenderable.render();
@@ -108334,7 +108334,7 @@ class rC {
       t.bind();
     else
       this.webgl.bindDrawingBuffer();
-    if (n.enable(r.BLEND), n.blendFunc(r.ONE, r.ONE), this.copyRenderable.render(), lt)
+    if (n.enable(r.BLEND), n.blendFunc(r.ONE, r.ONE), this.copyRenderable.render(), ct)
       this.webgl.timer.markEnd("BloomPass.render");
   }
 }
@@ -108584,9 +108584,9 @@ class v1 {
     return { transparentOutline: l, outlineScale: c };
   }
   render() {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("OutlinePass.render");
-    if (this.target.bind(), this.renderable.render(), lt)
+    if (this.target.bind(), this.renderable.render(), ct)
       this.webgl.timer.markEnd("OutlinePass.render");
   }
 }
@@ -108797,9 +108797,9 @@ class aB {
       this.renderable.update();
   }
   render() {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("ShadowPass.render");
-    if (this.target.bind(), this.renderable.render(), lt)
+    if (this.target.bind(), this.renderable.render(), ct)
       this.webgl.timer.markEnd("ShadowPass.render");
   }
 }
@@ -109369,52 +109369,52 @@ class ky {
       this.depthHalfRenderableOpaque.update(), this.depthHalfRenderableTransparent.update();
   }
   render(e) {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("SSAO.render");
     let { state: t } = this.webgl, { x: r, y: n, width: o, height: i } = e.viewport, a = this.renderable.values.dIncludeTransparent.ref.value, s = this.renderable.values.dMultiScale.ref.value, l = Math.floor(r * this.ssaoScale), c = Math.floor(n * this.ssaoScale), u = Math.ceil(o * this.ssaoScale), d = Math.ceil(i * this.ssaoScale);
     if (t.viewport(l, c, u, d), t.scissor(l, c, u, d), this.ssaoScale < 1) {
-      if (lt)
+      if (ct)
         this.webgl.timer.mark("SSAO.downsample");
       if (this.downsampledDepthTargetOpaque.bind(), this.downsampleDepthRenderableOpaque.render(), a)
         this.downsampledDepthTargetTransparent.bind(), this.downsampleDepthRenderableTransparent.render();
-      if (lt)
+      if (ct)
         this.webgl.timer.markEnd("SSAO.downsample");
     }
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("SSAO.half");
     if (s)
       this.depthHalfTargetOpaque.bind(), this.depthHalfRenderableOpaque.render();
     if (s && a)
       this.depthHalfTargetTransparent.bind(), this.depthHalfRenderableTransparent.render();
-    if (lt)
+    if (ct)
       this.webgl.timer.markEnd("SSAO.half");
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("SSAO.quarter");
     if (s)
       this.depthQuarterTargetOpaque.bind(), this.depthQuarterRenderableOpaque.render();
     if (s && a)
       this.depthQuarterTargetTransparent.bind(), this.depthQuarterRenderableTransparent.render();
-    if (lt)
+    if (ct)
       this.webgl.timer.markEnd("SSAO.quarter");
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("SSAO.opaque");
-    if (this.ssaoDepthTexture.attachFramebuffer(this.framebuffer, "color0"), D.update(this.renderable.values.uTransparencyFlag, 0), this.framebuffer.bind(), this.renderable.render(), lt)
+    if (this.ssaoDepthTexture.attachFramebuffer(this.framebuffer, "color0"), D.update(this.renderable.values.uTransparencyFlag, 0), this.framebuffer.bind(), this.renderable.render(), ct)
       this.webgl.timer.markEnd("SSAO.opaque");
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("SSAO.blurOpaque");
-    if (D.update(this.blurFirstPassRenderable.values.tSsaoDepth, this.ssaoDepthTexture), this.blurFirstPassRenderable.update(), this.blurFirstPassFramebuffer.bind(), this.blurFirstPassRenderable.render(), this.ssaoDepthTexture.attachFramebuffer(this.blurSecondPassFramebuffer, "color0"), this.blurSecondPassFramebuffer.bind(), this.blurSecondPassRenderable.render(), lt)
+    if (D.update(this.blurFirstPassRenderable.values.tSsaoDepth, this.ssaoDepthTexture), this.blurFirstPassRenderable.update(), this.blurFirstPassFramebuffer.bind(), this.blurFirstPassRenderable.render(), this.ssaoDepthTexture.attachFramebuffer(this.blurSecondPassFramebuffer, "color0"), this.blurSecondPassFramebuffer.bind(), this.blurSecondPassRenderable.render(), ct)
       this.webgl.timer.markEnd("SSAO.blurOpaque");
     if (a) {
-      if (lt)
+      if (ct)
         this.webgl.timer.mark("SSAO.transparent ");
-      if (this.ssaoDepthTransparentTexture.attachFramebuffer(this.framebuffer, "color0"), D.update(this.renderable.values.uTransparencyFlag, 1), this.framebuffer.bind(), this.renderable.render(), lt)
+      if (this.ssaoDepthTransparentTexture.attachFramebuffer(this.framebuffer, "color0"), D.update(this.renderable.values.uTransparencyFlag, 1), this.framebuffer.bind(), this.renderable.render(), ct)
         this.webgl.timer.markEnd("SSAO.transparent ");
-      if (lt)
+      if (ct)
         this.webgl.timer.mark("SSAO.blurTransparent ");
-      if (D.update(this.blurFirstPassRenderable.values.tSsaoDepth, this.ssaoDepthTransparentTexture), this.blurFirstPassRenderable.update(), this.blurFirstPassFramebuffer.bind(), this.blurFirstPassRenderable.render(), this.ssaoDepthTransparentTexture.attachFramebuffer(this.blurSecondPassFramebuffer, "color0"), this.blurSecondPassFramebuffer.bind(), this.blurSecondPassRenderable.render(), lt)
+      if (D.update(this.blurFirstPassRenderable.values.tSsaoDepth, this.ssaoDepthTransparentTexture), this.blurFirstPassRenderable.update(), this.blurFirstPassFramebuffer.bind(), this.blurFirstPassRenderable.render(), this.ssaoDepthTransparentTexture.attachFramebuffer(this.blurSecondPassFramebuffer, "color0"), this.blurSecondPassFramebuffer.bind(), this.blurSecondPassRenderable.render(), ct)
         this.webgl.timer.markEnd("SSAO.blurTransparent ");
     }
-    if (lt)
+    if (ct)
       this.webgl.timer.markEnd("SSAO.render");
   }
 }
@@ -109702,7 +109702,7 @@ class zl {
     this.transparentBackground = e;
   }
   render(e, t, r, n, o, i, a, s) {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("PostprocessingPass.render");
     this.updateState(e, t, n, o, i, a, s);
     let { state: l } = this.webgl, { x: c, y: u, width: d, height: m } = e.viewport;
@@ -109716,7 +109716,7 @@ class zl {
       this.webgl.bindDrawingBuffer();
     else
       this.target.bind();
-    if (this.background.update(e, i.background), this.background.clear(i.background, this.transparentBackground, o), this.background.render(i.background), this.renderable.render(), lt)
+    if (this.background.update(e, i.background), this.background.clear(i.background, this.transparentBackground, o), this.background.render(i.background), this.renderable.render(), ct)
       this.webgl.timer.markEnd("PostprocessingPass.render");
   }
 }
@@ -109850,7 +109850,7 @@ class nC {
   }
   renderMultiSample(e, t, r) {
     let { camera: n } = e, { compose: o, composeTarget: i, drawPass: a, webgl: s } = this, { gl: l, state: c } = s;
-    if (lt)
+    if (ct)
       s.timer.mark("MultiSamplePass.renderMultiSample");
     let u = sB[Math.max(0, Math.min(r.multiSample.sampleLevel, 5))], { x: d, y: m, width: f, height: g } = n.viewport, h = 1 / u.length, b = 0.03125;
     n.viewOffset.enabled = !0, D.update(o.values.tColor, a.getColorTarget(r.postprocessing).texture), o.update();
@@ -109866,12 +109866,12 @@ class nC {
         c.clearColor(0, 0, 0, 0), l.clear(l.COLOR_BUFFER_BIT);
       o.render();
     }
-    if (a.postprocessing.setOcclusionOffset(0, 0), D.update(o.values.uWeight, 1), D.update(o.values.tColor, i.texture), o.update(), this.bindOutputTarget(t), c.viewport(d, m, f, g), c.scissor(d, m, f, g), c.disable(l.BLEND), o.render(), n.viewOffset.enabled = !1, n.update(), lt)
+    if (a.postprocessing.setOcclusionOffset(0, 0), D.update(o.values.uWeight, 1), D.update(o.values.tColor, i.texture), o.update(), this.bindOutputTarget(t), c.viewport(d, m, f, g), c.scissor(d, m, f, g), c.disable(l.BLEND), o.render(), n.viewOffset.enabled = !1, n.update(), ct)
       s.timer.markEnd("MultiSamplePass.renderMultiSample");
   }
   renderTemporalMultiSample(e, t, r, n) {
     let { camera: o } = t, { compose: i, composeTarget: a, holdTarget: s, drawPass: l, webgl: c } = this, { gl: u, state: d } = c;
-    if (lt)
+    if (ct)
       c.timer.mark("MultiSamplePass.renderTemporalMultiSample");
     let m = sB[Math.max(0, Math.min(r.multiSample.sampleLevel, 5))];
     if (e === -2 || e >= m.length)
@@ -109905,7 +109905,7 @@ class nC {
         d.enable(u.BLEND);
       i.render();
     }
-    if (o.viewOffset.enabled = !1, o.update(), lt)
+    if (o.viewOffset.enabled = !1, o.update(), ct)
       c.timer.markEnd("MultiSamplePass.renderTemporalMultiSample");
     return e >= m.length ? -2 : e;
   }
@@ -110129,22 +110129,22 @@ class uB {
     Hi.set(this.viewport, e, t, r, n), this.setup();
   }
   read() {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("PickBuffers.read");
     let { x: e, y: t, width: r, height: n } = this.viewport;
-    if (this.pickPass.bindObject(), this.webgl.readPixels(e, t, r, n, this.object), this.pickPass.bindInstance(), this.webgl.readPixels(e, t, r, n, this.instance), this.pickPass.bindGroup(), this.webgl.readPixels(e, t, r, n, this.group), this.pickPass.bindDepth(), this.webgl.readPixels(e, t, r, n, this.depth), this.ready = !0, lt)
+    if (this.pickPass.bindObject(), this.webgl.readPixels(e, t, r, n, this.object), this.pickPass.bindInstance(), this.webgl.readPixels(e, t, r, n, this.instance), this.pickPass.bindGroup(), this.webgl.readPixels(e, t, r, n, this.group), this.pickPass.bindDepth(), this.webgl.readPixels(e, t, r, n, this.depth), this.ready = !0, ct)
       this.webgl.timer.markEnd("PickBuffers.read");
   }
   asyncRead() {
     let { gl: e } = this.webgl;
     if (!Pr(e))
       return;
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("PickBuffers.asyncRead");
     if (this.fenceSync !== null)
       e.deleteSync(this.fenceSync);
     let { x: t, y: r, width: n, height: o } = this.viewport;
-    if (this.pickPass.bindObject(), this.objectBuffer.read(t, r, n, o), this.pickPass.bindInstance(), this.instanceBuffer.read(t, r, n, o), this.pickPass.bindGroup(), this.groupBuffer.read(t, r, n, o), this.pickPass.bindDepth(), this.depthBuffer.read(t, r, n, o), this.fenceTimestamp = Yo(), this.fenceSync = e.fenceSync(e.SYNC_GPU_COMMANDS_COMPLETE, 0), e.flush(), this.ready = !1, lt)
+    if (this.pickPass.bindObject(), this.objectBuffer.read(t, r, n, o), this.pickPass.bindInstance(), this.instanceBuffer.read(t, r, n, o), this.pickPass.bindGroup(), this.groupBuffer.read(t, r, n, o), this.pickPass.bindDepth(), this.depthBuffer.read(t, r, n, o), this.fenceTimestamp = Yo(), this.fenceSync = e.fenceSync(e.SYNC_GPU_COMMANDS_COMPLETE, 0), e.flush(), this.ready = !1, ct)
       this.webgl.timer.markEnd("PickBuffers.asyncRead");
   }
   check() {
@@ -110299,14 +110299,14 @@ class NJ {
     this.spiral = DO(Math.ceil(this.pickRatio * this.pickPadding)), this.dirty = !0;
   }
   render(e) {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("PickHelper.render", { captureStats: !0 });
     let { pickX: t, pickY: r, pickWidth: n, pickHeight: o, halfPickWidth: i } = this, { renderer: a, scene: s, helper: l } = this;
     if (a.setTransparentBackground(!1), a.setDrawingBufferSize(n, o), a.setPixelRatio(this.pickRatio), Cv.is(e))
       a.setViewport(t, r, i, o), this.pickPass.render(a, e.left, s, l), a.setViewport(t + i, r, n - i, o), this.pickPass.render(a, e.right, s, l);
     else
       a.setViewport(t, r, n, o), this.pickPass.render(a, e, s, l);
-    if (this.dirty = !1, lt)
+    if (this.dirty = !1, ct)
       this.webgl.timer.markEnd("PickHelper.render");
   }
   identifyInternal(e, t, r) {
@@ -110346,18 +110346,18 @@ class NJ {
   }
   identify(e, t, r) {
     if (this.prepare(), this.dirty) {
-      if (lt)
+      if (ct)
         this.webgl.timer.mark("PickHelper.identify");
-      if (this.webgl.resources.finalizePrograms(["pick"], !0), this.render(r), this.buffers.read(), lt)
+      if (this.webgl.resources.finalizePrograms(["pick"], !0), this.render(r), this.buffers.read(), ct)
         this.webgl.timer.markEnd("PickHelper.identify");
     }
     return this.getPickData(e, t, r);
   }
   asyncIdentify(e, t, r) {
     if (this.prepare(), this.dirty) {
-      if (lt)
+      if (ct)
         this.webgl.timer.mark("PickHelper.asyncIdentify");
-      if (this.render(r), this.buffers.asyncRead(), lt)
+      if (this.render(r), this.buffers.asyncRead(), ct)
         this.webgl.timer.markEnd("PickHelper.asyncIdentify");
     }
     return {
@@ -110437,10 +110437,10 @@ class Cz {
     this.framebuffer.bind(), e.clearColor(0, 0, 0, 1), t.clear(t.COLOR_BUFFER_BIT), e.disable(t.DEPTH_TEST), e.blendFuncSeparate(t.ONE, t.ONE, t.ZERO, t.ONE_MINUS_SRC_ALPHA), e.enable(t.BLEND);
   }
   render() {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("WboitPass.render");
     let { state: e, gl: t } = this.webgl;
-    if (e.blendFuncSeparate(t.SRC_ALPHA, t.ONE_MINUS_SRC_ALPHA, t.ONE, t.ONE_MINUS_SRC_ALPHA), e.enable(t.BLEND), this.renderable.update(), this.renderable.render(), lt)
+    if (e.blendFuncSeparate(t.SRC_ALPHA, t.ONE_MINUS_SRC_ALPHA, t.ONE, t.ONE_MINUS_SRC_ALPHA), e.enable(t.BLEND), this.renderable.update(), this.renderable.render(), ct)
       this.webgl.timer.markEnd("WboitPass.render");
   }
   setSize(e, t) {
@@ -110569,17 +110569,17 @@ class _z {
     };
   }
   renderBlendBack() {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("DpoitPass.renderBlendBack");
     let { state: e, gl: t } = this.webgl;
-    if (e.blendEquation(t.FUNC_ADD), e.blendFuncSeparate(t.SRC_ALPHA, t.ONE_MINUS_SRC_ALPHA, t.ONE, t.ONE_MINUS_SRC_ALPHA), D.update(this.blendBackRenderable.values.tDpoitBackColor, this.colorBackTextures[this.writeId]), this.blendBackRenderable.update(), this.blendBackRenderable.render(), lt)
+    if (e.blendEquation(t.FUNC_ADD), e.blendFuncSeparate(t.SRC_ALPHA, t.ONE_MINUS_SRC_ALPHA, t.ONE, t.ONE_MINUS_SRC_ALPHA), D.update(this.blendBackRenderable.values.tDpoitBackColor, this.colorBackTextures[this.writeId]), this.blendBackRenderable.update(), this.blendBackRenderable.render(), ct)
       this.webgl.timer.markEnd("DpoitPass.renderBlendBack");
   }
   render() {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("DpoitPass.render");
     let { state: e, gl: t } = this.webgl;
-    if (e.blendEquation(t.FUNC_ADD), e.blendFunc(t.ONE, t.ONE_MINUS_SRC_ALPHA), D.update(this.renderable.values.tDpoitFrontColor, this.colorFrontTextures[this.writeId]), this.renderable.update(), this.renderable.render(), lt)
+    if (e.blendEquation(t.FUNC_ADD), e.blendFunc(t.ONE, t.ONE_MINUS_SRC_ALPHA), D.update(this.renderable.values.tDpoitFrontColor, this.colorFrontTextures[this.writeId]), this.renderable.update(), this.renderable.render(), ct)
       this.webgl.timer.markEnd("DpoitPass.render");
   }
   setSize(e, t) {
@@ -110770,9 +110770,9 @@ class S1 {
     D.update(u.uHighlightEdgeColor, Ye.toVec3Normalized(u.uHighlightEdgeColor.ref.value, t)), D.update(u.uSelectEdgeColor, Ye.toVec3Normalized(u.uSelectEdgeColor.ref.value, r)), D.updateIfChanged(u.uInnerEdgeFactor, o), D.updateIfChanged(u.uGhostEdgeStrength, i), D.updateIfChanged(u.uHighlightEdgeStrength, a), D.updateIfChanged(u.uSelectEdgeStrength, s);
   }
   render(e, t) {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("MarkingPass.render");
-    if (this.edgesTarget.bind(), this.setEdgeState(e), this.edge.render(), t.bind(), this.setOverlayState(e), this.overlay.render(), lt)
+    if (this.edgesTarget.bind(), this.setEdgeState(e), this.edge.render(), t.bind(), this.setOverlayState(e), this.overlay.render(), ct)
       this.webgl.timer.markEnd("MarkingPass.render");
   }
 }
@@ -110878,12 +110878,12 @@ class dB {
       let l = this.dpoit.bind();
       e.renderDpoitTransparent(r.primitives, t, this.depthTextureOpaque, l);
       for (let c = 0;c < n; c++) {
-        if (lt)
+        if (ct)
           this.webgl.timer.mark("DpoitPass.layer");
         let u = this.dpoit.bindDualDepthPeeling();
         if (e.renderDpoitTransparent(r.primitives, t, this.depthTextureOpaque, u), n > 1)
           s.bind(), this.dpoit.renderBlendBack();
-        if (lt)
+        if (ct)
           this.webgl.timer.markEnd("DpoitPass.layer");
       }
       s.bind(), this.dpoit.render();
@@ -111026,23 +111026,23 @@ class dB {
     this.webgl.gl.flush();
   }
   render(e, t, r) {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("DrawPass.render");
     let { renderer: n, camera: o, scene: i, helper: a } = e;
     this.postprocessing.setTransparentBackground(t.transparentBackground);
     let s = t.transparentBackground || this.postprocessing.background.isEnabled(t.postprocessing);
     if (n.setTransparentBackground(s), n.setDrawingBufferSize(this.colorTarget.getWidth(), this.colorTarget.getHeight()), n.setPixelRatio(this.webgl.pixelRatio), Cv.is(o)) {
-      if (lt)
+      if (ct)
         this.webgl.timer.mark("StereoCamera.left");
-      if (this._render(n, o.left, i, a, r, s, t), lt)
+      if (this._render(n, o.left, i, a, r, s, t), ct)
         this.webgl.timer.markEnd("StereoCamera.left");
-      if (lt)
+      if (ct)
         this.webgl.timer.mark("StereoCamera.right");
-      if (this._render(n, o.right, i, a, r, s, t), lt)
+      if (this._render(n, o.right, i, a, r, s, t), ct)
         this.webgl.timer.markEnd("StereoCamera.right");
     } else
       this._render(n, o, i, a, r, s, t);
-    if (lt)
+    if (ct)
       this.webgl.timer.markEnd("DrawPass.render");
   }
   getColorTarget(e) {
@@ -112033,12 +112033,12 @@ class UJ {
     return this.thicknessTarget.getByteCount() + this.holdTarget.getByteCount() + this.accumulateTarget.getByteCount() + this.composeTarget.getByteCount() + this.colorTextureOpaque.getByteCount() + this.normalTextureOpaque.getByteCount() + this.shadedTextureOpaque.getByteCount();
   }
   renderInput(e, t, r, n) {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("TracePass.renderInput");
     let { gl: o, state: i } = this.webgl;
     if (this.framebuffer.bind(), this.drawPass.depthTextureOpaque.attachFramebuffer(this.framebuffer, "depth"), e.clear(!0), e.renderTracing(r.primitives, t), n.thicknessMode === "auto")
       this.thicknessTarget.bind(), i.clearColor(0, 0, 0, 0), o.clear(o.COLOR_BUFFER_BIT | o.DEPTH_BUFFER_BIT), e.renderDepthOpaqueBack(r.primitives, t);
-    if (lt)
+    if (ct)
       this.webgl.timer.markEnd("TracePass.renderInput");
   }
   setSize(e, t) {
@@ -112095,7 +112095,7 @@ class UJ {
   }
   render(e, t, r, n, o) {
     let { rendersPerFrame: i, refineSteps: a, steps: s } = this.getAdjustedProps(r, n);
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("TracePass.render", {
         note: `${i} rendersPerFrame, ${a} refineSteps, ${s} steps`
       });
@@ -112136,11 +112136,11 @@ class UJ {
       D.update(this.traceRenderable.values.dShadowEnable, r.shadowEnable), E = !0;
     if (D.updateIfChanged(this.traceRenderable.values.uShadowSoftness, r.shadowSoftness), D.updateIfChanged(this.traceRenderable.values.uShadowThickness, r.shadowThickness), E)
       this.traceRenderable.update();
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("TracePass.renderTrace");
-    if (this.traceRenderable.render(), lt)
+    if (this.traceRenderable.render(), ct)
       this.webgl.timer.markEnd("TracePass.renderTrace");
-    if (this.accumulateTarget.bind(), this.accumulateRenderable.render(), lt)
+    if (this.accumulateTarget.bind(), this.accumulateRenderable.render(), ct)
       this.webgl.timer.markEnd("TracePass.render");
   }
 }
@@ -112302,7 +112302,7 @@ class C1 {
     this.tracing = new UJ(e, this.drawPass), this.transparentTarget = e.createRenderTarget(n, o, !1, "uint8", "nearest"), this.outputTarget = e.createRenderTarget(n, o, !1, "uint8", "linear"), this.copyRenderable = kp(e, this.transparentTarget.texture), this.composeRenderable = Sxt(e, this.tracing.accumulateTarget.texture, this.tracing.normalTextureOpaque, this.tracing.colorTextureOpaque, this.drawPass.depthTextureOpaque, this.drawPass.depthTargetTransparent.texture, this.drawPass.postprocessing.outline.target.texture, this.transparentTarget.texture, this.drawPass.postprocessing.ssao.ssaoDepthTexture, this.drawPass.postprocessing.ssao.ssaoDepthTransparentTexture, !1), this.multiSampleComposeTarget = e.createRenderTarget(n, o, !1, "float32"), this.multiSampleHoldTarget = e.createRenderTarget(n, o, !1), this.multiSampleAccumulateTarget = e.createRenderTarget(n, o, !1, "float32"), this.multiSampleCompose = wxt(e, this.outputTarget.texture), this._supported = !0;
   }
   renderInput(e, t, r, n) {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("IlluminationPass.renderInput");
     let { gl: o, state: i } = this.webgl, a = S1.isEnabled(n.marking), s = r.opacityAverage < 1 || r.volumes.renderables.length > 0, l = a && r.markerAverage > 0;
     this.transparentTarget.bind(), i.clearColor(0, 0, 0, 0), o.clear(o.COLOR_BUFFER_BIT);
@@ -112318,12 +112318,12 @@ class C1 {
         let m = this.drawPass.dpoit.bind();
         e.renderDpoitTransparent(r.primitives, t, this.drawPass.depthTextureOpaque, m);
         for (let f = 0, g = n.dpoitIterations;f < g; f++) {
-          if (lt)
+          if (ct)
             this.webgl.timer.mark("DpoitPass.layer");
           let h = this.drawPass.dpoit.bindDualDepthPeeling();
           if (e.renderDpoitTransparent(r.primitives, t, this.drawPass.depthTextureOpaque, h), g > 1)
             this.transparentTarget.bind(), this.drawPass.dpoit.renderBlendBack();
-          if (lt)
+          if (ct)
             this.webgl.timer.markEnd("DpoitPass.layer");
         }
         if (this.transparentTarget.bind(), this.drawPass.dpoit.render(), r.volumes.renderables.length > 0)
@@ -112343,7 +112343,7 @@ class C1 {
         this.drawPass.marking.depthTarget.bind(), e.clear(!1, !0), e.renderMarkingDepth(r.primitives, t);
       this.drawPass.marking.maskTarget.bind(), e.clear(!1, !0), e.renderMarkingMask(r.primitives, t, m ? this.drawPass.marking.depthTarget.texture : null), this.drawPass.marking.update(n.marking), this.drawPass.marking.render(t.viewport, this.transparentTarget);
     }
-    if (this.tracing.composeTarget.bind(), i.clearColor(0, 0, 0, 0), o.clear(o.COLOR_BUFFER_BIT), lt)
+    if (this.tracing.composeTarget.bind(), i.clearColor(0, 0, 0, 0), o.clear(o.COLOR_BUFFER_BIT), ct)
       this.webgl.timer.markEnd("IlluminationPass.renderInput");
   }
   shouldRender(e) {
@@ -112370,7 +112370,7 @@ class C1 {
   renderInternal(e, t, r, n) {
     if (!this.shouldRender(t.illumination))
       return;
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("IlluminationPass.render", {
         note: `iteration ${this._iteration + 1} of ${this.getMaxIterations(t.illumination)}`
       });
@@ -112430,13 +112430,13 @@ class C1 {
       if (this.drawPass.dof.update(i, this._colorTarget.texture, this.drawPass.depthTextureOpaque, this.drawPass.depthTargetTransparent.texture, t.postprocessing.dof.params, a.boundingSphereVisible), this.drawPass.dof.render(i.viewport, O ? void 0 : B), !O)
         this._colorTarget = B;
     }
-    if (this._iteration += 1, lt)
+    if (this._iteration += 1, ct)
       this.webgl.timer.markEnd("IlluminationPass.render");
     this.webgl.gl.flush();
   }
   renderMultiSample(e, t, r) {
     let { camera: n } = e, { multiSampleCompose: o, multiSampleComposeTarget: i, multiSampleHoldTarget: a, webgl: s } = this, { gl: l, state: c } = s, u = sB[Math.max(0, Math.min(t.multiSample.sampleLevel, 5))], d = this.getMaxIterations(t.illumination), m = Math.min(this._iteration, d), f = Math.floor(m / d * u.length);
-    if (lt)
+    if (ct)
       s.timer.mark("IlluminationPass.renderMultiSample", {
         note: `sampleIndex ${f + 1} of ${u.length}`
       });
@@ -112470,7 +112470,7 @@ class C1 {
         D.update(this.copyRenderable.values.tColor, this.multiSampleAccumulateTarget.texture), this.copyRenderable.update();
       this.copyRenderable.render();
     }
-    if (n.viewOffset.enabled = !1, n.update(), lt)
+    if (n.viewOffset.enabled = !1, n.update(), ct)
       s.timer.markEnd("IlluminationPass.renderMultiSample");
   }
   render(e, t, r) {
@@ -112642,9 +112642,9 @@ class zJ {
     if (this.illuminationPass.supported && this.props.illumination.enabled) {
       await e.update({ message: "Tracing...", current: 1, max: this.illuminationPass.getMaxIterations(this.props.illumination) }), this.illuminationPass.restart(!0);
       while (this.illuminationPass.shouldRender(this.props.illumination)) {
-        if (lt)
+        if (ct)
           this.webgl.timer.mark("ImagePass.render", { captureStats: !0 });
-        if (this.illuminationPass.render(t, this.props, !1), lt)
+        if (this.illuminationPass.render(t, this.props, !1), ct)
           this.webgl.timer.markEnd("ImagePass.render");
         if (e.shouldUpdate)
           await e.update({ current: this.illuminationPass.iteration });
@@ -112652,16 +112652,16 @@ class zJ {
       }
       this._colorTarget = this.illuminationPass.colorTarget;
     } else {
-      if (lt)
+      if (ct)
         this.webgl.timer.mark("ImagePass.render", { captureStats: !0 });
       if (nC.isEnabled(this.props.multiSample))
         this.multiSampleHelper.render(t, this.props, !1), this._colorTarget = this.multiSamplePass.colorTarget;
       else
         this.drawPass.render(t, this.props, !1), this._colorTarget = this.drawPass.getColorTarget(this.props.postprocessing);
-      if (lt)
+      if (ct)
         this.webgl.timer.markEnd("ImagePass.render");
     }
-    if (lt) {
+    if (ct) {
       let r = this.webgl.timer.resolve();
       if (r)
         for (let n of r)
@@ -113047,7 +113047,7 @@ class YJ {
     let { gl: t, state: r } = this.webgl;
     if (!Pr(t) || this.sync !== null)
       return;
-    if (this.nextNear = e.near, this.nextFar = e.far, ee.copy(this.nextView, e.view), ee.copy(this.nextProjection, e.projection), lt)
+    if (this.nextNear = e.near, this.nextFar = e.far, ee.copy(this.nextView, e.view), ee.copy(this.nextProjection, e.projection), ct)
       this.webgl.timer.mark("hi-Z");
     r.disable(t.CULL_FACE), r.disable(t.BLEND), r.disable(t.DEPTH_TEST), r.disable(t.SCISSOR_TEST), r.depthMask(!1), r.colorMask(!0, !0, !0, !0), r.clearColor(0, 0, 0, 0);
     let n = this.renderable.values, o = Math.pow(2, Math.ceil(Math.log(Math.max(t.drawingBufferWidth, t.drawingBufferHeight)) / Math.log(2)) - 1);
@@ -113062,7 +113062,7 @@ class YJ {
     }
     this.tex.attachFramebuffer(this.fb, 0);
     let i = this.tex.getWidth(), a = this.tex.getHeight();
-    if (this.buf.read(0, 0, i, a), this.sync = t.fenceSync(t.SYNC_GPU_COMMANDS_COMPLETE, 0), t.flush(), lt)
+    if (this.buf.read(0, 0, i, a), this.sync = t.fenceSync(t.SYNC_GPU_COMMANDS_COMPLETE, 0), t.flush(), ct)
       this.webgl.timer.markEnd("hi-Z");
   }
   tick() {
@@ -113453,10 +113453,10 @@ class ZJ {
     Hi.set(this.viewport, 0, 0, e, e), this.buffers.setViewport(0, 0, e, e), this.spiral = DO(this.pickPadding), this.size = e, this.pickPass.setSize(e, e);
   }
   render(e) {
-    if (lt)
+    if (ct)
       this.webgl.timer.mark("RayHelper.render", { captureStats: !0 });
     let { renderer: t, scene: r, helper: n } = this;
-    if (t.setTransparentBackground(!1), t.setDrawingBufferSize(this.size, this.size), t.setPixelRatio(1), t.setViewport(0, 0, this.size, this.size), this.pickPass.render(t, e, r, n), lt)
+    if (t.setTransparentBackground(!1), t.setDrawingBufferSize(this.size, this.size), t.setPixelRatio(1), t.setViewport(0, 0, this.size, this.size), this.pickPass.render(t, e, r, n), ct)
       this.webgl.timer.markEnd("RayHelper.render");
   }
   identifyInternal(e, t) {
@@ -113485,18 +113485,18 @@ class ZJ {
   identify(e, t) {
     if (!this.intersectsScene(e, t.scale))
       return;
-    if (this.prepare(e, t), lt)
+    if (this.prepare(e, t), ct)
       this.webgl.timer.mark("RayHelper.identify");
-    if (this.render(this.camera), this.buffers.read(), lt)
+    if (this.render(this.camera), this.buffers.read(), ct)
       this.webgl.timer.markEnd("RayHelper.identify");
     return this.getPickData();
   }
   asyncIdentify(e, t) {
     if (!this.intersectsScene(e, t.scale))
       return;
-    if (this.prepare(e, t), lt)
+    if (this.prepare(e, t), ct)
       this.webgl.timer.mark("RayHelper.asyncIdentify");
-    if (this.render(this.camera), this.buffers.asyncRead(), lt)
+    if (this.render(this.camera), this.buffers.asyncRead(), ct)
       this.webgl.timer.markEnd("RayHelper.asyncIdentify");
     return {
       tryGet: () => {
@@ -113869,10 +113869,10 @@ var Pz;
         if (oi || jt)
           W.setOcclusionTest(null), c.illumination.restart();
         if (c.illumination.shouldRender(f.illumination) && (!Wn && L.count > 0 || c.illumination.iteration === 0 || f.userInteractionReleaseMs === 0)) {
-          if (lt)
+          if (ct)
             s.timer.mark("Canvas3D.render", { captureStats: !0 });
           let Cr = { renderer: W, camera: z, scene: L, helper: ie };
-          if (c.illumination.render(Cr, f, !0), lt)
+          if (c.illumination.render(Cr, f, !0), ct)
             s.timer.markEnd("Canvas3D.render");
           le.dirty = le.dirty || oi, wr = !0;
         }
@@ -113886,7 +113886,7 @@ var Pz;
               Y.update();
             Oi = Y;
           }
-          if (lt)
+          if (ct)
             s.timer.mark("Canvas3D.render", { captureStats: !0 });
           let $o = { renderer: W, camera: Oi, scene: L, helper: ie };
           if (nC.isEnabled(f.multiSample) && !pr) {
@@ -113894,7 +113894,7 @@ var Pz;
             te.render($o, f, !0, hi);
           } else
             c.draw.render($o, f, !0);
-          if (G.render(z), lt)
+          if (G.render(z), ct)
             s.timer.markEnd("Canvas3D.render");
           le.dirty = le.dirty || oi, wr = !0;
         }
@@ -114073,7 +114073,7 @@ var Pz;
           pick: `${(c.pick.getByteCount() / 1024 / 1024).toFixed(3)} MiB`,
           hiZ: `${(G.getByteCount() / 1024 / 1024).toFixed(3)} MiB`
         }
-      }, void 0, 4)), lt)
+      }, void 0, 4)), ct)
         console.log(JSON.stringify(s.timer.formatedStats(), void 0, 4));
       console.groupEnd();
     }
@@ -121211,7 +121211,7 @@ function dRe(e, t, r = {}) {
 
 // node_modules/molstar/lib/mol-plugin/behavior/dynamic/selection/structure-focus-representation.js
 var $2t = (e) => {
-  let t = ct.Representation.StructureRepresentation3D.definition.params(void 0, e);
+  let t = lt.Representation.StructureRepresentation3D.definition.params(void 0, e);
   return {
     expandRadius: _.Numeric(5, { min: 1, max: 10, step: 1 }),
     targetParams: _.Group(t, {
@@ -121274,16 +121274,16 @@ class mRe extends ro.WithSubscribers {
     var t;
     let r = this.plugin.state.data, n = r.tree, o = r.build(), i = Hr.findUniqueTagsInSubtree(n, e.transform.ref, Z2t);
     if (!i[ns.TargetSel])
-      i[ns.TargetSel] = o.to(e).apply(ct.Model.StructureSelectionFromBundle, { bundle: fo.Empty, label: "[Focus] Target" }, { tags: ns.TargetSel }).ref;
+      i[ns.TargetSel] = o.to(e).apply(lt.Model.StructureSelectionFromBundle, { bundle: fo.Empty, label: "[Focus] Target" }, { tags: ns.TargetSel }).ref;
     if (!i[ns.SurrSel])
-      i[ns.SurrSel] = o.to(e).apply(ct.Model.StructureSelectionFromExpression, { expression: pe.struct.generator.empty(), label: this.surrLabel }, { tags: ns.SurrSel }).ref;
+      i[ns.SurrSel] = o.to(e).apply(lt.Model.StructureSelectionFromExpression, { expression: pe.struct.generator.empty(), label: this.surrLabel }, { tags: ns.SurrSel }).ref;
     let a = this.params.components;
     if (a.indexOf("target") >= 0 && !i[ns.TargetRepr])
-      i[ns.TargetRepr] = o.to(i[ns.TargetSel]).apply(ct.Representation.StructureRepresentation3D, this.getReprParams(this.params.targetParams), { tags: ns.TargetRepr }).ref;
+      i[ns.TargetRepr] = o.to(i[ns.TargetSel]).apply(lt.Representation.StructureRepresentation3D, this.getReprParams(this.params.targetParams), { tags: ns.TargetRepr }).ref;
     if (a.indexOf("surroundings") >= 0 && !i[ns.SurrRepr])
-      i[ns.SurrRepr] = o.to(i[ns.SurrSel]).apply(ct.Representation.StructureRepresentation3D, this.getReprParams(this.params.surroundingsParams), { tags: ns.SurrRepr }).ref;
+      i[ns.SurrRepr] = o.to(i[ns.SurrSel]).apply(lt.Representation.StructureRepresentation3D, this.getReprParams(this.params.surroundingsParams), { tags: ns.SurrRepr }).ref;
     if (a.indexOf("interactions") >= 0 && !i[ns.SurrNciRepr] && e.obj && _E.isApplicable((t = e.obj) === null || t === void 0 ? void 0 : t.data))
-      i[ns.SurrNciRepr] = o.to(i[ns.SurrSel]).apply(ct.Representation.StructureRepresentation3D, this.getReprParams(this.params.nciParams), { tags: ns.SurrNciRepr }).ref;
+      i[ns.SurrNciRepr] = o.to(i[ns.SurrSel]).apply(lt.Representation.StructureRepresentation3D, this.getReprParams(this.params.nciParams), { tags: ns.SurrNciRepr }).ref;
     return { state: r, builder: o, refs: i };
   }
   clear(e) {
@@ -121294,10 +121294,10 @@ class mRe extends ro.WithSubscribers {
       return;
     let o = t.build(), i = fo.Empty;
     for (let s of r)
-      o.to(s).update(ct.Model.StructureSelectionFromBundle, (l) => ({ ...l, bundle: i }));
+      o.to(s).update(lt.Model.StructureSelectionFromBundle, (l) => ({ ...l, bundle: i }));
     let a = pe.struct.generator.empty();
     for (let s of n)
-      o.to(s).update(ct.Model.StructureSelectionFromExpression, (l) => ({ ...l, expression: a }));
+      o.to(s).update(lt.Model.StructureSelectionFromExpression, (l) => ({ ...l, expression: a }));
     return Ot.State.Update(this.plugin, { state: t, tree: o, options: { doNotLogTiming: !0, doNotUpdateCurrent: !0 } });
   }
   async focus(e) {
@@ -121316,7 +121316,7 @@ class mRe extends ro.WithSubscribers {
         by: i
       });
     let { state: s, builder: l, refs: c } = this.ensureShape(t);
-    l.to(c[ns.TargetSel]).update(ct.Model.StructureSelectionFromBundle, (u) => ({ ...u, bundle: o })), l.to(c[ns.SurrSel]).update(ct.Model.StructureSelectionFromExpression, (u) => ({ ...u, expression: a, label: this.surrLabel })), await Ot.State.Update(this.plugin, { state: s, tree: l, options: { doNotLogTiming: !0, doNotUpdateCurrent: !0 } });
+    l.to(c[ns.TargetSel]).update(lt.Model.StructureSelectionFromBundle, (u) => ({ ...u, bundle: o })), l.to(c[ns.SurrSel]).update(lt.Model.StructureSelectionFromExpression, (u) => ({ ...u, expression: a, label: this.surrLabel })), await Ot.State.Update(this.plugin, { state: s, tree: l, options: { doNotLogTiming: !0, doNotUpdateCurrent: !0 } });
   }
   register(e) {
     this.subscribeObservable(this.plugin.managers.structure.focus.behaviors.current, (t) => {
@@ -121786,7 +121786,7 @@ var oCt = {
   },
   parse: async (e, t, r) => {
     var n, o;
-    let a = e.state.data.build().to(t).apply(ct.Data.ParseCif, void 0, { state: { isGhost: !0 } }), s = await a.apply(ct.Model.TrajectoryFromMmCif, void 0, { tags: r === null || r === void 0 ? void 0 : r.trajectoryTags }).commit({ revertOnError: !0 });
+    let a = e.state.data.build().to(t).apply(lt.Data.ParseCif, void 0, { state: { isGhost: !0 } }), s = await a.apply(lt.Model.TrajectoryFromMmCif, void 0, { tags: r === null || r === void 0 ? void 0 : r.trajectoryTags }).commit({ revertOnError: !0 });
     if ((((o = (n = a.selector.cell) === null || n === void 0 ? void 0 : n.obj) === null || o === void 0 ? void 0 : o.data.blocks.length) || 0) > 1)
       e.state.data.updateCellState(a.ref, { isGhost: !1 });
     return { trajectory: s };
@@ -121804,7 +121804,7 @@ var oCt = {
   },
   parse: async (e, t, r) => {
     var n, o;
-    let a = e.state.data.build().to(t).apply(ct.Data.ParseCif, void 0, { state: { isGhost: !0 } }), s = await a.apply(ct.Model.TrajectoryFromCifCore, void 0, { tags: r === null || r === void 0 ? void 0 : r.trajectoryTags }).commit({ revertOnError: !0 });
+    let a = e.state.data.build().to(t).apply(lt.Data.ParseCif, void 0, { state: { isGhost: !0 } }), s = await a.apply(lt.Model.TrajectoryFromCifCore, void 0, { tags: r === null || r === void 0 ? void 0 : r.trajectoryTags }).commit({ revertOnError: !0 });
     if ((((o = (n = a.selector.cell) === null || n === void 0 ? void 0 : n.obj) === null || o === void 0 ? void 0 : o.data.blocks.length) || 0) > 1)
       e.state.data.updateCellState(a.ref, { isGhost: !1 });
     return { trajectory: s };
@@ -121819,35 +121819,35 @@ var aCt = {
   description: "PDB",
   category: Vp,
   stringExtensions: ["pdb", "ent"],
-  parse: A1(ct.Model.TrajectoryFromPDB),
+  parse: A1(lt.Model.TrajectoryFromPDB),
   visuals: Uy
 }, sCt = {
   label: "PDBQT",
   description: "PDBQT",
   category: Vp,
   stringExtensions: ["pdbqt"],
-  parse: A1(ct.Model.TrajectoryFromPDB, { isPdbqt: !0 }),
+  parse: A1(lt.Model.TrajectoryFromPDB, { isPdbqt: !0 }),
   visuals: Uy
 }, lCt = {
   label: "XYZ",
   description: "XYZ",
   category: Vp,
   stringExtensions: ["xyz"],
-  parse: A1(ct.Model.TrajectoryFromXYZ),
+  parse: A1(lt.Model.TrajectoryFromXYZ),
   visuals: Uy
 }, cCt = {
   label: "Lammps Data",
   description: "Lammps Data",
   category: Vp,
   stringExtensions: ["data"],
-  parse: A1(ct.Model.TrajectoryFromLammpsData),
+  parse: A1(lt.Model.TrajectoryFromLammpsData),
   visuals: Uy
 }, uCt = {
   label: "Lammps Trajectory Data",
   description: "Lammps Trajectory Data",
   category: Vp,
   stringExtensions: ["lammpstrj"],
-  parse: A1(ct.Model.TrajectoryFromLammpsTrajData),
+  parse: A1(lt.Model.TrajectoryFromLammpsTrajData),
   visuals: Uy
 }, dCt = {
   label: "GRO",
@@ -121855,28 +121855,28 @@ var aCt = {
   category: Vp,
   stringExtensions: ["gro"],
   binaryExtensions: [],
-  parse: A1(ct.Model.TrajectoryFromGRO),
+  parse: A1(lt.Model.TrajectoryFromGRO),
   visuals: Uy
 }, fCt = {
   label: "MOL",
   description: "MOL",
   category: Vp,
   stringExtensions: ["mol"],
-  parse: A1(ct.Model.TrajectoryFromMOL),
+  parse: A1(lt.Model.TrajectoryFromMOL),
   visuals: Uy
 }, mCt = {
   label: "SDF",
   description: "SDF",
   category: Vp,
   stringExtensions: ["sdf", "sd"],
-  parse: A1(ct.Model.TrajectoryFromSDF),
+  parse: A1(lt.Model.TrajectoryFromSDF),
   visuals: Uy
 }, pCt = {
   label: "MOL2",
   description: "MOL2",
   category: Vp,
   stringExtensions: ["mol2"],
-  parse: A1(ct.Model.TrajectoryFromMOL2),
+  parse: A1(lt.Model.TrajectoryFromMOL2),
   visuals: Uy
 }, fV = [
   ["mmcif", oCt],
@@ -121918,7 +121918,7 @@ var gCt = Xu({
   category: TE,
   stringExtensions: ["psf"],
   parse: async (e, t) => {
-    let r = e.state.data.build().to(t).apply(ct.Data.ParsePsf, {}, { state: { isGhost: !0 } }), n = r.apply(ct.Model.TopologyFromPsf);
+    let r = e.state.data.build().to(t).apply(lt.Data.ParsePsf, {}, { state: { isGhost: !0 } }), n = r.apply(lt.Model.TopologyFromPsf);
     return await r.commit(), { format: r.selector, topology: n.selector };
   }
 });
@@ -121928,7 +121928,7 @@ var yCt = Xu({
   category: TE,
   stringExtensions: ["prmtop", "parm7"],
   parse: async (e, t) => {
-    let r = e.state.data.build().to(t).apply(ct.Data.ParsePrmtop, {}, { state: { isGhost: !0 } }), n = r.apply(ct.Model.TopologyFromPrmtop);
+    let r = e.state.data.build().to(t).apply(lt.Data.ParsePrmtop, {}, { state: { isGhost: !0 } }), n = r.apply(lt.Model.TopologyFromPrmtop);
     return await r.commit(), { format: r.selector, topology: n.selector };
   }
 });
@@ -121938,7 +121938,7 @@ var bCt = Xu({
   category: TE,
   stringExtensions: ["top"],
   parse: async (e, t) => {
-    let r = e.state.data.build().to(t).apply(ct.Data.ParseTop, {}, { state: { isGhost: !0 } }), n = r.apply(ct.Model.TopologyFromTop);
+    let r = e.state.data.build().to(t).apply(lt.Data.ParseTop, {}, { state: { isGhost: !0 } }), n = r.apply(lt.Model.TopologyFromTop);
     return await r.commit(), { format: r.selector, topology: n.selector };
   }
 }), vRe = [
@@ -121954,35 +121954,35 @@ var vCt = Xu({
   description: "DCD",
   category: xC,
   binaryExtensions: ["dcd"],
-  parse: (e, t) => e.state.data.build().to(t).apply(ct.Model.CoordinatesFromDcd).commit()
+  parse: (e, t) => e.state.data.build().to(t).apply(lt.Model.CoordinatesFromDcd).commit()
 });
 var xCt = Xu({
   label: "XTC",
   description: "XTC",
   category: xC,
   binaryExtensions: ["xtc"],
-  parse: (e, t) => e.state.data.build().to(t).apply(ct.Model.CoordinatesFromXtc).commit()
+  parse: (e, t) => e.state.data.build().to(t).apply(lt.Model.CoordinatesFromXtc).commit()
 });
 var SCt = Xu({
   label: "TRR",
   description: "TRR",
   category: xC,
   binaryExtensions: ["trr"],
-  parse: (e, t) => e.state.data.build().to(t).apply(ct.Model.CoordinatesFromTrr).commit()
+  parse: (e, t) => e.state.data.build().to(t).apply(lt.Model.CoordinatesFromTrr).commit()
 });
 var CCt = Xu({
   label: "NCTRAJ",
   description: "NCTRAJ",
   category: xC,
   binaryExtensions: ["nc", "nctraj"],
-  parse: (e, t) => e.state.data.build().to(t).apply(ct.Model.CoordinatesFromNctraj).commit()
+  parse: (e, t) => e.state.data.build().to(t).apply(lt.Model.CoordinatesFromNctraj).commit()
 });
 var _Ct = Xu({
   label: "LAMMPSTRAJ",
   description: "LAMMPSTRAJ",
   category: xC,
   stringExtensions: ["lammpstrj"],
-  parse: (e, t) => e.state.data.build().to(t).apply(ct.Model.CoordinatesFromLammpstraj).commit()
+  parse: (e, t) => e.state.data.build().to(t).apply(lt.Model.CoordinatesFromLammpstraj).commit()
 }), xRe = [
   ["dcd", vCt],
   ["xtc", xCt],
@@ -122159,7 +122159,7 @@ var PB = eu.build({
     by: _.Optional(_.Numeric(1, { min: -1, max: 1, step: 1 }))
   }
 })(({ params: e, state: t }) => {
-  let r = t.selectQ((o) => o.ofTransformer(ct.Model.ModelFromTrajectory)), n = t.build();
+  let r = t.selectQ((o) => o.ofTransformer(lt.Model.ModelFromTrajectory)), n = t.build();
   if (e.action === "reset")
     for (let o of r)
       n.to(o).update({ modelIndex: 0 });
@@ -122212,7 +122212,7 @@ var PB = eu.build({
   let o = [e.model, e.coordinates], i = t.build().toRoot().apply(NU, {
     modelRef: e.model,
     coordinatesRef: e.coordinates
-  }, { dependsOn: o }).apply(ct.Model.ModelFromTrajectory, { modelIndex: 0 });
+  }, { dependsOn: o }).apply(lt.Model.ModelFromTrajectory, { modelIndex: 0 });
   await t.updateTree(i).runInContext(n);
   let a = await r.builders.structure.createStructure(i.selector);
   await r.builders.structure.representation.applyPreset(a, "auto");
@@ -122290,7 +122290,7 @@ var PB = eu.build({
     let c = o.name === "url" ? await i(o.params.coordinates.url, o.params.coordinates.format, !0) : await a(o.params.coordinates), u = [l.ref, c.ref], d = t.build().toRoot().apply(NU, {
       modelRef: l.ref,
       coordinatesRef: c.ref
-    }, { dependsOn: u }).apply(ct.Model.ModelFromTrajectory, { modelIndex: 0 });
+    }, { dependsOn: u }).apply(lt.Model.ModelFromTrajectory, { modelIndex: 0 });
     await t.updateTree(d).runInContext(n);
     let m = await r.builders.structure.createStructure(d.selector);
     await r.builders.structure.representation.applyPreset(m, "auto");
@@ -122418,7 +122418,7 @@ var RCt = eu.build({
       return { ref: _.Text("", { isHidden: !0, label: "Volume" }) };
     return { ref: _.Select(r[0].transform.ref, r.map((n) => [n.transform.ref, n.obj.label]), { label: "Volume" }) };
   }
-})(({ ref: e, params: t, state: r }, n) => n.build().to(e).apply(ct.Volume.AssignColorVolume, { ref: t.ref }, { dependsOn: [t.ref] }).commit());
+})(({ ref: e, params: t, state: r }, n) => n.build().to(e).apply(lt.Volume.AssignColorVolume, { ref: t.ref }, { dependsOn: [t.ref] }).commit());
 
 // node_modules/molstar/lib/mol-plugin-state/actions/file.js
 async function mV(e, t, r, n) {
@@ -122580,9 +122580,9 @@ var _Re = Sf.create({
   async setup(e, t, r) {
     let n = r.state.data, o = n.select(Hr.Generators.ofType(ve.Molecule.Structure.Representation3D)), i = n.build(), a = !1;
     for (let s of o) {
-      if (n.select(Hr.Generators.ofTransformer(ct.Representation.SpinStructureRepresentation3D, s.transform.ref)).length > 0)
+      if (n.select(Hr.Generators.ofTransformer(lt.Representation.SpinStructureRepresentation3D, s.transform.ref)).length > 0)
         continue;
-      a = !0, i.to(s.transform.ref).apply(ct.Representation.SpinStructureRepresentation3D, { t: 0 }, { tags: "animate-structure-spin" });
+      a = !0, i.to(s.transform.ref).apply(lt.Representation.SpinStructureRepresentation3D, { t: 0 }, { tags: "animate-structure-spin" });
     }
     if (!a)
       return;
@@ -122599,7 +122599,7 @@ var _Re = Sf.create({
   },
   async apply(e, t, r) {
     var n;
-    let o = r.plugin.state.data, i = o.select(Hr.Generators.ofTransformer(ct.Representation.SpinStructureRepresentation3D));
+    let o = r.plugin.state.data, i = o.select(Hr.Generators.ofTransformer(lt.Representation.SpinStructureRepresentation3D));
     if (i.length === 0)
       return { kind: "finished" };
     let a = o.build(), s = (t.current - t.lastApplied) / r.params.durationInMs, l = (e.t + s) % 1;
@@ -122665,43 +122665,43 @@ var IRe = () => ({
     Nn.Action(eB),
     Nn.Action(oPe),
     Nn.Action(tB),
-    Nn.Action(ct.Data.Download),
-    Nn.Action(ct.Data.ParseCif),
-    Nn.Action(ct.Data.ParseCcp4),
-    Nn.Action(ct.Data.ParseDsn6),
-    Nn.Action(ct.Model.TrajectoryFromMmCif),
-    Nn.Action(ct.Model.TrajectoryFromCifCore),
-    Nn.Action(ct.Model.TrajectoryFromPDB),
-    Nn.Action(ct.Model.TransformStructureConformation),
-    Nn.Action(ct.Model.StructureInstances),
-    Nn.Action(ct.Model.StructureFromModel),
-    Nn.Action(ct.Model.StructureFromTrajectory),
-    Nn.Action(ct.Model.ModelFromTrajectory),
-    Nn.Action(ct.Model.StructureSelectionFromScript),
-    Nn.Action(ct.Representation.StructureRepresentation3D),
-    Nn.Action(ct.Representation.StructureSelectionsDistance3D),
-    Nn.Action(ct.Representation.StructureSelectionsAngle3D),
-    Nn.Action(ct.Representation.StructureSelectionsDihedral3D),
-    Nn.Action(ct.Representation.StructureSelectionsLabel3D),
-    Nn.Action(ct.Representation.StructureSelectionsOrientation3D),
-    Nn.Action(ct.Representation.ModelUnitcell3D),
-    Nn.Action(ct.Representation.StructureBoundingBox3D),
-    Nn.Action(ct.Representation.ExplodeStructureRepresentation3D),
-    Nn.Action(ct.Representation.SpinStructureRepresentation3D),
-    Nn.Action(ct.Representation.UnwindStructureAssemblyRepresentation3D),
-    Nn.Action(ct.Representation.OverpaintStructureRepresentation3DFromScript),
-    Nn.Action(ct.Representation.TransparencyStructureRepresentation3DFromScript),
-    Nn.Action(ct.Representation.ClippingStructureRepresentation3DFromScript),
-    Nn.Action(ct.Representation.SubstanceStructureRepresentation3DFromScript),
-    Nn.Action(ct.Representation.ThemeStrengthRepresentation3D),
+    Nn.Action(lt.Data.Download),
+    Nn.Action(lt.Data.ParseCif),
+    Nn.Action(lt.Data.ParseCcp4),
+    Nn.Action(lt.Data.ParseDsn6),
+    Nn.Action(lt.Model.TrajectoryFromMmCif),
+    Nn.Action(lt.Model.TrajectoryFromCifCore),
+    Nn.Action(lt.Model.TrajectoryFromPDB),
+    Nn.Action(lt.Model.TransformStructureConformation),
+    Nn.Action(lt.Model.StructureInstances),
+    Nn.Action(lt.Model.StructureFromModel),
+    Nn.Action(lt.Model.StructureFromTrajectory),
+    Nn.Action(lt.Model.ModelFromTrajectory),
+    Nn.Action(lt.Model.StructureSelectionFromScript),
+    Nn.Action(lt.Representation.StructureRepresentation3D),
+    Nn.Action(lt.Representation.StructureSelectionsDistance3D),
+    Nn.Action(lt.Representation.StructureSelectionsAngle3D),
+    Nn.Action(lt.Representation.StructureSelectionsDihedral3D),
+    Nn.Action(lt.Representation.StructureSelectionsLabel3D),
+    Nn.Action(lt.Representation.StructureSelectionsOrientation3D),
+    Nn.Action(lt.Representation.ModelUnitcell3D),
+    Nn.Action(lt.Representation.StructureBoundingBox3D),
+    Nn.Action(lt.Representation.ExplodeStructureRepresentation3D),
+    Nn.Action(lt.Representation.SpinStructureRepresentation3D),
+    Nn.Action(lt.Representation.UnwindStructureAssemblyRepresentation3D),
+    Nn.Action(lt.Representation.OverpaintStructureRepresentation3DFromScript),
+    Nn.Action(lt.Representation.TransparencyStructureRepresentation3DFromScript),
+    Nn.Action(lt.Representation.ClippingStructureRepresentation3DFromScript),
+    Nn.Action(lt.Representation.SubstanceStructureRepresentation3DFromScript),
+    Nn.Action(lt.Representation.ThemeStrengthRepresentation3D),
     Nn.Action(ete),
-    Nn.Action(ct.Volume.VolumeFromCcp4),
-    Nn.Action(ct.Volume.VolumeFromDsn6),
-    Nn.Action(ct.Volume.VolumeFromCube),
-    Nn.Action(ct.Volume.VolumeFromDx),
-    Nn.Action(ct.Representation.VolumeRepresentation3D),
-    Nn.Action(ct.Volume.VolumeTransform),
-    Nn.Action(ct.Volume.VolumeInstances)
+    Nn.Action(lt.Volume.VolumeFromCcp4),
+    Nn.Action(lt.Volume.VolumeFromDsn6),
+    Nn.Action(lt.Volume.VolumeFromCube),
+    Nn.Action(lt.Volume.VolumeFromDx),
+    Nn.Action(lt.Representation.VolumeRepresentation3D),
+    Nn.Action(lt.Volume.VolumeTransform),
+    Nn.Action(lt.Volume.VolumeInstances)
   ],
   behaviors: [
     Nn.Behavior(im.Representation.HighlightLoci),
@@ -132292,7 +132292,7 @@ async function wre(e, t, r, n, o) {
       i.to(s).update(tc.toBundle(m));
     } else {
       let d = O4e([u], l);
-      i.to(a.transform.ref).apply(ct.Representation.OverpaintStructureRepresentation3DFromBundle, tc.toBundle(d), { tags: N4e });
+      i.to(a.transform.ref).apply(lt.Representation.OverpaintStructureRepresentation3DFromBundle, tc.toBundle(d), { tags: N4e });
     }
   });
 }
@@ -132300,7 +132300,7 @@ async function T3t(e, t, r) {
   let n = e.state.data, o = n.build();
   for (let i of t)
     for (let a of i.representations) {
-      let s = n.select(Hr.Generators.ofTransformer(ct.Representation.OverpaintStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(N4e));
+      let s = n.select(Hr.Generators.ofTransformer(lt.Representation.OverpaintStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(N4e));
       await r(o, a.cell, s[0]);
     }
   return o.commit({ doNotUpdateCurrent: !0 });
@@ -132328,7 +132328,7 @@ async function V4e(e, t, r, n, o) {
       i.to(s).update(la.toBundle(m));
     } else {
       let d = U4e([u], l);
-      i.to(a.transform.ref).apply(ct.Representation.ClippingStructureRepresentation3DFromBundle, la.toBundle(d), { tags: z4e });
+      i.to(a.transform.ref).apply(lt.Representation.ClippingStructureRepresentation3DFromBundle, la.toBundle(d), { tags: z4e });
     }
   });
 }
@@ -132336,7 +132336,7 @@ async function A3t(e, t, r) {
   let n = e.state.data, o = n.build();
   for (let i of t)
     for (let a of i.representations) {
-      let s = n.select(Hr.Generators.ofTransformer(ct.Representation.ClippingStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(z4e));
+      let s = n.select(Hr.Generators.ofTransformer(lt.Representation.ClippingStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(z4e));
       await r(o, a.cell, s[0]);
     }
   return o.commit({ doNotUpdateCurrent: !0 });
@@ -132364,7 +132364,7 @@ async function G4e(e, t, r, n, o) {
       i.to(s).update(rc.toBundle(m));
     } else {
       let d = H4e([u], l);
-      i.to(a.transform.ref).apply(ct.Representation.TransparencyStructureRepresentation3DFromBundle, rc.toBundle(d), { tags: j4e });
+      i.to(a.transform.ref).apply(lt.Representation.TransparencyStructureRepresentation3DFromBundle, rc.toBundle(d), { tags: j4e });
     }
   });
 }
@@ -132372,7 +132372,7 @@ async function I3t(e, t, r) {
   let n = e.state.data, o = n.build();
   for (let i of t)
     for (let a of i.representations) {
-      let s = n.select(Hr.Generators.ofTransformer(ct.Representation.TransparencyStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(j4e));
+      let s = n.select(Hr.Generators.ofTransformer(lt.Representation.TransparencyStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(j4e));
       await r(o, a.cell, s[0]);
     }
   return o.commit({ doNotUpdateCurrent: !0 });
@@ -132401,7 +132401,7 @@ async function Tre(e, t, r, n, o) {
       i.to(s).update(nc.toBundle(m));
     } else {
       let d = q4e([u], l);
-      i.to(a.transform.ref).apply(ct.Representation.SubstanceStructureRepresentation3DFromBundle, nc.toBundle(d), { tags: W4e });
+      i.to(a.transform.ref).apply(lt.Representation.SubstanceStructureRepresentation3DFromBundle, nc.toBundle(d), { tags: W4e });
     }
   });
 }
@@ -132409,7 +132409,7 @@ async function E3t(e, t, r) {
   let n = e.state.data, o = n.build();
   for (let i of t)
     for (let a of i.representations) {
-      let s = n.select(Hr.Generators.ofTransformer(ct.Representation.SubstanceStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(W4e));
+      let s = n.select(Hr.Generators.ofTransformer(lt.Representation.SubstanceStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(W4e));
       await r(o, a.cell, s[0]);
     }
   return o.commit({ doNotUpdateCurrent: !0 });
@@ -132437,7 +132437,7 @@ async function K4e(e, t, r, n, o) {
       i.to(s).update(oc.toBundle(m));
     } else {
       let d = Y4e([u], l);
-      i.to(a.transform.ref).apply(ct.Representation.EmissiveStructureRepresentation3DFromBundle, oc.toBundle(d), { tags: X4e });
+      i.to(a.transform.ref).apply(lt.Representation.EmissiveStructureRepresentation3DFromBundle, oc.toBundle(d), { tags: X4e });
     }
   });
 }
@@ -132445,7 +132445,7 @@ async function P3t(e, t, r) {
   let n = e.state.data, o = n.build();
   for (let i of t)
     for (let a of i.representations) {
-      let s = n.select(Hr.Generators.ofTransformer(ct.Representation.EmissiveStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(X4e));
+      let s = n.select(Hr.Generators.ofTransformer(lt.Representation.EmissiveStructureRepresentation3DFromBundle, a.cell.transform.ref).withTag(X4e));
       await r(o, a.cell, s[0]);
     }
   return o.commit({ doNotUpdateCurrent: !0 });
@@ -132939,12 +132939,12 @@ var V3t = [
       e.currentModel = hT(e, t, $4e, t);
     e.hierarchy.models.push(e.currentModel);
   }, (e) => e.currentModel = void 0],
-  [p8(ct.Model.CustomModelProperties), (e, t) => {
+  [p8(lt.Model.CustomModelProperties), (e, t) => {
     if (!e.currentModel)
       return !1;
     e.currentModel.properties = hT(e, t, k3t, t, e.currentModel);
   }, gT],
-  [p8(ct.Representation.ModelUnitcell3D), (e, t) => {
+  [p8(lt.Representation.ModelUnitcell3D), (e, t) => {
     if (!e.currentModel)
       return !1;
     e.currentModel.unitcell = hT(e, t, M3t, t, e.currentModel);
@@ -132956,12 +132956,12 @@ var V3t = [
       e.currentStructure = hT(e, t, Z4e, t);
     e.hierarchy.structures.push(e.currentStructure);
   }, (e) => e.currentStructure = void 0],
-  [p8(ct.Model.CustomStructureProperties), (e, t) => {
+  [p8(lt.Model.CustomStructureProperties), (e, t) => {
     if (!e.currentStructure)
       return !1;
     e.currentStructure.properties = hT(e, t, R3t, t, e.currentStructure);
   }, gT],
-  [p8(ct.Model.TransformStructureConformation), (e, t) => {
+  [p8(lt.Model.TransformStructureConformation), (e, t) => {
     if (!e.currentStructure)
       return !1;
     e.currentStructure.transform = hT(e, t, B3t, t, e.currentStructure);
@@ -133826,7 +133826,7 @@ class kre extends Wu {
     let e = this.plugin.state.data, t = Hr.findTagInSubtree(e.tree, An.RootRef, Pre), r = this.plugin.state.data.build();
     if (t)
       return r.to(t);
-    return r.toRoot().group(ct.Misc.CreateGroup, { label: "Measurements" }, { tags: Pre });
+    return r.toRoot().group(lt.Misc.CreateGroup, { label: "Measurements" }, { tags: Pre });
   }
   async setOptions(e) {
     if (this.updateState({ options: e }))
@@ -133858,14 +133858,14 @@ class kre extends Wu {
       return;
     let i = [n.transform.ref];
     $a(i, o.transform.ref);
-    let s = this.getGroup().apply(ct.Model.MultiStructureSelectionFromBundle, {
+    let s = this.getGroup().apply(lt.Model.MultiStructureSelectionFromBundle, {
       selections: [
         { key: "a", groupId: "a", ref: n.transform.ref, ...qh(e) },
         { key: "b", groupId: "b", ref: o.transform.ref, ...qh(t) }
       ],
       isTransitive: !0,
       label: "Distance"
-    }, { dependsOn: i, tags: r === null || r === void 0 ? void 0 : r.selectionTags }), l = s.apply(ct.Representation.StructureSelectionsDistance3D, {
+    }, { dependsOn: i, tags: r === null || r === void 0 ? void 0 : r.selectionTags }), l = s.apply(lt.Representation.StructureSelectionsDistance3D, {
       customText: (r === null || r === void 0 ? void 0 : r.customText) || "",
       unitLabel: this.state.options.distanceUnitLabel,
       textColor: this.state.options.textColor,
@@ -133881,7 +133881,7 @@ class kre extends Wu {
       return;
     let s = [o.transform.ref];
     $a(s, i.transform.ref), $a(s, a.transform.ref);
-    let c = this.getGroup().apply(ct.Model.MultiStructureSelectionFromBundle, {
+    let c = this.getGroup().apply(lt.Model.MultiStructureSelectionFromBundle, {
       selections: [
         { key: "a", ref: o.transform.ref, ...qh(e) },
         { key: "b", ref: i.transform.ref, ...qh(t) },
@@ -133889,7 +133889,7 @@ class kre extends Wu {
       ],
       isTransitive: !0,
       label: "Angle"
-    }, { dependsOn: s, tags: n === null || n === void 0 ? void 0 : n.selectionTags }), u = c.apply(ct.Representation.StructureSelectionsAngle3D, {
+    }, { dependsOn: s, tags: n === null || n === void 0 ? void 0 : n.selectionTags }), u = c.apply(lt.Representation.StructureSelectionsAngle3D, {
       customText: (n === null || n === void 0 ? void 0 : n.customText) || "",
       textColor: this.state.options.textColor,
       ...n === null || n === void 0 ? void 0 : n.lineParams,
@@ -133904,7 +133904,7 @@ class kre extends Wu {
       return;
     let c = [i.transform.ref];
     $a(c, a.transform.ref), $a(c, s.transform.ref), $a(c, l.transform.ref);
-    let d = this.getGroup().apply(ct.Model.MultiStructureSelectionFromBundle, {
+    let d = this.getGroup().apply(lt.Model.MultiStructureSelectionFromBundle, {
       selections: [
         { key: "a", ref: i.transform.ref, ...qh(e) },
         { key: "b", ref: a.transform.ref, ...qh(t) },
@@ -133913,7 +133913,7 @@ class kre extends Wu {
       ],
       isTransitive: !0,
       label: "Dihedral"
-    }, { dependsOn: c, tags: o === null || o === void 0 ? void 0 : o.selectionTags }), m = d.apply(ct.Representation.StructureSelectionsDihedral3D, {
+    }, { dependsOn: c, tags: o === null || o === void 0 ? void 0 : o.selectionTags }), m = d.apply(lt.Representation.StructureSelectionsDihedral3D, {
       customText: (o === null || o === void 0 ? void 0 : o.customText) || "",
       textColor: this.state.options.textColor,
       ...o === null || o === void 0 ? void 0 : o.lineParams,
@@ -133926,13 +133926,13 @@ class kre extends Wu {
     let r = this.plugin.helpers.substructureParent.get(e.structure);
     if (!r)
       return;
-    let n = [r.transform.ref], i = this.getGroup().apply(ct.Model.MultiStructureSelectionFromBundle, {
+    let n = [r.transform.ref], i = this.getGroup().apply(lt.Model.MultiStructureSelectionFromBundle, {
       selections: [
         { key: "a", ref: r.transform.ref, ...qh(e) }
       ],
       isTransitive: !0,
       label: "Label"
-    }, { dependsOn: n, tags: t === null || t === void 0 ? void 0 : t.selectionTags }), a = i.apply(ct.Representation.StructureSelectionsLabel3D, {
+    }, { dependsOn: n, tags: t === null || t === void 0 ? void 0 : t.selectionTags }), a = i.apply(lt.Representation.StructureSelectionsLabel3D, {
       textColor: this.state.options.textColor,
       ...t === null || t === void 0 ? void 0 : t.labelParams,
       ...t === null || t === void 0 ? void 0 : t.visualParams
@@ -133949,11 +133949,11 @@ class kre extends Wu {
     }
     if (t.length === 0)
       return;
-    let o = this.getGroup().apply(ct.Model.MultiStructureSelectionFromBundle, {
+    let o = this.getGroup().apply(lt.Model.MultiStructureSelectionFromBundle, {
       selections: t,
       isTransitive: !0,
       label: "Orientation"
-    }, { dependsOn: r }), i = o.apply(ct.Representation.StructureSelectionsOrientation3D), a = this.plugin.state.data;
+    }, { dependsOn: r }), i = o.apply(lt.Representation.StructureSelectionsOrientation3D), a = this.plugin.state.data;
     return await Ot.State.Update(this.plugin, { state: a, tree: i, options: { doNotLogTiming: !0 } }), { selection: o.selector, representation: i.selector };
   }
   async addPlane(e) {
@@ -133966,11 +133966,11 @@ class kre extends Wu {
     }
     if (t.length === 0)
       return;
-    let n = this.getGroup(), o = n.apply(ct.Model.MultiStructureSelectionFromBundle, {
+    let n = this.getGroup(), o = n.apply(lt.Model.MultiStructureSelectionFromBundle, {
       selections: t,
       isTransitive: !0,
       label: "Plane"
-    }, { dependsOn: r }), i = o.apply(ct.Representation.StructureSelectionsPlane3D), a = this.plugin.state.data;
+    }, { dependsOn: r }), i = o.apply(lt.Representation.StructureSelectionsPlane3D), a = this.plugin.state.data;
     return await Ot.State.Update(this.plugin, { state: a, tree: n, options: { doNotLogTiming: !0 } }), { selection: o.selector, representation: i.selector };
   }
   async addOrderLabels(e) {
@@ -133983,13 +133983,13 @@ class kre extends Wu {
       if (!a)
         continue;
       let s = [a.transform.ref];
-      t.apply(ct.Model.MultiStructureSelectionFromBundle, {
+      t.apply(lt.Model.MultiStructureSelectionFromBundle, {
         selections: [
           { key: "a", ref: a.transform.ref, ...qh(i) }
         ],
         isTransitive: !0,
         label: "Order"
-      }, { dependsOn: s, tags: y8 }).apply(ct.Representation.StructureSelectionsLabel3D, {
+      }, { dependsOn: s, tags: y8 }).apply(lt.Representation.StructureSelectionsLabel3D, {
         textColor: Ye.fromRgb(255, 255, 255),
         borderColor: Ye.fromRgb(0, 0, 0),
         textSize: 0.33,
@@ -134009,18 +134009,18 @@ class kre extends Wu {
   }
   sync() {
     let e = [];
-    for (let r of this.getTransforms(ct.Representation.StructureSelectionsLabel3D)) {
+    for (let r of this.getTransforms(lt.Representation.StructureSelectionsLabel3D)) {
       let n = r.obj.tags;
       if (!n || !n.includes(y8))
         e.push(r);
     }
     if (this.updateState({
       labels: e,
-      distances: this.getTransforms(ct.Representation.StructureSelectionsDistance3D),
-      angles: this.getTransforms(ct.Representation.StructureSelectionsAngle3D),
-      dihedrals: this.getTransforms(ct.Representation.StructureSelectionsDihedral3D),
-      orientations: this.getTransforms(ct.Representation.StructureSelectionsOrientation3D),
-      planes: this.getTransforms(ct.Representation.StructureSelectionsPlane3D)
+      distances: this.getTransforms(lt.Representation.StructureSelectionsDistance3D),
+      angles: this.getTransforms(lt.Representation.StructureSelectionsAngle3D),
+      dihedrals: this.getTransforms(lt.Representation.StructureSelectionsDihedral3D),
+      orientations: this.getTransforms(lt.Representation.StructureSelectionsOrientation3D),
+      planes: this.getTransforms(lt.Representation.StructureSelectionsPlane3D)
     }))
       this.stateUpdated();
   }
@@ -135197,7 +135197,7 @@ class Ure extends Gp {
     if (r.structures.length !== 1)
       return null;
     let n = r.structures[0].model;
-    if (!n || n.cell.transform.transformer !== ct.Model.ModelFromTrajectory)
+    if (!n || n.cell.transform.transformer !== lt.Model.ModelFromTrajectory)
       return null;
     if (!n.cell.obj || xr.TrajectoryInfo.get(n.cell.obj.data).size <= 1)
       return null;
@@ -135223,7 +135223,7 @@ class Ure extends Gp {
     let t = e.structures[0];
     if (!t.cell.parent)
       return null;
-    let r = Hr.tryFindDecorator(this.plugin.state.data, t.cell.transform.ref, ct.Model.TransformStructureConformation);
+    let r = Hr.tryFindDecorator(this.plugin.state.data, t.cell.transform.ref, lt.Model.TransformStructureConformation);
     if (!r)
       return;
     return Af.jsx(jc, { header: "Conformation Transform", children: Af.jsx(ep, { state: r.parent, transform: r.transform, customHeader: "none", noMargin: !0, autoHideApply: !0 }) });
@@ -135417,7 +135417,7 @@ class bT extends _v {
   }
   addRepresentation(e, t) {
     var r;
-    return this.dataState.build().to(e.cell).apply(ct.Representation.VolumeRepresentation3D, R1(this.plugin, (r = e.cell.obj) === null || r === void 0 ? void 0 : r.data, {
+    return this.dataState.build().to(e.cell).apply(lt.Representation.VolumeRepresentation3D, R1(this.plugin, (r = e.cell.obj) === null || r === void 0 ? void 0 : r.data, {
       type: t
     })).commit({ canUndo: "Add Representation" });
   }
@@ -135653,7 +135653,7 @@ class Hre extends Gp {
           throw Error("Failed to parse any volume.");
         let g = a.build();
         for (let h of i)
-          g.to((c = (s = m.volumes) === null || s === void 0 ? void 0 : s[(l = h.volumeIndex) !== null && l !== void 0 ? l : 0]) !== null && c !== void 0 ? c : m.volume).apply(ct.Representation.VolumeRepresentation3D, R1(this.plugin, f.data, {
+          g.to((c = (s = m.volumes) === null || s === void 0 ? void 0 : s[(l = h.volumeIndex) !== null && l !== void 0 ? l : 0]) !== null && c !== void 0 ? c : m.volume).apply(lt.Representation.VolumeRepresentation3D, R1(this.plugin, f.data, {
             type: "isosurface",
             typeParams: { alpha: (u = h.alpha) !== null && u !== void 0 ? u : 1, isoValue: h.type === "absolute" ? { kind: "absolute", absoluteValue: h.value } : { kind: "relative", relativeValue: h.value } },
             color: "uniform",
@@ -136862,12 +136862,12 @@ class FFe extends hs {
     let n = ls.resolveAndCheck(this.plugin.state.data, e);
     if (!n)
       return;
-    let o = this.plugin.state.data.selectQ((l) => l.byRef(n.transform.ref).subtree().withTransformer(ct.Model.TransformStructureConformation))[0], a = {
+    let o = this.plugin.state.data.selectQ((l) => l.byRef(n.transform.ref).subtree().withTransformer(lt.Model.TransformStructureConformation))[0], a = {
       transform: {
         name: "matrix",
         params: { data: r && !ee.isIdentity(r.matrix) ? ee.mul(ee(), r.matrix, t) : t, transpose: !1 }
       }
-    }, s = o ? this.plugin.state.data.build().to(o).update(a) : this.plugin.state.data.build().to(e).insert(ct.Model.TransformStructureConformation, a, { tags: RIt });
+    }, s = o ? this.plugin.state.data.build().to(o).update(a) : this.plugin.state.data.build().to(e).insert(lt.Model.TransformStructureConformation, a, { tags: RIt });
     await this.plugin.runTask(this.plugin.state.data.updateTree(s));
   }
   getRootStructure(e) {
@@ -139190,7 +139190,7 @@ class kne extends Mn {
   constructor() {
     super(...arguments);
     this.state = { show: !1, label: "" }, this.update = () => {
-      let e = this.plugin.state.data, t = e.selectQ((i) => i.ofTransformer(ct.Model.ModelFromTrajectory));
+      let e = this.plugin.state.data, t = e.selectQ((i) => i.ofTransformer(lt.Model.ModelFromTrajectory));
       if (t.length === 0) {
         this.setState({ show: !1 });
         return;
@@ -141868,13 +141868,13 @@ function BC(e) {
 }
 (function(e) {
   e.CommonParams = (t, r) => ({
-    modelProperties: _.Optional(_.Group(Et.getParamDefinition(ct.Model.CustomModelProperties, void 0, r))),
-    structureProperties: _.Optional(_.Group(Et.getParamDefinition(ct.Model.CustomStructureProperties, void 0, r))),
+    modelProperties: _.Optional(_.Group(Et.getParamDefinition(lt.Model.CustomModelProperties, void 0, r))),
+    structureProperties: _.Optional(_.Group(Et.getParamDefinition(lt.Model.CustomStructureProperties, void 0, r))),
     representationPreset: _.Optional(_.Text("auto"))
   });
 })(BC || (BC = {}));
 var F8 = BC.CommonParams, EPt = (e, t) => ({
-  model: _.Optional(_.Group(Et.getParamDefinition(ct.Model.ModelFromTrajectory, e, t))),
+  model: _.Optional(_.Group(Et.getParamDefinition(lt.Model.ModelFromTrajectory, e, t))),
   showUnitcell: _.Optional(_.Boolean(!1)),
   structure: _.Optional(gv.getParams(void 0, "assembly").type),
   representationPresetParams: _.Optional(_.Group(du.CommonParams)),
@@ -141929,7 +141929,7 @@ var F8 = BC.CommonParams, EPt = (e, t) => ({
     return { models: s, structures: l };
   }
 }), sOe = (e, t) => ({
-  model: _.Optional(_.Group(Et.getParamDefinition(ct.Model.ModelFromTrajectory, e, t))),
+  model: _.Optional(_.Group(Et.getParamDefinition(lt.Model.ModelFromTrajectory, e, t))),
   ...F8(e, t)
 });
 async function lOe(e, t, r, n) {
@@ -141971,7 +141971,7 @@ var kPt = BC({
     return await lOe({ ijkMin: x.create(-1, -1, -1), ijkMax: x.create(1, 1, 1), theme: "operator-hkl" }, e, t, r);
   }
 }), RPt = (e, t) => ({
-  model: _.Optional(_.Group(Et.getParamDefinition(ct.Model.ModelFromTrajectory, e, t))),
+  model: _.Optional(_.Group(Et.getParamDefinition(lt.Model.ModelFromTrajectory, e, t))),
   ...F8(e, t)
 }), BPt = BC({
   id: "preset-trajectory-crystal-contacts",
@@ -142089,7 +142089,7 @@ class soe {
     return n;
   }
   parseTrajectoryBlob(e, t) {
-    return this.dataState.build().to(e).apply(ct.Data.ParseBlob, t, { state: { isGhost: !0 } }).apply(ct.Model.TrajectoryFromBlob, void 0).commit({ revertOnError: !0 });
+    return this.dataState.build().to(e).apply(lt.Data.ParseBlob, t, { state: { isGhost: !0 } }).apply(lt.Model.TrajectoryFromBlob, void 0).commit({ revertOnError: !0 });
   }
   parseTrajectory(e, t) {
     let r = ls.resolveAndCheck(this.dataState, e);
@@ -142101,10 +142101,10 @@ class soe {
       return this.parseTrajectoryData(e, t);
   }
   createModel(e, t, r) {
-    return this.dataState.build().to(e).apply(ct.Model.ModelFromTrajectory, t || { modelIndex: 0 }, { state: r }).commit({ revertOnError: !0 });
+    return this.dataState.build().to(e).apply(lt.Model.ModelFromTrajectory, t || { modelIndex: 0 }, { state: r }).commit({ revertOnError: !0 });
   }
   insertModelProperties(e, t, r) {
-    return this.dataState.build().to(e).apply(ct.Model.CustomModelProperties, t, { state: r }).commit({ revertOnError: !0 });
+    return this.dataState.build().to(e).apply(lt.Model.CustomModelProperties, t, { state: r }).commit({ revertOnError: !0 });
   }
   tryCreateUnitcell(e, t, r) {
     var n, o, i;
@@ -142114,7 +142114,7 @@ class soe {
     let l = (i = Da.Provider.get(s)) === null || i === void 0 ? void 0 : i.spacegroup.cell;
     if (qs.isZero(l))
       return;
-    return a.build().to(e).apply(ct.Representation.ModelUnitcell3D, t, { state: r }).commit({ revertOnError: !0 });
+    return a.build().to(e).apply(lt.Representation.ModelUnitcell3D, t, { state: r }).commit({ revertOnError: !0 });
   }
   createStructure(e, t, r, n) {
     var o;
@@ -142127,17 +142127,17 @@ class soe {
           t = { name: "model", params: {} };
       }
     }
-    return i.build().to(e).apply(ct.Model.StructureFromModel, { type: t || { name: "assembly", params: {} } }, { state: r, tags: n }).commit({ revertOnError: !0 });
+    return i.build().to(e).apply(lt.Model.StructureFromModel, { type: t || { name: "assembly", params: {} } }, { state: r, tags: n }).commit({ revertOnError: !0 });
   }
   insertStructureProperties(e, t) {
-    return this.dataState.build().to(e).apply(ct.Model.CustomStructureProperties, t).commit({ revertOnError: !0 });
+    return this.dataState.build().to(e).apply(lt.Model.CustomStructureProperties, t).commit({ revertOnError: !0 });
   }
   isComponentTransform(e) {
-    return e.transform.transformer === ct.Model.StructureComponent;
+    return e.transform.transformer === lt.Model.StructureComponent;
   }
   async tryCreateComponent(e, t, r, n) {
     var o, i;
-    let a = this.dataState, s = a.build().to(e), l = `structure-component-${r}`, c = s.applyOrUpdateTagged(l, ct.Model.StructureComponent, t, {
+    let a = this.dataState, s = a.build().to(e), l = `structure-component-${r}`, c = s.applyOrUpdateTagged(l, lt.Model.StructureComponent, t, {
       tags: n ? [...n, l] : [l]
     });
     await c.commit();
@@ -142245,7 +142245,7 @@ async function coe(e, t) {
   let r = {}, n = t.volume.data && cOe(t.volume.data);
   if (n)
     r.isoValue = n;
-  return [await e.build().to(t.volume).apply(ct.Representation.VolumeRepresentation3D, R1(e, t.volume.data, {
+  return [await e.build().to(t.volume).apply(lt.Representation.VolumeRepresentation3D, R1(e, t.volume.data, {
     type: "isosurface",
     typeParams: r
   })).commit()];
@@ -142256,7 +142256,7 @@ var FPt = Xu({
   category: eP,
   binaryExtensions: ["ccp4", "mrc", "map"],
   parse: async (e, t, r) => {
-    let n = e.build().to(t).apply(ct.Data.ParseCcp4, {}, { state: { isGhost: !0 } }), o = n.apply(ct.Volume.VolumeFromCcp4, { entryId: r === null || r === void 0 ? void 0 : r.entryId });
+    let n = e.build().to(t).apply(lt.Data.ParseCcp4, {}, { state: { isGhost: !0 } }), o = n.apply(lt.Volume.VolumeFromCcp4, { entryId: r === null || r === void 0 ? void 0 : r.entryId });
     return await n.commit({ revertOnError: !0 }), await x5(e, o.selector.data), { format: n.selector, volume: o.selector };
   },
   visuals: coe
@@ -142266,7 +142266,7 @@ var FPt = Xu({
   category: eP,
   binaryExtensions: ["dsn6", "brix"],
   parse: async (e, t, r) => {
-    let n = e.build().to(t).apply(ct.Data.ParseDsn6, {}, { state: { isGhost: !0 } }), o = n.apply(ct.Volume.VolumeFromDsn6, { entryId: r === null || r === void 0 ? void 0 : r.entryId });
+    let n = e.build().to(t).apply(lt.Data.ParseDsn6, {}, { state: { isGhost: !0 } }), o = n.apply(lt.Volume.VolumeFromDsn6, { entryId: r === null || r === void 0 ? void 0 : r.entryId });
     return await n.commit({ revertOnError: !0 }), await x5(e, o.selector.data), { format: n.selector, volume: o.selector };
   },
   visuals: coe
@@ -142277,7 +142277,7 @@ var FPt = Xu({
   stringExtensions: ["dx"],
   binaryExtensions: ["dxbin"],
   parse: async (e, t, r) => {
-    let o = e.build().to(t).apply(ct.Data.ParseDx, {}, { state: { isGhost: !0 } }).apply(ct.Volume.VolumeFromDx, { entryId: r === null || r === void 0 ? void 0 : r.entryId });
+    let o = e.build().to(t).apply(lt.Data.ParseDx, {}, { state: { isGhost: !0 } }).apply(lt.Volume.VolumeFromDx, { entryId: r === null || r === void 0 ? void 0 : r.entryId });
     return await o.commit({ revertOnError: !0 }), await x5(e, o.selector.data), { volume: o.selector };
   },
   visuals: coe
@@ -142287,19 +142287,19 @@ var FPt = Xu({
   category: eP,
   stringExtensions: ["cub", "cube"],
   parse: async (e, t, r) => {
-    let n = e.build().to(t).apply(ct.Data.ParseCube, {}, { state: { isGhost: !0 } }), o = n.apply(ct.Volume.VolumeFromCube, { entryId: r === null || r === void 0 ? void 0 : r.entryId }), i = n.apply(ct.Model.TrajectoryFromCube, void 0, { state: { isGhost: !0 } }).apply(ct.Model.ModelFromTrajectory).apply(ct.Model.StructureFromModel);
+    let n = e.build().to(t).apply(lt.Data.ParseCube, {}, { state: { isGhost: !0 } }), o = n.apply(lt.Volume.VolumeFromCube, { entryId: r === null || r === void 0 ? void 0 : r.entryId }), i = n.apply(lt.Model.TrajectoryFromCube, void 0, { state: { isGhost: !0 } }).apply(lt.Model.ModelFromTrajectory).apply(lt.Model.StructureFromModel);
     return await n.commit({ revertOnError: !0 }), await x5(e, o.selector.data), { format: n.selector, volume: o.selector, structure: i.selector };
   },
   visuals: async (e, t) => {
     var r, n;
     let o = e.build(), i = [], a = (n = (r = t.volume.cell) === null || r === void 0 ? void 0 : r.obj) === null || n === void 0 ? void 0 : n.data;
     if (a && at.isOrbitals(a)) {
-      let c = o.to(t.volume).apply(ct.Representation.VolumeRepresentation3D, R1(e, a, {
+      let c = o.to(t.volume).apply(lt.Representation.VolumeRepresentation3D, R1(e, a, {
         type: "isosurface",
         typeParams: { isoValue: at.IsoValue.relative(1), alpha: 0.4 },
         color: "uniform",
         colorParams: { value: Yr.blue }
-      })), u = o.to(t.volume).apply(ct.Representation.VolumeRepresentation3D, R1(e, a, {
+      })), u = o.to(t.volume).apply(lt.Representation.VolumeRepresentation3D, R1(e, a, {
         type: "isosurface",
         typeParams: { isoValue: at.IsoValue.relative(-1), alpha: 0.4 },
         color: "uniform",
@@ -142307,7 +142307,7 @@ var FPt = Xu({
       }));
       i.push(c.selector, u.selector);
     } else {
-      let c = o.to(t.volume).apply(ct.Representation.VolumeRepresentation3D, R1(e, a, {
+      let c = o.to(t.volume).apply(lt.Representation.VolumeRepresentation3D, R1(e, a, {
         type: "isosurface",
         typeParams: { isoValue: at.IsoValue.relative(2), alpha: 0.4 },
         color: "uniform",
@@ -142332,7 +142332,7 @@ var FPt = Xu({
   isApplicable: (e, t) => wE(e, t) === "dscif" ? !0 : !1,
   parse: async (e, t, r) => {
     var n;
-    let o = await e.build().to(t).apply(ct.Data.ParseCif).commit(), i = e.build().to(o), a = o.obj.data.blocks;
+    let o = await e.build().to(t).apply(lt.Data.ParseCif).commit(), i = e.build().to(o), a = o.obj.data.blocks;
     if (a.length === 0)
       throw Error("no data blocks");
     let s = [], l = 0;
@@ -142341,7 +142341,7 @@ var FPt = Xu({
         continue;
       let u = Array.isArray(r === null || r === void 0 ? void 0 : r.entryId) ? r === null || r === void 0 ? void 0 : r.entryId[l] : r === null || r === void 0 ? void 0 : r.entryId;
       if (((n = c.categories.volume_data_3d_info) === null || n === void 0 ? void 0 : n.rowCount) > 0)
-        s.push(i.apply(ct.Volume.VolumeFromDensityServerCif, { blockHeader: c.header, entryId: u }).selector), l++;
+        s.push(i.apply(lt.Volume.VolumeFromDensityServerCif, { blockHeader: c.header, entryId: u }).selector), l++;
     }
     await i.commit();
     for (let c of s)
@@ -142352,11 +142352,11 @@ var FPt = Xu({
     let { volumes: r } = t, n = e.build(), o = [];
     if (r.length > 0) {
       let i = r[0].data && cOe(r[0].data) || at.IsoValue.relative(1.5);
-      o[0] = n.to(r[0]).apply(ct.Representation.VolumeRepresentation3D, $g.getDefaultParamsStatic(e, "isosurface", { isoValue: i, alpha: 1 }, "uniform", { value: Yr.teal })).selector;
+      o[0] = n.to(r[0]).apply(lt.Representation.VolumeRepresentation3D, $g.getDefaultParamsStatic(e, "isosurface", { isoValue: i, alpha: 1 }, "uniform", { value: Yr.teal })).selector;
     }
     if (r.length > 1) {
       let i = $g.getDefaultParamsStatic(e, "isosurface", { isoValue: at.IsoValue.relative(3), alpha: 0.3 }, "uniform", { value: Yr.green }), a = $g.getDefaultParamsStatic(e, "isosurface", { isoValue: at.IsoValue.relative(-3), alpha: 0.3 }, "uniform", { value: Yr.red });
-      o[o.length] = n.to(r[1]).apply(ct.Representation.VolumeRepresentation3D, i).selector, o[o.length] = n.to(r[1]).apply(ct.Representation.VolumeRepresentation3D, a).selector;
+      o[o.length] = n.to(r[1]).apply(lt.Representation.VolumeRepresentation3D, i).selector, o[o.length] = n.to(r[1]).apply(lt.Representation.VolumeRepresentation3D, a).selector;
     }
     return await n.commit(), o;
   }
@@ -142369,7 +142369,7 @@ var FPt = Xu({
   isApplicable: (e, t) => wE(e, t) === "segcif" ? !0 : !1,
   parse: async (e, t) => {
     var r;
-    let n = await e.build().to(t).apply(ct.Data.ParseCif).commit(), o = e.build().to(n), i = n.obj.data.blocks;
+    let n = await e.build().to(t).apply(lt.Data.ParseCif).commit(), o = e.build().to(n), i = n.obj.data.blocks;
     if (i.length === 0)
       throw Error("no data blocks");
     let a = [];
@@ -142377,7 +142377,7 @@ var FPt = Xu({
       if (s.header.toUpperCase() === "SERVER")
         continue;
       if (((r = s.categories.volume_data_3d_info) === null || r === void 0 ? void 0 : r.rowCount) > 0)
-        a.push(o.apply(ct.Volume.VolumeFromSegmentationCif, { blockHeader: s.header }).selector);
+        a.push(o.apply(lt.Volume.VolumeFromSegmentationCif, { blockHeader: s.header }).selector);
     }
     return await o.commit(), { volumes: a };
   },
@@ -142385,7 +142385,7 @@ var FPt = Xu({
     let { volumes: r } = t, n = e.build(), o = [];
     if (r.length > 0) {
       if (at.Segmentation.get(r[0].data))
-        o[o.length] = n.to(r[0]).apply(ct.Representation.VolumeRepresentation3D, $g.getDefaultParams(e, "segment", r[0].data, { alpha: 1, instanceGranularity: !0 }, "volume-segment", {})).selector;
+        o[o.length] = n.to(r[0]).apply(lt.Representation.VolumeRepresentation3D, $g.getDefaultParams(e, "segment", r[0].data, { alpha: 1, instanceGranularity: !0 }, "volume-segment", {})).selector;
     }
     return await n.commit(), o;
   }
@@ -142405,11 +142405,11 @@ var VPt = "Shape", HPt = Xu({
   category: VPt,
   stringExtensions: ["ply"],
   parse: async (e, t) => {
-    let r = e.state.data.build().to(t).apply(ct.Data.ParsePly, {}, { state: { isGhost: !0 } }), n = r.apply(ct.Model.ShapeFromPly);
+    let r = e.state.data.build().to(t).apply(lt.Data.ParsePly, {}, { state: { isGhost: !0 } }), n = r.apply(lt.Model.ShapeFromPly);
     return await r.commit(), { format: r.selector, shape: n.selector };
   },
   visuals(e, t) {
-    return e.state.data.build().to(t.shape).apply(ct.Representation.ShapeRepresentation3D).commit();
+    return e.state.data.build().to(t.shape).apply(lt.Representation.ShapeRepresentation3D).commit();
   }
 }), dOe = [
   ["ply", HPt]
@@ -147545,18 +147545,18 @@ function Tie(e, t, r, n, o, i) {
   return e.isWebGL2 ? AMt(e, t, r, n, o, i) : w7(e, t, r, n, !1, o, i);
 }
 function w7(e, t, r, n, o, i, a) {
-  if (lt)
+  if (ct)
     e.timer.mark("GaussianDensityTexture2d");
   let s = EMt(e, t, r, n, o, i, a);
-  if (lt)
+  if (ct)
     e.timer.markEnd("GaussianDensityTexture2d");
   return u6e(s);
 }
 function AMt(e, t, r, n, o, i) {
-  if (lt)
+  if (ct)
     e.timer.mark("GaussianDensityTexture3d");
   let a = PMt(e, t, r, n, o, i);
-  if (lt)
+  if (ct)
     e.timer.markEnd("GaussianDensityTexture3d");
   return u6e(a);
 }
@@ -147916,10 +147916,10 @@ function LMt(e, t, r, n, o, i) {
   if (!s[NP])
     s[NP] = d && m ? l.texture("image-float16", "rgba", "fp16", "linear") : c && u ? l.texture("image-float32", "rgba", "float", "linear") : l.texture("image-uint8", "rgba", "ubyte", "linear");
   let f = x.create(0, 1, 2), g = t.elements.length, h = (v) => {
-    if (lt)
+    if (ct)
       a.timer.mark("createGaussianSurfaceTextureMesh");
     let S = v6e(r, t, n.size, !0, o, a, s[NP]), C = Math.exp(-o.smoothness) / S.radiusFactor, T = v === null || v === void 0 ? void 0 : v.doubleBuffer.get(), w = jw(a, S.texture, S.gridDim, S.gridTexDim, S.gridDataDim, S.gridTexScale, S.transform, C, !1, !0, f, !0, T === null || T === void 0 ? void 0 : T.vertex, T === null || T === void 0 ? void 0 : T.group, T === null || T === void 0 ? void 0 : T.normal);
-    if (lt)
+    if (ct)
       a.timer.markEnd("createGaussianSurfaceTextureMesh");
     let A = Ee.expand(Ee(), t.boundary.sphere, S.maxRadius), P = Zl.create(w.vertexCount, g, w.vertexTexture, w.groupTexture, w.normalTexture, A, v);
     return P.meta.resolution = S.resolution, P;
@@ -147979,10 +147979,10 @@ function NMt(e, t, r, n, o) {
   if (!a[NP])
     a[NP] = u && d ? s.texture("image-float16", "rgba", "fp16", "linear") : l && c ? s.texture("image-float32", "rgba", "float", "linear") : s.texture("image-uint8", "rgba", "ubyte", "linear");
   let m = x.create(0, 1, 2), f = t.elementCount, g = (b) => {
-    if (lt)
+    if (ct)
       i.timer.mark("createStructureGaussianSurfaceTextureMesh");
     let v = C6e(t, r.size, !0, n, i, a[NP]), S = Math.exp(-n.smoothness) / v.radiusFactor, C = b === null || b === void 0 ? void 0 : b.doubleBuffer.get(), T = jw(i, v.texture, v.gridDim, v.gridTexDim, v.gridDataDim, v.gridTexScale, v.transform, S, !1, !0, m, !0, C === null || C === void 0 ? void 0 : C.vertex, C === null || C === void 0 ? void 0 : C.group, C === null || C === void 0 ? void 0 : C.normal);
-    if (lt)
+    if (ct)
       i.timer.markEnd("createStructureGaussianSurfaceTextureMesh");
     let w = Ee.expand(Ee(), t.boundary.sphere, v.maxRadius), A = Zl.create(T.vertexCount, f, T.vertexTexture, T.groupTexture, T.normalTexture, w, b);
     return A.meta.resolution = v.resolution, A;
@@ -149896,7 +149896,7 @@ class zie {
   }
   async tick(e, t) {
     var r, n;
-    if (await this.plugin.managers.animation.tick(e, t === null || t === void 0 ? void 0 : t.isSynchronous, t === null || t === void 0 ? void 0 : t.animation), (r = this.plugin.canvas3d) === null || r === void 0 || r.tick(e, t), lt) {
+    if (await this.plugin.managers.animation.tick(e, t === null || t === void 0 ? void 0 : t.isSynchronous, t === null || t === void 0 ? void 0 : t.animation), (r = this.plugin.canvas3d) === null || r === void 0 || r.tick(e, t), ct) {
       let o = (n = this.plugin.canvas3d) === null || n === void 0 ? void 0 : n.webgl.timer.resolve();
       if (o)
         for (let i of o)
@@ -151351,7 +151351,7 @@ function lBt(e) {
     if ($n.dockingBoxLoaded)
       await P.build().delete(U7).commit(), $n.dockingBoxLoaded = !1;
     let L = P.build();
-    if (L.toRoot().apply(ct.Shape.BoxShape3D, B, { ref: U7 }).apply(ct.Representation.ShapeRepresentation3D), await L.commit(), O)
+    if (L.toRoot().apply(lt.Shape.BoxShape3D, B, { ref: U7 }).apply(lt.Representation.ShapeRepresentation3D), await L.commit(), O)
       P.managers.camera.setSnapshot(O, 0);
     $n.dockingBoxLoaded = !0;
   }, l = async (A) => {
@@ -151431,10 +151431,10 @@ function lBt(e) {
       if (!Y)
         throw Error("Mol* XTC coordinates provider is unavailable.");
       let Z = await Y.parse(E, z);
-      M = await E.state.data.build().toRoot().apply(ct.Model.TrajectoryFromModelAndCoordinates, {
+      M = await E.state.data.build().toRoot().apply(lt.Model.TrajectoryFromModelAndCoordinates, {
         modelRef: L.ref,
         coordinatesRef: Z.ref
-      }, { dependsOn: [L.ref, Z.ref] }).apply(ct.Model.ModelFromTrajectory, { modelIndex: 0 }).commit();
+      }, { dependsOn: [L.ref, Z.ref] }).apply(lt.Model.ModelFromTrajectory, { modelIndex: 0 }).commit();
     } else if (c(A.pdb))
       if (R = await E.builders.data.download({
         url: _o.Url(A.pdb),
@@ -151495,6 +151495,10 @@ COMPND   3 CHAIN: ${Z.chain_id};`;
         }
       }
     }
+    if (A.transform_matrix) {
+      let L = ee.ofRows(A.transform_matrix), U = E.state.data.build().to(B).insert(lt.Model.TransformStructureConformation, { transform: { name: "matrix", params: { data: L, transpose: !1 } } });
+      await E.runTask(E.state.data.updateTree(U));
+    }
     return [M, B, O];
   }, m = async (A) => {
     if (!$n.plugin || !$n.structures || !$n.representations)
@@ -151503,7 +151507,7 @@ COMPND   3 CHAIN: ${Z.chain_id};`;
     e.contigs[A].forEach((R, F) => {
       let M = Array.from(Array(R.end - R.start + 1), (O, L) => L + R.start), B = fo.fromSelection(S($n.plugin, R.chain, M, A));
       E.push({ bundle: B, color: Ye.fromHexString((R.color ?? "#808080").replace("#", "0x")), clear: !1 });
-    }), $n.representations[A].map((R) => P.to(R).apply(ct.Representation.OverpaintStructureRepresentation3DFromBundle, { layers: E })), await P.commit();
+    }), $n.representations[A].map((R) => P.to(R).apply(lt.Representation.OverpaintStructureRepresentation3DFromBundle, { layers: E })), await P.commit();
   }, f = (A) => {
     let P = A[0], E = A[A.length - 1] - P + 1;
     return Array.from(Array(E), (F, M) => M + P);
@@ -151599,7 +151603,7 @@ COMPND   3 CHAIN: ${Z.chain_id};`;
     if (!$n.plugin || !A)
       return;
     for (let E = 0;E < A.length; E++) {
-      let R = A[E], F = $n.plugin.state.data.build(), M = `chain_${R.chain_id}_${P}_${E}`, B = F.to($n.structures[P]).apply(ct.Misc.CreateGroup, { label: M }, { ref: M }), O;
+      let R = A[E], F = $n.plugin.state.data.build(), M = `chain_${R.chain_id}_${P}_${E}`, B = F.to($n.structures[P]).apply(lt.Misc.CreateGroup, { label: M }, { ref: M }), O;
       if (R.residues && R.residues.length > 0)
         O = pe.struct.generator.atomGroups({
           "chain-test": pe.core.rel.eq([pe.struct.atomProperty.macromolecular.auth_asym_id(), R.chain_id]),
@@ -151610,9 +151614,9 @@ COMPND   3 CHAIN: ${Z.chain_id};`;
         O = pe.struct.generator.atomGroups({
           "chain-test": pe.core.rel.eq([pe.struct.atomProperty.macromolecular.auth_asym_id(), R.chain_id])
         });
-      let L = pe.struct.modifier.wholeResidues({ 0: O }), U = B.apply(ct.Model.StructureSelectionFromExpression, { expression: L }), z = R.representation_type.split("+");
+      let L = pe.struct.modifier.wholeResidues({ 0: O }), U = B.apply(lt.Model.StructureSelectionFromExpression, { expression: L }), z = R.representation_type.split("+");
       for (let Y of z)
-        U.apply(ct.Representation.StructureRepresentation3D, yC($n.plugin, $n.structures[P].data, {
+        U.apply(lt.Representation.StructureRepresentation3D, yC($n.plugin, $n.structures[P].data, {
           type: Y,
           size: "physical",
           sizeParams: { scale: 1.05 },

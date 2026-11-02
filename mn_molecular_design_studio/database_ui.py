@@ -1099,9 +1099,14 @@ def render_use_selection(database, user, projects, ids, project_id=""):
             st.rerun()
 
 
-def render_molecule_picker(user, *, key, allowed_types=None, multiple=False):
-    database = MolecularDatabase()
-    with st.popover("My molecules", icon=":material/storage:"):
+def render_molecule_picker(user, *, key, allowed_types=None, multiple=False, lazy=False):
+    popover = st.popover("My molecules", icon=":material/storage:",
+                         key=key + "-library-open" if lazy else None,
+                         on_change="rerun" if lazy else "ignore")
+    with popover:
+        if lazy and not popover.open:
+            return None
+        database = MolecularDatabase()
         query = st.text_input("Search Database", key=key + "-library-query")
         groups = database.groups(user, collection="library")
         group_id = st.selectbox("Group", ["", *[row["id"] for row in groups]], format_func=lambda value: next((row["name"] for row in groups if row["id"] == value), "All molecules"), key=key + "-library-group")

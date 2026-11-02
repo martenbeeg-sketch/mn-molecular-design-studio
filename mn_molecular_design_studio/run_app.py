@@ -4109,14 +4109,23 @@ def _render_cofolding_header(title: str, description: str) -> None:
 def _submit_cofolding_job(schema: dict, workflow_id: str, parameters: dict, project_id: str, settings: dict, label: str) -> None:
     parameters = dict(parameters)
     source_job = parameters.pop("source_job", None)
+    database_source = parameters.pop("database_source", None)
+    interface_clustering_collection = parameters.pop("interface_clustering_collection", None)
+    foldseek_collection = parameters.pop("foldseek_collection", None)
     collection_policy = parameters.pop("_database_collection_policy", None)
     payload = {
         "schema_version": schema["schema_version"], "workflow": workflow_id,
-        "parameters": parameters, "project_id": project_id,
+        "parameters": parameters, "project_id": project_id or None,
         "priority": 1000 if settings.get("prioritize") else 0,
     }
     if source_job:
         payload["source_job"] = source_job
+    if database_source:
+        payload["database_source"] = database_source
+    if interface_clustering_collection:
+        payload["interface_clustering_collection"] = interface_clustering_collection
+    if foldseek_collection:
+        payload["foldseek_collection"] = foldseek_collection
     if collection_policy:
         payload["database_collection_policy"] = collection_policy
     if workflow_id in {"library.prepare", "library.centroids", "design.kejia_idr", "design.peptide_trap"}:
@@ -4130,14 +4139,17 @@ def _submit_cofolding_job(schema: dict, workflow_id: str, parameters: dict, proj
         st.error(f"The {label} inputs did not pass validation.")
         return
     result = _post_local_api("/api/v1/workflows", payload)
-    mark_studio_job(result, project_id=project_id, owner_id=str(CURRENT_USER["id"]))
+    mark_studio_job(result, project_id=project_id or None, owner_id=str(CURRENT_USER["id"]),
+                    allow_private_source=bool((database_source or interface_clustering_collection or foldseek_collection) and not project_id))
     st.session_state["last_submitted_job"] = result["job"]
     job = result.get("job", {})
     st.success(f"{label} job queued · Job {job.get('job_code') or job.get('run_id') or 'submitted'}")
 
 
+@st.fragment
 def _render_optimized_prediction_setup(engine_id: str) -> None:
     profile = optimized_prediction.ENGINE_PROFILES[engine_id]
+    editor_engine_key = engine_id
     workflow_id = "refolding.optimized_prediction"
     schema = workflow_schema(workflow_id)
     if st.button("← Back to All tools", key="back-to-optimized-images"):
@@ -4149,6 +4161,28 @@ def _render_optimized_prediction_setup(engine_id: str) -> None:
         _render_boltz_prediction_setup(profile, schema)
         return
     _render_cofolding_header(profile["label"], profile.get("input_summary", "Predict molecular structures."))
+    if engine_id == "localfold":
+        from mn_molecular_design_studio import localfold
+        model = str(st.session_state.get("localfold-model", "alphafold3"))
+        active_editor_key = st.session_state.get(
+            "_localfold_active_editor_key", "optimized-localfold-1-editor")
+        saved_editor = st.session_state.get(active_editor_key)
+        if isinstance(saved_editor, dict):
+            model = str((saved_editor.get("settings") or {}).get("model") or model)
+        if model not in localfold.UI_MODEL_KEYS:
+            model = 'alphafold3'
+            if isinstance(saved_editor, dict):
+                saved_editor.setdefault('settings', {}).update(model=model)
+        st.session_state['localfold-model'] = model
+        profile = localfold.profile_for(profile, model, ui=True)
+        editor_engine_key = "localfold"
+        reference = Path(reference_root()).expanduser().resolve()
+        st.caption(f"Shared weights and cache: {localfold.cache_root(reference)}")
+    submit_prediction = _submit_cofolding_job
+    if engine_id == "localfold":
+        def submit_prediction(schema, workflow, parameters, project, settings, title):
+            parameters.setdefault("engine_options", {}).setdefault('model', model)
+            return _submit_cofolding_job(schema, workflow, parameters, project, settings, title)
     with st.expander("About this workflow", expanded=False):
         st.write("Predict molecular structures through the Studio GPU scheduler.")
         st.code(profile["image"], language=None)
@@ -4158,7 +4192,7 @@ def _render_optimized_prediction_setup(engine_id: str) -> None:
     with project_col:
         project_id = _render_project_selector(f"optimized-prediction-{engine_id}")
     handled, task_count = render_batch_controls(
-        engine_id, profile, project_id, job_name, schema, search_jobs=search_jobs, submit=_submit_cofolding_job)
+        engine_id, profile, project_id, job_name, schema, search_jobs=search_jobs, submit=submit_prediction)
     if handled:
         return
     task_tabs = st.tabs([f"Complex {index + 1}" for index in range(task_count)]) if task_count > 1 else [st.container()]
@@ -4180,12 +4214,13 @@ def _render_optimized_prediction_setup(engine_id: str) -> None:
                     "target_msa_a3m": msa_file.getvalue().decode("utf-8", errors="replace") if msa_file else "",
                 }
             values, item_settings, item_submitted = render_molecule_editor(
-                f"optimized-{engine_id}-{index}", tuple(profile.get("molecule_inputs", ())),
+                f"optimized-{editor_engine_key}-{index}", tuple(profile.get("molecule_inputs", ())),
                 supports_cyclic=bool(profile.get("supports_cyclic")),
                 supports_modifications=bool(profile.get("supports_modifications")),
                 supports_restraints=bool(profile.get("supports_restraints")),
                 supports_msa_upload=bool(profile.get("supports_msa_upload")),
                 supports_templates=bool(profile.get("supports_templates") and profile["input_kind"] != "boltzgen"),
+                localfold=engine_id == "localfold",
                 supports_examples=profile["input_kind"] != "boltzgen",
                 supports_affinity=bool(profile.get("supports_affinity")),
                 modes=tuple(profile["modes"]), can_submit=bool(project_id),
@@ -4198,8 +4233,8 @@ def _render_optimized_prediction_setup(engine_id: str) -> None:
                 settings, submitted = item_settings, item_submitted
     if task_count > 1:
         _, settings, submitted = render_molecule_editor(
-            f"optimized-{engine_id}-batch-settings", (), modes=tuple(profile["modes"]), can_submit=bool(project_id),
-            prediction_settings=config, settings_only=True,
+            f"optimized-{editor_engine_key}-batch-settings", (), modes=tuple(profile["modes"]), can_submit=bool(project_id),
+            prediction_settings=config, settings_only=True, localfold=engine_id == "localfold",
         )
     if not submitted:
         return
@@ -4218,6 +4253,8 @@ def _render_optimized_prediction_setup(engine_id: str) -> None:
             "accept_alphafold3_terms": bool(settings.get("accept_terms")), "tasks": tasks,
             "engine_options": {field["key"]: settings[field["key"]] for field in profile.get("settings", ())},
         }
+        if engine_id == "localfold":
+            parameters["engine_options"]["model"] = settings.get('model', model)
         _submit_cofolding_job(schema, workflow_id, parameters, project_id, settings, profile["label"])
     except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         st.error(f"Could not start the prediction: {exc}")
@@ -4722,10 +4759,6 @@ def _render_workflow_setup() -> None:
 
 def _render_pipelines() -> None:
     st.title("Pipelines")
-    view = st.segmented_control("Pipeline workspace", ["Node canvas", "Compare design engines"], default="Node canvas", key="pipeline-workspace-view", label_visibility="collapsed")
-    if view == "Compare design engines":
-        _render_multi_engine_campaign()
-        return
     st.caption("Connect tools into a reusable experiment. Move blocks freely, branch outputs, and keep every run as a separate snapshot.")
     from mn_molecular_design_studio import pipeline_node_ui, pipeline_graph_ui
     importlib.reload(pipeline_node_ui)
@@ -7200,6 +7233,10 @@ def _render_cofolding_prediction_results(
     if not model_label:
         profile = optimized_prediction.ENGINE_PROFILES.get(engine, {})
         model_label = str(profile.get("label") or ("ESMFold2" if "model_variant" in params else "ColabFold 2.0 preview")).removesuffix(" optimized")
+    if engine == "localfold":
+        from mn_molecular_design_studio import localfold
+        selected_model = str((params.get("engine_options") or {}).get("model") or "alphafold3")
+        model_label = f"LocalFold · {localfold.MODELS.get(selected_model, {}).get('label', selected_model)}"
     candidates = cofolding_results.ranked_candidates([
         cofolding_results.enrich_candidate(run_dir, candidate) for candidate in candidates if isinstance(candidate, dict)
     ])
@@ -7339,8 +7376,17 @@ def _render_cofolding_prediction_results(
             except ValueError as exc:
                 st.warning(str(exc))
         pae_path = _cofolding_candidate_pae_path(run_dir, candidate, structure_path)
+        if raw_metadata.get("api_engine") == "localfold" and raw_metadata.get("model_name") == "bioemu2":
+            st.caption("BioEmu2 has no confidence head. pLDDT, PAE, pTM and ipTM are unavailable.")
+            if structure_path is not None:
+                physicality = structure_path.with_name(structure_path.stem.removesuffix("_model") + "_physicality.json")
+                if physicality.is_file():
+                    with st.expander("BioEmu2 physicality report", expanded=True):
+                        st.json(cofolding_results.read_payload(physicality))
 
         def confidence_metric(*names: str) -> object:
+            if raw_metadata.get("confidence_available") is False:
+                return None
             if "iptm" in {name.casefold() for name in names} and candidate_has_interchain_interface(candidate) is False:
                 return None
             normalized = {str(key).casefold(): value for key, value in confidence.items()}
@@ -7398,6 +7444,8 @@ def _render_cofolding_prediction_results(
         def confidence_data_for(item: dict) -> tuple[Path | None, Path | None, dict | None, str | None]:
             item_structure = structure_path_for(item)
             item_pae = _cofolding_candidate_pae_path(run_dir, item, item_structure)
+            if (item.get("raw_metadata") or {}).get("confidence_available") is False:
+                return item_structure, None, None, "This model has no confidence head."
             if item_structure is None:
                 return item_structure, item_pae, None, "The structure file is unavailable."
             try:

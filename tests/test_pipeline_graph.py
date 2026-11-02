@@ -19,6 +19,190 @@ def edge(source, target):
     return {"id": f"{source}-{target}", "source":source, "target":target,"sourceHandle":"out","targetHandle":"in"}
 
 
+def test_auto_filter_target_profile_tracks_target_and_idr_design_spec():
+    target = node("target", "target")
+    generator = node("rfd4", "generator")
+    collection = node("candidate_merge", "collection")
+    acceptance = node("shared_filter", "acceptance")
+    target["data"]["params"].update(target_pdb="target.cif")
+    acceptance["data"]["params"]["target_type"] = "auto"
+    nodes = {item["id"]: item for item in (target, generator, collection, acceptance)}
+    incoming = {"target": [], "generator": ["target"], "collection": ["generator"],
+                "acceptance": ["collection"]}
+    assert graph.resolve_pipeline_target_type(nodes, incoming, "acceptance") == "structured"
+
+    generator["data"]["params"].update(
+        input_mode="condition_spec",
+        condition_spec="idr_peptide_binder:\n  input: target.cif\n  conditions:\n    C_SEQ:\n      true: []\n",
+    )
+    assert graph.resolve_pipeline_target_type(nodes, incoming, "acceptance") == "fasta_idr"
+
+
+def test_auto_filter_binder_profile_tracks_rfd4_task():
+    target, generator = node("target", "target"), node("rfd4", "generator")
+    collection, acceptance = node("candidate_merge", "collection"), node("shared_filter", "acceptance")
+    nodes = {item["id"]: item for item in (target, generator, collection, acceptance)}
+    incoming = {"target": [], "generator": ["target"], "collection": ["generator"],
+                "acceptance": ["collection"]}
+    acceptance["data"]["params"]["binder_format"] = "auto"
+    generator["data"]["params"]["task"] = "protein_binder"
+    assert graph.resolve_pipeline_binder_format(nodes, incoming, "acceptance") == "miniprotein"
+    generator["data"]["params"]["task"] = "nanobody"
+    assert graph.resolve_pipeline_binder_format(nodes, incoming, "acceptance") == "vhh"
+    generator["data"]["params"]["task"] = "antibody"
+    assert graph.resolve_pipeline_binder_format(nodes, incoming, "acceptance") is None
+
+
+def test_shared_filter_preview_resolves_effective_rfd4_reference_thresholds():
+    from mn_molecular_design_studio.pipeline_node_ui import _shared_filter_effective_policy
+
+    target, generator = node("target", "target"), node("rfd4", "generator")
+    collection, acceptance = node("candidate_merge", "collection"), node("shared_filter", "acceptance")
+    target["data"]["params"]["target_pdb"] = "pdl1.cif"
+    generator["data"]["params"]["task"] = "protein_binder"
+    acceptance["data"]["params"].update(
+        binder_format="auto", target_type="auto", policy_profile="auto",
+        rules=[], informational_scores=[],
+    )
+    graph_data = {
+        "nodes": [target, generator, collection, acceptance],
+        "edges": [edge("target", "generator"), edge("generator", "collection"),
+                  edge("collection", "acceptance")],
+    }
+
+    target_type, binder_format, source_tools, policy, error = _shared_filter_effective_policy(
+        graph_data, "acceptance", acceptance["data"]["params"],
+    )
+
+    assert error is None
+    assert target_type == "structured"
+    assert binder_format == "miniprotein"
+    assert source_tools == ["rfd4_proteina"]
+    assert policy["reference_preset"]["source"]
+    assert {(rule["metric_id"], rule["operator"], rule["value"])
+            for rule in policy["mandatory_filters"]} == {
+        ("rfd4_native_ptm", ">=", 0.55),
+        ("rfd4_native_iptm", ">=", 0.70),
+        ("interface_pae_norm31", "<=", 0.35),
+        ("rfd4_interface_residues_4a", ">=", 7),
+        ("rfd4_backbone_clashes_2_5a", "<=", 0),
+    }
+
+
+def test_target_tile_can_use_saved_database_protein_structures_from_my_targets_and_project():
+    from mn_molecular_design_studio.target_editor import saved_protein_structure_options
+
+    mine = {
+        "id": "protein-1", "name": "Saved PD-L1", "groups": [{"name": "My targets"}],
+        "components": [{"type": "protein", "chain": "A", "role": "target"}],
+        "structures": [
+            {"id": "structure-1", "format": "cif"},
+            {"id": "invalid-format", "format": "pdbqt"},
+        ],
+    }
+    project = {
+        "id": "protein-2", "name": "Project target", "groups": [{"name": "PD-L1 Benchmark"}],
+        "components": [{"type": "protein", "chain": "B", "role": "target"}],
+        "structures": [{"id": "structure-2", "format": "pdb"}],
+    }
+
+    class FakeDatabase:
+        def __init__(self):
+            self.requests = []
+
+        def list_molecules(self, _user, **kwargs):
+            self.requests.append(kwargs)
+            if kwargs.get("project_id"):
+                return {"items": [project]}
+            return {"items": [mine, project]}
+
+    database = FakeDatabase()
+    options = saved_protein_structure_options(
+        database, {"id": "user-1"}, project_id="project-1", query="PD-L1", limit=100,
+    )
+
+    assert {item["structure_id"] for item in options} == {"structure-1", "structure-2"}
+    assert any("Saved PD-L1" in item["label"] and "chain A" in item["label"] for item in options)
+    assert [request["scope"] for request in database.requests] == ["all", "all"]
+    assert database.requests[0]["project_id"] == "project-1"
+    assert all(request["query"] == "PD-L1" and request["molecule_type"] == "protein"
+               for request in database.requests)
+
+
+def test_target_source_materializes_selected_database_structure_without_reimport(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    from mn_molecular_design_studio import molecular_database, target_editor
+
+    structure_path = tmp_path / "saved-target.pdb"
+    structure_path.write_text("TARGET STRUCTURE")
+    option = {"molecule_id": "mol-pdl1", "structure_id": "structure-pdl1",
+              "name": "PD-L1 benchmark", "label": "PD-L1 benchmark · chain A · PDB",
+              "format": "pdb", "chains": ["A"]}
+    monkeypatch.setattr(target_editor.st, "session_state", {"_molecular_database_user": {"id": "user-1"}})
+    monkeypatch.setattr(target_editor.st, "expander", lambda *_args, **_kwargs: nullcontext())
+    monkeypatch.setattr(target_editor.st, "caption", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(target_editor.st, "text_input", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(target_editor.st, "selectbox", lambda _label, _choices, **_kwargs: "structure-pdl1")
+    monkeypatch.setattr(target_editor, "_saved_target_options", lambda *_args: [option])
+
+    class FakeDatabase:
+        def structure_file(self, user, structure_id, *, materialize=False):
+            assert user == {"id": "user-1"}
+            assert structure_id == "structure-pdl1"
+            assert materialize is True
+            return structure_path
+
+    monkeypatch.setattr(molecular_database, "MolecularDatabase", FakeDatabase)
+
+    source = target_editor.render_target_source(
+        key_prefix="target-test", label="Target", owner_id="user-1", allow_cif=True,
+        allow_saved_targets=True,
+    )
+
+    assert source.path == structure_path
+    assert source.name == "PD-L1 benchmark"
+    assert source.molecule_id == "mol-pdl1"
+    assert source.structure_id == "structure-pdl1"
+
+
+def test_rfd4_binder_campaign_legacy_template_is_generic_and_exposes_tile_settings():
+    template_id = "rfd4_binder_acceptance_campaign"
+    graph_data = graph.new_graph(template_id)
+    plan = graph.validate_graph(graph_data)
+    graph_data = plan["graph"]
+    by_kind = {item["data"]["kind"]: item for item in plan["graph"]["nodes"]}
+
+    assert graph.LEGACY_STARTER_TEMPLATES["RFD4 binder campaign · Native refold → automatic acceptance"] == template_id
+    assert plan["order"] == ["target-0", "rfd4-1", "candidate_merge-2", "shared_filter-3", "campaign_stop-4", "results-5"]
+    assert by_kind["target"]["data"]["params"]["target_pdb"] == ""
+    assert by_kind["target"]["data"]["params"]["hotspots"] == ""
+    assert by_kind["rfd4"]["data"]["params"]["input_mode"] == "guided"
+    assert by_kind["rfd4"]["data"]["params"]["condition_spec"] == ""
+    assert json.loads(by_kind["rfd4"]["data"]["params"]["options_json"]) == {"refold": True}
+    assert by_kind["shared_filter"]["data"]["params"]["policy_profile"] == "auto"
+    assert by_kind["shared_filter"]["data"]["params"]["binder_format"] == "auto"
+    assert by_kind["shared_filter"]["data"]["params"]["target_type"] == "auto"
+    assert by_kind["campaign_stop"]["data"]["params"]["designs_per_job"] == 50
+    assert {item["name"] for item in graph.NODE_CATALOG["rfd4"]["fields"] if item["section"] == "basic"} >= {
+        "task", "input_mode", "num_designs", "length_min", "length_max", "nsteps", "seed",
+    }
+    with pytest.raises(ValueError, match="Load a target structure"):
+        graph.validate_graph(graph_data, require_inputs=True)
+
+    target = by_kind["target"]["data"]["params"]
+    target["target_pdb"] = "structured-target.cif"
+    structured = graph.validate_graph(graph_data)["campaign_stops"]["campaign_stop-4"]["campaign"]
+    assert structured["validation_stages"][0]["acceptance_policy"]["target_type"] == "structured"
+    by_kind["rfd4"]["data"]["params"].update(
+        task="nanobody", input_mode="condition_spec",
+        condition_spec="idr_peptide_binder:\n  input: structured-target.cif\n  conditions:\n    C_SEQ:\n      true:\n        - select: sel('A')\n",
+    )
+    idr = graph.validate_graph(graph_data)["campaign_stops"]["campaign_stop-4"]["campaign"]
+    policy = idr["validation_stages"][0]["acceptance_policy"]
+    assert policy["target_type"] == "fasta_idr"
+    assert policy["binder_format"] == "vhh"
+
+
 def test_foundry_template_has_explicit_generation_sequence_and_prediction():
     plan=graph.validate_graph(graph.new_graph())
     kinds = [n["data"]["kind"] for n in plan["graph"]["nodes"]]
@@ -786,6 +970,26 @@ def test_rfd4_campaign_graph_accepts_native_condition_spec_input():
     assert request["parameters"]["distributed_campaign"]["generated_target"] == 1
 
 
+def test_rfd4_condition_spec_follows_changed_graph_target_and_preserves_extra_inputs():
+    import yaml
+    from mn_molecular_design_studio.rfd4_proteina_input import rebind_condition_spec_target
+
+    request = runner.node_request("rfd4", {
+        "task": "protein_binder", "input_mode": "condition_spec",
+        "condition_spec": "protein_binder:\n  input: old-target.cif\n  contig: 70-110, /0, A1-115\n",
+        "target_structure": "", "input_files": "/data/extra-context.cif", "options_json": "{}",
+    }, {"target": {"target_pdb": "/data/new-target.cif", "target_chains": ["A"]}}, "design")
+    spec = yaml.safe_load(request["parameters"]["condition_spec"])
+    assert spec["protein_binder"]["input"] == "new-target.cif"
+    assert request["parameters"]["input_files"] == ["/data/extra-context.cif"]
+
+    multi = {
+        "protein_binder": {"input": ["old-target.cif", "extra-context.cif"]},
+    }
+    rebound = rebind_condition_spec_target(yaml.safe_dump(multi), "new-target.cif", ["/data/extra-context.cif"])
+    assert yaml.safe_load(rebound)["protein_binder"]["input"] == ["new-target.cif", "extra-context.cif"]
+
+
 def test_existing_design_inputs_require_successful_filter_passes_in_same_project(design_source_factory):
     source,_=design_source_factory()
     assert len(runner.source_designs(str(source),"test-project")[1])==1
@@ -1156,7 +1360,7 @@ def test_api_address_persists_when_saving_other_workspace_settings(tmp_path):
         save_settings({**settings,"api_base_url":"https://user:password@example.org/path"},home=tmp_path)
 
 
-def test_canvas_restores_and_opens_saved_graph_after_name_widget(monkeypatch,tmp_path):
+def test_canvas_restores_and_opens_saved_graph_with_name_in_canvas(monkeypatch,tmp_path):
     from streamlit.testing.v1 import AppTest
     monkeypatch.setattr(graph,"app_home",lambda:tmp_path)
     original=graph.new_graph();original["name"]="Saved pipeline"
@@ -1167,14 +1371,104 @@ render_pipeline_builder(owner_id="test-user",project_selector=lambda _:"test-pro
     submit_api=lambda *a:{},search_jobs=lambda **k:{"items":[]})
 ''').run()
     assert not app.exception
-    app.text_input(key="visual-pipeline-test-project-name").set_value("Changed draft").run()
+    assert not any(widget.label == "Pipeline name" for widget in app.text_input)
     app.button(key="visual-pipeline-test-project-restore").click().run()
     assert not app.exception
-    assert app.text_input(key="visual-pipeline-test-project-name").value=="Saved pipeline"
-    app.text_input(key="visual-pipeline-test-project-name").set_value("Changed again").run()
+    assert app.session_state["visual-pipeline-test-project-graph"]["name"] == "Saved pipeline"
     app.button(key="visual-pipeline-test-project-open").click().run()
     assert not app.exception
-    assert app.text_input(key="visual-pipeline-test-project-name").value=="Saved pipeline"
+    assert app.session_state["visual-pipeline-test-project-graph"]["name"] == "Saved pipeline"
+
+
+def test_canvas_save_as_creates_a_separate_named_draft():
+    from streamlit.testing.v1 import AppTest
+
+    app = AppTest.from_string('''
+import streamlit as st
+from mn_molecular_design_studio.pipeline_graph import new_graph
+from mn_molecular_design_studio.pipeline_graph_ui import _show_pipeline_save_as
+prefix = "save-as-test"
+if prefix + "-graph" not in st.session_state:
+    source = new_graph()
+    source["name"] = "Original pipeline"
+    st.session_state[prefix + "-graph"] = source
+    st.session_state[prefix + "-save-as-open"] = True
+def submit_api(endpoint, payload):
+    st.session_state["saved-copy"] = payload["graph"]
+_show_pipeline_save_as(prefix, "test-project", submit_api)
+''').run()
+    assert not app.exception
+    source_id = app.session_state["save-as-test-graph"]["id"]
+    name_key = f"save-as-test-save-as-name-{source_id}"
+    app.text_input(key=name_key).set_value("PD-L1 copy").run()
+    app.button(key="save-as-test-save-as-submit").click().run()
+    assert not app.exception
+    saved = app.session_state["saved-copy"]
+    assert saved["name"] == "PD-L1 copy"
+    assert saved["id"] != source_id
+    assert app.session_state["save-as-test-graph"] == saved
+
+
+def test_pipeline_resource_dialog_updates_graph_level_scheduler_policy():
+    from streamlit.testing.v1 import AppTest
+    app = AppTest.from_string('''
+import streamlit as st
+from mn_molecular_design_studio.pipeline_graph import new_graph
+from mn_molecular_design_studio.pipeline_graph_ui import _show_pipeline_resources
+prefix = "resource-test"
+if prefix + "-graph" not in st.session_state:
+    st.session_state[prefix + "-graph"] = new_graph("foundry")
+    st.session_state[prefix + "-resources-open"] = True
+_show_pipeline_resources(prefix, "test-user", None, lambda *args: {})
+''').run()
+    assert not app.exception
+    graph_id = app.session_state["resource-test-graph"]["id"]
+    resource_key = f"resource-test-{graph_id}"
+    app.checkbox(key=resource_key + "-resources-sharded").set_value(True).run()
+    assert not app.exception
+    app.button(key=f"resource-test-{graph_id}-resources-apply").click().run()
+    assert not app.exception
+    policy = app.session_state["resource-test-graph"]["candidate_execution"]
+    assert policy["mode"] == "sharded"
+    assert policy["placement"] == "local"
+    assert policy["gpu_device"] == "all"
+
+
+def test_canvas_campaign_dialog_keeps_shared_objective_editor_available():
+    from streamlit.testing.v1 import AppTest
+    app = AppTest.from_string('''
+import streamlit as st
+from mn_molecular_design_studio.pipeline_graph import new_graph
+from mn_molecular_design_studio.pipeline_graph_ui import _show_pipeline_campaign
+prefix = "campaign-test"
+if prefix + "-graph" not in st.session_state:
+    st.session_state[prefix + "-graph"] = new_graph("foundry")
+    st.session_state[prefix + "-campaign-open"] = True
+_show_pipeline_campaign(prefix, None, lambda *args: {})
+''').run()
+    assert not app.exception
+    assert any("Use a shared campaign objective" in item.label for item in app.checkbox)
+    app.button(key="campaign-test-campaign-apply").click().run()
+    assert not app.exception
+
+
+def test_canvas_step_execution_override_is_stored_with_the_node():
+    from streamlit.testing.v1 import AppTest
+    app = AppTest.from_string('''
+import streamlit as st
+from mn_molecular_design_studio.pipeline_graph import new_graph, validate_graph
+from mn_molecular_design_studio.pipeline_node_ui import _render_step_execution
+graph = validate_graph(new_graph("cofold_protein_protein"))["graph"]
+node = next(item for item in graph["nodes"] if item["data"]["kind"] == "boltz2")
+updates, ready = _render_step_execution(node, graph, "step-test")
+st.session_state["execution-updates"] = updates
+''').run()
+    assert not app.exception
+    app.checkbox(key="step-test-execution-override").set_value(True).run()
+    assert not app.exception
+    update = app.session_state["execution-updates"]
+    assert update["execution"]["mode"] == "native"
+    assert update["execution"]["placement"] == "local"
 
 
 @pytest.mark.parametrize('failure_policy', ['all', 'partial'])
@@ -1395,3 +1689,12 @@ def test_campaign_stop_executes_after_candidate_filter_and_reports_controller_co
     assert stop_result["generator_node"] == "rfd4-campaign"
     assert stop_result["campaign_summary"]["validation_acceptance"] == {"accepted": 1, "rejected": 0}
     assert stop_result["campaign_summary"]["termination_reason"] == "accepted_target_reached"
+
+
+def test_ipsae_structure_analysis_outputs_candidates_for_downstream_acceptance():
+    analysis = graph.NODE_CATALOG["ipsae"]
+    acceptance = graph.NODE_CATALOG["shared_filter"]
+
+    assert analysis["outputs"][0]["type"] == "candidates"
+    assert "candidates" in analysis["inputs"][0]["accepts"]
+    assert analysis["outputs"][0]["type"] in acceptance["inputs"][0]["accepts"]

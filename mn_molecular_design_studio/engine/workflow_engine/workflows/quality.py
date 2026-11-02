@@ -59,9 +59,14 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
         candidates = [by_id[identifier] for identifier in requested]
     if selected_structure_path is not None and len(candidates) != 1:
         raise ValueError("An exact selected structure can only be applied to one candidate per analysis request.")
-    selected_structure = Path(selected_structure_path).expanduser().resolve() if selected_structure_path is not None else None
-    if selected_structure is not None and not selected_structure.is_file():
-        raise ValueError("The selected structure is no longer available.")
+    selected_structure = Path(selected_structure_path).expanduser().resolve(strict=True) if selected_structure_path is not None else None
+    if selected_structure is not None:
+        try:
+            selected_structure.relative_to(source_run_dir.resolve())
+        except ValueError as exc:
+            raise ValueError("The selected structure must belong to the authorized source Results job.") from exc
+        if not selected_structure.is_file():
+            raise ValueError("The selected structure is no longer available.")
     if profile["kind"] == "interface":
         for name, chains in (("binder_chains", binder_chains), ("target_chains", target_chains)):
             if chains is not None:
@@ -102,6 +107,9 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
     run = job.run_dir
     output = run / "artifacts/analysis"
     output.mkdir(parents=True, exist_ok=True)
+    collection_manifest = source_run_dir / "complex_analysis_collection.json"
+    if collection_manifest.is_file():
+        shutil.copyfile(collection_manifest, output / "complex_analysis_collection.json")
     items, enhanced = [], copy.deepcopy(candidates)
     for index, candidate in enumerate(enhanced):
         identifier = f"item_{index:06d}"
@@ -125,7 +133,9 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
         for key in ("complex_pdb", "binder_pdb", "target_pdb"):
             path = _resolve_path(source_run_dir, str(candidate.get(key) or ""))
             if path and path.is_file():
-                staged = run / "artifacts/input" / identifier / (key + path.suffix)
+                suffixes = path.suffixes
+                extension = "".join(suffixes[-2:]) if len(suffixes) >= 2 and suffixes[-1].casefold() == ".gz" else path.suffix
+                staged = run / "artifacts/input" / identifier / (key + extension)
                 staged.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, staged)
                 candidate[key] = str(staged)
@@ -262,9 +272,13 @@ def run_foldseek(source_run_dir: Path, candidates_jsonl: Path, similarity_thresh
     return run_quality(source_run_dir, candidates_jsonl, tool="foldseek", settings={"similarity_threshold": similarity_threshold, "coverage": coverage}, cpu_cores=cpu_cores)
 
 
-def run_pep_patch(source_run_dir: Path, candidates_jsonl: Path, ph: float = 7.4, cpu_cores: int = 4) -> Path:
+def run_pep_patch(source_run_dir: Path, candidates_jsonl: Path, ph: float = 7.4, cpu_cores: int = 4,
+                  candidate_ids: list[str] | None = None, selected_structure_path: Path | None = None,
+                  selected_model_id: str | None = None, binder_chains: list[str] | None = None) -> Path:
     """Hydrophobic and electrostatic surface patches on the declared binder chains."""
-    return run_quality(source_run_dir, candidates_jsonl, tool="pep_patch", settings={"ph": ph}, cpu_cores=cpu_cores)
+    return run_quality(source_run_dir, candidates_jsonl, tool="pep_patch", settings={"ph": ph}, cpu_cores=cpu_cores,
+        candidate_ids=candidate_ids, selected_structure_path=selected_structure_path,
+        selected_model_id=selected_model_id, binder_chains=binder_chains)
 
 
 def run_esm1v_score(source_run_dir: Path, candidates_jsonl: Path, cpu_cores: int = 4, gpu_device: str = "0") -> Path:

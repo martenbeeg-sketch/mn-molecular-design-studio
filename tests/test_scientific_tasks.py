@@ -266,7 +266,7 @@ def test_multi_engine_prediction_has_independent_results_and_engine_settings(exe
 def test_api_supports_task_configuration_and_old_identifiers(api_data):
     client, project = api_data["client"], api_data["project"]["id"]
     listing = client.get("/api/v1/pipelines/templates").json()
-    assert len(listing["tasks"]) == 8 and len(listing["legacy_items"]) == 22
+    assert len(listing["tasks"]) == 8 and len(listing["legacy_items"]) == 23
     request = {"project_id": project, "template": "molecular_structure_prediction", "configuration": {
         "mode": "protein_ligand", "methods": ["boltz2"], "inputs": {"target_protein_sequences": "GGGG", "ligand_smiles": "CCO"}}}
     response = client.post("/api/v1/pipelines/drafts", json=request)
@@ -276,7 +276,7 @@ def test_api_supports_task_configuration_and_old_identifiers(api_data):
     assert client.post("/api/v1/pipelines/drafts", json=request, headers=headers(api_data, "other")).status_code == 404
 
 
-def test_task_ui_selection_does_not_replace_saved_draft_until_create(monkeypatch, tmp_path):
+def test_pipeline_page_keeps_legacy_recipe_selector_and_canvas_as_main_builder(monkeypatch, tmp_path):
     from streamlit.testing.v1 import AppTest
     monkeypatch.setattr(graph, "app_home", lambda: tmp_path)
     app = AppTest.from_string('''
@@ -287,12 +287,13 @@ render_pipeline_builder(owner_id="test-user", project_selector=lambda _:None,
     assert not app.exception
     prefix = "visual-pipeline-unassigned"
     original = copy.deepcopy(app.session_state[prefix + "-graph"])
-    app.selectbox(key=prefix + "-task").set_value("molecular_structure_prediction").run()
+    assert not any(getattr(widget, "key", "") == prefix + "-task" for widget in app.selectbox)
+    app.selectbox(key=prefix + "-legacy").set_value("Foundry · RFD3 → MPNN → RF3").run()
     assert not app.exception
     assert app.session_state[prefix + "-graph"] == original
-    app.button(key=prefix + "-create-task").click().run()
+    app.button(key=prefix + "-open-legacy").click().run()
     assert not app.exception
-    assert kinds(app.session_state[prefix + "-graph"]) == ["cofold_input", "boltz2", "results"]
+    assert kinds(app.session_state[prefix + "-graph"]) == ["target", "binder_context", "rfd3", "foundry_mpnn", "rf3", "results"]
 
 
 def test_task_ui_creates_every_task_and_blank_without_starting_jobs():

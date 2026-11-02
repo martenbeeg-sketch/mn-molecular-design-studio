@@ -83,8 +83,11 @@ NODE_CATALOG = {
         field("target_pdb", "Optional target PDB path", "", kind="text", help="Required by AlphaFold2 Initial Guess and BoltzGen Fold; optional as a target template for engines that support templates."),
         field("target_chain_id", "Target PDB chain ID", "A", kind="text", help="Single chain selected from the optional target PDB. Used by AlphaFold2 Initial Guess and BoltzGen Fold."),
     ]),
-    "target": _spec("target", "Target Structure", "Target inputs", "Shared PDB or mmCIF structure, selected protein chains and optional baseline interface annotations. Add Binder Design Context for branch-specific hotspot or coldspot settings.", output="target", color="#758f84", fields=[
-        field("target_pdb", "Target structure", "", kind="text"), field("target_chains", "Target chains", "A", kind="text"), field("hotspots", "Hotspot residues", "", kind="text"), field("coldspots", "Coldspot residues", "", kind="text")]),
+    "target": _spec("target", "Target Structure", "Target inputs", "Shared PDB or mmCIF structure, selected protein chains and optional baseline interface annotations. Downstream acceptance infers structured versus FASTA/IDR context from this input and the connected design conditions.", output="target", color="#758f84", fields=[
+        field("target_pdb", "Target structure", "", kind="text"), field("target_chains", "Target chains", "A", kind="text"),
+        field("hotspots", "Hotspot residues", "", kind="text"), field("coldspots", "Coldspot residues", "", kind="text"),
+        field("target_source_molecule_id", "Saved target molecule ID", "", kind="text"),
+        field("target_source_structure_id", "Saved target structure ID", "", kind="text")]),
     "binder_context": _spec("binder_context", "Binder Design Context", "Target context", "Set or override binder hotspots and coldspots on the connected target. The same structure continues through this branch, while other branches stay unchanged.", accepts=["target"], output="target", color="#668d75", fields=[
         field("hotspots", "Hotspot override", "", kind="text", help="Leave empty to inherit the connected Target Structure hotspots."),
         field("coldspots", "Coldspot override", "", kind="text", help="Leave empty to inherit the connected Target Structure coldspots."),
@@ -94,17 +97,17 @@ NODE_CATALOG = {
     "design_source": _spec("design_source", "Successful project designs", "Input", "Selected filter-passing designs from a successful job in this project.", output="sequence", color="#758f84", fields=[field("source_run_dir", "Source run", "", kind="text")]),
     "generation_source": _spec("generation_source", "Generated project designs", "Input", "Select generated structures and sequences from a completed generator job in this project.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Generator run", "", kind="text")]),
     "project_design_source": _spec("project_design_source", "Existing project designs", "Input", "Select structure-bearing candidates from any completed design job in this project, including generator and refold outputs.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Design job", "", kind="text")]),
-    "rfd4": _spec("rfd4", "RFD4-Proteina", "Design engine", "Co-design sequence and structure; attach any compatible prediction and analysis nodes.", accepts=["target"], output="sequence", workflow="design.rfd4_proteina", fields=[
-        field("task", "Design task", "protein_binder", kind="select", options=["protein_binder","nanobody","antibody","tcr","motif_scaffolding","enzyme","small_molecule_binder","dna_binder","rna_design","existing_structure","custom_conditions","score_structures","unconditional"]),
-        field("target_structure", "Input structure", "", kind="text"),
-        field("input_mode", "Input method", "guided", kind="select", options=["guided","annotated_cif","condition_spec"]),
-        field("condition_spec", "Native condition specification", "", kind="text", help="Native YAML/JSON design specification used with the condition_spec input method."),
-        field("input_files", "Input structure files (one path per line)", "", kind="text", help="For annotated_cif mode, list one annotated CIF path per design. Structure scoring can also take multiple inputs."),
-        field("options_json", "Task options (JSON)", "{}", kind="text", help="Multiline JSON matching the RFD4 task options, including motif residues, active-site atoms and ligand interactions. The standalone RFD4 form exposes these controls directly."),
+    "rfd4": _spec("rfd4", "RFD4-Proteina", "Design engine", "Co-design sequence and structure. Set task, design count, binder length and sampling in this tile; target structure, chains, hotspots and coldspots come from the connected Target Structure tile. Advanced native inputs stay optional.", accepts=["target"], output="sequence", workflow="design.rfd4_proteina", fields=[
+        field("task", "Design task", "protein_binder", kind="select", options=["protein_binder","nanobody","antibody","tcr","motif_scaffolding","enzyme","small_molecule_binder","dna_binder","rna_design","existing_structure","custom_conditions","score_structures","unconditional"], section="basic"),
+        field("target_structure", "Input structure", "", kind="text", help="Usually inherited from the connected Target Structure tile."),
+        field("input_mode", "Input method", "guided", kind="select", options=["guided","annotated_cif","condition_spec"], section="basic"),
+        field("condition_spec", "Native condition specification", "", kind="text", help="Advanced: native YAML/JSON design specification used with the condition_spec input method."),
+        field("input_files", "Input structure files (one path per line)", "", kind="text", help="Advanced: for annotated_cif mode, list one annotated CIF path per design. Structure scoring can also take multiple inputs."),
+        field("options_json", "Task options (JSON)", "{}", kind="text", help="Advanced: multiline JSON matching RFD4 task options, including native refolding and optional motif, active-site, or ligand controls."),
         field("num_designs", "Number of designs (Studio total)", 10, minimum=1, maximum=10000,
-              help="Design outputs requested for this target. Separate from RFD4's internal GPU batch size; distributed campaigns may execute the count as repeated one-design jobs."),
-        field("length_min", "Minimum length", 60, minimum=20, maximum=1024), field("length_max", "Maximum length", 120, minimum=20, maximum=1024),
-        field("nsteps", "Sampling steps", 60, minimum=60, maximum=120), SEED], formats=("cif",)),
+              section="basic", help="Design outputs requested for this target. Separate from RFD4's internal GPU batch size; distributed campaigns may execute the count as repeated jobs."),
+        field("length_min", "Minimum length", 60, minimum=20, maximum=1024, section="basic"), field("length_max", "Maximum length", 120, minimum=20, maximum=1024, section="basic"),
+        field("nsteps", "Sampling steps", 60, minimum=60, maximum=120, section="basic"), field("seed", "Random seed (0 = random)", 0, minimum=0, maximum=4294967295, section="basic")], formats=("cif",)),
     "rfd4_fold": _spec("rfd4_fold", "RFD4-Proteina Structure Prediction", "Structure prediction", "Fold supplied protein sequences or connected generated structures using RFD4 itself.", accepts=["sequence","prediction","target","molecule_task"], output="prediction", workflow="refolding.rfd4_proteina", fields=[
         field("protein_sequences", "Protein sequence(s) / FASTA", "", kind="text"), field("target_structure", "Input structure", "", kind="text"),
         field("num_designs", "Predictions per input", 1, minimum=1, maximum=1000),field("nsteps", "Sampling steps",60,minimum=60,maximum=120),SEED], formats=("cif",)),
@@ -177,7 +180,7 @@ NODE_CATALOG = {
         field("scannet_use_msa", "Use MSA with ScanNet", False, kind="boolean"),
         field("masif_chain_id", "MaSIF-seed chain", "", kind="text")]),
     "results": _spec("results", "Results & comparison", "Results", "Collect candidate structures, metrics, and surface-analysis runs from connected branches.", accepts=["backbone", "sequence", "prediction", "candidates", "analysis"], output=None, color="#5d7b6c"),
-    "ipsae": _spec("ipsae", "ipSAE & Structure Analysis", "Analysis", "Automatically measures each saved target–binder complex using only the evidence it contains. Pairwise PAE enables ipSAE, directional i_pAE, and i_pDAE; a separate design reference enables fitted binder RMSD and interface-contact preservation; target hotspots enable hotspot contacts. No prediction is launched.", accepts=["backbone", "sequence", "prediction"], output="prediction", workflow="analysis.ipsae", color="#9a7854", fields=[field("pae_cutoff", "ipSAE PAE cutoff (Å)", 10., minimum=0., maximum=100., help="Used only for candidates with a saved pairwise PAE matrix."), field("dist_cutoff", "Directional i_pAE contact distance (Å)", 10., minimum=0., maximum=100., help="Cα contact distance for PAE-derived i_pAE measurements."), field("ipdae_contact_cutoff", "i_pDAE contact cutoff (Å)", 8., minimum=0., maximum=100., help="Cα contact cutoff used by the BindCraft2-definition i_pDAE recalculation."), field("structure_contact_cutoff", "Interface contact distance (Å)", 4., minimum=0., maximum=100., help="Heavy-atom distance for structure contacts and designed-interface preservation."), field("hotspot_contact_cutoff", "Hotspot contact distance (Å)", 5., minimum=0., maximum=100., help="Heavy-atom distance used only when target hotspot residues are annotated." )]),
+    "ipsae": _spec("ipsae", "ipSAE & Structure Analysis", "Analysis", "Analyze saved candidate structures and any saved PAE matrices, then pass measured evidence forward with candidate identity and provenance intact. Pairwise PAE enables ipSAE, directional i_pAE, and i_pDAE. Separate design and cofold complexes enable both binder-fitted shape RMSD and target-aligned binder-pose RMSD. RFD4 native target-aligned refold RMSD remains separately attributed to RFD4. No prediction is launched.", accepts=["backbone", "sequence", "prediction", "candidates"], output="candidates", workflow="analysis.ipsae", color="#9a7854", fields=[field("pae_cutoff", "ipSAE PAE cutoff (Å)", 10., minimum=0., maximum=100., help="Used only for candidates with a saved pairwise PAE matrix."), field("dist_cutoff", "Directional i_pAE contact distance (Å)", 10., minimum=0., maximum=100., help="Cα contact distance for PAE-derived i_pAE measurements."), field("ipdae_contact_cutoff", "i_pDAE contact cutoff (Å)", 8., minimum=0., maximum=100., help="Cα contact cutoff used by the BindCraft2-definition i_pDAE recalculation."), field("structure_contact_cutoff", "Interface contact distance (Å)", 4., minimum=0., maximum=100., help="Heavy-atom distance for structure contacts and designed-interface preservation."), field("hotspot_contact_cutoff", "Hotspot contact distance (Å)", 5., minimum=0., maximum=100., help="Heavy-atom distance used only when target hotspot residues are annotated." )]),
     "rosetta_metrics": _spec("rosetta_metrics", "Rosetta Interface Analysis", "Analysis", "Calculate PyRosetta interface, packing, SASA, hydrogen-bond, and binder surface metrics.", accepts=["prediction"], output="prediction", workflow="analysis.rosetta", color="#9a7854", fields=[]),
 }
 
@@ -565,6 +568,8 @@ def _prediction_profile_fields(engine: str, profile: dict[str, Any]) -> list[dic
             kind = 'boolean'
         elif kind == 'select':
             kind = 'select'
+        elif kind == 'text':
+            kind = 'text'
         else:
             kind = 'number'
         choices = setting.get('choices', ())
@@ -574,6 +579,9 @@ def _prediction_profile_fields(engine: str, profile: dict[str, Any]) -> list[dic
             kind=kind, minimum=setting.get('min'), maximum=setting.get('max'),
             options=options, help=setting.get('help'),
         ))
+    if engine == 'localfold':
+        fields.append(field('accept_alphafold3_terms', 'Accept official AlphaFold3 weight terms', False,
+                            kind='boolean', help='Required when LocalFold uses the official AlphaFold3 weights.'))
     return fields
 
 
@@ -649,9 +657,13 @@ NODE_CATALOG.update({
         accepts=["backbone", "sequence", "prediction", "candidates"], output="candidates", fields=[
             field("deduplication", "Sequence deduplication", "mark_duplicates", kind="select", options=["keep_all", "mark_duplicates"], section="basic")]),
     "shared_filter": _spec("shared_filter", "Shared scientific filters", "Collection", "Keep every decision; route sequence-ready, eligible variants to prediction.",
-        accepts=["candidates"], output="sequence", fields=[
-            field("binder_format", "Binder format", "miniprotein", kind="select", options=["miniprotein", "large_protein", "peptide", "cyclic_peptide", "vhh", "scfv", "fab", "arp", "other"], section="basic"),
-            field("target_type", "Target type", "structured", kind="select", options=["structured", "fasta_idr"], section="basic"),
+        accepts=["candidates", "sequence", "prediction"], output="sequence", fields=[
+            field("binder_format", "Binder format", "auto", kind="select", options=["auto", "miniprotein", "large_protein", "peptide", "cyclic_peptide", "vhh", "scfv", "fab", "arp", "other"], section="basic",
+                  help="Auto follows the connected generator task (RFD4 protein_binder → miniprotein; nanobody → VHH). Generic antibody tasks remain ambiguous and need an explicit format."),
+        field("target_type", "Target type", "auto", kind="select", options=["auto", "structured", "fasta_idr"], section="basic",
+              help="Auto follows the connected Target Structure and generator task. The resolved type is recorded in Results; ambiguous source inputs require an explicit choice."),
+            field("policy_profile", "Acceptance profile", "auto", kind="select", options=["auto", "bindcraft2_reference", "custom"], section="basic",
+                  help="Auto uses the BindCraft2 reference criteria selected from the connected design task, target type and evidence source. Entering custom rules makes Auto use those rules. Choose Custom to keep your own thresholds."),
             field("rules", "Scientific threshold rules", [], kind="json", section="basic"),
             field("informational_scores", "Informational measurements (no rejection gate)", [], kind="json", section="basic"),
             field("ranking_metric", "Optional acceptance ranking field", "", kind="text", section="basic"),
@@ -778,6 +790,46 @@ def new_graph(template="foundry") -> dict[str, Any]:
     from mn_molecular_design_studio.scientific_tasks import TASKS, new_task_graph
     if template in TASKS:
         return new_task_graph(template)
+    if template == "rfd4_binder_acceptance_campaign":
+        # Reusable tile graph: the benchmark target and its hand-authored
+        # condition YAML belong in a saved experiment, not in this starter.
+        kinds = ["target", "rfd4", "candidate_merge", "shared_filter", "campaign_stop", "results"]
+        labels = {
+            "target": "Target input · structure, chains and hotspots",
+            "rfd4": "RFD4 native binder workflow · task-specific settings",
+            "candidate_merge": "Candidate collection · identity and provenance",
+            "shared_filter": "Validation & Acceptance · automatic BindCraft2 profile",
+            "campaign_stop": "Campaign objective · passing target and budgets",
+            "results": "Results · native, acceptance and campaign outcomes",
+        }
+        positions = [(50 + index * 330, 180) for index in range(len(kinds))]
+        nodes = []
+        for index, (kind, position) in enumerate(zip(kinds, positions)):
+            spec = NODE_CATALOG[kind]
+            params = {item["name"]: copy.deepcopy(item["default"]) for item in spec["fields"]}
+            if kind == "rfd4":
+                params.update(num_designs=1000, length_min=70, length_max=110,
+                              input_mode="guided", options_json=json.dumps({"refold": True}))
+            elif kind == "shared_filter":
+                params.update(binder_format="auto", target_type="auto", policy_profile="auto", rules=[])
+            elif kind == "campaign_stop":
+                params.update(passing_design_target=100, max_design_attempts=1000, designs_per_job=50,
+                              max_concurrent_generation_jobs=4, max_concurrent_validations=4,
+                              workstation_selection="eligible", gpu_selection="all")
+            nodes.append({
+                "id": f"{kind}-{index}", "type": "studio", "position": {"x": position[0], "y": position[1]},
+                "data": {"kind": kind, "label": labels[kind], "params": params},
+            })
+        edges = [{"id": f"edge-{index}", "source": nodes[index]["id"], "sourceHandle": "out",
+                  "target": nodes[index + 1]["id"], "targetHandle": "in"}
+                 for index in range(len(nodes) - 1)]
+        return clean_graph({
+            "schema_version": SCHEMA, "id": uuid.uuid4().hex,
+            "name": "RFD4 binder campaign · native refold → automatic acceptance",
+            "workflow_mode": "native_complete", "template_id": template, "template_version": 1,
+            "nodes": nodes, "edges": edges,
+            "viewport": {"x": 0, "y": 0, "zoom": 0.7},
+        })
     if template == "unidock_active_learning":
         kinds = ["active_library", "active_seed", "active_docking", "active_accumulate",
                  "active_binder_rule", "active_train", "active_predict", "active_select",
@@ -1474,7 +1526,7 @@ def clean_graph(graph: dict) -> dict:
             if NODE_CATALOG[kind]['category'] != 'Structure prediction' or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', str(data['evidence_namespace'])):
                 raise ValueError('Prediction evidence namespace must be a valid identifier.')
             node_data['evidence_namespace'] = data['evidence_namespace']
-        if "execution" in data:
+        if data.get("execution") is not None:
             from mn_molecular_design_studio.candidate_execution import policy
             node_data["execution"] = policy(data["execution"])
         if description and description.strip():
@@ -1533,6 +1585,100 @@ def validate_active_library_sources(screening: dict, seed: dict) -> tuple[dict, 
     if differences:
         raise ValueError("Centroid and screening fingerprints must use compatible settings: " + ", ".join(differences) + ".")
     return features, centroids
+
+
+def resolve_pipeline_target_type(nodes: dict, incoming: dict, node_id: str) -> str | None:
+    """Resolve a filter's Auto target profile from its connected graph inputs."""
+    from mn_molecular_design_studio.validation_acceptance import TARGET_TYPES, infer_target_type
+
+    node = nodes.get(node_id) or {}
+    params = (node.get("data") or {}).get("params") or {}
+    selected = params.get("target_type")
+    if selected in TARGET_TYPES:
+        return selected
+
+    pending = list(incoming.get(node_id, []))
+    ancestors = set()
+    while pending:
+        ancestor = pending.pop()
+        if ancestor in ancestors:
+            continue
+        ancestors.add(ancestor)
+        pending.extend(incoming.get(ancestor, []))
+
+    target_params = []
+    workflow_params = []
+    for ancestor in ancestors:
+        data = (nodes.get(ancestor) or {}).get("data") or {}
+        kind = data.get("kind")
+        node_params = data.get("params") or {}
+        if kind == "target":
+            if node_params.get("target_type") in TARGET_TYPES:
+                return node_params["target_type"]
+            target_params.append(node_params)
+        elif kind in NODE_CATALOG and NODE_CATALOG[kind]["category"] in {"Design engine", "Design pipeline"}:
+            workflow_params.append(node_params)
+    return infer_target_type({}, {"target_inputs": target_params, "generator_inputs": workflow_params})
+
+
+def resolve_pipeline_binder_format(nodes: dict, incoming: dict, node_id: str) -> str | None:
+    """Resolve a filter's Auto binder format from connected design-task provenance."""
+    from mn_molecular_design_studio.validation_acceptance import BINDER_FORMATS, infer_binder_format
+
+    node = nodes.get(node_id) or {}
+    params = (node.get("data") or {}).get("params") or {}
+    selected = params.get("binder_format")
+    if selected in BINDER_FORMATS:
+        return selected
+
+    pending = list(incoming.get(node_id, []))
+    ancestors = set()
+    while pending:
+        ancestor = pending.pop()
+        if ancestor in ancestors:
+            continue
+        ancestors.add(ancestor)
+        pending.extend(incoming.get(ancestor, []))
+
+    workflow_params = []
+    for ancestor in ancestors:
+        data = (nodes.get(ancestor) or {}).get("data") or {}
+        kind = data.get("kind")
+        if kind in NODE_CATALOG and NODE_CATALOG[kind]["category"] in {"Design engine", "Design pipeline"}:
+            workflow_params.append(data.get("params") or {})
+    inferred = infer_binder_format({}, {"generator_inputs": workflow_params})
+    if inferred:
+        return inferred
+    # Generic protein-binder generators with no modality/task control have
+    # historically used the miniprotein profile. A named but unrecognized task
+    # (for example RFD4's generic antibody task) remains deliberately ambiguous.
+    has_task_or_format = any(
+        any(params.get(key) not in (None, "", "auto") for key in
+            ("task", "design_task", "task_type", "modality", "modalities", "binder_format", "binder_type"))
+        for params in workflow_params
+    )
+    return None if has_task_or_format else "miniprotein"
+
+
+def pipeline_filter_source_tools(nodes: dict, incoming: dict, node_id: str) -> list[str]:
+    """Return registered upstream design-tool IDs in stable graph order."""
+    pending = list(incoming.get(node_id, []))
+    ancestors = set()
+    while pending:
+        ancestor = pending.pop()
+        if ancestor in ancestors:
+            continue
+        ancestors.add(ancestor)
+        pending.extend(incoming.get(ancestor, []))
+    tools = set()
+    for ancestor in ancestors:
+        kind = (nodes.get(ancestor) or {}).get("data", {}).get("kind")
+        if kind not in NODE_CATALOG or NODE_CATALOG[kind]["category"] not in {"Design engine", "Design pipeline"}:
+            continue
+        route = workflow_capability(kind)
+        if route.get("tool"):
+            tools.add(str(route["tool"]))
+    return sorted(tools)
 
 
 def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict | None:
@@ -1598,7 +1744,13 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
         if acceptance_node not in nodes or nodes[acceptance_node]["data"]["kind"] != "shared_filter":
             raise ValueError("Select an existing Validation & Acceptance / Shared scientific filters node.")
         from mn_molecular_design_studio.validation_acceptance import campaign_policy_from_node
-        policy = campaign_policy_from_node(nodes[acceptance_node]["data"]["params"])
+        resolved_target_type = resolve_pipeline_target_type(nodes, incoming, acceptance_node)
+        resolved_binder_format = resolve_pipeline_binder_format(nodes, incoming, acceptance_node)
+        policy = campaign_policy_from_node(
+            nodes[acceptance_node]["data"]["params"], target_type=resolved_target_type,
+            binder_format=resolved_binder_format,
+            source_tools=pipeline_filter_source_tools(nodes, incoming, acceptance_node),
+        )
         ancestors, pending = set(), list(incoming[acceptance_node])
         while pending:
             value = pending.pop()
@@ -1743,7 +1895,7 @@ def _validate_shared_campaign(graph: dict, nodes: dict, incoming: dict) -> dict 
     }
 
 
-def _compile_campaign_stop(graph: dict, nodes: dict, incoming: dict) -> dict[str, dict]:
+def _compile_campaign_stop(graph: dict, nodes: dict, incoming: dict, *, allow_unresolved=False) -> dict[str, dict]:
     """Compile visible stop controls onto each existing native campaign adapter.
 
     The stop node is a graph-level configuration surface, not a second
@@ -1799,7 +1951,18 @@ def _compile_campaign_stop(graph: dict, nodes: dict, incoming: dict) -> dict[str
     generator = nodes[generator_id]["data"]["params"]
     if params["designs_per_job"] > params["max_design_attempts"]:
         raise ValueError("Designs per native job cannot exceed the campaign design-attempt cap.")
-    policy = campaign_policy_from_node(nodes[filter_id]["data"]["params"])
+    resolved_target_type = resolve_pipeline_target_type(nodes, incoming, filter_id)
+    resolved_binder_format = resolve_pipeline_binder_format(nodes, incoming, filter_id)
+    if resolved_target_type not in {"structured", "fasta_idr"} and allow_unresolved:
+        # Reusable starter graphs intentionally have no target yet. Keep Auto
+        # unresolved in an editable draft; runnable validation resolves it
+        # after the connected target and generator conditions are configured.
+        return {}
+    policy = campaign_policy_from_node(
+        nodes[filter_id]["data"]["params"], target_type=resolved_target_type,
+        binder_format=resolved_binder_format,
+        source_tools=[route["tool"]],
+    )
     runtime_hours = float(params["max_runtime_hours"])
     deadline = str(params.get("deadline_at") or "").strip()
     if runtime_hours < 0:
@@ -1889,10 +2052,21 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
     if len(order) != len(nodes):
         raise ValueError("A pipeline cannot contain a cycle. Connect steps in the order data should flow.")
     for node_id, node in nodes.items():
-        if node["data"]["kind"] == "shared_filter" and (
-                len(incoming[node_id]) != 1
-                or nodes[incoming[node_id][0]]["data"]["kind"] != "candidate_merge"):
-            raise ValueError("Connect a Candidate collection before Shared scientific filters so every candidate has a validated identity and provenance.")
+        if node["data"]["kind"] != "shared_filter":
+            continue
+        if len(incoming[node_id]) != 1:
+            raise ValueError("Shared scientific filters need one connected CandidateSet input.")
+        pending, ancestors = list(incoming[node_id]), set()
+        while pending:
+            ancestor = pending.pop()
+            if ancestor in ancestors:
+                continue
+            ancestors.add(ancestor)
+            pending.extend(incoming[ancestor])
+        collection_kinds = {"candidate_merge", "run_source", "design_source", "generation_source",
+                            "backbone_source", "project_design_source", "molecule_source"}
+        if not any(nodes[ancestor]["data"]["kind"] in collection_kinds for ancestor in ancestors):
+            raise ValueError("Connect a Candidate collection or saved Run source before Shared scientific filters so every candidate has a validated identity and provenance.")
     output_types = {}
     output_formats = {}
     ligand_context = {}
@@ -2064,7 +2238,7 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
     shared_campaign = _validate_shared_campaign(graph, nodes, incoming)
     if shared_campaign:
         graph["shared_campaign"] = shared_campaign
-    campaign_stops = _compile_campaign_stop(graph, nodes, incoming)
+    campaign_stops = _compile_campaign_stop(graph, nodes, incoming, allow_unresolved=not require_inputs)
     return {"graph": graph, "order": order, "incoming": incoming, "outgoing": outgoing,
             "campaign_stops": campaign_stops}
 
@@ -2156,6 +2330,7 @@ LEGACY_STARTER_TEMPLATES = {"Active-learning docking": "unidock_active_learning"
                  "Generator comparison · initial sequences → optional SolubleMPNN → Boltz-2 + analysis":"all_generators_boltz2",
                  "VHH binders · BindCraft2 + BoltzGen + ESMFold2 → Boltz-2":"vhh_design",
                  "RFD4 Protein Binder → Boltz-2 → interface analysis":"rfd4_protein_binder",
+                 "RFD4 binder campaign · Native refold → automatic acceptance":"rfd4_binder_acceptance_campaign",
                  "RFD4 Small-Molecule Pocket Design → Boltz-2":"rfd4_small_molecule",
                  "RFD4 Enzyme Motif Scaffolding → Boltz-2":"rfd4_enzyme",
                  "Cofolding · Protein monomer":"cofold_protein",

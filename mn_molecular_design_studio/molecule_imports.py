@@ -525,7 +525,17 @@ def parse_sdf(data: bytes, filename: str = "molecules.sdf") -> list[dict]:
 
 def parse_structure(data: bytes, filename: str, *, include_ligands: bool = True, chains: list[str] | None = None) -> list[dict]:
     from Bio.PDB import PDBParser, MMCIFParser
-    from Bio.Data.PDBData import protein_letters_3to1_extended
+    try:
+        from Bio.Data.PDBData import protein_letters_3to1_extended
+    except ImportError:
+        # Biopython <1.80 exposed the canonical table from IUPACData instead.
+        # Normalize its title-case keys because the parser compares residue
+        # names in uppercase. MSE is common in crystallographic structures and
+        # is represented as methionine in the polymer sequence.
+        from Bio.Data.IUPACData import protein_letters_3to1_extended as _protein_letters
+
+        protein_letters_3to1_extended = {key.upper(): value for key, value in _protein_letters.items()}
+        protein_letters_3to1_extended.setdefault("MSE", "M")
     if filename.lower().endswith(".gz"):
         with gzip.GzipFile(fileobj=io.BytesIO(data)) as handle:
             data = handle.read(MAX_BYTES + 1)

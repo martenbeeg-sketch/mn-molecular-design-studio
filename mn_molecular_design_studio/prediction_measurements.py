@@ -11,6 +11,7 @@ VERSION = "studio.prediction-measurements.v1"
 # result adapters. The shared interface calculation only runs when the matrix
 # axes match the saved protein C-alpha inventory and binder/target chain roles.
 PAE_MATRIX_ENGINES = {
+    "localfold",
     "alphafold3", "af3_torch", "openfold3_jax", "boltz2", "protenix_v1",
     "protenix_v2", "rf3_foundry", "esmfold2", "esmfold2_fast", "chai1",
     "atlasfold", "openfold3_ob0", "opendde_native", "colabfold",
@@ -24,6 +25,7 @@ PAE_MATRIX_ENGINES = {
 # are conditional: a missing key is never replaced by a different confidence
 # score. BoltzGen Fold's fields use its design-to-target nomenclature.
 SCALAR_SCORE_ALIASES = {
+    "localfold": {"ptm": ("ptm",), "iptm": ("iptm",)},
     "alphafold3": {"ptm": ("ptm",), "iptm": ("iptm",)},
     "af3_torch": {"ptm": ("ptm",), "iptm": ("iptm",)},
     "openfold3_jax": {"ptm": ("ptm",), "iptm": ("iptm",)},

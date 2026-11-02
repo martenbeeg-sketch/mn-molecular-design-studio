@@ -359,6 +359,49 @@ def _find_original_group(database, owner, project, record, candidate=None):
     return (local[0]["id"], local[0]["group_id"], True) if local else (None, None, False)
 
 
+def _database_analysis_subject(database, user, owner, project, source):
+    """Resolve a completed Database analysis to its exact original structure."""
+    if not isinstance(source, dict) or source.get("schema") != "studio.complex_analysis_database_source.v1":
+        return None
+    molecule_id = str(source.get("molecule_id") or "")
+    structure_id = str(source.get("structure_id") or "")
+    group_id = str(source.get("group_id") or "")
+    digest = str(source.get("structure_digest") or "")
+    if not all((molecule_id, structure_id, group_id, digest)):
+        return None
+    try:
+        group = database.group(group_id, user)
+        if str(group.get("project_id") or "") != str(project or ""):
+            return None
+        if not str(project or "") and str(group.get("owner_id") or "") != str(owner):
+            return None
+        page = database.list_molecules(user, molecule_ids=[molecule_id], collection="all", limit=1)
+        rows = page.get("items") if isinstance(page, dict) else []
+        record = rows[0] if rows else None
+        if record is None or not any(str(item.get("id") or "") == group_id for item in record.get("groups", [])):
+            return None
+        representation = next((item for item in record.get("representations", [])
+                               if str(item.get("id") or "") == structure_id
+                               and str(item.get("group_id") or "") == group_id), None)
+        if representation is None:
+            return None
+        path = database.structure_file(user, structure_id, materialize=True)
+        if _file_sha256(path) != digest:
+            return None
+        return {"molecule_id": molecule_id, "structure_id": structure_id, "group_id": group_id,
+                "structure_digest": digest, "record": record, "representation": representation}
+    except (FileNotFoundError, OSError, PermissionError, ValueError, TypeError):
+        return None
+
+
+def _file_sha256(path):
+    try:
+        with Path(path).open("rb") as stream:
+            return hashlib.file_digest(stream, "sha256").hexdigest()
+    except OSError:
+        return ""
+
+
 def _ensure_group(database, user, group_id, name, project, import_method, origin, collection_kind):
     from mn_molecular_design_studio.molecular_database import COLLECTION_KINDS
     if collection_kind not in COLLECTION_KINDS:
@@ -705,7 +748,8 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                     "artifacts/input/target.pdb",
                     "artifacts/prepared/receptor.pdb",
                 ))
-    ingestion_version = 8 if is_legacy_aggregate else (7 if needs_compound_identity_refresh else 6)
+    database_analysis_run = str(metadata.get("upstream_source_kind") or "") == "database"
+    ingestion_version = 9 if database_analysis_run else (8 if is_legacy_aggregate else (7 if needs_compound_identity_refresh else 6))
     signature = _json({"ingestion_version": ingestion_version, "files": [
         (str(path.relative_to(run_dir)), path.stat().st_mtime_ns, path.stat().st_size)
         for path in observed_paths if path.is_file()],
@@ -783,6 +827,15 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         is_backbone = stage == "generation.backbone" and not sequence
         rejected = _candidate_rejected(candidate)
         raw_candidate = candidate.get("raw_metadata") or {}
+        database_source = raw_candidate.get("database_source") if isinstance(raw_candidate, dict) else None
+        database_subject = None
+        if database_source is not None:
+            database_subject = _database_analysis_subject(database, user, owner, project, database_source)
+            files = record.get("files") or []
+            if (database_subject is None or not files
+                    or _file_sha256(files[0].get("path") or "") != database_subject["structure_digest"]):
+                log.warning("Skipped Database evaluation projection for %s: its source structure is no longer an exact accessible representation.", run_dir)
+                continue
         campaign_filter = raw_candidate.get("distributed_campaign") if isinstance(raw_candidate.get("distributed_campaign"), dict) else {}
         if campaign_filter.get("validation_required") and rejected:
             # Campaign validation is an eligibility gate, not an intermediate
@@ -845,7 +898,10 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             if binder_components:
                 identity_record["components"] = binder_components
 
-        if mode == "curated":
+        if database_subject is not None:
+            molecule_id, destination = database_subject["molecule_id"], database_subject["group_id"]
+            _put_source(database, destination, molecule_id, source_for_molecule, provenance)
+        elif mode == "curated":
             destination = output_group("curated")
             with database.connection() as connection:
                 molecule_id = database._put(connection, destination, identity_record, source_key=source_for_molecule, origin=provenance, stamp=stamp)
@@ -885,7 +941,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         if previous_source and (previous_source["molecule_id"], previous_source["group_id"]) != (molecule_id, destination):
             stale_evaluation_memberships.add((previous_source["group_id"], previous_source["molecule_id"]))
 
-        attach_candidate_structure = not prediction_run or id(candidate) in best_prediction_ids
+        attach_candidate_structure = (database_subject is None) and (not prediction_run or id(candidate) in best_prediction_ids)
         candidate_files = (record.get("files") or []) if attach_candidate_structure else []
         for item in candidate_files:
             selected_item = dict(item)
@@ -921,19 +977,30 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             candidate_context["raw_metadata"] = {key: raw[key] for key in (
                 "fasta_header", "engine_version", "operation", "structure_kind", "image_digest",
                 "validation_acceptance", "validation_measurements", "validation_provenance",
+                "database_source", "complex_analysis_selection",
             ) if key in raw}
             settings = inputs.get("params") or {}
             from mn_molecular_design_studio.evaluations import file_digest
             target_source = _path(candidate.get("target_pdb"), run_dir)
             target_components = [component for component in record.get("components", []) if component.get("role") == "target"]
             evaluation_target = {"target_id": _id("target-", _json(target_components))} if target_components else {}
+            analysis_source_context = ({
+                "source_kind": "database",
+                "source_molecule_id": database_subject["molecule_id"],
+                "source_structure_id": database_subject["structure_id"],
+                "source_group_id": database_subject["group_id"],
+                "representation_id": database_subject["structure_id"],
+                "structure_digest": database_subject["structure_digest"],
+                "is_representative": True,
+            } if database_subject is not None else {})
             database.add_observation(destination, molecule_id, tool, run_dir.name, metrics,
-                context={**provenance, **evaluation_target, "candidate": candidate_context, "settings": settings,
+                context={**provenance, **evaluation_target, **analysis_source_context,
+                         "candidate": candidate_context, "settings": settings,
                          "status": (candidate.get("metrics") or {}).get("qc_status") or "completed",
                          "error": (candidate.get("metrics") or {}).get("qc_error") or "",
                          "image_digest": raw.get("image_digest") or "",
                          "target_structure_digest": raw.get("target_structure_digest") or (file_digest(target_source) if target_source else ""),
-                         "structure_digest": raw.get("structure_digest") or "",
+                         "structure_digest": raw.get("structure_digest") or analysis_source_context.get("structure_digest") or "",
                          "is_representative": not prediction_run or id(candidate) in best_prediction_ids},
                 source_key=f"{source_for_molecule}:metrics", created_at=stamp)
 

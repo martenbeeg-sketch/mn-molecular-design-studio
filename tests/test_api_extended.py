@@ -28,6 +28,218 @@ def write_structure(path, *, chains=(("A", 4), ("B", 4))):
     return path
 
 
+def test_database_complex_analysis_validation_preserves_source_access_and_project_scope(api_data, monkeypatch):
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    from mn_molecular_design_studio.molecule_imports import parse_structure
+
+    data, client = api_data, api_data["client"]
+    database = MolecularDatabase()
+    structure_path = write_structure(data["root"] / "imported-complex.pdb")
+    record = parse_structure(structure_path.read_bytes(), structure_path.name)[0]
+    private_import = database.import_records(data["student"], [record], name="Private imported PPI")
+    private_record = database.list_molecules(data["student"], molecule_ids=private_import["molecule_ids"])["items"][0]
+    private_structure = private_record["representations"][0]
+
+    def validate(selection, project_id=None, role="student"):
+        return client.post("/api/v1/workflows/validate", headers=headers(data, role), json={
+            "schema_version": 1, "workflow": "analysis.biotite_interface",
+            "project_id": project_id,
+            "database_source": selection,
+            "parameters": {"contact_distance": 5.0},
+            "execution": {"placement": "auto", "idempotency_key": "database-validation"},
+        })
+
+    private_source = {"molecule_id": private_record["id"], "structure_id": private_structure["id"],
+                      "group_id": private_import["group_id"], "model_id": private_structure["id"],
+                      "binder_chains": ["A"], "target_chains": ["B"]}
+    allowed_private = validate(private_source)
+    assert allowed_private.status_code == 200, allowed_private.text
+    parameters = allowed_private.json()["parameters"]
+    assert parameters["candidate_ids"] and parameters["selected_model_id"] == private_structure["id"]
+    assert Path(parameters["source_run_dir"]).is_relative_to(data["root"] / "studio" / "users" / data["student"]["id"] / "inputs")
+    denied = validate(private_source, role="other")
+    assert denied.status_code == 404
+
+    # Submission resolves the same stable selector at the API boundary and
+    # passes only ordinary registered-workflow inputs to Studio's scheduler.
+    from mn_molecular_design_studio import api
+    captured = {}
+
+    def queue_existing_workflow(request_path):
+        captured.update(json.loads(Path(request_path).read_text()))
+        return {"workflow": "analysis.biotite_interface", "job": {"run_id": "queued-database-analysis"}}
+
+    monkeypatch.setattr(api, "submit_workflow_request", queue_existing_workflow)
+    monkeypatch.setattr(api, "mark_studio_job", lambda result, **kwargs: result)
+    submitted = client.post("/api/v1/workflows", headers=headers(data, "student"), json={
+        "schema_version": 1, "workflow": "analysis.biotite_interface",
+        "database_source": private_source, "parameters": {"contact_distance": 5.0},
+    })
+    assert submitted.status_code == 202, submitted.text
+    assert captured["workflow"] == "analysis.biotite_interface"
+    assert "database_source" not in captured
+    assert captured["parameters"]["selected_model_id"] == private_structure["id"]
+    assert captured["parameters"]["binder_chains"] == ["A"]
+    assert captured["parameters"]["target_chains"] == ["B"]
+    assert captured["parameters"]["source_run_dir"]
+
+    project_import = database.import_records(data["student"], [record], name="Project imported PPI",
+                                             project_id=data["project"]["id"])
+    project_record = database.list_molecules(data["student"], molecule_ids=project_import["molecule_ids"])["items"][0]
+    project_structure = project_record["representations"][0]
+    project_source = {"molecule_id": project_record["id"], "structure_id": project_structure["id"],
+                      "group_id": project_import["group_id"], "model_id": project_structure["id"],
+                      "binder_chains": ["A"], "target_chains": ["B"]}
+    allowed_project = validate(project_source, project_id=data["project"]["id"])
+    assert allowed_project.status_code == 200, allowed_project.text
+    assert validate(project_source).status_code == 404
+
+
+def test_interface_clustering_saved_collection_validates_and_submits_registered_workflow(api_data, monkeypatch):
+    from mn_molecular_design_studio.evaluations import file_digest
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    from mn_molecular_design_studio.molecule_imports import parse_structure
+
+    data, client = api_data, api_data["client"]
+    database = MolecularDatabase()
+    first_path = write_structure(data["root"] / "cluster-first.pdb")
+    second_path = write_structure(data["root"] / "cluster-second.pdb")
+    lines = second_path.read_text().splitlines()
+    second_path.write_text("\n".join(
+        line[:30] + f"{float(line[30:38]) + 100.0:8.3f}" + line[38:] if line.startswith("ATOM  ") and line[21:22].strip() == "B" else line
+        for line in lines
+    ) + "\n")
+    imported = []
+    for index, path in enumerate((first_path, second_path), start=1):
+        parsed = parse_structure(path.read_bytes(), path.name)[0]
+        result = database.import_records(data["student"], [parsed], name=f"Private clustering source {index}")
+        record = database.list_molecules(data["student"], molecule_ids=result["molecule_ids"])['items'][0]
+        representation = record["representations"][0]
+        structure_path = database.structure_file(data["student"], representation["id"])
+        imported.append({
+            "kind": "database", "molecule_id": record["id"], "structure_id": representation["id"],
+            "group_id": result["group_id"],
+            "model_id": str((representation.get("context") or {}).get("model_id")
+                            or (representation.get("context") or {}).get("model_index")
+                            or representation["id"]),
+            "structure_digest": file_digest(structure_path), "target_chains": ["A"],
+            "binder_chains": ["B"], "evaluation_ids": [],
+        })
+
+    collection_payload = {
+        "schema_version": 1, "workflow": "analysis.interface_clustering",
+        "interface_clustering_collection": {
+            "schema": "studio.interface_clustering_selection.v1", "sources": imported,
+        },
+        "parameters": {"similarity_threshold": 0.5, "contact_distance": 5.0},
+    }
+    response = client.post("/api/v1/workflows/validate", headers=headers(data, "student"), json=collection_payload)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["valid"] is True
+    assert payload["workflow"] == "analysis.interface_clustering"
+    parameters = payload["parameters"]
+    assert parameters["similarity_threshold"] == 0.5
+    assert Path(parameters["source_run_dir"]).is_relative_to(
+        data["root"] / "studio" / "users" / data["student"]["id"] / "inputs"
+    )
+    candidates = [json.loads(line) for line in Path(parameters["candidates_jsonl"]).read_text().splitlines()]
+    assert len(candidates) == 2
+    assert len({item["raw_metadata"]["target_structure_digest"] for item in candidates}) == 1
+    assert {item["raw_metadata"]["database_source"]["structure_id"] for item in candidates} == {
+        item["structure_id"] for item in imported
+    }
+
+    from mn_molecular_design_studio import api
+    captured = {}
+
+    def queue_registered_workflow(request_path):
+        captured.update(json.loads(Path(request_path).read_text()))
+        return {"workflow": "analysis.interface_clustering", "job": {"run_id": "queued-interface-clustering"}}
+
+    monkeypatch.setattr(api, "submit_workflow_request", queue_registered_workflow)
+    monkeypatch.setattr(api, "mark_studio_job", lambda result, **kwargs: result)
+    submitted = client.post("/api/v1/workflows", headers=headers(data, "student"), json=collection_payload)
+
+    assert submitted.status_code == 202, submitted.text
+    assert captured["workflow"] == "analysis.interface_clustering"
+    assert "interface_clustering_collection" not in captured
+    assert Path(captured["parameters"]["candidates_jsonl"]).is_file()
+    assert captured["parameters"]["similarity_threshold"] == 0.5
+
+
+def test_foldseek_saved_collection_uses_local_registered_workflow(api_data, monkeypatch):
+    from mn_molecular_design_studio.evaluations import file_digest
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    from mn_molecular_design_studio.molecule_imports import parse_structure
+    from mn_molecular_design_studio import api
+
+    data, client = api_data, api_data["client"]
+    database = MolecularDatabase()
+    selectors = []
+    for index in range(2):
+        structure_path = write_structure(data["root"] / f"foldseek-source-{index}.pdb")
+        if index == 1:
+            lines = structure_path.read_text().splitlines()
+            # The target group differs in sequence and author numbering. Foldseek
+            # only clusters the declared binder chain, so this remains valid.
+            structure_path.write_text("\n".join(
+                line[:17] + "SER" + line[20:22] + f"{9:4d}" + line[26:]
+                if line.startswith("ATOM  ") and line[21:22] == "B" else line
+                for line in lines
+            ) + "\n")
+        parsed = parse_structure(structure_path.read_bytes(), structure_path.name)[0]
+        imported = database.import_records(data["student"], [parsed], name=f"Foldseek private source {index + 1}")
+        record = database.list_molecules(data["student"], molecule_ids=imported["molecule_ids"])['items'][0]
+        representation = record["representations"][0]
+        path = database.structure_file(data["student"], representation["id"])
+        selectors.append({
+            "kind": "database", "molecule_id": record["id"], "structure_id": representation["id"],
+            "group_id": imported["group_id"], "model_id": representation["id"],
+            "structure_digest": file_digest(path), "target_chains": ["B"], "binder_chains": ["A"],
+            "evaluation_ids": [],
+        })
+    payload = {
+        "schema_version": 1, "workflow": "analysis.foldseek",
+        "foldseek_collection": {"schema": "studio.foldseek_selection.v1", "sources": selectors},
+        "parameters": {"similarity_threshold": 0.55, "coverage": 0.75},
+        "execution": {"placement": "auto", "idempotency_key": "foldseek-collection-test"},
+    }
+
+    def no_remote_submission(*args, **kwargs):
+        raise AssertionError("Saved Foldseek collections must stay on the local scheduler path.")
+
+    monkeypatch.setattr(api, "_cluster_submission", no_remote_submission)
+    validated = client.post("/api/v1/workflows/validate", headers=headers(data, "student"), json=payload)
+    assert validated.status_code == 200, validated.text
+    validated_payload = validated.json()
+    assert validated_payload["valid"] is True
+    assert validated_payload["workflow"] == "analysis.foldseek"
+    assert validated_payload["parameters"]["similarity_threshold"] == 0.55
+    assert validated_payload["parameters"]["coverage"] == 0.75
+    staged_candidates = Path(validated_payload["parameters"]["candidates_jsonl"])
+    assert staged_candidates.is_file()
+    assert len(staged_candidates.read_text().splitlines()) == 2
+
+    captured = {}
+
+    def queue_registered_workflow(request_path):
+        captured.update(json.loads(Path(request_path).read_text()))
+        return {"workflow": "analysis.foldseek", "job": {"run_id": "queued-foldseek"}}
+
+    monkeypatch.setattr(api, "submit_workflow_request", queue_registered_workflow)
+    monkeypatch.setattr(api, "mark_studio_job", lambda result, **kwargs: result)
+    submitted = client.post("/api/v1/workflows", headers=headers(data, "student"), json=payload)
+
+    assert submitted.status_code == 202, submitted.text
+    assert captured["workflow"] == "analysis.foldseek"
+    assert "foldseek_collection" not in captured
+    assert captured["parameters"]["similarity_threshold"] == 0.55
+    assert captured["parameters"]["coverage"] == 0.75
+    assert Path(captured["parameters"]["candidates_jsonl"]).is_file()
+
+
 @pytest.fixture
 def design_assets(api_data):
     from mn_molecular_design_studio import kejia_idr_input as kejia, peptide_trap_input as trap

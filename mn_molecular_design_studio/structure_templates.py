@@ -12,6 +12,7 @@ from mn_molecular_design_studio.design_validation import protein_chains, read_st
 
 # These formats were checked against the pinned native parsers and batch runners.
 TEMPLATE_ENGINES = {
+    "localfold",
     "alphafold3", "openfold3_jax", "af3_torch", "boltz2", "colabfold",
     "protenix_v2", "openfold3_ob0", "rf3_foundry", "boltzgen_fold", "chai1", "mol1",
 }

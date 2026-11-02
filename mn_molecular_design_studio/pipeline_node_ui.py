@@ -144,6 +144,180 @@ def _connected_inputs(graph, node_id):
     return parents, upstream
 
 
+def _render_step_execution(node, graph, key):
+    """Configure execution where the user configures the corresponding canvas step."""
+    from mn_molecular_design_studio import candidate_execution
+    from mn_molecular_design_studio.cluster import config as cluster_config
+    from mn_molecular_design_studio.quality_tools import TOOLS as quality_tools
+
+    data = node.get("data", {})
+    kind = data.get("kind")
+    category = NODE_CATALOG[kind]["category"]
+    updates = {}
+    if category in {"Design engine", "Design pipeline", "Structure prediction"}:
+        updates["enabled"] = st.checkbox(
+            "Enable this branch", value=data.get("enabled", True), key=key + "-branch-enabled",
+        )
+        updates["retained_run_dir"] = st.text_input(
+            "Reuse retained run from this project (optional)",
+            value=data.get("retained_run_dir", ""), key=key + "-retained-run",
+            help="Explicit read-only evidence reuse. Source settings and hashes remain recorded.",
+        )
+
+    eligible = (
+        category in {"Design engine", "Design pipeline", "Structure prediction", "Sequence design", "Analysis"}
+        and not quality_tools.get(kind, {}).get("cohort")
+    )
+    if not eligible:
+        return updates, True
+
+    inherited = candidate_execution.policy(data.get("execution") or graph.get("candidate_execution"))
+    execution_ready = True
+    with st.expander("Execution & resources", expanded=False):
+        override = st.checkbox(
+            "Override pipeline resource defaults", value=bool(data.get("execution")),
+            key=key + "-execution-override",
+            help="When off, this step inherits the shared Resources settings from the canvas toolbar.",
+        )
+        if not override:
+            updates["execution"] = None
+            return updates, True
+
+        policy = dict(inherited)
+        partitionable = candidate_execution.supports(kind, {"candidates_jsonl": "preview"})
+        native_generator = bool(
+            graph.get("workflow_mode")
+            and category in {"Design engine", "Design pipeline"}
+        )
+        distribute = False
+        if partitionable or native_generator:
+            distribute = st.checkbox(
+                "Partition this step into candidate batches",
+                value=partitionable and policy["mode"] == "sharded",
+                disabled=not partitionable,
+                key=key + "-execution-sharded",
+                help="This splits independent inputs across scheduler jobs. It does not change the engine's own inference batch size.",
+            )
+            policy["mode"] = "sharded" if distribute else "native"
+            if distribute:
+                left, right = st.columns(2)
+                policy["batch_size"] = int(left.number_input(
+                    "Candidates per scheduler batch", min_value=1, max_value=10000,
+                    value=policy["batch_size"], key=key + "-execution-batch-size",
+                ))
+                policy["max_in_flight"] = int(right.number_input(
+                    "Concurrent batches", min_value=1, max_value=32,
+                    value=policy["max_in_flight"], key=key + "-execution-in-flight",
+                ))
+                from mn_molecular_design_studio.campaign_objectives_ui import render_time_limits
+                st.caption("Optional dispatch limits apply to this step from its start time. Active batches finish when a limit stops new work.")
+                limits, execution_ready = render_time_limits(st, policy, key=key + "-execution-time")
+                if execution_ready:
+                    for name in ("max_runtime_seconds", "deadline_at"):
+                        policy.pop(name, None)
+                    policy.update(limits)
+            else:
+                policy.pop("max_runtime_seconds", None)
+                policy.pop("deadline_at", None)
+        else:
+            policy["mode"] = "native"
+            policy.pop("max_runtime_seconds", None)
+            policy.pop("deadline_at", None)
+
+        nodes = []
+        try:
+            if cluster_config.load()["mode"] in {"peer", "coordinator"}:
+                from mn_molecular_design_studio.cluster.store import Store
+                nodes = Store().nodes()
+        except (OSError, ValueError, KeyError, TypeError):
+            nodes = []
+        destinations = {
+            "local": "This workstation",
+            "auto": "Automatic · eligible trusted workstations",
+            **{item["id"]: cluster_config.display_name(item["name"]) + " · " + item["availability"]
+               for item in nodes},
+        }
+        selected_placement = policy.get("placement", "local")
+        policy["placement"] = st.selectbox(
+            "Workstation", list(destinations), format_func=destinations.get,
+            index=list(destinations).index(selected_placement) if selected_placement in destinations else 0,
+            key=key + "-execution-placement",
+        )
+        gpu_selector = st.text_input(
+            "GPU selector", value=policy.get("gpu_device", ""), key=key + "-execution-gpu",
+            help="Use auto, all, or device indices such as 0 or 0,1. The existing scheduler checks reservations.",
+        ).strip()
+        if gpu_selector:
+            policy["gpu_device"] = gpu_selector
+        else:
+            policy.pop("gpu_device", None)
+
+        columns = st.columns(3)
+        policy["cpu_cores"] = int(columns[0].number_input(
+            "CPU cores per job", min_value=1, max_value=256, value=policy["cpu_cores"], key=key + "-execution-cpu",
+        ))
+        policy["ram_gb"] = float(columns[1].number_input(
+            "RAM per job (GiB)", min_value=0., value=float(policy["ram_gb"]), key=key + "-execution-ram",
+        ))
+        policy["min_vram_gb"] = float(columns[2].number_input(
+            "Minimum free VRAM (GiB)", min_value=0., value=float(policy["min_vram_gb"]), key=key + "-execution-vram",
+        ))
+        if distribute:
+            policy["retries"] = int(st.number_input(
+                "Retries per failed batch", min_value=0, max_value=5, value=policy["retries"], key=key + "-execution-retries",
+            ))
+            policy["incremental_cpu"] = st.checkbox(
+                "Process completed batches while prediction continues (CPU)", value=policy["incremental_cpu"],
+                key=key + "-execution-incremental",
+            )
+            policy["failure_policy"] = "partial" if st.checkbox(
+                "Allow explicit partial candidate pools", value=policy["failure_policy"] == "partial",
+                key=key + "-execution-partial",
+            ) else "all"
+        updates["execution"] = candidate_execution.policy(policy)
+        st.caption("Native sample counts and model microbatches stay in the engine controls. These settings apply to Studio scheduling.")
+    return updates, execution_ready
+
+
+def _shared_filter_effective_policy(graph, node_id, params):
+    """Resolve the policy preview from current form values and graph lineage."""
+    from mn_molecular_design_studio.pipeline_graph import (
+        pipeline_filter_source_tools,
+        resolve_pipeline_binder_format,
+        resolve_pipeline_target_type,
+    )
+    from mn_molecular_design_studio.validation_acceptance import campaign_policy_from_node
+
+    preview_graph = copy.deepcopy(graph)
+    preview_node = next((item for item in preview_graph.get("nodes", [])
+                         if item.get("id") == node_id), None)
+    if preview_node:
+        preview_node.setdefault("data", {})["params"] = copy.deepcopy(params)
+    nodes = {item["id"]: item for item in preview_graph.get("nodes", [])}
+    incoming = {}
+    for edge in preview_graph.get("edges", []):
+        if edge.get("source") in nodes and edge.get("target") in nodes:
+            incoming.setdefault(edge["target"], []).append(edge["source"])
+    target_type = resolve_pipeline_target_type(nodes, incoming, node_id)
+    binder_format = resolve_pipeline_binder_format(nodes, incoming, node_id)
+    source_tools = pipeline_filter_source_tools(nodes, incoming, node_id)
+    preview_params = copy.deepcopy(params)
+    if target_type:
+        preview_params["resolved_target_type"] = target_type
+    if binder_format:
+        preview_params["resolved_binder_format"] = binder_format
+    if not target_type or not binder_format:
+        return target_type, binder_format, source_tools, None, None
+    try:
+        policy = campaign_policy_from_node(
+            preview_params, target_type=target_type, binder_format=binder_format,
+            source_tools=source_tools,
+        )
+    except ValueError as exc:
+        return target_type, binder_format, source_tools, None, str(exc)
+    return target_type, binder_format, source_tools, policy, None
+
+
 def _analysis_input_profile(graph, node_id):
     """Describe the connected workflow lineage without assuming its artifacts exist."""
     nodes = {node["id"]: node for node in graph.get("nodes", [])}
@@ -339,7 +513,7 @@ def _available_docking_machines(gpu_engine):
     return machines
 
 
-def render_node_form(node, graph, *, key, render_input, owner_id):
+def render_node_form(node, graph, *, key, render_input, owner_id, include_node_updates=False):
     kind = node["data"]["kind"]
     spec = NODE_CATALOG[kind]
     values = {f["name"]:copy.deepcopy(node["data"]["params"].get(f["name"],f["default"])) for f in spec["fields"]}
@@ -610,9 +784,10 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                     st.markdown(
                         "- **Saved target–binder complex:** heavy-atom contacts, inter-chain Cα clashes, and chain Cα B-factors.\n"
                         "- **Saved pairwise PAE:** ipSAE, binder→target and target→binder i_pAE, plus i_pDAE.\n"
-                        "- **Separate design structure:** binder-fitted RMSD; a separate design complex also enables contact preservation.\n"
+                        "- **Separate design and cofold complexes:** binder-only fitted RMSD (shape), target-aligned binder-pose RMSD, and interface-contact preservation. The target is aligned; the binder is not refit.\n"
+                        "- **Native RFD4 refold:** its target-backbone-aligned binder RMSD remains separately attributed to RFD4.\n"
                         "- **Target hotspots:** hotspot contact measurements.\n\n"
-                        "Missing files or annotations are reported as unavailable for that candidate; they are never replaced with zero."
+                        "ipSAE and PAE-derived values require a saved pairwise PAE matrix. Missing files or annotations are reported as unavailable; they are never replaced with zero."
                     )
                 if not has_cofold:
                     st.caption("Design-only path: structure measurements need a saved target–binder complex with binder and target chain roles. PAE scores and design-to-cofold comparisons need their corresponding saved files.")
@@ -699,6 +874,92 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                 for index, field in enumerate(optional):
                     with columns[index % 2]:
                         values[field["name"]] = _render_field(field, values, key)
+        elif kind == "shared_filter":
+            _render_connection_card(node, graph)
+            columns = st.columns(2)
+            for index, name in enumerate(("binder_format", "target_type", "policy_profile")):
+                field_spec = next(field for field in spec["fields"] if field["name"] == name)
+                with columns[index % 2]:
+                    values[name] = _render_field(field_spec, values, key)
+
+            # Resolve the same graph context used by pipeline compilation. The
+            # editor used to show only the stored `rules` list here, although
+            # the reference profile populated its real rules later at compile
+            # time. Showing the compiled preview makes the visible criteria
+            # match the acceptance policy that will actually run.
+            from mn_molecular_design_studio.validation_acceptance import METRICS
+            resolved_target, resolved_format, source_tools, effective_policy, preview_error = (
+                _shared_filter_effective_policy(graph, node["id"], values)
+            )
+            active_profile = values.get("policy_profile", "auto")
+            has_custom_rules = bool(values.get("rules"))
+            reference_profile = active_profile == "bindcraft2_reference" or (
+                active_profile == "auto" and not has_custom_rules
+            )
+
+            if reference_profile:
+                if not resolved_target or not resolved_format:
+                    st.info("The reference thresholds are selected automatically after the connected target type and binder task are known. Set those inputs or choose them above to preview the effective criteria.")
+                elif preview_error:
+                    st.warning(preview_error)
+                if effective_policy:
+                    preset = effective_policy.get("reference_preset", {})
+                    st.markdown("**Effective mandatory acceptance criteria**")
+                    st.caption(
+                        f"{preset.get('tool', 'BindCraft2')} reference · "
+                        f"{preset.get('binder_format', resolved_format).replace('_', ' ').title()} · "
+                        f"{preset.get('target_type', resolved_target).replace('_', ' ').title()} target · "
+                        f"source: {', '.join(source_tools) if source_tools else 'connected candidate evidence'}"
+                    )
+                    rows = []
+                    for rule in effective_policy["mandatory_filters"]:
+                        metric = METRICS.get(rule.get("metric_id"), {})
+                        rows.append({
+                            "Measurement": metric.get("label", rule["field"]),
+                            "Pass criterion": f"{rule['operator']} {rule['value']:g}",
+                            "Units": metric.get("unit", ""),
+                        })
+                    if rows:
+                        st.dataframe(rows, hide_index=True, use_container_width=True)
+                        st.caption("These are rejection gates. A missing or unavailable required measurement does not pass. The native design workflow’s own pass/reject result remains a separate decision.")
+                    inactive = preset.get("inactive_criteria", [])
+                    if inactive:
+                        with st.expander("Reference criteria not applied on this path", expanded=False):
+                            st.caption("These BindCraft2 reference checks are not silently treated as passing; this connected evidence source cannot provide them as compatible measurements.")
+                            for reason in inactive:
+                                st.markdown(f"- {reason}")
+                    if not rows:
+                        st.error("This profile has no compatible mandatory measurements for the current connected path.")
+                    with st.expander("Optional informational measurements · no rejection gate", expanded=False):
+                        scores_field = next(field for field in spec["fields"] if field["name"] == "informational_scores")
+                        values["informational_scores"] = _render_field(scores_field, values, key)
+                        st.caption("These measurements are recorded or used for ranking only; they do not change pass/reject status.")
+                st.caption("To set different rejection thresholds, choose **Custom**. The reference profile above is resolved from the connected workflow and is not stored as an empty rules list.")
+            else:
+                with st.container(border=True):
+                    st.markdown("**Custom mandatory rejection rules**")
+                    rules_field = next(field for field in spec["fields"] if field["name"] == "rules")
+                    values["rules"] = _render_field(rules_field, values, key)
+                    scores_field = next(field for field in spec["fields"] if field["name"] == "informational_scores")
+                    values["informational_scores"] = _render_field(scores_field, values, key)
+                resolved_target, resolved_format, source_tools, effective_policy, preview_error = (
+                    _shared_filter_effective_policy(graph, node["id"], values)
+                )
+                if values.get("rules"):
+                    if effective_policy:
+                        st.caption(f"{len(effective_policy['mandatory_filters'])} custom rejection gate(s) configured. Missing required measurements are rejected, not treated as passing.")
+                    elif preview_error:
+                        st.warning(preview_error)
+                else:
+                    st.warning("Add at least one mandatory measurement and threshold before using this filter.")
+
+            columns = st.columns(2)
+            ranking_field = next(field for field in spec["fields"] if field["name"] == "ranking_metric")
+            exclude_field = next(field for field in spec["fields"] if field["name"] == "exclude_native_rejected")
+            with columns[0]:
+                values["ranking_metric"] = _render_field(ranking_field, values, key)
+            with columns[1]:
+                values["exclude_native_rejected"] = _render_field(exclude_field, values, key)
         elif kind in {"ligandmpnn", "foundry_mpnn"}:
             from mn_molecular_design_studio.mpnn_ui import render_inputs
             _render_connection_card(node, graph)
@@ -820,7 +1081,7 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
             if kind == "campaign_stop":
                 st.info("This node uses the upstream Shared scientific filters policy to configure the existing native distributed campaign controller. The campaign stops at the first reached limit: passing-design target, maximum design attempts, runtime, or absolute deadline.")
                 st.caption("Native jobs retain their engine settings, job identities, retries and recovery. Designs per native job is separate from the model's internal GPU microbatch. Rejected structures remain on their producing workstation when the RFD4 accepted-only transfer path is available.")
-            if kind in {"bindcraft2", "rfd4"}:
+        if kind in {"bindcraft2", "rfd4"}:
                 shared_campaign = graph.get("shared_campaign") if isinstance(graph.get("shared_campaign"), dict) else {}
                 has_stop_node = any(item.get("data", {}).get("kind") == "campaign_stop" for item in graph.get("nodes", []))
                 if has_stop_node:
@@ -840,6 +1101,8 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
                         else:
                             values["distributed_campaign"] = campaign
                         ready = ready and campaign_ready
+        node_updates, execution_ready = _render_step_execution(node, graph, key)
+        ready = ready and execution_ready
         st.caption("Apply saves this step to the draft. The pipeline runs only when you choose Run pipeline on the canvas.")
         a,b,c = st.columns([1.3,1,1.3])
         if a.button("Reset to tool defaults", key=key+"-defaults", disabled=kind in {"target","binder_context","design_source","generation_source","backbone_source","project_design_source","results"}, use_container_width=True):
@@ -848,4 +1111,5 @@ def render_node_form(node, graph, *, key, render_input, owner_id):
             action="cancel"
         if c.button("Apply to pipeline", type="primary", key=key+"-apply", disabled=not ready, use_container_width=True):
             action="apply"
-    return values,label,action,replacement_kind
+    result = (values, label, action, replacement_kind)
+    return (*result, node_updates) if include_node_updates else result

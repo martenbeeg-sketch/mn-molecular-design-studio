@@ -11,6 +11,7 @@ import io
 import time
 import zipfile
 import re
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 import pandas as pd
@@ -300,6 +301,51 @@ def _campaign_group_status(members):
     if cancelled:
         progress += f" · {cancelled} cancelled"
     return status, progress
+
+
+def _campaign_wall_elapsed(members, *, now=None):
+    """Return wall-clock duration for grouped jobs, never a sum of parallel runtimes."""
+    def parse(value):
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            result = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return result.replace(tzinfo=timezone.utc) if result.tzinfo is None else result.astimezone(timezone.utc)
+
+    if not members:
+        return "—"
+    started = []
+    for row in members:
+        first = None
+        for key in ("worker_started_at", "queue_wait_started_at", "created_at"):
+            first = parse(row.get(key))
+            if first:
+                break
+        if first:
+            started.append(first)
+    if not started:
+        return "—"
+    terminal = {"completed", "succeeded", "failed", "lost", "cancelled", "canceled", "stopped", "partial"}
+    active = any(str(row.get("status") or "unknown").casefold() not in terminal for row in members)
+    if active:
+        finished = now or datetime.now(timezone.utc)
+        finished = finished.replace(tzinfo=timezone.utc) if finished.tzinfo is None else finished.astimezone(timezone.utc)
+    else:
+        completed = []
+        for row in members:
+            last = parse(row.get("completed_at")) or parse(row.get("updated_at"))
+            if last:
+                completed.append(last)
+        if not completed:
+            return "—"
+        finished = max(completed)
+    elapsed = max(0, int((finished - min(started)).total_seconds()))
+    hours, remainder = divmod(elapsed, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    duration = f"{hours}h {minutes:02d}m" if hours else f"{minutes}m {seconds:02d}s" if minutes else f"{seconds}s"
+    return f"Running · {duration} wall" if active else f"{duration} wall"
 
 
 def _logical_run_groups(rows, excluded_references=()):
@@ -931,7 +977,8 @@ def _render_results_campaign_batches(members, elapsed_label=None, token=None):
     active = sum(str(row.get("status") or "").casefold() not in _RESULTS_TERMINAL_STATUSES for row in members)
     failed = sum(str(row.get("status") or "").casefold() in {"failed", "lost"} for row in members)
     st.markdown(f"**{config.display_text(label)}**")
-    st.caption(f"{status} · {len(members)} jobs · {len({row.get('node_id') for row in members if row.get('node_id')})} computers · {progress}")
+    wall_elapsed = _campaign_wall_elapsed(members)
+    st.caption(f"{status} · {len(members)} jobs · {len({row.get('node_id') for row in members if row.get('node_id')})} computers · {progress} · {wall_elapsed}")
     metric_columns = st.columns(4)
     metric_columns[0].metric("Batch jobs", len(members))
     metric_columns[1].metric("Completed", completed)
@@ -2241,7 +2288,7 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
             if is_campaign:
                 campaign_status, campaign_progress = _campaign_group_status(members)
                 table_row["Status"] = campaign_status
-                table_row["Elapsed"] = "—"
+                table_row["Elapsed"] = _campaign_wall_elapsed(members)
                 latest_update = max(
                     (str(member.get("updated_at") or member.get("completed_at") or member.get("created_at") or "")
                      for member in members), default="",
@@ -2289,7 +2336,10 @@ def _render_runs_content(user, token, local_search, *, elapsed_label=None, elaps
             "Pipeline": st.column_config.TextColumn("Pipeline", width="medium"),
             "Code": st.column_config.TextColumn("#", width="small"),
             "Status": st.column_config.TextColumn("Status", width="small"),
-            "Elapsed": st.column_config.TextColumn("Elapsed", width="small"),
+            "Elapsed": st.column_config.TextColumn(
+                "Elapsed", width="small",
+                help="Grouped Runs show wall time from the earliest job start to the latest finish. Parallel job durations are not added together.",
+            ),
             "Updated": st.column_config.TextColumn("Updated", width="medium"),
             "Workstation": st.column_config.TextColumn("Workstation", width="medium"),
             "Files": st.column_config.TextColumn("Files", width="medium"),

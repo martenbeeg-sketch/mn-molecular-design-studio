@@ -230,6 +230,25 @@ def test_api_purge_rejects_active_jobs_and_queues_remote_run_cleanup(api_cluster
     assert active.status_code == 409
     assert client.get(f"/api/v1/cluster/jobs/{local_active_id}").status_code == 200
 
+    # The coordinator catalog can lag a workstation's local metadata. Never
+    # delete a present run directory if it still identifies itself as active.
+    from mn_molecular_design_studio.workspace import ensure_studio_workspace
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import runs_root
+    ensure_studio_workspace()
+    mismatched_id = str(uuid.uuid4())
+    mismatched_dir = runs_root() / "design" / "catalog-says-failed"
+    mismatched_dir.mkdir(parents=True)
+    (mismatched_dir / "metadata.json").write_text(json.dumps({"status": "running"}))
+    store.heartbeat(origin["node_id"], snapshot, [{
+        "cluster_job_id": mismatched_id, "task_group": "design", "run_id": "catalog-says-failed",
+        "status": "failed", "owner_id": actor["id"], "project_id": project["id"],
+    }])
+    mismatch_response = client.delete(f"/api/v1/cluster/jobs/{mismatched_id}/purge")
+    assert mismatch_response.status_code == 409
+    assert mismatched_dir.exists()
+    import shutil
+    shutil.rmtree(mismatched_dir)
+
     remote_id = str(uuid.uuid4())
     store.heartbeat(remote["node_id"], snapshot, [{
         "cluster_job_id": remote_id, "task_group": "design", "run_id": "remote-failed",
@@ -247,6 +266,68 @@ def test_api_purge_rejects_active_jobs_and_queues_remote_run_cleanup(api_cluster
     store.finish(remote["node_id"], command["id"], command["lease_token"], response={"status": "purged"})
     assert client.get(f"/api/v1/cluster/jobs/{remote_id}").status_code == 404
     assert client.get(f"/api/v1/cluster/commands/{command['id']}").json()["status"] == "completed"
+
+
+def test_api_purge_removes_paused_orphan_when_workstation_confirms_run_missing(api_cluster):
+    client, store, origin, remote, actor, project, snapshot, _needs = api_cluster
+    from mn_molecular_design_studio.workspace import ensure_studio_workspace
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import runs_root
+    ensure_studio_workspace()
+
+    # A stale missing-reference report must never authorize deletion of a
+    # directory whose own metadata still says it is paused.
+    protected_id = str(uuid.uuid4())
+    protected_dir = runs_root() / "analysis" / "paused-still-present"
+    protected_dir.mkdir(parents=True)
+    (protected_dir / "metadata.json").write_text(json.dumps({"status": "paused"}))
+    store.heartbeat(origin["node_id"], snapshot, [{
+        "cluster_job_id": protected_id, "task_group": "analysis", "run_id": "paused-still-present",
+        "status": "paused", "owner_id": actor["id"], "project_id": project["id"],
+    }])
+    store.heartbeat(origin["node_id"], snapshot, [], known_references=[])
+    protected_response = client.delete(f"/api/v1/cluster/jobs/{protected_id}/purge")
+    assert protected_response.status_code == 409
+    assert protected_dir.exists()
+    import shutil
+    shutil.rmtree(protected_dir)
+    assert client.delete(f"/api/v1/cluster/jobs/{protected_id}/purge").status_code == 200
+
+    local_id = str(uuid.uuid4())
+    store.heartbeat(origin["node_id"], snapshot, [{
+        "cluster_job_id": local_id, "task_group": "analysis", "run_id": "paused-orphan-local",
+        "status": "paused",
+        "owner_id": actor["id"], "project_id": project["id"],
+    }])
+    store.heartbeat(origin["node_id"], snapshot, [], known_references=[])
+    local_response = client.delete(f"/api/v1/cluster/jobs/{local_id}/purge")
+    assert local_response.status_code == 200, local_response.text
+    assert local_response.json()["run_files_removed"] is False
+    assert client.get(f"/api/v1/cluster/jobs/{local_id}").status_code == 404
+
+    remote_id = str(uuid.uuid4())
+    store.heartbeat(remote["node_id"], snapshot, [{
+        "cluster_job_id": remote_id, "task_group": "analysis", "run_id": "paused-orphan-remote",
+        "status": "paused",
+        "owner_id": actor["id"], "project_id": project["id"],
+    }])
+    store.heartbeat(remote["node_id"], snapshot, [], known_references=[])
+    cancel = store.action(remote_id, "cancel", {}, actor)
+    assert cancel["status"] == "queued"
+
+    remote_response = client.delete(f"/api/v1/cluster/jobs/{remote_id}/purge")
+    assert remote_response.status_code == 202, remote_response.text
+    with store.connect() as db:
+        cancel_row = db.execute("SELECT status FROM commands WHERE id=?", (cancel["command_id"],)).fetchone()
+    assert cancel_row["status"] == "cancelled"
+
+    command = store.claim(remote["node_id"])
+    assert command["kind"] == "purge"
+    agent = Agent()
+    result, error = agent.execute(command)
+    assert error is None, error
+    assert result["status"] == "purged"
+    store.finish(remote["node_id"], command["id"], command["lease_token"], response=result)
+    assert client.get(f"/api/v1/cluster/jobs/{remote_id}").status_code == 404
 
 
 def test_placement_options_api_previews_candidates_without_creating_a_job(api_cluster, monkeypatch):

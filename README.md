@@ -8,6 +8,10 @@ job catalog, Results folder, database, and organization data. Workflow modules
 needed by Studio are kept inside this repository; the previous app is a
 reference only and its job results are not imported.
 
+The [LocalFold integration](docs/localfold.md) adds the current sokrypton JAX
+fork with 19 model choices, including Mol-1 and BioEmu2. Its model files and
+shared caches live under the configured `reference_files/localfold` directory.
+
 The Results folder starts empty, defaults to the same data volume as the
 previous app, and can be changed in Settings. The Database includes only
 molecule sets imported or created through Molecular Design Studio.
