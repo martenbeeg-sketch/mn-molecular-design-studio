@@ -29,7 +29,9 @@ def docker_user_args():
     return [] if "rootless" in info.stdout else ["--user", f"{os.getuid()}:{os.getgid()}"]
 
 
-def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4, gpu_device=None):
+def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4, gpu_device=None,
+                candidate_ids=None, selected_structure_path=None, selected_model_id=None,
+                binder_chains=None, target_chains=None):
     if tool not in TOOLS:
         raise ValueError("Unknown QC tool.")
     for field in ("ph", "contact_distance", "similarity_threshold", "coverage"):
@@ -46,6 +48,32 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
         candidates_jsonl = source_run_dir / "artifacts/normalized_candidates/candidates.jsonl"
     else:
         candidates = read_candidates(Path(candidates_jsonl))
+    if candidate_ids is not None:
+        requested = [str(value).strip() for value in candidate_ids if str(value).strip()]
+        if not requested or len(requested) != len(set(requested)):
+            raise ValueError("candidate_ids must contain one or more unique candidate IDs.")
+        by_id = {str(row.get("candidate_id") or ""): row for row in candidates}
+        missing = [identifier for identifier in requested if identifier not in by_id]
+        if missing:
+            raise ValueError("Selected candidate IDs are unavailable in the source collection: " + ", ".join(missing))
+        candidates = [by_id[identifier] for identifier in requested]
+    if selected_structure_path is not None and len(candidates) != 1:
+        raise ValueError("An exact selected structure can only be applied to one candidate per analysis request.")
+    selected_structure = Path(selected_structure_path).expanduser().resolve() if selected_structure_path is not None else None
+    if selected_structure is not None and not selected_structure.is_file():
+        raise ValueError("The selected structure is no longer available.")
+    if profile["kind"] == "interface":
+        for name, chains in (("binder_chains", binder_chains), ("target_chains", target_chains)):
+            if chains is not None:
+                normalized = [str(chain).strip() for chain in chains if str(chain).strip()]
+                if not normalized or len(normalized) != len(set(normalized)):
+                    raise ValueError(f"{name} must contain one or more unique chain identifiers.")
+                if name == "binder_chains":
+                    binder_chains = normalized
+                else:
+                    target_chains = normalized
+        if binder_chains is not None and target_chains is not None and set(binder_chains) & set(target_chains):
+            raise ValueError("The two interface chain groups must not overlap.")
     if not candidates:
         raise ValueError("Select a nonempty collection of candidates.")
     if len(candidates) > 100000:
@@ -78,6 +106,19 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
     for index, candidate in enumerate(enhanced):
         identifier = f"item_{index:06d}"
         raw = candidate.get("raw_metadata") or {}
+        if selected_structure is not None:
+            candidate["complex_pdb"] = str(selected_structure)
+        if selected_structure is not None or selected_model_id:
+            raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+            raw["complex_analysis_selection"] = {
+                "structure_path": str(selected_structure or candidate.get("complex_pdb") or ""),
+                "model_id": str(selected_model_id or raw.get("model_index") or ""),
+            }
+            candidate["raw_metadata"] = raw
+        if binder_chains is not None:
+            candidate["binder_chains"] = list(binder_chains)
+        if target_chains is not None:
+            candidate["target_chains"] = list(target_chains)
         item = {"id": identifier, "candidate_id": str(candidate.get("candidate_id") or identifier),
                 "sequence": candidate.get("binder_sequence") or "",
                 "binder_chains": candidate.get("binder_chains") or [], "target_chains": candidate.get("target_chains") or []}
@@ -112,7 +153,12 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
         candidate["raw_metadata"] = {**(candidate.get("raw_metadata") or raw), "source_candidate": copy.deepcopy(candidates[index]),
                                      "analysis_tool": tool, "analysis_subject": "ligand" if profile["kind"] == "ligand" else "protein", "result_kind": "app_reanalysis"}
         items.append(item)
-    manifest = {"schema": "studio.qc.v1", "tool": tool, "items": items, "settings": settings, "output": "/work/artifacts/analysis"}
+    manifest = {"schema": "studio.qc.v1", "tool": tool, "items": items, "settings": settings,
+                "selection": {"candidate_ids": [str(row.get("candidate_id") or "") for row in enhanced],
+                              "structure_path": str(selected_structure) if selected_structure else "",
+                              "model_id": str(selected_model_id or ""),
+                              "binder_chains": list(binder_chains or []), "target_chains": list(target_chains or [])},
+                "output": "/work/artifacts/analysis"}
     write_json(output / "batch_manifest.json", manifest)
     runtime = run / "artifacts/runtime"
     runtime.mkdir(parents=True, exist_ok=True)
@@ -187,9 +233,18 @@ def run_proteinsol(source_run_dir: Path, candidates_jsonl: Path, cpu_cores: int 
     return run_quality(source_run_dir, candidates_jsonl, tool="proteinsol", settings={}, cpu_cores=cpu_cores)
 
 
-def run_biotite_interface(source_run_dir: Path, candidates_jsonl: Path, contact_distance: float = 5.0, cpu_cores: int = 4) -> Path:
-    """Heavy-atom contacts, residue maps, geometric salt bridges and explicit-H hydrogen bonds."""
-    return run_quality(source_run_dir, candidates_jsonl, tool="biotite_interface", settings={"contact_distance": contact_distance}, cpu_cores=cpu_cores)
+def run_biotite_interface(source_run_dir: Path, candidates_jsonl: Path, contact_distance: float = 5.0,
+                          cpu_cores: int = 4, candidate_ids: list[str] | None = None,
+                          selected_structure_path: Path | None = None,
+                          selected_model_id: str | None = None,
+                          binder_chains: list[str] | None = None,
+                          target_chains: list[str] | None = None) -> Path:
+    """Run the existing interface evaluator on selected candidate/model and chain groups."""
+    return run_quality(source_run_dir, candidates_jsonl, tool="biotite_interface",
+        settings={"contact_distance": contact_distance}, cpu_cores=cpu_cores,
+        candidate_ids=candidate_ids, selected_structure_path=selected_structure_path,
+        selected_model_id=selected_model_id,
+        binder_chains=binder_chains, target_chains=target_chains)
 
 
 def run_sequence_clustering(source_run_dir: Path, candidates_jsonl: Path, similarity_threshold: float = .8, cpu_cores: int = 4) -> Path:

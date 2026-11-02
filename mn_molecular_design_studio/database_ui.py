@@ -447,6 +447,14 @@ def render_details(database, user, record):
                         st.caption(f"Structure file is hosted by {source_workstation} and retrieved when opened.")
                 path = database.structure_file(user, structure["id"])
                 st.download_button("Download structure", path.read_bytes(), file_name=record["name"][:70] + path.suffix, key="database-download-" + structure["id"])
+                if len(record.get("components") or []) > 1 and path.suffix.lower() in {".pdb", ".ent", ".cif", ".mmcif", ".pdbqt", ".gz"}:
+                    if st.button("Open in Complex Analysis", icon=":material/biotech:", key="database-open-complex-analysis-" + structure["id"]):
+                        from mn_molecular_design_studio.complex_analysis_ui import open_database_complex
+                        open_database_complex(
+                            record["id"],
+                            evaluation_id=str(evaluation.get("id") or ""),
+                            structure_id=str(structure["id"]),
+                        )
                 if structure.get("context", {}).get("portable"):
                     st.caption("This structure is stored in the shared Database and will be copied to other workstations during sync.")
                 else:

@@ -721,6 +721,7 @@ with st.sidebar:
     st.divider()
     for label, icon, page in (
         ("My results", ":material/query_stats:", "My runs"),
+        ("Complex Analysis", ":material/biotech:", "Complex Analysis"),
         ("Database", ":material/storage:", "Database"),
         ("Pipelines", ":material/account_tree:", "Pipelines"),
         ("Projects", ":material/folder_open:", "Projects"),
@@ -7327,6 +7328,16 @@ def _render_cofolding_prediction_results(
             return count > 1 if count else None
 
         structure_path = structure_path_for(candidate)
+        if structure_path is not None and st.button(
+            "Open in Complex Analysis",
+            icon=":material/biotech:",
+            key=f"cofolding-open-complex-analysis-{run_id}-{candidate.get('candidate_id') or selected_index}-{structure_path.name}",
+        ):
+            from mn_molecular_design_studio.complex_analysis_ui import open_result_complex
+            try:
+                open_result_complex(run_dir, structure_path, candidate)
+            except ValueError as exc:
+                st.warning(str(exc))
         pae_path = _cofolding_candidate_pae_path(run_dir, candidate, structure_path)
 
         def confidence_metric(*names: str) -> object:
@@ -8534,6 +8545,16 @@ def _render_job_details() -> None:
                 key=f"job-structure-{run_id}-{design_scope.casefold().replace(' ', '-')}",
             )
             preview_kind, _structure_item, structure_path, topology_path = preview_options[structure_index]
+            if preview_kind == "structure" and st.button(
+                "Open in Complex Analysis",
+                icon=":material/biotech:",
+                key=f"job-open-complex-analysis-{run_id}-{structure_index}",
+            ):
+                from mn_molecular_design_studio.complex_analysis_ui import open_result_complex
+                try:
+                    open_result_complex(run_dir, structure_path)
+                except ValueError as exc:
+                    st.warning(str(exc))
             try:
                 if preview_kind == "trajectory":
                     if structure_path.stat().st_size > 50 * 1024 * 1024:
@@ -10018,6 +10039,14 @@ elif page == "Job details":
     _render_job_details()
 elif page == "Database":
     _render_database()
+elif page == "Complex Analysis":
+    from mn_molecular_design_studio.complex_analysis_ui import render_complex_analysis_workspace
+    render_complex_analysis_workspace(
+        CURRENT_USER,
+        workflow_schema=workflow_schema,
+        project_selector=_render_project_selector,
+        submit=_submit_cofolding_job,
+    )
 elif page == "Pipelines":
     _render_pipelines()
 elif page == "Projects":

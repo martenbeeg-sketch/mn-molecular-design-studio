@@ -92,6 +92,137 @@ def test_collection_is_one_container_and_keeps_failed_rows(tmp_path, monkeypatch
     assert "native_pass_filters" not in rows[0]["metrics"]  # inherited metrics are lineage, not new measurements
 
 
+def test_biotite_interface_runs_exact_candidate_model_and_chain_groups(tmp_path, monkeypatch, design_source_factory):
+    source, candidate = design_source_factory()
+    candidate_path = source / "artifacts/normalized_candidates/candidates.jsonl"
+    second = {**candidate, "candidate_id": "other-model", "complex_pdb": "designed.cif"}
+    candidate_path.write_text(json.dumps(candidate) + "\n" + json.dumps(second) + "\n")
+    selected_model = source / "selected-model-2.cif"
+    selected_model.write_bytes((source / "designed.cif").read_bytes() + b"# exact selected model\n")
+    run = tmp_path / "analysis/job"
+    run.mkdir(parents=True)
+    monkeypatch.setattr(quality, "_analysis_job", lambda *a, **k: SimpleNamespace(run_dir=run))
+    monkeypatch.setattr(quality, "_allocated_cpu_cores", lambda *a: 2)
+    monkeypatch.setattr(quality, "apply_docker_cpu_limits_to_steps", lambda run, steps: steps)
+    monkeypatch.setattr(quality, "docker_user_args", lambda: [])
+    monkeypatch.setattr(quality, "finish_job", lambda *a: None)
+
+    def fake(command, **kwargs):
+        if command[:3] == ["docker", "image", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout="")
+        (run / "artifacts/analysis/batch_status.json").write_text(json.dumps({"items": [
+            {"id": "item_000000", "status": "completed", "metrics": {"qc_interface_contact_pairs": 12}},
+        ]}))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(quality.subprocess, "run", fake)
+    result = quality.run_biotite_interface(
+        source, candidate_path, candidate_ids=["passing-design"],
+        selected_structure_path=selected_model, selected_model_id="model-2",
+        binder_chains=["B"], target_chains=["A"], contact_distance=4.5,
+    )
+
+    manifest = json.loads((run / "artifacts/analysis/batch_manifest.json").read_text())
+    assert result == run
+    assert manifest["selection"] == {
+        "candidate_ids": ["passing-design"], "structure_path": str(selected_model.resolve()),
+        "model_id": "model-2", "binder_chains": ["B"], "target_chains": ["A"],
+    }
+    assert len(manifest["items"]) == 1
+    assert manifest["items"][0]["candidate_id"] == "passing-design"
+    assert manifest["items"][0]["binder_chains"] == ["B"]
+    assert manifest["items"][0]["target_chains"] == ["A"]
+    assert manifest["items"][0]["structure_digest"] == __import__("hashlib").sha256(selected_model.read_bytes()).hexdigest()
+    outputs = [json.loads(line) for line in (run / "artifacts/normalized_candidates/candidates.jsonl").read_text().splitlines()]
+    assert len(outputs) == 1
+    assert outputs[0]["raw_metadata"]["complex_analysis_selection"]["model_id"] == "model-2"
+    assert outputs[0]["raw_metadata"]["analysis_parameters"]["contact_distance"] == 4.5
+    assert outputs[0]["binder_chains"] == ["B"] and outputs[0]["target_chains"] == ["A"]
+
+
+def test_biotite_interface_selection_rejects_unknown_candidates_and_overlapping_groups(tmp_path, design_source_factory):
+    source, candidate = design_source_factory()
+    candidate_path = source / "artifacts/normalized_candidates/candidates.jsonl"
+    with pytest.raises(ValueError, match="unavailable in the source collection"):
+        quality.run_biotite_interface(source, candidate_path, candidate_ids=["missing"],
+                                      binder_chains=["B"], target_chains=["A"])
+    with pytest.raises(ValueError, match="must not overlap"):
+        quality.run_biotite_interface(source, candidate_path, candidate_ids=[candidate["candidate_id"]],
+                                      binder_chains=["A"], target_chains=["A"])
+
+
+def test_biotite_schema_exposes_contextual_selection_through_the_existing_workflow():
+    from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import workflow_schema
+
+    schema = workflow_schema("analysis.biotite_interface")
+    parameters = {item["name"]: item for item in schema["parameters"]}
+    assert "source_job" in schema["request_fields"]
+    assert parameters["candidate_ids"]["type"] == "list[str] | None"
+    assert parameters["selected_structure_path"]["type"] == "pathlib.Path | None"
+    assert parameters["selected_model_id"]["type"] == "str | None"
+    assert parameters["binder_chains"]["type"] == "list[str] | None"
+    assert parameters["target_chains"]["type"] == "list[str] | None"
+
+
+def test_biotite_workflow_request_validates_selected_model_and_chain_groups(tmp_path, monkeypatch, design_source_factory):
+    from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation
+
+    source, candidate = design_source_factory()
+    selected = source / "designed.cif"
+    monkeypatch.setattr(workflow_automation, "resolve_job", lambda reference, **kwargs: {
+        "run_dir": str(source), "run_id": source.name, "task_group": "design", "project_id": "test-project",
+    })
+    request = {
+        "schema_version": 1, "workflow": "analysis.biotite_interface",
+        "source_job": f"design/{source.name}",
+        "parameters": {
+            "candidate_ids": [candidate["candidate_id"]],
+            "selected_structure_path": str(selected), "selected_model_id": "model-1",
+            "binder_chains": ["B"], "target_chains": ["A"], "contact_distance": 4.5,
+        },
+    }
+    request_path = tmp_path / "workflow-request.json"
+    request_path.write_text(json.dumps(request))
+
+    result = validate_workflow_request(request_path)
+
+    assert result["valid"] is True
+    assert result["workflow"] == "analysis.biotite_interface"
+    assert result["parameters"]["candidate_ids"] == [candidate["candidate_id"]]
+    assert result["parameters"]["selected_structure_path"] == str(selected.resolve())
+    assert result["parameters"]["selected_model_id"] == "model-1"
+    assert result["parameters"]["binder_chains"] == ["B"]
+    assert result["parameters"]["target_chains"] == ["A"]
+
+
+def test_biotite_source_job_submission_keeps_existing_job_acl_and_project_boundary(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    from mn_molecular_design_studio import api, job_catalog
+
+    source = tmp_path / "prediction" / "source"
+    source.mkdir(parents=True)
+    (source / "metadata.json").write_text(json.dumps({"status": "completed", "tool": "prediction"}))
+    resolved = {"run_dir": str(source), "run_id": "source", "task_group": "prediction", "project_id": "source-project"}
+    access = {"owner_id": "source-owner", "project_id": "source-project"}
+    monkeypatch.setattr(api, "resolve_job", lambda reference, **kwargs: dict(resolved))
+    monkeypatch.setattr(job_catalog, "get_job_access_record", lambda group, run: access)
+
+    with pytest.raises(HTTPException) as denied:
+        api._resolve_api_job("prediction/source", {"id": "unrelated-user", "role": "user"})
+    assert denied.value.status_code == 404
+
+    access["owner_id"] = USER_ID = "analysis-owner"
+    user = {"id": USER_ID, "role": "user"}
+    row = api._resolve_api_job("prediction/source", user)
+    assert row["run_id"] == "source"
+    with pytest.raises(HTTPException) as wrong_project:
+        api._guard_source_job({"source_job": "prediction/source", "workflow": "analysis.biotite_interface", "parameters": {}},
+                              user, project_id="different-project")
+    assert wrong_project.value.status_code == 422
+    api._guard_source_job({"source_job": "prediction/source", "workflow": "analysis.biotite_interface", "parameters": {}},
+                          user, project_id="source-project")
+
+
 def test_legacy_docking_source_selects_only_best_poses_and_api_allows_missing_candidate_contract(tmp_path, monkeypatch):
     from mn_molecular_design_studio import ligand_compounds
     from mn_molecular_design_studio.engine.workflow_engine.workflows.quality_ligands import docking_candidates

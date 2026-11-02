@@ -139,6 +139,21 @@ class MolecularDatabase:
             );
             CREATE INDEX IF NOT EXISTS molecular_structure_lookup ON molecule_structures(molecule_id,group_id);
             CREATE INDEX IF NOT EXISTS molecular_structure_path ON molecule_structures(path);
+            CREATE TABLE IF NOT EXISTS complex_review_annotations (
+                id TEXT PRIMARY KEY,
+                source_kind TEXT NOT NULL,
+                subject_id TEXT NOT NULL,
+                structure_ref TEXT NOT NULL DEFAULT '',
+                evaluation_id TEXT NOT NULL DEFAULT '',
+                user_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(source_kind,subject_id,structure_ref,evaluation_id,user_id)
+            );
+            CREATE INDEX IF NOT EXISTS complex_review_lookup
+                ON complex_review_annotations(source_kind,subject_id,structure_ref,evaluation_id,user_id);
             CREATE TABLE IF NOT EXISTS molecule_observations (
                 id TEXT PRIMARY KEY, molecule_id TEXT NOT NULL REFERENCES molecules(id),
                 group_id TEXT NOT NULL REFERENCES molecule_groups(id), namespace TEXT NOT NULL,
@@ -1008,6 +1023,100 @@ class MolecularDatabase:
         if not destination.exists():
             destination.write_bytes(content)
         return destination
+
+    def _validate_complex_review_subject(self, user, source_kind, subject_id, structure_ref, evaluation_id=""):
+        if not str(user.get("id") or ""):
+            raise PermissionError("A signed-in user is required to access review annotations.")
+        source_kind = str(source_kind or "").casefold()
+        subject_id = str(subject_id or "")
+        structure_ref = str(structure_ref or "")
+        evaluation_id = str(evaluation_id or "")
+        if source_kind == "database":
+            records = self.list_molecules(user, molecule_ids=[subject_id], collection="all", limit=1)["items"]
+            if not records:
+                raise PermissionError("This Database record is not accessible.")
+            record = records[0]
+            if structure_ref not in {str(item.get("id") or "") for item in record.get("representations", [])}:
+                raise PermissionError("This Database structure is not accessible for review.")
+            if evaluation_id:
+                from mn_molecular_design_studio.evaluations import evaluation_descriptor
+                known = set()
+                for observation in record.get("observations", []):
+                    try:
+                        known.add(evaluation_descriptor(observation)["id"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                if evaluation_id not in known:
+                    raise PermissionError("This Database evaluation is not accessible for review.")
+            return
+        if source_kind != "results":
+            raise ValueError("Review source must be Database or Results.")
+        task_group, separator, run_id = subject_id.partition("/")
+        if not separator or not task_group or not run_id or "/" in run_id:
+            raise ValueError("Results review requires a task-group/run identifier.")
+        relative = Path(structure_ref)
+        if not structure_ref or relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("Results review requires a job-relative structure path.")
+        from mn_molecular_design_studio.auth import can_access_job
+        from mn_molecular_design_studio.job_catalog import get_job_access_record
+        from mn_molecular_design_studio.runtime import runs_root
+        job = get_job_access_record(task_group, run_id)
+        if not job or not can_access_job(user, job):
+            raise PermissionError("This Results job is not accessible.")
+        root = Path(runs_root()).expanduser().resolve()
+        run_relative = Path(str(job.get("run_relative_path") or task_group + "/" + run_id))
+        run_dir = (root / run_relative).resolve(strict=True)
+        selected = (run_dir / relative).resolve(strict=True)
+        try:
+            run_dir.relative_to(root)
+            selected.relative_to(run_dir)
+        except ValueError as exc:
+            raise PermissionError("This Results structure is outside the authorized job.") from exc
+        if not selected.is_file():
+            raise FileNotFoundError("The Results structure is no longer available.")
+
+    def get_complex_review(self, user, *, source_kind, subject_id, structure_ref, evaluation_id=""):
+        """Read this user's persistent, non-scientific review annotation after rechecking source access."""
+        source_kind = str(source_kind or "").casefold()
+        subject_id = str(subject_id or "")
+        structure_ref = str(structure_ref or "")
+        evaluation_id = str(evaluation_id or "")
+        self._validate_complex_review_subject(user, source_kind, subject_id, structure_ref, evaluation_id)
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT status,note,created_at,updated_at FROM complex_review_annotations "
+                "WHERE source_kind=? AND subject_id=? AND structure_ref=? AND evaluation_id=? AND user_id=?",
+                (source_kind, subject_id, structure_ref, evaluation_id, str(user["id"])),
+            ).fetchone()
+        return dict(row) if row else {"status": "Unreviewed", "note": "", "created_at": "", "updated_at": ""}
+
+    def save_complex_review(self, user, *, source_kind, subject_id, structure_ref, evaluation_id="", status="Unreviewed", note=""):
+        """Save a user's manual review separately from calculated observations and metrics."""
+        source_kind = str(source_kind or "").casefold()
+        subject_id = str(subject_id or "")
+        structure_ref = str(structure_ref or "")
+        evaluation_id = str(evaluation_id or "")
+        status = str(status or "").strip()
+        note = str(note or "")
+        if status not in {"Unreviewed", "Needs review", "Reviewed", "Not applicable"}:
+            raise ValueError("Choose a supported review status.")
+        if len(note) > 10_000:
+            raise ValueError("Review notes are limited to 10,000 characters.")
+        self._validate_complex_review_subject(user, source_kind, subject_id, structure_ref, evaluation_id)
+        stamp = _now()
+        identifier = _id("review-", _json([source_kind, subject_id, structure_ref, evaluation_id, user["id"]]))
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT INTO complex_review_annotations "
+                "(id,source_kind,subject_id,structure_ref,evaluation_id,user_id,status,note,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_kind,subject_id,structure_ref,evaluation_id,user_id) "
+                "DO UPDATE SET status=excluded.status,note=excluded.note,updated_at=excluded.updated_at",
+                (identifier, source_kind, subject_id, structure_ref, evaluation_id, str(user["id"]), status, note, stamp, stamp),
+            )
+        return self.get_complex_review(
+            user, source_kind=source_kind, subject_id=subject_id,
+            structure_ref=structure_ref, evaluation_id=evaluation_id,
+        )
 
 
 def save_legacy_groups(path: Path, groups: list[dict], user: dict):
