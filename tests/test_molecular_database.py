@@ -102,6 +102,38 @@ def test_preserves_stereochemistry_stoichiometry_and_group_chain_ids(database):
     assert len(stereo["molecule_ids"]) == 2
 
 
+def test_structure_catalog_exposes_explicit_target_provenance_without_hydrating_complex_identity(database):
+    imported = database.import_records(A, imports.parse_sequences(">binder\nACDEFG"), name="Target-conditioned binder")
+    molecule_id = imported["molecule_ids"][0]
+    database.update_metadata(A, imported["group_id"], molecule_id, {
+        "target_fasta": "target.fasta",
+        "target_chain_inference": "fasta_sequence_match",
+        "target_type": "sequence",
+    })
+    structure_id = database.attach_structure(
+        imported["group_id"], molecule_id,
+        {"name": "complex.cif", "content": b"data_test\n", "label": "Saved complex"},
+        context={"candidate_id": "candidate-1"},
+    )
+
+    record = next(item for item in database.list_structure_records(A)["items"] if item["id"] == molecule_id)
+    assert record["source_target_provenance"] is True
+    assert len(record["components"]) == 1
+    assert record["representations"][0]["id"] == structure_id
+    assert database.list_structure_records(B)["items"] == []
+
+
+def test_structure_catalog_does_not_mark_generic_target_files_as_an_explicit_chain_link(database):
+    imported = database.import_records(A, imports.parse_sequences(">binder\nACDEFG"), name="Sequence-only binder")
+    molecule_id = imported["molecule_ids"][0]
+    database.update_metadata(A, imported["group_id"], molecule_id, {"target_fasta": "target.fasta"})
+    database.attach_structure(imported["group_id"], molecule_id,
+                              {"name": "binder.cif", "content": b"data_test\n"})
+
+    record = next(item for item in database.list_structure_records(A)["items"] if item["id"] == molecule_id)
+    assert record["source_target_provenance"] is False
+
+
 def test_concurrent_legacy_writes_preserve_other_owners_and_additions(tmp_path):
     path = tmp_path / "groups.json"
     path.write_text(json.dumps([{"id": "bob", "name": "Bob", "owner_id": B["id"], "members": []}]))

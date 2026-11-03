@@ -850,6 +850,26 @@ if st.button("Open selected Database structure"):
     assert app.session_state["page"] == "Complex Analysis"
 
 
+def test_database_picker_accepts_explicit_target_provenance_for_single_component_identity():
+    from mn_molecular_design_studio.complex_analysis_ui import _has_database_analysis_complex, _target_structure_notice
+
+    binder_identity = {
+        "components": [{"type": "protein", "chain": "B", "role": "binder", "sequence": "ACDEFG"}],
+        "source_target_provenance": True,
+        "representations": [{"id": "structure-1", "context": {"candidate_id": "candidate-1"}}],
+    }
+    assert _has_database_analysis_complex(binder_identity)
+    assert not _has_database_analysis_complex({
+        "components": binder_identity["components"],
+        "representations": binder_identity["representations"],
+    })
+    assert "saved predicted conformation" in _target_structure_notice({"target_type": "sequence"})
+    assert "stable native target fold" in _target_structure_notice({
+        "validation_acceptance": {"target_type": "fasta_idr"},
+    })
+    assert not _target_structure_notice({"target_type": "structured"})
+
+
 def test_workspace_review_form_saves_persistent_annotation(tmp_path, monkeypatch):
     database = _isolated_database(tmp_path, monkeypatch)
     imported_record = molecule_imports.parse_structure(_complex_pdb("protein"), "review-form.pdb")[0]

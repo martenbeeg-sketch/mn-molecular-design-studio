@@ -749,9 +749,17 @@ class MolecularDatabase:
                 "ORDER BY mm.added_at DESC LIMIT 1),m.components) AS components,"
                 "(SELECT mm.name FROM molecule_members mm "
                 "WHERE mm.molecule_id=m.id AND mm.group_id IN (SELECT value FROM json_each(?)) "
-                "ORDER BY mm.added_at DESC LIMIT 1) AS name FROM molecules m WHERE " + clause +
+                "ORDER BY mm.added_at DESC LIMIT 1) AS name,"
+                "COALESCE((SELECT CASE WHEN json_valid(mm.metadata) "
+                "AND COALESCE(json_extract(mm.metadata,'$.target_chain_inference'),'')<>'' "
+                "AND (COALESCE(json_extract(mm.metadata,'$.target_fasta'),'')<>'' "
+                "OR COALESCE(json_extract(mm.metadata,'$.target_pdb'),'')<>'') "
+                "THEN 1 ELSE 0 END FROM molecule_members mm "
+                "WHERE mm.molecule_id=m.id AND mm.group_id IN (SELECT value FROM json_each(?)) "
+                "ORDER BY mm.added_at DESC LIMIT 1),0) AS source_target_provenance "
+                "FROM molecules m WHERE " + clause +
                 " ORDER BY m.created_at DESC NULLS LAST,m.id LIMIT ? OFFSET ?",
-                [visible_json, visible_json, *parameters, int(limit) + 1, int(offset)],
+                [visible_json, visible_json, visible_json, *parameters, int(limit) + 1, int(offset)],
             ).fetchall()
             has_more = len(rows) > int(limit)
             rows = rows[:int(limit)]
@@ -770,7 +778,8 @@ class MolecularDatabase:
             else:
                 structures = []
         result = {
-            row["id"]: {**dict(row), "components": json.loads(row["components"]), "groups": [],
+            row["id"]: {**dict(row), "components": json.loads(row["components"]),
+                        "source_target_provenance": bool(row["source_target_provenance"]), "groups": [],
                         "structures": [], "representations": []}
             for row in rows
         }

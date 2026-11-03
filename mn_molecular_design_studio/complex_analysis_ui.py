@@ -167,6 +167,45 @@ def _evaluation_label(item: dict) -> str:
     ) if value)
 
 
+def _has_database_analysis_complex(item: dict) -> bool:
+    """Recognize stored complexes and source-linked target-conditioned poses.
+
+    A few design imports register the binder as the molecular identity while
+    keeping the target only in the exact saved complex representation and its
+    source metadata. The lightweight Database catalog marks that explicit
+    provenance without hydrating every record. The selected structure is
+    still parsed before the user chooses chains or launches an evaluator.
+    """
+    if len(item.get("components") or []) >= 2:
+        return True
+    if any((structure.get("context") or {}).get("database_structure_policy") == "bound_docking_complex"
+           for structure in item.get("representations") or item.get("structures") or []):
+        return True
+    if item.get("source_target_provenance") is True:
+        return True
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    return bool(metadata.get("target_chain_inference") and (metadata.get("target_fasta") or metadata.get("target_pdb")))
+
+
+def _target_structure_notice(metadata: dict) -> str:
+    """Describe sequence-defined target provenance without inferring a fold."""
+    validation = metadata.get("validation_acceptance") if isinstance(metadata.get("validation_acceptance"), dict) else {}
+    target_type = str(validation.get("target_type") or metadata.get("target_type") or "").strip().casefold()
+    if target_type == "fasta_idr":
+        return (
+            "The source workflow identifies this as a sequence-defined IDR target. Structural interface, confidence, "
+            "and energy measurements involving that chain describe this saved predicted conformation; they do not "
+            "establish a stable native target fold."
+        )
+    if target_type in {"sequence", "fasta"}:
+        return (
+            "The source workflow defines this target by sequence. Structural measurements involving that chain "
+            "describe this saved predicted conformation; sequence provenance does not establish a native fold or "
+            "a full-length structural reference."
+        )
+    return ""
+
+
 def _evaluation_matches_structure(evaluation: dict, structure: dict) -> bool:
     context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
     representation_id = str(evaluation.get("representation_id") or "")
@@ -3181,12 +3220,6 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
     from mn_molecular_design_studio.complex_analysis_catalog import authorized_structure_catalog
 
-    def has_analysis_complex(item: dict) -> bool:
-        if len(item.get("components") or []) >= 2:
-            return True
-        return any((structure.get("context") or {}).get("database_structure_policy") == "bound_docking_complex"
-                   for structure in item.get("representations") or item.get("structures") or [])
-
     database = MolecularDatabase()
     st.caption("Analyses launched from Database use the existing Studio workflow queue on this workstation; the selected structure stays linked to its Database record without creating a prediction Results job.")
     query = st.text_input("Search Database complexes", key="complex-analysis-db-query", placeholder="Name or sequence")
@@ -3200,7 +3233,8 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
         database, user, session_state=st.session_state, cache_key=catalog_key,
         query=query, limit=100, advance=load_next, refresh=refresh_catalog,
     )
-    records = [item for item in catalog["records"] if item.get("representations") and has_analysis_complex(item)]
+    records = [item for item in catalog["records"]
+               if item.get("representations") and _has_database_analysis_complex(item)]
     st.caption(f"Showing {len(records):,} authorized complex choices on this page"
                + ("; additional pages are available." if catalog.get("next_offset") is not None else "."))
     by_id = {str(item["id"]): item for item in records}
@@ -3210,14 +3244,22 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
             requested = database.list_molecules(user, molecule_ids=[requested_id], collection="all", limit=1)["items"]
         except PermissionError:
             requested = []
-        if requested and requested[0].get("representations") and has_analysis_complex(requested[0]):
+        if requested and requested[0].get("representations") and _has_database_analysis_complex(requested[0]):
             records = [requested[0], *records]
             by_id[requested_id] = requested[0]
     if not records:
-        st.info("No accessible Database records with a saved multi-component structure are available. Import a PDB/mmCIF structure in Database or open a completed Results structure.")
+        st.info("No accessible Database records with a saved multi-component structure or explicit target-conditioned structure provenance are available. Import a PDB/mmCIF structure in Database or open a completed Results structure.")
         return
     ids = list(dict.fromkeys(str(item["id"]) for item in records))
-    labels = {str(item["id"]): f"{item.get('name') or 'Complex'} · {max(2, len(item.get('components') or []))} components · {str(item['id'])[-8:]}" for item in records}
+    labels = {
+        str(item["id"]): (
+            f"{item.get('name') or 'Complex'} · "
+            + ("target in saved structure · " if item.get("source_target_provenance") else
+               f"{len(item.get('components') or [])} registered components · ")
+            + str(item["id"])[-8:]
+        )
+        for item in records
+    }
     if requested_id not in ids:
         requested_id = ids[0]
     molecule_widget_key = "complex-analysis-molecule-id"
@@ -3290,6 +3332,16 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
         f"Structure {structure_id} · {structure.get('label') or path.name}"
     )
     component_rows = component_inventory(path.read_bytes(), path.name, all_record.get("components"))
+    source_metadata = all_record.get("metadata") if isinstance(all_record.get("metadata"), dict) else {}
+    target_notice = _target_structure_notice(source_metadata)
+    if target_notice:
+        st.info(target_notice)
+    if source_metadata.get("target_chain_inference") and (source_metadata.get("target_fasta") or source_metadata.get("target_pdb")):
+        st.caption(
+            "This Database molecular identity stores fewer chains than its target-conditioned source record. "
+            "The selected saved structure is parsed below; choose the target chain from its coordinates explicitly. "
+            "The source record preserves a target sequence relationship, not a separate linked target molecule."
+        )
     _show_components(component_rows)
     viewer_key = f"complex-analysis-db-viewer-{structure_id}"
     structure_context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
