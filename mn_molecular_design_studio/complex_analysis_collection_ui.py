@@ -567,18 +567,21 @@ def render_collection_workspace(user: dict) -> None:
     query = st.text_input("Search Database structures", key="complex-analysis-collection-query",
                           placeholder="Name, sequence, or molecule identifier")
     catalog_key = _widget_key("complex-analysis-collection-catalog-", str(user.get("id") or ""))
-    cached_catalog = st.session_state.get(catalog_key)
-    same_query = isinstance(cached_catalog, dict) and str(cached_catalog.get("query") or "") == query
     refresh_catalog = st.button("Refresh Database structures", key=_widget_key("complex-analysis-collection-refresh-", str(user.get("id"))))
+    catalog = authorized_structure_catalog(
+        database, user, session_state=st.session_state, cache_key=catalog_key,
+        query=query, limit=100, refresh=refresh_catalog,
+    )
     load_next = st.button(
         "Load next Database structure page",
         key=_widget_key("complex-analysis-collection-next-", f"{user.get('id')}:{query}"),
-        disabled=not (same_query and cached_catalog.get("next_offset") is not None),
+        disabled=catalog.get("next_offset") is None,
     )
-    catalog = authorized_structure_catalog(
-        database, user, session_state=st.session_state, cache_key=catalog_key,
-        query=query, limit=100, advance=load_next, refresh=refresh_catalog,
-    )
+    if load_next:
+        catalog = authorized_structure_catalog(
+            database, user, session_state=st.session_state, cache_key=catalog_key,
+            query=query, limit=100, advance=True,
+        )
     records = list(catalog.get("records") or [])
     if not records:
         st.info("No accessible Database structures match this search.")
