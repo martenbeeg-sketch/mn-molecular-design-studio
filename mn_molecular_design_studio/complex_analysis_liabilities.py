@@ -625,6 +625,10 @@ def _pep_patch_findings(reuse: list[dict], component_chains: list[str], chain_ro
                                   "metrics": payload, "method": "PEP-Patch", "method_version": item.get("method_version") or "unrecorded"})
             elif name.startswith("residue_patches") and name.endswith(".csv"):
                 for row in _parse_csv(path):
+                    # The native artifact contains both surface methods. An
+                    # electrostatic patch is not hydrophobic liability evidence.
+                    if str(row.get("method") or "").strip().casefold() != "hydrophobic":
+                        continue
                     nested = _parse_nested(row.get("per_residue_patches"))
                     if isinstance(nested, list):
                         patch_rows = nested
@@ -639,11 +643,18 @@ def _pep_patch_findings(reuse: list[dict], component_chains: list[str], chain_ro
                         if chain_id not in component_chains:
                             continue
                         try:
-                            number = int(patch.get("residue_id", patch.get("author_number")))
+                            residue_id = str(patch.get("residue_id", patch.get("author_number", ""))).strip()
+                            identity = re.fullmatch(r"(-?\d+)([A-Za-z]?)", residue_id)
+                            if identity is None:
+                                continue
+                            number = int(identity.group(1))
                         except (TypeError, ValueError):
                             continue
                         chain_track = chain_rows.get(chain_id) or []
                         candidates = [entry for entry in chain_track if entry.get("author_number") == number]
+                        if identity.group(2):
+                            candidates = [entry for entry in candidates
+                                          if str(entry.get("insertion_code") or "") == identity.group(2)]
                         if len(candidates) != 1:
                             continue
                         residue = candidates[0]

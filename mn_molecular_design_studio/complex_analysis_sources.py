@@ -257,6 +257,7 @@ def authorize_database_structure(
         selected_evaluation = known[evaluation_id]
 
     context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
+    structure_context = context
     saved_model = str(context.get("model_id") or context.get("model_index") or context.get("model") or "")
     model_id = str(selection.get("model_id") or saved_model or structure_id)
     if saved_model and model_id != saved_model:
@@ -264,6 +265,9 @@ def authorize_database_structure(
     path = database.structure_file(user, structure_id, materialize=True).resolve()
     if path.suffix.casefold() not in _STRUCTURE_SUFFIXES:
         raise ValueError("This analysis workflow requires a PDB or mmCIF Database structure.")
+    from mn_molecular_design_studio.complex_analysis_comparison import _read_biopython_structure
+    if len(list(_read_biopython_structure(path).get_models())) != 1:
+        raise ValueError("Select a saved single-model Database representation before running an analysis; an internal model cannot be inferred from a label.")
     digest = file_digest(path)
     if not digest:
         raise FileNotFoundError("The selected Database structure could not be read.")
@@ -450,10 +454,10 @@ def authorize_database_structure(
         "record_name": str(record.get("name") or molecule_id),
         "record_components": record.get("components") or components,
         "parsed_components": components,
-        "structure_context": context,
+        "structure_context": structure_context,
         "group_origin": group.get("origin") or {},
         "observations": list(record.get("observations") or []),
-        "structure_record": {"id": structure_id, "group_id": group_id, "context": context,
+        "structure_record": {"id": structure_id, "group_id": group_id, "context": structure_context,
                              "label": structure.get("label") or ""},
     }
 

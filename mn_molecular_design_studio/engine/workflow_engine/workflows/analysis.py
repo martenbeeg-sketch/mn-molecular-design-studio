@@ -1546,6 +1546,7 @@ def _find_pae_path(source_run_dir: Path, candidate: dict[str, Any], structure_pa
         resolved = _resolve_path(source_run_dir, str(explicit_pae))
         if resolved and resolved.exists():
             return resolved
+        return None
     if structure_path:
         direct_matches = [
             structure_path.with_name(f"{structure_path.stem}_pae.json"),
@@ -1580,13 +1581,22 @@ def _find_pae_path(source_run_dir: Path, candidate: dict[str, Any], structure_pa
         seen.add(directory)
         if structure_path:
             stem = structure_path.stem
+            bounded_stem = re.compile(r"(?:^|[_.-])" + re.escape(stem) + r"(?:[_.-]|$)")
             for pattern in [f"{stem}*pae*.json", f"{stem}*pae*.npz", f"*{stem}*pae*.json", f"*{stem}*pae*.npz"]:
-                matches = sorted(directory.glob(pattern))
-                if matches:
+                matches = sorted(path for path in directory.glob(pattern) if bounded_stem.search(path.stem))
+                if len(matches) == 1:
                     return matches[0]
+        # A shared prediction directory may hold several same-length models.
+        # Matrix shape cannot establish which model a generic sidecar belongs
+        # to. Only allow a generic file in the selected structure's private,
+        # single-structure directory; otherwise require explicit provenance.
+        coordinates = [path for path in directory.iterdir() if path.is_file()
+                       and path.suffix.lower() in {".pdb", ".ent", ".cif", ".mmcif"}]
+        if structure_path is None or directory != structure_path.parent or coordinates != [structure_path]:
+            continue
         for pattern in patterns:
             matches = sorted(directory.glob(pattern))
-            if matches:
+            if len(matches) == 1:
                 return matches[0]
     return None
 
