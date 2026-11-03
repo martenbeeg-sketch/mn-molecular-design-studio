@@ -26,7 +26,7 @@ The 412 accepted RFD4 structures do not have compatible pairwise PAE in the save
 
 ## Workstation visibility
 
-The primary Database contains all 537 Biotite observations and all 100 R3 BindCraft2 ipSAE observations. At the start of this follow-up, `share_molecular_database` was disabled on the primary workstation; it has now been enabled. The primary peer-sync cursors reached the current source cursors, but the 25 IDR BindCraft2 ipSAE observations attached to accepted records on PC004032/PC004033 still did not appear in the primary Database. They remain available on their source workstations and are not reported as lost. Source-side publication still needs to be checked: each source workstation must have molecular Database sharing enabled and its agent must publish the updated observation snapshots. The per-design CSV retains their source workstation, run ID, score, digest, target ID, and collection.
+The primary Database contains all 537 Biotite observations and all 125 BindCraft2 ipSAE measurements. The sharing flag had been disabled on the primary and both source workstations, which prevented the IDR observations from appearing centrally. Sharing is now enabled on all three, and the 25 IDR BindCraft2 results have replicated into the primary. Each score was verified against its exact structure digest, source collection/run, analysis run, and target ID. One accepted design has two matching ipSAE observations from separate analysis runs; it remains one distinct design. The agents continue synchronizing the remaining historical Database metadata.
 
 No BindCraft2 or RFD4 filter was rerun, and no pass/fail state was changed. Biotite and ipSAE are additional measurements, not new acceptance criteria.
 
