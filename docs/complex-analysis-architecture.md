@@ -95,7 +95,7 @@ measurements, job state, Evaluation ID, and provenance when available.
 | Optional reference association | **Implemented as component-specific context.** It preserves source/reference structure IDs, digests, model IDs, chains and author numbering. A unique exact subsequence correspondence covering the full source construct is valid even when it covers only part of the reference; ambiguous or non-identical correspondence is not enabled for reference-dependent evaluation. |
 | Paired reference visualization | **Supported when an authorized association exists.** Before placement is evaluated, the selected complex and reference display in separate original coordinate frames. A matching completed placement Evaluation enables the transformed source complex beside the original reference in one Mol* viewer. |
 | Exact-correspondence structural placement | **Supported as an optional registered Evaluation.** A unique contiguous exact source subsequence is fitted to the explicitly associated reference chain using mapped Cα atoms and the shared Bio.PDB.Superimposer Kabsch fitter. Results retain both structure identities, digests, models, chains, residue map, transformation, aligned-pair count, source/reference coverage, RMSD, method/version and parameters. |
-| Non-identical correspondence and placement | **Unavailable.** Substitutions, internal insertions/deletions, ambiguous sequence maps and TM-align/US-align correspondence are not fitted by this workflow. |
+| Non-identical correspondence and placement | **No persisted Evaluation.** Mol* has a separate transient TM-align superposition for selected polymer chains; it does not save a Database-bound correspondence, placement Evaluation or provenance. No Studio US-align workflow is registered. |
 | Full-length spatial context, glycans and advanced steric context | **Unavailable as validated Complex Analysis evaluations.** No full-length clash/occlusion, glycan accessibility, or context score is claimed. These require separately validated calculations and provenance. |
 | Protein–DNA/RNA interactions, generalized specificity and fusion/tag accessibility | **Unavailable as general contextual analyses.** Existing prediction-time constraints or protein-only tools are not presented as post-hoc evaluations for these cases. |
 
@@ -131,6 +131,15 @@ The evaluator does not calculate clashes, glycans, occlusion, or accessibility,
 and a partial reference chain does not become full-length context by inference.
 TM-align/US-align and validated non-identical structural correspondence remain
 separate future work.
+
+Mol*'s existing TM-align control is useful for interactive structural
+comparison of selected polymer chains, including non-identical structures. Its
+viewer transform is not the exact-reference workflow above: it does not
+establish an explicit Database reference association or persist the aligned
+residue correspondence, source/reference digests, method parameters and
+transformation as a Studio Evaluation. It therefore remains a separate visual
+comparison capability until an Evaluation-backed workflow with validated
+inputs and provenance is implemented. No US-align integration was found.
 
 The documented validation fixture uses a five-residue source construct and its
 unique exact subsequence in a seven-residue reference chain. A known rigid
