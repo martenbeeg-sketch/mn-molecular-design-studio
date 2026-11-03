@@ -354,11 +354,14 @@ evaluation semantics.
 The focused consolidation regression selection passed 117 tests, including
 Complex Analysis, docking-to-complex, Database listing and the relevant API
 ACL/submission cases. Mol* residue-selection tests passed 3/3 and TypeScript
-type-checking passed. A broader `test_api_extended.py` run reported 153 passed,
-1 skipped and 1 unrelated ipSAE output assertion failure
-(`structure_design_interaction_preservation_fraction` missing); the modified
-Complex Analysis and Database discovery paths were not involved in that
-failure.
+type-checking passed. In the 2026-11-03 maintenance follow-up, the ipSAE API
+assertion was traced to a stale mocked CSV: the Studio parser's 71-column
+schema exactly matches the registered ipSAE runner, while the mock omitted
+seven target-aligned pose columns and shifted later values. The fixture now
+matches the runner field order; no production calculation changed. The
+relevant Complex Analysis, Database, workflow, reference-integrity, ipSAE and
+extended API selection passed 216 tests; one API test was skipped because the
+optional `mcp` Python module is unavailable in this environment.
 
 ### Verified by real execution
 

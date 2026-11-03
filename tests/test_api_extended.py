@@ -1333,7 +1333,11 @@ def test_ipsae_analysis_api_emits_directional_contact_pae_and_bc2_definition_ipd
                         "structure_hotspots_contacted", "structure_hotspots_missing", "structure_metrics_status",
                         "structure_metrics_error", "design_vs_cofold_rmsd_status", "design_vs_cofold_rmsd_error",
                         "structure_binder_design_to_cofold_fitted_ca_rmsd", "structure_binder_rmsd_ca_count",
-                        "structure_binder_rmsd_alignment_coverage", "hotspot_analysis_status", "hotspot_analysis_error"]
+                        "structure_binder_rmsd_alignment_coverage", "target_aligned_pose_rmsd_status",
+                        "target_aligned_pose_rmsd_error", "structure_target_aligned_binder_pose_ca_rmsd",
+                        "structure_target_alignment_ca_rmsd", "structure_target_alignment_ca_count",
+                        "structure_target_aligned_binder_ca_count", "structure_target_aligned_binder_sequence_coverage",
+                        "hotspot_analysis_status", "hotspot_analysis_error"]
         headers_list.extend(["interaction_preservation_status", "interaction_preservation_error",
                              "structure_design_interface_residue_contact_pairs", "structure_cofold_interface_residue_contact_pairs",
                              "structure_interface_contact_pairs_preserved", "structure_design_interaction_preservation_fraction",
