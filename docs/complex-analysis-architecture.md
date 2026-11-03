@@ -93,7 +93,7 @@ measurements, job state, Evaluation ID, and provenance when available.
 | Collection Map and Evaluation Board | **Implemented.** Authorized Database structures can be paged and selected beyond the 2–5 Compare panel limit. Compatible protein–protein maps show saved Biotite contact footprints and per-structure frequencies; protein–ligand rows preserve pose and ligand identity without applying protein–protein metrics. Saved Interface Clustering and Foldseek assignments remain distinct. Missing evaluations are not zero-contact results. |
 | Contact measurements | **Supported with distinct meanings.** Saved residue-pair rows are pair counts; each contacted residue is counted once per structure; contact frequency is the number of evaluated structures contacting that residue divided by the number with compatible saved maps. |
 | Optional reference association | **Implemented as component-specific context.** It preserves source/reference structure IDs, digests, model IDs, chains and author numbering. A unique exact subsequence correspondence covering the full source construct is valid even when it covers only part of the reference; ambiguous or non-identical correspondence is not enabled for reference-dependent evaluation. |
-| Paired reference visualization | **Supported when an authorized association exists.** Before placement is evaluated, the selected complex and reference display in separate original coordinate frames. A matching completed placement Evaluation enables the transformed source complex beside the original reference in one Mol* viewer. |
+| Paired-reference visualization | **Supported when an authorized association and current placement Evaluation exist.** The complete saved reference coordinate file and transformed source share one Mol* view. Author-numbered sequence tracks distinguish mapped/present, resolved-but-omitted, and sequence-declared-but-unresolved reference residues. Other saved reference chains/components remain visible. Studio does not infer that the saved file is biologically full-length. |
 | Exact-correspondence structural placement | **Supported as an optional registered Evaluation.** A unique contiguous exact source subsequence is fitted to the explicitly associated reference chain using mapped Cα atoms and the shared Bio.PDB.Superimposer Kabsch fitter. Results retain both structure identities, digests, models, chains, residue map, transformation, aligned-pair count, source/reference coverage, RMSD, method/version and parameters. |
 | Non-identical correspondence and placement | **No persisted Evaluation.** Mol* has a separate transient TM-align superposition for selected polymer chains; it does not save a Database-bound correspondence, placement Evaluation or provenance. No Studio US-align workflow is registered. |
 | Full-length spatial context, glycans and advanced steric context | **Unavailable as validated Complex Analysis evaluations.** No full-length clash/occlusion, glycan accessibility, or context score is claimed. These require separately validated calculations and provenance. |
@@ -128,7 +128,7 @@ or invalid, the two structures remain visible in separate original frames.
 
 A good fit does not establish experimental binding or biological accessibility.
 The evaluator does not calculate clashes, glycans, occlusion, or accessibility,
-and a partial reference chain does not become full-length context by inference.
+and a partial reference file does not become full-length context by inference.
 TM-align/US-align and validated non-identical structural correspondence remain
 separate future work.
 
@@ -141,14 +141,128 @@ transformation as a Studio Evaluation. It therefore remains a separate visual
 comparison capability until an Evaluation-backed workflow with validated
 inputs and provenance is implemented. No US-align integration was found.
 
-The documented validation fixture uses a five-residue source construct and its
-unique exact subsequence in a seven-residue reference chain. A known rigid
-rotation and translation are recovered with five aligned pairs, source coverage
-1.0, reference coverage 5/7 and near-zero Cα RMSD. The Mol* adapter test checks
-that the original reference is loaded first and the source complex receives
-the saved source-to-reference matrix. The local Database contained no saved
-reference associations during this verification, so no genuine biological
-association was available for a live paired-view demonstration.
+The small unit fixture uses a five-residue source construct and its unique
+exact subsequence in a seven-residue reference chain. The real-coordinate
+validation fixture uses the complete tracked 5O45 mmCIF file (a partial PD-L1
+structural construct, not the full-length biological protein): the explicitly
+associated chain-A source is the unique author-numbered 45–105 construct, and
+the original chain-B partner is retained. A known rigid transform was applied
+to the source atoms before Database registration. The registered placement
+workflow recovered 61 pairs, source coverage 1.0, reference coverage 61/129,
+and sub-millangstrom Cα RMSD. Independent coordinate checks verified that both
+the source target and partner return to the reference coordinates under the
+saved Mol* matrix. The records and association live only in an isolated test
+Database; this does not create a biological association in production data.
+
+The paired Mol* adapter loads the complete saved reference first, untransformed,
+then the original selected complex with the saved source-to-reference matrix.
+The reference is grey and the source remains chain-colored. Reference sequence
+buttons select exact author-numbered residues in the first Mol* structure.
+Mapped source residues, resolved reference-only residues and unresolved
+declared sequence positions are distinct. CIF-declared branched entities and
+other parsed components are shown as file annotations; they are not treated as
+glycan occupancy, accessibility or context measurements. Without a current,
+authorized placement, both structures stay in their original coordinate
+frames, and ordinary Inspector panels remain available.
+
+### Optional reference structural-context inspection and measurement boundary
+
+This is an optional visualization layer for any explicitly associated Database
+reference, not a binder-design feature. It presents the existing source complex
+in the selected reference coordinate frame, the entire saved reference file
+(including additional chains and resolved non-protein components), and the
+selected reference chain's declared sequence/residue map. This shows the full
+saved reference representation, not necessarily a full-length biological
+protein. Mol* does not synthesize missing reference coordinates. A sequence
+tile without coordinates is labelled unresolved; regions absent from the
+source construct are not presented as measured occlusion or accessibility.
+When reference identity, access, digest, mapping, or placement checks fail, the
+ordinary source-complex Inspector remains usable and the two structures are
+not superposed.
+
+BinderScope's `target_frame.py` builds a campaign-aware construct/reference
+frame, optionally weights placement around the binder interface, and then
+calculates partner-subunit, rest-of-chain, glycan, cut-end and membrane-context
+measurements. Its Inspector renders those outputs as distinct scene layers,
+target-frame strips and evidence-linked findings. Studio reuses the presentation
+idea of displaying the explicitly associated reference around the placed
+complex and linking reference residues to Mol*; it does not port BinderScope's
+BindCraft run numbering, interface-weighted fit, verdict thresholds or context
+calculations. Studio's registered placement uses the existing Kabsch fitter on
+the validated mapped Cα pairs. No registered Studio evaluator currently takes
+the full reference assembly as spatial context.
+
+The existing registered evaluations do not currently consume this full
+reference context as a spatial measurement:
+
+| Existing Studio output | Reuse for reference context |
+| --- | --- |
+| Biotite Interface contacts, hydrogen bonds and residue artifacts | Provides evidence for the saved source-complex interface under its existing chain selections. It does not evaluate omitted reference domains, other reference subunits or glycans. Hydrogen bonds require explicit hydrogen atoms. |
+| Rosetta Interface Analysis | Provides its registered interface energy and SASA terms for the selected complex chains. Those definitions do not automatically include the remaining reference assembly. |
+| ipSAE / saved confidence fields | Retains its model/PAE-derived confidence outputs where inputs exist. It does not measure full-length steric fit or biological accessibility. |
+| PLIP and PandaMap | Provide saved ligand–receptor interaction records for the selected pose/receptor. They do not report ligand contacts with reference-only domains or glycans. |
+| PoseBusters | Validates ligand pose geometry/chemistry under its own inputs. It is not a receptor-context evaluator. |
+| PEP-Patch, Interface Clustering and Foldseek | Retain their surface, contact-mode and fold-similarity meanings respectively. None supplies a full-length context score; Foldseek similarity is not a binding-mode measurement. |
+
+No full-length clash, occlusion, glycan, membrane-accessibility, or
+construct-accessibility result is currently calculated. A future evaluator
+would need its own registered workflow, provenance and Evaluation artifact;
+the following are validation requirements, not present measurements:
+
+1. **Reference-only protein steric proximity.** Inputs: exact authorized
+   source complex and explicitly associated reference structures/digests,
+   selected model/chains, validated residue map, saved transform, and a
+   declared reference biological assembly when the intended context is not the
+   deposited coordinate set. A calculation could report heavy-atom minimum
+   distances and residue-pair counts between the transformed partner and
+   reference atoms outside the mapped construct, with explicit covalent,
+   alternate-location, hydrogen and missing-coordinate policies. It must not
+   label the result a binding score or imply that asymmetric-unit neighbors are
+   biological. Artifacts should include per-residue/atom-pair evidence, units,
+   threshold parameters, source selections and digests, transform identity and
+   a summary JSON. Validate known rigid fixtures, unchanged source/reference
+   files, atom correspondence, threshold sensitivity, chain/assembly selection,
+   and examples with genuine clash and non-clash geometry.
+2. **Explicit glycan proximity.** Inputs: a reference coordinate file with
+   explicitly resolved carbohydrate atoms, exact chain/entity/alternate
+   conformer and occupancy records, validated placement, and the transformed
+   partner selection. A distance/contact calculation may report atom and
+   residue-level proximity to those coordinates only. It cannot infer
+   unmodeled glycans, occupancy, glycoform distribution, flexibility or
+   accessibility. Artifacts should retain glycan entity/residue IDs, partner
+   residue IDs, distances and all digests/parameters. Validation requires
+   curated coordinate fixtures, entity/author-chain correspondence, alternate
+   conformers, covalent attachment handling, occupancy policy, and independent
+   coordinate-level checks.
+3. **Full-context solvent exposure or occlusion.** Inputs: a chemically
+   complete placed complex, the selected reference assembly, atom/residue
+   correspondence, protonation and missing-atom policy, and explicit
+   partner/context chains. Existing Rosetta SASA can be evaluated on declared
+   selections, but its existing interface output is not this full-context
+   comparison. A new evaluator must state solvent model, radii, probe size and
+   whether exposure differences are calculated per residue. Artifacts should
+   contain per-residue values in named units, exact selections, software/method
+   version and input digests. Validate against analytic/simple structures and
+   an independent implementation, with tests for missing loops, chain changes
+   and atom preparation.
+4. **Membrane-relative placement.** Inputs: an explicitly selected membrane
+   plane/orientation source (for example a saved membrane-frame structure or
+   curated plane annotation) in the same validated reference frame, plus
+   residue/atom selections. Without that orientation evidence, Studio cannot
+   infer membrane accessibility. Any future output should report signed
+   distances/orientation with frame provenance and validate against known
+   membrane structures and deliberate frame changes.
+5. **Construct-end context.** Existing contact artifacts and validated
+   residue correspondence can identify the source construct's mapped termini
+   and source-partner residue evidence. A future residue-level view can surface
+   contacts near those termini while retaining the Biotite method/parameters;
+   it cannot estimate the effect of absent sequence. Tests must include
+   insertions, author numbering, missing residues and alternate mappings.
+
+These outputs should become separate residue-linked Findings with evaluator,
+definition, units, parameters, exact residue references, artifacts and source
+provenance. They must not be merged into a universal quality score or conflated
+with predicted confidence or human review.
 
 BinderScope's family board, inspector, and binding-mode map informed the
 compatible-collection board and side-by-side inspector below. Its family

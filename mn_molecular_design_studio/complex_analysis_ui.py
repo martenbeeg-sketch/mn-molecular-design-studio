@@ -892,7 +892,8 @@ def _render_inspector_tracks(data: dict, viewer_key: str) -> None:
 
 
 def _render_database_inspector(user: dict, data: dict, viewer_key: str, *, record: dict,
-                               structure: dict, components: list[dict], model_id: str) -> None:
+                               structure: dict, components: list[dict], model_id: str,
+                               reference_view_context: dict | None = None) -> None:
     items = data["evaluations"]
     evaluators = {item["evaluator"] for item in items}
     interface_evaluators = {"biotite_interface", "rosetta_metrics", "ipsae", "plip", "pandamap"}
@@ -958,7 +959,10 @@ def _render_database_inspector(user: dict, data: dict, viewer_key: str, *, recor
                 _render_inspector_findings(data, viewer_key)
             elif kind == "reference":
                 key = hashlib.sha256(f"database:{record['id']}:{structure['id']}".encode()).hexdigest()[:14]
-                _render_optional_reference_context(user, record, structure, components, model_id, key)
+                _render_optional_reference_context(
+                    user, record, structure, components, model_id, key,
+                    view_context=reference_view_context,
+                )
 
 
 def _render_biotite_results(user: dict, evaluation: dict, *, source_candidate_id: str, key: str,
@@ -1120,11 +1124,10 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
             if placement:
                 with st.expander("Rigid transformation, exact structures, mapped residues and limitations"):
                     st.json(placement)
-            report_path = item_dir / "report.json"
-            report = _read_json(report_path)
-            if report:
-                with st.expander("Native evaluator report", expanded=False):
-                    st.json(report)
+            summary = _read_json(run_dir / "artifacts" / "analysis" / "reference_placement_summary.json")
+            if summary:
+                with st.expander("Registered evaluator summary", expanded=False):
+                    st.json(summary)
     evaluator = {"analysis.ipsae": "ipsae", "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
                  "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters"}.get(workflow_id, workflow_id)
     evaluation_id = _analysis_evaluation_id(run_dir, user, source_candidate_id, evaluator=evaluator)
@@ -1695,7 +1698,8 @@ def _show_structure(path: Path, context: dict, components: list[dict], *, key: s
 
 def _show_reference_placement_overlay(reference_path: Path, source_path: Path,
                                       source_context: dict, result: dict, *,
-                                      key: str, highlighted_selections: list[str] | None = None) -> None:
+                                      key: str, highlighted_selections: list[str] | None = None,
+                                      reference_highlighted_selections: list[str] | None = None) -> None:
     """Show the exact associated reference and transformed source in one Mol* view."""
     if max(reference_path.stat().st_size, source_path.stat().st_size) > VIEWER_MAX_BYTES:
         st.info("One of these structures is over 50 MB; the placement remains saved, but this paired Mol* view is unavailable.")
@@ -1706,8 +1710,10 @@ def _show_reference_placement_overlay(reference_path: Path, source_path: Path,
 
         visualizations = [
             StructureVisualization(
-                pdb=_viewer_text(reference_path, {}), color="chain-id",
+                pdb=_viewer_text(reference_path, {}), color="uniform",
+                color_params={"value": "0x9AA3AE"},
                 representation_type="cartoon+ball-and-stick",
+                highlighted_selections=reference_highlighted_selections,
             ),
             StructureVisualization(
                 pdb=_viewer_text(source_path, source_context), color="chain-id",
@@ -1897,8 +1903,61 @@ def _reference_placement_match(user: dict, record: dict, structure: dict, saved:
     return {"job": current, "result": result}
 
 
+def _render_reference_context_track(track: dict, viewer_key: str) -> None:
+    residues = list(track.get("residues") or [])
+    if not residues:
+        st.info(track.get("reason") or "The selected reference does not expose a full polymer sequence track.")
+        return
+    st.markdown("##### Full reference-chain sequence")
+    st.caption(
+        "Mapped residues are present in the source construct and mapped to this reference. "
+        "Resolved reference-only residues are omitted from the source construct. "
+        "Unresolved residues occur in the declared polymer sequence but have no coordinates in this reference representation."
+    )
+    counts = track.get("counts") or {}
+    st.caption(
+        f"Chain {track.get('chain_id')} · {len(residues)} declared residues · "
+        f"{counts.get('mapped', 0)} mapped/present in source · "
+        f"{counts.get('omitted', 0)} reference-resolved but omitted · "
+        f"{counts.get('unresolved', 0)} unresolved in reference coordinates"
+    )
+    page_size = 24
+    page_count = max(1, (len(residues) + page_size - 1) // page_size)
+    state_key = f"{viewer_key}-reference-highlights"
+    page_key = f"{viewer_key}-reference-track-page-{track.get('chain_id')}"
+    if int(st.session_state.get(page_key, 0) or 0) >= page_count:
+        st.session_state[page_key] = 0
+    page = st.selectbox(
+        "Reference sequence segment", list(range(page_count)),
+        format_func=lambda index: f"Residues {index * page_size + 1}–{min((index + 1) * page_size, len(residues))} of {len(residues)}",
+        key=page_key,
+    )
+    selected = residues[page * page_size:(page + 1) * page_size]
+    st.caption("Reference sequence: " + "".join(row["amino_acid"] for row in selected))
+    symbols = {"mapped": "●", "omitted": "○", "unresolved": "?"}
+    labels = {"mapped": "Mapped and present in source construct",
+              "omitted": "Resolved in reference; omitted from source construct",
+              "unresolved": "Unresolved in selected reference coordinates"}
+    for offset in range(0, len(selected), 12):
+        batch = selected[offset:offset + 12]
+        columns = st.columns(12)
+        for column, residue in zip(columns, batch):
+            status = str(residue.get("status") or "unresolved")
+            number = str(residue.get("author_residue") or f"seq#{residue['sequence_index'] + 1}")
+            selector = str(residue.get("selector") or "")
+            column.button(
+                f"{symbols.get(status, '?')} {residue['amino_acid']}\n{number}",
+                key=f"{viewer_key}-reference-track-{track.get('chain_id')}-{residue['sequence_index']}",
+                help=f"Reference chain {track.get('chain_id')} · author residue {number} · {labels.get(status, status)}",
+                on_click=_select_inspector_evidence if selector else None,
+                args=(state_key, [selector]) if selector else None,
+                disabled=not selector,
+            )
+
+
 def _render_optional_reference_context(user: dict, record: dict, structure: dict,
-                                       components: list[dict], model_id: str, key: str) -> None:
+                                       components: list[dict], model_id: str, key: str,
+                                       view_context: dict | None = None) -> None:
     """Select and persist an optional Database reference for one protein component."""
     protein_chains = sorted({str(item.get("source_chain") or "") for item in components
                              if item.get("type") == "protein" and item.get("source_chain")})
@@ -1907,7 +1966,10 @@ def _render_optional_reference_context(user: dict, record: dict, structure: dict
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
 
     database = MolecularDatabase()
-    with st.expander("Optional component reference context", expanded=False):
+    view_context = view_context if isinstance(view_context, dict) else {}
+    paired_reference = view_context.get("paired_reference") if isinstance(view_context.get("paired_reference"), dict) else None
+    placement = view_context.get("placement") if isinstance(view_context.get("placement"), dict) else None
+    with st.expander("Optional component reference context", expanded=bool(placement)):
         st.caption(
             "A component-specific link to another saved Database structure is optional; Studio does not assert that the reference is full-length. Core analyses and compatible comparisons do not require it. "
             "Only exact Database IDs recorded in this structure's provenance are reused automatically; Studio does not infer a reference from sequence similarity or an unrelated cofold."
@@ -1951,6 +2013,55 @@ def _render_optional_reference_context(user: dict, record: dict, structure: dict
                     "Reference context is retained for provenance, but reference-dependent evaluations are disabled because residue correspondence is not fully validated. "
                     "Core analyses remain available."
                 )
+            if (placement and paired_reference
+                    and str(saved.get("id") or "") == str(paired_reference.get("saved", {}).get("id") or "")
+                    and placement.get("result")):
+                from mn_molecular_design_studio.complex_analysis_reference_context import (
+                    explicit_reference_components, reference_component_track,
+                )
+                result = placement["result"]
+                st.markdown("#### Reference context in the placed Mol* view")
+                st.caption(
+                    "The associated reference file is shown in its original coordinates in grey; the selected source complex is transformed into that frame and shown in chain colors. "
+                    "The reference file is loaded as saved, including its other resolved chains and components. Its coverage of the biological protein is not inferred."
+                )
+                st.caption(
+                    f"Reference Database record {saved.get('reference_molecule_id')} · structure {saved.get('reference_structure_id')} · "
+                    f"model {saved.get('reference_model_id')} · chain {saved.get('reference_component_chain')} · "
+                    f"SHA256 {str(saved.get('reference_structure_digest') or '')[:16]}"
+                )
+                reference_track = reference_component_track(
+                    paired_reference["path"], str(saved.get("reference_component_chain") or ""),
+                    result.get("mapped_residue_pairs") or [],
+                )
+                if reference_track.get("status") == "available":
+                    _render_reference_context_track(
+                        reference_track, f"complex-analysis-db-viewer-{structure['id']}",
+                    )
+                    st.caption("Residue buttons select the exact author-numbered residue in the reference (first structure) in the paired Mol* viewer. They do not add or infer measurements.")
+                else:
+                    st.info(reference_track.get("reason") or "Full reference sequence context is unavailable for this file.")
+                try:
+                    explicit_components = explicit_reference_components(paired_reference["path"])
+                except (OSError, ValueError, TypeError):
+                    explicit_components = []
+                if explicit_components:
+                    st.markdown("##### Explicit branched entities declared in the reference file")
+                    st.dataframe(explicit_components, hide_index=True, use_container_width=True)
+                    st.caption("These are coordinate-file annotations only. A declared glycan entity does not establish occupancy or accessibility; no context measurement is calculated.")
+                else:
+                    if paired_reference["path"].name.casefold().endswith((".pdb", ".ent")):
+                        st.caption("This PDB file has no mmCIF branched-entity annotations; non-polymer coordinates remain visible in Mol*. Studio does not infer missing glycans.")
+                    else:
+                        st.caption("No explicitly declared branched entities were detected in this reference file; Studio does not infer missing glycans.")
+                if paired_reference.get("components"):
+                    st.markdown("##### Other parsed reference components")
+                    st.dataframe([{
+                        "Type": component.get("type"),
+                        "Author chain": component.get("source_chain"),
+                        "Component": component.get("label"),
+                        "Residue / identity": component.get("residue_key") or component.get("smiles") or component.get("sequence"),
+                    } for component in paired_reference["components"]], hide_index=True, use_container_width=True)
             residues = mapping.get("residue_mapping") if isinstance(mapping.get("residue_mapping"), list) else []
             if residues:
                 rows = []
@@ -2498,7 +2609,9 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
                 placement["result"],
                 key=f"complex-analysis-reference-placement-viewer-{reference_key}-{paired_reference['source_chain']}",
                 highlighted_selections=_active_biotite_highlights(viewer_key),
+                reference_highlighted_selections=st.session_state.get(f"{viewer_key}-reference-highlights"),
             )
+            st.caption("Mol*: the complete associated reference is shown first in grey; the selected complex is second, transformed into the reference frame and colored by chain.")
             st.caption("The selected complex is transformed for display into the associated reference frame. Its Database coordinates and existing evaluations are unchanged. This fit does not establish experimental binding, biological accessibility, clashes, or glycan context.")
         else:
             source_view, reference_view = st.columns(2)
@@ -2520,7 +2633,8 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
                 )
             st.caption("No completed placement evaluation matches this exact source/reference association. These structures are displayed in their original, separate coordinate frames.")
         _render_database_inspector(user, inspector_data, viewer_key, record=all_record,
-                                   structure=structure, components=component_rows, model_id=model_id)
+                                   structure=structure, components=component_rows, model_id=model_id,
+                                   reference_view_context={"paired_reference": paired_reference, "placement": placement})
     else:
         structure_col, inspector_col = st.columns([1.15, 1])
         with structure_col:
@@ -2528,7 +2642,8 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
                             highlighted_selections=_active_biotite_highlights(viewer_key))
         with inspector_col:
             _render_database_inspector(user, inspector_data, viewer_key, record=all_record,
-                                       structure=structure, components=component_rows, model_id=model_id)
+                                       structure=structure, components=component_rows, model_id=model_id,
+                                       reference_view_context=None)
     _render_inspector_tracks(inspector_data, viewer_key)
     _show_component_groups(component_rows, structure_id)
     _render_database_analysis(user, record, structure, path, component_rows, evaluation_id,

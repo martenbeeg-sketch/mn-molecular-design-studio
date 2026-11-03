@@ -220,7 +220,7 @@ def test_placement_overlay_passes_reference_first_and_validated_transform_to_mol
 
     complex_analysis_ui._show_reference_placement_overlay(
         reference, source, {}, {"matrix_4x4": matrix}, key="overlay",
-        highlighted_selections=["A:4"],
+        highlighted_selections=["A:4"], reference_highlighted_selections=["R:6^A"],
     )
 
     assert len(captured) == 1
@@ -230,8 +230,35 @@ def test_placement_overlay_passes_reference_first_and_validated_transform_to_mol
     assert " A" in structures[1].pdb
     assert structures[0].transform_matrix is None
     assert structures[1].transform_matrix == matrix
+    assert structures[0].color == "uniform"
+    assert structures[0].color_params == {"value": "0x9AA3AE"}
+    assert structures[0].highlighted_selections == ["R:6^A"]
     assert structures[1].highlighted_selections == ["A:4"]
     assert options["key"] == "overlay"
+
+
+def test_placement_evaluation_summary_renders_without_ligand_item_directory(tmp_path, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import complex_analysis_ui
+
+    run_dir = tmp_path / "reference-placement-run"
+    artifacts = run_dir / "artifacts" / "analysis"
+    placement_dir = artifacts / "reference_placement"
+    placement_dir.mkdir(parents=True)
+    (run_dir / "metadata.json").write_text(json.dumps({"status": "COMPLETED"}))
+    (placement_dir / "reference_placement.json").write_text(json.dumps({"aligned_pair_count": 3}))
+    (artifacts / "reference_placement_summary.json").write_text(json.dumps({"rmsd_angstrom": 0.1}))
+    monkeypatch.setattr(complex_analysis_ui, "_analysis_evaluation_id", lambda *_args, **_kwargs: "evaluation-placement")
+    script = f'''\
+from mn_molecular_design_studio.complex_analysis_ui import _render_contextual_results
+_render_contextual_results({USER!r}, {{"run_dir": {str(run_dir)!r}, "status": "completed", "run_id": "placement-run", "job_code": "job-1", "metadata": {{}}}}, workflow_id="analysis.reference_placement", source_candidate_id="candidate-1", key="placement")
+'''
+
+    app = AppTest.from_string(script, default_timeout=20).run()
+
+    assert not app.exception
+    assert any("Registered evaluator summary" in item.label for item in app.expander)
+    assert any("evaluation-placement" in item.value for item in app.success)
 
 
 def test_database_workspace_launches_placement_from_saved_association(tmp_path, monkeypatch):
