@@ -504,6 +504,116 @@ def fetch_structure(row, user):
     return path
 
 
+def _removal_records(database, group_id, selected):
+    """Publish only the authoritative group policy and selected tombstones."""
+    from mn_molecular_design_studio.cluster import config
+    from mn_molecular_design_studio.cluster.replication import Replica
+    node_id = config.identity()
+    with database.connection() as connection:
+        group = dict(connection.execute("SELECT * FROM molecule_groups WHERE id=?", (group_id,)).fetchone())
+    if json.loads(group["origin"]).get("_replica_node"):
+        raise PermissionError("A replica cannot publish source membership changes.")
+    values = [("molecule_group:" + node_id + ":" + group_id, "molecule_group", {"node_id": node_id, "group": group})]
+    values.extend((f"molecule_entry:{node_id}:{group_id}:{mid}", "molecule_entry", None) for mid in selected)
+    replica, records = Replica(), []
+    with replica.db() as connection:
+        for key, kind, value in values:
+            replica._write(connection, key, kind, value, author=node_id)
+            counter = connection.execute("SELECT counter FROM records WHERE key=?", (key,)).fetchone()[0]
+            records.append(dict(key=key, kind=kind, author=node_id, counter=counter, value=value))
+    return records
+
+
+def publish_member_removal(database, user, group_id, selected):
+    """Persist a bounded mutation outbox even while bulk library sharing is paused."""
+    from mn_molecular_design_studio.cluster import config
+    # Explicit user removals are much smaller than a full library catch-up.
+    # A source-authored tombstone still uses the normal Lamport/authority checks.
+    directory = config.home() / "molecular-removals"
+    directory.mkdir(parents=True, exist_ok=True)
+    records = []
+    for start in range(0, len(selected), 499):
+        batch = selected[start:start + 499]
+        records.extend(_removal_records(database, group_id, batch))
+        payload = {"user_id": user["id"], "source_group_id": group_id,
+                   "molecule_ids": batch, "records": records[-(len(batch) + 1):]}
+        key = hashlib.sha256(_json(payload).encode()).hexdigest()
+        config.atomic_json(directory / (key + ".json"), {"payload": payload, "delivered": []})
+    for peer in config.load().get("peers", []):
+        flush_member_removals(peer)
+    return records
+
+
+def flush_member_removals(peer):
+    """Retry explicit removal events without changing the bulk sharing policy."""
+    from mn_molecular_design_studio.cluster import config, transport
+    for path in sorted((config.home() / "molecular-removals").glob("*.json")):
+        event = json.loads(path.read_text())
+        if peer["id"] in event.get("delivered", []):
+            continue
+        try:
+            response = transport.node_request("/molecules/removals", event["payload"], method="POST",
+                                              base_url=peer["url"], timeout=15)
+            if response.get("node_id") != peer["id"]:
+                raise ValueError("The peer API belongs to a different workstation.")
+        except (transport.ClusterUnavailable, ValueError, OSError):
+            continue
+        event["delivered"] = sorted(set(event.get("delivered", [])) | {peer["id"]})
+        config.atomic_json(path, event)
+
+
+def remove_remote_members(database, user, group, selected):
+    """Forward an authorized request; never edit a replica optimistically."""
+    from mn_molecular_design_studio.cluster import config, transport
+    node_id = group["origin"]["_replica_node"]
+    original_group = group["origin"]["_replica_group"]
+    peer = next((p for p in config.load().get("peers", []) if p["id"] == node_id), None)
+    if not peer:
+        raise transport.ClusterUnavailable("Connect the source workstation to remove this Database membership.")
+    if len(selected) > 499:
+        return sum(remove_remote_members(database, user, group, selected[start:start + 499])
+                   for start in range(0, len(selected), 499))
+    response = transport.node_request("/molecules/groups/" + original_group + "/members/remove",
+        {"user_id": user["id"], "molecule_ids": selected}, method="POST", base_url=peer["url"], timeout=60)
+    if response.get("node_id") != node_id:
+        raise ValueError("The mutation response belongs to a different workstation.")
+    receive_member_removal(database, user, node_id, response["mutation"])
+    return int(response["removed_count"])
+
+
+def receive_member_removal(database, user, author, payload):
+    """Validate the narrow source mutation before normal replication applies it."""
+    from mn_molecular_design_studio.cluster.replication import Replica
+    group_id = str(payload.get("source_group_id") or "")
+    ids = payload.get("molecule_ids")
+    records = payload.get("records")
+    if (not group_id or not isinstance(ids, list) or not ids or len(ids) > 499
+            or any(not isinstance(mid, str) or not mid.startswith("mol-") for mid in ids)
+            or not isinstance(records, list) or len(records) != len(set(ids)) + 1):
+        raise ValueError("Invalid source membership-removal event.")
+    replica_group = _id("peer-", author + ":" + group_id)
+    with database.connection() as connection:
+        existing = connection.execute("SELECT id FROM molecule_groups WHERE id=?", (replica_group,)).fetchone()
+    if existing:
+        group = database.group(replica_group, user)
+        if user.get("role") != "admin" and group["owner_id"] != user["id"]:
+            raise PermissionError("Only the group owner or an administrator can remove membership.")
+    expected = {f"molecule_entry:{author}:{group_id}:{mid}" for mid in ids}
+    group_key = f"molecule_group:{author}:{group_id}"
+    if {record.get("key") for record in records} != expected | {group_key}:
+        raise ValueError("Removal records do not match the selected source group and molecules.")
+    for record in records:
+        if record.get("author") != author:
+            raise PermissionError("Only the authoritative source may publish a removal.")
+        if record["key"] in expected and (record.get("kind") != "molecule_entry" or record.get("value") is not None):
+            raise ValueError("Membership removals require source entry tombstones.")
+        if record["key"] == group_key:
+            source_group = (record.get("value") or {}).get("group") or {}
+            if user.get("role") != "admin" and source_group.get("owner_id") != user["id"]:
+                raise PermissionError("Only the group owner or an administrator can remove membership.")
+    return Replica().receive(records)
+
+
 def materialize_portable_structures(*, database=None, peer=None):
     """Cache portable peer structures in this workstation's shared Database store."""
     from mn_molecular_design_studio.cluster import config, transport
@@ -561,6 +671,61 @@ def install_routes(app):
     from mn_molecular_design_studio.cluster.store import Store
     from mn_molecular_design_studio import auth
     router = APIRouter(prefix="/api/v1/cluster/node/molecules", tags=["molecular database peers"])
+
+    def mutation_user(request, payload):
+        authorization = request.headers.get("authorization", "")
+        if not authorization.startswith("Bearer "):
+            raise PermissionError("A workstation credential is required.")
+        actor = Store().authenticate_node(authorization[7:])
+        user = next((row for row in auth.list_users()
+                     if row["id"] == payload.get("user_id") and not row.get("disabled")), None)
+        if not user and auth.is_development_mode() and payload.get("user_id") == auth.development_user()["id"]:
+            user = auth.development_user()
+        if not user:
+            raise PermissionError("Unknown or disabled user.")
+        return actor, user
+
+    @router.post("/groups/{group_id}/members/remove")
+    def remove_members(group_id: str, request: Request, payload: dict = Body(...)):
+        try:
+            _, user = mutation_user(request, payload)
+            selected = payload.get("molecule_ids")
+            if (not isinstance(selected, list) or not 1 <= len(selected) <= 499
+                    or any(not isinstance(mid, str) or not mid.startswith("mol-") for mid in selected)):
+                raise ValueError("Select between 1 and 499 molecular identities.")
+            selected = list(dict.fromkeys(selected))
+            database = MolecularDatabase()
+            # The write check rejects replicas and rechecks the actual source ACL.
+            group = database.group(group_id, user, write=True)
+            with database.connection() as connection:
+                present = {row[0] for row in connection.execute(
+                    "SELECT molecule_id FROM molecule_members WHERE group_id=? AND molecule_id IN (SELECT value FROM json_each(?))",
+                    (group_id, _json(selected)))}
+            removed = set(group["origin"].get("removed_molecule_ids") or [])
+            if set(selected) - present - removed:
+                raise PermissionError("Some selected molecules are not in the source group.")
+            if present:
+                database.remove_from_group(user, group_id, sorted(present))
+            from mn_molecular_design_studio.cluster import config
+            mutation = {"user_id": user["id"], "source_group_id": group_id,
+                        "molecule_ids": selected, "records": _removal_records(database, group_id, selected)}
+            return {"node_id": config.identity(), "removed_count": len(selected), "mutation": mutation}
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @router.post("/removals")
+    def apply_removal(request: Request, payload: dict = Body(...)):
+        try:
+            actor, user = mutation_user(request, payload)
+            result = receive_member_removal(MolecularDatabase(), user, actor["id"], payload)
+            from mn_molecular_design_studio.cluster import config
+            return {"node_id": config.identity(), "accepted": result}
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @router.post("/structures/{structure_id}")
     def file(structure_id: str, request: Request, payload: dict = Body(...)):

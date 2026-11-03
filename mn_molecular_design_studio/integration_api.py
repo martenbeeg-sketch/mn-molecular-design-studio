@@ -93,6 +93,7 @@ class DockingPreparation(Contract):
 
 
 def install(app, current_user, admin_user, *, validate_paths):
+    from mn_molecular_design_studio.cluster.transport import ClusterUnavailable
     from mn_molecular_design_studio import api_files
     from mn_molecular_design_studio.auth import accessible_project_ids, require_project_access
     from mn_molecular_design_studio.external_libraries import LibraryCatalog
@@ -108,6 +109,8 @@ def install(app, current_user, admin_user, *, validate_paths):
             raise HTTPException(404, "Record not found or inaccessible.") from exc
         except (TypeError, ValueError, OSError) as exc:
             raise HTTPException(422, str(exc)) from exc
+        except ClusterUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
 
     def projects(values, user):
         result = []

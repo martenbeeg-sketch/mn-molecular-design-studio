@@ -1012,10 +1012,16 @@ class MolecularDatabase:
 
     def remove_from_group(self, user, group_id, ids):
         """Remove selected molecule rows and their group-scoped data only."""
-        self.group(group_id, user, write=True)
+        group = self.group(group_id, user)
+        if user.get("role") != "admin" and group["owner_id"] != user["id"]:
+            raise PermissionError("Only the group owner or an administrator can change this group.")
         selected = list(dict.fromkeys(str(value) for value in ids or []))
         if not selected:
             raise ValueError("Select at least one molecule.")
+        if group["origin"].get("_replica_node"):
+            from mn_molecular_design_studio.molecular_database_peer import remove_remote_members
+            return remove_remote_members(self, user, group, selected)
+        self.group(group_id, user, write=True)
         with self.connection() as connection:
             present = {row[0] for row in connection.execute(
                 "SELECT molecule_id FROM molecule_members WHERE group_id=? AND molecule_id IN (SELECT value FROM json_each(?))",
@@ -1032,7 +1038,17 @@ class MolecularDatabase:
                 "DELETE FROM molecule_members WHERE group_id=? AND molecule_id IN (SELECT value FROM json_each(?))",
                 (group_id, _json(selected)),
             )
-            connection.execute("UPDATE molecule_groups SET updated_at=? WHERE id=?", (_now(), group_id))
+            # Automatic job indexing must not resurrect an explicit collection
+            # removal. This is membership policy, not a Results rejection.
+            origin = json.loads(connection.execute(
+                "SELECT origin FROM molecule_groups WHERE id=?", (group_id,)
+            ).fetchone()[0])
+            origin["removed_molecule_ids"] = sorted(set(origin.get("removed_molecule_ids") or []) | present)
+            connection.execute("UPDATE molecule_groups SET updated_at=?,origin=? WHERE id=?", (_now(), _json(origin), group_id))
+        from mn_molecular_design_studio.cluster import config
+        if config.is_peer():
+            from mn_molecular_design_studio.molecular_database_peer import publish_member_removal
+            publish_member_removal(self, user, group_id, selected)
         return len(selected)
 
     def update_metadata(self, user, group_id, molecule_id, metadata, *, name=None):

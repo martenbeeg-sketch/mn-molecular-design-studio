@@ -1018,7 +1018,7 @@ def render_database(user, projects):
                     st.rerun()
                 selected_group = next((row for row in groups if row["id"] == group_id), None)
                 can_remove = bool(
-                    selected_group and not selected_group["read_only"]
+                    selected_group
                     and (user.get("role") == "admin" or selected_group["owner_id"] == user["id"])
                 )
                 if not group_id:
@@ -1039,7 +1039,7 @@ def render_database(user, projects):
                             st.session_state.pop("database-pending-removal", None)
                             st.session_state["molecular-database-flash"] = f"Removed {removed:,} molecule row(s) from {group_name}."
                             st.rerun()
-                        except (ValueError, PermissionError, sqlite3.Error) as exc:
+                        except (ValueError, PermissionError, OSError, RuntimeError, sqlite3.Error) as exc:
                             st.error(str(exc))
                     if cancel.button("Cancel removal", key="molecular-remove-cancel"):
                         st.session_state.pop("database-pending-removal", None)

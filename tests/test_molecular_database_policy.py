@@ -107,6 +107,31 @@ def test_generated_complex_refolding_is_library_output(database):
     assert database.list_molecules(A, group_id=library[0]["id"], collection="library")["total"] == 1
 
 
+def test_explicit_run_membership_removal_survives_forced_reindex(database):
+    run = _make_run(database, "design", "removed-rfd4", tool="rfd4_proteina",
+        workflow="design_generation", candidates=[{
+            "candidate_id": "saved-1", "stage": "generation.backbone_sequence", "binder_sequence": "ACDE"}])
+    assert ingest_run(run, database=database) == 1
+    group = next(g for g in database.groups(A, collection="all") if g["origin"].get("run_id") == run.name)
+    molecule = database.list_molecules(A, group_id=group["id"])["items"][0]["id"]
+    other = database.create_group(A, "Pending elsewhere")
+    database.add_to_group(A, other, [molecule])
+    database.remove_from_group(A, group["id"], [molecule])
+    ingest_run(run, database=database, force=True)
+    assert database.list_molecules(A, group_id=group["id"])["total"] == 0
+    assert database.list_molecules(A, group_id=other)["total"] == 1
+
+
+@pytest.mark.parametrize("status,expected", [("rejected", 0), ("unresolved", 1), ("accepted", 1)])
+def test_saved_acceptance_decisions_are_not_confused_with_candidate_execution_status(database, status, expected):
+    run = _make_run(database, "analysis", "acceptance-" + status, tool="validation_acceptance",
+        workflow="analysis.validation_acceptance", candidates=[{
+            "candidate_id": "source-1", "source_tool": "rfd4_proteina", "stage": "generation.backbone_sequence",
+            "binder_sequence": "ACDE", "raw_metadata": {"validation_acceptance": {"status": status}},
+            "metrics": {"native_score": .8}}])
+    assert ingest_run(run, database=database) == expected
+
+
 def test_generated_complex_reindex_keeps_binder_identity_and_only_passing_designs(database):
     candidate = {
         "candidate_id": "bindcraft2_00001", "stage": "complex_refolding",

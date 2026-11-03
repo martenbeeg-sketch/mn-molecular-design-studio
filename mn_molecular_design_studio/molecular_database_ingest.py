@@ -284,6 +284,9 @@ def _attach_prediction_input(candidate, tasks_by_id):
 def _candidate_rejected(candidate):
     raw = candidate.get("raw_metadata") or {}
     metrics = candidate.get("metrics") or {}
+    validation = raw.get("validation_acceptance")
+    if isinstance(validation, dict) and validation.get("status") == "rejected":
+        return True
     status = str(candidate.get("status") or raw.get("status") or raw.get("filter_status") or metrics.get("status") or "").strip().casefold()
     if status in {"rejected", "failed", "invalid", "filtered", "discarded", "not accepted", "not_accepted"}:
         return True
@@ -821,12 +824,19 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     prediction_candidate_ids = set()
     generated_molecule_ids = set()
     stale_evaluation_memberships = set()
+    with database.connection() as connection:
+        removed_group = connection.execute(
+            "SELECT origin FROM molecule_groups WHERE id=?", (_id("job-", source_key),)
+        ).fetchone()
+    removed_ids = set(json.loads(removed_group[0]).get("removed_molecule_ids") or []) if removed_group else set()
     for candidate, record in candidate_records:
         stage = str(candidate.get("stage") or "")
         sequence = candidate.get("binder_sequence") or candidate.get("sequence")
         is_backbone = stage == "generation.backbone" and not sequence
         rejected = _candidate_rejected(candidate)
         raw_candidate = candidate.get("raw_metadata") or {}
+        if (raw_candidate.get("validation_acceptance") or {}).get("status") == "rejected":
+            continue
         database_source = raw_candidate.get("database_source") if isinstance(raw_candidate, dict) else None
         database_subject = None
         if database_source is not None:
@@ -907,6 +917,11 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             ]
             if binder_components:
                 identity_record["components"] = binder_components
+
+        # An explicit owner/admin removal applies only to this run's group.
+        # Preserve its Results candidate and memberships in all other runs.
+        if ("mol-" + _canonical_fingerprint(identity_record)[:32]) in removed_ids:
+            continue
 
         if database_subject is not None:
             molecule_id, destination = database_subject["molecule_id"], database_subject["group_id"]

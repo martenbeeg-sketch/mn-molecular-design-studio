@@ -431,6 +431,8 @@ def capture_identity():
 
 def sync_peer(peer, snapshot, jobs=None):
     from . import transport
+    from mn_molecular_design_studio.molecular_database_peer import flush_member_removals
+    flush_member_removals(peer)
     replica = Replica()
     share_molecular_database = config.load().get("share_molecular_database", True)
     if share_molecular_database:
