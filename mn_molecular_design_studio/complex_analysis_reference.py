@@ -113,8 +113,12 @@ def component_reference_mapping(
                 })
 
     mapped_source = {int(item["source"]["sequence_index"]) for item in mapping}
+    mapped_reference = sorted(int(item["reference"]["sequence_index"]) for item in mapping)
     exact_matches = sum(bool(item["sequence_match"]) for item in mapping)
     source_count = len(source["residues"])
+    contiguous_reference = bool(mapped_reference) and mapped_reference == list(
+        range(mapped_reference[0], mapped_reference[0] + len(mapped_reference))
+    )
     if alignment_count != 1:
         status = "ambiguous"
         reason = f"The selected chains have {alignment_count} equally optimal sequence mappings; residue correspondence is not inferred."
@@ -122,9 +126,15 @@ def component_reference_mapping(
     elif not mapping:
         status = "unmatched"
         reason = "The selected protein chains have no sequence correspondence."
-    elif len(mapped_source) == source_count and exact_matches == source_count:
+    elif len(mapped_source) == source_count and exact_matches == source_count and contiguous_reference:
         status = "validated"
-        reason = f"A unique exact sequence mapping covers all {source_count} source residues."
+        reason = f"A unique exact contiguous subsequence mapping covers all {source_count} source residues."
+    elif len(mapped_source) == source_count and exact_matches == source_count:
+        status = "partial"
+        reason = (
+            f"All {source_count} source residues match exactly, but the mapped reference residues are not contiguous; "
+            "this is not a truncated exact subsequence mapping."
+        )
     else:
         status = "partial"
         reason = (

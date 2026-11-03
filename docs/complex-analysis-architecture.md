@@ -93,8 +93,9 @@ measurements, job state, Evaluation ID, and provenance when available.
 | Collection Map and Evaluation Board | **Implemented.** Authorized Database structures can be paged and selected beyond the 2–5 Compare panel limit. Compatible protein–protein maps show saved Biotite contact footprints and per-structure frequencies; protein–ligand rows preserve pose and ligand identity without applying protein–protein metrics. Saved Interface Clustering and Foldseek assignments remain distinct. Missing evaluations are not zero-contact results. |
 | Contact measurements | **Supported with distinct meanings.** Saved residue-pair rows are pair counts; each contacted residue is counted once per structure; contact frequency is the number of evaluated structures contacting that residue divided by the number with compatible saved maps. |
 | Optional reference association | **Implemented as component-specific context.** It preserves source/reference structure IDs, digests, model IDs, chains and author numbering. A unique exact subsequence correspondence covering the full source construct is valid even when it covers only part of the reference; ambiguous or non-identical correspondence is not enabled for reference-dependent evaluation. |
-| Paired reference visualization | **Available when an authorized association exists.** The selected complex and reference display in separate original coordinate frames. This is not a fitted structural overlay or placement result. |
-| Structural correspondence and placement | **Partially available.** Exact sequence correspondence and user-supplied residue maps/transforms can support inspection, with identity and form validation. Studio does not derive or scientifically validate a structural fit, place a component into a full-length frame, or score placement accuracy. |
+| Paired reference visualization | **Supported when an authorized association exists.** Before placement is evaluated, the selected complex and reference display in separate original coordinate frames. A matching completed placement Evaluation enables the transformed source complex beside the original reference in one Mol* viewer. |
+| Exact-correspondence structural placement | **Supported as an optional registered Evaluation.** A unique contiguous exact source subsequence is fitted to the explicitly associated reference chain using mapped Cα atoms and the shared Bio.PDB.Superimposer Kabsch fitter. Results retain both structure identities, digests, models, chains, residue map, transformation, aligned-pair count, source/reference coverage, RMSD, method/version and parameters. |
+| Non-identical correspondence and placement | **Unavailable.** Substitutions, internal insertions/deletions, ambiguous sequence maps and TM-align/US-align correspondence are not fitted by this workflow. |
 | Full-length spatial context, glycans and advanced steric context | **Unavailable as validated Complex Analysis evaluations.** No full-length clash/occlusion, glycan accessibility, or context score is claimed. These require separately validated calculations and provenance. |
 | Protein–DNA/RNA interactions, generalized specificity and fusion/tag accessibility | **Unavailable as general contextual analyses.** Existing prediction-time constraints or protein-only tools are not presented as post-hoc evaluations for these cases. |
 
@@ -102,6 +103,43 @@ BinderScope's Inspector, map, board and query concepts informed these views.
 Studio retains its Database identities, ACLs, Mol* viewer, registered
 evaluators, and per-user human review annotations; campaign-specific labels,
 browser-local review state, and inferred rankings are not imported.
+
+### Optional reference-frame placement
+
+`analysis.reference_placement` uses the saved, user-scoped component reference
+association and the authorized Database source adapter. Both structures must be
+the exact digest-current, single-model representations recorded by that
+association. The source component must map uniquely and exactly to a contiguous
+subsequence of the selected reference chain. The evaluator checks each mapped
+author residue number, insertion code and amino-acid identity, then fits the
+corresponding Cα atoms with `Bio.PDB.Superimposer`; the same fitter is used by
+the existing target-aligned benchmark path. At least three non-collinear pairs
+with finite coordinates are required. Alternate Cα atoms use a unique highest
+occupancy; tied occupancy is rejected.
+
+The saved transformation maps selected-complex coordinates into the associated
+reference frame, using a row-major column-vector matrix for Mol*. The exact
+source/reference IDs, groups, models, chains, digests, mapping, method/version,
+parameters, aligned-pair count, coverage and RMSD are stored in the normal
+analysis job and Database Evaluation. RMSD has no acceptance cutoff. Mol* applies
+the matrix to the source complex only in the viewer; saved coordinates and
+existing evaluations are unchanged. If placement is absent, stale, inaccessible
+or invalid, the two structures remain visible in separate original frames.
+
+A good fit does not establish experimental binding or biological accessibility.
+The evaluator does not calculate clashes, glycans, occlusion, or accessibility,
+and a partial reference chain does not become full-length context by inference.
+TM-align/US-align and validated non-identical structural correspondence remain
+separate future work.
+
+The documented validation fixture uses a five-residue source construct and its
+unique exact subsequence in a seven-residue reference chain. A known rigid
+rotation and translation are recovered with five aligned pairs, source coverage
+1.0, reference coverage 5/7 and near-zero Cα RMSD. The Mol* adapter test checks
+that the original reference is loaded first and the source complex receives
+the saved source-to-reference matrix. The local Database contained no saved
+reference associations during this verification, so no genuine biological
+association was available for a live paired-view demonstration.
 
 BinderScope's family board, inspector, and binding-mode map informed the
 compatible-collection board and side-by-side inspector below. Its family
@@ -267,11 +305,11 @@ saved Boltz-2/Protenix pair; both remain in their original frames until an
 external transform and explicit map are supplied. No real aligned overlay was
 claimed in this verification.
 BinderScope's campaign-specific family clustering, embedding, rejection
-filters, specificity map, spatial full-length target frame, glycan/steric
+filters, specificity map, validated full-length spatial context, glycan/steric
 context, sequence liabilities, and fusion/tag accessibility remain planned
-extensions. The optional Database reference association below preserves an
-explicit component-to-chain residue map; it is not a target-frame placement or
-context evaluation.
+extensions. The optional Database reference association remains independent
+from binder-design provenance and does not claim reference identity unless a
+user or source workflow explicitly records it.
 
 ### Delivery status and remaining work
 
@@ -287,10 +325,12 @@ provenance.
 Remaining scientific work is limited to separately validated calculations:
 
 1. Derive and validate structural correspondence/fit across non-identical
-   constructs or numbering schemes; verify supplied transforms against the
-   structures instead of treating their declared provenance as authenticated.
-2. Place a selected component into a full-length reference frame and validate
-   spatial context measurements before exposing them as evaluations.
+   constructs or numbering schemes, including any TM-align/US-align extension;
+   verify supplied transforms against structures rather than treating their
+   declared provenance as authenticated.
+2. Add validated spatial context measurements for justified full-length
+   references before exposing them as evaluations; exact-component placement
+   alone does not provide these measurements.
 3. Add advanced interface context such as all-atom full-length clashes,
    glycan occlusion, and construct/tag accessibility only through suitable
    registered evaluators with explicit inputs and provenance.

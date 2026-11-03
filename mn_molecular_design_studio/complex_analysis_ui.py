@@ -1043,7 +1043,8 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
              "analysis.rosetta": "Rosetta Interface Analysis",
              "analysis.pep_patch": "PEP-Patch", "analysis.plip": "PLIP interaction analysis",
              "analysis.pandamap": "PandaMap interaction analysis",
-             "analysis.posebusters": "PoseBusters pose validation"}.get(workflow_id, workflow_id)
+             "analysis.posebusters": "PoseBusters pose validation",
+             "analysis.reference_placement": "Reference-frame placement"}.get(workflow_id, workflow_id)
     ligand_workflow = workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
     if workflow_id in {"analysis.plip", "analysis.pandamap"}:
         st.caption("Interaction analysis · reports contacts and interaction classes for the selected ligand pose and receptor.")
@@ -1070,7 +1071,8 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
                       "analysis.rosetta": "rosetta_metrics.csv",
                       "analysis.pep_patch": "qc_metrics.csv",
                       "analysis.plip": "qc_metrics.csv", "analysis.pandamap": "qc_metrics.csv",
-                      "analysis.posebusters": "qc_metrics.csv"}[workflow_id]
+                      "analysis.posebusters": "qc_metrics.csv",
+                      "analysis.reference_placement": "reference_placement_metrics.csv"}[workflow_id]
         metrics_path = run_dir / "artifacts" / "analysis" / table_name
         if status in {"completed", "succeeded"} and metrics_path.is_file():
             try:
@@ -1113,6 +1115,11 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
                         st.caption("The registered evaluator produced no tabular rows for this item.")
                     else:
                         st.dataframe(frame, hide_index=True, use_container_width=True)
+        if workflow_id == "analysis.reference_placement" and status in {"completed", "succeeded"}:
+            placement = _read_json(run_dir / "artifacts" / "analysis" / "reference_placement" / "reference_placement.json")
+            if placement:
+                with st.expander("Rigid transformation, exact structures, mapped residues and limitations"):
+                    st.json(placement)
             report_path = item_dir / "report.json"
             report = _read_json(report_path)
             if report:
@@ -1265,7 +1272,8 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
 
     tool = {"analysis.biotite_interface": "biotite_interface", "analysis.ipsae": "ipsae",
             "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
-            "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters"}.get(workflow_id)
+            "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters",
+            "analysis.reference_placement": "reference_placement"}.get(workflow_id)
     if not tool:
         return []
     rows = search_jobs(tools=[tool], task_group="analysis", limit=1000, sort_by="active_desc",
@@ -1685,6 +1693,37 @@ def _show_structure(path: Path, context: dict, components: list[dict], *, key: s
         st.error(f"Could not display this structure in Mol*: {exc}")
 
 
+def _show_reference_placement_overlay(reference_path: Path, source_path: Path,
+                                      source_context: dict, result: dict, *,
+                                      key: str, highlighted_selections: list[str] | None = None) -> None:
+    """Show the exact associated reference and transformed source in one Mol* view."""
+    if max(reference_path.stat().st_size, source_path.stat().st_size) > VIEWER_MAX_BYTES:
+        st.info("One of these structures is over 50 MB; the placement remains saved, but this paired Mol* view is unavailable.")
+        return
+    try:
+        from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer import molstar_custom_component
+        from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer.dataclasses import StructureVisualization
+
+        visualizations = [
+            StructureVisualization(
+                pdb=_viewer_text(reference_path, {}), color="chain-id",
+                representation_type="cartoon+ball-and-stick",
+            ),
+            StructureVisualization(
+                pdb=_viewer_text(source_path, source_context), color="chain-id",
+                representation_type="cartoon+ball-and-stick",
+                highlighted_selections=highlighted_selections,
+                transform_matrix=result["matrix_4x4"],
+            ),
+        ]
+        molstar_custom_component(
+            visualizations, key=key, height=650, show_controls=True,
+            show_structure_tools=False,
+        )
+    except (ImportError, OSError, ValueError, TypeError, KeyError) as exc:
+        st.error(f"Could not display the validated reference placement in Mol*: {exc}")
+
+
 def _show_components(components: list[dict]) -> None:
     if not components:
         st.info("No supported components could be identified from this structure or its saved metadata.")
@@ -1782,6 +1821,82 @@ def _paired_reference_for_viewer(database, user: dict, record: dict, structure: 
     }
 
 
+def _reference_placement_parameters(saved: dict, model_id: str) -> dict:
+    from mn_molecular_design_studio.complex_analysis_placement import PLACEMENT_METHOD, PLACEMENT_VERSION
+
+    return {
+        "source_component_chain": str(saved.get("source_component_chain") or ""),
+        "selected_model_id": str(model_id),
+        "reference_context_id": str(saved.get("id") or ""),
+        "reference_molecule_id": str(saved.get("reference_molecule_id") or ""),
+        "reference_structure_id": str(saved.get("reference_structure_id") or ""),
+        "reference_structure_digest": str(saved.get("reference_structure_digest") or ""),
+        "reference_model_id": str(saved.get("reference_model_id") or ""),
+        "reference_component_chain": str(saved.get("reference_component_chain") or ""),
+        "method": PLACEMENT_METHOD,
+        "method_version": PLACEMENT_VERSION,
+    }
+
+
+def _reference_placement_match(user: dict, record: dict, structure: dict, saved: dict,
+                              model_id: str) -> dict | None:
+    """Load only a completed placement Evaluation matching both exact structures."""
+    from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer.dataclasses import validate_rigid_transform_matrix
+    from mn_molecular_design_studio.complex_analysis_placement import PLACEMENT_METHOD, PLACEMENT_VERSION
+
+    if saved.get("status") != "validated":
+        return None
+    source = {
+        "molecule_id": str(record.get("id") or ""),
+        "structure_id": str(structure.get("id") or ""),
+        "group_id": str(structure.get("group_id") or ""),
+        "structure_digest": str(saved.get("source_structure_digest") or ""),
+        "model_id": str(model_id),
+    }
+    candidate_id = "database-" + hashlib.sha256(
+        (source["molecule_id"] + ":" + source["structure_id"]).encode()
+    ).hexdigest()[:24]
+    parameters = _reference_placement_parameters(saved, model_id)
+    matches = _matching_database_analysis_jobs(
+        user, workflow_id="analysis.reference_placement", source=source,
+        candidate_id=candidate_id, model_id=str(model_id), binder_chains=[], target_chains=[],
+        parameters=parameters,
+    )
+    current = next((item for item in matches if item.get("status") in {"completed", "succeeded"}), None)
+    if current is None:
+        return None
+    result_path = Path(current["run_dir"]) / "artifacts" / "analysis" / "reference_placement" / "reference_placement.json"
+    result = _read_json(result_path)
+    source_result = result.get("source") if isinstance(result.get("source"), dict) else {}
+    reference_result = result.get("reference") if isinstance(result.get("reference"), dict) else {}
+    if (result.get("schema") != "studio.complex_analysis_reference_placement.v1"
+            or result.get("method") != PLACEMENT_METHOD
+            or result.get("method_version") != PLACEMENT_VERSION
+            or str(result.get("reference_context_id") or "") != str(saved.get("id") or "")
+            or str(source_result.get("molecule_id") or "") != source["molecule_id"]
+            or str(source_result.get("structure_id") or "") != source["structure_id"]
+            or str(source_result.get("group_id") or "") != source["group_id"]
+            or str(source_result.get("structure_digest") or "") != source["structure_digest"]
+            or str(source_result.get("model_id") or "") != str(model_id)
+            or str(source_result.get("chain_id") or "") != str(saved.get("source_component_chain") or "")
+            or str(reference_result.get("molecule_id") or "") != str(saved.get("reference_molecule_id") or "")
+            or str(reference_result.get("structure_id") or "") != str(saved.get("reference_structure_id") or "")
+            or str(reference_result.get("group_id") or "") != str(saved.get("reference_group_id") or "")
+            or str(reference_result.get("structure_digest") or "") != str(saved.get("reference_structure_digest") or "")
+            or str(reference_result.get("model_id") or "") != str(saved.get("reference_model_id") or "")
+            or str(reference_result.get("chain_id") or "") != str(saved.get("reference_component_chain") or "")):
+        return None
+    try:
+        result["matrix_4x4"] = validate_rigid_transform_matrix(result.get("matrix_4x4"))
+        rmsd = float(result.get("rmsd_angstrom"))
+        pair_count = int(result.get("aligned_pair_count"))
+    except (TypeError, ValueError):
+        return None
+    if not (rmsd >= 0.0 and pair_count >= 3):
+        return None
+    return {"job": current, "result": result}
+
+
 def _render_optional_reference_context(user: dict, record: dict, structure: dict,
                                        components: list[dict], model_id: str, key: str) -> None:
     """Select and persist an optional Database reference for one protein component."""
@@ -1828,7 +1943,7 @@ def _render_optional_reference_context(user: dict, record: dict, structure: dict
             st.caption(f"Association source: {mapping.get('association_source') or 'user_selected'}")
             if saved.get("status") == "validated":
                 st.info(
-                    "Residue correspondence is uniquely mapped and sequence-validated. No general-purpose full-length context evaluator is registered here yet; "
+                    "Residue correspondence is uniquely mapped and sequence-validated. Optional reference-frame placement is available under Available analyses; "
                     "the reference does not change or gate this complex's existing analyses."
                 )
             else:
@@ -2098,6 +2213,56 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
         st.info("No compatible registered interaction analysis was identified for this component combination.")
 
     if protein_chains:
+        placement_workflow = "analysis.reference_placement"
+        try:
+            schemas[placement_workflow] = workflow_schema(placement_workflow) if workflow_schema else None
+            if not schemas[placement_workflow]:
+                schema_errors[placement_workflow] = "The workflow registry did not return this analysis schema."
+        except Exception as exc:
+            schemas[placement_workflow] = None
+            schema_errors[placement_workflow] = f"The registered workflow is unavailable: {exc}"
+        reference_component_key = f"complex-analysis-reference-component-{key}"
+        source_component_chain = str(st.session_state.get(reference_component_key) or "")
+        if source_component_chain not in protein_chains:
+            source_component_chain = protein_chains[0]
+        placement_source = {**source, "binder_chains": [], "target_chains": []}
+        placement_parameters: dict = {}
+        placement_unavailable = ""
+        try:
+            saved_reference = MolecularDatabase().get_complex_reference_context(
+                user, source_molecule_id=str(record["id"]),
+                source_structure_id=str(structure["id"]), source_chain=source_component_chain,
+            )
+        except (OSError, PermissionError, ValueError) as exc:
+            saved_reference = None
+            placement_unavailable = f"The saved reference association is unavailable: {exc}"
+        if not placement_unavailable:
+            if not saved_reference:
+                placement_unavailable = "Select and save an explicit component reference in the Inspector's Reference Context panel first."
+            elif saved_reference.get("status") != "validated":
+                placement_unavailable = (
+                    f"Reference placement is unavailable for this association ({saved_reference.get('status')}). "
+                    "It requires a current, unique, exact sequence correspondence; core analyses remain available."
+                )
+            else:
+                placement_parameters = _reference_placement_parameters(saved_reference, model_id)
+                if not all(placement_parameters.get(name) for name in (
+                    "source_component_chain", "reference_context_id", "reference_molecule_id",
+                    "reference_structure_id", "reference_structure_digest", "reference_model_id",
+                    "reference_component_chain",
+                )):
+                    placement_unavailable = "The saved reference association is missing required identity provenance."
+        st.markdown("#### Optional reference-frame placement")
+        st.caption("Fits the selected protein component to its explicitly associated reference chain with mapped Cα atoms. It records a rigid display transform; it does not infer reference identity or calculate biological accessibility.")
+        _render_database_workflow(
+            user, placement_workflow, schemas.get(placement_workflow), placement_source,
+            model_id, [], [], placement_parameters, key + "-reference-placement", submit,
+            project_id, schema_errors.get(placement_workflow, "") or placement_unavailable,
+            structure_path=path, structure_context=context, structure_components=components,
+            viewer_key=f"complex-analysis-db-viewer-{structure['id']}",
+        )
+
+    if protein_chains:
         st.markdown("#### Protein surface analysis")
         pep_key = f"complex-analysis-db-pep-chains-{key}"
         if pep_key not in st.session_state:
@@ -2123,7 +2288,8 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
     title = {"analysis.biotite_interface": "Biotite Interface", "analysis.rosetta": "Rosetta Interface Analysis",
              "analysis.ipsae": "ipSAE & Structure Analysis", "analysis.pep_patch": "PEP-Patch",
              "analysis.plip": "PLIP interaction analysis", "analysis.pandamap": "PandaMap interaction analysis",
-             "analysis.posebusters": "PoseBusters pose validation"}.get(workflow_id, workflow_id)
+             "analysis.posebusters": "PoseBusters pose validation",
+             "analysis.reference_placement": "Reference-frame placement"}.get(workflow_id, workflow_id)
     st.markdown(f"##### {title}")
     if not schema:
         st.info(unavailable or "The registered workflow schema is unavailable.")
@@ -2176,6 +2342,8 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
                     "group_id": source["group_id"], "evaluation_id": source.get("evaluation_id", ""),
                     "model_id": model_id, "binder_chains": list(binder_chains),
                     "target_chains": list(target_chains),
+                    **({"source_component_chain": str(parameters.get("source_component_chain") or "")}
+                       if workflow_id == "analysis.reference_placement" else {}),
                     **({"ligand_selection": dict(ligand_selection)} if ligand_selection else {}),
                 }, **({"ligand_selection": dict(ligand_selection)} if ligand_selection else {})}, project_id, {}, title)
             st.rerun()
@@ -2311,25 +2479,46 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
         database, user, all_record, structure, component_rows, reference_key,
     )
     if paired_reference:
-        source_view, reference_view = st.columns(2)
-        with source_view:
-            st.markdown("#### Selected complex")
-            st.caption(f"Source {all_record.get('name') or all_record['id']} · {structure_id} · component {paired_reference['source_chain']}")
-            _show_structure(path, structure.get("context") or {}, component_rows, key=viewer_key,
-                            highlighted_selections=_active_biotite_highlights(viewer_key))
-        with reference_view:
-            saved = paired_reference["saved"]
-            st.markdown("#### Associated reference structure")
+        saved = paired_reference["saved"]
+        placement = _reference_placement_match(user, all_record, structure, saved, model_id)
+        if placement:
+            st.markdown("#### Reference-frame structural placement")
             st.caption(
-                f"{saved.get('reference_record_name') or saved.get('reference_molecule_id')} · "
-                f"{saved.get('reference_structure_label') or paired_reference['reference_id']} · "
-                f"{paired_reference['reference_id']} · component {saved.get('reference_component_chain')}"
+                f"Cα fit · {placement['result']['aligned_pair_count']} aligned pairs · "
+                f"source coverage {placement['result']['source_coverage']:.3f} · "
+                f"reference coverage {placement['result']['reference_coverage']:.3f} · "
+                f"RMSD {placement['result']['rmsd_angstrom']:.3f} Å"
             )
-            _show_structure(
-                paired_reference["path"], {}, paired_reference["components"],
-                key=f"complex-analysis-reference-viewer-{reference_key}-{paired_reference['source_chain']}",
+            st.caption(f"{placement['result']['method']} · {placement['result']['method_version']} · {placement['result']['mapping_method']}")
+            with st.expander("Placement limitations"):
+                for limitation in placement["result"].get("limitations") or []:
+                    st.write(f"• {limitation}")
+            _show_reference_placement_overlay(
+                paired_reference["path"], path, structure.get("context") or {},
+                placement["result"],
+                key=f"complex-analysis-reference-placement-viewer-{reference_key}-{paired_reference['source_chain']}",
+                highlighted_selections=_active_biotite_highlights(viewer_key),
             )
-        st.caption("These Mol* views use their original, separate coordinate frames. No superposition, spatial placement, or reference-context measurement is calculated.")
+            st.caption("The selected complex is transformed for display into the associated reference frame. Its Database coordinates and existing evaluations are unchanged. This fit does not establish experimental binding, biological accessibility, clashes, or glycan context.")
+        else:
+            source_view, reference_view = st.columns(2)
+            with source_view:
+                st.markdown("#### Selected complex")
+                st.caption(f"Source {all_record.get('name') or all_record['id']} · {structure_id} · component {paired_reference['source_chain']}")
+                _show_structure(path, structure.get("context") or {}, component_rows, key=viewer_key,
+                                highlighted_selections=_active_biotite_highlights(viewer_key))
+            with reference_view:
+                st.markdown("#### Associated reference structure")
+                st.caption(
+                    f"{saved.get('reference_record_name') or saved.get('reference_molecule_id')} · "
+                    f"{saved.get('reference_structure_label') or paired_reference['reference_id']} · "
+                    f"{paired_reference['reference_id']} · component {saved.get('reference_component_chain')}"
+                )
+                _show_structure(
+                    paired_reference["path"], {}, paired_reference["components"],
+                    key=f"complex-analysis-reference-viewer-{reference_key}-{paired_reference['source_chain']}",
+                )
+            st.caption("No completed placement evaluation matches this exact source/reference association. These structures are displayed in their original, separate coordinate frames.")
         _render_database_inspector(user, inspector_data, viewer_key, record=all_record,
                                    structure=structure, components=component_rows, model_id=model_id)
     else:

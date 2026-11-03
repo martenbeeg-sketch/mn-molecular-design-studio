@@ -27,11 +27,12 @@ _WORKFLOWS = {
     "analysis.plip",
     "analysis.pandamap",
     "analysis.posebusters",
+    "analysis.reference_placement",
 }
 _STRUCTURE_SUFFIXES = {".pdb", ".ent", ".cif", ".mmcif"}
 _SELECTION_FIELDS = {
     "molecule_id", "structure_id", "group_id", "evaluation_id", "model_id",
-    "binder_chains", "target_chains", "ligand_selection",
+    "binder_chains", "target_chains", "ligand_selection", "source_component_chain",
 }
 _LIGAND_WORKFLOWS = {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
 
@@ -142,6 +143,7 @@ def authorize_database_structure(
     parsed = parse_structure(path.read_bytes(), path.name, include_ligands=True)
     components = list(parsed[0].get("components") or []) if parsed else []
     protein_chains, _ = _chain_ids(components)
+    source_component_chain = str(selection.get("source_component_chain") or "").strip()
     ligand_selection = selection.get("ligand_selection")
     if workflow_id in _LIGAND_WORKFLOWS:
         if not isinstance(ligand_selection, dict) or set(ligand_selection) - {"chain", "residue_key", "ccd", "smiles"}:
@@ -195,6 +197,11 @@ def authorize_database_structure(
     elif workflow_id == "analysis.foldseek":
         if len(binder_chains) != 1:
             raise ValueError("Foldseek requires exactly one selected protein chain per structure.")
+    elif workflow_id == "analysis.reference_placement":
+        if binder_chains or target_chains or ligand_selection is not None:
+            raise ValueError("Reference placement uses the saved component association and does not accept interface or ligand selections.")
+        if source_component_chain not in protein_chains:
+            raise ValueError("Choose one protein component that has an explicit saved reference association.")
     elif workflow_id in _LIGAND_WORKFLOWS:
         if binder_chains or target_chains:
             raise ValueError("Protein-ligand workflows use a selected ligand residue and do not accept protein interface chain groups.")
@@ -219,6 +226,7 @@ def authorize_database_structure(
         "structure_format": str(structure.get("format") or path.suffix.lstrip(".")),
         "binder_chains": binder_chains,
         "target_chains": target_chains,
+        "source_component_chain": source_component_chain,
         "ligand_selection": ligand_selection or {},
         "record_name": str(record.get("name") or molecule_id),
         "record_components": record.get("components") or components,
@@ -244,6 +252,37 @@ def build_database_analysis_source(
         "kind", "molecule_id", "structure_id", "group_id", "project_id", "evaluation_id",
         "model_id", "structure_digest", "binder_chains", "target_chains", "ligand_selection",
     )}
+    if workflow_id == "analysis.reference_placement":
+        identity["source_component_chain"] = source["source_component_chain"]
+        from mn_molecular_design_studio.molecular_database import MolecularDatabase
+
+        database = database or MolecularDatabase()
+        saved = database.get_complex_reference_context(
+            user, source_molecule_id=source["molecule_id"],
+            source_structure_id=source["structure_id"], source_chain=source["source_component_chain"],
+        )
+        mapping = saved.get("mapping") if isinstance(saved, dict) and isinstance(saved.get("mapping"), dict) else {}
+        if (not saved or saved.get("status") != "validated" or mapping.get("mapping_status") != "validated"
+                or int(mapping.get("alignment_count") or 0) != 1):
+            raise ValueError("Reference placement requires an explicit, current, unique exact sequence association.")
+        if (str(saved.get("source_group_id") or "") != source["group_id"]
+                or str(saved.get("source_structure_digest") or "") != source["structure_digest"]
+                or str(saved.get("source_model_id") or "") != source["model_id"]):
+            raise ValueError("The saved reference association does not match the selected source Database representation.")
+        reference_path = Path(database.structure_file(user, str(saved["reference_structure_id"]), materialize=True)).resolve()
+        reference_digest = file_digest(reference_path)
+        if reference_digest != str(saved.get("reference_structure_digest") or ""):
+            raise ValueError("The associated reference structure changed after its residue map was saved.")
+        if str(saved.get("reference_component_chain") or "") != str(mapping.get("reference_component", {}).get("chain_id") or ""):
+            raise ValueError("The saved reference chain does not match the validated residue map.")
+        identity["reference_context_id"] = str(saved.get("id") or "")
+        identity["reference_molecule_id"] = str(saved.get("reference_molecule_id") or "")
+        identity["reference_structure_id"] = str(saved.get("reference_structure_id") or "")
+        identity["reference_group_id"] = str(saved.get("reference_group_id") or "")
+        identity["reference_structure_digest"] = reference_digest
+        identity["reference_model_id"] = str(saved.get("reference_model_id") or "")
+        identity["reference_component_chain"] = str(saved.get("reference_component_chain") or "")
+        identity["mapping_status"] = str(saved.get("status") or "")
     bundle_id = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     bundle_dir = user_input_root(str(user["id"])) / "complex_analysis_sources" / bundle_id
     bundle_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -257,6 +296,31 @@ def build_database_analysis_source(
     if not staged_structure.is_file() or file_digest(staged_structure) != source["structure_digest"]:
         shutil.copyfile(source_path, staged_structure)
     staged_structure = staged_structure.resolve()
+    staged_reference = None
+    reference_context = None
+    if workflow_id == "analysis.reference_placement":
+        staged_reference = bundle_dir / f"associated_reference{reference_path.suffix.casefold()}"
+        if not staged_reference.is_file() or file_digest(staged_reference) != identity["reference_structure_digest"]:
+            shutil.copyfile(reference_path, staged_reference)
+        staged_reference = staged_reference.resolve()
+        reference_context = {
+            "id": str(saved["id"]),
+            "status": "validated",
+            "source_molecule_id": str(saved["source_molecule_id"]),
+            "source_structure_id": str(saved["source_structure_id"]),
+            "source_group_id": str(saved["source_group_id"]),
+            "source_structure_digest": str(saved["source_structure_digest"]),
+            "source_model_id": str(saved["source_model_id"]),
+            "source_component_chain": str(saved["source_component_chain"]),
+            "reference_molecule_id": str(saved["reference_molecule_id"]),
+            "reference_structure_id": str(saved["reference_structure_id"]),
+            "reference_group_id": str(saved["reference_group_id"]),
+            "reference_structure_digest": identity["reference_structure_digest"],
+            "reference_model_id": str(saved["reference_model_id"]),
+            "reference_component_chain": str(saved["reference_component_chain"]),
+            "structure_path": str(staged_reference),
+            "mapping": mapping,
+        }
     selection_context = {
         "candidate_id": candidate_id,
         "structure_path": str(staged_structure),
@@ -266,6 +330,8 @@ def build_database_analysis_source(
         "target_chains": source["target_chains"],
         "ligand_selection": source.get("ligand_selection") or {},
     }
+    if workflow_id == "analysis.reference_placement":
+        selection_context["source_component_chain"] = source["source_component_chain"]
     source_manifest = {
         "schema": "studio.complex_analysis_database_source.v1",
         **identity,
@@ -276,6 +342,8 @@ def build_database_analysis_source(
         "structure_format": source["structure_format"],
         "ligand_selection": source.get("ligand_selection") or {},
     }
+    if reference_context:
+        source_manifest["reference_context"] = reference_context
     (bundle_dir / "complex_analysis_source.json").write_text(
         json.dumps(source_manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8",
     )
@@ -722,6 +790,10 @@ def apply_database_analysis_source(payload: dict, user: dict, project_id: str | 
     raw_parameters = payload.get("parameters")
     if not isinstance(raw_parameters, dict):
         raise ValueError("A Database structure analysis requires one parameter object.")
+    if workflow_id == "analysis.reference_placement" and set(raw_parameters) & {
+        "reference_structure_path", "reference_context", "reference_identity", "source_identity",
+    }:
+        raise ValueError("Reference placement inputs must come from the saved Database association, not caller-supplied paths or identities.")
     adapter = build_database_analysis_source(
         user, selection, workflow_id=workflow_id, project_id=project_id,
     )
@@ -733,10 +805,28 @@ def apply_database_analysis_source(payload: dict, user: dict, project_id: str | 
         "selected_structure_path": adapter["selected_structure_path"],
         "selected_model_id": adapter["selected_model_id"],
     })
+    if workflow_id == "analysis.reference_placement":
+        parameters["source_component_chain"] = adapter["source"]["source_component_chain"]
+        from mn_molecular_design_studio.complex_analysis_placement import PLACEMENT_METHOD, PLACEMENT_VERSION
+
+        reference_context = adapter["source_manifest"]["reference_context"]
+        parameters.update({
+            "reference_context_id": reference_context["id"],
+            "reference_molecule_id": reference_context["reference_molecule_id"],
+            "reference_structure_id": reference_context["reference_structure_id"],
+            "reference_structure_digest": reference_context["reference_structure_digest"],
+            "reference_model_id": reference_context["reference_model_id"],
+            "reference_component_chain": reference_context["reference_component_chain"],
+            "method": PLACEMENT_METHOD,
+            "method_version": PLACEMENT_VERSION,
+        })
     if workflow_id in _LIGAND_WORKFLOWS:
         parameters.pop("binder_chains", None)
         parameters.pop("target_chains", None)
         parameters["ligand_selection"] = dict(adapter["source"]["ligand_selection"])
+    elif workflow_id == "analysis.reference_placement":
+        parameters.pop("binder_chains", None)
+        parameters.pop("target_chains", None)
     else:
         parameters["binder_chains"] = list(adapter["source"]["binder_chains"])
         if workflow_id != "analysis.pep_patch":

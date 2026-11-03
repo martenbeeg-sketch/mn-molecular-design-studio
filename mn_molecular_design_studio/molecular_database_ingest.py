@@ -987,7 +987,8 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             candidate_context["raw_metadata"] = {key: raw[key] for key in (
                 "fasta_header", "engine_version", "operation", "structure_kind", "image_digest",
                 "validation_acceptance", "validation_measurements", "validation_provenance",
-                "database_source", "complex_analysis_selection",
+                "database_source", "complex_analysis_selection", "reference_placement",
+                "measurement_provenance", "analysis_parameters",
             ) if key in raw}
             settings = inputs.get("params") or {}
             from mn_molecular_design_studio.evaluations import file_digest

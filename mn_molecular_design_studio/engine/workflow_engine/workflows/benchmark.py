@@ -3958,7 +3958,8 @@ def _target_aligned_binder_pose_metrics(
     prediction_binder_chains: list[str],
     prediction_target_chains: list[str],
 ) -> dict[str, Any]:
-    from Bio.PDB import PDBParser, Superimposer
+    from Bio.PDB import PDBParser
+    from mn_molecular_design_studio.complex_analysis_placement import fit_ca_atom_superimposer
 
     parser = PDBParser(QUIET=True)
     reference = parser.get_structure("reference", str(reference_pdb))
@@ -4002,8 +4003,7 @@ def _target_aligned_binder_pose_metrics(
             "target_alignment_mapping_status": "verified by identical chain and author residue identifiers",
             "binder_mapping_status": "not checked",
         }
-    superimposer = Superimposer()
-    superimposer.set_atoms(reference_target_atoms, prediction_target_atoms)
+    superimposer, _matrix = fit_ca_atom_superimposer(reference_target_atoms, prediction_target_atoms)
     superimposer.apply(prediction.get_atoms())
     if list(reference_binder_chains) != list(prediction_binder_chains):
         return {

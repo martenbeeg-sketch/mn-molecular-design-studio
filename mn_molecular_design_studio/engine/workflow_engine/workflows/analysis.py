@@ -602,13 +602,15 @@ def _finish_metric_analysis(
     tool: str,
     table_name: str,
     metric_names: list[str],
+    required_metrics: list[str] | None = None,
+    error_key: str | None = None,
 ) -> Path:
     analysis_dir = job.run_dir / "artifacts" / "analysis"
     analysis_dir.mkdir(parents=True, exist_ok=True)
     table_path = analysis_dir / table_name
-    error_key = "ipsae_error" if tool == "ipsae" else "rosetta_error"
+    error_key = error_key or ("ipsae_error" if tool == "ipsae" else "rosetta_error")
     outcomes = []
-    required = ["ipsae"] if tool == "ipsae" else ["rosetta_interface_dG"]
+    required = required_metrics or (["ipsae"] if tool == "ipsae" else ["rosetta_interface_dG"])
     for candidate in candidates:
         metrics = candidate.setdefault("metrics", {})
         outcome = measurement_outcome(metrics, required, metrics.get(error_key))
@@ -665,6 +667,211 @@ def _finish_metric_analysis(
         },
     )
     return job.run_dir
+
+
+def run_reference_placement_contract(
+    source_run_dir: Path,
+    candidates_jsonl: Path,
+    candidate_ids: list[str] | None = None,
+    selected_structure_path: Path | None = None,
+    selected_model_id: str | None = None,
+    source_component_chain: str | None = None,
+    reference_context_id: str | None = None,
+    reference_molecule_id: str | None = None,
+    reference_structure_id: str | None = None,
+    reference_structure_digest: str | None = None,
+    reference_model_id: str | None = None,
+    reference_component_chain: str | None = None,
+    method: str | None = None,
+    method_version: str | None = None,
+) -> Path:
+    """Fit one Database complex into its explicitly associated reference frame.
+
+    The Database-source adapter is responsible for authorizing both saved
+    structures and staging the existing digest-bound reference association.
+    This registered evaluator rechecks that provenance before fitting.
+    """
+    from mn_molecular_design_studio.complex_analysis_placement import (
+        PLACEMENT_METHOD,
+        PLACEMENT_VERSION,
+        calculate_reference_placement,
+    )
+    from mn_molecular_design_studio.evaluations import file_digest
+
+    source_run_dir = Path(source_run_dir).expanduser().resolve(strict=True)
+    candidates_jsonl = Path(candidates_jsonl).expanduser().resolve(strict=True)
+    candidates = _analysis_source_candidates(source_run_dir, candidates_jsonl)
+    candidates = _select_complex_analysis_candidates(
+        source_run_dir,
+        candidates,
+        candidate_ids=candidate_ids,
+        selected_structure_path=selected_structure_path,
+        selected_model_id=selected_model_id,
+    )
+    if len(candidates) != 1:
+        raise ValueError("Reference placement requires exactly one selected Database structure.")
+    source_metadata = read_json(source_run_dir / "metadata.json")
+    if str(source_metadata.get("source_kind") or "") != "database":
+        raise ValueError("Reference placement is available only from an authorized Database source.")
+    manifest = read_json(source_run_dir / "complex_analysis_source.json")
+    if manifest.get("schema") != "studio.complex_analysis_database_source.v1":
+        raise ValueError("The Database source manifest is missing or has an unsupported schema.")
+    reference_context = manifest.get("reference_context")
+    if not isinstance(reference_context, dict) or reference_context.get("status") != "validated":
+        raise ValueError("Reference placement requires an explicitly saved, digest-current, validated association.")
+    source_chain = str(source_component_chain or "").strip()
+    if not source_chain or source_chain != str(reference_context.get("source_component_chain") or ""):
+        raise ValueError("The selected source component does not match the saved reference association.")
+    if str(reference_context.get("source_structure_id") or "") != str(manifest.get("structure_id") or ""):
+        raise ValueError("The saved reference association points to a different source Database structure.")
+    if str(reference_context.get("source_structure_digest") or "") != str(manifest.get("structure_digest") or ""):
+        raise ValueError("The saved reference association is stale for the selected source structure.")
+    if str(reference_context.get("source_model_id") or "") != str(manifest.get("model_id") or ""):
+        raise ValueError("The saved reference association is bound to a different source model.")
+    if selected_model_id and str(selected_model_id) != str(manifest.get("model_id") or ""):
+        raise ValueError("The selected source model does not match the Database representation.")
+
+    selected_path = Path(str(candidates[0].get("complex_pdb") or "")).resolve(strict=True)
+    try:
+        selected_path.relative_to(source_run_dir)
+    except ValueError as exc:
+        raise ValueError("The selected complex must be staged inside the authorized Database source bundle.") from exc
+    if file_digest(selected_path) != str(manifest.get("structure_digest") or ""):
+        raise ValueError("The selected source structure changed after Database authorization.")
+    reference_path = Path(str(reference_context.get("structure_path") or "")).resolve(strict=True)
+    try:
+        reference_path.relative_to(source_run_dir)
+    except ValueError as exc:
+        raise ValueError("The associated reference must be staged inside the authorized Database source bundle.") from exc
+    if file_digest(reference_path) != str(reference_context.get("reference_structure_digest") or ""):
+        raise ValueError("The associated reference structure changed after Database authorization.")
+
+    mapping = reference_context.get("mapping") if isinstance(reference_context.get("mapping"), dict) else {}
+    source_identity = {
+        "molecule_id": str(manifest.get("molecule_id") or ""),
+        "structure_id": str(manifest.get("structure_id") or ""),
+        "group_id": str(manifest.get("group_id") or ""),
+        "structure_digest": str(manifest.get("structure_digest") or ""),
+        "model_id": str(manifest.get("model_id") or ""),
+        "chain_id": source_chain,
+    }
+    reference_identity = {
+        "molecule_id": str(reference_context.get("reference_molecule_id") or ""),
+        "structure_id": str(reference_context.get("reference_structure_id") or ""),
+        "group_id": str(reference_context.get("reference_group_id") or ""),
+        "structure_digest": str(reference_context.get("reference_structure_digest") or ""),
+        "model_id": str(reference_context.get("reference_model_id") or ""),
+        "chain_id": str(reference_context.get("reference_component_chain") or ""),
+    }
+    expected_public_inputs = {
+        "reference_context_id": str(reference_context.get("id") or ""),
+        "reference_molecule_id": reference_identity["molecule_id"],
+        "reference_structure_id": reference_identity["structure_id"],
+        "reference_structure_digest": reference_identity["structure_digest"],
+        "reference_model_id": reference_identity["model_id"],
+        "reference_component_chain": reference_identity["chain_id"],
+        "method": PLACEMENT_METHOD,
+        "method_version": PLACEMENT_VERSION,
+    }
+    requested_public_inputs = {
+        "reference_context_id": reference_context_id,
+        "reference_molecule_id": reference_molecule_id,
+        "reference_structure_id": reference_structure_id,
+        "reference_structure_digest": reference_structure_digest,
+        "reference_model_id": reference_model_id,
+        "reference_component_chain": reference_component_chain,
+        "method": method,
+        "method_version": method_version,
+    }
+    if any(value is not None and str(value) != expected_public_inputs[key]
+           for key, value in requested_public_inputs.items()):
+        raise ValueError("The requested placement identity or method does not match the authorized saved association.")
+    if any(not value for identity in (source_identity, reference_identity) for value in identity.values()):
+        raise ValueError("The saved reference association is missing a required structure identity field.")
+    result = calculate_reference_placement(
+        selected_path, reference_path,
+        source_chain=source_chain,
+        reference_chain=reference_identity["chain_id"],
+        source_model_id=source_identity["model_id"],
+        reference_model_id=reference_identity["model_id"],
+        source_digest=source_identity["structure_digest"],
+        reference_digest=reference_identity["structure_digest"],
+        mapping=mapping,
+        source_identity=source_identity,
+        reference_identity=reference_identity,
+    )
+    result.update({
+        "reference_context_id": str(reference_context.get("id") or ""),
+        "association_source": str(mapping.get("association_source") or "user_selected"),
+    })
+
+    params = {
+        "candidate_ids": [str(candidates[0].get("candidate_id") or "")],
+        "selected_structure_path": str(selected_path),
+        "selected_model_id": source_identity["model_id"],
+        "source_component_chain": source_chain,
+        "reference_context_id": result["reference_context_id"],
+        "reference_molecule_id": reference_identity["molecule_id"],
+        "reference_structure_id": reference_identity["structure_id"],
+        "reference_structure_digest": reference_identity["structure_digest"],
+        "reference_model_id": reference_identity["model_id"],
+        "reference_component_chain": reference_identity["chain_id"],
+        "method": PLACEMENT_METHOD,
+        "method_version": PLACEMENT_VERSION,
+    }
+    job = _analysis_job(
+        source_run_dir, candidates_jsonl,
+        tool="reference_placement", params=params,
+        note="Fit the explicitly associated source component to its unique exact reference-chain correspondence using mapped C-alpha atoms. This is a coordinate-frame transform only; no biological accessibility or context score is calculated.",
+        mode="saved-structure-coordinate-fit",
+    )
+    _write_complex_analysis_selection(
+        job, source_run_dir, candidates[0], workflow="analysis.reference_placement",
+        parameters={key: value for key, value in params.items() if key not in {"candidate_ids", "selected_structure_path"}},
+    )
+    placement_dir = job.run_dir / "artifacts" / "analysis" / "reference_placement"
+    placement_dir.mkdir(parents=True, exist_ok=True)
+    write_json(placement_dir / "reference_placement.json", result)
+    candidate = copy.deepcopy(candidates[0])
+    metrics = dict(candidate.get("metrics") or {})
+    metrics.update({
+        "reference_placement_aligned_ca_pair_count": result["aligned_pair_count"],
+        "reference_placement_source_coverage": result["source_coverage"],
+        "reference_placement_reference_coverage": result["reference_coverage"],
+        "reference_placement_ca_rmsd_angstrom": result["rmsd_angstrom"],
+        "reference_placement_mapping_method": result["mapping_method"],
+        "reference_placement_status": "measured",
+    })
+    candidate["metrics"] = metrics
+    raw = candidate.setdefault("raw_metadata", {})
+    raw["reference_placement"] = result
+    raw["measurement_provenance"] = {
+        **dict(raw.get("measurement_provenance") or {}),
+        "reference_placement": {
+            "method": result["method"],
+            "method_version": result["method_version"],
+            "parameters": result["parameters"],
+            "reference_context_id": result["reference_context_id"],
+            "source": result["source"],
+            "reference": result["reference"],
+            "result_artifact": "artifacts/analysis/reference_placement/reference_placement.json",
+            "biological_accessibility_claimed": False,
+        },
+    }
+    raw["analysis_parameters"] = params
+    return _finish_metric_analysis(
+        job, [candidate], tool="reference_placement",
+        table_name="reference_placement_metrics.csv",
+        metric_names=[
+            "reference_placement_aligned_ca_pair_count",
+            "reference_placement_source_coverage",
+            "reference_placement_reference_coverage",
+            "reference_placement_ca_rmsd_angstrom",
+            "reference_placement_mapping_method",
+        ],
+        required_metrics=["reference_placement_ca_rmsd_angstrom"],
+        error_key="reference_placement_error",
+    )
 
 
 def _safe_float(value: Any) -> float | None:
