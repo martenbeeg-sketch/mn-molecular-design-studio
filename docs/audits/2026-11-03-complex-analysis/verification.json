@@ -306,5 +306,589 @@
     "source_tools": [
       "rfd4_proteina"
     ]
+  },
+  "product_behavior_followup": {
+    "saved_records_checked": [
+      {
+        "molecule_id": "mol-57cb7d558e0f1d88ac59eb683ef2336c",
+        "structure_id": "structure-d6cc59901b09530590581429726a6be9",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-26144f20fefcd81faa5d66db223b4f9d",
+        "structure_id": "structure-314b4040f5a91c5e08476f4e89a8b335",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-dbcb312ff29eaff340ac61730efdc462",
+        "structure_id": "structure-fde64c0cf91b0ae29a5344faab43a498",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-5cf877b8996bc953df4f25cfb2e2dffd",
+        "structure_id": "structure-8e13dc70bee6edfcd1e1cbac4fb78b54",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-775a55f625f4a9661f25e6b9324dc823",
+        "structure_id": "structure-c862728aa814f4a507a56783be956c05",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-d9ed1ccf9b9063e2111ca98e66a0acbf",
+        "structure_id": "structure-c6ac9081db7b73c4fec180eee97722f7",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-4ff62496382dd7ed0e42d2950648d43c",
+        "structure_id": "structure-2fb7cb84903bb96f8875b956454d0b06",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-1a42551c346b3311ed207ea8b09e9e14",
+        "structure_id": "structure-d1141cfede3e7550298399e5444e1e6b",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-dd55ea7c64559c4662bccea8e0c60026",
+        "structure_id": "structure-d80f04fdb00810faf9c19c8af17885be",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-0cf04ad17e4260dec7f7770e64edc26d",
+        "structure_id": "structure-bbbd1d13fda467ed9c65d866e31c9362",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-8e793d1923c1959d92e7dd5dfa7cccd7",
+        "structure_id": "structure-84c94836c6b025b54170512d246955c3",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-90c4a84078fa5090a1888e475ef2959f",
+        "structure_id": "structure-4fac9352b7434bc1e5d93bffe7bd4cde",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-3117553ee4eca348a3300029163395e8",
+        "structure_id": "structure-40fd5f1330e4a7fa9710bab14ffa6fa8",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-0f50a783158869ff4272c80f0c405730",
+        "structure_id": "structure-e60aa0d4d0ec8d4a8506f872044d6d57",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-d0dcfd33c27a300ae47592f4851ddc49",
+        "structure_id": "structure-81054f8a87a155074868bc369de4b412",
+        "target_id": "mol-5b8294fd0a0b697c318184f64286a427",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-f026c69db5f46e3ff70cf45db8d7ee76",
+        "structure_id": "structure-180d571e7ea3173acf3bc49acaac88d6",
+        "target_id": "mol-5b8294fd0a0b697c318184f64286a427",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-60318f41a77dd79f6603a7589411d9c2",
+        "structure_id": "structure-bffd7da052b4e5c256aff7262324945b",
+        "target_id": "mol-5b8294fd0a0b697c318184f64286a427",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-3a149efd97c9263c246b902a843c8004",
+        "structure_id": "structure-96367216a31522b11bde2f9515e8f978",
+        "target_id": "mol-5b8294fd0a0b697c318184f64286a427",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-f4d6bae6de76f66abf47cd3cb3cb511b",
+        "structure_id": "structure-1cbeed9041ffcd86ddfaf8f9bd520819",
+        "target_id": "mol-5b8294fd0a0b697c318184f64286a427",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-5e4cb3b019315464150527612a2c0c89",
+        "structure_id": "structure-8ece7307f3de354db3e6874357fe0740",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-d16586efdf4c433f46c121cdd93e101f",
+        "structure_id": "structure-5398cdad428e2fbf91012acd931662e1",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-febc4f68b30a695285a8b211d1281cc6",
+        "structure_id": "structure-ee6bd4b744e374fa922ef9b819bd7f4d",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-4b3af88eb5cd9b5602d9b0e6cc8e3848",
+        "structure_id": "structure-c945dac1c202936c9679ea710c1e8e54",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-46ed633dca0155c37c03d8cd263c1ddb",
+        "structure_id": "structure-095d2b1c838df8856d76ea8cd0f1b566",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-97a20675c446539e7986d42b195b094d",
+        "structure_id": "structure-daa771e766930559ba53de591cc38fc1",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-fe188e13a3f2a4122fda135929cca7b3",
+        "structure_id": "structure-3857742207f7f95017951823fc9b3574",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-e55a09cce0879613d707897ca0e1f17b",
+        "structure_id": "structure-918ba6c4be5af649e8698198ea9a1843",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-9842541cfb19705e0b025da4b0158218",
+        "structure_id": "structure-3eee1b6247a7c4cb2434f57a73e0b58e",
+        "target_id": "mol-5b8294fd0a0b697c318184f64286a427",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-00e4d9fbd14b68fffa8377231a34dc27",
+        "structure_id": "structure-e09c5c91170bfed8aba0ee28ea7697bf",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-26c6e0fdc938fee97c5eb82c11e4e462",
+        "structure_id": "structure-e79a77fbd543efa5fc8f923b6a047ed5",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-da722f27b0678979800cc4d0b0c97843",
+        "structure_id": "structure-0c3765cae66aafa43ce1532f5a9a62ef",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-d4997ec8af3730d3877f57266493beb5",
+        "structure_id": "structure-94b237a61b88fdd4edf1d8f4f13ab5e4",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-c3d6346025ced07337a8f15e725c86b7",
+        "structure_id": "structure-6df7c68182e48ab852ea369c4974ad78",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-141fa6dff3afc8d63f3639e4b45bb0de",
+        "structure_id": "structure-c0124edc34ce6f104e8b6e1455de4e09",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      },
+      {
+        "molecule_id": "mol-ee625f6a5ddd7345e5e09bc818eea533",
+        "structure_id": "structure-954ec607547d6b1823aa317f97c5fb47",
+        "target_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+        "default_binder_chains": [
+          "B"
+        ],
+        "default_target_chains": [
+          "A"
+        ],
+        "saved_selection": true
+      }
+    ],
+    "local_source_navigation_checked": [
+      {
+        "run_id": "20261029-210422-9af4aeaa",
+        "group_id": "accepted-review-cd4bac69933895474d40272de91029c9"
+      },
+      {
+        "run_id": "20261029-220658-b570be76",
+        "group_id": "accepted-review-3f2d8dc6d04b5c351feb6618c7a2ce1d"
+      },
+      {
+        "run_id": "20261029-221641-4fc7a6ee",
+        "group_id": "accepted-review-a7f3abed7c79ea1b6cac8d0db8b1cb70"
+      },
+      {
+        "run_id": "20261029-221652-15bb0f93",
+        "group_id": "accepted-review-1525b486b738be4c9066012d6182e030"
+      },
+      {
+        "run_id": "20261029-222555-47033e46",
+        "group_id": "accepted-review-55fdd69f91f593664834890214766770"
+      },
+      {
+        "run_id": "20261029-225211-4762ee54",
+        "group_id": "accepted-review-88d6a71c71be53c67b15b83cb7b8dd1b"
+      },
+      {
+        "run_id": "20261029-231007-4b71decc",
+        "group_id": "accepted-review-9139014fdc8eaeb1f6da8cf46e086f54"
+      },
+      {
+        "run_id": "20261029-231234-4e37b4d7",
+        "group_id": "accepted-review-79a7141d7717c741fed17285729b3e24"
+      },
+      {
+        "run_id": "20261029-232410-e1c95425",
+        "group_id": "accepted-review-6d88bbe288bf59f6ed99d076bdf44507"
+      },
+      {
+        "run_id": "20261029-235919-645e462e",
+        "group_id": "accepted-review-9296cf039cb393b2acf5546ae28ac5d1"
+      },
+      {
+        "run_id": "20261030-002200-a70b8d57",
+        "group_id": "accepted-review-31f40cf7305b62a93e3a960b6ca22ea9"
+      },
+      {
+        "run_id": "20261030-002512-eac25595",
+        "group_id": "accepted-review-633dc6138baab7649a30a626324bb504"
+      },
+      {
+        "run_id": "20261030-002924-132a259d",
+        "group_id": "accepted-review-d0865f0622fb9228955249c7ce1fad34"
+      },
+      {
+        "run_id": "20261030-002957-97f01024",
+        "group_id": "accepted-review-8c57b1a2b6fa127bf8ebe44d46e0fa2b"
+      },
+      {
+        "run_id": "20261031-112821-9b884998",
+        "group_id": "accepted-review-c20be82745024a6b2b58b058b6a2f8e3"
+      },
+      {
+        "run_id": "20261031-112832-fae83c41",
+        "group_id": "accepted-review-3bee9d7898fc7a2230ea16008849786e"
+      },
+      {
+        "run_id": "20261031-145314-b1338cc5",
+        "group_id": "accepted-review-3c89e12ac25c3e22a1d0998b92a5d6dc"
+      },
+      {
+        "run_id": "20261031-160237-c6289aad",
+        "group_id": "accepted-review-d07be897405780ca84ab7a3b98d01739"
+      },
+      {
+        "run_id": "20261031-160237-c6289aad",
+        "group_id": "accepted-review-d07be897405780ca84ab7a3b98d01739"
+      }
+    ],
+    "api_saved_collections_verified": true,
+    "rosetta": {
+      "run_id": "20261103-190338-8acfa0a6",
+      "scientific_status": "valid",
+      "source_structure_id": "structure-81054f8a87a155074868bc369de4b412",
+      "source_structure_digest": "108314c16b4dd33e4db2273d322d37a291d923f54c92dfb41d5f648244f9ed6f",
+      "target_id": "mol-5b8294fd0a0b697c318184f64286a427",
+      "excluded_legacy_ratio": {
+        "raw_value": 170.08,
+        "reason": "The scorer divides total interface dSASA by bound binder SASA; this is not a binder percentage.",
+        "status": "excluded"
+      }
+    },
+    "pc004033_container_ownership": {
+      "host_uid": 1000,
+      "output_uid": 1000,
+      "explicit_user_mapping": true,
+      "host_rewrite_succeeded": true
+    },
+    "historical_saved_chain_defaults": [
+      {
+        "label": "PD-L1",
+        "molecule_id": "mol-02398c1a432a95f9266c81398a78463a",
+        "structure_id": "structure-41133f5f9d868c6c5b87e88e45ffbc62",
+        "binder_chains": [
+          "B"
+        ],
+        "target_chains": [
+          "A"
+        ],
+        "calculation_performed": false
+      },
+      {
+        "label": "R3",
+        "molecule_id": "mol-1871d84a2b3832c6025fa0d1d59d15b6",
+        "structure_id": "structure-22eee4743d92c861f939ec0c95b4b433",
+        "binder_chains": [
+          "B"
+        ],
+        "target_chains": [
+          "A"
+        ],
+        "calculation_performed": false
+      },
+      {
+        "label": "Tau214-283",
+        "molecule_id": "mol-066ba81f6bd8f6fa20cd07d0232f78a5",
+        "structure_id": "peer-structure-eef489bcc3648b00a4bb6a774bddfae8",
+        "binder_chains": [
+          "B"
+        ],
+        "target_chains": [
+          "A"
+        ],
+        "calculation_performed": false
+      }
+    ]
+  },
+  "followup_tests": {
+    "product_regressions": {
+      "passed": 208,
+      "warnings": 26
+    },
+    "target_evaluation_identity": {
+      "passed": 2
+    },
+    "projection_upgrade": {
+      "passed": 60
+    },
+    "pc004032_product_suite": {
+      "passed": 77
+    },
+    "pc004033_product_suite": {
+      "passed": 77
+    },
+    "both_peers_projection_upgrade_tests": {
+      "passed_each": 5
+    },
+    "historical_chain_defaults": {
+      "passed": 17,
+      "warnings": 26
+    }
   }
 }
