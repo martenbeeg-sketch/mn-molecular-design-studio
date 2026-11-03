@@ -13,6 +13,7 @@ import { Color } from "molstar/lib/mol-util/color";
 import { StructureSelection, Structure, StructureProperties } from "molstar/lib/mol-model/structure";
 import { PluginConfig } from "molstar/lib/mol-plugin/config";
 import { PluginCommands } from "molstar/lib/mol-plugin/commands";
+import { parseResidueSelections } from "./residueSelection";
 import { createStructureRepresentationParams } from "molstar/lib/mol-plugin-state/helpers/structure-representation-params";
 import { StructureElement } from "molstar/lib/mol-model/structure";
 import { PLDDTConfidenceColorThemeProvider } from "molstar/lib/extensions/model-archive/quality-assessment/color/plddt";
@@ -223,23 +224,9 @@ function MolstarCustomComponent(props: Props) {
   };
 
   const parseSelections = (selections: string[]): SequenceSelection[] => {
-    const trimmed = selections.map((sel) => sel.trim()).filter((e) => e !== "");
-
-    const parsedSelections = trimmed.map(item => {
-      const match = item.match(/^([^:\s]+):(-?\d+)(?:-(-?\d+))?$/) || item.match(/^([A-Za-z]+)(-?\d+)(?:-(-?\d+))?$/);
-
-      if (match) {
-        const start = parseInt(match[2]);
-        return {
-          chainId: match[1] === "_" ? "" : match[1],
-          residues: getRange([start, match[3] ? parseInt(match[3]) : start])
-        };
-      } else {
-        throw new Error(`Invalid format for selection: ${item}`);
-      }
-    });
-
-    return parsedSelections;
+    return parseResidueSelections(selections).map(({ chainId, residues, insertionCode }) => ({
+      chainId, residues, insertionCode,
+    }));
   };
 
   const addSelections = async (selections: string[] | null, structureIdx: number) => {
@@ -249,7 +236,8 @@ function MolstarCustomComponent(props: Props) {
     const parsed = parseSelections(selections);
 
     for (const parsedSel of parsed) {
-      const sel = getSelectionFromChainAuthId(innerProps.plugin!, parsedSel.chainId, parsedSel.residues, structureIdx);
+      const sel = getSelectionFromChainAuthId(innerProps.plugin!, parsedSel.chainId, parsedSel.residues,
+        structureIdx, false, parsedSel.insertionCode);
       const loci = StructureSelection.toLociWithSourceUnits(sel);
       innerProps.plugin.managers.structure.selection.fromLoci("add", loci);
     }
@@ -696,8 +684,13 @@ function MolstarCustomComponent(props: Props) {
     });
   };
 
-  const getSelectionFromChainAuthId = (plugin: PluginUIContext, chainId: string, positions: number[], structureIdx: number, backboneOnly: boolean = false) => {
+  const getSelectionFromChainAuthId = (plugin: PluginUIContext, chainId: string, positions: number[], structureIdx: number, backboneOnly: boolean = false, insertionCode: string | null = null) => {
     // In reality, this is not the right type - check the argument of MS.struct.generator.atomGroups()
+    const authorNumberTest = MS.core.set.has([MS.set(...positions), MS.struct.atomProperty.macromolecular.auth_seq_id()]);
+    const residueTest = insertionCode === null ? authorNumberTest : MS.core.logic.and([
+      authorNumberTest,
+      MS.core.rel.eq([MS.struct.atomProperty.macromolecular.pdbx_PDB_ins_code(), insertionCode]),
+    ]);
     const groups: {
       'chain-test': any;
       'residue-test': any;
@@ -705,7 +698,7 @@ function MolstarCustomComponent(props: Props) {
       'atom-test'?: any;
     } = {
       'chain-test': MS.core.rel.eq([MS.struct.atomProperty.macromolecular.auth_asym_id(), chainId]),
-      'residue-test': MS.core.set.has([MS.set(...positions), MS.struct.atomProperty.macromolecular.auth_seq_id()]),
+      'residue-test': residueTest,
       'group-by': MS.struct.atomProperty.macromolecular.residueKey()
     };
     if (backboneOnly) {

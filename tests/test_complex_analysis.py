@@ -89,6 +89,88 @@ _show_structure(Path({str(path)!r}), {{}}, [], key="complex-test", highlighted_s
     assert visualization.highlighted_selections == ["A:1", "R:1"]
 
 
+def test_inspector_finding_selection_reaches_molstar_with_insertion_code(tmp_path, monkeypatch):
+    path = tmp_path / "complex.pdb"
+    path.write_text("\n".join([
+        _atom(1, "ATOM", "CA", "GLY", "A", 10, 1.0),
+        _atom(2, "ATOM", "CA", "GLY", "A", 10, 2.0),
+        "END", "",
+    ]))
+    # Encode an author insertion code in the saved fixture for the exact Mol* selector.
+    lines = path.read_text().splitlines()
+    lines[1] = lines[1][:26] + "A" + lines[1][27:]
+    path.write_text("\n".join([*lines, ""]))
+    captured = []
+    from mn_molecular_design_studio.engine.workflow_engine.app.components import molstar_viewer
+    from mn_molecular_design_studio.complex_analysis_ui import (
+        _active_biotite_highlights, _render_inspector_findings, _show_structure,
+    )
+
+    monkeypatch.setattr(molstar_viewer, "molstar_custom_component",
+                        lambda structures, **kwargs: captured.append(structures[0].highlighted_selections))
+    data = {
+        "evidence": [{"id": "finding-1", "evaluator": "plip", "label": "hydrogen bond · A:10A",
+                      "artifact": "interactions.csv", "residue_refs": ["A:10^A"],
+                      "selectors": ["A:10^A", "L:1^_"], "raw": {"distance_angstrom": "2.7"}}],
+        "evaluations": [{"evaluator": "plip", "evaluation": {"id": "evaluation-1"}}],
+    }
+    script = f'''\
+from pathlib import Path
+from mn_molecular_design_studio.complex_analysis_ui import _active_biotite_highlights, _render_inspector_findings, _show_structure
+key = "inspector-test"
+_show_structure(Path({str(path)!r}), {{}}, [], key=key, highlighted_selections=_active_biotite_highlights(key))
+_render_inspector_findings({data!r}, key)
+'''
+    app = AppTest.from_string(script, default_timeout=10).run()
+    assert not app.exception
+    highlight = next(button for button in app.button if button.label == "Highlight evidence in Mol*")
+
+    app = highlight.click().run()
+
+    assert not app.exception
+    assert captured[-1] == ["A:10^A", "L:1^_"]
+
+
+def test_inspector_sequence_track_selection_reaches_molstar_with_insertion_code(tmp_path, monkeypatch):
+    path = tmp_path / "complex.pdb"
+    path.write_text("\n".join([
+        _atom(1, "ATOM", "CA", "GLY", "A", 10, 1.0),
+        _atom(2, "ATOM", "CA", "ALA", "A", 10, 2.0),
+        "END", "",
+    ]))
+    lines = path.read_text().splitlines()
+    lines[1] = lines[1][:26] + "A" + lines[1][27:]
+    path.write_text("\n".join([*lines, ""]))
+    captured = []
+    from mn_molecular_design_studio.engine.workflow_engine.app.components import molstar_viewer
+    from mn_molecular_design_studio.complex_analysis_ui import _active_biotite_highlights, _render_inspector_tracks, _show_structure
+
+    monkeypatch.setattr(molstar_viewer, "molstar_custom_component",
+                        lambda structures, **kwargs: captured.append(structures[0].highlighted_selections))
+    tracks = [{
+        "chain_id": "A", "sequence": "GA",
+        "residues": [
+            {"sequence_index": 0, "amino_acid": "G", "author_residue": "10", "selector": "A:10^_"},
+            {"sequence_index": 1, "amino_acid": "A", "author_residue": "10A", "selector": "A:10^A"},
+        ],
+    }]
+    script = f'''\
+from pathlib import Path
+from mn_molecular_design_studio.complex_analysis_ui import _active_biotite_highlights, _render_inspector_tracks, _show_structure
+key = "inspector-track-test"
+data = {{"tracks": {tracks!r}}}
+_show_structure(Path({str(path)!r}), {{}}, [], key=key, highlighted_selections=_active_biotite_highlights(key))
+_render_inspector_tracks(data, key)
+'''
+    app = AppTest.from_string(script, default_timeout=10).run()
+
+    assert not app.exception
+    app = next(button for button in app.button if button.label == "A\n10A").click().run()
+
+    assert not app.exception
+    assert captured[-1] == ["A:10^A"]
+
+
 def test_biotite_contact_residues_keep_saved_auth_chain_numbering(tmp_path):
     run_dir = tmp_path / "analysis-run"
     item_dir = run_dir / "artifacts" / "analysis" / "item-1"

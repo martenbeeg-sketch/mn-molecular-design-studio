@@ -117,6 +117,8 @@ class MolecularDatabase:
                 id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL UNIQUE,
                 type TEXT NOT NULL, components TEXT NOT NULL, created_at TEXT NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS molecular_molecules_created
+                ON molecules(created_at DESC,id ASC);
             CREATE TABLE IF NOT EXISTS molecule_groups (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_id TEXT NOT NULL,
                 project_id TEXT NOT NULL DEFAULT '', import_method TEXT NOT NULL,
@@ -154,6 +156,28 @@ class MolecularDatabase:
             );
             CREATE INDEX IF NOT EXISTS complex_review_lookup
                 ON complex_review_annotations(source_kind,subject_id,structure_ref,evaluation_id,user_id);
+            CREATE TABLE IF NOT EXISTS complex_reference_contexts (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                source_molecule_id TEXT NOT NULL,
+                source_structure_id TEXT NOT NULL,
+                source_group_id TEXT NOT NULL,
+                source_structure_digest TEXT NOT NULL,
+                source_model_id TEXT NOT NULL DEFAULT '',
+                source_component_chain TEXT NOT NULL,
+                reference_molecule_id TEXT NOT NULL,
+                reference_structure_id TEXT NOT NULL,
+                reference_group_id TEXT NOT NULL,
+                reference_structure_digest TEXT NOT NULL,
+                reference_model_id TEXT NOT NULL DEFAULT '',
+                reference_component_chain TEXT NOT NULL,
+                mapping_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(user_id,source_molecule_id,source_structure_id,source_component_chain)
+            );
+            CREATE INDEX IF NOT EXISTS complex_reference_context_lookup
+                ON complex_reference_contexts(user_id,source_molecule_id,source_structure_id,source_component_chain);
             CREATE TABLE IF NOT EXISTS molecule_observations (
                 id TEXT PRIMARY KEY, molecule_id TEXT NOT NULL REFERENCES molecules(id),
                 group_id TEXT NOT NULL REFERENCES molecule_groups(id), namespace TEXT NOT NULL,
@@ -675,6 +699,90 @@ class MolecularDatabase:
             groups = [row for row in groups if row["id"] == group_id]
         return [row["id"] for row in groups]
 
+    def list_structure_records(self, user, *, project_id="", scope="organization", methods=None, collection="all",
+                               query="", molecule_type="", limit=1000, offset=0, molecule_ids=None,
+                               hide_smoke_test=False):
+        """Return lightweight, ACL-filtered molecule rows with accessible structures.
+
+        This is for structure pickers, not scientific result display. It avoids
+        evaluation projection rebuilding and observation/source hydration; callers
+        should use ``list_molecules`` for the small set of selected records.
+        """
+        if not 1 <= int(limit) <= 5000 or int(offset) < 0:
+            raise ValueError("Invalid structure-discovery page size or offset.")
+        if collection not in {"all", "library"}:
+            raise ValueError("Collection must be 'all' or 'library'.")
+        visible_ids = self._visible_ids(user, project_id=project_id, scope=scope, methods=methods,
+                                        collection=collection, hide_smoke_test=hide_smoke_test)
+        # As in list_molecules, collection selection limits which identities are
+        # discovered, while structures can come from any group the user may read.
+        accessible_ids = self._visible_ids(user, project_id=project_id, collection="all",
+                                           hide_smoke_test=hide_smoke_test)
+        if not visible_ids or not accessible_ids:
+            return {"items": [], "next_offset": None}
+        visible_json, accessible_json = _json(visible_ids), _json(accessible_ids)
+        parameters: list[Any] = [visible_json, accessible_json]
+        clause = (
+            "EXISTS (SELECT 1 FROM molecule_members mm WHERE mm.molecule_id=m.id "
+            "AND mm.group_id IN (SELECT value FROM json_each(?))) "
+            "AND EXISTS (SELECT 1 FROM molecule_structures s WHERE s.molecule_id=m.id "
+            "AND s.group_id IN (SELECT value FROM json_each(?)))"
+        )
+        if query:
+            needle = "%" + query + "%"
+            clause += (
+                " AND (m.components LIKE ? OR EXISTS (SELECT 1 FROM molecule_members search_mm "
+                "WHERE search_mm.molecule_id=m.id AND search_mm.group_id IN (SELECT value FROM json_each(?)) "
+                "AND (search_mm.name LIKE ? OR search_mm.metadata LIKE ?)))"
+            )
+            parameters.extend([needle, visible_json, needle, needle])
+        if molecule_type:
+            clause += " AND m.type=?"
+            parameters.append(molecule_type)
+        if molecule_ids is not None:
+            clause += " AND m.id IN (SELECT value FROM json_each(?))"
+            parameters.append(_json(molecule_ids))
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT m.id,m.type,COALESCE((SELECT mm.components FROM molecule_members mm "
+                "WHERE mm.molecule_id=m.id AND mm.group_id IN (SELECT value FROM json_each(?)) "
+                "ORDER BY mm.added_at DESC LIMIT 1),m.components) AS components,"
+                "(SELECT mm.name FROM molecule_members mm "
+                "WHERE mm.molecule_id=m.id AND mm.group_id IN (SELECT value FROM json_each(?)) "
+                "ORDER BY mm.added_at DESC LIMIT 1) AS name FROM molecules m WHERE " + clause +
+                " ORDER BY m.created_at DESC NULLS LAST,m.id LIMIT ? OFFSET ?",
+                [visible_json, visible_json, *parameters, int(limit) + 1, int(offset)],
+            ).fetchall()
+            has_more = len(rows) > int(limit)
+            rows = rows[:int(limit)]
+            ids_json = _json([row["id"] for row in rows])
+            if rows:
+                structures = connection.execute(
+                    "SELECT id,molecule_id,group_id,label,format,created_at,"
+                    "json_object('model_index',json_extract(context,'$.model_index'),"
+                    "'model',json_extract(context,'$.model'),'sample',json_extract(context,'$.sample'),"
+                    "'candidate_id',json_extract(context,'$.candidate_id'),"
+                    "'database_structure_policy',json_extract(context,'$.database_structure_policy')) AS context "
+                    "FROM molecule_structures WHERE molecule_id IN (SELECT value FROM json_each(?)) "
+                    "AND group_id IN (SELECT value FROM json_each(?)) ORDER BY created_at DESC",
+                    (ids_json, accessible_json),
+                ).fetchall()
+            else:
+                structures = []
+        result = {
+            row["id"]: {**dict(row), "components": json.loads(row["components"]), "groups": [],
+                        "structures": [], "representations": []}
+            for row in rows
+        }
+        for structure in structures:
+            result[structure["molecule_id"]]["structures"].append(
+                {**dict(structure), "context": json.loads(structure["context"])}
+            )
+        for record in result.values():
+            record["representations"] = list(record["structures"])
+        next_offset = int(offset) + len(rows) if has_more else None
+        return {"items": list(result.values()), "next_offset": next_offset}
+
     def metric_fields(self, user, *, group_id="", project_id="", scope="organization", methods=None, collection="all",
                       hide_smoke_test=False):
         ids = self._visible_ids(user, group_id, project_id, scope, methods, collection, hide_smoke_test)
@@ -1023,6 +1131,174 @@ class MolecularDatabase:
         if not destination.exists():
             destination.write_bytes(content)
         return destination
+
+    def _complex_reference_structure(self, user, molecule_id, structure_id):
+        """Resolve a Database representation only after rechecking its ACL."""
+        molecule_id, structure_id = str(molecule_id or ""), str(structure_id or "")
+        if not molecule_id or not structure_id:
+            raise ValueError("Choose both a Database record and one of its saved structures.")
+        rows = self.list_molecules(user, molecule_ids=[molecule_id], collection="all", limit=1)["items"]
+        if not rows:
+            raise PermissionError("The selected Database record is unavailable or inaccessible.")
+        record = rows[0]
+        structure = next((item for item in record.get("representations", [])
+                          if str(item.get("id") or "") == structure_id), None)
+        if structure is None:
+            raise PermissionError("The selected structure is not attached to this accessible Database record.")
+        group_id = str(structure.get("group_id") or "")
+        group = self.group(group_id, user)
+        path = self.structure_file(user, structure_id, materialize=True).resolve()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
+        model_id = str(context.get("model_id") or context.get("model_index") or context.get("model")
+                       or structure.get("model_index") or structure_id)
+        return {
+            "record": record,
+            "structure": structure,
+            "group": group,
+            "path": path,
+            "digest": digest,
+            "model_id": model_id,
+        }
+
+    def accessible_structure_molecule_id(self, user, structure_id):
+        """Resolve an exact structure ID to its molecule only after checking access."""
+        structure_id = str(structure_id or "")
+        if not structure_id:
+            raise ValueError("A saved Database structure ID is required.")
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT molecule_id FROM molecule_structures WHERE id=?", (structure_id,),
+            ).fetchone()
+        if not row:
+            raise FileNotFoundError("The referenced Database structure is unavailable.")
+        molecule_id = str(row["molecule_id"])
+        self._complex_reference_structure(user, molecule_id, structure_id)
+        return molecule_id
+
+    def get_complex_reference_context(self, user, *, source_molecule_id, source_structure_id, source_chain):
+        """Return this user's optional component reference after ACL and digest checks."""
+        if not str(user.get("id") or ""):
+            raise PermissionError("A signed-in user is required to access reference context.")
+        source_molecule_id = str(source_molecule_id or "")
+        source_structure_id = str(source_structure_id or "")
+        source_chain = str(source_chain or "").strip()
+        if not source_chain:
+            raise ValueError("Choose a source protein component.")
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM complex_reference_contexts WHERE user_id=? AND source_molecule_id=? "
+                "AND source_structure_id=? AND source_component_chain=?",
+                (str(user["id"]), source_molecule_id, source_structure_id, source_chain),
+            ).fetchone()
+        if not row:
+            return None
+        saved = dict(row)
+        try:
+            source = self._complex_reference_structure(user, source_molecule_id, source_structure_id)
+        except (OSError, PermissionError, ValueError, FileNotFoundError):
+            return {"configured": True, "status": "source_unavailable"}
+        if (str(source["structure"].get("group_id") or "") != saved["source_group_id"]
+                or source["digest"] != saved["source_structure_digest"]
+                or source["model_id"] != saved["source_model_id"]):
+            return {"configured": True, "status": "stale"}
+        try:
+            reference = self._complex_reference_structure(
+                user, saved["reference_molecule_id"], saved["reference_structure_id"]
+            )
+        except (OSError, PermissionError, ValueError, FileNotFoundError):
+            return {"configured": True, "status": "reference_unavailable"}
+        if (str(reference["structure"].get("group_id") or "") != saved["reference_group_id"]
+                or reference["digest"] != saved["reference_structure_digest"]
+                or reference["model_id"] != saved["reference_model_id"]):
+            return {"configured": True, "status": "stale"}
+        try:
+            mapping = json.loads(saved["mapping_json"])
+        except (TypeError, ValueError):
+            return {"configured": True, "status": "stale"}
+        return {
+            **saved,
+            "configured": True,
+            "status": str(mapping.get("mapping_status") or "unavailable"),
+            "mapping": mapping,
+            "source_record_name": str(source["record"].get("name") or source_molecule_id),
+            "source_structure_label": str(source["structure"].get("label") or source_structure_id),
+            "reference_record_name": str(reference["record"].get("name") or saved["reference_molecule_id"]),
+            "reference_structure_label": str(reference["structure"].get("label") or saved["reference_structure_id"]),
+        }
+
+    def save_complex_reference_context(
+        self, user, *, source_molecule_id, source_structure_id, source_chain,
+        reference_molecule_id, reference_structure_id, reference_chain,
+        association_source="user_selected",
+    ):
+        """Save an explicit, user-scoped reference association outside core records."""
+        if not str(user.get("id") or ""):
+            raise PermissionError("A signed-in user is required to save reference context.")
+        source_chain = str(source_chain or "").strip()
+        reference_chain = str(reference_chain or "").strip()
+        association_source = str(association_source or "user_selected").strip()
+        known_relationships = {
+            f"structure.context.{molecule_key}/{structure_key}"
+            for molecule_key, structure_key in (
+                ("design_target_molecule_id", "design_target_structure_id"),
+                ("target_molecule_id", "target_structure_id"),
+                ("reference_molecule_id", "reference_structure_id"),
+            )
+        }
+        if association_source != "user_selected" and association_source not in known_relationships:
+            raise ValueError("Reference association provenance is not supported.")
+        if not source_chain or not reference_chain:
+            raise ValueError("Choose a protein chain in both the source and reference structures.")
+        source = self._complex_reference_structure(user, source_molecule_id, source_structure_id)
+        reference = self._complex_reference_structure(user, reference_molecule_id, reference_structure_id)
+        from mn_molecular_design_studio.complex_analysis_reference import component_reference_mapping
+
+        mapping = component_reference_mapping(
+            source["path"], source_chain, reference["path"], reference_chain,
+        )
+        mapping["association_source"] = association_source
+        stamp = _now()
+        identifier = _id("reference-context-", _json([
+            user["id"], source_molecule_id, source_structure_id, source_chain,
+        ]))
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT INTO complex_reference_contexts "
+                "(id,user_id,source_molecule_id,source_structure_id,source_group_id,source_structure_digest,source_model_id,source_component_chain,"
+                "reference_molecule_id,reference_structure_id,reference_group_id,reference_structure_digest,reference_model_id,reference_component_chain,mapping_json,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(user_id,source_molecule_id,source_structure_id,source_component_chain) DO UPDATE SET "
+                "source_group_id=excluded.source_group_id,source_structure_digest=excluded.source_structure_digest,source_model_id=excluded.source_model_id,"
+                "reference_molecule_id=excluded.reference_molecule_id,reference_structure_id=excluded.reference_structure_id,"
+                "reference_group_id=excluded.reference_group_id,reference_structure_digest=excluded.reference_structure_digest,"
+                "reference_model_id=excluded.reference_model_id,reference_component_chain=excluded.reference_component_chain,"
+                "mapping_json=excluded.mapping_json,updated_at=excluded.updated_at",
+                (
+                    identifier, str(user["id"]), str(source_molecule_id), str(source_structure_id),
+                    str(source["structure"].get("group_id") or ""), source["digest"], source["model_id"], source_chain,
+                    str(reference_molecule_id), str(reference_structure_id),
+                    str(reference["structure"].get("group_id") or ""), reference["digest"], reference["model_id"],
+                    reference_chain, _json(mapping), stamp, stamp,
+                ),
+            )
+        return self.get_complex_reference_context(
+            user, source_molecule_id=source_molecule_id,
+            source_structure_id=source_structure_id, source_chain=source_chain,
+        )
+
+    def clear_complex_reference_context(self, user, *, source_molecule_id, source_structure_id, source_chain):
+        """Remove only this user's optional association for an accessible source component."""
+        if not str(user.get("id") or ""):
+            raise PermissionError("A signed-in user is required to clear reference context.")
+        self._complex_reference_structure(user, source_molecule_id, source_structure_id)
+        with self.connection() as connection:
+            connection.execute(
+                "DELETE FROM complex_reference_contexts WHERE user_id=? AND source_molecule_id=? "
+                "AND source_structure_id=? AND source_component_chain=?",
+                (str(user["id"]), str(source_molecule_id), str(source_structure_id), str(source_chain or "").strip()),
+            )
+        return {"configured": False, "status": "not_configured"}
 
     def _validate_complex_review_subject(self, user, source_kind, subject_id, structure_ref, evaluation_id=""):
         if not str(user.get("id") or ""):

@@ -102,6 +102,51 @@ def test_compatibility_rejects_comparing_a_structure_representation_to_itself():
     assert any("two distinct saved structure representations" in reason for reason in report["errors"])
 
 
+def _protein_ligand_sample(*, identity: str, digest: str, ligand_smiles="CCO"):
+    sample = _sample()
+    sample.update({
+        "identity": identity,
+        "complex_type": "protein-ligand",
+        "binder_chains": [],
+        "binder_chains_sequence": [],
+        "ligand_selection": {"chain": "Z", "residue_key": "Z:1", "ccd": "LIG", "smiles": ligand_smiles},
+        "structure_digest": digest,
+        "coordinate_frame_id": "receptor-sha256:shared-receptor",
+    })
+    return sample
+
+
+def test_protein_ligand_compatibility_requires_same_isomeric_ligand_and_receptor_mapping():
+    left = _protein_ligand_sample(identity="pose-a", digest="pose-a")
+    right = _protein_ligand_sample(identity="pose-b", digest="pose-b")
+
+    report = compatibility_report(left, right)
+
+    assert report["compatible"] is True
+    assert report["overlay_compatible"] is True
+    assert report["overlay_basis"] == "matching saved coordinate-frame identifier"
+
+    right["ligand_selection"]["smiles"] = "C[C@@H](O)F"
+    left["ligand_selection"]["smiles"] = "C[C@H](O)F"
+    report = compatibility_report(left, right)
+    assert report["compatible"] is False
+    assert any("different isomeric chemical identities" in reason for reason in report["errors"])
+
+
+def test_protein_ligand_compatibility_rejects_different_receptor_residue_numbering():
+    left = _protein_ligand_sample(identity="pose-a", digest="pose-a")
+    right = _protein_ligand_sample(identity="pose-b", digest="pose-b")
+    right["target_numbering"] = [{
+        "sequence": "AG",
+        "numbering": [{"number": 10, "insertion": ""}, {"number": 12, "insertion": ""}],
+    }]
+
+    report = compatibility_report(left, right)
+
+    assert report["compatible"] is False
+    assert any("author residue numbering" in reason for reason in report["errors"])
+
+
 def test_contact_presence_table_only_transcribes_saved_target_residues():
     rows = saved_target_contact_rows({
         "Structure A": [{"target_residue": "A:10"}, {"target_residue": "A:11"}],
@@ -164,6 +209,53 @@ def test_comparison_view_supports_multiple_molstar_viewers_and_saved_evaluation_
     evaluations = next(rows for rows in tables if rows and "Stored measurements" in rows[0])
     assert {row["Evaluator"] for row in evaluations} == {"boltz2", "chai1", "protenix"}
     assert {row["Evaluation / candidate ID"] for row in evaluations} == {"ev-a", "ev-b", "ev-c"}
+
+
+def test_protein_ligand_comparison_shows_saved_structures_and_evaluations_without_ppi_workflows(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import complex_analysis_ui
+    from mn_molecular_design_studio import complex_analysis_comparison_ui as view
+
+    path_a, path_b = tmp_path / "a.pdb", tmp_path / "b.pdb"
+    path_a.write_text("END\n")
+    path_b.write_text("END\n")
+    common = {
+        "kind": "database", "label": "Saved docking pose", "context": {}, "components": [],
+        "model_id": "bound-complex", "target_chains": ["A"], "binder_chains": [],
+        "target_numbering": [{"sequence": "AG", "numbering": [{"number": 10, "insertion": ""}, {"number": 11, "insertion": ""}]}],
+        "target_chains_sequence": ["AG"], "binder_chains_sequence": [], "complex_type": "protein-ligand",
+        "format": ".pdb", "target_identity": "target-molecule", "coordinate_frame_id": "receptor-frame",
+        "ligand_selection": {"chain": "Z", "residue_key": "Z:1", "ccd": "LIG", "smiles": "CCO"},
+        "evaluation_entries": [],
+    }
+    first = {**common, "identity": "a", "path": path_a, "viewer_key": "compare-a", "structure_digest": "a",
+             "evaluation_entries": [{"evaluation_id": "ev-a", "evaluator": "plip", "run_id": "run-a",
+                                     "status": "completed", "metrics": {"hbonds": 2}, "provenance": {"source": "Database"}}]}
+    second = {**common, "identity": "b", "path": path_b, "viewer_key": "compare-b", "structure_digest": "b",
+              "evaluation_entries": [{"evaluation_id": "ev-b", "evaluator": "posebusters", "run_id": "run-b",
+                                      "status": "completed", "metrics": {"valid": True}, "provenance": {"source": "Database"}}]}
+    slots = {"a": first, "b": second}
+    shown, tables = [], []
+    monkeypatch.setattr(view, "_comparison_slot", lambda user, slot: slots[slot])
+    monkeypatch.setattr(view, "_saved_biotite_contacts", lambda *args: (_ for _ in ()).throw(AssertionError("PPI map requested for protein-ligand")))
+    monkeypatch.setattr(view, "_render_interface_clustering", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("PPI clustering shown for protein-ligand")))
+    monkeypatch.setattr(view, "_render_foldseek", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Foldseek shown for protein-ligand")))
+    monkeypatch.setattr(complex_analysis_ui, "_show_structure", lambda path, context, components, **kwargs: shown.append(path))
+    monkeypatch.setattr(view.st, "dataframe", lambda rows, **kwargs: tables.append(rows))
+
+    app = AppTest.from_string(
+        "import streamlit as st\n"
+        "st.session_state['complex-analysis-compare-count'] = 2\n"
+        "from mn_molecular_design_studio.complex_analysis_comparison_ui import render_comparison\n"
+        "render_comparison({'id': 'user-1'})",
+        default_timeout=10,
+    ).run()
+
+    assert not app.exception
+    assert shown == [path_a, path_b]
+    assert any("Ligand identity comparison" in item.value for item in app.markdown)
+    assert any("does not recalculate ligand interactions" in item.value for item in app.caption)
+    evaluations = next(rows for rows in tables if rows and "Stored measurements" in rows[0])
+    assert {row["Evaluator"] for row in evaluations} == {"plip", "posebusters"}
 
 
 def test_results_comparison_picker_uses_accessible_jobs_and_exact_saved_model(tmp_path, monkeypatch):

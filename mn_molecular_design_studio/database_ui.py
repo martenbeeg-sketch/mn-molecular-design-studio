@@ -489,6 +489,10 @@ def render_details(database, user, record):
                             receptor_text=receptor_text, receptor_name=receptor_name,
                             include_pocket_sidechains=False,
                         )
+                    elif policy == "bound_docking_complex":
+                        representations = [StructureVisualization(
+                            pdb=_structure_text(path, structure_context), color="chain-id",
+                            representation_type="cartoon+ball-and-stick")]
                     else:
                         # Ordinary protein structures stay in cartoon form; the
                         # specialized pose path above splits a ligand complex so
@@ -498,6 +502,32 @@ def render_details(database, user, record):
                 from mn_molecular_design_studio.bound_docking import is_bound_pose
                 if is_bound_pose(structure):
                     from mn_molecular_design_studio.workspace import load_organization
+                    from mn_molecular_design_studio.bound_docking import register_bound_complex
+                    source_group = database.group(structure["group_id"], user)
+                    can_add_complex = not source_group.get("read_only") and (
+                        user.get("role") == "admin" or source_group.get("owner_id") == user.get("id"))
+                    existing_complex = next((item for item in (record.get("representations") or record.get("structures") or [])
+                        if (item.get("context") or {}).get("database_structure_policy") == "bound_docking_complex"
+                        and str((item.get("context") or {}).get("source_pose_structure_id") or "") == str(structure["id"])), None)
+                    has_one_ligand_identity = record["type"] == "small_molecule" and len([
+                        item for item in record.get("components") or []
+                        if str(item.get("type") or "").casefold() == "small_molecule" and item.get("smiles")
+                    ]) == 1
+                    if has_one_ligand_identity:
+                        if existing_complex:
+                            if st.button("Open bound complex in Complex Analysis", key="database-bound-analysis-" + structure["id"]):
+                                from mn_molecular_design_studio.complex_analysis_ui import open_database_complex
+                                open_database_complex(record["id"], structure_id=existing_complex["id"])
+                        elif st.button("Create bound complex for analysis", disabled=not can_add_complex,
+                                       key="database-bound-analysis-create-" + structure["id"]):
+                            try:
+                                result = register_bound_complex(database, user, record["id"], structure_id=structure["id"])
+                                from mn_molecular_design_studio.complex_analysis_ui import open_database_complex
+                                open_database_complex(record["id"], structure_id=result["complex_structure_id"])
+                            except (OSError, PermissionError, RuntimeError, TypeError, ValueError) as exc:
+                                st.error(f"Could not create an analysis-ready complex: {exc}")
+                        elif not can_add_complex:
+                            st.caption("Only the source Database group owner or an administrator can attach a reconstructed complex to this record.")
                     bundle_key = "database-bound-export-" + structure["id"]
                     if st.button("Prepare bound complex for export", key=bundle_key + "-prepare"):
                         from mn_molecular_design_studio.bound_docking import prepare_bound_inputs
@@ -517,6 +547,10 @@ def render_details(database, user, record):
                             open_bound_pose_in_md(database, user, record["id"], "ligand.md." + engine.lower(), project,
                                                   structure_id=structure["id"])
                             st.rerun()
+                elif (structure.get("context") or {}).get("database_structure_policy") == "bound_docking_complex":
+                    if st.button("Open in Complex Analysis", key="database-bound-analysis-open-" + structure["id"]):
+                        from mn_molecular_design_studio.complex_analysis_ui import open_database_complex
+                        open_database_complex(record["id"], structure_id=structure["id"])
             except (OSError, ValueError, PermissionError) as exc:
                 st.caption(str(exc))
         elif source_workstation:

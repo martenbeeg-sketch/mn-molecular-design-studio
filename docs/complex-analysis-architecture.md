@@ -78,48 +78,65 @@ measurements, job state, Evaluation ID, and provenance when available.
   scheduler, evaluation ingestion, and results renderers. They add no new
   execution service or scientific calculation. All four workflows accept a
   Database source through the shared adapter, subject to each evaluator's own
-  input constraints. Database UI result display currently has a dedicated
-  Biotite contact-map renderer; the other evaluators reuse the shared saved
-  metrics/progress renderer.
+  input constraints. Saved outputs flow back to the exact selected Database
+  representation and are shown in the Scientific Inspector and Evaluation
+  Board with method-specific measurements and provenance.
 
-## Studio and BinderScope capability matrix
+## Studio and BinderScope capability status
 
-| Capability | Studio analysis already available | BinderScope capability | Decision and planned integration |
-| --- | --- | --- | --- |
-| Structure parsing, components, chain IDs, provenance | `molecule_imports.parse_structure`, Database representations, Results artifacts, Mol* viewer, and candidate/evaluation lineage. | `structure.py` parses structures and assigns component/chain roles. | **Already reusable.** Keep Studio parser, access control, viewer, and provenance contracts; do not copy the BinderScope parser. |
-| Heavy-atom contacts and residue maps | Biotite Interface computes contacts and residue-pair maps for declared protein chain groups. Results artifacts preserve source residue identifiers. | `interface.py` generates interface contacts/maps and 3D review layers. | **Already reusable for protein–protein.** Complex Analysis launches Biotite, renders its existing contact-map artifact, and can highlight the saved interface, binder side, or target side in Mol* using source author chain/residue IDs. Insertion-code selectors are not yet supported by the viewer selector syntax. |
-| Buried solvent-accessible area (SASA) | Rosetta Interface Analysis reports `dSASA`, interface SASA fraction, interface energy, and related measures through `analysis.rosetta`. | `interface.py` reports interface buried area. | **Already implemented and now contextually invocable.** Reuse the existing Rosetta workflow and metrics; retain its Rosetta method and units. |
-| Hydrogen bonds | Biotite Interface counts geometric hydrogen bonds when explicit H atoms are present. Rosetta Interface Analysis reports its own interface H-bond metrics. | `interface.py` reports interface hydrogen bonds and geometry. | **Already partially implemented.** Reuse the two existing evaluators with their method-specific definitions and explicit missing-input states. Do not merge their counts. |
-| Unsatisfied polar atoms / interface H-bonds | Rosetta Interface Analysis reports interface unsatisfied H-bond metrics. Biotite does not calculate unsatisfied polar atoms. | `interface.py` reports unsatisfied polar atoms. | **Already implemented and now contextually invocable through Rosetta.** Identify as Rosetta output, not a universal polar-satisfaction score. |
-| Salt bridges and contact geometry | Biotite Interface reports charged-side-chain pairs within its declared 4 Å geometric cutoff. It does not infer energetic strength. | `interface.py` includes polar geometry and salt-bridge context. | **Already reusable.** Present as geometric contacts with chain/residue numbering and cutoff provenance. |
-| Hydrophobic surface patches | PEP-Patch is an existing workflow for selected protein chains with hydrophobic and pH-specific electrostatic surface patches, per-residue artifacts, areas, and fractions. | `interface.py` and `liabilities.py` report surface patches/chemical properties. | **Already implemented and contextually invocable.** Reuse saved patch artifacts and declared pH; patch area is not affinity or specificity. |
-| Full-length target context and residue mapping | Studio retains target/reference IDs and source residue numbering. ipSAE can use saved structures, PAE, and design-reference evidence when available; this is not a general full-length target-frame mapper. | `target_frame.py` aligns cropped targets to optional full-length references and maps contacted residues. | **Partially present, requiring extension.** First reuse explicit references and existing ipSAE evidence. Plan a separate reusable context-mapping workflow for full-length placement, target residue mapping, and missing-reference reporting. Do not assume residue numbers match across constructs. |
-| Glycans and construct accessibility | Some prediction/design inputs can carry glycan-related structure context, but Studio has no general glycan-occlusion evaluation in Complex Analysis. | `target_frame.py` checks glycan context and clashes. | **Missing and worth integrating.** Add only as an explicit reference-context workflow with supported glycan atoms/links and a transparent unavailable state. Do not infer glycan occupancy or biological accessibility from an absent structure. |
-| Steric clashes | Existing measures include ipSAE Cα clash counts, selected validation Cα geometry, Rosetta/other workflow outputs, and PoseBusters ligand plausibility checks. They are distinct methods and do not provide a universal full-length all-atom clash test. | `target_frame.py` checks clashes in full-length context. | **Partially implemented.** Connect existing measurements with source/method labels. A full-length all-atom context check is a later extension; do not substitute a Cα threshold for it. |
-| Binding-mode clustering | Interface Clustering compares contacted target residues by Jaccard similarity for one identical target structure and author numbering, with a 2,000-item workflow limit. Sequence Clustering and Foldseek are separate existing collection workflows. | `modes.py` and `families.py` compare contacted-residue footprints and families. | **Contextually invocable.** Compare saved complexes submits compatible saved Results/Database structures to the registered `analysis.interface_clustering` workflow. Studio records each source structure, model, chain group, digest, and associated evaluation IDs; the existing workflow computes contacts and Jaccard clusters. |
-| Structural comparison across engines/runs | Studio stores distinct model/pose evaluations and supports selected metric comparisons. Foldseek is available for chain-level structure clustering. Existing refolding RMSD metrics are retained with strict residue-list validation. | `modes.py` compares complex poses and binding modes. | **Partially implemented.** Complex Analysis selects authorized saved structures from Results or Database, presents side-by-side Mol* viewers, and can display an overlay from a user-supplied transform plus explicit target-residue map. Studio validates the selected identities/models, residue references, one-to-one mapping, and rigid transform form; it does not fit or score that alignment. |
-| Interface specificity | Some prediction/design workflows accept explicit counter-target or specificity panels. Studio has no general saved-pose homolog/paralog specificity evaluation. PEP-Patch is not a counter-target assay. | `specificity.py` evaluates ortholog/paralog panels. | **Partially present at the workflow level; missing as a general analysis.** Reuse existing explicit-panel workflows where compatible, then design a reusable post-prediction panel adapter. Do not claim proteome-wide specificity from one target model. |
-| Sequence/structural liabilities | Sequence Composition, Protein-Sol, ESM-1v/ESM-IF1, PEP-Patch, PoseBusters, and some engine-specific developability filters exist. They measure different properties and are not interchangeable. | `liabilities.py` includes sequence and structural liability screens. | **Partially implemented.** Surface existing Studio workflows with their evaluator and provenance. Plan a generic plugin interface for additional well-defined liability checks; no composite pass/fail verdict or invented measurement. |
-| Fusion/tag accessibility | Some BindCraft2 modes constrain termini during generation. Studio has no generic post-hoc tag/fusion accessibility analysis for arbitrary structures. | `termini.py` evaluates N/C terminus and fusion/tag accessibility. | **BinderScope-specific behavior requiring generalization.** Do not reuse a generation-time constraint as a post-hoc measurement. Plan a separately named, structure-context workflow that accepts explicit tags/fusions and reports geometric assumptions. |
-| Protein–ligand interactions | PLIP and PandaMap provide saved-pose interaction analysis; PoseBusters checks pose/chemistry plausibility. The existing workflows retain pose and source compound provenance. | BinderScope is primarily an antibody/protein-complex analysis tool. | **Already implemented in Studio.** Connect these workflows for the selected ligand pose, reusing their renderers and compound identity mapping. |
-| Protein–DNA/RNA interactions | Structure parsing and visualization support DNA/RNA components. Current Biotite Interface requires protein chains; no registered contextual protein–nucleic-acid interaction evaluator is available in this slice. | BinderScope's protein-chain assumptions do not make these analyses applicable. | **Not currently supported by the contextual analysis tools.** Keep structures selectable and visible, state unsupported checks explicitly, and add only scientifically suitable existing or separately reviewed workflow modules later. |
-| Source viewer and human review | Mol* and authenticated Database/Results selection are reused; per-user persistent notes remain separate from observations. | BinderScope includes an offline review bundle, interactive family board, per-design inspector, binding-mode/species map, and rule-based query/filter view. | **Partially adapted.** The comparison panel provides a compatible structure board, side-by-side inspector, saved contact-map view, and evaluator filter. Values retain their original evaluation provenance. Human review remains separate from scientific measurements and is not part of filtering or scoring. Campaign family semantics and browser-local review storage are not imported. |
+| Scientific or inspection capability | Studio status |
+| --- | --- |
+| Results/Database structures, access control, Mol*, saved Evaluations and provenance | **Supported.** Contextual actions use registered workflows, the existing scheduler and Evaluation ingestion; selected structure/model IDs and digests remain attached to results. |
+| Protein–protein interface evaluation | **Supported through existing tools.** Biotite Interface, Rosetta Interface Analysis, ipSAE and PEP-Patch retain their own definitions, units, parameters and missing-input states. Interface Clustering reuses its registered workflow. |
+| Protein–ligand evaluation | **Supported through existing tools.** PLIP and PandaMap report interactions; PoseBusters performs its own pose/chemistry validation. A reconstructed docking complex is attached to the existing Database molecular identity with receptor/pose digests, atom mapping, ligand isomeric SMILES and source provenance. |
+| Scientific Inspector | **Implemented.** Mol* and saved evaluations are linked through author-residue selectors, including insertion codes. Interface, Confidence, Surface/Chemistry, Findings and optional Reference Context panels appear when their inputs exist. Evidence rows can select their mapped residues in Mol*. No universal quality score is calculated. |
+| Collection Map and Evaluation Board | **Implemented.** Authorized Database structures can be paged and selected beyond the 2–5 Compare panel limit. Compatible protein–protein maps show saved Biotite contact footprints and per-structure frequencies; protein–ligand rows preserve pose and ligand identity without applying protein–protein metrics. Saved Interface Clustering and Foldseek assignments remain distinct. Missing evaluations are not zero-contact results. |
+| Contact measurements | **Supported with distinct meanings.** Saved residue-pair rows are pair counts; each contacted residue is counted once per structure; contact frequency is the number of evaluated structures contacting that residue divided by the number with compatible saved maps. |
+| Optional reference association | **Implemented as component-specific context.** It preserves source/reference structure IDs, digests, model IDs, chains and author numbering. A unique exact subsequence correspondence covering the full source construct is valid even when it covers only part of the reference; ambiguous or non-identical correspondence is not enabled for reference-dependent evaluation. |
+| Paired reference visualization | **Available when an authorized association exists.** The selected complex and reference display in separate original coordinate frames. This is not a fitted structural overlay or placement result. |
+| Structural correspondence and placement | **Partially available.** Exact sequence correspondence and user-supplied residue maps/transforms can support inspection, with identity and form validation. Studio does not derive or scientifically validate a structural fit, place a component into a full-length frame, or score placement accuracy. |
+| Full-length spatial context, glycans and advanced steric context | **Unavailable as validated Complex Analysis evaluations.** No full-length clash/occlusion, glycan accessibility, or context score is claimed. These require separately validated calculations and provenance. |
+| Protein–DNA/RNA interactions, generalized specificity and fusion/tag accessibility | **Unavailable as general contextual analyses.** Existing prediction-time constraints or protein-only tools are not presented as post-hoc evaluations for these cases. |
+
+BinderScope's Inspector, map, board and query concepts informed these views.
+Studio retains its Database identities, ACLs, Mol* viewer, registered
+evaluators, and per-user human review annotations; campaign-specific labels,
+browser-local review state, and inferred rankings are not imported.
 
 BinderScope's family board, inspector, and binding-mode map informed the
 compatible-collection board and side-by-side inspector below. Its family
 labels, campaign filters, and browser-local review state are not portable
 generic structure metadata.
 
-### Phase 3 comparative workspace (implemented foundation)
+### Compare saved complexes and Collection Map
 
-The **Compare saved complexes** panel provides two to five independently
-selected structure slots. Each slot uses the existing authenticated Results
-job/artifact or Database molecule/representation selectors, preserves the
-exact model or artifact identity, and lets the user map target and
-protein-partner chain groups. Compatibility is checked against Structure A.
-The first comparison view is limited to protein–protein structures;
-protein–ligand and protein–DNA/RNA structures remain supported by the common
-single-complex model and viewer but are not yet compared in this panel.
+**Compare saved complexes** keeps its focused two-to-five structure view. It
+accepts authorized Results and Database structures, including compatible
+protein–protein and protein–ligand representations, and preserves their exact
+model, pose and component identities. The shared protein–protein map requires
+matching selected target sequence and author numbering. Protein–ligand
+comparison keeps ligand identity and saved pose measurements separate from
+protein–protein contact metrics.
+
+The **Collection Map & Evaluation Board** is the larger Database-centered
+workspace. Its ACL-scoped structure discovery is paged and returns lightweight
+record/representation summaries; evaluation observations and provenance are
+loaded only for selected records. The map supports more than five selected
+structures (up to 1,000 per interactive view), with row and residue
+pagination. Compatible protein–protein rows use matching component sequence
+and residue correspondence. Protein–ligand collections are handled separately
+by pose and ligand identity.
+
+For protein–protein collections, contact-frequency values are derived from
+saved Biotite contact artifacts. Pair rows remain residue-pair observations;
+unique contacted residues are deduplicated within each structure; frequency
+counts how many evaluated structures contact each reference residue. A missing
+artifact is distinct from an evaluated map with zero contacts. Saved Interface
+Clustering assignments and representative structures are shown by run and
+cluster. Foldseek assignments are labeled as structural similarity, not
+binding-mode similarity. The Evaluation Board filters saved method-specific
+measurements and provenance without merging scientific findings, prediction
+confidence or human review into a score.
 
 Before showing a shared target-residue map, the panel requires identical
 selected target chain-group sequences and author residue numbering, including
@@ -185,11 +202,11 @@ keeps all sources in one project access boundary. The workflow retains its
 2,000-item ceiling, while the comparison panel currently selects two to five.
 
 The saved-evaluation table includes Results candidate metrics and
-structure-associated Database evaluations, with an evaluator filter. It keeps
-one row per existing record and includes measurement and provenance payloads;
-it does not normalize methods, rank structures, merge scores, or treat human
-review decisions as scientific measurements. Missing saved evaluations are
-reported explicitly.
+structure-associated Database evaluations, with method and available
+provenance filters. It keeps one row per existing record and preserves native
+measurement definitions; it does not normalize methods, rank structures,
+merge scores, or treat human review decisions as scientific measurements.
+Missing saved evaluations are reported explicitly.
 
 #### Live comparison verification (2026-11-02)
 
@@ -217,9 +234,11 @@ prediction workflow was submitted.
 
 The current panel does not calculate structural superpositions, verify the
 scientific fit of a supplied transform, align non-identical target constructs,
-or infer residue mappings across numbering schemes. It does not invoke
-Foldseek from its collection selection. The supplied-transform view is an
-inspection aid and does not produce scientific evaluation measurements.
+or infer residue mappings across numbering schemes. Compare saved complexes
+can launch the registered Foldseek collection workflow for compatible
+single-chain protein inputs; the Collection Map displays saved Foldseek
+assignments but does not rerun that calculation. The supplied-transform view
+is an inspection aid and does not produce scientific evaluation measurements.
 
 #### Structural integrity and supplied-transform inspection (2026-11-02)
 
@@ -248,47 +267,44 @@ saved Boltz-2/Protenix pair; both remain in their original frames until an
 external transform and explicit map are supplied. No real aligned overlay was
 claimed in this verification.
 BinderScope's campaign-specific family clustering, embedding, rejection
-filters, specificity map, full-length target frame, glycan/steric context,
-sequence liabilities, and fusion/tag accessibility remain planned extensions.
+filters, specificity map, spatial full-length target frame, glycan/steric
+context, sequence liabilities, and fusion/tag accessibility remain planned
+extensions. The optional Database reference association below preserves an
+explicit component-to-chain residue map; it is not a target-frame placement or
+context evaluation.
 
-### Planned implementation phases
+### Delivery status and remaining work
 
-1. **Complete Biotite Interface vertical slice** (implemented and verified in
-   live execution): exact Results and Database structure/model, chain groups,
-   evaluation reuse, workflow submission, measurements/contact map, and
-   provenance.
-2. **Complete protein–protein contextual connections**: Rosetta Interface
-   Analysis, ipSAE, and PEP-Patch are connected to Results and Database
-   submission; all three were live-run from Results. Database execution uses
-   the shared adapter. Compare saved complexes also launches Interface
-   Clustering for collections with identical target coordinates, author chain
-   IDs, and numbering. Biotite saved residues can also highlight in Mol*.
-3. **Database as a first-class source** (implemented): direct authorized source
-   selection, stable structure/model/group IDs, ACL/project validation at API
-   boundaries, private staging, scheduler submission, and evaluation
-   ingestion onto the same structure representation. Imported-source behavior
-   has focused API/adapter tests; the real Database launch used a generated
-   structure already saved in Database.
-4. Connect existing PLIP, PandaMap, and PoseBusters workflows for selected
-   protein–ligand poses.
-5. Add reusable full-length context/reference mapping, glycan context, and
-   compatible steric-clash checks only where a validated existing workflow or
-   separately reviewed module supports them.
-6. Add compatible cross-run/model binding-mode comparison, explicit-panel
-   specificity, advanced structural inspection, and protein liability
-   integrations while keeping predicted, measured, geometric, and empirical
-   quantities separate.
-7. Add scientifically appropriate protein–DNA/RNA analyses when a registered
-   supported workflow exists. Keep unavailable capabilities explicit.
-8. Adapt BinderScope's family board, inspector, map, and query interface ideas
-   to compatible Studio evaluation collections. Do not carry over campaign
-   family semantics, browser-only review storage, or inferred pass/fail
-   rankings.
+The Results/Database contextual workflows, optional component reference
+associations, Scientific Inspector, protein–protein and protein–ligand
+comparison paths, Collection Map, Evaluation Board, and saved clustering
+display are implemented. They reuse Studio's registered tools, scheduler,
+Database ACLs, Evaluation ingestion and Mol* viewer. Protein–ligand docking
+representations remain attached to their original Database molecular record
+and retain source pose, receptor, ligand chemistry, coordinate and mapping
+provenance.
 
-The All Tools catalog remains available for standalone workflows throughout.
-Complex Analysis should become their preferred contextual entry point; it must
-not create a second scheduler, job store, evaluation store, or copied scientific
-algorithm.
+Remaining scientific work is limited to separately validated calculations:
+
+1. Derive and validate structural correspondence/fit across non-identical
+   constructs or numbering schemes; verify supplied transforms against the
+   structures instead of treating their declared provenance as authenticated.
+2. Place a selected component into a full-length reference frame and validate
+   spatial context measurements before exposing them as evaluations.
+3. Add advanced interface context such as all-atom full-length clashes,
+   glycan occlusion, and construct/tag accessibility only through suitable
+   registered evaluators with explicit inputs and provenance.
+4. Add general protein–DNA/RNA interaction and counter-target specificity
+   analyses only when their scientific methods and input requirements are
+   defined and validated.
+
+BinderScope campaign-specific family semantics, browser-local review state,
+and composite rankings are outside this workspace. Predicted confidence,
+scientific findings and human review remain separate throughout.
+
+The All Tools catalog remains available for standalone workflow access.
+Complex Analysis is an additional contextual entry point and does not create a
+second scheduler, job store, Evaluation store, or scientific implementation.
 
 ## Comparison rules and limits
 
@@ -312,6 +328,37 @@ not grant separate rights to BindCraft 2; its campaign launcher and scheduler
 integration are excluded from Studio.
 
 ## Verification
+
+### Database collection-discovery profile (2026-11-03)
+
+The local Database contained 21,134 molecules, 30,265 structure
+representations and 38,093 observations. No evaluation projections were stale.
+The detailed `list_molecules(..., limit=1000)` call took 13.38 seconds before
+the discovery-path change; evaluation projection rebuilding accounted for
+about 0.16 seconds. The profiled work included full-list selection and exact
+count queries, plus loading and normalizing 1,543 observations and 1,530
+structure rows for the first 1,000 molecules.
+
+Complex Analysis structure pickers now use the ACL-filtered,
+`created_at`-indexed `list_structure_records` page query. It returns only
+record/component and minimal representation summaries, supports `offset` /
+`next_offset`, and does not rebuild or hydrate evaluations. On the same local
+Database, measured 1,000-record pages took 0.89, 0.82 and 2.64 seconds at
+offsets 0, 1,000 and 2,000 (median 0.89 seconds; cache/page variation is
+visible). Loading the full saved record after selecting one entry took 0.24
+seconds and retained its two saved observations. The general detailed
+`list_molecules` API remains available where callers need complete evaluation
+history; this optimization narrows the picker query rather than changing
+evaluation semantics.
+
+The focused consolidation regression selection passed 117 tests, including
+Complex Analysis, docking-to-complex, Database listing and the relevant API
+ACL/submission cases. Mol* residue-selection tests passed 3/3 and TypeScript
+type-checking passed. A broader `test_api_extended.py` run reported 153 passed,
+1 skipped and 1 unrelated ipSAE output assertion failure
+(`structure_design_interaction_preservation_fraction` missing); the modified
+Complex Analysis and Database discovery paths were not involved in that
+failure.
 
 ### Verified by real execution
 
@@ -363,13 +410,12 @@ and source job metadata without fabricating a Results prediction job. Reopening
 the same selection showed the saved completed result instead of a Run/Retry
 control.
 
-The local Complex Analysis page was inspected in the browser. The first
-on-demand duplicate Mol* viewer collapsed to zero height inside an expander;
-that attempt was removed. Interface selection now feeds the existing main
-Mol* viewer, preserving the contact map's author chain and residue numbering.
-Current Mol* selectors accept numeric author residue IDs; insertion-code
-selectors remain visible in contact output but are not highlighted by this
-viewer syntax.
+The local Complex Analysis page was inspected in the browser. Interface
+selection feeds the existing main Mol* viewer, preserving author chain and
+residue numbering. The Scientific Inspector also supports insertion-code
+selectors; focused frontend and Streamlit tests verify those exact selectors.
+An earlier duplicate on-demand viewer was removed after it collapsed to zero
+height inside an expander.
 
 ### Verified by focused tests
 

@@ -379,24 +379,44 @@ def validate_supplied_alignment(reference: dict, moving: dict, record: dict) -> 
     }
 
 
-def compatibility_report(left: dict, right: dict) -> dict[str, Any]:
-    """Check whether two selected protein–protein structures share a target frame.
+def _ligand_identity(selection: dict) -> str:
+    from rdkit import Chem
 
-    Compatibility is deliberately strict: both sides need explicit target and
-    binder protein groups, identical target sequences, and identical author
-    residue numbering. A matching target label alone is not enough.
-    """
+    smiles = str(selection.get("smiles") or "").strip() if isinstance(selection, dict) else ""
+    molecule = Chem.MolFromSmiles(smiles) if smiles else None
+    if molecule is None:
+        return ""
+    molecule = Chem.RemoveHs(molecule)
+    for atom in molecule.GetAtoms():
+        atom.SetAtomMapNum(0)
+    return Chem.MolToSmiles(molecule, isomericSmiles=True, canonical=True)
+
+
+def compatibility_report(left: dict, right: dict) -> dict[str, Any]:
+    """Check protein–protein or protein–ligand comparison compatibility."""
     errors: list[str] = []
     notes: list[str] = []
     if left.get("identity") and str(left.get("identity")) == str(right.get("identity")):
         errors.append("Select two distinct saved structure representations to compare.")
+    left_type = str(left.get("complex_type") or "")
+    right_type = str(right.get("complex_type") or "")
+    if left_type not in {"protein-protein", "protein-ligand"}:
+        errors.append("The first structure is not a supported protein complex.")
+    if right_type not in {"protein-protein", "protein-ligand"}:
+        errors.append("The second structure is not a supported protein complex.")
+    if left_type and right_type and left_type != right_type:
+        errors.append("The selected structures have different complex types.")
+    comparison_type = left_type if left_type == right_type else ""
     for label, item in (("First structure", left), ("Second structure", right)):
-        if item.get("complex_type") != "protein-protein":
-            errors.append(f"{label} is not a protein–protein complex.")
         if not item.get("target_chains") or not item.get("target_chains_sequence"):
             errors.append(f"{label} has no selected protein target group with a readable sequence.")
-        if not item.get("binder_chains") or not item.get("binder_chains_sequence"):
-            errors.append(f"{label} has no selected protein partner group with a readable sequence.")
+        if comparison_type == "protein-protein":
+            if not item.get("binder_chains") or not item.get("binder_chains_sequence"):
+                errors.append(f"{label} has no selected protein partner group with a readable sequence.")
+        elif comparison_type == "protein-ligand":
+            selection = item.get("ligand_selection") if isinstance(item.get("ligand_selection"), dict) else {}
+            if not selection.get("chain") or not selection.get("residue_key") or not _ligand_identity(selection):
+                errors.append(f"{label} has no uniquely selected ligand with a valid isomeric identity.")
         if not item.get("model_id"):
             notes.append(f"{label} has no saved model identifier; its selected artifact is still kept as an independent sample.")
 
@@ -408,6 +428,14 @@ def compatibility_report(left: dict, right: dict) -> dict[str, Any]:
             errors.append("Selected target chain groups use different author residue numbering or insertion codes.")
     else:
         errors.append("Target residue numbering could not be verified for both structures.")
+
+    if comparison_type == "protein-ligand":
+        first_identity = _ligand_identity(left.get("ligand_selection") or {})
+        second_identity = _ligand_identity(right.get("ligand_selection") or {})
+        if first_identity and second_identity and first_identity != second_identity:
+            errors.append("Selected ligands have different isomeric chemical identities.")
+        elif not first_identity or not second_identity:
+            errors.append("The selected ligand identity could not be verified for both structures.")
 
     left_target_id = str(left.get("target_identity") or "").strip()
     right_target_id = str(right.get("target_identity") or "").strip()

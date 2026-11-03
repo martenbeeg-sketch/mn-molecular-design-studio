@@ -330,6 +330,17 @@ def _ligand_selection_for_component(component: dict, ligand_components: list[dic
                 or component.get("chain") or "")
     ccd = str(component.get("ccd") or "").upper()
     smiles = str(component.get("smiles") or "").strip()
+    saved_selection = metadata.get("ligand_selection")
+    if isinstance(saved_selection, dict):
+        saved_chain = str(saved_selection.get("chain") or "")
+        saved_residue = str(saved_selection.get("residue_key") or "")
+        if (saved_chain == chain and saved_residue == residue_key
+                and str(saved_selection.get("smiles") or "").strip()):
+            return {
+                "chain": saved_chain, "residue_key": saved_residue,
+                "ccd": str(saved_selection.get("ccd") or ccd).upper(),
+                "smiles": str(saved_selection["smiles"]).strip(),
+            }
     if not smiles:
         stored = next((item for item in (metadata.get("components") or [])
                        if isinstance(item, dict) and str(item.get("residue_key") or "") == residue_key
@@ -551,7 +562,403 @@ def _active_biotite_highlights(viewer_key: str) -> list[str]:
     residue_sets = st.session_state.get(f"{viewer_key}-biotite-residue-sets", {})
     mode = st.session_state.get(f"{viewer_key}-biotite-highlight-mode", "No highlight")
     selected = residue_sets.get(mode, []) if isinstance(residue_sets, dict) else []
-    return list(selected) if isinstance(selected, list) else []
+    selected = list(selected) if isinstance(selected, list) else []
+    inspector = st.session_state.get(f"{viewer_key}-inspector-highlights", [])
+    if isinstance(inspector, list):
+        selected.extend(item for item in inspector if isinstance(item, str))
+    return list(dict.fromkeys(selected))
+
+
+def _select_inspector_evidence(state_key: str, selectors: list[str]) -> None:
+    st.session_state[state_key] = list(dict.fromkeys(item for item in selectors if item))
+
+
+def _authorized_evaluation_run_dir(user: dict, observation: dict) -> Path | None:
+    """Resolve a saved Evaluation's artifact directory through the job ACL."""
+    from mn_molecular_design_studio.auth import accessible_project_ids, can_access_job
+    from mn_molecular_design_studio.complex_analysis_inspector import observation_context
+    from mn_molecular_design_studio.job_catalog import get_job_access_record, search_jobs
+
+    context = observation_context(observation)
+    run_id = str(observation.get("run_id") or context.get("run_id") or "")
+    task_group = str(context.get("task_group") or "analysis")
+    if not run_id:
+        return None
+    job_access = get_job_access_record(task_group, run_id)
+    if not can_access_job(user, job_access):
+        return None
+    rows = search_jobs(
+        query=run_id, task_group=task_group, limit=1000,
+        access_owner_id=str(user.get("id") or ""),
+        accessible_project_ids=accessible_project_ids(user), access_admin=user.get("role") == "admin",
+    )["items"]
+    row = next((item for item in rows if str(item.get("run_id") or "") == run_id
+                and str(item.get("task_group") or "") == task_group), None)
+    if not row or not can_access_job(user, job_access):
+        return None
+    path = Path(str(row.get("run_dir") or "")).expanduser().resolve()
+    return path if path.is_dir() else None
+
+
+def _csv_rows(path: Path) -> list[dict]:
+    import csv
+
+    try:
+        with path.open("r", newline="", encoding="utf-8-sig") as handle:
+            return [dict(row) for row in csv.DictReader(handle)]
+    except (OSError, UnicodeError, csv.Error):
+        return []
+
+
+def _saved_evaluation_artifacts(user: dict, observation: dict, structure: dict,
+                                current_digest: str) -> list[dict]:
+    """Read only artifacts belonging to an accessible, exact-structure Evaluation."""
+    from mn_molecular_design_studio.complex_analysis_inspector import observation_context
+
+    context = observation_context(observation)
+    candidate = context.get("candidate") if isinstance(context.get("candidate"), dict) else {}
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    selection = raw.get("complex_analysis_selection") if isinstance(raw.get("complex_analysis_selection"), dict) else {}
+    representation_id = str(context.get("representation_id") or "")
+    selection_source = selection.get("database_source") if isinstance(selection.get("database_source"), dict) else {}
+    source_structure_id = str(context.get("source_structure_id") or selection_source.get("structure_id") or "")
+    saved_digest = str(context.get("source_structure_digest") or context.get("structure_digest")
+                       or selection.get("structure_digest") or "")
+    structure_id = str(structure.get("id") or "")
+    if saved_digest and saved_digest != current_digest:
+        return []
+    if not (representation_id == structure_id or source_structure_id == structure_id
+            or saved_digest == current_digest):
+        return []
+    run_dir = _authorized_evaluation_run_dir(user, observation)
+    if not run_dir:
+        return []
+    analysis_dir = run_dir / "artifacts" / "analysis"
+    manifest = _read_json(analysis_dir / "batch_manifest.json")
+    candidate_id = str(context.get("candidate_id") or candidate.get("candidate_id") or "")
+    item = next((row for row in manifest.get("items", [])
+                 if candidate_id and str(row.get("candidate_id") or "") == candidate_id), None)
+    if item is None:
+        candidate_dirs = sorted(analysis_dir.glob("item_*/"))
+        if len(candidate_dirs) == 1:
+            item = {"id": candidate_dirs[0].name}
+    item_id = str((item or {}).get("id") or "")
+    if item_id and Path(item_id).name != item_id:
+        return []
+    item_dir = analysis_dir / item_id if item_id else analysis_dir
+    results = []
+    for name in ("contacts.json", "interactions.csv", "full_checks.csv", "report.json",
+                 "patch_metrics.json"):
+        path = item_dir / name
+        if not path.is_file():
+            continue
+        if name.endswith(".json"):
+            payload = _read_json(path)
+            if name == "contacts.json":
+                rows = payload.get("residue_pairs", []) if isinstance(payload, dict) else []
+                salt_pairs = payload.get("salt_bridge_pairs", []) if isinstance(payload, dict) else []
+                results.append({"name": name, "path": path,
+                                "rows": [dict(row) for row in rows if isinstance(row, dict)]})
+                if salt_pairs:
+                    results.append({"name": "salt_bridges.json", "path": path,
+                                    "rows": [{"binder_residue": pair[0], "target_residue": pair[1],
+                                              "interaction_type": "Salt bridge"}
+                                             for pair in salt_pairs if isinstance(pair, (list, tuple)) and len(pair) == 2]})
+                continue
+            else:
+                rows = [payload] if payload else []
+        else:
+            rows = _csv_rows(path)
+        results.append({"name": name, "path": path, "rows": [dict(row) for row in rows if isinstance(row, dict)]})
+    for path in sorted(item_dir.glob("residue_patches*.csv")):
+        rows = _csv_rows(path)
+        if rows:
+            results.append({"name": path.name, "path": path, "rows": rows})
+    return results
+
+
+def _database_inspector_data(user: dict, record: dict, structure: dict, path: Path,
+                             components: list[dict], associated: list[tuple[dict, dict]]) -> dict:
+    from mn_molecular_design_studio.complex_analysis_inspector import (
+        author_residue_selector, inspector_evidence_rows, observation_context,
+        parse_author_residue_selector, protein_sequence_tracks, structure_digest,
+    )
+
+    protein_chains = sorted({str(item.get("source_chain") or "") for item in components
+                             if item.get("type") == "protein" and item.get("source_chain")})
+    try:
+        tracks = protein_sequence_tracks(path, protein_chains)
+    except (ImportError, OSError, ValueError, TypeError):
+        tracks = []
+    current_digest = structure_digest(path)
+    ligand_components = [item for item in components if str(item.get("type") or "").casefold() == "small_molecule"]
+    ligand_selection = {}
+    for observation, _evaluation in associated:
+        context = observation_context(observation)
+        candidate = context.get("candidate") if isinstance(context.get("candidate"), dict) else {}
+        raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+        selection = raw.get("complex_analysis_selection") if isinstance(raw.get("complex_analysis_selection"), dict) else {}
+        candidate_selection = selection.get("ligand_selection") if isinstance(selection.get("ligand_selection"), dict) else {}
+        if candidate_selection:
+            ligand_selection = candidate_selection
+            break
+    if not ligand_selection:
+        context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
+        ligand_selection = context.get("ligand_selection") if isinstance(context.get("ligand_selection"), dict) else {}
+    if not ligand_selection and ligand_components:
+        ligand = ligand_components[0]
+        ligand_selection = {
+            "chain": str(ligand.get("source_chain") or ligand.get("chain") or ""),
+            "residue_key": str(ligand.get("residue_key") or ""),
+            "ccd": str(ligand.get("ccd") or ""),
+            "smiles": str(ligand.get("smiles") or ""),
+        }
+    ligand_selector = ""
+    ligand_key = str(ligand_selection.get("residue_key") or "")
+    parsed_ligand_key = parse_author_residue_selector(ligand_key)
+    if parsed_ligand_key:
+        ligand_selector = author_residue_selector(
+            str(ligand_selection.get("chain") or parsed_ligand_key["chain_id"] or "_"),
+            parsed_ligand_key["number"], parsed_ligand_key["insertion_code"] or "",
+        )
+    elif ligand_selection.get("chain") and ligand_selection.get("residue_number") is not None:
+        ligand_selector = author_residue_selector(
+            str(ligand_selection["chain"]), int(ligand_selection["residue_number"]),
+            str(ligand_selection.get("insertion_code") or ""),
+        )
+
+    evaluations = []
+    evidence_rows = []
+    for observation, descriptor in associated:
+        evaluator = str(observation.get("namespace") or descriptor.get("evaluator") or "unknown").casefold()
+        artifacts = _saved_evaluation_artifacts(user, observation, structure, current_digest)
+        item = {"observation": observation, "evaluation": descriptor, "evaluator": evaluator,
+                "artifacts": artifacts}
+        evaluations.append(item)
+        for artifact in artifacts:
+            if artifact["name"] in {"report.json", "patch_metrics.json"}:
+                # These are summary measurements shown in their evaluator panel,
+                # not residue-level findings to attach to a Mol* selection.
+                continue
+            evidence_rows.extend(inspector_evidence_rows(
+                evaluator, artifact["name"], artifact["rows"], tracks,
+                ligand_selector=ligand_selector,
+            ))
+    confidence_keys = ("plddt", "pae", "ptm", "iptm", "ipae", "confidence")
+    confidence = []
+    for item in evaluations:
+        observation = item["observation"]
+        metrics = observation.get("metrics") if isinstance(observation.get("metrics"), dict) else {}
+        values = {key: value for key, value in metrics.items() if any(stem in str(key).casefold() for stem in confidence_keys)}
+        context = observation_context(observation)
+        candidate = context.get("candidate") if isinstance(context.get("candidate"), dict) else {}
+        raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+        outputs = raw.get("confidence_outputs")
+        if values or outputs:
+            confidence.append({**item, "confidence_metrics": values, "confidence_outputs": outputs or {}})
+    return {
+        "tracks": tracks,
+        "evaluations": evaluations,
+        "evidence": evidence_rows,
+        "confidence": confidence,
+        "ligand_selection": ligand_selection,
+        "ligand_components": ligand_components,
+        "structure_digest": current_digest,
+        "protein_chains": protein_chains,
+        "record": record,
+        "structure": structure,
+        "path": path,
+    }
+
+
+def _render_inspector_measurements(items: list[dict], *, evaluators: set[str] | None = None) -> None:
+    import pandas as pd
+
+    selected = [item for item in items if evaluators is None or item["evaluator"] in evaluators]
+    if not selected:
+        st.info("No saved evaluation measurements are available for this panel.")
+        return
+    for item in selected:
+        observation, evaluation = item["observation"], item["evaluation"]
+        st.markdown(f"**{item['evaluator']}** · `{evaluation.get('id')}`")
+        st.caption(f"Run {evaluation.get('run_id') or observation.get('run_id') or 'unknown'} · saved measurement values retain the evaluator's native definitions and units.")
+        metrics = observation.get("metrics") if isinstance(observation.get("metrics"), dict) else {}
+        if metrics:
+            st.dataframe(pd.DataFrame([{"Measurement": key, "Stored value": value}
+                                       for key, value in metrics.items()]), hide_index=True, use_container_width=True)
+        normalized = observation.get("normalized_output") if isinstance(observation.get("normalized_output"), dict) else {}
+        normalized_metrics = normalized.get("metrics") if isinstance(normalized.get("metrics"), dict) else {}
+        normalized_provenance = normalized.get("provenance") if isinstance(normalized.get("provenance"), dict) else {}
+        if normalized_metrics:
+            with st.expander("Existing Studio measurement definitions and units"):
+                rows = []
+                for key, value in normalized_metrics.items():
+                    definition = normalized_provenance.get(key) if isinstance(normalized_provenance.get(key), dict) else {}
+                    rows.append({
+                        "Registered measure": key,
+                        "Stored projection": value,
+                        "Unit": definition.get("unit") or "not specified",
+                        "Scope": definition.get("scope") or "not specified",
+                        "Method": definition.get("method") or "not specified",
+                        "Source tool": definition.get("source_tool") or item["evaluator"],
+                    })
+                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        for artifact in item["artifacts"]:
+            rows = artifact["rows"]
+            if rows and artifact["name"] not in {"report.json", "patch_metrics.json"}:
+                with st.expander(f"Saved {artifact['name']} · {len(rows)} row(s)"):
+                    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+            elif rows:
+                with st.expander(f"Saved {artifact['name']}"):
+                    st.json(rows[0])
+        with st.expander("Evaluation provenance", expanded=False):
+            context = observation.get("context") if isinstance(observation.get("context"), dict) else {}
+            st.json({
+                "evaluation_id": evaluation.get("id"), "observation_id": observation.get("id"),
+                "evaluator": item["evaluator"], "run_id": evaluation.get("run_id") or observation.get("run_id"),
+                "source_structure_id": context.get("source_structure_id") or context.get("representation_id"),
+                "source_structure_digest": context.get("source_structure_digest") or context.get("structure_digest"),
+                "settings": context.get("settings") or {}, "evaluation_context": context,
+            })
+
+
+def _render_inspector_findings(data: dict, viewer_key: str) -> None:
+    evidence = data["evidence"]
+    if not evidence:
+        st.info("No saved residue-linked artifact evidence is available for this structure. Existing scalar evaluations remain available in their measurement panels.")
+        return
+    st.caption("Choose a saved evaluator observation and highlight its exact residue references in the structure. Raw evaluator fields, units, and Evaluation provenance are retained below.")
+    evidence_ids = [item["id"] for item in evidence]
+    labels = {item["id"]: f"{item['evaluator']} · {item['label']}" for item in evidence}
+    select_key = f"{viewer_key}-inspector-evidence-select"
+    if st.session_state.get(select_key) not in evidence_ids:
+        st.session_state[select_key] = evidence_ids[0]
+    selected_id = st.selectbox("Saved finding / interaction", evidence_ids,
+                               format_func=lambda value: labels[value], key=select_key)
+    selected = next(item for item in evidence if item["id"] == selected_id)
+    state_key = f"{viewer_key}-inspector-highlights"
+    cols = st.columns([1, 1])
+    cols[0].button("Highlight evidence in Mol*", key=f"{viewer_key}-inspector-evidence-highlight",
+                   disabled=not selected["selectors"],
+                   on_click=_select_inspector_evidence, args=(state_key, selected["selectors"]))
+    cols[1].button("Clear Inspector highlight", key=f"{viewer_key}-inspector-evidence-clear",
+                   on_click=_select_inspector_evidence, args=(state_key, []))
+    if selected["selectors"]:
+        st.caption("Mol* selection: " + ", ".join(selected["selectors"]))
+    else:
+        st.info("This output does not contain a uniquely resolvable author residue reference in the selected representation, so no highlight is inferred.")
+    st.json({"evaluator": selected["evaluator"], "artifact": selected["artifact"],
+             "residue_references": selected["residue_refs"], "stored_evaluator_fields": selected["raw"]})
+    descriptor = next((item["evaluation"] for item in data["evaluations"]
+                       if item["evaluator"] == selected["evaluator"]), {})
+    st.caption(f"Evidence Evaluation ID: {descriptor.get('id') or 'unavailable'}")
+
+
+def _render_inspector_tracks(data: dict, viewer_key: str) -> None:
+    tracks = data["tracks"]
+    if not tracks:
+        return
+    with st.expander("Interactive author-numbered sequence tracks", expanded=True):
+        st.caption("Each residue is shown in sequence order with the saved author residue number and insertion code. Select a tile to highlight that exact residue in Mol*.")
+        chain_ids = [str(item["chain_id"]) for item in tracks]
+        chain_key = f"{viewer_key}-inspector-track-chain"
+        if st.session_state.get(chain_key) not in chain_ids:
+            st.session_state[chain_key] = chain_ids[0]
+        chain_id = st.selectbox("Protein component track", chain_ids, key=chain_key)
+        track = next(item for item in tracks if item["chain_id"] == chain_id)
+        page_size = 24
+        page_count = max(1, (len(track["residues"]) + page_size - 1) // page_size)
+        page_key = f"{viewer_key}-inspector-track-page-{chain_id}"
+        if int(st.session_state.get(page_key, 0) or 0) >= page_count:
+            st.session_state[page_key] = 0
+        page = st.selectbox("Sequence segment", list(range(page_count)),
+                            format_func=lambda index: f"Residues {index * page_size + 1}–{min((index + 1) * page_size, len(track['residues']))} of {len(track['residues'])}",
+                            key=page_key)
+        start = page * page_size
+        residues = track["residues"][start:start + page_size]
+        st.caption("Sequence: " + "".join(row["amino_acid"] for row in residues))
+        for offset in range(0, len(residues), 12):
+            batch = residues[offset:offset + 12]
+            columns = st.columns(12)
+            for column, residue in zip(columns, batch):
+                column.button(
+                    f"{residue['amino_acid']}\n{residue['author_residue']}",
+                    key=f"{viewer_key}-inspector-track-{chain_id}-{residue['sequence_index']}",
+                    help=f"Chain {chain_id} · author residue {residue['author_residue']} · sequence index {residue['sequence_index'] + 1}",
+                    on_click=_select_inspector_evidence,
+                    args=(f"{viewer_key}-inspector-highlights", [residue["selector"]]),
+                    disabled=not residue["selector"],
+                )
+
+
+def _render_database_inspector(user: dict, data: dict, viewer_key: str, *, record: dict,
+                               structure: dict, components: list[dict], model_id: str) -> None:
+    items = data["evaluations"]
+    evaluators = {item["evaluator"] for item in items}
+    interface_evaluators = {"biotite_interface", "rosetta_metrics", "ipsae", "plip", "pandamap"}
+    surface_evaluators = {"pep_patch", "posebusters"}
+    ligand_present = bool(data["ligand_components"])
+    panel_specs = []
+    if evaluators & interface_evaluators:
+        panel_specs.append(("Interface", "interface"))
+    if data["confidence"]:
+        panel_specs.append(("Confidence", "confidence"))
+    if evaluators & surface_evaluators or ligand_present:
+        panel_specs.append(("Surface / Chemistry", "chemistry"))
+    if data["evidence"]:
+        panel_specs.append(("Findings", "findings"))
+    if data["protein_chains"]:
+        panel_specs.append(("Reference Context", "reference"))
+    st.markdown("### Scientific Inspector")
+    if not panel_specs:
+        st.info("This saved structure has no applicable saved Evaluation data yet. Its structure and existing analysis launch controls remain available.")
+        return
+    tabs = st.tabs([title for title, _kind in panel_specs])
+    for tab, (_title, kind) in zip(tabs, panel_specs):
+        with tab:
+            if kind == "interface":
+                _render_inspector_measurements(items, evaluators=interface_evaluators)
+            elif kind == "confidence":
+                for item in data["confidence"]:
+                    st.markdown(f"**{item['evaluator']}** · `{item['evaluation'].get('id')}`")
+                    if item["confidence_metrics"]:
+                        st.dataframe([{"Measurement": key, "Stored value": value}
+                                      for key, value in item["confidence_metrics"].items()],
+                                     hide_index=True, use_container_width=True)
+                    if item["confidence_outputs"]:
+                        st.json(item["confidence_outputs"])
+                    normalized = item["observation"].get("normalized_output")
+                    provenance = normalized.get("provenance") if isinstance(normalized, dict) else None
+                    if isinstance(provenance, dict) and provenance:
+                        with st.expander("Confidence measurement definitions and units"):
+                            keys = [key for key in (normalized.get("metrics") or {}) if key in provenance]
+                            st.dataframe([{
+                                "Registered measure": key,
+                                "Unit": provenance[key].get("unit") or "not specified",
+                                "Scope": provenance[key].get("scope") or "not specified",
+                                "Method": provenance[key].get("method") or "not specified",
+                                "Source tool": provenance[key].get("source_tool") or item["evaluator"],
+                            } for key in keys], hide_index=True, use_container_width=True)
+                    context = item["observation"].get("context")
+                    if isinstance(context, dict):
+                        st.caption(f"Confidence provenance · run {item['evaluation'].get('run_id') or item['observation'].get('run_id')} · values shown as stored by {item['evaluator']}.")
+            elif kind == "chemistry":
+                ligand = data["ligand_selection"]
+                smiles = str(ligand.get("smiles") or "")
+                if ligand_present:
+                    st.markdown("#### Selected ligand identity")
+                    if smiles:
+                        st.caption("Saved isomeric SMILES")
+                        st.code(smiles, language=None)
+                    st.caption(f"Ligand residue {ligand.get('residue_key') or 'unavailable'} · chain {ligand.get('chain') or 'unavailable'} · CCD {ligand.get('ccd') or 'unavailable'}")
+                _render_inspector_measurements(items, evaluators=surface_evaluators)
+                if "posebusters" in evaluators:
+                    st.info("PoseBusters results are structural and chemical pose-validation outputs, separate from ligand–receptor interaction analyses.")
+            elif kind == "findings":
+                _render_inspector_findings(data, viewer_key)
+            elif kind == "reference":
+                key = hashlib.sha256(f"database:{record['id']}:{structure['id']}".encode()).hexdigest()[:14]
+                _render_optional_reference_context(user, record, structure, components, model_id, key)
 
 
 def _render_biotite_results(user: dict, evaluation: dict, *, source_candidate_id: str, key: str,
@@ -962,7 +1369,7 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
         st.info("Biotite Interface is not applicable: this selected structure does not contain at least two protein chains.")
     if ppi_applicable:
         st.caption("Rosetta Interface Analysis and ipSAE are available below through their registered Studio workflows. They currently require one selected chain per group; ipSAE-derived scores additionally require a saved pairwise PAE matrix.")
-    st.caption("Interface Clustering remains available from All Tools for compatible collections. Full-length context mapping, cross-run comparison, and specificity remain roadmap work.")
+    st.caption("Compare saved complexes and the Collection Map expose compatible saved structures and registered Interface Clustering results. Optional reference mapping is available for Database components; spatial placement and general counter-target specificity remain unavailable.")
     if protein_chains:
         st.caption("PEP-Patch evaluates hydrophobic and pH-specific electrostatic surface patches on a user-selected protein chain group.")
     st.markdown("##### Protein–ligand")
@@ -1321,6 +1728,255 @@ def _show_human_review(database, user: dict, *, source_kind: str, subject_id: st
         st.success(f"Review saved · {saved['updated_at']}")
 
 
+def _explicit_reference_link(structure: dict) -> tuple[str, str, str]:
+    """Return only a reference pair explicitly carried by this representation's provenance."""
+    context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
+    for molecule_key, structure_key in (
+        ("design_target_molecule_id", "design_target_structure_id"),
+        ("target_molecule_id", "target_structure_id"),
+        ("reference_molecule_id", "reference_structure_id"),
+    ):
+        molecule_id = str(context.get(molecule_key) or "").strip()
+        structure_id = str(context.get(structure_key) or "").strip()
+        if structure_id:
+            return molecule_id, structure_id, f"structure.context.{molecule_key}/{structure_key}"
+    return "", "", ""
+
+
+def _paired_reference_for_viewer(database, user: dict, record: dict, structure: dict,
+                                 components: list[dict], key: str) -> dict | None:
+    """Resolve the current user's digest-checked optional reference for the viewer.
+
+    This only loads the exact saved Database representation. It does not place,
+    align, transform, or score the reference against the selected complex.
+    """
+    protein_chains = sorted({str(item.get("source_chain") or "") for item in components
+                             if item.get("type") == "protein" and item.get("source_chain")})
+    if not protein_chains:
+        return None
+    component_key = f"complex-analysis-reference-component-{key}"
+    source_chain = str(st.session_state.get(component_key) or "")
+    if source_chain not in protein_chains:
+        source_chain = protein_chains[0]
+        st.session_state[component_key] = source_chain
+    try:
+        saved = database.get_complex_reference_context(
+            user, source_molecule_id=str(record["id"]),
+            source_structure_id=str(structure["id"]), source_chain=source_chain,
+        )
+        if not saved or not saved.get("configured"):
+            return None
+        reference_id = str(saved.get("reference_structure_id") or "")
+        if not reference_id:
+            return None
+        reference_path = database.structure_file(user, reference_id)
+        reference_components = component_inventory(reference_path.read_bytes(), reference_path.name)
+    except (OSError, PermissionError, ValueError, TypeError, KeyError):
+        return None
+    return {
+        "saved": saved,
+        "source_chain": source_chain,
+        "path": reference_path,
+        "components": reference_components,
+        "reference_id": reference_id,
+    }
+
+
+def _render_optional_reference_context(user: dict, record: dict, structure: dict,
+                                       components: list[dict], model_id: str, key: str) -> None:
+    """Select and persist an optional Database reference for one protein component."""
+    protein_chains = sorted({str(item.get("source_chain") or "") for item in components
+                             if item.get("type") == "protein" and item.get("source_chain")})
+    if not protein_chains:
+        return
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+
+    database = MolecularDatabase()
+    with st.expander("Optional component reference context", expanded=False):
+        st.caption(
+            "A component-specific link to another saved Database structure is optional; Studio does not assert that the reference is full-length. Core analyses and compatible comparisons do not require it. "
+            "Only exact Database IDs recorded in this structure's provenance are reused automatically; Studio does not infer a reference from sequence similarity or an unrelated cofold."
+        )
+        component_key = f"complex-analysis-reference-component-{key}"
+        if st.session_state.get(component_key) not in protein_chains:
+            st.session_state[component_key] = protein_chains[0]
+        source_chain = st.selectbox("Source protein component", protein_chains, key=component_key)
+        try:
+            saved = database.get_complex_reference_context(
+                user, source_molecule_id=str(record["id"]),
+                source_structure_id=str(structure["id"]), source_chain=source_chain,
+            )
+        except (PermissionError, ValueError, OSError) as exc:
+            saved = None
+            st.info(f"Reference context is not configured for this component: {exc}")
+
+        if saved and saved.get("status") in {"validated", "partial", "ambiguous", "unmatched"}:
+            mapping = saved.get("mapping") if isinstance(saved.get("mapping"), dict) else {}
+            st.markdown(
+                f"Saved reference: **{saved.get('reference_record_name') or saved.get('reference_molecule_id')}** · "
+                f"{saved.get('reference_structure_label') or saved.get('reference_structure_id')} · chain {saved.get('reference_component_chain')}"
+            )
+            st.caption(
+                f"Source {saved.get('source_molecule_id')} / {saved.get('source_structure_id')} · "
+                f"SHA256 {saved.get('source_structure_digest', '')[:16]} · chain {source_chain} · model {saved.get('source_model_id') or model_id}"
+            )
+            st.caption(
+                f"Reference {saved.get('reference_molecule_id')} / {saved.get('reference_structure_id')} · "
+                f"SHA256 {saved.get('reference_structure_digest', '')[:16]} · model {saved.get('reference_model_id')} · "
+                f"mapping: {saved.get('status')} · {mapping.get('mapping_reason') or 'Residue mapping unavailable.'}"
+            )
+            st.caption(f"Association source: {mapping.get('association_source') or 'user_selected'}")
+            if saved.get("status") == "validated":
+                st.info(
+                    "Residue correspondence is uniquely mapped and sequence-validated. No general-purpose full-length context evaluator is registered here yet; "
+                    "the reference does not change or gate this complex's existing analyses."
+                )
+            else:
+                st.info(
+                    "Reference context is retained for provenance, but reference-dependent evaluations are disabled because residue correspondence is not fully validated. "
+                    "Core analyses remain available."
+                )
+            residues = mapping.get("residue_mapping") if isinstance(mapping.get("residue_mapping"), list) else []
+            if residues:
+                rows = []
+                for item in residues:
+                    source_residue, reference_residue = item.get("source") or {}, item.get("reference") or {}
+                    rows.append({
+                        "Source chain": source_chain,
+                        "Source residue": f"{source_residue.get('number')}{source_residue.get('insertion') or ''}",
+                        "Source sequence index": source_residue.get("sequence_index"),
+                        "Source amino acid": source_residue.get("amino_acid"),
+                        "Reference chain": saved.get("reference_component_chain"),
+                        "Reference residue": f"{reference_residue.get('number')}{reference_residue.get('insertion') or ''}",
+                        "Reference sequence index": reference_residue.get("sequence_index"),
+                        "Reference amino acid": reference_residue.get("amino_acid"),
+                        "Exact sequence match": bool(item.get("sequence_match")),
+                    })
+                st.markdown("##### Residue-numbering provenance")
+                st.caption("Author residue numbers and insertion codes come from the exact saved PDB/mmCIF artifacts; sequence indices and amino-acid identities are retained too.")
+                st.dataframe(rows, hide_index=True, use_container_width=True)
+                st.caption(
+                    f"{mapping.get('mapping_method')} · alignments {mapping.get('alignment_count')} · "
+                    f"source coverage {float(mapping.get('source_coverage') or 0):.3f} · "
+                    f"mapped sequence identity {float(mapping.get('mapped_sequence_identity') or 0):.3f}"
+                )
+                st.json(mapping.get("mapping_parameters") or {})
+            st.caption("The exact associated Database reference is displayed beside the selected complex above in its original coordinate frame.")
+        elif saved:
+            status_message = {
+                "stale": "The saved source or reference file changed; reselect the reference to refresh its digest-bound numbering map.",
+                "source_unavailable": "The source representation is no longer accessible.",
+                "reference_unavailable": "The reference is no longer accessible.",
+            }.get(str(saved.get("status")), "The saved reference context is unavailable.")
+            st.warning(status_message + " The complex remains available for its existing analyses.")
+        else:
+            st.info("Reference-context analyses: not configured. This is not a missing-input condition for the complex.")
+
+        linked_molecule, linked_structure, link_provenance = _explicit_reference_link(structure)
+        search = st.text_input("Find a Database reference", key=f"complex-analysis-reference-search-{key}", placeholder="Name or sequence")
+        try:
+            reference_records = (database.list_structure_records(user, collection="all", query=search, limit=1000)["items"]
+                                if search.strip() else [])
+        except (PermissionError, ValueError, OSError) as exc:
+            reference_records = []
+            st.warning(f"Could not list reference structures: {exc}")
+        choices = {str(row["id"]): row for row in reference_records
+                   if row.get("representations") or row.get("structures")}
+        saved_molecule = str((saved or {}).get("reference_molecule_id") or "")
+        if linked_structure and not linked_molecule:
+            try:
+                linked_molecule = database.accessible_structure_molecule_id(user, linked_structure)
+            except (FileNotFoundError, PermissionError, ValueError, OSError):
+                linked_molecule = ""
+        for candidate_id in (saved_molecule, linked_molecule):
+            if candidate_id and candidate_id not in choices:
+                try:
+                    extra = database.list_molecules(user, molecule_ids=[candidate_id], collection="all", limit=1)["items"]
+                    if extra and (extra[0].get("representations") or extra[0].get("structures")):
+                        choices[candidate_id] = extra[0]
+                except (PermissionError, ValueError, OSError):
+                    pass
+        molecule_options = ["", *choices]
+        default_molecule = saved_molecule if saved_molecule in choices else linked_molecule if linked_molecule in choices else ""
+        molecule_key = f"complex-analysis-reference-molecule-{key}-{source_chain}"
+        if st.session_state.get(molecule_key) not in molecule_options:
+            st.session_state[molecule_key] = default_molecule
+        reference_molecule_id = st.selectbox(
+            "Reference Database record", molecule_options,
+            format_func=lambda value: "Choose a saved reference…" if not value else f"{choices[value].get('name') or 'Structure'} · {value[-8:]}",
+            key=molecule_key,
+        )
+        if reference_molecule_id:
+            reference_record = choices[reference_molecule_id]
+            representations = list(reference_record.get("representations") or reference_record.get("structures") or [])
+            structure_choices = {str(item["id"]): item for item in representations
+                                 if str(item.get("format") or "").casefold() in {"pdb", "ent", "cif", "mmcif"}}
+            structure_options = ["", *structure_choices]
+            saved_structure = str((saved or {}).get("reference_structure_id") or "")
+            default_structure = saved_structure if saved_structure in structure_choices else linked_structure if linked_structure in structure_choices else ""
+            structure_key = f"complex-analysis-reference-structure-{key}-{source_chain}"
+            if st.session_state.get(structure_key) not in structure_options:
+                st.session_state[structure_key] = default_structure
+            reference_structure_id = st.selectbox(
+                "Reference structure / model", structure_options,
+                format_func=lambda value: "Choose a saved structure…" if not value else _representation_label(structure_choices[value]),
+                key=structure_key,
+            )
+            reference_chain = ""
+            if reference_structure_id:
+                try:
+                    reference_path = database.structure_file(user, reference_structure_id)
+                    reference_components = component_inventory(reference_path.read_bytes(), reference_path.name, reference_record.get("components"))
+                    reference_chains = sorted({str(item.get("source_chain") or "") for item in reference_components
+                                               if item.get("type") == "protein" and item.get("source_chain")})
+                except (OSError, PermissionError, ValueError) as exc:
+                    reference_path, reference_chains = None, []
+                    st.warning(f"Could not inspect the selected reference structure: {exc}")
+                if reference_path and not reference_chains:
+                    st.info("This saved representation contains no parsed protein chain for component mapping.")
+                if reference_chains:
+                    saved_chain = str((saved or {}).get("reference_component_chain") or "")
+                    source_context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
+                    linked_chains = [str(value) for value in source_context.get("target_chains") or []]
+                    default_chain = saved_chain if saved_chain in reference_chains else (
+                        linked_chains[0] if linked_structure == reference_structure_id and len(linked_chains) == 1
+                        and linked_chains[0] in reference_chains else ""
+                    )
+                    chain_options = ["", *reference_chains]
+                    chain_key = f"complex-analysis-reference-chain-{key}-{source_chain}"
+                    if st.session_state.get(chain_key) not in chain_options:
+                        st.session_state[chain_key] = default_chain
+                    reference_chain = st.selectbox(
+                        "Reference protein chain", chain_options,
+                        format_func=lambda value: "Choose a reference component…" if not value else value,
+                        key=chain_key,
+                    )
+                if st.button("Save component reference", key=f"complex-analysis-reference-save-{key}-{source_chain}",
+                             type="primary", disabled=not reference_chain):
+                    try:
+                        database.save_complex_reference_context(
+                            user, source_molecule_id=str(record["id"]), source_structure_id=str(structure["id"]),
+                            source_chain=source_chain, reference_molecule_id=reference_molecule_id,
+                            reference_structure_id=reference_structure_id, reference_chain=reference_chain,
+                            association_source=(link_provenance if linked_structure == reference_structure_id
+                                                and linked_molecule in {"", reference_molecule_id} else "user_selected"),
+                        )
+                        st.success("Optional component reference saved with exact structure digests and residue-numbering provenance.")
+                        st.rerun()
+                    except (OSError, PermissionError, TypeError, ValueError) as exc:
+                        st.error(f"Could not save this component reference: {exc}")
+        if saved and saved.get("configured"):
+            if st.button("Clear component reference", key=f"complex-analysis-reference-clear-{key}-{source_chain}"):
+                try:
+                    database.clear_complex_reference_context(
+                        user, source_molecule_id=str(record["id"]),
+                        source_structure_id=str(structure["id"]), source_chain=source_chain,
+                    )
+                    st.rerun()
+                except (OSError, PermissionError, ValueError) as exc:
+                    st.error(f"Could not clear this component reference: {exc}")
+
+
 def _render_database_analysis(user: dict, record: dict, structure: dict, path: Path,
                               components: list[dict], evaluation_id: str, *,
                               workflow_schema=None, submit=None) -> None:
@@ -1414,7 +2070,10 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
         selected_ligand_id = st.selectbox("Ligand residue", ligand_options,
             format_func=lambda value: ligand_labels[value], key=ligand_key)
         selected_ligand = next((item for item in ligand_components if item.get("id") == selected_ligand_id), {})
-        ligand_selection = _ligand_selection_for_component(selected_ligand, ligand_components, {"components": record.get("components") or []})
+        ligand_selection = _ligand_selection_for_component(selected_ligand, ligand_components, {
+            "components": record.get("components") or [],
+            "ligand_selection": context.get("ligand_selection"),
+        })
         st.caption(f"Selected representation: {structure['id']} · model {model_id} · SHA256 {digest[:16]}")
         unavailable = ""
         if not ligand_selection.get("chain") or not ligand_selection.get("residue_key"):
@@ -1527,11 +2186,17 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
 def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, submit=None) -> None:
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
 
+    def has_analysis_complex(item: dict) -> bool:
+        if len(item.get("components") or []) >= 2:
+            return True
+        return any((structure.get("context") or {}).get("database_structure_policy") == "bound_docking_complex"
+                   for structure in item.get("representations") or item.get("structures") or [])
+
     database = MolecularDatabase()
     st.caption("Analyses launched from Database use the existing Studio workflow queue on this workstation; the selected structure stays linked to its Database record without creating a prediction Results job.")
     query = st.text_input("Search Database complexes", key="complex-analysis-db-query", placeholder="Name or sequence")
-    page = database.list_molecules(user, collection="all", query=query, limit=1000)
-    records = [item for item in page["items"] if item.get("representations") and len(item.get("components") or []) >= 2]
+    page = database.list_structure_records(user, collection="all", query=query, limit=1000)
+    records = [item for item in page["items"] if item.get("representations") and has_analysis_complex(item)]
     by_id = {str(item["id"]): item for item in records}
     requested_id = str(opened.get("molecule_id") or st.session_state.get("complex-analysis-molecule-id") or "")
     if requested_id and requested_id not in by_id:
@@ -1539,14 +2204,14 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
             requested = database.list_molecules(user, molecule_ids=[requested_id], collection="all", limit=1)["items"]
         except PermissionError:
             requested = []
-        if requested and len(requested[0].get("components") or []) >= 2 and requested[0].get("representations"):
+        if requested and requested[0].get("representations") and has_analysis_complex(requested[0]):
             records = [requested[0], *records]
             by_id[requested_id] = requested[0]
     if not records:
         st.info("No accessible Database records with a saved multi-component structure are available. Import a PDB/mmCIF structure in Database or open a completed Results structure.")
         return
     ids = list(dict.fromkeys(str(item["id"]) for item in records))
-    labels = {str(item["id"]): f"{item.get('name') or 'Complex'} · {len(item.get('components') or [])} components · {str(item['id'])[-8:]}" for item in records}
+    labels = {str(item["id"]): f"{item.get('name') or 'Complex'} · {max(2, len(item.get('components') or []))} components · {str(item['id'])[-8:]}" for item in records}
     if requested_id not in ids:
         requested_id = ids[0]
     molecule_widget_key = "complex-analysis-molecule-id"
@@ -1557,8 +2222,10 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
     if not rows:
         st.warning("This Database record is unavailable or you do not have access to it.")
         return
-    record = rows[0]
-    evaluation_rows, evaluation_by_id = _evaluation_options(record)
+    all_record = rows[0]
+    all_evaluation_rows, all_evaluation_by_id = _evaluation_options(all_record)
+    record = all_record
+    evaluation_rows, evaluation_by_id = all_evaluation_rows, all_evaluation_by_id
     default_evaluation = str(opened.get("evaluation_id") or (record.get("selected_evaluation") or {}).get("id") or "")
     evaluation_ids = ["", *[row["id"] for row in evaluation_rows]]
     if default_evaluation not in evaluation_ids:
@@ -1616,24 +2283,67 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
         f"Database record: {record.get('name') or record['id']} · {record['id']} · "
         f"Structure {structure_id} · {structure.get('label') or path.name}"
     )
-    component_rows = component_inventory(path.read_bytes(), path.name, record.get("components"))
+    component_rows = component_inventory(path.read_bytes(), path.name, all_record.get("components"))
     _show_components(component_rows)
     viewer_key = f"complex-analysis-db-viewer-{structure_id}"
-    _show_structure(path, structure.get("context") or {}, component_rows, key=viewer_key,
-                    highlighted_selections=_active_biotite_highlights(viewer_key))
-    _show_component_groups(component_rows, structure_id)
-    _render_database_analysis(user, record, structure, path, component_rows, evaluation_id,
-                              workflow_schema=workflow_schema, submit=submit)
+    structure_context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
+    model_id = str(structure_context.get("model_id") or structure_context.get("model_index")
+                   or structure_context.get("model") or structure.get("model_index") or structure_id)
     associated = []
-    for observation in record.get("observations", []):
-        evaluation = next((item for known_observation, item in evaluation_by_id.values()
+    for observation in all_record.get("observations", []):
+        evaluation = next((item for known_observation, item in all_evaluation_by_id.values()
                            if known_observation.get("id") == observation.get("id")), None)
         if evaluation and _evaluation_matches_structure(evaluation, structure):
             associated.append((observation, evaluation))
     if evaluation_id and not any(evaluation.get("id") == evaluation_id for _, evaluation in associated):
-        selected = evaluation_by_id.get(evaluation_id)
+        selected = all_evaluation_by_id.get(evaluation_id)
         if selected:
             associated.append(selected)
+    inspector_data = _database_inspector_data(user, all_record, structure, path, component_rows, associated)
+    selected_finding_key = f"{viewer_key}-inspector-evidence-select"
+    selected_finding_id = st.session_state.get(selected_finding_key)
+    selected_finding = next((item for item in inspector_data["evidence"]
+                             if item["id"] == selected_finding_id), None)
+    if selected_finding:
+        st.session_state[f"{viewer_key}-inspector-highlights"] = selected_finding["selectors"]
+    reference_key = hashlib.sha256(f"database:{all_record['id']}:{structure['id']}".encode()).hexdigest()[:14]
+    paired_reference = _paired_reference_for_viewer(
+        database, user, all_record, structure, component_rows, reference_key,
+    )
+    if paired_reference:
+        source_view, reference_view = st.columns(2)
+        with source_view:
+            st.markdown("#### Selected complex")
+            st.caption(f"Source {all_record.get('name') or all_record['id']} · {structure_id} · component {paired_reference['source_chain']}")
+            _show_structure(path, structure.get("context") or {}, component_rows, key=viewer_key,
+                            highlighted_selections=_active_biotite_highlights(viewer_key))
+        with reference_view:
+            saved = paired_reference["saved"]
+            st.markdown("#### Associated reference structure")
+            st.caption(
+                f"{saved.get('reference_record_name') or saved.get('reference_molecule_id')} · "
+                f"{saved.get('reference_structure_label') or paired_reference['reference_id']} · "
+                f"{paired_reference['reference_id']} · component {saved.get('reference_component_chain')}"
+            )
+            _show_structure(
+                paired_reference["path"], {}, paired_reference["components"],
+                key=f"complex-analysis-reference-viewer-{reference_key}-{paired_reference['source_chain']}",
+            )
+        st.caption("These Mol* views use their original, separate coordinate frames. No superposition, spatial placement, or reference-context measurement is calculated.")
+        _render_database_inspector(user, inspector_data, viewer_key, record=all_record,
+                                   structure=structure, components=component_rows, model_id=model_id)
+    else:
+        structure_col, inspector_col = st.columns([1.15, 1])
+        with structure_col:
+            _show_structure(path, structure.get("context") or {}, component_rows, key=viewer_key,
+                            highlighted_selections=_active_biotite_highlights(viewer_key))
+        with inspector_col:
+            _render_database_inspector(user, inspector_data, viewer_key, record=all_record,
+                                       structure=structure, components=component_rows, model_id=model_id)
+    _render_inspector_tracks(inspector_data, viewer_key)
+    _show_component_groups(component_rows, structure_id)
+    _render_database_analysis(user, record, structure, path, component_rows, evaluation_id,
+                              workflow_schema=workflow_schema, submit=submit)
     st.markdown("#### Existing evaluations associated with this structure")
     if associated:
         for observation, evaluation in associated:
@@ -1788,7 +2498,20 @@ def render_complex_analysis_workspace(user: dict, *, workflow_schema=None, proje
         st.warning("This record or job is unavailable or you do not have access to it.")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         st.error(f"Could not load this structure source: {html.escape(str(exc))}")
-    with st.expander("Compare saved complexes", expanded=False):
-        from mn_molecular_design_studio.complex_analysis_comparison_ui import render_comparison
-        render_comparison(user, workflow_schema=workflow_schema,
-                          project_selector=project_selector, submit=submit)
+    collection_panel = st.expander(
+        "Collection Map & Evaluation Board", expanded=False,
+        key="complex-analysis-collection-expander", on_change="rerun",
+    )
+    if collection_panel.open:
+        with collection_panel:
+            from mn_molecular_design_studio.complex_analysis_collection_ui import render_collection_workspace
+            render_collection_workspace(user)
+    comparison_panel = st.expander(
+        "Compare saved complexes", expanded=False,
+        key="complex-analysis-comparison-expander", on_change="rerun",
+    )
+    if comparison_panel.open:
+        with comparison_panel:
+            from mn_molecular_design_studio.complex_analysis_comparison_ui import render_comparison
+            render_comparison(user, workflow_schema=workflow_schema,
+                              project_selector=project_selector, submit=submit)

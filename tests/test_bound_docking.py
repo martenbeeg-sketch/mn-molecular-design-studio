@@ -75,6 +75,192 @@ def test_md_rejects_ambiguous_mapping_instead_of_inventing_coordinates(bound):
         bound_docking.pose_molecule(pose, {}, "CCO")
 
 
+def test_md_rejects_pose_chemistry_that_does_not_match_saved_ligand_identity(bound):
+    _, _, _, _, _, pose = bound
+    pose.write_text(pose.read_text().replace("REMARK SMILES CCO", "REMARK SMILES C1CO1"))
+    with pytest.raises(ValueError, match="does not match the saved Database ligand identity"):
+        bound_docking.pose_molecule(pose, {}, "CCO")
+
+
+def test_chemically_annotated_pose_records_source_atom_coordinate_mapping(tmp_path):
+    molecule = Chem.AddHs(Chem.MolFromSmiles("CCO"))
+    conformer = Chem.Conformer(molecule.GetNumAtoms())
+    for index in range(molecule.GetNumAtoms()):
+        conformer.SetAtomPosition(index, (float(index), 2.0, 3.0))
+    molecule.AddConformer(conformer)
+    pose = tmp_path / "pose.sdf"
+    with Chem.SDWriter(str(pose)) as writer:
+        writer.write(molecule)
+
+    reconstructed, provenance = bound_docking.pose_molecule(
+        pose, {}, "CCO", return_provenance=True)
+
+    assert reconstructed.GetNumAtoms() == 3
+    assert provenance["atom_mapping"] == [
+        {"ligand_atom_index": 0, "pose_atom_index": 0, "element": "C"},
+        {"ligand_atom_index": 1, "pose_atom_index": 1, "element": "C"},
+        {"ligand_atom_index": 2, "pose_atom_index": 2, "element": "O"},
+    ]
+    np.testing.assert_allclose(reconstructed.GetConformer().GetPositions(), [[0, 2, 3], [1, 2, 3], [2, 2, 3]])
+
+
+def test_pose_receptor_digest_must_match_before_complex_reconstruction(bound):
+    db, molecule, structure_id, _, _, _ = bound
+    with db.connection() as connection:
+        row = connection.execute("SELECT context FROM molecule_structures WHERE id=?", (structure_id,)).fetchone()
+        context = json.loads(row[0])
+        context["target_structure_digest"] = "0" * 64
+        connection.execute("UPDATE molecule_structures SET context=? WHERE id=?", (json.dumps(context), structure_id))
+    with pytest.raises(ValueError, match="different coordinate-frame digests"):
+        bound_docking.prepare_bound_inputs(db, USER, molecule, structure_id=structure_id)
+
+
+def test_pose_without_any_saved_receptor_digest_fails_coordinate_frame_validation(bound):
+    db, molecule, structure_id, linked, _, _ = bound
+    with db.connection() as connection:
+        pose_row = connection.execute("SELECT context FROM molecule_structures WHERE id=?", (structure_id,)).fetchone()
+        pose_context = json.loads(pose_row[0])
+        pose_context.pop("target_structure_digest", None)
+        pose_context.pop("target_variant_sha256", None)
+        connection.execute("UPDATE molecule_structures SET context=? WHERE id=?", (json.dumps(pose_context), structure_id))
+        target_row = connection.execute("SELECT context FROM molecule_structures WHERE id=?", (linked["target_structure_id"],)).fetchone()
+        target_context = json.loads(target_row[0])
+        target_context.pop("portable_sha256", None)
+        connection.execute("UPDATE molecule_structures SET context=? WHERE id=?",
+                           (json.dumps(target_context), linked["target_structure_id"]))
+
+    with pytest.raises(ValueError, match="no digest to verify their coordinate frame"):
+        bound_docking.prepare_bound_inputs(db, USER, molecule, structure_id=structure_id)
+
+
+def test_bound_complex_is_attached_to_same_record_with_chemical_identity_and_provenance(bound):
+    db, molecule, source_pose_id, linked, _, pose = bound
+
+    result = bound_docking.register_bound_complex(db, USER, molecule, structure_id=source_pose_id)
+
+    rows = db.list_molecules(USER, molecule_ids=[molecule], collection="all")["items"]
+    assert len(rows) == 1
+    record = rows[0]
+    assert {item["id"] for item in record["representations"]} == {source_pose_id, result["complex_structure_id"]}
+    complex_structure = next(item for item in record["representations"] if item["id"] == result["complex_structure_id"])
+    context = complex_structure["context"]
+    assert context["database_structure_policy"] == "bound_docking_complex"
+    assert context["source_pose_structure_id"] == source_pose_id
+    assert context["source_pose_digest"] == __import__("hashlib").sha256(pose.read_bytes()).hexdigest()
+    assert context["source_receptor_structure_id"] == linked["target_structure_id"]
+    assert context["target_structure_digest"] == linked["target_structure_digest"]
+    assert context["coordinate_frame_id"] == "receptor-sha256:" + linked["target_structure_digest"]
+    assert context["ligand_selection"] == {"chain": "Z", "residue_key": "Z:1", "ccd": "LIG", "smiles": "CCO"}
+    assert context["ligand_isomeric_smiles"] == "CCO"
+    assert context["pose_atom_mapping"] == [
+        {"ligand_atom_index": 0, "pose_atom_serial": 3, "element": "C"},
+        {"ligand_atom_index": 1, "pose_atom_serial": 2, "element": "C"},
+        {"ligand_atom_index": 2, "pose_atom_serial": 1, "element": "O"},
+    ]
+    complex_path = db.structure_file(USER, result["complex_structure_id"])
+    assert complex_path.read_bytes() == Path(result["complex_pdb"]).read_bytes()
+    assert complex_structure["context"]["portable_sha256"] == __import__("hashlib").sha256(complex_path.read_bytes()).hexdigest()
+
+    from mn_molecular_design_studio.complex_analysis_sources import authorize_database_structure
+    source = authorize_database_structure(USER, {
+        "molecule_id": molecule, "structure_id": result["complex_structure_id"],
+        "group_id": result["group_id"], "model_id": result["complex_structure_id"],
+        "ligand_selection": context["ligand_selection"],
+    }, project_id="", database=db, workflow_id="analysis.plip")
+    assert source["structure_digest"] == context["complex_structure_digest"]
+    assert source["ligand_selection"] == context["ligand_selection"]
+
+
+def test_bound_complex_registration_is_idempotent_and_respects_group_write_access(bound):
+    db, molecule, source_pose_id, _, _, _ = bound
+    first = bound_docking.register_bound_complex(db, USER, molecule, structure_id=source_pose_id)
+    second = bound_docking.register_bound_complex(db, USER, molecule, structure_id=source_pose_id)
+    assert first["complex_structure_id"] == second["complex_structure_id"]
+    assert len(db.list_molecules(USER, molecule_ids=[molecule], collection="all")["items"][0]["representations"]) == 2
+    with pytest.raises(PermissionError):
+        bound_docking.register_bound_complex(db, {"id": "b" * 32}, molecule, structure_id=source_pose_id)
+
+
+def test_registered_bound_complex_is_selectable_and_reopens_in_database_analysis(bound, monkeypatch):
+    db, molecule, source_pose_id, _, _, _ = bound
+    result = bound_docking.register_bound_complex(db, USER, molecule, structure_id=source_pose_id)
+    from mn_molecular_design_studio import complex_analysis_ui, molecular_database
+    monkeypatch.setattr(molecular_database, "MolecularDatabase", lambda: db)
+    monkeypatch.setattr(complex_analysis_ui, "_show_structure", lambda *args, **kwargs: None)
+
+    opened = {"molecule_id": molecule, "structure_id": result["complex_structure_id"]}
+    app = AppTest.from_string(
+        "from mn_molecular_design_studio.complex_analysis_ui import _render_database_source\n"
+        f"_render_database_source({USER!r}, {opened!r})"
+    ).run()
+
+    assert not app.exception
+    structures = next(widget for widget in app.selectbox if widget.label == "Structure / model / pose")
+    assert "Docking pose · receptor–ligand complex" in structures.options
+    assert structures.value == result["complex_structure_id"]
+    assert any(widget.label == "Ligand residue" for widget in app.selectbox)
+
+
+@pytest.mark.parametrize("workflow_id", ["analysis.plip", "analysis.pandamap", "analysis.posebusters"])
+def test_registered_bound_complex_uses_existing_ligand_workflow_submission_contract(bound, monkeypatch, workflow_id):
+    db, molecule, source_pose_id, _, _, _ = bound
+    result = bound_docking.register_bound_complex(db, USER, molecule, structure_id=source_pose_id)
+    from mn_molecular_design_studio import complex_analysis_ui, molecular_database
+    monkeypatch.setattr(molecular_database, "MolecularDatabase", lambda: db)
+    monkeypatch.setattr(complex_analysis_ui, "_show_structure", lambda *args, **kwargs: None)
+    monkeypatch.setattr(complex_analysis_ui, "_matching_database_analysis_jobs", lambda *args, **kwargs: [])
+    opened = {"molecule_id": molecule, "structure_id": result["complex_structure_id"]}
+    script = f'''\
+import streamlit as st
+from mn_molecular_design_studio.complex_analysis_ui import _render_database_source
+def submit(schema, workflow, parameters, project_id, settings, title):
+    st.session_state["submitted"] = {{"workflow": workflow, "parameters": parameters, "project_id": project_id}}
+_render_database_source({USER!r}, {opened!r}, workflow_schema=lambda workflow_id: {{"parameters": []}}, submit=submit)
+'''
+    app = AppTest.from_string(script).run()
+    key = __import__("hashlib").sha256(f"database:{molecule}:{result['complex_structure_id']}".encode()).hexdigest()[:14]
+    run_button = next(item for item in app.button
+                      if f"run-{workflow_id.replace('.', '-')}" in str(item.key))
+    assert key in run_button.key
+    run_button.click().run()
+
+    assert not app.exception
+    submitted = app.session_state["submitted"]
+    assert submitted["workflow"] == workflow_id
+    assert submitted["project_id"] == ""
+    assert submitted["parameters"]["database_source"]["molecule_id"] == molecule
+    assert submitted["parameters"]["database_source"]["structure_id"] == result["complex_structure_id"]
+    assert submitted["parameters"]["ligand_selection"] == {
+        "chain": "Z", "residue_key": "Z:1", "ccd": "LIG", "smiles": "CCO",
+    }
+
+
+def test_compare_saved_complexes_resolves_attached_docking_complex_as_protein_ligand(bound, monkeypatch):
+    db, molecule, source_pose_id, _, _, _ = bound
+    result = bound_docking.register_bound_complex(db, USER, molecule, structure_id=source_pose_id)
+    from mn_molecular_design_studio import molecular_database, complex_analysis_comparison_ui
+    monkeypatch.setattr(molecular_database, "MolecularDatabase", lambda: db)
+    observed = []
+    monkeypatch.setattr(complex_analysis_comparison_ui.st, "write", lambda value, *args, **kwargs: observed.append(value))
+    script = f'''\
+import streamlit as st
+from mn_molecular_design_studio.complex_analysis_comparison_ui import _comparison_slot
+st.session_state["complex-analysis-compare-a-source"] = "Database"
+st.session_state["complex-analysis-compare-a-molecule"] = {molecule!r}
+st.session_state["complex-analysis-compare-a-database-structure"] = {result['complex_structure_id']!r}
+selected = _comparison_slot({USER!r}, "a")
+st.write(selected["complex_type"])
+st.write(selected["ligand_selection"])
+st.write(selected["coordinate_frame_id"])
+'''
+    app = AppTest.from_string(script).run()
+
+    assert not app.exception
+    assert "protein-ligand" in observed
+    assert {"chain": "Z", "residue_key": "Z:1", "ccd": "LIG", "smiles": "CCO"} in observed
+    assert "receptor-sha256:" + result["target_structure_digest"] in observed
+
+
 def test_receptor_resolves_via_authorized_database_structure_on_peers(bound):
     db, molecule, structure, linked, _, _ = bound
     record = db.list_molecules(USER, molecule_ids=[molecule])["items"][0]

@@ -15,6 +15,7 @@ export type ContigSegment = {
 export type SequenceSelection = {
     chainId: string;
     residues: number[];
+    insertionCode?: string | null;
 };
 
 export type StreamlitComponentValue = {

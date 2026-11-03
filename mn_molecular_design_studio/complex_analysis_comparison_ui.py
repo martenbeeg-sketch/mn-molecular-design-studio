@@ -114,7 +114,7 @@ def _comparison_slot(user: dict, slot: str) -> dict | None:
     else:
         database = MolecularDatabase()
         query = st.text_input("Search Database", key=f"complex-analysis-compare-{slot}-query")
-        page = database.list_molecules(user, collection="all", query=query, limit=1000)
+        page = database.list_structure_records(user, collection="all", query=query, limit=1000)
         records = [item for item in page.get("items", []) if item.get("representations") or item.get("structures")]
         if not records:
             st.info("No accessible Database structures are available for this comparison slot.")
@@ -179,8 +179,9 @@ def _comparison_slot(user: dict, slot: str) -> dict | None:
             "component_metadata": record.get("components") or [],
             "evaluation_entries": entries,
             "structure_digest": workspace._structure_digest(path),
-            "target_identity": str(context.get("target_id") or context.get("target_identity") or ""),
-            "coordinate_frame_id": str(context.get("coordinate_frame_id") or ""),
+            "target_identity": str(context.get("target_id") or context.get("target_identity") or context.get("target_molecule_id") or ""),
+            "coordinate_frame_id": str(context.get("coordinate_frame_id") or (
+                f"receptor-sha256:{context.get('target_structure_digest')}" if context.get("target_structure_digest") else "")),
         })
         try:
             source["project_id"] = str(database.group(str(structure.get("group_id") or ""), user).get("project_id") or "")
@@ -195,38 +196,62 @@ def _comparison_slot(user: dict, slot: str) -> dict | None:
         return None
     protein_chains = workspace._protein_chain_ids(components)
     if not protein_chains:
-        st.info("This structure has no identified protein chains. It remains available in its source page; this first comparison view is for protein–protein complexes.")
+        st.info("This structure has no identified protein chains. It remains available in its source page; comparison requires a protein component.")
         return None
     component_types = {str(item.get("type") or "other").casefold() for item in components}
-    if component_types != {"protein"}:
-        if "small_molecule" in component_types:
-            kind = "protein–ligand"
-        elif "dna" in component_types or "rna" in component_types:
-            kind = "protein–DNA/RNA"
-        else:
-            kind = "mixed-component"
-        st.info(f"This comparison view is currently limited to protein–protein structures; the selected representation also contains {kind} components. Component parsing and single-structure viewing remain available.")
+    is_ppi = component_types == {"protein"}
+    is_protein_ligand = {"protein", "small_molecule"} <= component_types and not {"dna", "rna"} & component_types
+    if not (is_ppi or is_protein_ligand):
+        kind = "protein–DNA/RNA" if {"protein", "dna"} <= component_types or {"protein", "rna"} <= component_types else "mixed-component"
+        st.info(f"This comparison supports protein–protein and protein–ligand structures. This representation also contains {kind} components; single-structure viewing remains available.")
         return None
     chain_key = _key(source["identity"])
     context = source.get("context") if isinstance(source.get("context"), dict) else {}
     raw = source.get("candidate", {}).get("raw_metadata") if isinstance(source.get("candidate", {}).get("raw_metadata"), dict) else {}
     default_target = [str(value) for value in (source.get("candidate", {}).get("target_chains") or raw.get("target_chains") or context.get("target_chains") or []) if str(value) in protein_chains]
-    default_binder = [str(value) for value in (source.get("candidate", {}).get("binder_chains") or raw.get("binder_chains") or context.get("binder_chains") or []) if str(value) in protein_chains]
-    if not default_target:
-        default_target = protein_chains[:1]
-    if not default_binder:
-        default_binder = [chain for chain in protein_chains if chain not in default_target]
-    a, b = st.columns(2)
-    target_chains = a.multiselect("Target chain group", protein_chains, default=default_target,
-                                  key=f"complex-analysis-compare-{slot}-target-{chain_key}")
-    binder_chains = b.multiselect("Protein partner chain group", protein_chains, default=default_binder,
-                                  key=f"complex-analysis-compare-{slot}-partner-{chain_key}")
-    if not binder_chains or set(target_chains) & set(binder_chains):
-        st.info("Select a nonempty protein-partner group and keep it separate from the target group.")
-        return None
+    if is_ppi:
+        default_binder = [str(value) for value in (source.get("candidate", {}).get("binder_chains") or raw.get("binder_chains") or context.get("binder_chains") or []) if str(value) in protein_chains]
+        if not default_target:
+            default_target = protein_chains[:1]
+        if not default_binder:
+            default_binder = [chain for chain in protein_chains if chain not in default_target]
+        a, b = st.columns(2)
+        target_chains = a.multiselect("Target chain group", protein_chains, default=default_target,
+                                      key=f"complex-analysis-compare-{slot}-target-{chain_key}")
+        binder_chains = b.multiselect("Protein partner chain group", protein_chains, default=default_binder,
+                                      key=f"complex-analysis-compare-{slot}-partner-{chain_key}")
+        if not binder_chains or set(target_chains) & set(binder_chains):
+            st.info("Select a nonempty protein-partner group and keep it separate from the target group.")
+            return None
+    else:
+        if not default_target:
+            default_target = list(protein_chains)
+        target_chains = st.multiselect("Receptor protein chain group", protein_chains, default=default_target,
+                                       key=f"complex-analysis-compare-{slot}-target-{chain_key}")
+        binder_chains = []
+        ligands = [item for item in components if str(item.get("type") or "").casefold() == "small_molecule"]
+        if not ligands:
+            st.info("No ligand residue was identified in this representation.")
+            return None
+        ligand_key = f"complex-analysis-compare-{slot}-ligand-{chain_key}"
+        ligand_ids = [str(item.get("id") or "") for item in ligands]
+        ligand_by_id = {str(item.get("id") or ""): item for item in ligands}
+        if st.session_state.get(ligand_key) not in ligand_ids:
+            st.session_state[ligand_key] = ligand_ids[0]
+        selected_ligand_id = st.selectbox(
+            "Ligand residue", ligand_ids,
+            format_func=lambda value: f"{ligand_by_id[value].get('label') or ligand_by_id[value].get('ccd') or 'Ligand'} · {ligand_by_id[value].get('residue_key') or ligand_by_id[value].get('source_chain')}",
+            key=ligand_key,
+        )
+        from mn_molecular_design_studio.complex_analysis_ui import _ligand_selection_for_component
+        ligand_selection = _ligand_selection_for_component(ligand_by_id[selected_ligand_id], ligands, {
+            "components": source.get("component_metadata") or [],
+            "ligand_selection": context.get("ligand_selection"),
+            "ligand_smiles": context.get("ligand_smiles"),
+        })
     try:
         target_numbering = protein_chain_numbering(source["path"], list(target_chains)) if target_chains else []
-        binder_numbering = protein_chain_numbering(source["path"], list(binder_chains))
+        binder_numbering = protein_chain_numbering(source["path"], list(binder_chains)) if is_ppi else []
     except ValueError as exc:
         st.info(str(exc))
         return None
@@ -237,11 +262,14 @@ def _comparison_slot(user: dict, slot: str) -> dict | None:
         "target_numbering": target_numbering,
         "target_chains_sequence": [row["sequence"] for row in target_numbering],
         "binder_chains_sequence": [row["sequence"] for row in binder_numbering],
-        "complex_type": "protein-protein",
+        "complex_type": "protein-protein" if is_ppi else "protein-ligand",
         "format": source["path"].suffix.casefold(),
         "viewer_key": f"complex-analysis-compare-viewer-{slot}-{chain_key}",
     })
-    st.caption(f"{source['label']} · model {source['model_id'] or 'not specified'} · target chains {', '.join(target_chains)} · partner chains {', '.join(binder_chains)}")
+    if is_protein_ligand:
+        source["ligand_selection"] = ligand_selection
+    partner = ", ".join(binder_chains) if is_ppi else f"{ligand_selection.get('ccd') or 'Ligand'} {ligand_selection.get('residue_key') or ''}".strip()
+    st.caption(f"{source['label']} · model {source['model_id'] or 'not specified'} · target chains {', '.join(target_chains)} · partner {partner}")
     return source
 
 
@@ -919,9 +947,10 @@ def render_comparison(user: dict, *, workflow_schema=None, project_selector=None
         for index, source in enumerate(sources[1:])
     ]
     compatible = all(report["compatible"] for _, report in reports)
+    protein_protein = all(sample.get("complex_type") == "protein-protein" for sample in sources)
     st.markdown("#### Target and component compatibility")
     if compatible:
-        st.success("Compatible target sequence, selected component roles, and author residue numbering.")
+        st.success("Compatible target sequence and author residue numbering; selected components have matching roles and ligand identity.")
     else:
         st.warning("These structures are kept as independent samples and cannot share a target-residue comparison map.")
     for label, report in reports:
@@ -932,7 +961,9 @@ def render_comparison(user: dict, *, workflow_schema=None, project_selector=None
         st.caption(note)
     st.dataframe([
         {"Structure": f"Structure {chr(ord('A') + index)}", "Source": sample["label"], "Model": sample.get("model_id") or "Not recorded",
-         "Target chains": ", ".join(sample["target_chains"]), "Partner chains": ", ".join(sample["binder_chains"]),
+         "Target chains": ", ".join(sample["target_chains"]),
+         "Partner / ligand": (", ".join(sample["binder_chains"]) if sample.get("complex_type") == "protein-protein"
+                              else f"{sample.get('ligand_selection', {}).get('ccd') or 'Ligand'} · {sample.get('ligand_selection', {}).get('residue_key') or ''}".strip(" ·")),
          "Target sequence lengths": ", ".join(str(len(row["sequence"])) for row in sample["target_numbering"]),
          "Structure format": sample.get("format") or "Unknown"}
         for index, sample in enumerate(sources)
@@ -949,7 +980,7 @@ def render_comparison(user: dict, *, workflow_schema=None, project_selector=None
                 st.caption(f"Structure {chr(ord('A') + index)}")
                 workspace._show_structure(sample["path"], sample.get("context") or {}, sample["components"], key=sample["viewer_key"])
 
-    if compatible:
+    if compatible and protein_protein:
         contact_sets = {
             f"Structure {chr(ord('A') + index)}": _saved_biotite_contacts(user, sample)
             for index, sample in enumerate(sources)
@@ -979,6 +1010,15 @@ def render_comparison(user: dict, *, workflow_schema=None, project_selector=None
         else:
             st.info("No matching completed Biotite Interface evaluations are saved for these exact structures and selected chain groups. Open a structure's analysis panel to run the registered workflow.")
 
+    elif compatible:
+        st.markdown("#### Ligand identity comparison")
+        st.dataframe([{
+            "Structure": f"Structure {chr(ord('A') + index)}",
+            "Ligand residue": sample["ligand_selection"].get("residue_key"),
+            "Isomeric SMILES": sample["ligand_selection"].get("smiles"),
+        } for index, sample in enumerate(sources)], hide_index=True, use_container_width=True)
+        st.caption("This view compares the selected saved structures and their saved evaluations. It does not recalculate ligand interactions or pose-validation metrics.")
+    if compatible:
         if reports and all(report["overlay_compatible"] for _, report in reports):
             st.markdown("#### Shared-frame overlay")
             bases = list(dict.fromkeys(report["overlay_basis"] for _, report in reports))
@@ -998,9 +1038,10 @@ def render_comparison(user: dict, *, workflow_schema=None, project_selector=None
     else:
         st.info("Interface residue maps require compatible target sequence and numbering. The structures remain available for independent visual inspection.")
 
-    _render_interface_clustering(user, sources, compatible=compatible,
-                                  workflow_schema=workflow_schema, submit=submit)
-    _render_foldseek(user, sources, workflow_schema=workflow_schema, submit=submit)
+    if protein_protein:
+        _render_interface_clustering(user, sources, compatible=compatible,
+                                      workflow_schema=workflow_schema, submit=submit)
+        _render_foldseek(user, sources, workflow_schema=workflow_schema, submit=submit)
     _render_saved_evaluations(sources)
     _render_supplied_alignment_overlay(sources)
     st.markdown("#### Human review")
