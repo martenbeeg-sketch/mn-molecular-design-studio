@@ -124,3 +124,37 @@ def test_design_contact_preservation_is_selectable_and_missing_data_never_passes
     status = {row["candidate_id"]: row["raw_metadata"]["validation_acceptance"]["status"] for row in rows}
     assert status == {"preserved": "accepted", "changed": "rejected", "no-design-complex": "unresolved"}
     assert summary["accepted"] == summary["rejected"] == summary["unresolved"] == 1
+
+
+def test_pae_score_does_not_hide_failed_geometry(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import analysis
+    finished = {}
+    monkeypatch.setattr(analysis, 'write_candidates', lambda *args, **kwargs: {})
+    monkeypatch.setattr(analysis, 'finish_job', lambda run, success, payload: finished.update(success=success, payload=payload))
+    candidate = {'candidate_id':'partial', 'metrics':{'ipsae':.6, 'structure_metrics_status':'error', 'structure_metrics_error':'invalid geometry input'}}
+    analysis._finish_metric_analysis(SimpleNamespace(run_dir=tmp_path), [candidate], tool='ipsae', table_name='scores.csv', metric_names=['ipsae'])
+    assert finished['success']
+    assert finished['payload']['scientific_status'] == 'partial'
+    assert finished['payload']['metrics']['ipsae_measured_count'] == 1
+    assert candidate['metrics']['ipsae'] == .6
+    assert not candidate['metrics'].get('ipsae_error')
+
+
+def test_scorer_occupancy_default_preserves_exact_atom_order(tmp_path, design_source_factory):
+    from Bio.PDB import MMCIFIO
+    from Bio.PDB.MMCIF2Dict import MMCIF2Dict
+    from mn_molecular_design_studio.complex_analysis_comparison import _read_biopython_structure
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.analysis import _prepare_ipsae_optional_cif_fields
+    source, candidate = design_source_factory()
+    path = tmp_path / 'optional.cif'
+    writer = MMCIFIO(); writer.set_structure(_read_biopython_structure(source / candidate['complex_pdb'])); writer.save(str(path))
+    data = MMCIF2Dict(str(path)); data.pop('_atom_site.occupancy')
+    writer.set_dict(data); writer.save(str(path))
+    before = path.read_bytes()
+    evidence = _prepare_ipsae_optional_cif_fields(path)
+    after = MMCIF2Dict(str(path))
+    assert evidence['defaulted_fields'] == {'_atom_site.occupancy':1.0}
+    assert evidence['source_digest'] != evidence['prepared_digest']
+    assert path.read_bytes() != before
+    assert {key:value for key,value in after.items() if key != '_atom_site.occupancy'} == data
+    assert _prepare_ipsae_optional_cif_fields(path)['defaulted_fields'] == {}

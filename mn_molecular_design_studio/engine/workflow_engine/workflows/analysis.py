@@ -624,16 +624,21 @@ def _finish_metric_analysis(
     table_path = analysis_dir / table_name
     error_key = error_key or ("ipsae_error" if tool == "ipsae" else "rosetta_error")
     outcomes = []
+    ipsae_measured_count = 0
     required = required_metrics or (["ipsae"] if tool == "ipsae" else ["rosetta_interface_dG"])
     for candidate in candidates:
         metrics = candidate.setdefault("metrics", {})
         outcome = measurement_outcome(metrics, required, metrics.get(error_key))
+        ipsae_measured = tool == "ipsae" and outcome["status"] == "measured"
+        ipsae_measured_count += int(ipsae_measured)
         structure_measured = tool == "ipsae" and metrics.get("structure_metrics_status") == "measured"
+        if ipsae_measured and metrics.get("structure_metrics_status") == "error":
+            outcome = {**outcome, "status": "partial", "error": "Structure geometry unavailable: " + str(metrics.get("structure_metrics_error") or "unknown error")}
         if tool == "ipsae" and outcome["status"] != "measured" and structure_measured:
             outcome = {**outcome, "status": "partial",
                        "error": str(metrics.get(error_key) or "ipSAE/PAE-derived measurements were unavailable; structure analysis completed")}
         outcomes.append(outcome)
-        if outcome["error"]:
+        if outcome["error"] and not ipsae_measured:
             metrics[error_key] = outcome["error"]
         metrics["analysis_status"] = outcome["status"] if outcome["status"] in {"measured", "partial"} else "error"
         candidate.setdefault("raw_metadata", {})["measurement_status"] = outcome
@@ -647,7 +652,7 @@ def _finish_metric_analysis(
         structure_count = sum((candidate.get("metrics") or {}).get("structure_metrics_status") == "measured" for candidate in candidates)
         counts["partial_count"] = partial_count
         counts["structure_measured_count"] = structure_count
-        counts["ipsae_measured_count"] = sum(item["status"] == "measured" for item in outcomes)
+        counts["ipsae_measured_count"] = ipsae_measured_count
         counts["scored_count"] += partial_count
         if not counts["scored_count"]:
             counts["scientific_status"] = "failed"
@@ -2074,6 +2079,24 @@ def _interface_pae_scores(
     }
 
 
+def _prepare_ipsae_optional_cif_fields(path: Path) -> dict:
+    """Default absent occupancy for the scorer, preserving atom and PAE order."""
+    from mn_molecular_design_studio.evaluations import file_digest
+    evidence = {"source_digest": file_digest(path), "defaulted_fields": {}}
+    if path.suffix.lower() in {".cif", ".mmcif"}:
+        from Bio.PDB.MMCIF2Dict import MMCIF2Dict
+        from Bio.PDB import MMCIFIO
+        data = MMCIF2Dict(str(path))
+        if "_atom_site.occupancy" not in data:
+            data["_atom_site.occupancy"] = ["1.0"] * len(data.get("_atom_site.id", []))
+            writer = MMCIFIO()
+            writer.set_dict(data)
+            writer.save(str(path))
+            evidence["defaulted_fields"]["_atom_site.occupancy"] = 1.0
+    evidence["prepared_digest"] = file_digest(path)
+    return evidence
+
+
 def _run_ipsae(
     source_run_dir: Path,
     run_dir: Path,
@@ -2124,6 +2147,7 @@ def _run_ipsae(
             continue
         staged_measurement_structure = staged_dir / structure_path.name
         shutil.copy2(structure_path, staged_measurement_structure)
+        candidate.setdefault("raw_metadata", {})["ipsae_structure_preparation"] = _prepare_ipsae_optional_cif_fields(staged_measurement_structure)
         staged_measurement_structures[safe_id] = staged_measurement_structure
         staged_pae = None
         if pae_path and pae_path.exists():

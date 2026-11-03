@@ -213,7 +213,8 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
         from mn_molecular_design_studio.runtime import reference_root
         reference_args = ["-v", f"{reference_root()}/esm_models:/reference/esm_models:ro", "-e", "TORCH_HOME=/reference"]
     command = ["docker", "run", "--rm", "--network", "none", "--entrypoint", "python3", *docker_user_args(), *gpu_args, *reference_args,
-               "-e", "OMP_NUM_THREADS=1", "-e", "OPENBLAS_NUM_THREADS=1", "-v", f"{run}:/work", "-v", f"{runtime}:/opt/studio-qc:ro",
+               "-e", "OMP_NUM_THREADS=1", "-e", "OPENBLAS_NUM_THREADS=1", "-e", "NUMBA_CACHE_DIR=/tmp/studio-numba-cache",
+               "-v", f"{run}:/work", "-v", f"{runtime}:/opt/studio-qc:ro",
                "-w", "/work/artifacts/analysis", profile["image"], "/opt/studio-qc/quality_runner.py", "--manifest", "/work/artifacts/analysis/batch_manifest.json"]
     command = apply_docker_cpu_limits_to_steps(run, [{"name": tool + "-batch", "command": command}])[0]["command"]
     inspected = subprocess.run(["docker", "image", "inspect", profile["image"], "--format", "{{.Id}}"], capture_output=True, text=True, check=False)
