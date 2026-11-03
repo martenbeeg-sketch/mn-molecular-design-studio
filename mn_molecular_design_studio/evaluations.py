@@ -13,7 +13,18 @@ from functools import lru_cache
 
 from mn_molecular_design_studio.output_vocabulary import PREFIX, VERSION, normalize_metrics
 
-PROJECTION_VERSION = "evaluation.v4:" + VERSION
+PROJECTION_VERSION = "evaluation.v5:" + VERSION
+
+
+def _projectable_metrics(metrics, namespace):
+    if namespace != "rosetta_metrics":
+        return metrics
+    # The installed standalone scorer mislabeled total interface dSASA /
+    # bound binder SASA as a binder percentage. Keep historical raw evidence,
+    # but exclude it from displayed scores and query/filter indexes.
+    return {key: value for key, value in metrics.items() if key not in {
+        "rosetta_interface_percent_of_binder_in_intf", "interface_percent_of_binder_in_intf",
+    }}
 
 
 def encoded(value):
@@ -103,6 +114,7 @@ def rebuild_missing(connection):
         observation = dict(raw)
         descriptor = evaluation_descriptor(observation)
         metrics, context = json.loads(observation["metrics"]), json.loads(observation["context"])
+        metrics = _projectable_metrics(metrics, observation["namespace"])
         normalized = normalize_metrics(metrics, observation["namespace"], context)
         connection.execute("DELETE FROM molecule_metric_values WHERE observation_id=?", (observation["id"],))
         connection.execute("INSERT OR REPLACE INTO molecule_evaluations VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
@@ -142,8 +154,9 @@ def selection_clause(filters, parameters, *, alias="e"):
 
 
 def project_observation(observation):
-    normalized = normalize_metrics(observation["metrics"], observation["namespace"], observation["context"])
-    scores = {observation["namespace"] + "." + key: value for key, value in observation["metrics"].items()}
+    metrics = _projectable_metrics(observation["metrics"], observation["namespace"])
+    normalized = normalize_metrics(metrics, observation["namespace"], observation["context"])
+    scores = {observation["namespace"] + "." + key: value for key, value in metrics.items()}
     scores.update({PREFIX + key: value for key, value in normalized["metrics"].items()})
     sources = {field: {"observation_id": observation["id"], "run_id": observation["run_id"],
                        "namespace": observation["namespace"], "created_at": observation["created_at"],

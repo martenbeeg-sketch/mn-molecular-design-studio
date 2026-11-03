@@ -2648,6 +2648,18 @@ def run_rosetta_metrics_contract(
         metrics = dict(candidate.get("metrics") or {})
         rosetta_metrics = result_rows.get(safe_id, {})
         if rosetta_metrics:
+            legacy_fraction = rosetta_metrics.pop("rosetta_interface_percent_of_binder_in_intf", None)
+            unprefixed_fraction = rosetta_metrics.pop("interface_percent_of_binder_in_intf", None)
+            if legacy_fraction is None:
+                legacy_fraction = unprefixed_fraction
+            if legacy_fraction is not None:
+                candidate.setdefault("raw_metadata", {}).setdefault("measurement_provenance", {})[
+                    "excluded_rosetta_interface_fraction"
+                ] = {
+                    "raw_value": legacy_fraction,
+                    "status": "excluded",
+                    "reason": "The scorer divides total interface dSASA by bound binder SASA; this is not a binder percentage.",
+                }
             metrics.update(rosetta_metrics)
             metrics.pop("rosetta_error", None)
             metrics["rosetta_scoring_status"] = "completed"

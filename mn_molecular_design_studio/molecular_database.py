@@ -794,6 +794,7 @@ class MolecularDatabase:
 
     def metric_fields(self, user, *, group_id="", project_id="", scope="organization", methods=None, collection="all",
                       hide_smoke_test=False):
+        from mn_molecular_design_studio.evaluations import _projectable_metrics
         ids = self._visible_ids(user, group_id, project_id, scope, methods, collection, hide_smoke_test)
         # Collection selection controls which molecules are listed, while
         # scientific history may accumulate through any group the user can read.
@@ -808,7 +809,8 @@ class MolecularDatabase:
                                         "WHERE o.group_id IN (SELECT value FROM json_each(?)) AND o.molecule_id IN "
                                         "(SELECT molecule_id FROM molecule_members WHERE group_id IN (SELECT value FROM json_each(?))) "
                                         "ORDER BY j.key", (_json(accessible), _json(ids))).fetchall()
-        return [*[PREFIX + row[0] for row in common], *[f"{row[0]}.{row[1]}" for row in rows]]
+        return [*[PREFIX + row[0] for row in common],
+                *[f"{row[0]}.{row[1]}" for row in rows if _projectable_metrics({row[1]: None}, row[0])]]
 
     def list_molecules(self, user, *, group_id="", project_id="", scope="organization", methods=None, collection="all",
                        query="", molecule_type="", limit=100, offset=0, sort="added", descending=True, metric_filters=None, molecule_ids=None,
