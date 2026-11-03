@@ -2717,7 +2717,9 @@ def _render_optional_reference_context(user: dict, record: dict, structure: dict
                     st.error(f"Could not clear this component reference: {exc}")
 
 
-def _database_chain_defaults(context: dict, protein_chains: list[str]) -> tuple[list[str], list[str]]:
+def _database_chain_defaults(context: dict, protein_chains: list[str], *,
+                             stored_components: list[dict] | None = None,
+                             parsed_components: list[dict] | None = None) -> tuple[list[str], list[str]]:
     """Use roles recorded for this representation, validated against its chains."""
     binder = context.get("binder_chains")
     target = context.get("target_chains")
@@ -2728,6 +2730,18 @@ def _database_chain_defaults(context: dict, protein_chains: list[str]) -> tuple[
             and not set(binder) & set(target)
             and (target or len(protein_chains) == len(binder))):
         return list(binder), list(target)
+    if binder is None and target is None:
+        # Older binder identities may predate representation-level roles. Use
+        # their explicit role only if chain AND sequence match this actual file.
+        parsed = {item.get("source_chain") or item.get("chain"): item.get("sequence")
+                  for item in parsed_components or [] if item.get("type") == "protein"}
+        matched = [item for item in stored_components or []
+                   if item.get("type") == "protein" and item.get("sequence")
+                   and parsed.get(item.get("chain")) == item["sequence"]]
+        binders = sorted({item["chain"] for item in matched if item.get("role") == "binder"})
+        targets = sorted({item["chain"] for item in matched if item.get("role") == "target"})
+        if binders:
+            return binders, targets or [chain for chain in protein_chains if chain not in binders]
     return protein_chains[:1], protein_chains[1:]
 
 
@@ -2742,7 +2756,9 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
     db_group = MolecularDatabase().group(group_id, user)
     project_id = str(db_group.get("project_id") or "")
     context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
-    default_binder, default_target = _database_chain_defaults(context, protein_chains)
+    default_binder, default_target = _database_chain_defaults(
+        context, protein_chains, stored_components=record.get("components"), parsed_components=components,
+    )
     model_id = str(context.get("model_id") or context.get("model_index") or context.get("model") or structure.get("model_index") or structure["id"])
     source = {
         "molecule_id": str(record["id"]), "structure_id": str(structure["id"]),
