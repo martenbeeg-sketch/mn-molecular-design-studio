@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 import sys
 from functools import wraps
 from contextlib import contextmanager
@@ -222,6 +223,7 @@ def enqueue_workflow_call(
         job.run_dir / "command.json",
         {
             "mode": "local_worker",
+            "environment": _submission_environment(),
             "command": [
                 sys.executable,
                 "-m",
@@ -234,6 +236,19 @@ def enqueue_workflow_call(
     if dispatch:
         spawn_worker_for_run(job.run_dir)
     return job.run_dir
+
+
+def _submission_environment() -> dict[str, str]:
+    """Bind managed input paths to the submitting workspace, not a bridge daemon."""
+    from mn_molecular_design_studio.runtime import app_home, runs_root, reference_root
+    from mn_molecular_design_studio.workspace import _studio_home
+    return {
+        "MN_MOLECULAR_DESIGN_STUDIO_HOME": str(_studio_home().resolve()),
+        "MN_MOLECULAR_DESIGN_STUDIO_APP_HOME": str(app_home().resolve()),
+        "MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR": str(runs_root().resolve()),
+        "MN_MOLECULAR_DESIGN_STUDIO_REFERENCE_DIR": str(reference_root().resolve()),
+        **({"PYTHONPATH": os.environ["PYTHONPATH"]} if os.environ.get("PYTHONPATH") else {}),
+    }
 
 
 def queued_workflow_alias(

@@ -37,6 +37,27 @@ CPU_THREAD_ENV_VARS = (
     "VECLIB_MAXIMUM_THREADS",
     "BLIS_NUM_THREADS",
 )
+WORKSPACE_ENV_VARS = (
+    "MN_MOLECULAR_DESIGN_STUDIO_HOME", "MN_MOLECULAR_DESIGN_STUDIO_APP_HOME",
+    "MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", "MN_MOLECULAR_DESIGN_STUDIO_REFERENCE_DIR", "PYTHONPATH",
+)
+
+
+def _submitted_execution_context(run_dir: Path) -> tuple[str, dict[str, str]]:
+    """Honor the queue's recorded Python and workspace for a workflow call."""
+    command = read_json(run_dir / "command.json")
+    argv = command.get("command") or []
+    if (command.get("mode") != "local_worker" or len(argv) < 3
+            or argv[1:3] != ["-m", "mn_molecular_design_studio.engine.workflow_engine.core.local_worker"]):
+        return sys.executable, {}
+    executable = str(argv[0])
+    if not Path(executable).is_absolute() or not Path(executable).is_file():
+        raise ValueError("The submitting Studio Python executable is unavailable.")
+    environment = command.get("environment") or {}
+    if not isinstance(environment, dict):
+        raise ValueError("Invalid submitting workspace environment.")
+    return executable, {key: value for key, value in environment.items()
+                        if key in WORKSPACE_ENV_VARS and isinstance(value, str)}
 
 
 def _client():
@@ -234,6 +255,8 @@ def _run_claimed_job(client, job: dict[str, Any], worker_id: str) -> None:
         resource_request = job.get("resource_request") if isinstance(job.get("resource_request"), dict) else {}
         cpu_cores = max(1, int(resource_request.get("cpu_threads") or allocation.get("cpu_cores") or 1))
         env = os.environ.copy()
+        python_executable, submitted_environment = _submitted_execution_context(run_dir)
+        env.update(submitted_environment)
         for key in CPU_THREAD_ENV_VARS:
             env[key] = str(cpu_cores)
         env["MN_MOLECULAR_DESIGN_STUDIO_JOB_CPU_CORES"] = str(cpu_cores)
@@ -243,7 +266,7 @@ def _run_claimed_job(client, job: dict[str, Any], worker_id: str) -> None:
         try:
             process = subprocess.Popen(
                 [
-                    sys.executable,
+                    python_executable,
                     "-m",
                     "mn_molecular_design_studio.engine.workflow_engine.core.local_worker",
                     "--run-dir",
@@ -260,7 +283,9 @@ def _run_claimed_job(client, job: dict[str, Any], worker_id: str) -> None:
             stdout.close()
             stderr.close()
         metadata = read_json(run_dir / "metadata.json")
-        metadata.update({"worker_pid": process.pid, "updated_at": utc_now()})
+        metadata.update({"worker_pid": process.pid, "updated_at": utc_now(),
+                         "execution_python_executable": python_executable,
+                         "execution_workspace_environment": submitted_environment})
         write_json(run_dir / "metadata.json", metadata)
     except Exception as exc:
         finish_failure(f"{type(exc).__name__}: {exc}", traceback_text=traceback.format_exc())
