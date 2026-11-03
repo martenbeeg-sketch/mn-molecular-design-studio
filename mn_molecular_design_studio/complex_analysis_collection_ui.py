@@ -20,6 +20,7 @@ from mn_molecular_design_studio.complex_analysis_collection import (
     prepare_inspector_navigation_state,
     sequence_correspondence,
 )
+from mn_molecular_design_studio.complex_analysis_catalog import authorized_structure_catalog
 
 
 def _widget_key(prefix: str, value: str) -> str:
@@ -34,7 +35,7 @@ def _structure_label(record: dict, structure: dict) -> str:
 
 def _accessible_records(database, user: dict, query: str) -> list[dict]:
     """Use lightweight, ACL-filtered Database discovery for structure choices."""
-    page = database.list_structure_records(user, collection="all", query=query, limit=1000)
+    page = database.list_structure_records(user, collection="all", query=query, limit=100)
     return list(page.get("items", []))
 
 
@@ -566,23 +567,18 @@ def render_collection_workspace(user: dict) -> None:
     query = st.text_input("Search Database structures", key="complex-analysis-collection-query",
                           placeholder="Name, sequence, or molecule identifier")
     catalog_key = _widget_key("complex-analysis-collection-catalog-", str(user.get("id") or ""))
-    catalog = st.session_state.get(catalog_key)
-    if not isinstance(catalog, dict) or catalog.get("query") != query:
-        page = database.list_structure_records(user, collection="all", query=query, limit=1000, offset=0)
-        catalog = {"query": query, "records": list(page.get("items", [])),
-                   "next_offset": page.get("next_offset")}
-        st.session_state[catalog_key] = catalog
-    next_offset = catalog.get("next_offset")
-    if next_offset is not None and st.button(
-        "Load next Database structure page", key=_widget_key("complex-analysis-collection-next-", f"{user.get('id')}:{query}:{next_offset}"),
-    ):
-        page = database.list_structure_records(user, collection="all", query=query, limit=1000,
-                                               offset=int(next_offset))
-        known = {str(row.get("id") or "") for row in catalog["records"]}
-        catalog["records"].extend(row for row in page.get("items", [])
-                                  if str(row.get("id") or "") not in known)
-        catalog["next_offset"] = page.get("next_offset")
-        st.session_state[catalog_key] = catalog
+    cached_catalog = st.session_state.get(catalog_key)
+    same_query = isinstance(cached_catalog, dict) and str(cached_catalog.get("query") or "") == query
+    refresh_catalog = st.button("Refresh Database structures", key=_widget_key("complex-analysis-collection-refresh-", str(user.get("id"))))
+    load_next = st.button(
+        "Load next Database structure page",
+        key=_widget_key("complex-analysis-collection-next-", f"{user.get('id')}:{query}"),
+        disabled=not (same_query and cached_catalog.get("next_offset") is not None),
+    )
+    catalog = authorized_structure_catalog(
+        database, user, session_state=st.session_state, cache_key=catalog_key,
+        query=query, limit=100, advance=load_next, refresh=refresh_catalog,
+    )
     records = list(catalog.get("records") or [])
     if not records:
         st.info("No accessible Database structures match this search.")
@@ -592,10 +588,13 @@ def render_collection_workspace(user: dict) -> None:
     record_by_id = {str(row["id"]): row for row in records}
     record_ids = list(record_by_id)
     selection_suffix = hashlib.sha256(query.encode()).hexdigest()[:10]
+    selection_key = f"complex-analysis-collection-records-{selection_suffix}"
+    if selection_key in st.session_state:
+        st.session_state[selection_key] = [value for value in st.session_state[selection_key] if value in record_ids]
     selected_records = st.multiselect(
         "Database records", record_ids,
         format_func=lambda value: f"{record_by_id[value].get('name') or 'Complex'} · {str(value)[-8:]} · {len(record_by_id[value].get('representations') or record_by_id[value].get('structures') or [])} structures",
-        key=f"complex-analysis-collection-records-{selection_suffix}",
+        key=selection_key,
     )
     if not selected_records:
         st.info("Select one or more accessible Database records, then choose their saved structures and models.")

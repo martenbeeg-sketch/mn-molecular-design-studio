@@ -103,6 +103,28 @@ def test_terminal_evidence_preserves_author_identity_confidence_scope_and_cleara
     assert any("not experimental proof" in item for item in result["interpretation_limitations"])
 
 
+def test_folded_fusion_clearance_pass_remains_distinct_from_interface_attachment_advisory(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import complex_analysis_tag_fusion as evaluator
+
+    path = _write_complex(tmp_path / "terminal-interface.pdb")
+    passing = {
+        tag["key"]: {"label": tag["label"], "kind": tag["kind"],
+                     "status": "clearance_cone_without_added_linker", "minimum_linker_residues_tested": 0,
+                     "minimum_clearance_angstrom": 5.0}
+        for tag in evaluator.TAGS
+    }
+    monkeypatch.setattr(evaluator, "_tag_clearances", lambda *_args: {key: dict(value) for key, value in passing.items()})
+    result = _calculate(path)
+    n_terminal = result["terminal_geometry"]["N"]
+    assert n_terminal["contact_at_terminal_residue"] is True
+    for key in ("gfp_snap", "fc_mbp"):
+        clearance = n_terminal["tag_clearance"][key]
+        assert clearance["status"] == "clearance_cone_without_added_linker"
+        assert clearance["suitability_advisory"]["status"] == "not_recommended_terminal_interface_contact"
+        assert "sampled geometric envelope may clear" in clearance["suitability_advisory"]["reason"]
+        assert result["tag_comparison"][key]["preferred_end_advisory"] == "neither_end_suitable_under_method"
+
+
 def test_declared_incomplete_terminus_is_not_scored_and_user_confirmation_does_not_override_it(tmp_path, monkeypatch):
     from mn_molecular_design_studio import complex_analysis_tag_fusion as evaluator
 

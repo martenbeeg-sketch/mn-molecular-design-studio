@@ -25,9 +25,9 @@ from scipy.sparse.csgraph import dijkstra
 from scipy.spatial import cKDTree
 
 METHOD = "Studio terminal geometry and clearance assessment (BinderScope termini-inspired)"
-METHOD_VERSION = "studio.tag-fusion-suitability.v3"
+METHOD_VERSION = "studio.tag-fusion-suitability.v4"
 CONTEXT_METHOD = "Studio tag/fusion clearance with explicitly placed saved-reference surroundings"
-CONTEXT_VERSION = "studio.tag-fusion-context.v3"
+CONTEXT_VERSION = "studio.tag-fusion-context.v4"
 CONTACT_CUTOFF_ANGSTROM = 4.5
 EXIT_WINDOW = 6
 TERMINAL_WINDOW = 5
@@ -551,6 +551,35 @@ def _endpoint_assessment(*, end: str, chain_id: str, residues: list[Any], ca_ato
     # Exclude only the terminal residue from the component's own-fold obstacle
     # set. All other chains and components in the exact saved complex remain.
     row["tag_clearance"] = _tag_clearances(ca, direction, obstacle_xyz, local_frame)
+    # Keep sampled geometric clearance distinct from suitability. BinderScope's
+    # termini method treats a terminal interface contact as disqualifying for a
+    # folded fusion even where a coarse sphere sample finds an open exit cone.
+    # Preserve that geometric result, but carry the attachment-site advisory
+    # separately so the Inspector cannot present it as an unqualified pass.
+    for tag in TAGS:
+        clearance = row["tag_clearance"].get(tag["key"])
+        if not isinstance(clearance, dict):
+            continue
+        status = str(clearance.get("status") or "")
+        geometric_pass = status in {
+            "clearance_path_without_added_linker", "clearance_path_with_linker",
+            "clearance_cone_without_added_linker", "clearance_cone_with_linker",
+        }
+        if tag["kind"] == "globular_fusion" and row["contact_at_terminal_residue"]:
+            clearance["suitability_advisory"] = {
+                "status": "not_recommended_terminal_interface_contact",
+                "reason": "The terminal residue participates in the selected interface. The sampled geometric envelope may clear, but attachment at this residue can perturb the interface.",
+            }
+        elif geometric_pass:
+            clearance["suitability_advisory"] = {
+                "status": "clearance_only_no_terminal_interface_contact",
+                "reason": "The sampled geometric clearance passed and the terminal residue is not in the selected interface; this remains a static advisory.",
+            }
+        else:
+            clearance["suitability_advisory"] = {
+                "status": "not_recommended_clearance_not_demonstrated",
+                "reason": "The sampled geometric clearance did not pass within the tested linker search.",
+            }
     return row
 
 
@@ -880,10 +909,16 @@ def calculate_tag_fusion_suitability(
                                 "clearance_cone_without_added_linker", "clearance_cone_with_linker"}
             c_ok = c_status in {"clearance_path_without_added_linker", "clearance_path_with_linker",
                                 "clearance_cone_without_added_linker", "clearance_cone_with_linker"}
+            # A measured envelope fit remains in ``tag_clearance``. For folded
+            # fusions, however, attaching at a residue that itself participates
+            # in the selected interface is not a supported suitability choice.
+            if tag["kind"] == "globular_fusion":
+                n_ok = n_ok and not bool(n_row.get("contact_at_terminal_residue"))
+                c_ok = c_ok and not bool(c_row.get("contact_at_terminal_residue"))
             if not termini_confirmed:
                 preferred = "not_assessed"
             elif not n_ok and not c_ok:
-                preferred = "neither_end_clear_in_this_model"
+                preferred = "neither_end_suitable_under_method"
             elif n_ok and not c_ok:
                 preferred = "N"
             elif c_ok and not n_ok:
@@ -909,7 +944,7 @@ def calculate_tag_fusion_suitability(
             }
         else:
             comparisons["spr_bli_immobilization_orientation_advisory"] = {
-                "recommendation": "no_supported_end_in_this_model" if his == "neither_end_clear_in_this_model" else "not_assessed",
+                "recommendation": "no_supported_end_under_method" if his == "neither_end_suitable_under_method" else "not_assessed",
                 "basis": "No experimental assay outcome is predicted.",
             }
         base["tag_comparison"] = comparisons

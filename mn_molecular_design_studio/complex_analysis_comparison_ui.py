@@ -33,6 +33,7 @@ def _read_json(path: Path) -> dict:
 def _comparison_slot(user: dict, slot: str) -> dict | None:
     """Resolve one independently authorized Results or Database structure."""
     from mn_molecular_design_studio import complex_analysis_ui as workspace
+    from mn_molecular_design_studio.complex_analysis_catalog import authorized_structure_catalog
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
 
     source_kind = st.selectbox("Structure source", ["Results", "Database"], key=f"complex-analysis-compare-{slot}-source")
@@ -114,17 +115,31 @@ def _comparison_slot(user: dict, slot: str) -> dict | None:
     else:
         database = MolecularDatabase()
         query = st.text_input("Search Database", key=f"complex-analysis-compare-{slot}-query")
-        page = database.list_structure_records(user, collection="all", query=query, limit=1000)
-        records = [item for item in page.get("items", []) if item.get("representations") or item.get("structures")]
+        catalog_key = f"complex-analysis-compare-catalog-{user.get('id', '')}-{slot}"
+        cached_catalog = st.session_state.get(catalog_key)
+        same_query = isinstance(cached_catalog, dict) and str(cached_catalog.get("query") or "") == query
+        refresh_catalog = st.button("Refresh Database choices", key=f"complex-analysis-compare-{slot}-refresh")
+        load_next = st.button("Load next Database page", key=f"complex-analysis-compare-{slot}-next",
+                              disabled=not (same_query and cached_catalog.get("next_offset") is not None))
+        catalog = authorized_structure_catalog(
+            database, user, session_state=st.session_state, cache_key=catalog_key,
+            query=query, limit=100, advance=load_next, refresh=refresh_catalog,
+        )
+        records = [item for item in catalog["records"] if item.get("representations") or item.get("structures")]
+        st.caption(f"Showing {len(records):,} authorized choices on this page"
+                   + ("; additional pages are available." if catalog.get("next_offset") is not None else "."))
         if not records:
             st.info("No accessible Database structures are available for this comparison slot.")
             return None
         record_ids = [str(item["id"]) for item in records]
         by_id = {str(item["id"]): item for item in records}
+        molecule_key = f"complex-analysis-compare-{slot}-molecule"
+        if st.session_state.get(molecule_key) not in record_ids:
+            st.session_state[molecule_key] = record_ids[0]
         molecule_id = st.selectbox(
             "Database complex", record_ids,
             format_func=lambda value: f"{by_id[value].get('name') or 'Complex'} · {value}",
-            key=f"complex-analysis-compare-{slot}-molecule",
+            key=molecule_key,
         )
         rows = database.list_molecules(user, molecule_ids=[molecule_id], collection="all", limit=1)["items"]
         if not rows:

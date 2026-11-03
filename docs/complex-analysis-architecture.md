@@ -96,8 +96,8 @@ measurements, job state, Evaluation ID, and provenance when available.
 | Paired-reference visualization | **Supported when an authorized association and current placement Evaluation exist.** The complete saved reference coordinate file and transformed source share one Mol* view. Author-numbered sequence tracks distinguish mapped/present, resolved-but-omitted, and sequence-declared-but-unresolved reference residues. Other saved reference chains/components remain visible. Studio does not infer that the saved file is biologically full-length. |
 | Exact-correspondence structural placement | **Supported as an optional registered Evaluation.** A unique contiguous exact source subsequence is fitted to the explicitly associated reference chain using mapped Cα atoms and the shared Bio.PDB.Superimposer Kabsch fitter. Results retain both structure identities, digests, models, chains, residue map, transformation, aligned-pair count, source/reference coverage, RMSD, method/version and parameters. |
 | Non-identical correspondence and placement | **No persisted Evaluation.** Mol* has a separate transient TM-align superposition for selected polymer chains; it does not save a Database-bound correspondence, placement Evaluation or provenance. No Studio US-align workflow is registered. |
-| Full-length spatial context, glycans and advanced steric context | **Unavailable as validated Complex Analysis evaluations.** No full-length clash/occlusion, glycan accessibility, or context score is claimed. These require separately validated calculations and provenance. |
-| Tag/fusion terminal geometry and clearance advisory | **Supported as a registered post-hoc Evaluation.** Flexible tags use grid-path reach estimates; folded fusions use spherical exit-cone envelopes. Incomplete termini, cyclic/multichain inputs, missing DSSP and unverified B-factors remain explicitly limited. No tag dynamics, biological accessibility or experimental SPR/BLI result is claimed. |
+| Optional reference-frame steric/environment context | **Supported as a registered, optional Evaluation.** Requires a current explicit component association and matching saved Reference Placement Evaluation. Reports static heavy-atom distances, residue evidence and configured van-der-Waals envelope overlap against resolved omitted reference residues, explicitly selected reference chains and recognized modeled sugar residues. Geometry against the associated source component and other complex components is reported separately. A selected assembly ID is accepted only where the file confirms identity-operator membership; non-identity operators are not expanded. No biological accessibility or binding-quality score is claimed. |
+| Tag/fusion terminal geometry and clearance advisory | **Supported as a registered post-hoc Evaluation.** Flexible tags use grid-path reach estimates; folded fusions use spherical exit-cone envelopes. Measured envelope clearance is retained separately from suitability; a folded fusion at an interface-contacting terminal residue gets an explicit advisory even if its sampled sphere clears. Incomplete termini, cyclic/multichain inputs, missing DSSP and unverified B-factors remain explicitly limited. No tag dynamics, biological accessibility or experimental SPR/BLI result is claimed. |
 | Full-reference tag/fusion context | **Supported only as a separate optional Evaluation.** It requires an explicit validated component association and a saved exact Reference Placement Evaluation. It checks resolved reference heavy-atom geometry only; it does not calculate biological assemblies, glycan accessibility or experimental binding. |
 | Protein–DNA/RNA interactions and generalized specificity | **Unavailable as general contextual analyses.** Existing prediction-time constraints or protein-only tools are not presented as post-hoc evaluations for these cases. |
 
@@ -191,11 +191,15 @@ idea of displaying the explicitly associated reference around the placed
 complex and linking reference residues to Mol*; it does not port BinderScope's
 BindCraft run numbering, interface-weighted fit, verdict thresholds or context
 calculations. Studio's registered placement uses the existing Kabsch fitter on
-the validated mapped Cα pairs. No registered Studio evaluator currently takes
-the full reference assembly as spatial context.
+the validated mapped Cα pairs. Studio now has a registered optional static
+reference-context evaluator for resolved omitted reference regions, explicitly
+selected saved reference chains, and explicitly modeled carbohydrate
+coordinates. It uses the existing reference association, placement Evaluation,
+Database access checks and normal Evaluation ingestion. It does not synthesize
+a full assembly or infer biology.
 
-The existing registered evaluations do not currently consume this full
-reference context as a spatial measurement:
+The existing registered interface and ligand Evaluations retain their own
+scopes; reference context is measured by a separate method-specific Evaluation:
 
 | Existing Studio output | Reuse for reference context |
 | --- | --- |
@@ -206,37 +210,52 @@ reference context as a spatial measurement:
 | PoseBusters | Validates ligand pose geometry/chemistry under its own inputs. It is not a receptor-context evaluator. |
 | PEP-Patch, Interface Clustering and Foldseek | Retain their surface, contact-mode and fold-similarity meanings respectively. None supplies a full-length context score; Foldseek similarity is not a binding-mode measurement. |
 
-No full-length clash, occlusion, glycan, membrane-accessibility, or
-construct-accessibility result is currently calculated. A future evaluator
-would need its own registered workflow, provenance and Evaluation artifact;
-the following are validation requirements, not present measurements:
+The registered `analysis.reference_environment` workflow reports static
+geometry; it does not calculate solvent exposure, conformational accessibility,
+membrane orientation, glycan occupancy, or a binding-quality score. For each
+context residue it stores closest atom-pair evidence (source and context atom,
+element, author residue number and insertion code), distance, atom-pair counts
+within 8 Å, and summed configured van-der-Waals envelope overlap above 0.4 Å.
+It reports geometry separately for the associated source component and the
+other selected-complex chains, so chain continuity within the mapped target is
+not confused with partner proximity.
+Bondi radii are used for H, C, N, O, F, P, S, Cl, Br, I and Se; the remaining
+listed common elements use explicit configured values. Unsupported heavy atoms
+are counted by element and excluded from pair calculations, with a limitation
+shown in the Evaluation. Bondi values follow A. Bondi, “van der Waals Volumes
+and Radii,” *J. Phys. Chem.* 68 (1964), 441–451,
+[doi:10.1021/j100785a001](https://doi.org/10.1021/j100785a001); added values
+are Studio-configured and are recorded individually in the saved parameters.
+The Evaluation also stores total residue/atom-pair counts, the placement fit
+coverage and RMSD, source/reference IDs and digests, reference coordinate
+origin where explicit file metadata supports it, selected chains, assembly ID,
+method/version, and limitations. Positive overlap is reported as potential
+geometric overlap, not an experimental clash.
 
-1. **Reference-only protein steric proximity.** Inputs: exact authorized
-   source complex and explicitly associated reference structures/digests,
-   selected model/chains, validated residue map, saved transform, and a
-   declared reference biological assembly when the intended context is not the
-   deposited coordinate set. A calculation could report heavy-atom minimum
-   distances and residue-pair counts between the transformed partner and
-   reference atoms outside the mapped construct, with explicit covalent,
-   alternate-location, hydrogen and missing-coordinate policies. It must not
-   label the result a binding score or imply that asymmetric-unit neighbors are
-   biological. Artifacts should include per-residue/atom-pair evidence, units,
-   threshold parameters, source selections and digests, transform identity and
-   a summary JSON. Validate known rigid fixtures, unchanged source/reference
-   files, atom correspondence, threshold sensitivity, chain/assembly selection,
-   and examples with genuine clash and non-clash geometry.
-2. **Explicit glycan proximity.** Inputs: a reference coordinate file with
-   explicitly resolved carbohydrate atoms, exact chain/entity/alternate
-   conformer and occupancy records, validated placement, and the transformed
-   partner selection. A distance/contact calculation may report atom and
-   residue-level proximity to those coordinates only. It cannot infer
-   unmodeled glycans, occupancy, glycoform distribution, flexibility or
-   accessibility. Artifacts should retain glycan entity/residue IDs, partner
-   residue IDs, distances and all digests/parameters. Validation requires
-   curated coordinate fixtures, entity/author-chain correspondence, alternate
-   conformers, covalent attachment handling, occupancy policy, and independent
-   coordinate-level checks.
-3. **Full-context solvent exposure or occlusion.** Inputs: a chemically
+Resolved omitted protein residues in the associated reference chain are
+measured separately from explicitly selected other chains and recognized
+modeled sugar residues. Sugar components are labeled by coordinate residue
+identity; covalent attachment/linkage is not validated. When an assembly ID is supplied, only membership whose saved
+operator is the identity transform is confirmed; non-identity assembly
+operators and operator expressions are rejected because Studio does not
+expand them. A selected chain without an assembly ID is labelled a selected
+reference component, not a biological partner. PDB REMARK 350 and mmCIF
+assembly metadata are read where available. Sequence-only N-X-S/T motifs are
+listed in a separate field and never treated as modeled sugar coordinates.
+Unsupported elements without a configured radius, unresolved atoms, alternative
+conformers not selected by Bio.PDB, and missing coordinates limit the static
+atom inventory. Experimental and predicted reference labels are shown only
+when stated by the coordinate file; otherwise origin is unknown.
+
+The following capabilities remain unavailable and need separate methods,
+provenance and validation before they can be presented as measurements:
+
+1. **Non-identity biological-assembly expansion.** This needs exact assembly
+   operator composition, chain mapping, atom transformation, operator
+   provenance and fixtures covering identity, non-identity, compound and
+   ambiguous expressions. The current evaluator fails closed for unsupported
+   operators.
+2. **Full-context solvent exposure or occlusion.** Inputs: a chemically
    complete placed complex, the selected reference assembly, atom/residue
    correspondence, protonation and missing-atom policy, and explicit
    partner/context chains. Existing Rosetta SASA can be evaluated on declared
@@ -247,14 +266,14 @@ the following are validation requirements, not present measurements:
    version and input digests. Validate against analytic/simple structures and
    an independent implementation, with tests for missing loops, chain changes
    and atom preparation.
-4. **Membrane-relative placement.** Inputs: an explicitly selected membrane
+3. **Membrane-relative placement.** Inputs: an explicitly selected membrane
    plane/orientation source (for example a saved membrane-frame structure or
    curated plane annotation) in the same validated reference frame, plus
    residue/atom selections. Without that orientation evidence, Studio cannot
    infer membrane accessibility. Any future output should report signed
    distances/orientation with frame provenance and validate against known
    membrane structures and deliberate frame changes.
-5. **Construct-end context.** Existing contact artifacts and validated
+4. **Construct-end context.** Existing contact artifacts and validated
    residue correspondence can identify the source construct's mapped termini
    and source-partner residue evidence. A future residue-level view can surface
    contacts near those termini while retaining the Biotite method/parameters;
@@ -304,6 +323,18 @@ polymer conformations, tag self-avoidance, tag–receptor binding, expression,
 folding, or experimental SPR/BLI behavior. The end comparison and
 immobilization-orientation recommendation are advisory summaries of those
 measurements, never a universal score or experimental prediction.
+
+The inspected BinderScope `termini.py` and `docs/termini.md` explicitly block
+folded fusions when the terminal residue itself contacts the selected target,
+while allowing flexible tags to be assessed by path clearance. Studio originally
+reported an open sampled fusion cone without carrying that attachment-site
+limitation into the summary. Studio now preserves the measured cone/linker
+status as geometric evidence and separately marks a folded-fusion advisory as
+not recommended at a contacting terminus; it excludes that end from the
+advisory end preference. This retains Studio's own clearance measurement while
+making its suitability summary consistent with the documented physical
+limitation. Flexible-tag clearance and terminal-interface evidence remain
+separate.
 
 The separate `analysis.tag_fusion_context` workflow is offered only when the
 same assessed component has an explicit, current Database reference
@@ -574,6 +605,18 @@ seconds and retained its two saved observations. The general detailed
 history; this optimization narrows the picker query rather than changing
 evaluation semantics.
 
+The full Complex Analysis, Compare and Collection pickers now request 100
+structure summaries initially instead of rediscovering the first 1,000 on
+every Streamlit rerun. A local call-path profile on 2026-11-03 measured the
+initial 100-record page at 0.146 s, ACL-revalidated rerenders at 0.128 s and
+0.109 s, loading the next page at 0.271 s, and the subsequent 200-ID
+ACL-revalidated rerender at 0.173 s. Cached state contains stable IDs only;
+each rerun resolves labels and minimal representation summaries through the
+current ACL-filtered Database query. Page navigation remains offset-based, and
+revoked IDs trigger a current authorized-prefix rebuild so changes in visible
+rows do not skip records. Coordinate files and Evaluation histories are loaded
+only after selecting a structure.
+
 The focused consolidation regression selection passed 117 tests, including
 Complex Analysis, docking-to-complex, Database listing and the relevant API
 ACL/submission cases. Mol* residue-selection tests passed 3/3 and TypeScript
@@ -585,6 +628,42 @@ matches the runner field order; no production calculation changed. The
 relevant Complex Analysis, Database, workflow, reference-integrity, ipSAE and
 extended API selection passed 216 tests; one API test was skipped because the
 optional `mcp` Python module is unavailable in this environment.
+
+### Reference environment Evaluation verification (2026-11-03)
+
+The registered `analysis.reference_environment` workflow was run in an isolated
+Database against the real experimental 1IEP X-ray structure in
+`assets/vina/1iep.pdb`. The saved source representation was a documented
+controlled truncation of chain A to author residues 280–450 while retaining
+chain B; it was associated only inside the fixture Database with chain A of
+the original file. This is not a production biological-reference association.
+The exact saved placement used `Biopython PairwiseAligner affine semiglobal
+sequence mapping`, aligned 171 Cα pairs, source coverage 1.0, reference
+coverage 0.6241, and RMSD `4.61e-15 Å`.
+
+The Evaluation measured 103 resolved omitted-reference residues and 13,325
+heavy-atom pairs within 8 Å. It counted 17 configured-radius envelope overlaps
+greater than 0.4 Å across six context residues; these are potential static
+overlaps, not experimental clashes. The role-separated totals showed 16
+overlaps against the associated target component itself and one against the
+other source-complex component. The closest other-component pair was source
+chain B residue GLN 447 OE1 to reference chain A residue TYR 456 OH at 2.6074 Å
+(0.4326 Å configured-radius overlap). The all-source minimum of 1.3278 Å was
+at the truncated target-chain boundary and is therefore shown separately from
+the other-component minimum. No unsupported heavy atoms or modeled sugars
+occurred in this structure. A controlled unit fixture separately verifies a
+modeled NAG residue and sequence-only N-X-S/T motif remain distinct; the
+evaluator does not validate covalent sugar attachment or glycan occupancy.
+
+Both placement and context Evaluations were ingested into the same fixture
+Database. Reopening the Database record restored the saved measurements and
+the Inspector generated source-residue Mol* selectors for the nearest other
+component evidence. The workflow also verified authorized association checks,
+stale-digest rejection, duplicate residue-map rejection, rigid-transform
+invariance, and unavailable context behavior. The full relevant regression
+selection passed 166 tests after final edits. One Starlette `TestClient`
+deprecation warning came from the existing Database policy test; no tests were
+skipped.
 
 ### Verified by real execution
 

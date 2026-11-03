@@ -314,6 +314,9 @@ def test_streamlit_collection_picker_loads_next_acl_filtered_page(monkeypatch):
     class FakeDatabase:
         def list_structure_records(self, user, **kwargs):
             assert user == USER
+            if kwargs.get("molecule_ids") is not None:
+                selected = set(kwargs["molecule_ids"])
+                return {"items": [row for row in records if row["id"] in selected], "next_offset": None}
             if int(kwargs.get("offset", 0)):
                 return {"items": records[2:], "next_offset": None}
             return {"items": records[:2], "next_offset": 2}

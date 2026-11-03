@@ -670,11 +670,22 @@ def _saved_evaluation_artifacts(user: dict, observation: dict, structure: dict,
                                               "interaction_type": "Salt bridge"}
                                              for pair in salt_pairs if isinstance(pair, (list, tuple)) and len(pair) == 2]})
                 continue
+            elif name == "reference_environment.json":
+                results.append({"name": name, "path": path,
+                                "rows": payload.get("residue_evidence", []) if isinstance(payload, dict) else [],
+                                "payload": payload})
+                continue
             else:
                 rows = [payload] if payload else []
         else:
             rows = _csv_rows(path)
         results.append({"name": name, "path": path, "rows": [dict(row) for row in rows if isinstance(row, dict)]})
+    environment_path = run_dir / "artifacts" / "analysis" / "reference_environment" / "reference_environment.json"
+    if environment_path.is_file():
+        payload = _read_json(environment_path)
+        if isinstance(payload, dict):
+            results.append({"name": "reference_environment.json", "path": environment_path,
+                            "rows": payload.get("residue_evidence", []), "payload": payload})
     for path in sorted(item_dir.glob("residue_patches*.csv")):
         rows = _csv_rows(path)
         if rows:
@@ -690,8 +701,10 @@ def _database_inspector_data(user: dict, record: dict, structure: dict, path: Pa
         structure_digest,
     )
 
-    protein_chains = sorted({str(item.get("source_chain") or "") for item in components
-                             if item.get("type") == "protein" and item.get("source_chain")})
+    protein_chains = sorted({str(item.get("source_chain") or item.get("chain") or item.get("chain_id") or "")
+                             for item in components
+                             if item.get("type") == "protein"
+                             and (item.get("source_chain") or item.get("chain") or item.get("chain_id"))})
     try:
         tracks = protein_sequence_tracks(path, protein_chains)
     except (ImportError, OSError, ValueError, TypeError):
@@ -782,9 +795,72 @@ def _database_inspector_data(user: dict, record: dict, structure: dict, path: Pa
                         "raw": terminal,
                     })
                 item["tag_fusion_terminal_selectors"] = verified_terminal_selectors
+        environment_artifact = next((artifact for artifact in artifacts
+                                     if artifact.get("name") == "reference_environment.json"
+                                     and isinstance(artifact.get("payload"), dict)), None)
+        environment_result = environment_artifact.get("payload") if environment_artifact else None
+        if evaluator == "reference_environment" and isinstance(environment_result, dict):
+            env_source = environment_result.get("source") if isinstance(environment_result.get("source"), dict) else {}
+            env_reference = environment_result.get("reference") if isinstance(environment_result.get("reference"), dict) else {}
+            expected_model = str((structure.get("context") or {}).get("model_id")
+                                 or (structure.get("context") or {}).get("model_index")
+                                 or structure.get("model_index") or structure.get("id") or "")
+            reference_is_current = False
+            try:
+                from mn_molecular_design_studio.molecular_database import MolecularDatabase
+                from mn_molecular_design_studio.evaluations import file_digest
+                db = MolecularDatabase()
+                saved_context = db.get_complex_reference_context(
+                    user, source_molecule_id=str(record.get("id") or ""),
+                    source_structure_id=str(structure.get("id") or ""),
+                    source_chain=str(env_source.get("chain_id") or ""),
+                )
+                if (saved_context and saved_context.get("status") == "validated"
+                        and str(saved_context.get("id") or "") == str(environment_result.get("reference_context_id") or "")
+                        and str(saved_context.get("reference_molecule_id") or "") == str(env_reference.get("molecule_id") or "")
+                        and str(saved_context.get("reference_structure_id") or "") == str(env_reference.get("structure_id") or "")
+                        and str(saved_context.get("reference_structure_digest") or "") == str(env_reference.get("structure_digest") or "")
+                        and str(saved_context.get("reference_model_id") or "") == str(env_reference.get("model_id") or "")
+                        and str(saved_context.get("reference_component_chain") or "") == str(env_reference.get("chain_id") or "")):
+                    current_reference = db.structure_file(user, str(env_reference.get("structure_id") or ""), materialize=True)
+                    reference_is_current = file_digest(current_reference) == str(env_reference.get("structure_digest") or "")
+            except (OSError, PermissionError, ValueError, TypeError, KeyError):
+                reference_is_current = False
+            if (reference_is_current
+                    and str(env_source.get("molecule_id") or "") == str(record.get("id") or "")
+                    and str(env_source.get("structure_id") or "") == str(structure.get("id") or "")
+                    and str(env_source.get("structure_digest") or "") == current_digest
+                    and str(env_source.get("model_id") or "") == expected_model):
+                item["reference_environment_result"] = environment_result
+                for row in environment_result.get("residue_evidence", []):
+                    if not isinstance(row, dict):
+                        continue
+                    for role_key, role_label in (
+                        ("source_component_geometry", "associated source component"),
+                        ("other_source_complex_geometry", "other source-complex component"),
+                    ):
+                        role_geometry = row.get(role_key) if isinstance(row.get(role_key), dict) else {}
+                        if not int(role_geometry.get("atom_pairs_within_proximity_cutoff") or 0):
+                            continue
+                        pair = role_geometry.get("closest_atom_pair")
+                        src = pair.get("source") if isinstance(pair, dict) else None
+                        if not isinstance(src, dict):
+                            continue
+                        selector = resolve_author_residue_selector(
+                            tracks, str(src.get("chain_id") or ""), src.get("author_number"),
+                            str(src.get("insertion_code") or ""),
+                        )
+                        if selector:
+                            evidence_rows.append({
+                                "id": f"reference_environment:{role_key}:{row.get('context_kind')}:{row.get('chain_id')}:{row.get('author_number')}:{row.get('insertion_code', '')}:{descriptor.get('id')}",
+                                "evaluator": evaluator, "artifact": "reference_environment.json",
+                                "label": f"Reference context {row.get('context_kind')} · {role_label} {src.get('chain_id')}:{src.get('author_residue')} · {role_geometry.get('closest_distance_angstrom')} Å",
+                                "residue_refs": [f"{src.get('chain_id')}:{src.get('author_residue')}"],
+                                "selectors": [selector], "raw": row,
+                            })
         evaluations.append(item)
         for artifact in artifacts:
-            if artifact["name"] in {"tag_fusion_suitability.json", "report.json", "patch_metrics.json"}:
+            if artifact["name"] in {"tag_fusion_suitability.json", "reference_environment.json", "report.json", "patch_metrics.json"}:
                 # These are summary measurements shown in their evaluator panel,
                 # not residue-level findings to attach to a Mol* selection.
                 continue
@@ -982,11 +1058,14 @@ def _render_inspector_tag_fusion(items: list[dict], viewer_key: str) -> None:
                               args=(f"{viewer_key}-inspector-highlights", [selector]))
                 clearances = terminal.get("tag_clearance") or {}
                 if clearances:
-                    rows = [{"Model": value.get("label"), "Geometric status": value.get("status"),
+                    rows = [{"Model": value.get("label"), "Measured geometric status": value.get("status"),
+                             "Suitability advisory": (value.get("suitability_advisory") or {}).get("status"),
+                             "Advisory basis": (value.get("suitability_advisory") or {}).get("reason"),
                              "Minimum tested linker (residues)": value.get("minimum_linker_residues_tested"),
                              "Path (Å)": value.get("shortest_grid_path_angstrom")}
                             for value in clearances.values()]
                     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+                    st.caption("Measured envelope clearance is geometric evidence. The separate suitability advisory accounts for terminal interface participation and does not predict tag behavior experimentally.")
             else:
                 st.caption("This component format has no free, assessable N/C terminus under the selected method.")
     comparison = result.get("tag_comparison") if isinstance(result.get("tag_comparison"), dict) else {}
@@ -1066,6 +1145,8 @@ def _render_database_inspector(user: dict, data: dict, viewer_key: str, *, recor
         panel_specs.append(("Findings", "findings"))
     if data["protein_chains"]:
         panel_specs.append(("Reference Context", "reference"))
+    if any(isinstance(item.get("reference_environment_result"), dict) for item in items):
+        panel_specs.append(("Spatial Context", "spatial_context"))
     if evaluators & tag_fusion_evaluators:
         panel_specs.append(("Tag & Fusion", "tag_fusion"))
     st.markdown("### Scientific Inspector")
@@ -1123,6 +1204,43 @@ def _render_database_inspector(user: dict, data: dict, viewer_key: str, *, recor
                 )
             elif kind == "tag_fusion":
                 _render_inspector_tag_fusion(items, viewer_key)
+            elif kind == "spatial_context":
+                for item in items:
+                    result = item.get("reference_environment_result")
+                    if not isinstance(result, dict):
+                        continue
+                    st.markdown(f"**Reference environment** · Evaluation `{item['evaluation'].get('id')}`")
+                    placement = result.get("placement") or {}
+                    st.caption(
+                        f"Placement fit: {placement.get('aligned_pair_count')} mapped Cα pairs · "
+                        f"source coverage {placement.get('source_coverage')} · "
+                        f"reference coverage {placement.get('reference_coverage')} · "
+                        f"RMSD {placement.get('rmsd_angstrom')} Å · "
+                        f"mapping {placement.get('mapping_method') or 'unavailable'}"
+                    )
+                    st.caption("Geometry is reported against both the associated source component and the other chains in the selected complex. Same-component contacts can reflect structural continuity; they are not partner-interface measurements.")
+                    st.dataframe([result.get("measurements", {})], hide_index=True, use_container_width=True)
+                    evidence = result.get("residue_evidence") or []
+                    if evidence:
+                        st.dataframe([{
+                            "Context": row.get("context_kind"), "Residue": f"{row.get('chain_id')}:{row.get('residue_name')}{row.get('author_number')}{row.get('insertion_code') or ''}",
+                            "Closest distance (Å)": row.get("closest_distance_angstrom"),
+                            "Atom pairs ≤ 8 Å": row.get("atom_pairs_within_proximity_cutoff"),
+                            "Potential VDW overlaps": row.get("atom_pairs_with_vdw_overlap_above_epsilon"),
+                            "Associated component nearest (Å)": (row.get("source_component_geometry") or {}).get("closest_distance_angstrom"),
+                            "Other complex chains nearest (Å)": (row.get("other_source_complex_geometry") or {}).get("closest_distance_angstrom"),
+                            "Other chain potential overlaps": (row.get("other_source_complex_geometry") or {}).get("atom_pairs_with_vdw_overlap_above_epsilon"),
+                            "Closest source role": ((row.get("closest_atom_pair") or {}).get("source_role")),
+                            "Closest source atom": ((row.get("closest_atom_pair") or {}).get("source") or {}).get("atom_name"),
+                            "Closest context atom": ((row.get("closest_atom_pair") or {}).get("context") or {}).get("atom_name"),
+                        } for row in evidence], hide_index=True, use_container_width=True)
+                    with st.expander("Method, exact identities and limitations"):
+                        st.json({"method": result.get("method"), "method_version": result.get("method_version"),
+                                 "source": result.get("source"), "reference": result.get("reference"),
+                                 "placement": result.get("placement"), "parameters": result.get("parameters"),
+                                 "reference_coordinate_origin": result.get("reference_coordinate_origin"),
+                                 "sequence_only_potential_n_linked_sequons": result.get("sequence_only_potential_n_linked_sequons"),
+                                 "limitations": result.get("limitations")})
 
 
 def _render_biotite_results(user: dict, evaluation: dict, *, source_candidate_id: str, key: str,
@@ -1209,6 +1327,7 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
              "analysis.pandamap": "PandaMap interaction analysis",
              "analysis.posebusters": "PoseBusters pose validation",
              "analysis.reference_placement": "Reference-frame placement",
+             "analysis.reference_environment": "Reference-frame steric and environmental context",
              "analysis.tag_fusion_suitability": "Tag and Fusion Suitability",
              "analysis.tag_fusion_context": "Reference-context Tag and Fusion Suitability"}.get(workflow_id, workflow_id)
     ligand_workflow = workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
@@ -1239,6 +1358,7 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
                       "analysis.plip": "qc_metrics.csv", "analysis.pandamap": "qc_metrics.csv",
                       "analysis.posebusters": "qc_metrics.csv",
                       "analysis.reference_placement": "reference_placement_metrics.csv",
+                      "analysis.reference_environment": "reference_environment_metrics.csv",
                       "analysis.tag_fusion_suitability": "tag_fusion_suitability_metrics.csv",
                       "analysis.tag_fusion_context": "tag_fusion_suitability_metrics.csv"}[workflow_id]
         metrics_path = run_dir / "artifacts" / "analysis" / table_name
@@ -1292,6 +1412,12 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
             if summary:
                 with st.expander("Registered evaluator summary", expanded=False):
                     st.json(summary)
+        if workflow_id == "analysis.reference_environment" and status in {"completed", "succeeded"}:
+            result = _read_json(run_dir / "artifacts" / "analysis" / "reference_environment" / "reference_environment.json")
+            if result:
+                st.dataframe([result.get("measurements", {})], hide_index=True, use_container_width=True)
+                with st.expander("Residue/atom evidence, method and limitations", expanded=True):
+                    st.json(result)
         if workflow_id in {"analysis.tag_fusion_suitability", "analysis.tag_fusion_context"} and status in {"completed", "succeeded"}:
             result = _read_json(run_dir / "artifacts" / "analysis" / "tag_fusion_suitability.json")
             if result:
@@ -1304,6 +1430,7 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
                     st.caption(result["adaptation_attribution"])
     evaluator = {"analysis.ipsae": "ipsae", "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
                  "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters",
+                 "analysis.reference_environment": "reference_environment",
                  "analysis.tag_fusion_suitability": "tag_fusion_suitability",
                  "analysis.tag_fusion_context": "tag_fusion_context"}.get(workflow_id, workflow_id)
     evaluation_id = _analysis_evaluation_id(run_dir, user, source_candidate_id, evaluator=evaluator)
@@ -1453,6 +1580,7 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
             "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
             "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters",
             "analysis.reference_placement": "reference_placement",
+            "analysis.reference_environment": "reference_environment",
             "analysis.tag_fusion_suitability": "tag_fusion_suitability",
             "analysis.tag_fusion_context": "tag_fusion_context"}.get(workflow_id)
     if not tool:
@@ -1462,6 +1590,10 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
                        accessible_project_ids=accessible_project_ids(user),
                        access_admin=user.get("role") == "admin")["items"]
     identity_keys = ("molecule_id", "structure_id", "group_id", "structure_digest", "model_id")
+    if workflow_id == "analysis.reference_environment":
+        identity_keys = (*identity_keys, "reference_context_id", "reference_molecule_id",
+                         "reference_structure_id", "reference_structure_digest",
+                         "reference_model_id", "reference_chain_id", "placement_run_id")
     matches = []
     desired_binder, desired_target = sorted(map(str, binder_chains)), sorted(map(str, target_chains))
     for row in rows:
@@ -1522,9 +1654,13 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
             saved_parameters = manifest.get("parameters") if isinstance(manifest.get("parameters"), dict) else {}
             item_binder, item_target = saved_binder, saved_target
             selected_item = manifest
+        parameters_match = saved_parameters == parameters
+        if workflow_id == "analysis.reference_environment":
+            parameters_match = all(saved_parameters.get(key) == parameters.get(key)
+                                   for key in ("source_component_chain", "selected_reference_chains", "assembly_id"))
         if (saved_model != model_id or saved_binder != desired_binder or saved_target != desired_target
                 or item_binder != desired_binder or item_target != desired_target
-                or saved_parameters != parameters):
+                or not parameters_match):
             continue
         status = str(row.get("status") or metadata.get("status") or "unknown").casefold()
         error = str(metadata.get("error") or "")
@@ -2142,6 +2278,7 @@ def _render_optional_reference_context(user: dict, record: dict, structure: dict
     if not protein_chains:
         return
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    from mn_molecular_design_studio.complex_analysis_catalog import authorized_structure_catalog
 
     database = MolecularDatabase()
     view_context = view_context if isinstance(view_context, dict) else {}
@@ -2279,8 +2416,19 @@ def _render_optional_reference_context(user: dict, record: dict, structure: dict
         linked_molecule, linked_structure, link_provenance = _explicit_reference_link(structure)
         search = st.text_input("Find a Database reference", key=f"complex-analysis-reference-search-{key}", placeholder="Name or sequence")
         try:
-            reference_records = (database.list_structure_records(user, collection="all", query=search, limit=1000)["items"]
-                                if search.strip() else [])
+            reference_records = []
+            if search.strip():
+                catalog_key = f"complex-analysis-reference-catalog-{user.get('id', '')}-{key}-{source_chain}"
+                cached_catalog = st.session_state.get(catalog_key)
+                same_query = isinstance(cached_catalog, dict) and str(cached_catalog.get("query") or "") == search
+                refresh_catalog = st.button("Refresh reference choices", key=f"complex-analysis-reference-refresh-{key}-{source_chain}")
+                load_next = st.button("Load next reference page", key=f"complex-analysis-reference-next-{key}-{source_chain}",
+                                      disabled=not (same_query and cached_catalog.get("next_offset") is not None))
+                catalog = authorized_structure_catalog(
+                    database, user, session_state=st.session_state, cache_key=catalog_key,
+                    query=search, limit=100, advance=load_next, refresh=refresh_catalog,
+                )
+                reference_records = catalog["records"]
         except (PermissionError, ValueError, OSError) as exc:
             reference_records = []
             st.warning(f"Could not list reference structures: {exc}")
@@ -2409,7 +2557,7 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
     schemas, schema_errors = {}, {}
     for workflow_id in ("analysis.biotite_interface", "analysis.rosetta", "analysis.ipsae", "analysis.pep_patch",
                         "analysis.plip", "analysis.pandamap", "analysis.posebusters",
-                        "analysis.tag_fusion_suitability", "analysis.tag_fusion_context"):
+                        "analysis.reference_environment", "analysis.tag_fusion_suitability", "analysis.tag_fusion_context"):
         try:
             schemas[workflow_id] = workflow_schema(workflow_id) if workflow_schema else None
             if not schemas[workflow_id]:
@@ -2649,6 +2797,66 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
             structure_path=path, structure_context=context, structure_components=components,
             viewer_key=f"complex-analysis-db-viewer-{structure['id']}",
         )
+        st.markdown("#### Optional full-reference steric and environmental context")
+        environment_unavailable = ""
+        environment_source = {**source, "binder_chains": [], "target_chains": [],
+                              "source_component_chain": source_component_chain}
+        environment_parameters = {"source_component_chain": source_component_chain,
+                                  "selected_reference_chains": [], "assembly_id": None}
+        environment_reference_chains = []
+        environment_association = saved_reference if isinstance(saved_reference, dict) else None
+        if not environment_association or environment_association.get("status") != "validated":
+            environment_unavailable = "A current, explicit, validated component reference association is required. Ordinary complex analyses remain available."
+        else:
+            placement_match = _reference_placement_match(user, record, structure, environment_association, model_id)
+            if placement_match is None:
+                environment_unavailable = "Run and save Reference-frame placement for this exact association first."
+            else:
+                try:
+                    database = MolecularDatabase()
+                    ref_path = database.structure_file(user, str(environment_association["reference_structure_id"]), materialize=True)
+                    from mn_molecular_design_studio.complex_analysis_comparison import _read_biopython_structure
+                    ref_models = list(_read_biopython_structure(ref_path).get_models())
+                    if len(ref_models) != 1:
+                        raise ValueError("The associated reference must have the same single-model representation validated for placement.")
+                    environment_reference_chains = sorted(str(chain.id) for chain in ref_models[0]
+                                                          if str(chain.id) != str(environment_association.get("reference_component_chain") or ""))
+                    environment_source.update({
+                        "reference_context_id": str(environment_association.get("id") or ""),
+                        "reference_molecule_id": str(environment_association.get("reference_molecule_id") or ""),
+                        "reference_structure_id": str(environment_association.get("reference_structure_id") or ""),
+                        "reference_structure_digest": str(environment_association.get("reference_structure_digest") or ""),
+                        "reference_model_id": str(environment_association.get("reference_model_id") or ""),
+                        "reference_chain_id": str(environment_association.get("reference_component_chain") or ""),
+                        "placement_run_id": str(placement_match["job"].get("run_id") or ""),
+                    })
+                except (OSError, PermissionError, ValueError, KeyError, TypeError) as exc:
+                    environment_unavailable = f"The selected reference coordinates cannot be used for context analysis: {exc}"
+        if not environment_unavailable:
+            selected_context_key = f"complex-analysis-reference-environment-chains-{key}-{source_component_chain}"
+            if st.session_state.get(selected_context_key) is None:
+                st.session_state[selected_context_key] = []
+            selected_context_chains = st.multiselect(
+                "Additional reference components to compare",
+                environment_reference_chains, key=selected_context_key,
+                help="The validated mapped reference chain is always excluded from context comparison at mapped residues. Other chains are included only when explicitly selected.",
+            )
+            environment_parameters["selected_reference_chains"] = list(selected_context_chains)
+            assembly_id = st.text_input(
+                "Reference assembly ID (optional)", value="",
+                key=f"complex-analysis-reference-environment-assembly-{key}-{source_component_chain}",
+                help="Select an assembly only when its identity-operator membership is explicit in the associated mmCIF. Non-identity assembly operators are not expanded.",
+            ).strip()
+            environment_parameters["assembly_id"] = assembly_id or None
+            st.caption("Reports resolved omitted-reference residues, closest heavy-atom distances, atom-pair counts and potential van-der-Waals envelope overlaps. Static overlaps are advisory. Explicit modeled sugars are separate from sequence-only motifs; no glycan occupancy or accessibility is inferred.")
+        _render_database_workflow(
+            user, "analysis.reference_environment", schemas.get("analysis.reference_environment"),
+            environment_source, model_id, [], [], environment_parameters,
+            key + "-reference-environment", submit, project_id,
+            schema_errors.get("analysis.reference_environment", "") or environment_unavailable,
+            structure_path=path, structure_context=context, structure_components=components,
+            viewer_key=f"complex-analysis-db-viewer-{structure['id']}",
+        )
 
     if protein_chains:
         st.markdown("#### Protein surface analysis")
@@ -2678,6 +2886,7 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
              "analysis.plip": "PLIP interaction analysis", "analysis.pandamap": "PandaMap interaction analysis",
              "analysis.posebusters": "PoseBusters pose validation",
              "analysis.reference_placement": "Reference-frame placement",
+             "analysis.reference_environment": "Reference-frame steric and environmental context",
              "analysis.tag_fusion_suitability": "Tag and Fusion Suitability",
              "analysis.tag_fusion_context": "Reference-context Tag and Fusion Suitability"}.get(workflow_id, workflow_id)
     st.markdown(f"##### {title}")
@@ -2743,6 +2952,7 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
 
 def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, submit=None) -> None:
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    from mn_molecular_design_studio.complex_analysis_catalog import authorized_structure_catalog
 
     def has_analysis_complex(item: dict) -> bool:
         if len(item.get("components") or []) >= 2:
@@ -2753,8 +2963,19 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
     database = MolecularDatabase()
     st.caption("Analyses launched from Database use the existing Studio workflow queue on this workstation; the selected structure stays linked to its Database record without creating a prediction Results job.")
     query = st.text_input("Search Database complexes", key="complex-analysis-db-query", placeholder="Name or sequence")
-    page = database.list_structure_records(user, collection="all", query=query, limit=1000)
-    records = [item for item in page["items"] if item.get("representations") and has_analysis_complex(item)]
+    catalog_key = f"complex-analysis-db-catalog-{user.get('id', '')}"
+    cached_catalog = st.session_state.get(catalog_key)
+    same_query = isinstance(cached_catalog, dict) and str(cached_catalog.get("query") or "") == query
+    refresh_catalog = st.button("Refresh Database structure choices", key="complex-analysis-db-refresh")
+    load_next = st.button("Load next Database structure page", key="complex-analysis-db-next",
+                          disabled=not (same_query and cached_catalog.get("next_offset") is not None))
+    catalog = authorized_structure_catalog(
+        database, user, session_state=st.session_state, cache_key=catalog_key,
+        query=query, limit=100, advance=load_next, refresh=refresh_catalog,
+    )
+    records = [item for item in catalog["records"] if item.get("representations") and has_analysis_complex(item)]
+    st.caption(f"Showing {len(records):,} authorized complex choices on this page"
+               + ("; additional pages are available." if catalog.get("next_offset") is not None else "."))
     by_id = {str(item["id"]): item for item in records}
     requested_id = str(opened.get("molecule_id") or st.session_state.get("complex-analysis-molecule-id") or "")
     if requested_id and requested_id not in by_id:

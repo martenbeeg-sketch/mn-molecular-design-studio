@@ -37,7 +37,10 @@ def _database_pair(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_HOME", str(workspace))
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_APP_HOME", str(workspace))
-    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(workspace / "runs"))
+    # Studio's workspace initializer canonicalizes the run root under workdir.
+    # Keep the test's registered run files inside that ACL boundary so the
+    # downstream environment evaluator can verify the ingested placement run.
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(workspace / "workdir" / "runs"))
     database = MolecularDatabase(workspace / "database")
     source_path = _write_chain(
         tmp_path / "source-complex.pdb",
@@ -75,6 +78,7 @@ def test_database_adapter_requires_authorized_current_explicit_association(tmp_p
     database, source, source_structure, reference, reference_structure, saved, selection = _database_pair(tmp_path, monkeypatch)
     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import WORKFLOWS, workflow_schema
     assert "analysis.reference_placement" in WORKFLOWS
+    assert "analysis.reference_environment" in WORKFLOWS
     schema_names = {item["name"] for item in workflow_schema("analysis.reference_placement")["parameters"]}
     assert {"source_component_chain", "reference_context_id", "reference_structure_digest", "method_version"} <= schema_names
     assert saved["status"] == "validated"
@@ -128,6 +132,14 @@ def test_database_adapter_requires_authorized_current_explicit_association(tmp_p
     with pytest.raises(ValueError, match="explicit, current, unique exact"):
         build_database_analysis_source(
             USER, selection, workflow_id="analysis.reference_placement", project_id=None, database=database,
+        )
+    with pytest.raises(ValueError, match="explicit, current, unique exact"):
+        build_database_analysis_source(
+            USER, selection, workflow_id="analysis.reference_environment", project_id=None, database=database,
+        )
+    with pytest.raises(ValueError, match="explicit, current, unique exact"):
+        build_database_analysis_source(
+            USER, selection, workflow_id="analysis.reference_environment", project_id=None, database=database,
         )
 
 
@@ -204,6 +216,112 @@ def test_registered_placement_contract_ingests_evaluation_on_existing_database_s
     assert matched is not None
     assert matched["result"]["reference"]["molecule_id"] == reference["id"]
     assert matched["result"]["matrix_4x4"] == result["matrix_4x4"]
+
+
+def test_reference_environment_registered_workflow_on_real_saved_1iep_structure(tmp_path, monkeypatch):
+    """A controlled truncation of a saved experimental PDB validates real file + Evaluation reuse."""
+    from mn_molecular_design_studio.complex_analysis_sources import build_database_analysis_source
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.analysis import (
+        run_reference_environment_contract, run_reference_placement_contract,
+    )
+    from mn_molecular_design_studio.evaluations import evaluation_descriptor
+    from mn_molecular_design_studio.molecular_database_ingest import ingest_run
+    from mn_molecular_design_studio.workspace import mark_studio_job
+
+    workspace = tmp_path / "real-pdb-workspace"
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_HOME", str(workspace))
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_APP_HOME", str(workspace))
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(workspace / "workdir" / "runs"))
+    # Match the app's configured local Database so registered-run auto-ingest
+    # and the explicit reopen checks use the same isolated fixture store.
+    database = MolecularDatabase(workspace / "database")
+    reference_path = Path(__file__).parents[1] / "mn_molecular_design_studio" / "assets" / "vina" / "1iep.pdb"
+    source_path = tmp_path / "1iep-truncated-source-complex.pdb"
+    source_lines = ["HEADER    CONTROLLED TRUNCATED 1IEP REFERENCE-PLACEMENT FIXTURE",
+                    "EXPDTA    X-RAY DIFFRACTION"]
+    for line in reference_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.startswith("ATOM  "):
+            continue
+        chain = line[21:22]
+        if chain == "B" or (chain == "A" and 280 <= int(line[22:26]) <= 450):
+            source_lines.append(line)
+    source_path.write_text("\n".join([*source_lines, "TER", "END", ""]), encoding="utf-8")
+    source_record = molecule_imports.parse_structure(source_path.read_bytes(), source_path.name)[0]
+    reference_record = molecule_imports.parse_structure(reference_path.read_bytes(), reference_path.name)[0]
+    source_import = database.import_records(USER, [source_record], name="Controlled truncated 1IEP source")
+    reference_import = database.import_records(USER, [reference_record], name="1IEP experimental reference file")
+    source = database.list_molecules(USER, molecule_ids=source_import["molecule_ids"], collection="all")["items"][0]
+    reference = database.list_molecules(USER, molecule_ids=reference_import["molecule_ids"], collection="all")["items"][0]
+    source_structure = source["representations"][0]
+    reference_structure = reference["representations"][0]
+    saved = database.save_complex_reference_context(
+        USER, source_molecule_id=source["id"], source_structure_id=source_structure["id"],
+        source_chain="A", reference_molecule_id=reference["id"],
+        reference_structure_id=reference_structure["id"], reference_chain="A",
+    )
+    assert saved["status"] == "validated", saved
+    selection = {
+        "molecule_id": source["id"], "structure_id": source_structure["id"],
+        "group_id": source_import["group_id"],
+        "model_id": (source_structure.get("context") or {}).get("model_id") or source_structure["id"],
+        "binder_chains": [], "target_chains": [], "source_component_chain": "A",
+    }
+    placement_adapter = build_database_analysis_source(
+        USER, selection, workflow_id="analysis.reference_placement", project_id=None, database=database,
+    )
+    placement_run = run_reference_placement_contract(
+        Path(placement_adapter["source_run_dir"]), Path(placement_adapter["candidates_jsonl"]),
+        candidate_ids=[placement_adapter["candidate_id"]],
+        selected_structure_path=Path(placement_adapter["selected_structure_path"]),
+        selected_model_id=placement_adapter["selected_model_id"], source_component_chain="A",
+    )
+    placement_result = json.loads((placement_run / "artifacts/analysis/reference_placement/reference_placement.json").read_text())
+    assert placement_result["aligned_pair_count"] >= 100
+    assert placement_result["rmsd_angstrom"] < 0.01
+    mark_studio_job({"run_dir": str(placement_run)}, project_id=None, owner_id=USER["id"], allow_private_source=True)
+    assert ingest_run(placement_run, database=database, force=True) == 1
+
+    environment_adapter = build_database_analysis_source(
+        USER, selection, workflow_id="analysis.reference_environment", project_id=None, database=database,
+    )
+    context = environment_adapter["source_manifest"]["reference_environment_context"]
+    assert context["placement_evaluation_id"]
+    environment_run = run_reference_environment_contract(
+        Path(environment_adapter["source_run_dir"]), Path(environment_adapter["candidates_jsonl"]),
+        candidate_ids=[environment_adapter["candidate_id"]],
+        selected_structure_path=Path(environment_adapter["selected_structure_path"]),
+        selected_model_id=environment_adapter["selected_model_id"], source_component_chain="A",
+    )
+    environment_result = json.loads((environment_run / "artifacts/analysis/reference_environment/reference_environment.json").read_text())
+    assert environment_result["reference_coordinate_origin"]["classification"] == "experimental"
+    assert environment_result["measurements"]["context_residue_count"] > 0
+    assert environment_result["source"]["structure_id"] == source_structure["id"]
+    assert environment_result["reference"]["structure_id"] == reference_structure["id"]
+    assert all(row["context_kind"] == "omitted_reference_region" for row in environment_result["residue_evidence"])
+    assert environment_result["measurements"]["associated_source_component_atom_pairs_with_vdw_overlap_above_epsilon"] > 0
+    assert environment_result["measurements"]["other_source_complex_atom_pairs_with_vdw_overlap_above_epsilon"] > 0
+    mark_studio_job({"run_dir": str(environment_run)}, project_id=None, owner_id=USER["id"], allow_private_source=True)
+    assert ingest_run(environment_run, database=database, force=True) == 1
+
+    reopened = database.list_molecules(USER, molecule_ids=[source["id"]], collection="all")["items"][0]
+    observation = next(item for item in reopened["observations"] if item.get("namespace") == "reference_environment")
+    assert evaluation_descriptor(observation)["evaluator"] == "reference_environment"
+    assert observation["context"]["representation_id"] == source_structure["id"]
+    saved_result = observation["context"]["candidate"]["raw_metadata"]["reference_environment"]
+    assert saved_result["measurements"] == environment_result["measurements"]
+    assert saved_result["reference_context_id"] == saved["id"]
+    from mn_molecular_design_studio.complex_analysis_ui import _database_inspector_data
+    from mn_molecular_design_studio import molecular_database
+    monkeypatch.setattr(molecular_database, "MolecularDatabase", lambda: database)
+    inspector = _database_inspector_data(USER, reopened, source_structure,
+        database.structure_file(USER, source_structure["id"]), source["components"],
+        [(observation, evaluation_descriptor(observation))])
+    assert any(item.get("reference_environment_result", {}).get("measurements") == environment_result["measurements"]
+               for item in inspector["evaluations"])
+    partner_evidence = [row for row in inspector["evidence"]
+                        if "other source-complex component B:" in row.get("label", "")]
+    assert partner_evidence
+    assert partner_evidence[0]["selectors"]
 
 
 def test_placement_overlay_passes_reference_first_and_validated_transform_to_molstar(tmp_path, monkeypatch):

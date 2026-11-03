@@ -874,6 +874,155 @@ def run_reference_placement_contract(
     )
 
 
+def run_reference_environment_contract(
+    source_run_dir: Path, candidates_jsonl: Path,
+    candidate_ids: list[str] | None = None, selected_structure_path: Path | None = None,
+    selected_model_id: str | None = None, source_component_chain: str | None = None,
+    selected_reference_chains: list[str] | None = None, assembly_id: str | None = None,
+) -> Path:
+    """Measure static atom proximity to omitted and explicitly selected reference context."""
+    from mn_molecular_design_studio.complex_analysis_environment import (
+        METHOD, METHOD_VERSION, calculate_reference_environment,
+    )
+    from mn_molecular_design_studio.evaluations import file_digest
+
+    source_run_dir = Path(source_run_dir).expanduser().resolve(strict=True)
+    candidates_jsonl = Path(candidates_jsonl).expanduser().resolve(strict=True)
+    candidates = _analysis_source_candidates(source_run_dir, candidates_jsonl)
+    candidates = _select_complex_analysis_candidates(
+        source_run_dir, candidates, candidate_ids=candidate_ids,
+        selected_structure_path=selected_structure_path, selected_model_id=selected_model_id,
+    )
+    if len(candidates) != 1:
+        raise ValueError("Reference-environment evaluation requires exactly one selected Database complex.")
+    metadata = read_json(source_run_dir / "metadata.json")
+    manifest = read_json(source_run_dir / "complex_analysis_source.json")
+    context = manifest.get("reference_environment_context")
+    if metadata.get("source_kind") != "database" or manifest.get("schema") != "studio.complex_analysis_database_source.v1":
+        raise ValueError("Reference-environment evaluation requires an authorized Database source bundle.")
+    if not isinstance(context, dict) or context.get("status") != "validated":
+        raise ValueError("An explicit, current, validated Database reference association is required.")
+    source_chain = str(source_component_chain or "")
+    if source_chain != str(context.get("source_component_chain") or ""):
+        raise ValueError("The selected associated source component does not match the saved reference context.")
+    source_path = Path(str(candidates[0].get("complex_pdb") or "")).resolve(strict=True)
+    reference_path = Path(str(context.get("structure_path") or "")).resolve(strict=True)
+    for path in (source_path, reference_path):
+        try:
+            path.relative_to(source_run_dir)
+        except ValueError as exc:
+            raise ValueError("Source and reference coordinates must be staged inside the authorized Database bundle.") from exc
+    source_identity = {
+        "molecule_id": str(manifest.get("molecule_id") or ""),
+        "structure_id": str(manifest.get("structure_id") or ""),
+        "group_id": str(manifest.get("group_id") or ""),
+        "structure_digest": str(manifest.get("structure_digest") or ""),
+        "model_id": str(manifest.get("model_id") or ""), "chain_id": source_chain,
+    }
+    reference_identity = {
+        "molecule_id": str(context.get("reference_molecule_id") or ""),
+        "structure_id": str(context.get("reference_structure_id") or ""),
+        "group_id": str(context.get("reference_group_id") or ""),
+        "structure_digest": str(context.get("reference_structure_digest") or ""),
+        "model_id": str(context.get("reference_model_id") or ""),
+        "chain_id": str(context.get("reference_component_chain") or ""),
+    }
+    if not all(source_identity.values()) or not all(reference_identity.values()):
+        raise ValueError("The saved association is missing exact source or reference identity fields.")
+    if file_digest(source_path) != source_identity["structure_digest"] or file_digest(reference_path) != reference_identity["structure_digest"]:
+        raise ValueError("The source or associated reference digest changed after authorization.")
+    placement = context.get("placement_result") if isinstance(context.get("placement_result"), dict) else {}
+    if (str(placement.get("reference_context_id") or "") != str(context.get("id") or "")
+            or str(placement.get("evaluation_id") or "") != str(context.get("placement_evaluation_id") or "")
+            or str(context.get("placement_run_id") or "") == ""):
+        raise ValueError("A completed and ingested Reference Placement Evaluation matching this exact association is required.")
+    result = calculate_reference_environment(
+        source_path, reference_path, placement=placement,
+        source_identity=source_identity, reference_identity=reference_identity,
+        reference_context_id=str(context.get("id") or ""),
+        selected_reference_chains=list(selected_reference_chains or []),
+        assembly_id=str(assembly_id or "").strip() or None,
+    )
+    result["placement"]["evaluation_id"] = str(context.get("placement_evaluation_id") or "")
+    result["placement"]["run_id"] = str(context.get("placement_run_id") or "")
+    params = {
+        "candidate_ids": [str(candidates[0].get("candidate_id") or "")],
+        "selected_structure_path": str(source_path), "selected_model_id": source_identity["model_id"],
+        "source_component_chain": source_chain, "reference_context_id": str(context.get("id") or ""),
+        "reference_molecule_id": reference_identity["molecule_id"],
+        "reference_structure_id": reference_identity["structure_id"],
+        "reference_structure_digest": reference_identity["structure_digest"],
+        "reference_model_id": reference_identity["model_id"],
+        "reference_component_chain": reference_identity["chain_id"],
+        "placement_evaluation_id": result["placement"]["evaluation_id"],
+        "placement_run_id": result["placement"]["run_id"],
+        "placement_mapping_method": result["placement"]["mapping_method"],
+        "selected_reference_chains": list(selected_reference_chains or []),
+        "assembly_id": str(assembly_id or "").strip() or None,
+        "method": METHOD, "method_version": METHOD_VERSION,
+    }
+    job = _analysis_job(
+        source_run_dir, candidates_jsonl, tool="reference_environment", params=params,
+        note="Measure static atom-pair proximity and van-der-Waals envelope overlap against resolved omitted reference regions and explicitly selected reference components. No biological accessibility score is calculated.",
+        mode="saved-structure-reference-context-geometry",
+    )
+    _write_complex_analysis_selection(
+        job, source_run_dir, candidates[0], workflow="analysis.reference_environment",
+        parameters={key: value for key, value in params.items() if key not in {"candidate_ids", "selected_structure_path"}},
+    )
+    output_dir = job.run_dir / "artifacts" / "analysis" / "reference_environment"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result_path = output_dir / "reference_environment.json"
+    write_json(result_path, result)
+    candidate = copy.deepcopy(candidates[0])
+    metrics = dict(candidate.get("metrics") or {})
+    measurements = result["measurements"]
+    metrics.update({
+        "reference_environment_context_residue_count": measurements["context_residue_count"],
+        "reference_environment_residues_with_pairs_within_8A": measurements["residue_count_with_atom_pairs_within_proximity_cutoff"],
+        "reference_environment_residues_with_vdw_overlap": measurements["residue_count_with_vdw_overlap_above_epsilon"],
+        "reference_environment_closest_distance_angstrom": measurements["closest_distance_angstrom"],
+        "reference_environment_source_component_closest_distance_angstrom": measurements["associated_source_component_closest_distance_angstrom"],
+        "reference_environment_other_component_closest_distance_angstrom": measurements["other_source_complex_closest_distance_angstrom"],
+        "reference_environment_atom_pairs_within_8A": measurements["atom_pairs_within_proximity_cutoff"],
+        "reference_environment_atom_pairs_with_vdw_overlap": measurements["atom_pairs_with_vdw_overlap_above_epsilon"],
+        "reference_environment_other_component_vdw_overlap_pairs": measurements["other_source_complex_atom_pairs_with_vdw_overlap_above_epsilon"],
+        "reference_environment_status": "measured",
+    })
+    candidate["metrics"] = metrics
+    raw = candidate.setdefault("raw_metadata", {})
+    raw["reference_environment"] = result
+    raw["analysis_parameters"] = params
+    raw["measurement_provenance"] = {
+        **dict(raw.get("measurement_provenance") or {}),
+        "reference_environment": {
+            "method": METHOD, "method_version": METHOD_VERSION,
+            "parameters": result["parameters"], "source": source_identity,
+            "reference": reference_identity, "reference_context_id": result["reference_context_id"],
+            "placement": result["placement"],
+            "result_artifact": "artifacts/analysis/reference_environment/reference_environment.json",
+            "biological_accessibility_claimed": False,
+        },
+    }
+    return _finish_metric_analysis(
+        job, [candidate], tool="reference_environment",
+        table_name="reference_environment_metrics.csv",
+        metric_names=[
+            "reference_environment_context_residue_count",
+            "reference_environment_residues_with_pairs_within_8A",
+            "reference_environment_residues_with_vdw_overlap",
+            "reference_environment_closest_distance_angstrom",
+            "reference_environment_source_component_closest_distance_angstrom",
+            "reference_environment_other_component_closest_distance_angstrom",
+            "reference_environment_atom_pairs_within_8A",
+            "reference_environment_atom_pairs_with_vdw_overlap",
+            "reference_environment_other_component_vdw_overlap_pairs",
+        ],
+        required_metrics=["reference_environment_closest_distance_angstrom"],
+        error_key="reference_environment_error",
+    )
+
+
 def _run_tag_fusion_contract(
     source_run_dir: Path,
     candidates_jsonl: Path,
