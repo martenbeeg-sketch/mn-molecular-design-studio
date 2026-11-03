@@ -48,6 +48,7 @@ def test_rosetta_excludes_mislabeled_sasa_ratio_even_when_within_percentage_rang
 
 def test_historical_rosetta_sasa_ratio_is_preserved_raw_but_not_projected_or_filterable(tmp_path, monkeypatch):
     from mn_molecular_design_studio import molecule_imports
+    from mn_molecular_design_studio import evaluations
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
     monkeypatch.setenv('MN_MOLECULAR_DESIGN_STUDIO_HOME', str(tmp_path))
     monkeypatch.setenv('MN_MOLECULAR_DESIGN_STUDIO_APP_HOME', str(tmp_path))
@@ -67,6 +68,14 @@ def test_historical_rosetta_sasa_ratio_is_preserved_raw_but_not_projected_or_fil
         # Simulate an index produced by the older projection version.
         with database.connection() as connection:
             connection.execute('UPDATE molecule_evaluations SET projection_version=? WHERE observation_id=?',
-                               ('evaluation.v4:old', observation_id))
+                               ('evaluation.v4:'+evaluations.VERSION, observation_id))
             connection.execute('INSERT OR REPLACE INTO molecule_metric_values VALUES (?,?,?,?,?,?)',
                                (observation_id, 'rosetta_metrics.'+bad_key, 'number', 171.0, '171.0', '{}'))
+        with monkeypatch.context() as isolated:
+            def no_full_rebuild(*args):
+                raise AssertionError('Compatible v4 projections must upgrade without recalculation')
+            isolated.setattr(evaluations, 'normalize_metrics', no_full_rebuild)
+            with database.connection() as connection:
+                evaluations.rebuild_missing(connection)
+                assert connection.execute('SELECT projection_version FROM molecule_evaluations WHERE observation_id=?',
+                                          (observation_id,)).fetchone()[0] == evaluations.PROJECTION_VERSION

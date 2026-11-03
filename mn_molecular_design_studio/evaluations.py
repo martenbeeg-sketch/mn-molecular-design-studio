@@ -108,6 +108,15 @@ def install_schema(connection):
 
 
 def rebuild_missing(connection):
+    # v5 only removes the mislabeled standalone Rosetta ratio. Upgrade v4
+    # indexes in place instead of blocking the first API request on a complete
+    # scientific-history rebuild (tens of thousands of observations).
+    connection.execute("DELETE FROM molecule_metric_values WHERE field IN (?,?)", (
+        "rosetta_metrics.rosetta_interface_percent_of_binder_in_intf",
+        "rosetta_metrics.interface_percent_of_binder_in_intf",
+    ))
+    connection.execute("UPDATE molecule_evaluations SET projection_version=? WHERE projection_version=?",
+                       (PROJECTION_VERSION, "evaluation.v4:" + VERSION))
     rows = connection.execute("SELECT o.* FROM molecule_observations o LEFT JOIN molecule_evaluations e ON e.observation_id=o.id "
                               "WHERE e.observation_id IS NULL OR e.projection_version!=?", (PROJECTION_VERSION,)).fetchall()
     for raw in rows:
