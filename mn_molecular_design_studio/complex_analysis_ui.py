@@ -575,9 +575,10 @@ def _select_inspector_evidence(state_key: str, selectors: list[str]) -> None:
 
 def _authorized_evaluation_run_dir(user: dict, observation: dict) -> Path | None:
     """Resolve a saved Evaluation's artifact directory through the job ACL."""
-    from mn_molecular_design_studio.auth import accessible_project_ids, can_access_job
+    from mn_molecular_design_studio.auth import can_access_job
     from mn_molecular_design_studio.complex_analysis_inspector import observation_context
-    from mn_molecular_design_studio.job_catalog import get_job_access_record, search_jobs
+    from mn_molecular_design_studio.job_catalog import get_job_access_record
+    from mn_molecular_design_studio.runtime import runs_root
 
     context = observation_context(observation)
     run_id = str(observation.get("run_id") or context.get("run_id") or "")
@@ -587,16 +588,20 @@ def _authorized_evaluation_run_dir(user: dict, observation: dict) -> Path | None
     job_access = get_job_access_record(task_group, run_id)
     if not can_access_job(user, job_access):
         return None
-    rows = search_jobs(
-        query=run_id, task_group=task_group, limit=1000,
-        access_owner_id=str(user.get("id") or ""),
-        accessible_project_ids=accessible_project_ids(user), access_admin=user.get("role") == "admin",
-    )["items"]
-    row = next((item for item in rows if str(item.get("run_id") or "") == run_id
-                and str(item.get("task_group") or "") == task_group), None)
-    if not row or not can_access_job(user, job_access):
+    relative_path = str(job_access.get("run_relative_path") or "") if isinstance(job_access, dict) else ""
+    if not relative_path:
         return None
-    path = Path(str(row.get("run_dir") or "")).expanduser().resolve()
+    root = Path(runs_root()).expanduser().resolve()
+    relative = Path(relative_path)
+    if relative.is_absolute():
+        return None
+    path = (root / relative).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return None
+    if not can_access_job(user, job_access):
+        return None
     return path if path.is_dir() else None
 
 
@@ -647,8 +652,8 @@ def _saved_evaluation_artifacts(user: dict, observation: dict, structure: dict,
         return []
     item_dir = analysis_dir / item_id if item_id else analysis_dir
     results = []
-    for name in ("contacts.json", "interactions.csv", "full_checks.csv", "report.json",
-                 "patch_metrics.json"):
+    for name in ("tag_fusion_suitability.json", "contacts.json", "interactions.csv",
+                 "full_checks.csv", "report.json", "patch_metrics.json"):
         path = item_dir / name
         if not path.is_file():
             continue
@@ -681,7 +686,8 @@ def _database_inspector_data(user: dict, record: dict, structure: dict, path: Pa
                              components: list[dict], associated: list[tuple[dict, dict]]) -> dict:
     from mn_molecular_design_studio.complex_analysis_inspector import (
         author_residue_selector, inspector_evidence_rows, observation_context,
-        parse_author_residue_selector, protein_sequence_tracks, structure_digest,
+        parse_author_residue_selector, protein_sequence_tracks, resolve_author_residue_selector,
+        structure_digest,
     )
 
     protein_chains = sorted({str(item.get("source_chain") or "") for item in components
@@ -734,9 +740,51 @@ def _database_inspector_data(user: dict, record: dict, structure: dict, path: Pa
         artifacts = _saved_evaluation_artifacts(user, observation, structure, current_digest)
         item = {"observation": observation, "evaluation": descriptor, "evaluator": evaluator,
                 "artifacts": artifacts}
+        context = observation_context(observation)
+        candidate = context.get("candidate") if isinstance(context.get("candidate"), dict) else {}
+        raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+        saved_tag_artifact = next((artifact.get("rows", [None])[0]
+                                   for artifact in artifacts
+                                   if artifact.get("name") == "tag_fusion_suitability.json"
+                                   and artifact.get("rows")), None)
+        # The access-checked run artifact is the authoritative evaluator output.
+        # Candidate normalization may resolve short DSSP assignment codes such
+        # as "H" or "-" as paths in older saved Evaluation metadata.
+        tag_result = (saved_tag_artifact if isinstance(saved_tag_artifact, dict)
+                      else raw.get("tag_fusion_suitability"))
+        if evaluator in {"tag_fusion_suitability", "tag_fusion_context"} and isinstance(tag_result, dict):
+            tag_source = tag_result.get("source") if isinstance(tag_result.get("source"), dict) else {}
+            expected_model = str((structure.get("context") or {}).get("model_id")
+                                 or (structure.get("context") or {}).get("model_index")
+                                 or structure.get("model_index") or structure.get("id") or "")
+            if (str(tag_source.get("molecule_id") or "") == str(record.get("id") or "")
+                    and str(tag_source.get("structure_id") or "") == str(structure.get("id") or "")
+                    and str(tag_source.get("structure_digest") or "") == current_digest
+                    and str(tag_source.get("model_id") or "") == expected_model):
+                item["tag_fusion_result"] = tag_result
+                verified_terminal_selectors = {}
+                for end, terminal in (tag_result.get("terminal_geometry") or {}).items():
+                    identity = terminal.get("terminal_residue") if isinstance(terminal, dict) else None
+                    if not isinstance(identity, dict):
+                        continue
+                    selector = resolve_author_residue_selector(
+                        tracks, str(identity.get("chain_id") or ""), identity.get("author_number"),
+                        str(identity.get("insertion_code") or ""),
+                    )
+                    verified_terminal_selectors[str(end)] = selector
+                    residue_ref = (f"{identity.get('chain_id')}:{identity.get('author_number')}"
+                                   f"{identity.get('insertion_code') or ''}")
+                    evidence_rows.append({
+                        "id": f"{evaluator}:terminus:{end}:{descriptor.get('id')}",
+                        "evaluator": evaluator, "artifact": "tag_fusion_suitability.json",
+                        "label": f"{end}-terminus geometry · {residue_ref}",
+                        "residue_refs": [residue_ref], "selectors": [selector] if selector else [],
+                        "raw": terminal,
+                    })
+                item["tag_fusion_terminal_selectors"] = verified_terminal_selectors
         evaluations.append(item)
         for artifact in artifacts:
-            if artifact["name"] in {"report.json", "patch_metrics.json"}:
+            if artifact["name"] in {"tag_fusion_suitability.json", "report.json", "patch_metrics.json"}:
                 # These are summary measurements shown in their evaluator panel,
                 # not residue-level findings to attach to a Mol* selection.
                 continue
@@ -854,6 +902,113 @@ def _render_inspector_findings(data: dict, viewer_key: str) -> None:
     st.caption(f"Evidence Evaluation ID: {descriptor.get('id') or 'unavailable'}")
 
 
+def _tag_fusion_terminal_metric_rows(terminal: dict) -> list[dict]:
+    """Build Arrow-safe rows for numeric and categorical terminal evidence."""
+    definitions = (
+        ("Distance to selected interface (Å)", "distance_to_selected_interface_angstrom"),
+        ("Terminal exit direction toward partner (degrees)", "aim_toward_partner_degrees"),
+        ("Interface-side cosine", "interface_side_cosine"),
+        ("Terminal residue SASA (Å²)", "terminal_residue_sasa_angstrom2"),
+        ("DSSP relative accessibility", "relative_sasa_sander"),
+        ("Secondary structure", "secondary_structure"),
+        ("Terminal window mean pLDDT", "terminal_window_mean_plddt"),
+        ("Terminal window mean B-factor", "terminal_window_mean_b_factor"),
+        ("Terminal contact at cutoff", "contact_at_terminal_residue"),
+        ("Loop residues in terminal window", "terminal_window_loop_residue_count"),
+        ("Flexibility evidence", "flexibility_evidence"),
+    )
+    rows = []
+    for label, field in definitions:
+        value = terminal.get(field)
+        if value is None:
+            continue
+        if field == "secondary_structure":
+            value = _display_dssp_assignment(value)
+        rows.append({"Evidence": label, "Stored value": str(value)})
+    return rows
+
+
+def _display_dssp_assignment(value: object) -> str:
+    """Keep DSSP codes readable when older normalized metadata stored them as paths."""
+    assignment = str(value).strip()
+    dssp_codes = {"H", "G", "I", "E", "B", "T", "S", "-"}
+    if assignment in dssp_codes:
+        return assignment
+    normalized = assignment.replace("\\", "/")
+    if normalized.startswith("/") or normalized.startswith("runs:///"):
+        leaf = normalized.rsplit("/", 1)[-1]
+        if leaf in dssp_codes:
+            return leaf
+        return "unavailable (invalid stored assignment)"
+    return assignment
+
+
+def _render_inspector_tag_fusion(items: list[dict], viewer_key: str) -> None:
+    import pandas as pd
+
+    results = [item for item in items if isinstance(item.get("tag_fusion_result"), dict)]
+    if not results:
+        st.info("No matching saved Tag and Fusion Evaluation is available for this exact Database representation.")
+        return
+    options = [str(item["evaluation"].get("id") or index) for index, item in enumerate(results)]
+    labels = {option: f"{item['evaluator']} · {option}" for option, item in zip(options, results)}
+    key = f"{viewer_key}-tag-fusion-evaluation"
+    if st.session_state.get(key) not in options:
+        st.session_state[key] = options[0]
+    selected_id = st.selectbox("Tag and Fusion Evaluation", options,
+                               format_func=lambda value: labels[value], key=key)
+    item = results[options.index(selected_id)]
+    result = item["tag_fusion_result"]
+    st.caption(f"{result.get('method')} · version {result.get('method_version')} · {result.get('assessment_scope')}")
+    st.markdown(f"**Assessment status:** `{result.get('assessment_status', 'unknown')}`")
+    if result.get("not_applicable_reason"):
+        st.info(result["not_applicable_reason"])
+    geometry = result.get("terminal_geometry") if isinstance(result.get("terminal_geometry"), dict) else {}
+    terminal_columns = st.columns(2)
+    for column, end in zip(terminal_columns, ("N", "C")):
+        with column:
+            terminal = geometry.get(end) if isinstance(geometry.get(end), dict) else {}
+            residue = terminal.get("terminal_residue") if isinstance(terminal.get("terminal_residue"), dict) else {}
+            selector = str((item.get("tag_fusion_terminal_selectors") or {}).get(end) or "")
+            st.markdown(f"#### {end}-terminus")
+            st.caption(f"{residue.get('residue_name') or 'Residue'} {residue.get('author_number', 'unavailable')}{residue.get('insertion_code') or ''} · chain {residue.get('chain_id') or 'unavailable'} · {terminal.get('assessment_status', 'not assessed')}")
+            if terminal:
+                metrics = _tag_fusion_terminal_metric_rows(terminal)
+                if metrics:
+                    st.dataframe(pd.DataFrame(metrics), hide_index=True, use_container_width=True)
+                if selector:
+                    st.button(f"Highlight {end}-terminus in Mol*", key=f"{viewer_key}-tag-fusion-highlight-{end}",
+                              on_click=_select_inspector_evidence,
+                              args=(f"{viewer_key}-inspector-highlights", [selector]))
+                clearances = terminal.get("tag_clearance") or {}
+                if clearances:
+                    rows = [{"Model": value.get("label"), "Geometric status": value.get("status"),
+                             "Minimum tested linker (residues)": value.get("minimum_linker_residues_tested"),
+                             "Path (Å)": value.get("shortest_grid_path_angstrom")}
+                            for value in clearances.values()]
+                    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+            else:
+                st.caption("This component format has no free, assessable N/C terminus under the selected method.")
+    comparison = result.get("tag_comparison") if isinstance(result.get("tag_comparison"), dict) else {}
+    if comparison:
+        st.markdown("#### Advisory comparison")
+        rows = [{"Tag / fusion model": value.get("label", key),
+                 "Preferred end advisory": value.get("preferred_end_advisory", value.get("recommendation", "not assessed")),
+                 "Basis": value.get("advice_basis", value.get("basis", ""))}
+                for key, value in comparison.items() if isinstance(value, dict)]
+        if rows:
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.caption("These are coordinate-based advisories. Flexible polymer conformations, tag–receptor interactions, expression, and experimental SPR/BLI behavior are not simulated.")
+    with st.expander("Evaluation provenance, definitions and limitations"):
+        st.json({"evaluation_id": item["evaluation"].get("id"), "run_id": item["evaluation"].get("run_id"),
+                 "source": result.get("source"), "parameters": result.get("parameters"),
+                 "method_parameters": result.get("method_parameters"),
+                 "reference_context": result.get("reference_context"),
+                 "checks_not_performed": result.get("checks_not_performed"),
+                 "interpretation_limitations": result.get("interpretation_limitations"),
+                 "adaptation_attribution": result.get("adaptation_attribution")})
+
+
 def _render_inspector_tracks(data: dict, viewer_key: str) -> None:
     tracks = data["tracks"]
     if not tracks:
@@ -898,6 +1053,7 @@ def _render_database_inspector(user: dict, data: dict, viewer_key: str, *, recor
     evaluators = {item["evaluator"] for item in items}
     interface_evaluators = {"biotite_interface", "rosetta_metrics", "ipsae", "plip", "pandamap"}
     surface_evaluators = {"pep_patch", "posebusters"}
+    tag_fusion_evaluators = {"tag_fusion_suitability", "tag_fusion_context"}
     ligand_present = bool(data["ligand_components"])
     panel_specs = []
     if evaluators & interface_evaluators:
@@ -910,6 +1066,8 @@ def _render_database_inspector(user: dict, data: dict, viewer_key: str, *, recor
         panel_specs.append(("Findings", "findings"))
     if data["protein_chains"]:
         panel_specs.append(("Reference Context", "reference"))
+    if evaluators & tag_fusion_evaluators:
+        panel_specs.append(("Tag & Fusion", "tag_fusion"))
     st.markdown("### Scientific Inspector")
     if not panel_specs:
         st.info("This saved structure has no applicable saved Evaluation data yet. Its structure and existing analysis launch controls remain available.")
@@ -963,6 +1121,8 @@ def _render_database_inspector(user: dict, data: dict, viewer_key: str, *, recor
                     user, record, structure, components, model_id, key,
                     view_context=reference_view_context,
                 )
+            elif kind == "tag_fusion":
+                _render_inspector_tag_fusion(items, viewer_key)
 
 
 def _render_biotite_results(user: dict, evaluation: dict, *, source_candidate_id: str, key: str,
@@ -1048,7 +1208,9 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
              "analysis.pep_patch": "PEP-Patch", "analysis.plip": "PLIP interaction analysis",
              "analysis.pandamap": "PandaMap interaction analysis",
              "analysis.posebusters": "PoseBusters pose validation",
-             "analysis.reference_placement": "Reference-frame placement"}.get(workflow_id, workflow_id)
+             "analysis.reference_placement": "Reference-frame placement",
+             "analysis.tag_fusion_suitability": "Tag and Fusion Suitability",
+             "analysis.tag_fusion_context": "Reference-context Tag and Fusion Suitability"}.get(workflow_id, workflow_id)
     ligand_workflow = workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
     if workflow_id in {"analysis.plip", "analysis.pandamap"}:
         st.caption("Interaction analysis · reports contacts and interaction classes for the selected ligand pose and receptor.")
@@ -1076,7 +1238,9 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
                       "analysis.pep_patch": "qc_metrics.csv",
                       "analysis.plip": "qc_metrics.csv", "analysis.pandamap": "qc_metrics.csv",
                       "analysis.posebusters": "qc_metrics.csv",
-                      "analysis.reference_placement": "reference_placement_metrics.csv"}[workflow_id]
+                      "analysis.reference_placement": "reference_placement_metrics.csv",
+                      "analysis.tag_fusion_suitability": "tag_fusion_suitability_metrics.csv",
+                      "analysis.tag_fusion_context": "tag_fusion_suitability_metrics.csv"}[workflow_id]
         metrics_path = run_dir / "artifacts" / "analysis" / table_name
         if status in {"completed", "succeeded"} and metrics_path.is_file():
             try:
@@ -1128,8 +1292,20 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
             if summary:
                 with st.expander("Registered evaluator summary", expanded=False):
                     st.json(summary)
+        if workflow_id in {"analysis.tag_fusion_suitability", "analysis.tag_fusion_context"} and status in {"completed", "succeeded"}:
+            result = _read_json(run_dir / "artifacts" / "analysis" / "tag_fusion_suitability.json")
+            if result:
+                st.markdown(f"**Assessment status:** `{result.get('assessment_status', 'unknown')}` · **Scope:** `{result.get('assessment_scope', 'unknown')}`")
+                if result.get("not_applicable_reason"):
+                    st.info(result["not_applicable_reason"])
+                with st.expander("Terminal evidence, tag/fusion clearance and scientific limitations", expanded=True):
+                    st.json(result)
+                if result.get("adaptation_attribution"):
+                    st.caption(result["adaptation_attribution"])
     evaluator = {"analysis.ipsae": "ipsae", "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
-                 "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters"}.get(workflow_id, workflow_id)
+                 "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters",
+                 "analysis.tag_fusion_suitability": "tag_fusion_suitability",
+                 "analysis.tag_fusion_context": "tag_fusion_context"}.get(workflow_id, workflow_id)
     evaluation_id = _analysis_evaluation_id(run_dir, user, source_candidate_id, evaluator=evaluator)
     if evaluation_id:
         st.success(f"Saved Evaluation · {evaluation_id}")
@@ -1276,7 +1452,9 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
     tool = {"analysis.biotite_interface": "biotite_interface", "analysis.ipsae": "ipsae",
             "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
             "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters",
-            "analysis.reference_placement": "reference_placement"}.get(workflow_id)
+            "analysis.reference_placement": "reference_placement",
+            "analysis.tag_fusion_suitability": "tag_fusion_suitability",
+            "analysis.tag_fusion_context": "tag_fusion_context"}.get(workflow_id)
     if not tool:
         return []
     rows = search_jobs(tools=[tool], task_group="analysis", limit=1000, sort_by="active_desc",
@@ -2230,7 +2408,8 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
     st.caption("Choose a registered analysis explicitly. Opening a Database structure does not start calculations.")
     schemas, schema_errors = {}, {}
     for workflow_id in ("analysis.biotite_interface", "analysis.rosetta", "analysis.ipsae", "analysis.pep_patch",
-                        "analysis.plip", "analysis.pandamap", "analysis.posebusters"):
+                        "analysis.plip", "analysis.pandamap", "analysis.posebusters",
+                        "analysis.tag_fusion_suitability", "analysis.tag_fusion_context"):
         try:
             schemas[workflow_id] = workflow_schema(workflow_id) if workflow_schema else None
             if not schemas[workflow_id]:
@@ -2323,6 +2502,104 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
     else:
         st.info("No compatible registered interaction analysis was identified for this component combination.")
 
+    if len(protein_chains) >= 2:
+        st.markdown("#### Tag and Fusion Suitability")
+        st.caption("Post-hoc advisory for one selected protein component against a selected protein interface. Flexible tags use geometric clearance paths; folded fusions use a spherical clearance envelope. Neither model simulates the actual tag or predicts assay performance.")
+        component_key = f"complex-analysis-tag-fusion-component-{key}"
+        if st.session_state.get(component_key) not in protein_chains:
+            st.session_state[component_key] = protein_chains[0]
+        assessed_chain = st.selectbox("Protein component to assess", protein_chains,
+                                      key=component_key)
+        partner_options = [chain for chain in protein_chains if chain != assessed_chain]
+        partner_key = f"complex-analysis-tag-fusion-partners-{key}-{assessed_chain}"
+        if partner_key not in st.session_state:
+            st.session_state[partner_key] = partner_options
+        partner_chains = st.multiselect("Interface partner chains", partner_options,
+                                        key=partner_key)
+        format_key = f"complex-analysis-tag-fusion-format-{key}"
+        format_labels = {
+            "single_chain_linear_protein": "Single-chain linear protein",
+            "cyclic_peptide": "Cyclic peptide (not applicable)",
+            "multichain_construct": "Multichain construct (not applicable)",
+        }
+        component_format = st.selectbox("Component format", list(format_labels),
+            format_func=lambda value: format_labels[value], key=format_key)
+        termini_confirmed = st.checkbox(
+            "I confirm the selected representation contains the complete intended construct termini",
+            value=False, key=f"complex-analysis-tag-fusion-termini-{key}",
+            help="If the coordinate file declares an unresolved terminal sequence position, the evaluator still marks that end incomplete.",
+        )
+        plddt_declared = st.checkbox(
+            "The selected structure stores predictor pLDDT in Cα B-factors (verified from its source)",
+            value=False, key=f"complex-analysis-tag-fusion-plddt-{key}",
+            help="B-factors are otherwise shown only as uninterpreted file metadata.",
+        )
+        tag_cutoff = round(float(st.number_input(
+            "Interface contact cutoff (Å)", min_value=1.0, max_value=10.0, value=4.5, step=0.25,
+            key=f"complex-analysis-tag-fusion-cutoff-{key}")), 3)
+        tag_parameters = {
+            "interface_contact_cutoff": tag_cutoff,
+            "termini_confirmed": bool(termini_confirmed),
+            "component_format": component_format,
+            "b_factor_interpretation": "plddt_0_100" if plddt_declared else "uninterpreted",
+        }
+        tag_source = {**source, "binder_chains": [assessed_chain], "target_chains": list(partner_chains)}
+        tag_unavailable = "" if partner_chains else "Choose at least one disjoint protein interface partner chain."
+        _render_database_workflow(
+            user, "analysis.tag_fusion_suitability", schemas.get("analysis.tag_fusion_suitability"),
+            tag_source, model_id, [assessed_chain], list(partner_chains), tag_parameters,
+            key + "-tag-fusion", submit, project_id,
+            schema_errors.get("analysis.tag_fusion_suitability", "") or tag_unavailable,
+        )
+
+        st.markdown("##### Optional full-reference surroundings")
+        context_unavailable = ""
+        contextual_parameters = dict(tag_parameters)
+        db = MolecularDatabase()
+        reference_associations = {}
+        for chain in protein_chains:
+            try:
+                saved = db.get_complex_reference_context(
+                    user, source_molecule_id=str(record["id"]),
+                    source_structure_id=str(structure["id"]), source_chain=chain,
+                )
+            except (OSError, PermissionError, ValueError, TypeError, KeyError):
+                continue
+            if isinstance(saved, dict) and saved.get("id") and saved.get("status") in {"validated", "stale"}:
+                reference_associations[chain] = saved
+        if reference_associations:
+            reference_key = f"complex-analysis-tag-fusion-reference-chain-{key}-{assessed_chain}"
+            reference_chains = sorted(reference_associations)
+            if st.session_state.get(reference_key) not in reference_chains:
+                st.session_state[reference_key] = reference_chains[0]
+            reference_source_chain = st.selectbox(
+                "Reference-associated source chain used to place the complex",
+                reference_chains, key=reference_key,
+                help="The explicit reference association may belong to another component in this same saved complex. Its saved transform places the entire complex.",
+            )
+            contextual_source = {**tag_source, "source_component_chain": reference_source_chain}
+            associated_reference = reference_associations[reference_source_chain]
+            if associated_reference.get("status") != "validated":
+                context_unavailable = "This reference association is stale or ambiguous. The intrinsic assessment above remains available."
+            else:
+                matched_placement = _reference_placement_match(
+                    user, record, structure, associated_reference, model_id,
+                )
+                if matched_placement is None:
+                    context_unavailable = "Run and save Reference-frame placement for this exact association first. Contextual clearance does not refit or infer a reference."
+                else:
+                    st.caption(f"Uses the saved placement Evaluation for source chain {reference_source_chain} and includes resolved reference coordinates outside its mapped component.")
+                    contextual_parameters["source_component_chain"] = reference_source_chain
+        else:
+            contextual_source = {**tag_source, "source_component_chain": ""}
+            context_unavailable = "No current, explicit reference association is saved for a protein component in this structure. The intrinsic assessment above remains available."
+        _render_database_workflow(
+            user, "analysis.tag_fusion_context", schemas.get("analysis.tag_fusion_context"),
+            contextual_source, model_id, [assessed_chain], list(partner_chains),
+            contextual_parameters, key + "-tag-fusion-context", submit, project_id,
+            schema_errors.get("analysis.tag_fusion_context", "") or tag_unavailable or context_unavailable,
+        )
+
     if protein_chains:
         placement_workflow = "analysis.reference_placement"
         try:
@@ -2400,7 +2677,9 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
              "analysis.ipsae": "ipSAE & Structure Analysis", "analysis.pep_patch": "PEP-Patch",
              "analysis.plip": "PLIP interaction analysis", "analysis.pandamap": "PandaMap interaction analysis",
              "analysis.posebusters": "PoseBusters pose validation",
-             "analysis.reference_placement": "Reference-frame placement"}.get(workflow_id, workflow_id)
+             "analysis.reference_placement": "Reference-frame placement",
+             "analysis.tag_fusion_suitability": "Tag and Fusion Suitability",
+             "analysis.tag_fusion_context": "Reference-context Tag and Fusion Suitability"}.get(workflow_id, workflow_id)
     st.markdown(f"##### {title}")
     if not schema:
         st.info(unavailable or "The registered workflow schema is unavailable.")
@@ -2454,7 +2733,7 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
                     "model_id": model_id, "binder_chains": list(binder_chains),
                     "target_chains": list(target_chains),
                     **({"source_component_chain": str(parameters.get("source_component_chain") or "")}
-                       if workflow_id == "analysis.reference_placement" else {}),
+                       if workflow_id in {"analysis.reference_placement", "analysis.tag_fusion_context"} else {}),
                     **({"ligand_selection": dict(ligand_selection)} if ligand_selection else {}),
                 }, **({"ligand_selection": dict(ligand_selection)} if ligand_selection else {})}, project_id, {}, title)
             st.rerun()

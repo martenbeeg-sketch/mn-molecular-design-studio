@@ -97,7 +97,9 @@ measurements, job state, Evaluation ID, and provenance when available.
 | Exact-correspondence structural placement | **Supported as an optional registered Evaluation.** A unique contiguous exact source subsequence is fitted to the explicitly associated reference chain using mapped Cα atoms and the shared Bio.PDB.Superimposer Kabsch fitter. Results retain both structure identities, digests, models, chains, residue map, transformation, aligned-pair count, source/reference coverage, RMSD, method/version and parameters. |
 | Non-identical correspondence and placement | **No persisted Evaluation.** Mol* has a separate transient TM-align superposition for selected polymer chains; it does not save a Database-bound correspondence, placement Evaluation or provenance. No Studio US-align workflow is registered. |
 | Full-length spatial context, glycans and advanced steric context | **Unavailable as validated Complex Analysis evaluations.** No full-length clash/occlusion, glycan accessibility, or context score is claimed. These require separately validated calculations and provenance. |
-| Protein–DNA/RNA interactions, generalized specificity and fusion/tag accessibility | **Unavailable as general contextual analyses.** Existing prediction-time constraints or protein-only tools are not presented as post-hoc evaluations for these cases. |
+| Tag/fusion terminal geometry and clearance advisory | **Supported as a registered post-hoc Evaluation.** Flexible tags use grid-path reach estimates; folded fusions use spherical exit-cone envelopes. Incomplete termini, cyclic/multichain inputs, missing DSSP and unverified B-factors remain explicitly limited. No tag dynamics, biological accessibility or experimental SPR/BLI result is claimed. |
+| Full-reference tag/fusion context | **Supported only as a separate optional Evaluation.** It requires an explicit validated component association and a saved exact Reference Placement Evaluation. It checks resolved reference heavy-atom geometry only; it does not calculate biological assemblies, glycan accessibility or experimental binding. |
+| Protein–DNA/RNA interactions and generalized specificity | **Unavailable as general contextual analyses.** Existing prediction-time constraints or protein-only tools are not presented as post-hoc evaluations for these cases. |
 
 BinderScope's Inspector, map, board and query concepts informed these views.
 Studio retains its Database identities, ACLs, Mol* viewer, registered
@@ -268,6 +270,63 @@ BinderScope's family board, inspector, and binding-mode map informed the
 compatible-collection board and side-by-side inspector below. Its family
 labels, campaign filters, and browser-local review state are not portable
 generic structure metadata.
+
+### Tag and Fusion Suitability
+
+Studio now has a post-hoc registered Database Evaluation for existing protein
+complexes. BindCraft2's terminal design constraints remain design-time inputs
+and are not treated as post-hoc evidence. The intrinsic evaluator requires one
+selected protein chain, one or more disjoint protein interface-partner chains,
+an exact single-model Database representation, and a user declaration about
+whether the observed chain ends are the complete intended construct termini.
+If the structure declares unresolved terminal polymer residues, that evidence
+overrides the user's confirmation for that end. Cyclic peptides and
+multichain constructs return explicit not-applicable statuses; a single-chain
+component may still be selected independently where scientifically justified.
+
+The registered `analysis.tag_fusion_suitability` workflow records, for both
+termini, Cα exit direction from up to six inward residues, distance to the
+selected interface residues, interfacial contact status, Bio.PDB
+ShrakeRupley residue SASA (240 sphere points), DSSP Sander relative
+accessibility and secondary structure when DSSP is available, and terminal
+window B-factors. B-factors are interpreted as pLDDT only when the caller
+explicitly confirms that source encoding. An explicitly selected, saved
+confidence Evaluation may also be retained as separate Evaluation-wide
+context; those scalar outputs are not localized to either terminus and do not
+grade it.
+
+Flexible His6 and Twin-Strep tags use a shortest clearance path on a 3 Å grid,
+with stated exposed-motif and per-residue reach assumptions. GFP/SNAP-sized and
+Fc/MBP-sized fusions use spherical envelopes sampled in a fixed 40° exit cone,
+with tested linker increments. These are documented geometry approximations
+for clearance and linker comparison. They do not simulate the chemical tag,
+polymer conformations, tag self-avoidance, tag–receptor binding, expression,
+folding, or experimental SPR/BLI behavior. The end comparison and
+immobilization-orientation recommendation are advisory summaries of those
+measurements, never a universal score or experimental prediction.
+
+The separate `analysis.tag_fusion_context` workflow is offered only when the
+same assessed component has an explicit, current Database reference
+association and a completed, ingested Reference Placement Evaluation matching
+the source/reference IDs, models, chains, digests, method, and transformation
+direction. The association may be attached to a different protein chain in
+the same saved complex; the explicitly selected chain anchors placement of the
+entire coordinate model. It applies the saved source-to-reference transform
+to a transient in-memory copy and includes resolved reference heavy atoms
+outside the mapped source component in the same clearance geometry. Original coordinates and
+prior Evaluations remain unchanged. It does not infer a reference association,
+refit the structures, assert biological assembly, or calculate glycan,
+full-length accessibility, or experimental binding measurements. Without a
+reference, the intrinsic result is complete within its selected-complex scope
+and lists the external checks not performed.
+
+The Tag & Fusion Inspector panel appears only when a matching saved Evaluation
+is available. It displays N/C evidence, native clearance findings, advisory
+comparison, method parameters and provenance. Each terminal button selects its
+exact author-numbered residue, including insertion codes, in the existing Mol*
+viewer. Results are saved as normal Evaluation records against the existing
+Database molecular identity. BinderScope method attribution and the MIT notice
+are in `docs/third-party-notices.md`.
 
 ### Compare saved complexes and Collection Map
 
@@ -483,12 +542,13 @@ experimental binding result.
 
 ## BinderScope source and licensing
 
-The inspected BinderScope source is MIT licensed. No BinderScope code was
-copied or vendored for this implementation, so no BinderScope source notice was
-modified or removed. Future source reuse must retain its copyright and MIT
-permission notice and cite the upstream source. BinderScope's MIT license does
-not grant separate rights to BindCraft 2; its campaign launcher and scheduler
-integration are excluded from Studio.
+The inspected BinderScope source is MIT licensed. Studio's Tag and Fusion
+evaluator independently implements and attributes selected geometric and
+presentation concepts from `binder_review/termini.py` and `docs/termini.md`;
+no BinderScope Python source was copied or vendored. The upstream copyright and
+MIT permission notice are retained in `docs/third-party-notices.md`. The
+license does not grant separate rights to BindCraft 2; its campaign launcher
+and scheduler integration are excluded from Studio.
 
 ## Verification
 

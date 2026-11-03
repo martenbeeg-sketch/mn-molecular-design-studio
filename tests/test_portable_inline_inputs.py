@@ -72,6 +72,32 @@ def test_rna_secondary_structure_round_trips_as_inline_worker_input(monkeypatch,
     assert not portable_paths.is_operational_path_key("rna_secondary_structure")
 
 
+def test_dssp_assignment_codes_are_not_resolved_as_relative_structure_paths(tmp_path):
+    run_dir = tmp_path / "runs" / "analysis" / "tag-fusion"
+    run_dir.mkdir(parents=True)
+    structure_path = run_dir / "input.pdb"
+    structure_path.write_text("END\\n")
+    payload = {
+        "tag_fusion_suitability": {
+            "terminal_geometry": {
+                "N": {
+                    "secondary_structure": "-",
+                    "terminal_window_secondary_structure": ["-", "H", "E"],
+                }
+            },
+            "structure_path": "input.pdb",
+        }
+    }
+
+    restored = portable_paths.resolve_managed_paths(payload, run_dir=run_dir)
+
+    assert restored["tag_fusion_suitability"]["terminal_geometry"]["N"] == {
+        "secondary_structure": "-",
+        "terminal_window_secondary_structure": ["-", "H", "E"],
+    }
+    assert restored["tag_fusion_suitability"]["structure_path"] == str(structure_path)
+
+
 def test_non_admin_path_guard_distinguishes_inline_yaml_and_real_paths(monkeypatch, tmp_path):
     user = {"id": "test-user", "role": "user"}
     monkeypatch.setattr(api, "user_input_root", lambda _user_id: tmp_path / "uploads")

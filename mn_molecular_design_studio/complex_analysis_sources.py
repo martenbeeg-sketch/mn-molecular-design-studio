@@ -28,6 +28,8 @@ _WORKFLOWS = {
     "analysis.pandamap",
     "analysis.posebusters",
     "analysis.reference_placement",
+    "analysis.tag_fusion_suitability",
+    "analysis.tag_fusion_context",
 }
 _STRUCTURE_SUFFIXES = {".pdb", ".ent", ".cif", ".mmcif"}
 _SELECTION_FIELDS = {
@@ -59,6 +61,145 @@ def _chain_ids(components: list[dict]) -> tuple[list[str], list[str]]:
         if str(component.get("type") or "").casefold() == "protein":
             proteins.add(chain)
     return sorted(proteins), sorted(all_chains)
+
+
+def _authorized_reference_placement(user: dict, *, source: dict, saved: dict,
+                                    reference_digest: str) -> dict[str, Any]:
+    """Resolve a completed, accessible placement Evaluation for this exact association."""
+    from mn_molecular_design_studio.auth import accessible_project_ids, can_access_job
+    from mn_molecular_design_studio.complex_analysis_placement import PLACEMENT_METHOD, PLACEMENT_VERSION
+    from mn_molecular_design_studio.complex_analysis_inspector import observation_context
+    from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer.dataclasses import validate_rigid_transform_matrix
+    from mn_molecular_design_studio.job_catalog import get_job_access_record, search_jobs
+    from mn_molecular_design_studio.molecular_database_results import list_run_molecules
+    from mn_molecular_design_studio.evaluations import evaluation_descriptor
+
+    source_identity = {
+        "molecule_id": source["molecule_id"], "structure_id": source["structure_id"],
+        "group_id": source["group_id"], "structure_digest": source["structure_digest"],
+        "model_id": source["model_id"],
+    }
+    reference_identity = {
+        "reference_context_id": str(saved.get("id") or ""),
+        "reference_molecule_id": str(saved.get("reference_molecule_id") or ""),
+        "reference_structure_id": str(saved.get("reference_structure_id") or ""),
+        "reference_structure_digest": str(reference_digest or ""),
+        "reference_model_id": str(saved.get("reference_model_id") or ""),
+        "reference_component_chain": str(saved.get("reference_component_chain") or ""),
+        "source_component_chain": str(saved.get("source_component_chain") or ""),
+    }
+    if not all(reference_identity.values()):
+        raise ValueError("The saved reference association is missing placement identity fields.")
+    rows = search_jobs(
+        tools=["reference_placement"], task_group="analysis", limit=1000,
+        sort_by="active_desc", access_owner_id=str(user.get("id") or ""),
+        accessible_project_ids=accessible_project_ids(user), access_admin=user.get("role") == "admin",
+    ).get("items", [])
+    for row in rows:
+        task_group, run_id = str(row.get("task_group") or ""), str(row.get("run_id") or "")
+        if not task_group or not run_id or not can_access_job(
+            user, get_job_access_record(task_group, run_id),
+        ):
+            continue
+        run_dir = Path(str(row.get("run_dir") or "")).expanduser().resolve()
+        metadata_path = run_dir / "metadata.json"
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            continue
+        if str(metadata.get("upstream_source_kind") or "") != "database":
+            continue
+        manifest = metadata.get("database_source") if isinstance(metadata.get("database_source"), dict) else {}
+        if any(str(manifest.get(key) or "") != str(value) for key, value in source_identity.items()):
+            continue
+        if str(manifest.get("reference_context_id") or "") != reference_identity["reference_context_id"]:
+            continue
+        selection_path = run_dir / "artifacts" / "analysis" / "complex_analysis_selection.json"
+        try:
+            selection = json.loads(selection_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            continue
+        params = selection.get("parameters") if isinstance(selection.get("parameters"), dict) else {}
+        expected_params = {
+            "source_component_chain": reference_identity["source_component_chain"],
+            "reference_context_id": reference_identity["reference_context_id"],
+            "reference_molecule_id": reference_identity["reference_molecule_id"],
+            "reference_structure_id": reference_identity["reference_structure_id"],
+            "reference_structure_digest": reference_identity["reference_structure_digest"],
+            "reference_model_id": reference_identity["reference_model_id"],
+            "reference_component_chain": reference_identity["reference_component_chain"],
+            "method": PLACEMENT_METHOD, "method_version": PLACEMENT_VERSION,
+        }
+        if selection.get("workflow") != "analysis.reference_placement" or any(
+            str(params.get(key) or "") != str(value) for key, value in expected_params.items()
+        ):
+            continue
+        if str(selection.get("model_id") or "") != source_identity["model_id"]:
+            continue
+        result_path = run_dir / "artifacts" / "analysis" / "reference_placement" / "reference_placement.json"
+        try:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            continue
+        src = result.get("source") if isinstance(result.get("source"), dict) else {}
+        ref = result.get("reference") if isinstance(result.get("reference"), dict) else {}
+        if (result.get("schema") != "studio.complex_analysis_reference_placement.v1"
+                or result.get("method") != PLACEMENT_METHOD
+                or result.get("method_version") != PLACEMENT_VERSION
+                or str(result.get("reference_context_id") or "") != reference_identity["reference_context_id"]
+                or any(str(src.get(key) or "") != str(value) for key, value in {
+                    "molecule_id": source_identity["molecule_id"], "structure_id": source_identity["structure_id"],
+                    "group_id": source_identity["group_id"], "structure_digest": source_identity["structure_digest"],
+                    "model_id": source_identity["model_id"], "chain_id": reference_identity["source_component_chain"],
+                }.items())
+                or any(str(ref.get(key) or "") != str(value) for key, value in {
+                    "molecule_id": reference_identity["reference_molecule_id"],
+                    "structure_id": reference_identity["reference_structure_id"],
+                    "group_id": str(saved.get("reference_group_id") or ""),
+                    "structure_digest": reference_identity["reference_structure_digest"],
+                    "model_id": reference_identity["reference_model_id"],
+                    "chain_id": reference_identity["reference_component_chain"],
+                }.items())):
+            continue
+        try:
+            result["matrix_4x4"] = validate_rigid_transform_matrix(result.get("matrix_4x4"))
+            if (result.get("transformation_direction") != "selected complex/source coordinates -> associated reference coordinates"
+                    or int(result.get("aligned_pair_count") or 0) < 3
+                    or float(result.get("rmsd_angstrom")) < 0):
+                continue
+            result["rmsd_angstrom"] = float(result["rmsd_angstrom"])
+        except (TypeError, ValueError):
+            continue
+        # Require the corresponding Evaluation observation to have been ingested
+        # through Studio's normal Results-to-Database path.
+        try:
+            run_records = list_run_molecules(run_dir, user)
+        except (OSError, PermissionError, ValueError, TypeError):
+            continue
+        evaluation_id = ""
+        for record in run_records:
+            for observation in record.get("observations", []):
+                try:
+                    descriptor = evaluation_descriptor(observation)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                context = observation_context(observation)
+                candidate_context = context.get("candidate") if isinstance(context.get("candidate"), dict) else {}
+                raw_context = candidate_context.get("raw_metadata") if isinstance(candidate_context.get("raw_metadata"), dict) else {}
+                evaluation_result = raw_context.get("reference_placement") if isinstance(raw_context.get("reference_placement"), dict) else {}
+                if (descriptor.get("evaluator") == "reference_placement"
+                        and str(descriptor.get("run_id") or "") == run_id
+                        and str(context.get("representation_id") or context.get("source_structure_id") or "") == source_identity["structure_id"]
+                        and str(context.get("source_structure_digest") or context.get("structure_digest") or "") == source_identity["structure_digest"]
+                        and evaluation_result.get("matrix_4x4") == result.get("matrix_4x4")
+                        and str(evaluation_result.get("reference_context_id") or "") == reference_identity["reference_context_id"]):
+                    evaluation_id = str(descriptor.get("id") or "")
+                    break
+            if evaluation_id:
+                break
+        if evaluation_id:
+            return {"result": result, "evaluation_id": evaluation_id, "run_id": run_id}
+    raise ValueError("A completed, ingested Reference Placement Evaluation matching this exact association is required for contextual Tag and Fusion analysis.")
 
 
 def authorize_database_structure(
@@ -138,6 +279,33 @@ def authorize_database_structure(
         if selected_digest and selected_digest != digest:
             raise ValueError("The selected evaluation was calculated for a different structure representation.")
 
+    saved_confidence_context = {}
+    if selected_evaluation:
+        metrics = selected_evaluation.get("metrics") if isinstance(selected_evaluation.get("metrics"), dict) else {}
+        context = selected_evaluation.get("context") if isinstance(selected_evaluation.get("context"), dict) else {}
+        candidate = context.get("candidate") if isinstance(context.get("candidate"), dict) else {}
+        raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+        confidence_outputs = raw.get("confidence_outputs") if isinstance(raw.get("confidence_outputs"), dict) else {}
+        confidence_metrics = {str(key): value for key, value in metrics.items()
+                              if any(token in str(key).casefold() for token in ("plddt", "confidence", "iptm", "ipae", "pae", "ptm"))
+                              and type(value) in {int, float, str, bool}}
+        saved_confidence_context = {
+            "evaluation_id": evaluation_id,
+            "evaluator": str(selected_evaluation.get("namespace") or "unknown"),
+            "run_id": str(selected_evaluation.get("run_id") or context.get("run_id") or ""),
+            "structure_digest": digest,
+            "model_id": model_id,
+            "native_scalar_metrics": confidence_metrics,
+            "native_confidence_outputs": {
+                str(key): value for key, value in confidence_outputs.items()
+                if any(token in str(key).casefold() for token in ("plddt", "confidence", "iptm", "ipae", "pae", "ptm"))
+                and (type(value) in {int, float, str, bool}
+                     or isinstance(value, list) and len(value) <= 500
+                     and all(type(item) in {int, float, str, bool} for item in value))
+            },
+            "scope": "saved Evaluation-wide confidence outputs; not localized to terminal residues",
+        }
+
     from mn_molecular_design_studio.molecule_imports import parse_structure
 
     parsed = parse_structure(path.read_bytes(), path.name, include_ligands=True)
@@ -202,6 +370,14 @@ def authorize_database_structure(
             raise ValueError("Reference placement uses the saved component association and does not accept interface or ligand selections.")
         if source_component_chain not in protein_chains:
             raise ValueError("Choose one protein component that has an explicit saved reference association.")
+    elif workflow_id in {"analysis.tag_fusion_suitability", "analysis.tag_fusion_context"}:
+        if len(binder_chains) != 1 or not target_chains:
+            raise ValueError("Tag and Fusion assessment requires one selected protein component and one or more disjoint interface-partner chains.")
+        if workflow_id == "analysis.tag_fusion_context":
+            if source_component_chain not in protein_chains:
+                raise ValueError("Choose a protein chain with an explicit, validated reference association to place this complex in its reference frame.")
+        elif source_component_chain:
+            raise ValueError("Reference associations are accepted only by the separately registered Tag and Fusion Context evaluation.")
     elif workflow_id in _LIGAND_WORKFLOWS:
         if binder_chains or target_chains:
             raise ValueError("Protein-ligand workflows use a selected ligand residue and do not accept protein interface chain groups.")
@@ -227,6 +403,7 @@ def authorize_database_structure(
         "binder_chains": binder_chains,
         "target_chains": target_chains,
         "source_component_chain": source_component_chain,
+        "saved_confidence_context": saved_confidence_context,
         "ligand_selection": ligand_selection or {},
         "record_name": str(record.get("name") or molecule_id),
         "record_components": record.get("components") or components,
@@ -252,14 +429,17 @@ def build_database_analysis_source(
         "kind", "molecule_id", "structure_id", "group_id", "project_id", "evaluation_id",
         "model_id", "structure_digest", "binder_chains", "target_chains", "ligand_selection",
     )}
-    if workflow_id == "analysis.reference_placement":
-        identity["source_component_chain"] = source["source_component_chain"]
+    context_association = None
+    context_placement = None
+    if workflow_id in {"analysis.reference_placement", "analysis.tag_fusion_context"}:
+        association_source_chain = source["source_component_chain"]
+        identity["source_component_chain"] = association_source_chain
         from mn_molecular_design_studio.molecular_database import MolecularDatabase
 
         database = database or MolecularDatabase()
         saved = database.get_complex_reference_context(
             user, source_molecule_id=source["molecule_id"],
-            source_structure_id=source["structure_id"], source_chain=source["source_component_chain"],
+            source_structure_id=source["structure_id"], source_chain=association_source_chain,
         )
         mapping = saved.get("mapping") if isinstance(saved, dict) and isinstance(saved.get("mapping"), dict) else {}
         if (not saved or saved.get("status") != "validated" or mapping.get("mapping_status") != "validated"
@@ -275,14 +455,27 @@ def build_database_analysis_source(
             raise ValueError("The associated reference structure changed after its residue map was saved.")
         if str(saved.get("reference_component_chain") or "") != str(mapping.get("reference_component", {}).get("chain_id") or ""):
             raise ValueError("The saved reference chain does not match the validated residue map.")
-        identity["reference_context_id"] = str(saved.get("id") or "")
-        identity["reference_molecule_id"] = str(saved.get("reference_molecule_id") or "")
-        identity["reference_structure_id"] = str(saved.get("reference_structure_id") or "")
-        identity["reference_group_id"] = str(saved.get("reference_group_id") or "")
-        identity["reference_structure_digest"] = reference_digest
-        identity["reference_model_id"] = str(saved.get("reference_model_id") or "")
-        identity["reference_component_chain"] = str(saved.get("reference_component_chain") or "")
-        identity["mapping_status"] = str(saved.get("status") or "")
+        if workflow_id == "analysis.tag_fusion_context":
+            context_association = saved
+            context_placement = _authorized_reference_placement(
+                user, source=source, saved=saved, reference_digest=reference_digest,
+            )
+            identity["reference_association_source_chain"] = str(saved.get("source_component_chain") or "")
+            identity["reference_context_id"] = str(saved.get("id") or "")
+            identity["reference_molecule_id"] = str(saved.get("reference_molecule_id") or "")
+            identity["reference_structure_id"] = str(saved.get("reference_structure_id") or "")
+            identity["reference_structure_digest"] = reference_digest
+            identity["reference_model_id"] = str(saved.get("reference_model_id") or "")
+            identity["reference_chain_id"] = str(saved.get("reference_component_chain") or "")
+            identity["placement_run_id"] = str(context_placement["run_id"] or "")
+        elif workflow_id == "analysis.reference_placement":
+            identity["reference_context_id"] = str(saved.get("id") or "")
+            identity["reference_molecule_id"] = str(saved.get("reference_molecule_id") or "")
+            identity["reference_structure_id"] = str(saved.get("reference_structure_id") or "")
+            identity["reference_structure_digest"] = reference_digest
+            identity["reference_model_id"] = str(saved.get("reference_model_id") or "")
+            identity["reference_component_chain"] = str(saved.get("reference_component_chain") or "")
+            identity["mapping_status"] = str(saved.get("status") or "")
     bundle_id = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     bundle_dir = user_input_root(str(user["id"])) / "complex_analysis_sources" / bundle_id
     bundle_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -298,7 +491,7 @@ def build_database_analysis_source(
     staged_structure = staged_structure.resolve()
     staged_reference = None
     reference_context = None
-    if workflow_id == "analysis.reference_placement":
+    if workflow_id in {"analysis.reference_placement", "analysis.tag_fusion_context"}:
         staged_reference = bundle_dir / f"associated_reference{reference_path.suffix.casefold()}"
         if not staged_reference.is_file() or file_digest(staged_reference) != identity["reference_structure_digest"]:
             shutil.copyfile(reference_path, staged_reference)
@@ -321,6 +514,11 @@ def build_database_analysis_source(
             "structure_path": str(staged_reference),
             "mapping": mapping,
         }
+        if workflow_id == "analysis.tag_fusion_context":
+            reference_context["placement_result"] = context_placement["result"]
+            reference_context["placement_evaluation_id"] = context_placement["evaluation_id"]
+            reference_context["placement_run_id"] = context_placement["run_id"]
+            reference_context["source_component_chain"] = str(saved["source_component_chain"])
     selection_context = {
         "candidate_id": candidate_id,
         "structure_path": str(staged_structure),
@@ -332,6 +530,8 @@ def build_database_analysis_source(
     }
     if workflow_id == "analysis.reference_placement":
         selection_context["source_component_chain"] = source["source_component_chain"]
+    elif workflow_id == "analysis.tag_fusion_context":
+        selection_context["source_component_chain"] = str(source["source_component_chain"])
     source_manifest = {
         "schema": "studio.complex_analysis_database_source.v1",
         **identity,
@@ -342,8 +542,10 @@ def build_database_analysis_source(
         "structure_format": source["structure_format"],
         "ligand_selection": source.get("ligand_selection") or {},
     }
+    if source.get("saved_confidence_context"):
+        source_manifest["selected_evaluation_confidence_context"] = source["saved_confidence_context"]
     if reference_context:
-        source_manifest["reference_context"] = reference_context
+        source_manifest["reference_context" if workflow_id == "analysis.reference_placement" else "tag_fusion_context"] = reference_context
     (bundle_dir / "complex_analysis_source.json").write_text(
         json.dumps(source_manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8",
     )
@@ -790,8 +992,10 @@ def apply_database_analysis_source(payload: dict, user: dict, project_id: str | 
     raw_parameters = payload.get("parameters")
     if not isinstance(raw_parameters, dict):
         raise ValueError("A Database structure analysis requires one parameter object.")
-    if workflow_id == "analysis.reference_placement" and set(raw_parameters) & {
+    if workflow_id in {"analysis.reference_placement", "analysis.tag_fusion_context"} and set(raw_parameters) & {
         "reference_structure_path", "reference_context", "reference_identity", "source_identity",
+        "placement_result", "reference_context_id", "reference_molecule_id", "reference_structure_id",
+        "reference_structure_digest", "reference_model_id", "reference_component_chain",
     }:
         raise ValueError("Reference placement inputs must come from the saved Database association, not caller-supplied paths or identities.")
     adapter = build_database_analysis_source(
@@ -820,6 +1024,8 @@ def apply_database_analysis_source(payload: dict, user: dict, project_id: str | 
             "method": PLACEMENT_METHOD,
             "method_version": PLACEMENT_VERSION,
         })
+    elif workflow_id == "analysis.tag_fusion_context":
+        parameters["source_component_chain"] = adapter["source"]["source_component_chain"]
     if workflow_id in _LIGAND_WORKFLOWS:
         parameters.pop("binder_chains", None)
         parameters.pop("target_chains", None)

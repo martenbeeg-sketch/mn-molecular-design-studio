@@ -101,6 +101,12 @@ def is_provenance_key(key: str) -> bool:
 
 def _relative_path_key(key: str) -> bool:
     lowered = key.lower()
+    # DSSP's ``-``, ``H`` and related assignment codes are scientific text,
+    # even though these schema names contain the word "structure". Resolving
+    # them as run-relative paths corrupts saved secondary-structure evidence
+    # when candidates are reopened from normalized output.
+    if lowered == "secondary_structure" or lowered.endswith("_secondary_structure"):
+        return False
     return lowered == "path" or lowered.endswith(_RELATIVE_PATH_KEY_SUFFIXES)
 
 

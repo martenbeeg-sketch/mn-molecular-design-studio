@@ -874,6 +874,222 @@ def run_reference_placement_contract(
     )
 
 
+def _run_tag_fusion_contract(
+    source_run_dir: Path,
+    candidates_jsonl: Path,
+    *,
+    contextual: bool,
+    candidate_ids: list[str] | None = None,
+    selected_structure_path: Path | None = None,
+    selected_model_id: str | None = None,
+    binder_chains: list[str] | None = None,
+    target_chains: list[str] | None = None,
+    source_component_chain: str | None = None,
+    interface_contact_cutoff: float = 4.5,
+    termini_confirmed: bool = False,
+    component_format: str = "single_chain_linear_protein",
+    b_factor_interpretation: str = "uninterpreted",
+) -> Path:
+    from mn_molecular_design_studio.complex_analysis_tag_fusion import calculate_tag_fusion_suitability
+    from mn_molecular_design_studio.evaluations import file_digest
+
+    source_run_dir = Path(source_run_dir).expanduser().resolve(strict=True)
+    candidates_jsonl = Path(candidates_jsonl).expanduser().resolve(strict=True)
+    source_candidates = _analysis_source_candidates(source_run_dir, candidates_jsonl)
+    selected = _select_complex_analysis_candidates(
+        source_run_dir, source_candidates, candidate_ids=candidate_ids,
+        selected_structure_path=selected_structure_path, selected_model_id=selected_model_id,
+        binder_chains=binder_chains, target_chains=target_chains,
+    )
+    if len(selected) != 1:
+        raise ValueError("Tag and Fusion Suitability requires one selected Database structure.")
+    source_metadata = read_json(source_run_dir / "metadata.json")
+    if str(source_metadata.get("source_kind") or "") != "database":
+        raise ValueError("Tag and Fusion Suitability is currently available only for authorized Database structures.")
+    manifest = read_json(source_run_dir / "complex_analysis_source.json")
+    if manifest.get("schema") != "studio.complex_analysis_database_source.v1":
+        raise ValueError("The authorized Database source manifest is missing or unsupported.")
+    selected_path = Path(str(selected[0].get("complex_pdb") or "")).resolve(strict=True)
+    try:
+        selected_path.relative_to(source_run_dir)
+    except ValueError as exc:
+        raise ValueError("The selected complex must remain inside the authorized Database source bundle.") from exc
+    if file_digest(selected_path) != str(manifest.get("structure_digest") or ""):
+        raise ValueError("The selected source structure changed after Database authorization.")
+    if str(selected_model_id or "") != str(manifest.get("model_id") or ""):
+        raise ValueError("The selected model does not match the authorized Database representation.")
+    component_group = list(binder_chains or [])
+    partner_group = list(target_chains or [])
+    if len(component_group) != 1 or not partner_group:
+        raise ValueError("Choose one protein component and one or more disjoint interface-partner chains.")
+    if set(component_group) & set(partner_group):
+        raise ValueError("The assessed protein component and interface-partner chains must be disjoint.")
+
+    reference_context = None
+    contextual_source = manifest.get("tag_fusion_context") if contextual else None
+    if contextual:
+        if not isinstance(contextual_source, dict) or contextual_source.get("status") != "validated":
+            raise ValueError("Contextual Tag and Fusion analysis requires a staged, explicitly validated reference association.")
+        if (not str(source_component_chain or "")
+                or str(contextual_source.get("source_component_chain") or "") != str(source_component_chain)):
+            raise ValueError("The saved placement Evaluation must belong to the explicitly selected reference-associated source chain.")
+        ref_path = Path(str(contextual_source.get("structure_path") or "")).resolve(strict=True)
+        try:
+            ref_path.relative_to(source_run_dir)
+        except ValueError as exc:
+            raise ValueError("The associated reference must remain inside the authorized Database source bundle.") from exc
+        if file_digest(ref_path) != str(contextual_source.get("reference_structure_digest") or ""):
+            raise ValueError("The associated reference structure changed after Database authorization.")
+        reference_context = {**contextual_source, "structure_path": str(ref_path)}
+    elif source_component_chain:
+        raise ValueError("Reference identity is accepted only by the separately registered contextual evaluation.")
+
+    source_identity = {
+        key: str(manifest.get(key) or "") for key in (
+            "molecule_id", "structure_id", "group_id", "structure_digest", "model_id", "evaluation_id",
+        )
+    }
+    if any(not source_identity[key] for key in ("molecule_id", "structure_id", "group_id", "structure_digest", "model_id")):
+        raise ValueError("The Database source manifest is missing exact structure identity provenance.")
+    source_identity["structure_digest"] = file_digest(selected_path)
+    result = calculate_tag_fusion_suitability(
+        selected_path, component_chain=component_group[0], interface_chains=partner_group,
+        model_id=str(selected_model_id), source_identity=source_identity,
+        interface_contact_cutoff=float(interface_contact_cutoff), termini_confirmed=bool(termini_confirmed),
+        component_format=str(component_format), b_factor_interpretation=str(b_factor_interpretation),
+        saved_confidence_context=(manifest.get("selected_evaluation_confidence_context")
+                                  if isinstance(manifest.get("selected_evaluation_confidence_context"), dict) else None),
+        reference_context=reference_context,
+    )
+    workflow = "analysis.tag_fusion_context" if contextual else "analysis.tag_fusion_suitability"
+    tool = "tag_fusion_context" if contextual else "tag_fusion_suitability"
+    params = {
+        "candidate_ids": [str(selected[0].get("candidate_id") or "")],
+        "selected_structure_path": str(selected_path), "selected_model_id": str(selected_model_id),
+        "binder_chains": component_group, "target_chains": partner_group,
+        "interface_contact_cutoff": float(interface_contact_cutoff),
+        "termini_confirmed": bool(termini_confirmed), "component_format": str(component_format),
+        "b_factor_interpretation": str(b_factor_interpretation),
+    }
+    if contextual:
+        params["source_component_chain"] = str(source_component_chain or "")
+    job = _analysis_job(
+        source_run_dir, candidates_jsonl, tool=tool, params=params,
+        note="Evaluate saved N/C terminus geometry, accessibility evidence, and advisory tag/fusion clearance. This calculation does not simulate a tag or establish experimental accessibility.",
+        mode="saved-database-structure-geometry",
+    )
+    _write_complex_analysis_selection(
+        job, source_run_dir, selected[0], workflow=workflow,
+        parameters={key: value for key, value in params.items() if key not in {"candidate_ids", "selected_structure_path"}},
+    )
+    analysis_dir = job.run_dir / "artifacts" / "analysis"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    result_path = analysis_dir / "tag_fusion_suitability.json"
+    write_json(result_path, result)
+    candidate = copy.deepcopy(selected[0])
+    metrics = dict(candidate.get("metrics") or {})
+    metrics["tag_fusion_assessment_status"] = str(result.get("assessment_status") or "unknown")
+    metrics["tag_fusion_assessment_scope"] = str(result.get("assessment_scope") or "intrinsic_complex")
+    metrics["tag_fusion_component_chain"] = component_group[0]
+    metrics["tag_fusion_partner_chains"] = partner_group
+    if isinstance(result.get("interface"), dict):
+        metrics["tag_fusion_interface_contact_residue_count"] = result["interface"].get("component_residue_count_contacting_partner")
+    for end, prefix in (("N", "n_terminus"), ("C", "c_terminus")):
+        terminal = (result.get("terminal_geometry") or {}).get(end) or {}
+        metrics[f"tag_fusion_{prefix}_status"] = str(terminal.get("assessment_status") or "not_assessed")
+        for field, suffix in (("distance_to_selected_interface_angstrom", "distance_to_partner_angstrom"),
+                              ("terminal_residue_sasa_angstrom2", "residue_sasa_angstrom2"),
+                              ("terminal_window_mean_plddt", "window_mean_plddt")):
+            value = terminal.get(field)
+            if value is not None:
+                metrics[f"tag_fusion_{prefix}_{suffix}"] = value
+    analysis_status = str(result.get("assessment_status") or "not_assessed")
+    metrics["analysis_status"] = "measured" if analysis_status == "measured" else "partial"
+    candidate["metrics"] = metrics
+    raw = candidate.setdefault("raw_metadata", {})
+    raw["tag_fusion_suitability"] = result
+    raw["analysis_parameters"] = params
+    raw["measurement_status"] = {
+        "status": "measured" if analysis_status == "measured" else "partial",
+        "assessment_status": analysis_status,
+        "error": "",
+    }
+    raw["measurement_provenance"] = {
+        **dict(raw.get("measurement_provenance") or {}),
+        tool: {
+            "method": result.get("method"), "method_version": result.get("method_version"),
+            "parameters": result.get("parameters"), "source": result.get("source"),
+            "result_artifact": str(result_path.relative_to(job.run_dir)),
+            "attribution": result.get("adaptation_attribution"),
+            "assessment_scope": result.get("assessment_scope"),
+            "reference_context": result.get("reference_context") or {},
+            "experimental_claims": False,
+        },
+    }
+    table_path = analysis_dir / "tag_fusion_suitability_metrics.csv"
+    _analysis_metrics_table([candidate]).to_csv(table_path, index=False)
+    outputs = _analysis_output_candidates([candidate], tool=tool)
+    normalized = write_candidates(job.run_dir, tool, outputs)
+    scientific_status = "valid" if analysis_status == "measured" else "partial"
+    summary = {
+        "tool": tool, "evaluation_count": 1, "execution_status": "completed",
+        "scientific_status": scientific_status, "assessment_status": analysis_status,
+        "assessment_scope": result.get("assessment_scope"), "result_artifact": str(result_path.relative_to(job.run_dir)),
+        "source_ranking_preserved": True,
+    }
+    write_json(analysis_dir / "tag_fusion_suitability_summary.json", summary)
+    artifacts = _candidate_artifacts(job.run_dir)
+    finish_job(job.run_dir, True, {
+        "outputs": {"artifacts": artifacts, "candidates": normalized},
+        "metrics": {"evaluation_count": 1, "scientific_status": scientific_status,
+                    "assessment_status": analysis_status},
+        "execution_status": "completed", "scientific_status": scientific_status,
+        "downstream_artifacts": {
+            "candidates_jsonl": "artifacts/normalized_candidates/candidates.jsonl",
+            "campaign_result": "artifacts/normalized_candidates/campaign_result.json",
+            "tag_fusion_suitability": str(result_path.relative_to(job.run_dir)),
+        },
+        "summary": summary,
+    })
+    return job.run_dir
+
+
+def run_tag_fusion_suitability_contract(
+    source_run_dir: Path, candidates_jsonl: Path,
+    candidate_ids: list[str] | None = None, selected_structure_path: Path | None = None,
+    selected_model_id: str | None = None, binder_chains: list[str] | None = None,
+    target_chains: list[str] | None = None, interface_contact_cutoff: float = 4.5,
+    termini_confirmed: bool = False, component_format: str = "single_chain_linear_protein",
+    b_factor_interpretation: str = "uninterpreted",
+) -> Path:
+    return _run_tag_fusion_contract(
+        source_run_dir, candidates_jsonl, contextual=False, candidate_ids=candidate_ids,
+        selected_structure_path=selected_structure_path, selected_model_id=selected_model_id,
+        binder_chains=binder_chains, target_chains=target_chains,
+        interface_contact_cutoff=interface_contact_cutoff, termini_confirmed=termini_confirmed,
+        component_format=component_format, b_factor_interpretation=b_factor_interpretation,
+    )
+
+
+def run_tag_fusion_context_contract(
+    source_run_dir: Path, candidates_jsonl: Path,
+    candidate_ids: list[str] | None = None, selected_structure_path: Path | None = None,
+    selected_model_id: str | None = None, binder_chains: list[str] | None = None,
+    target_chains: list[str] | None = None, source_component_chain: str | None = None,
+    interface_contact_cutoff: float = 4.5, termini_confirmed: bool = False,
+    component_format: str = "single_chain_linear_protein",
+    b_factor_interpretation: str = "uninterpreted",
+) -> Path:
+    return _run_tag_fusion_contract(
+        source_run_dir, candidates_jsonl, contextual=True, candidate_ids=candidate_ids,
+        selected_structure_path=selected_structure_path, selected_model_id=selected_model_id,
+        binder_chains=binder_chains, target_chains=target_chains,
+        source_component_chain=source_component_chain,
+        interface_contact_cutoff=interface_contact_cutoff, termini_confirmed=termini_confirmed,
+        component_format=component_format, b_factor_interpretation=b_factor_interpretation,
+    )
+
+
 def _safe_float(value: Any) -> float | None:
     return finite_number(value)
 
