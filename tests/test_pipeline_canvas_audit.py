@@ -4,6 +4,16 @@ import pytest
 from mn_molecular_design_studio import pipeline_graph as graph
 
 
+def test_canvas_preserves_typed_prediction_choices():
+    definition = graph.new_graph("cofold_protein_protein")
+    localfold = next(n for n in definition["nodes"] if n["data"]["kind"] == "prediction_localfold")
+    assert localfold["data"]["params"]["af2_num_models"] == 1
+    graph.clean_graph(definition)
+    localfold["data"]["params"]["af2_num_models"] = True
+    with pytest.raises(ValueError, match="Unsupported AF2 model number"):
+        graph.clean_graph(definition)
+
+
 def test_campaign_stop_waits_for_the_canvas_ipsae_step_before_counting_passes():
     target, generator = node("target", "target"), node("rfd4", "generator")
     generator["data"]["params"].update(task="protein_binder", num_designs=1000)

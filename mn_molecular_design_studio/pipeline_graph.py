@@ -1500,11 +1500,13 @@ def clean_graph(graph: dict) -> dict:
                     raise ValueError(f"{f['label']} must be a whole number.")
             elif f["type"] == "boolean" and type(value) is not bool:
                 raise ValueError(f"{f['label']} must be true or false.")
-            elif f["type"] in {"text", "select"} and not isinstance(value, str):
+            elif f["type"] == "text" and not isinstance(value, str):
                 raise ValueError(f"{f['label']} must be text.")
             elif f['type']=='json' and not isinstance(value,list):
                 raise ValueError(f"{f['label']} must be a list.")
-            if f["type"] == "select" and value not in f["options"]:
+            if f["type"] == "select" and not any(
+                type(value) is type(option) and value == option for option in f["options"]
+            ):
                 raise ValueError(f"Unsupported {f['label']}.")
         if kind == "bindcraft2":
             bindcraft2_native_overrides(params)
