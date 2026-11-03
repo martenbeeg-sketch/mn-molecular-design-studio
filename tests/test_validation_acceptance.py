@@ -481,3 +481,30 @@ st.session_state["acceptance_errors"] = errors
     assert policy["reference_preset"]["source"] == "BindCraft2 source 4a56313"
     assert any("Unbound_Binder_pLDDT" in item for item in policy["reference_preset"]["inactive_criteria"])
     assert app.session_state["acceptance_errors"] == []
+
+
+def test_analysis_then_acceptance_measures_exact_generator_parent_geometry(tmp_path, monkeypatch, design_source_factory):
+    import copy
+    import json
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import analysis
+    source, candidate = design_source_factory()
+    parent = {**candidate, 'candidate_id': 'original', 'source_tool': 'rfd4_proteina',
+              'stage': 'generation.backbone_sequence', 'metrics': {}}
+    analyzed = {**copy.deepcopy(parent), 'candidate_id': 'analyzed', 'source_tool': 'ipsae',
+                'stage': 'analysis', 'parents': ['original'],
+                'raw_metadata': {'source_candidate': parent}}
+    mismatched = copy.deepcopy(analyzed)
+    mismatched['candidate_id'] = 'other-model'
+    mismatched['raw_metadata']['source_candidate']['complex_pdb'] = str(tmp_path / 'different.pdb')
+    path = source / 'artifacts/normalized_candidates/candidates.jsonl'
+    path.write_text('\n'.join(json.dumps(r) for r in [analyzed, mismatched]) + '\n')
+    monkeypatch.setenv('MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR', str(tmp_path / 'runs'))
+    policy = {'binder_format':'miniprotein', 'target_type':'fasta_idr', 'mandatory_filters':[
+        {'field':METRICS['rfd4_backbone_clashes_2_5a']['field'], 'operator':'>=', 'value':0}]}
+    result = analysis.run_validation_acceptance_analysis(source, path, policy)
+    rows = read_candidates(result)
+    assert [r['raw_metadata']['validation_acceptance']['status'] for r in rows] == ['accepted', 'unresolved']
+    measurement = rows[0]['raw_metadata']['validation_acceptance']['measurements'][METRICS['rfd4_backbone_clashes_2_5a']['field']]
+    assert measurement['source_tool'] == 'rfd4_proteina'
+    assert rows[0]['source_tool'] == 'ipsae'

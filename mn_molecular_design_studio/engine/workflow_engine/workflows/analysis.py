@@ -522,9 +522,23 @@ def run_validation_acceptance_analysis(
                 )
                 metrics["validation_interface_residue_count_4a"] = measurements["validation_interface_residue_count_4a"]
                 metrics["validation_backbone_ca_clashes_2_5a"] = measurements["validation_backbone_ca_clashes_2_5a"]
-                if source_tool == "rfd4_proteina":
-                    metrics["rfd4_native_interface_residue_count_4a"] = measurements["validation_interface_residue_count_4a"]
-                    metrics["rfd4_native_backbone_ca_clashes_2_5a"] = measurements["validation_backbone_ca_clashes_2_5a"]
+                # An intervening analysis emits a new candidate while keeping
+                # its generator parent. Attribute native geometry to that parent
+                # only when it describes this exact file and chain selection.
+                geometry_source = row
+                for _ in range(8):
+                    if str(geometry_source.get("source_tool") or geometry_source.get("tool")) == "rfd4_proteina":
+                        same_structure = Path(str(geometry_source.get("complex_pdb") or "")).resolve() == Path(structure_path).resolve()
+                        same_chains = all(geometry_source.get(key) == row.get(key) for key in ("binder_chains", "target_chains"))
+                        if same_structure and same_chains:
+                            native = metrics if geometry_source is row else geometry_source.setdefault("metrics", {})
+                            native["rfd4_native_interface_residue_count_4a"] = measurements["validation_interface_residue_count_4a"]
+                            native["rfd4_native_backbone_ca_clashes_2_5a"] = measurements["validation_backbone_ca_clashes_2_5a"]
+                        break
+                    parent = (geometry_source.get("raw_metadata") or {}).get("source_candidate")
+                    if not isinstance(parent, dict):
+                        break
+                    geometry_source = parent
             except Exception as exc:
                 geometry_errors[source_id] = f"{type(exc).__name__}: {exc}"
                 metrics["validation_acceptance_geometry_error"] = geometry_errors[source_id]
