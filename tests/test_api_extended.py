@@ -524,10 +524,17 @@ def test_workstation_settings_are_admin_only_and_never_return_credentials(api_da
     response = client.get(path)
     assert response.status_code == 200 and "private-node-credential" not in response.text
     assert response.json()["credential_configured"]
+    assert response.json()["share_molecular_database"] is True
     assert client.get(path, headers=headers(data, "student")).status_code == 403
-    updated = client.patch(path, json={"name": "Research PC", "accept_jobs": False})
+    updated = client.patch(path, json={"name": "Research PC", "accept_jobs": False, "share_molecular_database": False})
     assert updated.status_code == 200, updated.text
     assert updated.json()["restart_required"] and config.load()["accept_jobs"] is False
+    assert updated.json()["share_molecular_database"] is False and config.load()["share_molecular_database"] is False
+    sharing_only = client.patch(path, json={"share_molecular_database": True})
+    assert sharing_only.status_code == 200, sharing_only.text
+    assert not sharing_only.json()["restart_required"]
+    assert "next peer sync" in sharing_only.json()["message"]
+    assert config.load()["share_molecular_database"] is True
     assert client.patch(path, json={"node_token": "replacement"}).status_code == 422
     assert client.patch(path, json={"heartbeat_seconds": 0}).status_code == 422
     assert client.patch(path, json={"name": None}).status_code == 422

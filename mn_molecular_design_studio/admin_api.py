@@ -47,6 +47,7 @@ class WorkstationSettings(Contract):
     coordinator_url: str | None = None
     default_placement: Literal["local", "auto"] | None = None
     accept_jobs: bool | None = Field(default=None, strict=True)
+    share_molecular_database: bool | None = Field(default=None, strict=True)
     heartbeat_seconds: int | None = Field(default=None, ge=5, le=300, strict=True)
     peers: list[Peer] | None = Field(default=None, max_length=100)
 
@@ -168,8 +169,16 @@ def install(app, current_user, admin_user):
             enrollment = call(Store().enroll, updates.get("name", previous["name"]), config.identity())
             updates["node_token"] = enrollment["node_token"]
         call(config.save, updates)
-        return {**public_workstation(), "restart_required": True,
-                "message": "Restart the API and workstation agent after changing connection settings."}
+        restart_required = any(
+            key != "share_molecular_database" and value != previous.get(key)
+            for key, value in updates.items()
+        )
+        message = (
+            "Restart the API and workstation agent after changing connection settings."
+            if restart_required else
+            "Molecular Database sharing takes effect on the next peer sync."
+        )
+        return {**public_workstation(), "restart_required": restart_required, "message": message}
 
     @router.get("/replication/conflicts")
     def replication_conflicts(user=Depends(admin_user)):

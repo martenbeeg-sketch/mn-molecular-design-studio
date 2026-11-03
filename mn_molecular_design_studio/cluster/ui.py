@@ -1830,9 +1830,11 @@ def execution_selector(user, token):
 def settings(user, token):
     st.subheader("Workstations")
     current = config.load()
-    st.caption("Share the job catalog and send new work to available workstations. Full results stay on their execution machine.")
+    st.caption("Share the job catalog and send new work to available workstations. Molecular Database records can also sync between trusted peers; scientific result files stay on their execution machine.")
     if user.get("role") != "admin":
         st.write(f"{current['name']} · {current['mode']}")
+        st.caption("Molecular Database sharing is enabled." if current.get("share_molecular_database", True)
+                   else "Molecular Database sharing is disabled on this workstation.")
         return
     modes = ["disabled", "peer", "coordinator", "worker"]
     mode = st.selectbox("Workstation connection", modes, index=modes.index(current["mode"]),
@@ -1843,6 +1845,12 @@ def settings(user, token):
     name = st.text_input("Workstation name", value=config.display_name(current["name"]), key=name_key)
     address = st.text_input("Local API address" if mode == "peer" else "Coordinator API address", value=current["coordinator_url"] or "http://127.0.0.1:8766", key="cluster-settings-url")
     accept = st.checkbox("Accept new jobs on this workstation", value=current["accept_jobs"], key="cluster-settings-accept")
+    share_database = st.checkbox(
+        "Share molecular Database records with trusted peers",
+        value=current.get("share_molecular_database", True),
+        key="cluster-settings-share-molecular-database",
+        help="Replicates collections, molecule entries, linked structure metadata, provenance, and score observations, including Complex Analysis results. Structure files stay on their source workstation and are retrieved on demand.",
+    )
     st.caption(f"Permanent workstation ID: {config.identity()}")
     if mode == "peer" and current["mode"] != "peer":
         st.info("Connect trusted peers with the cluster enable-peers command. Each installation keeps its accounts, scheduler and results available independently.")
@@ -1851,13 +1859,20 @@ def settings(user, token):
         st.code("mn-molecular-design-studio cluster join workstation-enrollment.json --coordinator-url " + address, language="bash")
     elif st.button("Save workstation settings", key="cluster-settings-save"):
         try:
-            changes = {"mode": mode, "name": name, "coordinator_url": address, "accept_jobs": accept}
+            changes = {"mode": mode, "name": name, "coordinator_url": address, "accept_jobs": accept,
+                       "share_molecular_database": share_database}
             if mode == "coordinator" and not current["node_token"]:
                 from .store import Store
                 enrollment = Store().enroll(name, config.identity())
                 changes.update(node_token=enrollment["node_token"], default_placement="auto")
             config.save(changes)
-            st.success("Workstation settings saved. Start or restart the API and agent services to apply connection changes.")
+            restart_required = any(changes[key] != current.get(key) for key in changes
+                                   if key != "share_molecular_database")
+            st.success(
+                "Workstation settings saved. Start or restart the API and agent services to apply connection changes."
+                if restart_required else
+                "Settings saved. Molecular Database sharing takes effect on the next peer sync."
+            )
         except (ValueError, OSError) as exc:
             st.error(str(exc))
     if mode != "disabled":

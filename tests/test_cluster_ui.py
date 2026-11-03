@@ -21,7 +21,23 @@ def test_settings_render_without_enabling_sharing(isolated):
     at = AppTest.from_string('from mn_molecular_design_studio.cluster.ui import settings\nsettings({"id":"admin", "role":"admin"}, "token")').run()
     assert not at.exception
     assert at.selectbox[0].value == "disabled"
+    assert at.checkbox[1].label == "Share molecular Database records with trusted peers"
+    assert at.checkbox[1].value is True
     assert config.load()["mode"] == "disabled"
+
+
+def test_workstation_settings_can_disable_and_restore_database_sharing(isolated, monkeypatch):
+    config.save({"mode": "peer", "coordinator_url": "http://127.0.0.1:18766", "share_molecular_database": False})
+    monkeypatch.setattr(ui, "_request", lambda *a, **k: {"nodes": []})
+    at = AppTest.from_string('from mn_molecular_design_studio.cluster.ui import settings\nsettings({"id":"admin", "role":"admin"}, "token")').run()
+    assert not at.exception
+    share = next(item for item in at.checkbox if item.label == "Share molecular Database records with trusted peers")
+    assert share.value is False
+    share.set_value(True)
+    at.button[0].click().run()
+    assert not at.exception
+    assert config.load()["share_molecular_database"] is True
+    assert any("next peer sync" in item.value for item in at.success)
 
 
 def test_workstation_resources_are_visible_to_an_ordinary_user(isolated, monkeypatch):

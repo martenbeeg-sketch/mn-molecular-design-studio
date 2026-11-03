@@ -83,7 +83,7 @@ def agent(once: bool = False):
 @app.command("status")
 def status():
     settings = config.load()
-    result = {k: settings[k] for k in ("mode", "name", "coordinator_url", "accept_jobs", "default_placement")}
+    result = {k: settings[k] for k in ("mode", "name", "coordinator_url", "accept_jobs", "share_molecular_database", "default_placement")}
     result["node_id"] = config.identity()
     if settings["mode"] in {"coordinator", "peer"}:
         result["nodes"] = Store().nodes()
