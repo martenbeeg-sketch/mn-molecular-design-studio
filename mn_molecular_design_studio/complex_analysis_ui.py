@@ -652,7 +652,7 @@ def _saved_evaluation_artifacts(user: dict, observation: dict, structure: dict,
         return []
     item_dir = analysis_dir / item_id if item_id else analysis_dir
     results = []
-    for name in ("tag_fusion_suitability.json", "contacts.json", "interactions.csv",
+    for name in ("tag_fusion_suitability.json", "sequence_liability.json", "contacts.json", "interactions.csv",
                  "full_checks.csv", "report.json", "patch_metrics.json"):
         path = item_dir / name
         if not path.is_file():
@@ -675,6 +675,11 @@ def _saved_evaluation_artifacts(user: dict, observation: dict, structure: dict,
                                 "rows": payload.get("residue_evidence", []) if isinstance(payload, dict) else [],
                                 "payload": payload})
                 continue
+            elif name == "sequence_liability.json":
+                results.append({"name": name, "path": path,
+                                "rows": payload.get("findings", []) if isinstance(payload, dict) else [],
+                                "payload": payload})
+                continue
             else:
                 rows = [payload] if payload else []
         else:
@@ -690,6 +695,12 @@ def _saved_evaluation_artifacts(user: dict, observation: dict, structure: dict,
         rows = _csv_rows(path)
         if rows:
             results.append({"name": path.name, "path": path, "rows": rows})
+    liability_path = analysis_dir / "sequence_liability" / "sequence_liability.json"
+    if liability_path.is_file():
+        payload = _read_json(liability_path)
+        if isinstance(payload, dict):
+            results.append({"name": "sequence_liability.json", "path": liability_path,
+                            "rows": payload.get("findings", []), "payload": payload})
     return results
 
 
@@ -858,9 +869,44 @@ def _database_inspector_data(user: dict, record: dict, structure: dict, path: Pa
                                 "residue_refs": [f"{src.get('chain_id')}:{src.get('author_residue')}"],
                                 "selectors": [selector], "raw": row,
                             })
+        liability_artifact = next((artifact for artifact in artifacts
+                                   if artifact.get("name") == "sequence_liability.json"
+                                   and isinstance(artifact.get("payload"), dict)), None)
+        liability_result = liability_artifact.get("payload") if liability_artifact else raw.get("sequence_liability")
+        if evaluator == "sequence_liability" and isinstance(liability_result, dict):
+            liability_source = liability_result.get("source") if isinstance(liability_result.get("source"), dict) else {}
+            expected_model = str((structure.get("context") or {}).get("model_id")
+                                 or (structure.get("context") or {}).get("model_index")
+                                 or structure.get("model_index") or structure.get("id") or "")
+            chains = [str(value) for value in liability_result.get("selected_component_chains") or []]
+            if (str(liability_source.get("molecule_id") or "") == str(record.get("id") or "")
+                    and str(liability_source.get("structure_id") or "") == str(structure.get("id") or "")
+                    and str(liability_source.get("structure_digest") or "") == current_digest
+                    and str(liability_source.get("model_id") or "") == expected_model
+                    and chains and set(chains) <= set(protein_chains)):
+                item["sequence_liability_result"] = liability_result
+                for finding in liability_result.get("findings") or []:
+                    if not isinstance(finding, dict):
+                        continue
+                    chain_id = str(finding.get("chain_id") or "")
+                    number = finding.get("author_number")
+                    if number in (None, "") or chain_id not in chains:
+                        selector = ""
+                    else:
+                        selector = resolve_author_residue_selector(
+                            tracks, chain_id, number, str(finding.get("insertion_code") or ""),
+                        )
+                    residue_ref = str(finding.get("residue_ref") or f"{chain_id}:sequence#{finding.get('sequence_position') or '?'}")
+                    evidence_rows.append({
+                        "id": f"sequence_liability:{finding.get('finding_id') or finding.get('kind')}:{descriptor.get('id')}",
+                        "evaluator": evaluator, "artifact": "sequence_liability.json",
+                        "label": f"{str(finding.get('severity') or 'info').upper()} · {finding.get('kind') or 'liability'} · {residue_ref}",
+                        "residue_refs": [residue_ref], "selectors": [selector] if selector else [],
+                        "raw": finding,
+                    })
         evaluations.append(item)
         for artifact in artifacts:
-            if artifact["name"] in {"tag_fusion_suitability.json", "reference_environment.json", "report.json", "patch_metrics.json"}:
+            if artifact["name"] in {"tag_fusion_suitability.json", "sequence_liability.json", "reference_environment.json", "report.json", "patch_metrics.json"}:
                 # These are summary measurements shown in their evaluator panel,
                 # not residue-level findings to attach to a Mol* selection.
                 continue
@@ -1088,6 +1134,87 @@ def _render_inspector_tag_fusion(items: list[dict], viewer_key: str) -> None:
                  "adaptation_attribution": result.get("adaptation_attribution")})
 
 
+def _render_inspector_liabilities(items: list[dict], viewer_key: str, evidence: list[dict]) -> None:
+    import pandas as pd
+
+    results = [item for item in items if isinstance(item.get("sequence_liability_result"), dict)]
+    if not results:
+        st.info("No matching saved Sequence and Developability Liability Evaluation is available for this exact Database representation.")
+        return
+    options = [str(item["evaluation"].get("id") or index) for index, item in enumerate(results)]
+    labels = {option: f"{item['evaluation'].get('run_id') or item['observation'].get('run_id') or 'saved evaluation'} · {option}"
+              for option, item in zip(options, results)}
+    key = f"{viewer_key}-inspector-liability-evaluation"
+    if st.session_state.get(key) not in options:
+        st.session_state[key] = options[0]
+    selected_id = st.selectbox("Saved liability evaluation", options, format_func=lambda value: labels[value], key=key)
+    item = results[options.index(selected_id)]
+    result = item["sequence_liability_result"]
+    st.caption("Sequence alerts are susceptibility motifs, not observed modifications or experimental stability measurements. Structural findings are tied to the saved model and their own evaluator evidence.")
+    st.markdown(f"**Assessment status:** {result.get('assessment_status', 'unknown')} · **Method:** {result.get('method', 'unavailable')} · **Version:** {result.get('method_version', 'unavailable')}")
+    properties = []
+    for chain_id, record in (result.get("sequence_properties") or {}).items():
+        metrics = record.get("metrics") if isinstance(record.get("metrics"), dict) else {}
+        properties.append({"Chain": chain_id, "Sequence calculation": record.get("status"),
+                           "pI": metrics.get("qc_sequence_pi"), "Net charge at pH 7.4": metrics.get("qc_sequence_charge"),
+                           "GRAVY": metrics.get("qc_sequence_gravy"), "Length": metrics.get("qc_sequence_length"),
+                           "Method": record.get("method") or record.get("evaluator") or "unavailable"})
+    if properties:
+        st.markdown("#### Sequence properties")
+        st.dataframe(pd.DataFrame(properties), hide_index=True, use_container_width=True)
+    coverage = result.get("sequence_coverage") or {}
+    if coverage:
+        st.markdown("#### Sequence and coordinate coverage")
+        rows = []
+        for chain_id, value in coverage.items():
+            rows.append({"Chain": chain_id, "Sequence source": value.get("sequence_source"),
+                         "Coverage": value.get("status"), "Sequence residues": value.get("sequence_length"),
+                         "Coordinate residues": value.get("coordinate_residue_count"),
+                         "Unresolved/unmapped": value.get("unresolved_or_unmapped_residue_count"),
+                         "Termini": (value.get("terminal_assessment") or {}).get("status"),
+                         "Explanation": (value.get("terminal_assessment") or {}).get("reason") or value.get("reason")})
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    findings = result.get("findings") or []
+    if findings:
+        st.markdown("#### Residue-linked findings")
+        st.dataframe(pd.DataFrame([{
+            "Severity": str(row.get("severity") or "info").upper(), "Evidence basis": row.get("basis"),
+            "Finding": row.get("kind"), "Residue": row.get("residue_ref"), "Motif": row.get("motif"),
+            "Interface status": row.get("interface_status"), "Observation": row.get("message"),
+        } for row in findings]), hide_index=True, use_container_width=True)
+    else:
+        st.info("No supported liability findings were reported for this selected sequence/model. This does not establish absence of experimental liabilities.")
+    missing = result.get("missing_data") or []
+    if missing:
+        st.markdown("#### Unavailable or unsupported inputs")
+        st.dataframe(pd.DataFrame([{"Input": row.get("data"), "Status": row.get("status"), "Reason": row.get("reason")}
+                                   for row in missing]), hide_index=True, use_container_width=True)
+    with st.expander("Methods and provenance", expanded=False):
+        st.json({"evaluation_id": item["evaluation"].get("id"), "run_id": item["evaluation"].get("run_id"),
+                 "source": result.get("source"), "selected_component_chains": result.get("selected_component_chains"),
+                 "selected_partner_chains": result.get("selected_partner_chains"), "parameters": result.get("parameters"),
+                 "method_provenance": result.get("method_provenance"),
+                 "interpretation_limitations": result.get("interpretation_limitations"),
+                 "attribution": result.get("attribution")})
+    liability_evidence = [row for row in evidence if row.get("evaluator") == "sequence_liability"
+                          and str(item["evaluation"].get("id") or "") in str(row.get("id") or "")]
+    if liability_evidence:
+        evidence_ids = [row["id"] for row in liability_evidence]
+        names = {row["id"]: row.get("label") or row["id"] for row in liability_evidence}
+        select_key = f"{viewer_key}-liability-finding-select"
+        if st.session_state.get(select_key) not in evidence_ids:
+            st.session_state[select_key] = evidence_ids[0]
+        selected_evidence_id = st.selectbox("Finding to highlight", evidence_ids,
+                                            format_func=lambda value: names[value], key=select_key)
+        selected_evidence = next(row for row in liability_evidence if row["id"] == selected_evidence_id)
+        st.button("Highlight this liability in Mol*", key=f"{viewer_key}-liability-highlight",
+                  disabled=not selected_evidence.get("selectors"),
+                  on_click=_select_inspector_evidence,
+                  args=(f"{viewer_key}-inspector-highlights", selected_evidence.get("selectors") or []))
+        if not selected_evidence.get("selectors"):
+            st.info("This finding refers to an unresolved sequence position, so no structural highlight is inferred.")
+
+
 def _render_inspector_tracks(data: dict, viewer_key: str) -> None:
     tracks = data["tracks"]
     if not tracks:
@@ -1133,6 +1260,7 @@ def _render_database_inspector(user: dict, data: dict, viewer_key: str, *, recor
     interface_evaluators = {"biotite_interface", "rosetta_metrics", "ipsae", "plip", "pandamap"}
     surface_evaluators = {"pep_patch", "posebusters"}
     tag_fusion_evaluators = {"tag_fusion_suitability", "tag_fusion_context"}
+    liability_evaluators = {"sequence_liability"}
     ligand_present = bool(data["ligand_components"])
     panel_specs = []
     if evaluators & interface_evaluators:
@@ -1149,6 +1277,8 @@ def _render_database_inspector(user: dict, data: dict, viewer_key: str, *, recor
         panel_specs.append(("Spatial Context", "spatial_context"))
     if evaluators & tag_fusion_evaluators:
         panel_specs.append(("Tag & Fusion", "tag_fusion"))
+    if evaluators & liability_evaluators:
+        panel_specs.append(("Sequence Liabilities", "sequence_liabilities"))
     st.markdown("### Scientific Inspector")
     if not panel_specs:
         st.info("This saved structure has no applicable saved Evaluation data yet. Its structure and existing analysis launch controls remain available.")
@@ -1204,6 +1334,8 @@ def _render_database_inspector(user: dict, data: dict, viewer_key: str, *, recor
                 )
             elif kind == "tag_fusion":
                 _render_inspector_tag_fusion(items, viewer_key)
+            elif kind == "sequence_liabilities":
+                _render_inspector_liabilities(items, viewer_key, data["evidence"])
             elif kind == "spatial_context":
                 for item in items:
                     result = item.get("reference_environment_result")
@@ -1329,7 +1461,8 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
              "analysis.reference_placement": "Reference-frame placement",
              "analysis.reference_environment": "Reference-frame steric and environmental context",
              "analysis.tag_fusion_suitability": "Tag and Fusion Suitability",
-             "analysis.tag_fusion_context": "Reference-context Tag and Fusion Suitability"}.get(workflow_id, workflow_id)
+             "analysis.tag_fusion_context": "Reference-context Tag and Fusion Suitability",
+             "analysis.sequence_liability": "Sequence and Developability Liabilities"}.get(workflow_id, workflow_id)
     ligand_workflow = workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
     if workflow_id in {"analysis.plip", "analysis.pandamap"}:
         st.caption("Interaction analysis · reports contacts and interaction classes for the selected ligand pose and receptor.")
@@ -1360,7 +1493,8 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
                       "analysis.reference_placement": "reference_placement_metrics.csv",
                       "analysis.reference_environment": "reference_environment_metrics.csv",
                       "analysis.tag_fusion_suitability": "tag_fusion_suitability_metrics.csv",
-                      "analysis.tag_fusion_context": "tag_fusion_suitability_metrics.csv"}[workflow_id]
+                      "analysis.tag_fusion_context": "tag_fusion_suitability_metrics.csv",
+                      "analysis.sequence_liability": "sequence_liability_metrics.csv"}[workflow_id]
         metrics_path = run_dir / "artifacts" / "analysis" / table_name
         if status in {"completed", "succeeded"} and metrics_path.is_file():
             try:
@@ -1428,11 +1562,18 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
                     st.json(result)
                 if result.get("adaptation_attribution"):
                     st.caption(result["adaptation_attribution"])
+        if workflow_id == "analysis.sequence_liability" and status in {"completed", "succeeded"}:
+            result = _read_json(run_dir / "artifacts" / "analysis" / "sequence_liability" / "sequence_liability.json")
+            if result:
+                st.markdown(f"**Assessment status:** `{result.get('assessment_status', 'unknown')}` · **Method:** `{result.get('method', 'unavailable')}`")
+                with st.expander("Residue-linked findings, measurements and limitations", expanded=True):
+                    st.json(result)
     evaluator = {"analysis.ipsae": "ipsae", "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
                  "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters",
                  "analysis.reference_environment": "reference_environment",
                  "analysis.tag_fusion_suitability": "tag_fusion_suitability",
-                 "analysis.tag_fusion_context": "tag_fusion_context"}.get(workflow_id, workflow_id)
+                 "analysis.tag_fusion_context": "tag_fusion_context",
+                 "analysis.sequence_liability": "sequence_liability"}.get(workflow_id, workflow_id)
     evaluation_id = _analysis_evaluation_id(run_dir, user, source_candidate_id, evaluator=evaluator)
     if evaluation_id:
         st.success(f"Saved Evaluation · {evaluation_id}")
@@ -1582,7 +1723,8 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
             "analysis.reference_placement": "reference_placement",
             "analysis.reference_environment": "reference_environment",
             "analysis.tag_fusion_suitability": "tag_fusion_suitability",
-            "analysis.tag_fusion_context": "tag_fusion_context"}.get(workflow_id)
+            "analysis.tag_fusion_context": "tag_fusion_context",
+            "analysis.sequence_liability": "sequence_liability"}.get(workflow_id)
     if not tool:
         return []
     rows = search_jobs(tools=[tool], task_group="analysis", limit=1000, sort_by="active_desc",
@@ -1590,6 +1732,8 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
                        accessible_project_ids=accessible_project_ids(user),
                        access_admin=user.get("role") == "admin")["items"]
     identity_keys = ("molecule_id", "structure_id", "group_id", "structure_digest", "model_id")
+    if workflow_id == "analysis.sequence_liability":
+        identity_keys = (*identity_keys, "ligand_selection")
     if workflow_id == "analysis.reference_environment":
         identity_keys = (*identity_keys, "reference_context_id", "reference_molecule_id",
                          "reference_structure_id", "reference_structure_digest",
@@ -1658,6 +1802,9 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
         if workflow_id == "analysis.reference_environment":
             parameters_match = all(saved_parameters.get(key) == parameters.get(key)
                                    for key in ("source_component_chain", "selected_reference_chains", "assembly_id"))
+        elif workflow_id == "analysis.sequence_liability":
+            parameters_match = all(saved_parameters.get(key) == parameters.get(key)
+                                   for key in ("component_format", "b_factor_interpretation"))
         if (saved_model != model_id or saved_binder != desired_binder or saved_target != desired_target
                 or item_binder != desired_binder or item_target != desired_target
                 or not parameters_match):
@@ -2557,7 +2704,8 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
     schemas, schema_errors = {}, {}
     for workflow_id in ("analysis.biotite_interface", "analysis.rosetta", "analysis.ipsae", "analysis.pep_patch",
                         "analysis.plip", "analysis.pandamap", "analysis.posebusters",
-                        "analysis.reference_environment", "analysis.tag_fusion_suitability", "analysis.tag_fusion_context"):
+                        "analysis.reference_environment", "analysis.tag_fusion_suitability", "analysis.tag_fusion_context",
+                        "analysis.sequence_liability"):
         try:
             schemas[workflow_id] = workflow_schema(workflow_id) if workflow_schema else None
             if not schemas[workflow_id]:
@@ -2649,6 +2797,83 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
         st.info("The selected representation contains protein and nucleic acid. The registered protein–protein interface workflows do not apply; no contextual DNA/RNA interaction evaluator is currently registered here.")
     else:
         st.info("No compatible registered interaction analysis was identified for this component combination.")
+
+    if protein_chains:
+        st.markdown("#### Sequence and Developability Liabilities")
+        st.caption("Post-hoc sequence and model screen. Exact saved Biotite, PEP-Patch, PLIP, PandaMap and Sequence Composition Evaluations are reused when available; this workflow does not rerun those scientific tools.")
+        liability_component_key = f"complex-analysis-liability-components-{key}"
+        if st.session_state.get(liability_component_key) is None:
+            st.session_state[liability_component_key] = protein_chains[:1]
+        selected_liability_chains = st.multiselect(
+            "Protein chain(s) to assess", protein_chains,
+            key=liability_component_key,
+        )
+        liability_partner_options = [chain for chain in protein_chains if chain not in selected_liability_chains]
+        liability_partner_key = f"complex-analysis-liability-partners-{key}"
+        if liability_partner_key not in st.session_state:
+            st.session_state[liability_partner_key] = liability_partner_options
+        else:
+            st.session_state[liability_partner_key] = [value for value in st.session_state[liability_partner_key]
+                                                       if value in liability_partner_options]
+        liability_partner_chains = st.multiselect(
+            "Optional protein interface partners", liability_partner_options,
+            key=liability_partner_key,
+            help="Interface-specific findings are included only when matching saved contact/interactions Evaluations exist.",
+        )
+        liability_ligand_selection = {}
+        liability_ligands = [item for item in components if str(item.get("type") or "").casefold() == "small_molecule"]
+        if liability_ligands:
+            ligand_evidence_key = f"complex-analysis-liability-ligand-evidence-{key}"
+            ligand_options = [""] + [str(item.get("id") or "") for item in liability_ligands]
+            ligand_labels = {str(item.get("id") or ""): f"{item.get('label') or item.get('ccd') or 'Ligand'} · {item.get('residue_key') or item.get('source_chain')}"
+                             for item in liability_ligands}
+            chosen_ligand_id = st.selectbox(
+                "Optional ligand interaction-evidence selection", ligand_options,
+                format_func=lambda value: "No ligand-specific evidence" if not value else ligand_labels.get(value, value),
+                key=ligand_evidence_key,
+                help="This only links a matching saved PLIP/PandaMap Evaluation to protein interface findings; it does not rerun or score the ligand pose.",
+            )
+            if chosen_ligand_id:
+                chosen_ligand = next(item for item in liability_ligands if str(item.get("id") or "") == chosen_ligand_id)
+                liability_ligand_selection = _ligand_selection_for_component(chosen_ligand, liability_ligands, {
+                    "components": record.get("components") or [],
+                    "ligand_selection": context.get("ligand_selection"),
+                })
+                if not liability_ligand_selection.get("smiles"):
+                    st.warning("The selected ligand has no saved isomeric SMILES, so it cannot identify an exact saved interaction Evaluation.")
+                    liability_ligand_selection = {}
+                else:
+                    st.caption("Only saved PLIP/PandaMap interaction artifacts with this exact ligand identity are eligible for interface-specific findings.")
+        format_key = f"complex-analysis-liability-format-{key}"
+        liability_format_labels = {
+            "linear_protein": "Linear protein chain(s)",
+            "cyclic_construct": "Cyclic construct (no free termini)",
+            "multichain_construct": "Multichain construct (chain-by-chain screen)",
+        }
+        if st.session_state.get(format_key) not in liability_format_labels:
+            st.session_state[format_key] = "multichain_construct" if len(selected_liability_chains) > 1 else "linear_protein"
+        component_format = st.selectbox("Construct format", list(liability_format_labels),
+                                        format_func=lambda value: liability_format_labels[value], key=format_key)
+        b_factor_declared = st.checkbox(
+            "The selected structure stores predictor pLDDT values in Cα B-factors (verified from its source)",
+            value=False, key=f"complex-analysis-liability-plddt-{key}",
+            help="Otherwise B-factors remain uninterpreted metadata and do not affect a liability severity.",
+        )
+        liability_source = {**source, "binder_chains": list(selected_liability_chains),
+                            "target_chains": list(liability_partner_chains),
+                            "ligand_selection": liability_ligand_selection}
+        _render_database_workflow(
+            user, "analysis.sequence_liability", schemas.get("analysis.sequence_liability"),
+            liability_source, model_id, list(selected_liability_chains), list(liability_partner_chains),
+            {"component_format": component_format,
+             "b_factor_interpretation": "plddt_0_100" if b_factor_declared else "uninterpreted"},
+            key + "-sequence-liability", submit, project_id,
+            schema_errors.get("analysis.sequence_liability", "") or
+            ("Choose one or more protein chains to assess." if not selected_liability_chains else ""),
+            structure_path=path, structure_context=context, structure_components=components,
+            viewer_key=f"complex-analysis-db-viewer-{structure['id']}",
+            ligand_selection=liability_ligand_selection or None,
+        )
 
     if len(protein_chains) >= 2:
         st.markdown("#### Tag and Fusion Suitability")
@@ -2888,7 +3113,8 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
              "analysis.reference_placement": "Reference-frame placement",
              "analysis.reference_environment": "Reference-frame steric and environmental context",
              "analysis.tag_fusion_suitability": "Tag and Fusion Suitability",
-             "analysis.tag_fusion_context": "Reference-context Tag and Fusion Suitability"}.get(workflow_id, workflow_id)
+             "analysis.tag_fusion_context": "Reference-context Tag and Fusion Suitability",
+             "analysis.sequence_liability": "Sequence and Developability Liabilities"}.get(workflow_id, workflow_id)
     st.markdown(f"##### {title}")
     if not schema:
         st.info(unavailable or "The registered workflow schema is unavailable.")
@@ -2944,7 +3170,8 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
                     **({"source_component_chain": str(parameters.get("source_component_chain") or "")}
                        if workflow_id in {"analysis.reference_placement", "analysis.tag_fusion_context"} else {}),
                     **({"ligand_selection": dict(ligand_selection)} if ligand_selection else {}),
-                }, **({"ligand_selection": dict(ligand_selection)} if ligand_selection else {})}, project_id, {}, title)
+                }, **({"ligand_selection": dict(ligand_selection)}
+                      if ligand_selection and workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"} else {})}, project_id, {}, title)
             st.rerun()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             st.error(f"Could not start {title}: {exc}")

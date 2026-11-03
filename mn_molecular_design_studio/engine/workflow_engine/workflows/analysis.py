@@ -1239,6 +1239,162 @@ def run_tag_fusion_context_contract(
     )
 
 
+def run_sequence_liability_contract(
+    source_run_dir: Path, candidates_jsonl: Path,
+    candidate_ids: list[str] | None = None,
+    selected_structure_path: Path | None = None,
+    selected_model_id: str | None = None,
+    binder_chains: list[str] | None = None,
+    target_chains: list[str] | None = None,
+    interface_ligand_selection: dict[str, Any] | None = None,
+    component_format: str = "linear_protein",
+    b_factor_interpretation: str = "uninterpreted",
+) -> Path:
+    """Evaluate liabilities for selected protein components in one Database complex."""
+    from mn_molecular_design_studio.complex_analysis_liabilities import (
+        METHOD, METHOD_VERSION, calculate_sequence_liabilities,
+    )
+    from mn_molecular_design_studio.evaluations import file_digest
+
+    source_run_dir = Path(source_run_dir).expanduser().resolve(strict=True)
+    candidates_jsonl = Path(candidates_jsonl).expanduser().resolve(strict=True)
+    candidates = _analysis_source_candidates(source_run_dir, candidates_jsonl)
+    selected = _select_complex_analysis_candidates(
+        source_run_dir, candidates, candidate_ids=candidate_ids,
+        selected_structure_path=selected_structure_path, selected_model_id=selected_model_id,
+    )
+    if len(selected) != 1:
+        raise ValueError("Sequence and Developability Liability assessment requires one selected Database structure.")
+    metadata = read_json(source_run_dir / "metadata.json")
+    manifest = read_json(source_run_dir / "complex_analysis_source.json")
+    if str(metadata.get("source_kind") or "") != "database" or manifest.get("schema") != "studio.complex_analysis_database_source.v1":
+        raise ValueError("Sequence and Developability Liability assessment is available only for an authorized Database structure.")
+    selected_path = Path(str(selected[0].get("complex_pdb") or "")).resolve(strict=True)
+    try:
+        selected_path.relative_to(source_run_dir)
+    except ValueError as exc:
+        raise ValueError("The selected structure must remain inside the authorized Database source bundle.") from exc
+    if file_digest(selected_path) != str(manifest.get("structure_digest") or ""):
+        raise ValueError("The selected source structure changed after Database authorization.")
+    if str(selected_model_id or "") != str(manifest.get("model_id") or ""):
+        raise ValueError("The selected model does not match the authorized Database representation.")
+    component_chains = list(dict.fromkeys(str(value).strip() for value in (binder_chains or []) if str(value).strip()))
+    partner_chains = list(dict.fromkeys(str(value).strip() for value in (target_chains or []) if str(value).strip()))
+    if component_chains != list(manifest.get("binder_chains") or []) or partner_chains != list(manifest.get("target_chains") or []):
+        raise ValueError("Selected component or interface-partner chains do not match the authorized Database source selection.")
+    authorized_ligand_selection = dict(manifest.get("ligand_selection") or {})
+    if dict(interface_ligand_selection or {}) != authorized_ligand_selection:
+        raise ValueError("Optional ligand interface evidence does not match the authorized saved Database ligand identity.")
+
+    reused = []
+    for item in manifest.get("reused_evidence") or []:
+        if not isinstance(item, dict) or str(item.get("source_digest") or "") != str(manifest.get("structure_digest") or ""):
+            continue
+        copied = dict(item)
+        artifacts = []
+        for artifact in item.get("artifacts") or []:
+            if not isinstance(artifact, dict) or not artifact.get("path"):
+                continue
+            candidate_path = (source_run_dir / str(artifact["path"])).resolve()
+            try:
+                candidate_path.relative_to(source_run_dir)
+            except ValueError:
+                continue
+            if candidate_path.is_file():
+                artifacts.append({**artifact, "path": str(candidate_path)})
+        copied["artifacts"] = artifacts
+        reused.append(copied)
+
+    identity = {key: str(manifest.get(key) or "") for key in (
+        "molecule_id", "structure_id", "group_id", "structure_digest", "model_id", "evaluation_id",
+    )}
+    if any(not identity[key] for key in ("molecule_id", "structure_id", "group_id", "structure_digest", "model_id")):
+        raise ValueError("The Database source is missing exact structure identity provenance.")
+    result = calculate_sequence_liabilities(
+        selected_path, component_chains=component_chains, partner_chains=partner_chains,
+        model_id=str(selected_model_id), source_identity=identity, reused_evidence=reused,
+        saved_confidence_context=(manifest.get("selected_evaluation_confidence_context")
+                                  if isinstance(manifest.get("selected_evaluation_confidence_context"), dict) else None),
+        interface_ligand_selection=authorized_ligand_selection,
+        component_format=str(component_format), b_factor_interpretation=str(b_factor_interpretation),
+    )
+    params = {
+        "candidate_ids": [str(selected[0].get("candidate_id") or "")],
+        "selected_structure_path": str(selected_path), "selected_model_id": str(selected_model_id),
+        "binder_chains": component_chains, "target_chains": partner_chains,
+        "interface_ligand_selection": authorized_ligand_selection,
+        "component_format": str(component_format), "b_factor_interpretation": str(b_factor_interpretation),
+        "method": METHOD, "method_version": METHOD_VERSION,
+    }
+    job = _analysis_job(
+        source_run_dir, candidates_jsonl, tool="sequence_liability", params=params,
+        note="Screen selected Database protein chains for sequence motifs and structure-supported liability evidence. This does not measure chemical modification, protein stability, expression or binding.",
+        mode="saved-database-sequence-and-structure-screen",
+    )
+    _write_complex_analysis_selection(
+        job, source_run_dir, selected[0], workflow="analysis.sequence_liability",
+        parameters={key: value for key, value in params.items() if key != "selected_structure_path"},
+    )
+    output_dir = job.run_dir / "artifacts" / "analysis" / "sequence_liability"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result_path = output_dir / "sequence_liability.json"
+    write_json(result_path, result)
+    candidate = copy.deepcopy(selected[0])
+    metrics = dict(candidate.get("metrics") or {})
+    counts = result["measurement_counts"]
+    metrics.update({
+        "sequence_liability_finding_count": counts["finding_count"],
+        "sequence_liability_warning_count": counts["warning_count"],
+        "sequence_liability_information_count": counts["information_count"],
+        "sequence_liability_unpaired_cysteine_count": counts["unpaired_cysteine_count"],
+        "sequence_liability_interface_residue_finding_count": counts["interface_liability_count"],
+        "sequence_liability_peppatch_residue_count": counts["peppatch_patch_residue_count"],
+        "sequence_liability_status": result["assessment_status"],
+        "sequence_liability_component_chain_count": len(component_chains),
+    })
+    if len(result["sequence_properties"]) == 1:
+        chain_properties = next(iter(result["sequence_properties"].values()))
+        property_metrics = chain_properties.get("metrics") if isinstance(chain_properties.get("metrics"), dict) else {}
+        for source_key, destination in (
+            ("qc_sequence_pi", "sequence_liability_isoelectric_point"),
+            ("qc_sequence_charge", "sequence_liability_net_charge_ph_7_4"),
+            ("qc_sequence_gravy", "sequence_liability_gravy"),
+            ("qc_sequence_length", "sequence_liability_sequence_length"),
+        ):
+            value = property_metrics.get(source_key)
+            if type(value) in {int, float} and math.isfinite(float(value)):
+                metrics[destination] = value
+    metrics["analysis_status"] = "measured" if result["assessment_status"] == "measured" else "partial"
+    candidate["metrics"] = metrics
+    raw = candidate.setdefault("raw_metadata", {})
+    raw["sequence_liability"] = result
+    raw["analysis_parameters"] = params
+    raw["measurement_status"] = {
+        "status": metrics["analysis_status"], "assessment_status": result["assessment_status"], "error": "",
+    }
+    raw["measurement_provenance"] = {
+        **dict(raw.get("measurement_provenance") or {}),
+        "sequence_liability": {
+            "method": METHOD, "method_version": METHOD_VERSION,
+            "parameters": result["parameters"], "source": result["source"],
+            "reused_evaluations": result["method_provenance"].get("reused_evaluations") or [],
+            "result_artifact": str(result_path.relative_to(job.run_dir)),
+            "attribution": result["attribution"], "scientific_status": result["assessment_status"],
+        },
+    }
+    return _finish_metric_analysis(
+        job, [candidate], tool="sequence_liability", table_name="sequence_liability_metrics.csv",
+        metric_names=[
+            "sequence_liability_finding_count", "sequence_liability_warning_count",
+            "sequence_liability_information_count", "sequence_liability_unpaired_cysteine_count",
+            "sequence_liability_interface_residue_finding_count", "sequence_liability_peppatch_residue_count",
+            "sequence_liability_isoelectric_point", "sequence_liability_net_charge_ph_7_4",
+            "sequence_liability_gravy", "sequence_liability_sequence_length",
+        ],
+        required_metrics=["sequence_liability_finding_count"], error_key="sequence_liability_error",
+    )
+
+
 def _safe_float(value: Any) -> float | None:
     return finite_number(value)
 

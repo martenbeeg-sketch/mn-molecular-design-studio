@@ -988,7 +988,8 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                 "fasta_header", "engine_version", "operation", "structure_kind", "image_digest",
                 "validation_acceptance", "validation_measurements", "validation_provenance",
                 "database_source", "complex_analysis_selection", "reference_placement",
-                "reference_environment", "tag_fusion_suitability", "measurement_provenance", "analysis_parameters",
+                "reference_environment", "tag_fusion_suitability", "sequence_liability",
+                "measurement_provenance", "analysis_parameters",
             ) if key in raw}
             settings = inputs.get("params") or {}
             from mn_molecular_design_studio.evaluations import file_digest

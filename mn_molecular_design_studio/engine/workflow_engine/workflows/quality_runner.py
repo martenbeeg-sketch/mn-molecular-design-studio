@@ -48,6 +48,38 @@ def atoms_from(path):
     return array
 
 
+def flatten_pep_patch_residues(residue_data):
+    """Flatten PEP-Patch's saved per-method residue annotations for reuse.
+
+    PEP-Patch returns a list of method/configuration records, each containing
+    residue-level patch assignments. Persisting these native assignments lets
+    later Database views reuse the registered method instead of recalculating
+    or approximating its patches.
+    """
+    rows = []
+    if isinstance(residue_data, list):
+        for method_record in residue_data:
+            if not isinstance(method_record, dict):
+                continue
+            metadata = {key: value for key, value in method_record.items() if key != "per_residue_patches"}
+            for patch in method_record.get("per_residue_patches") or []:
+                if isinstance(patch, dict):
+                    rows.append({**metadata, **patch})
+    elif hasattr(residue_data, "to_dict"):
+        try:
+            rows.extend(dict(row) for row in residue_data.to_dict(orient="records"))
+        except (TypeError, ValueError):
+            pass
+    elif isinstance(residue_data, dict):
+        for method_name, table in residue_data.items():
+            if hasattr(table, "to_dict"):
+                try:
+                    rows.extend({"method_name": str(method_name), **dict(row)} for row in table.to_dict(orient="records"))
+                except (TypeError, ValueError):
+                    continue
+    return rows
+
+
 def interface_metrics(item, settings, destination):
     import numpy as np
     import biotite.structure as struc
@@ -147,13 +179,10 @@ def pep_patch(item, settings, destination):
         if definition["method"] == "hydrophobic":
             definition["config"]["hydrophobicity_scale"] = "/opt/resources/hydrophobicity_scales/scale_Ja.csv"
     residue_data, descriptors = process_pdb(str(pdb), definitions)
-    if hasattr(residue_data, "to_csv"):
-        residue_data.to_csv(destination / "residue_patches.csv")
-    elif isinstance(residue_data, dict):
-        import hashlib
-        for name, data in residue_data.items():
-            if hasattr(data, "to_csv"):
-                data.to_csv(destination / ("residue_patches_" + hashlib.sha1(str(name).encode()).hexdigest()[:10] + ".csv"))
+    residue_rows = flatten_pep_patch_residues(residue_data)
+    if residue_rows:
+        import pandas as pd
+        pd.DataFrame(residue_rows).to_csv(destination / "residue_patches.csv", index=False)
     scalar = {"peppatch_" + str(k): float(v) for k, v in descriptors.items() if isinstance(v, (int, float)) and math.isfinite(v)}
     total = scalar.get("peppatch_total_area")
     if total:

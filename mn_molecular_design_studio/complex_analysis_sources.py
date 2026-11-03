@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ _WORKFLOWS = {
     "analysis.reference_environment",
     "analysis.tag_fusion_suitability",
     "analysis.tag_fusion_context",
+    "analysis.sequence_liability",
 }
 _STRUCTURE_SUFFIXES = {".pdb", ".ent", ".cif", ".mmcif"}
 _SELECTION_FIELDS = {
@@ -351,6 +353,38 @@ def authorize_database_structure(
         ligand_selection = {"chain": selected_chain, "residue_key": selected_residue,
                             "ccd": selected_ccd or str(matches[0].get("ccd") or "").upper(),
                             "smiles": Chem.MolToSmiles(molecule, isomericSmiles=True)}
+    elif workflow_id == "analysis.sequence_liability" and ligand_selection is not None:
+        if not isinstance(ligand_selection, dict) or set(ligand_selection) - {"chain", "residue_key", "ccd", "smiles"}:
+            raise ValueError("Optional ligand interface evidence needs a supported saved ligand identity.")
+        selected_residue = str(ligand_selection.get("residue_key") or "").strip()
+        selected_chain = str(ligand_selection.get("chain") or "").strip()
+        selected_ccd = str(ligand_selection.get("ccd") or "").strip().upper()
+        requested_smiles = str(ligand_selection.get("smiles") or "").strip()
+        if not selected_residue or not selected_chain or not requested_smiles:
+            raise ValueError("Optional ligand interface evidence requires an exact chain, residue key, and isomeric SMILES.")
+        parsed_ligands = [item for item in components if str(item.get("type") or "").casefold() == "small_molecule"]
+        matches = [item for item in parsed_ligands
+                   if str(item.get("residue_key") or "") == selected_residue
+                   and str(item.get("residue_key") or "").split(":", 1)[0] == selected_chain
+                   and (not selected_ccd or str(item.get("ccd") or "").upper() == selected_ccd)]
+        if len(matches) != 1:
+            raise ValueError("The selected optional ligand is not unique in this saved structure.")
+        matching_record = next((item for item in (record.get("components") or [])
+                                if str(item.get("type") or "").casefold() == "small_molecule"
+                                and str(item.get("residue_key") or "") == selected_residue), {})
+        stored_smiles = str(matching_record.get("smiles") or "").strip()
+        from rdkit import Chem
+        molecule = Chem.MolFromSmiles(requested_smiles)
+        if molecule is None:
+            raise ValueError("The optional ligand SMILES is invalid.")
+        canonical_smiles = Chem.MolToSmiles(molecule, isomericSmiles=True)
+        if stored_smiles:
+            stored_molecule = Chem.MolFromSmiles(stored_smiles)
+            if stored_molecule is None or Chem.MolToSmiles(stored_molecule, isomericSmiles=True) != canonical_smiles:
+                raise ValueError("The optional ligand identity does not match the saved Database component.")
+        ligand_selection = {"chain": selected_chain, "residue_key": selected_residue,
+                            "ccd": selected_ccd or str(matches[0].get("ccd") or "").upper(),
+                            "smiles": canonical_smiles}
     elif ligand_selection is not None:
         raise ValueError("Ligand selections are accepted only by PLIP, PandaMap, and PoseBusters.")
     binder_chains = [str(value).strip() for value in (selection.get("binder_chains") or []) if str(value).strip()]
@@ -379,6 +413,13 @@ def authorize_database_structure(
                 raise ValueError("Choose a protein chain with an explicit, validated reference association to place this complex in its reference frame.")
         elif source_component_chain:
             raise ValueError("Reference associations are accepted only by the separately registered Tag and Fusion Context evaluation.")
+    elif workflow_id == "analysis.sequence_liability":
+        if not binder_chains:
+            raise ValueError("Select at least one protein chain to assess. Interface partner chains are optional.")
+        if len(binder_chains) > 1 and not target_chains:
+            # Multi-chain constructs may still be screened chain by chain; the
+            # optional target group only controls interface-specific evidence.
+            pass
     elif workflow_id in _LIGAND_WORKFLOWS:
         if binder_chains or target_chains:
             raise ValueError("Protein-ligand workflows use a selected ligand residue and do not accept protein interface chain groups.")
@@ -411,6 +452,9 @@ def authorize_database_structure(
         "parsed_components": components,
         "structure_context": context,
         "group_origin": group.get("origin") or {},
+        "observations": list(record.get("observations") or []),
+        "structure_record": {"id": structure_id, "group_id": group_id, "context": context,
+                             "label": structure.get("label") or ""},
     }
 
 
@@ -544,6 +588,10 @@ def build_database_analysis_source(
         "structure_format": source["structure_format"],
         "ligand_selection": source.get("ligand_selection") or {},
     }
+    if workflow_id == "analysis.sequence_liability":
+        source_manifest["reused_evidence"] = _stage_sequence_liability_evidence(
+            user, source, bundle_dir,
+        )
     if source.get("saved_confidence_context"):
         source_manifest["selected_evaluation_confidence_context"] = source["saved_confidence_context"]
     if reference_context:
@@ -603,6 +651,94 @@ def build_database_analysis_source(
         "selected_structure_path": str(staged_structure),
         "selected_model_id": source["model_id"],
     }
+
+
+def _stage_sequence_liability_evidence(user: dict, source: dict, bundle_dir: Path) -> list[dict[str, Any]]:
+    """Stage only ACL-checked Evaluations tied to the exact Database representation."""
+    from mn_molecular_design_studio.complex_analysis_inspector import observation_context
+    from mn_molecular_design_studio.complex_analysis_ui import _saved_evaluation_artifacts
+    from mn_molecular_design_studio.evaluations import evaluation_descriptor
+
+    current_structure = dict(source.get("structure_record") or {})
+    current_structure.update({"id": source["structure_id"], "context": source.get("structure_context") or {}})
+    selected_component_chains = list(source.get("binder_chains") or [])
+    selected_partner_chains = list(source.get("target_chains") or [])
+    output = []
+    reuse_dir = bundle_dir / "reused_evaluations"
+    for observation in source.get("observations") or []:
+        try:
+            descriptor = evaluation_descriptor(observation)
+        except (KeyError, TypeError, ValueError):
+            continue
+        evaluator = str(descriptor.get("evaluator") or "").casefold()
+        if evaluator not in {"sequence_qc", "pep_patch", "biotite_interface", "plip", "pandamap"}:
+            continue
+        context = observation_context(observation)
+        candidate = context.get("candidate") if isinstance(context.get("candidate"), dict) else {}
+        raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+        selection = raw.get("complex_analysis_selection") if isinstance(raw.get("complex_analysis_selection"), dict) else {}
+        source_structure_id = str(context.get("source_structure_id") or context.get("representation_id")
+                                  or selection.get("structure_id") or "")
+        saved_digest = str(context.get("source_structure_digest") or context.get("structure_digest")
+                           or selection.get("structure_digest") or "")
+        if source_structure_id != str(source["structure_id"]) or saved_digest != str(source["structure_digest"]):
+            continue
+        saved_component_chains = list(candidate.get("binder_chains") or selection.get("binder_chains") or [])
+        saved_partner_chains = list(candidate.get("target_chains") or selection.get("target_chains") or [])
+        if evaluator == "sequence_qc":
+            if saved_component_chains and saved_component_chains != selected_component_chains:
+                continue
+            sequence = str(candidate.get("binder_sequence") or "")
+            if not sequence:
+                continue
+            output.append({
+                "evaluator": evaluator, "evaluation_id": descriptor.get("id"),
+                "run_id": descriptor.get("run_id"), "source_digest": saved_digest,
+                "chain_id": selected_component_chains[0] if len(selected_component_chains) == 1 else "",
+                "sequence": sequence, "metrics": dict(observation.get("metrics") or {}),
+                "method_version": descriptor.get("engine_version") or "Biopython ProteinAnalysis",
+            })
+            continue
+        if evaluator == "pep_patch" and saved_component_chains != selected_component_chains:
+            continue
+        if evaluator in {"plip", "pandamap"}:
+            selected_ligand = dict(source.get("ligand_selection") or {})
+            saved_ligand = selection.get("ligand_selection") if isinstance(selection.get("ligand_selection"), dict) else {}
+            if not selected_ligand or saved_ligand != selected_ligand:
+                continue
+        if evaluator == "biotite_interface" and not (
+            (saved_component_chains == selected_component_chains and saved_partner_chains == selected_partner_chains)
+            or (saved_component_chains == selected_partner_chains and saved_partner_chains == selected_component_chains)
+        ):
+            continue
+        artifacts = _saved_evaluation_artifacts(user, observation, current_structure, source["structure_digest"])
+        selected_artifacts = []
+        for artifact in artifacts:
+            name = str(artifact.get("name") or "")
+            allowed = (evaluator == "pep_patch" and (name == "patch_metrics.json" or name.startswith("residue_patches") and name.endswith(".csv")))
+            allowed = allowed or (evaluator == "biotite_interface" and name == "contacts.json")
+            allowed = allowed or (evaluator in {"plip", "pandamap"} and name == "interactions.csv")
+            if not allowed:
+                continue
+            path = Path(str(artifact.get("path") or "")).resolve()
+            if not path.is_file() or path.stat().st_size > 50 * 1024 * 1024:
+                continue
+            evaluation_dir = reuse_dir / re.sub(r"[^A-Za-z0-9._-]", "_", str(descriptor.get("id") or descriptor.get("run_id") or "evaluation"))[:100]
+            evaluation_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            staged = evaluation_dir / name
+            shutil.copyfile(path, staged)
+            selected_artifacts.append({"name": name, "path": str(staged.relative_to(bundle_dir))})
+        if not selected_artifacts:
+            continue
+        output.append({
+            "evaluator": evaluator, "evaluation_id": descriptor.get("id"),
+            "run_id": descriptor.get("run_id"), "source_digest": saved_digest,
+            "component_chains": saved_component_chains, "partner_chains": saved_partner_chains,
+            "ligand_selection": selection.get("ligand_selection") or raw.get("complex_analysis_selection", {}).get("ligand_selection") or {},
+            "method_version": descriptor.get("engine_version") or "",
+            "artifacts": selected_artifacts,
+        })
+    return output
 
 
 def _collection_structure_suffix(path: Path) -> str:
@@ -1042,6 +1178,8 @@ def apply_database_analysis_source(payload: dict, user: dict, project_id: str | 
         parameters["binder_chains"] = list(adapter["source"]["binder_chains"])
         if workflow_id != "analysis.pep_patch":
             parameters["target_chains"] = list(adapter["source"]["target_chains"])
+        if workflow_id == "analysis.sequence_liability":
+            parameters["interface_ligand_selection"] = dict(adapter["source"].get("ligand_selection") or {})
     result = {key: value for key, value in payload.items() if key != "database_source"}
     result["parameters"] = parameters
     return result

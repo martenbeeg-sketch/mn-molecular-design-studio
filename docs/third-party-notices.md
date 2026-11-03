@@ -2,12 +2,17 @@
 
 ## BinderScope
 
-The Studio Tag and Fusion Suitability evaluator adapts visualization and
+Studio's Tag and Fusion Suitability evaluator adapts visualization and
 geometric-assessment concepts described in BinderScope's
 `binder_review/termini.py`, `docs/termini.md`, and associated Inspector views.
-Studio's evaluator is an independent implementation and does not import or
-copy BinderScope Python source. Upstream attribution is retained here and in
-the saved Evaluation payload.
+The Sequence and Developability Liabilities evaluator adapts advisory motif
+and disulfide-method concepts from `binder_review/liabilities.py` and
+`binder_review/disulfides.py`. BinderScope's `binder_review/interface.py` was
+reviewed to compare contact, SASA, patch and confidence evidence with Studio's
+existing registered evaluators; Studio keeps those Studio method definitions.
+Studio's evaluators are independent implementations and do not import or copy
+BinderScope Python source. Upstream attribution is retained here and in the
+saved liability Evaluation payload.
 
 BinderScope is available under the MIT License. Copyright (c) 2026 The
 University of Iowa.

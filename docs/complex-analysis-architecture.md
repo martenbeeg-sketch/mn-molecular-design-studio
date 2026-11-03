@@ -96,15 +96,75 @@ measurements, job state, Evaluation ID, and provenance when available.
 | Paired-reference visualization | **Supported when an authorized association and current placement Evaluation exist.** The complete saved reference coordinate file and transformed source share one Mol* view. Author-numbered sequence tracks distinguish mapped/present, resolved-but-omitted, and sequence-declared-but-unresolved reference residues. Other saved reference chains/components remain visible. Studio does not infer that the saved file is biologically full-length. |
 | Exact-correspondence structural placement | **Supported as an optional registered Evaluation.** A unique contiguous exact source subsequence is fitted to the explicitly associated reference chain using mapped Cα atoms and the shared Bio.PDB.Superimposer Kabsch fitter. Results retain both structure identities, digests, models, chains, residue map, transformation, aligned-pair count, source/reference coverage, RMSD, method/version and parameters. |
 | Non-identical correspondence and placement | **No persisted Evaluation.** Mol* has a separate transient TM-align superposition for selected polymer chains; it does not save a Database-bound correspondence, placement Evaluation or provenance. No Studio US-align workflow is registered. |
-| Optional reference-frame steric/environment context | **Supported as a registered, optional Evaluation.** Requires a current explicit component association and matching saved Reference Placement Evaluation. Reports static heavy-atom distances, residue evidence and configured van-der-Waals envelope overlap against resolved omitted reference residues, explicitly selected reference chains and recognized modeled sugar residues. Geometry against the associated source component and other complex components is reported separately. A selected assembly ID is accepted only where the file confirms identity-operator membership; non-identity operators are not expanded. No biological accessibility or binding-quality score is claimed. |
+| Optional reference-frame geometric/environment context | **Supported as a registered, optional Evaluation.** Requires a current explicit component association and matching saved Reference Placement Evaluation. Reports static heavy-atom distances, residue evidence and configured van-der-Waals envelope overlap against resolved omitted reference residues, explicitly selected reference chains and recognized modeled sugar residues. Envelope overlap is a geometric proxy; Studio does not validate atom typing, bonding, protonation or chemical clash energetics, so it is not reported as a chemically validated steric clash. Geometry against the associated source component and other complex components is reported separately. A selected assembly ID is accepted only where the file confirms identity-operator membership; non-identity operators are not expanded. No biological accessibility or binding-quality score is claimed. |
 | Tag/fusion terminal geometry and clearance advisory | **Supported as a registered post-hoc Evaluation.** Flexible tags use grid-path reach estimates; folded fusions use spherical exit-cone envelopes. Measured envelope clearance is retained separately from suitability; a folded fusion at an interface-contacting terminal residue gets an explicit advisory even if its sampled sphere clears. Incomplete termini, cyclic/multichain inputs, missing DSSP and unverified B-factors remain explicitly limited. No tag dynamics, biological accessibility or experimental SPR/BLI result is claimed. |
 | Full-reference tag/fusion context | **Supported only as a separate optional Evaluation.** It requires an explicit validated component association and a saved exact Reference Placement Evaluation. It checks resolved reference heavy-atom geometry only; it does not calculate biological assemblies, glycan accessibility or experimental binding. |
+| Sequence and developability liabilities | **Supported as an advisory registered Database Evaluation.** The Inspector combines sequence-only motifs and reused Sequence Composition properties with exact-digest saved interface/PEP-Patch evidence, model SASA/DSSP, and explicit or geometry-inferred disulfide observations. No experimental modification, stability, expression, or universal developability score is claimed. |
 | Protein–DNA/RNA interactions and generalized specificity | **Unavailable as general contextual analyses.** Existing prediction-time constraints or protein-only tools are not presented as post-hoc evaluations for these cases. |
 
 BinderScope's Inspector, map, board and query concepts informed these views.
 Studio retains its Database identities, ACLs, Mol* viewer, registered
 evaluators, and per-user human review annotations; campaign-specific labels,
 browser-local review state, and inferred rankings are not imported.
+
+### Sequence and Developability Liabilities
+
+`analysis.sequence_liability` is a post-hoc evaluator for explicitly selected
+protein chains in one authorized Database representation. It is available for
+protein-only and protein-containing complexes and does not require binder
+design provenance. The selected chain group is reported chain by chain;
+cyclic constructs do not receive presumed free-terminal calls, and multichain
+construct connectivity is not inferred.
+
+The audit found these existing Studio capabilities: Sequence Composition
+reports length, pI, net charge at the selected pH, GRAVY, aromaticity,
+instability index, entropy and residue fractions; PEP-Patch reports configured
+surface descriptors; Biotite Interface stores residue-pair contact evidence;
+and Tag/Fusion reuses Bio.PDB ShrakeRupley absolute residue SASA plus DSSP
+Sander relative accessibility and secondary structure when available. The
+liability workflow reuses exact-digest saved Sequence Composition, Biotite,
+PEP-Patch, PLIP and PandaMap Evaluations where their selected chain groups
+match. Existing PEP-Patch per-residue annotations are now retained in its
+normal artifacts so later views can reuse the registered output.
+
+New work in this evaluator consists of sequence-motif matching and
+coordinate-based Cys SG pairing. It distinguishes explicit PDB `SSBOND`/`LINK`
+or mmCIF `_struct_conn` records from one-to-one geometry inference, using
+3.0 Å close and 3.4 Å loose limits. Competing equal-score matchings are
+reported as ambiguous; geometry can include a modeled protein-chain partner
+outside the selected component, while findings remain scoped to selected
+chains. Missing SG coordinates are unknown. Sequence alerts
+cover N-X-S/T sequons, NG/NS deamidation susceptibility, DG/DS isomerization,
+DP and dibasic/furin protease motifs, Met/Trp oxidation susceptibility and
+hydrophobic runs of at least six V/I/L/M/F/W/Y residues. Exposure is attached
+only when the corresponding DSSP assignment exists. A saved PEP-Patch surface
+patch is presented as its native method output; no alternate patch algorithm
+or aggregation score is introduced.
+
+Sequence Composition values use its registered Biopython ProteinAnalysis
+method when an exact matching saved Evaluation is unavailable. Coordinate
+SASA/DSSP use the existing Tag/Fusion helper implementations; these are
+method reuse, not independent new definitions. A source Cα B-factor is called
+pLDDT only when the user explicitly confirms that source encoding. Saved
+Evaluation-wide confidence metrics remain global context and are never
+localized to residues or converted to liability severity. Findings preserve
+author residue numbers/insertion codes, sequence position, evidence basis,
+severity, exact source identity/digest/model, Evaluator provenance, and
+Mol* selectors when coordinates map uniquely. Missing SASA, interface maps,
+confidence, patch files and coordinates remain explicit unavailable states.
+
+BinderScope's `liabilities.py` supplied advisory motif concepts and thresholds;
+`disulfides.py` supplied the recorded-first, geometry-fallback distinction
+and 3.0/3.4 Å pairing limits. Studio independently implements them with
+Database-aware author numbering and conservative ambiguity handling. Its
+campaign-specific parity fallback and global charge flag are not used.
+BinderScope `interface.py` was inspected for contact, interface, SASA,
+hydrophobic-patch and confidence outputs. Studio keeps its registered
+Biotite, PEP-Patch, Rosetta, ipSAE and other evaluator definitions rather
+than treating BinderScope campaign measurements as interchangeable. Sequence
+motifs are not proof of modification, cleavage, instability, aggregation,
+expression or experimental binding, and the evaluator does not compute a
+universal developability score.
 
 ### Optional reference-frame placement
 
@@ -129,8 +189,9 @@ existing evaluations are unchanged. If placement is absent, stale, inaccessible
 or invalid, the two structures remain visible in separate original frames.
 
 A good fit does not establish experimental binding or biological accessibility.
-The evaluator does not calculate clashes, glycans, occlusion, or accessibility,
-and a partial reference file does not become full-length context by inference.
+The placement evaluator itself does not calculate environmental geometry,
+glycan occlusion, or accessibility; those are separate, optional evaluations.
+A partial reference file does not become full-length context by inference.
 TM-align/US-align and validated non-identical structural correspondence remain
 separate future work.
 
@@ -212,7 +273,11 @@ scopes; reference context is measured by a separate method-specific Evaluation:
 
 The registered `analysis.reference_environment` workflow reports static
 geometry; it does not calculate solvent exposure, conformational accessibility,
-membrane orientation, glycan occupancy, or a binding-quality score. For each
+membrane orientation, glycan occupancy, or a binding-quality score. Its
+configured van-der-Waals overlap is a geometric envelope measurement, not a
+chemically validated steric-clash calculation: atom typing, bonding,
+protonation, and interaction energetics are not validated by this workflow.
+For each
 context residue it stores closest atom-pair evidence (source and context atom,
 element, author residue number and insertion code), distance, atom-pair counts
 within 8 Å, and summed configured van-der-Waals envelope overlap above 0.4 Å.
@@ -230,7 +295,7 @@ The Evaluation also stores total residue/atom-pair counts, the placement fit
 coverage and RMSD, source/reference IDs and digests, reference coordinate
 origin where explicit file metadata supports it, selected chains, assembly ID,
 method/version, and limitations. Positive overlap is reported as potential
-geometric overlap, not an experimental clash.
+geometric envelope overlap, not a chemically validated or experimental clash.
 
 Resolved omitted protein residues in the associated reference chain are
 measured separately from explicitly selected other chains and recognized
@@ -518,11 +583,13 @@ saved Boltz-2/Protenix pair; both remain in their original frames until an
 external transform and explicit map are supplied. No real aligned overlay was
 claimed in this verification.
 BinderScope's campaign-specific family clustering, embedding, rejection
-filters, specificity map, validated full-length spatial context, glycan/steric
-context, sequence liabilities, and fusion/tag accessibility remain planned
-extensions. The optional Database reference association remains independent
-from binder-design provenance and does not claim reference identity unless a
-user or source workflow explicitly records it.
+filters, and specificity map remain planned extensions. Studio has separate
+Database workflows for explicit reference association and placement, static
+reference-context geometry, Tag/Fusion suitability, and sequence liabilities;
+none infers a biological reference or experimental accessibility. The
+sequence-liability evaluator is independent of binder-generation provenance.
+The optional Database reference association does not claim reference identity
+unless a user or source workflow explicitly records it.
 
 ### Delivery status and remaining work
 
@@ -541,13 +608,11 @@ Remaining scientific work is limited to separately validated calculations:
    constructs or numbering schemes, including any TM-align/US-align extension;
    verify supplied transforms against structures rather than treating their
    declared provenance as authenticated.
-2. Add validated spatial context measurements for justified full-length
-   references before exposing them as evaluations; exact-component placement
-   alone does not provide these measurements.
-3. Add advanced interface context such as all-atom full-length clashes,
-   glycan occlusion, and construct/tag accessibility only through suitable
-   registered evaluators with explicit inputs and provenance.
-4. Add general protein–DNA/RNA interaction and counter-target specificity
+2. Extend reference context beyond its current static geometry with validated
+   chemical steric-clash analysis, glycan occupancy/occlusion, and construct
+   accessibility methods. Current envelope overlap and modeled-sugar proximity
+   remain geometric observations and do not establish these outcomes.
+3. Add general protein–DNA/RNA interaction and counter-target specificity
    analyses only when their scientific methods and input requirements are
    defined and validated.
 
