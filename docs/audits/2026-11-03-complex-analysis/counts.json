@@ -1,0 +1,14 @@
+{
+  "pending_candidate_runs": 780,
+  "pending_outcomes": {
+    "rejected": 727,
+    "accepted": 35,
+    "unresolved": 18
+  },
+  "pending_runs_evaluated": 192,
+  "pending_runs_requested": 192,
+  "exact_database_matches": 780,
+  "decision_match_errors": [],
+  "inventory_runs": 2410,
+  "source_acceptance_rows": 1824
+}

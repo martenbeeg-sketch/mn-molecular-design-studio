@@ -1,0 +1,772 @@
+[
+  {
+    "host": "pc002975",
+    "source_run_id": "20261029-210422-9af4aeaa",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-180518-f9e9916c",
+    "structure_digest": "c86118e25b1c8d1ab5a8b8a2c16c6d0da1fc3ab462c103affd87a15d7e7d9a6a",
+    "source_complex_molecule_id": "mol-87bcde837b7ceeb2f637b0055ede0a0b",
+    "binder_molecule_id": "mol-57cb7d558e0f1d88ac59eb683ef2336c",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-cd4bac69933895474d40272de91029c9",
+    "structure_id": "structure-d6cc59901b09530590581429726a6be9",
+    "source_job_reference": "design/20261029-210422-9af4aeaa",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native campaign \u00b7 stop 08:00 Rome-00000003",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261029-220658-b570be76",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-181650-15a0644d",
+    "structure_digest": "659e7b693a8407209a3d6ede0bcfcd2432ad29c89db3c82b69cb88397ad56d1d",
+    "source_complex_molecule_id": "mol-597dca8684c92e628adfe1bc5257c9b1",
+    "binder_molecule_id": "mol-26144f20fefcd81faa5d66db223b4f9d",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-3f2d8dc6d04b5c351feb6618c7a2ce1d",
+    "structure_id": "structure-314b4040f5a91c5e08476f4e89a8b335",
+    "source_job_reference": "design/20261029-220658-b570be76",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native design campaign \u00b7 stop 08:00 Rome-00000003",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261029-221641-4fc7a6ee",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-181630-ceed44c8",
+    "structure_digest": "e706b9b3711898c7827aacecd4ee96bc08abe5ecca1736b36898110a2dd5c9c9",
+    "source_complex_molecule_id": "mol-184599ffa264db82d88ed16e8a91f8b8",
+    "binder_molecule_id": "mol-dbcb312ff29eaff340ac61730efdc462",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-a7f3abed7c79ea1b6cac8d0db8b1cb70",
+    "structure_id": "structure-fde64c0cf91b0ae29a5344faab43a498",
+    "source_job_reference": "design/20261029-221641-4fc7a6ee",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native design campaign \u00b7 stop 08:00 Rome-00000010",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261029-221652-15bb0f93",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-181234-865bb7c0",
+    "structure_digest": "73c4f0372b22da046f0be639ffc31181eeb6ff57a336f6ef80891dee74f507b8",
+    "source_complex_molecule_id": "mol-81e5b68b39a61758369969faf1ff309c",
+    "binder_molecule_id": "mol-5cf877b8996bc953df4f25cfb2e2dffd",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-1525b486b738be4c9066012d6182e030",
+    "structure_id": "structure-8e13dc70bee6edfcd1e1cbac4fb78b54",
+    "source_job_reference": "design/20261029-221652-15bb0f93",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native design campaign \u00b7 stop 08:00 Rome-00000012",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261029-222555-47033e46",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-182007-f0ae54ec",
+    "structure_digest": "1cabba17f0dc514154de6657bfef994ea2fd38e01de75d494b0317c438119048",
+    "source_complex_molecule_id": "mol-f355ebf9f2292e2229e19856b4e52a92",
+    "binder_molecule_id": "mol-775a55f625f4a9661f25e6b9324dc823",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-55fdd69f91f593664834890214766770",
+    "structure_id": "structure-c862728aa814f4a507a56783be956c05",
+    "source_job_reference": "design/20261029-222555-47033e46",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native design campaign \u00b7 stop 08:00 Rome-00000017",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261029-225211-4762ee54",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-181613-867e7680",
+    "structure_digest": "2379410e10579a44f9fb1c4994e320bbfe6d7ab44dcb14a5bad9f38280d53ef6",
+    "source_complex_molecule_id": "mol-291c2b9717f93a07659a9016acd03745",
+    "binder_molecule_id": "mol-d9ed1ccf9b9063e2111ca98e66a0acbf",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-88d6a71c71be53c67b15b83cb7b8dd1b",
+    "structure_id": "structure-c6ac9081db7b73c4fec180eee97722f7",
+    "source_job_reference": "design/20261029-225211-4762ee54",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native design campaign \u00b7 stop 08:00 Rome-00000040",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261029-231007-4b71decc",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-181647-53b439fe",
+    "structure_digest": "1782b136a71ce23716ae184c33fac32241141b9a222d6a4b6b91b9070b46f917",
+    "source_complex_molecule_id": "mol-ae6c9873fde016bce3dcd647eeb0f3e8",
+    "binder_molecule_id": "mol-4ff62496382dd7ed0e42d2950648d43c",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-9139014fdc8eaeb1f6da8cf46e086f54",
+    "structure_id": "structure-2fb7cb84903bb96f8875b956454d0b06",
+    "source_job_reference": "design/20261029-231007-4b71decc",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native design campaign \u00b7 stop 08:00 Rome-00000054",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261029-231234-4e37b4d7",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-181525-4a676761",
+    "structure_digest": "54d82b19ed207e6f397e18601b9c7d4826da171fc97395938e515f682c229af4",
+    "source_complex_molecule_id": "mol-3ca61a2b8edc7f91943577dc88745fcc",
+    "binder_molecule_id": "mol-1a42551c346b3311ed207ea8b09e9e14",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-79a7141d7717c741fed17285729b3e24",
+    "structure_id": "structure-d1141cfede3e7550298399e5444e1e6b",
+    "source_job_reference": "design/20261029-231234-4e37b4d7",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native design campaign \u00b7 stop 08:00 Rome-00000056",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261029-232410-e1c95425",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-181949-3f0d74da",
+    "structure_digest": "3c1d8c6fa6ca5fd7cdc58e16527f73c12480d923ffb8eb9a0af3c2b67c83a410",
+    "source_complex_molecule_id": "mol-0a7c455268a21e050ba84225ddb106b6",
+    "binder_molecule_id": "mol-dd55ea7c64559c4662bccea8e0c60026",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-6d88bbe288bf59f6ed99d076bdf44507",
+    "structure_id": "structure-d80f04fdb00810faf9c19c8af17885be",
+    "source_job_reference": "design/20261029-232410-e1c95425",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native design campaign \u00b7 stop 08:00 Rome-00000061",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261029-235919-645e462e",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-181109-a6fc5b5f",
+    "structure_digest": "57675611673b7fb7cf115366482a186106b21f1527b3ca00de6bda366facfa9b",
+    "source_complex_molecule_id": "mol-2b74a66bf82f04adc0a14a1c03f1016b",
+    "binder_molecule_id": "mol-0cf04ad17e4260dec7f7770e64edc26d",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-9296cf039cb393b2acf5546ae28ac5d1",
+    "structure_id": "structure-bbbd1d13fda467ed9c65d866e31c9362",
+    "source_job_reference": "design/20261029-235919-645e462e",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native campaign \u00b7 stop 08:00 Rome-00000001",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261030-002200-a70b8d57",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-181616-6333f23d",
+    "structure_digest": "f47bf789a2aabfbc2f866957c42a0b322f3c3579c9d6551845948eb8e2561068",
+    "source_complex_molecule_id": "mol-14cee94740a01c0caa62bc31a6d1527e",
+    "binder_molecule_id": "mol-8e793d1923c1959d92e7dd5dfa7cccd7",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-31f40cf7305b62a93e3a960b6ca22ea9",
+    "structure_id": "structure-84c94836c6b025b54170512d246955c3",
+    "source_job_reference": "design/20261030-002200-a70b8d57",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native campaign \u00b7 stop 08:00 Rome \u00b7 ledger fix-00000015",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261030-002512-eac25595",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-181653-e14d7120",
+    "structure_digest": "1bf8970c2690c5215bf1787434f3458dd155ec67f91acce52ffd2afd49607f14",
+    "source_complex_molecule_id": "mol-96cd46893135b321116ed95bc9df3193",
+    "binder_molecule_id": "mol-90c4a84078fa5090a1888e475ef2959f",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-633dc6138baab7649a30a626324bb504",
+    "structure_id": "structure-4fac9352b7434bc1e5d93bffe7bd4cde",
+    "source_job_reference": "design/20261030-002512-eac25595",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native campaign \u00b7 stop 08:00 Rome \u00b7 ledger fix-00000020",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261030-002924-132a259d",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-180528-cd0347a3",
+    "structure_digest": "df2a9363dd7631fc04494063e06677955e23b378767b0c4faddeaefdcfc0e960",
+    "source_complex_molecule_id": "mol-91f0fc8afbc29daa6cff12e6aabf0142",
+    "binder_molecule_id": "mol-3117553ee4eca348a3300029163395e8",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-d0865f0622fb9228955249c7ce1fad34",
+    "structure_id": "structure-40fd5f1330e4a7fa9710bab14ffa6fa8",
+    "source_job_reference": "design/20261030-002924-132a259d",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native campaign \u00b7 stop 08:00 Rome \u00b7 ledger fix-00000025",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261030-002957-97f01024",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-180508-218b723f",
+    "structure_digest": "9588d7e0b21809ad54d4bd3df5f8a1d39f03651917975c605fa91788572dc1ef",
+    "source_complex_molecule_id": "mol-8e148fd2c8b74bfcf4c403c745ff6e2f",
+    "binder_molecule_id": "mol-0f50a783158869ff4272c80f0c405730",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-8c57b1a2b6fa127bf8ebe44d46e0fa2b",
+    "structure_id": "structure-e60aa0d4d0ec8d4a8506f872044d6d57",
+    "source_job_reference": "design/20261030-002957-97f01024",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native campaign \u00b7 stop 08:00 Rome \u00b7 ledger fix-00000026",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261031-112821-9b884998",
+    "candidate_id": "rfd4_000045_idr_peptide_binder_rep49",
+    "evaluation_run_id": "20261103-180506-1419612b",
+    "structure_digest": "108314c16b4dd33e4db2273d322d37a291d923f54c92dfb41d5f648244f9ed6f",
+    "source_complex_molecule_id": "mol-1904dbb2787d38d96e68a50c62e24fac",
+    "binder_molecule_id": "mol-d0dcfd33c27a300ae47592f4851ddc49",
+    "target_molecule_id": "mol-5b8294fd0a0b697c318184f64286a427",
+    "target_sequence_sha256": "3f29f0b8a434f462fc137895da86055ffc765440996599e1aaae32e79af2ebaa",
+    "group_id": "accepted-review-c20be82745024a6b2b58b058b6a2f8e3",
+    "structure_id": "structure-81054f8a87a155074868bc369de4b412",
+    "source_job_reference": "design/20261031-112821-9b884998",
+    "campaign_id": null,
+    "campaign_name": "Tau 214\u2013283 IDR \u00b7 RFD4 native refold \u00b7 200 passing \u00b7 50 designs per job \u00b7 max 3000-00000001",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261031-112832-fae83c41",
+    "candidate_id": "rfd4_000047_idr_peptide_binder_rep6",
+    "evaluation_run_id": "20261103-181320-a1fae09a",
+    "structure_digest": "8231e62d7ccff76b09b92cb5faae0c2b093ddb71709346b626325a4bc9167c68",
+    "source_complex_molecule_id": "mol-b5073f0d2f2501dff954d365e2dadc73",
+    "binder_molecule_id": "mol-f026c69db5f46e3ff70cf45db8d7ee76",
+    "target_molecule_id": "mol-5b8294fd0a0b697c318184f64286a427",
+    "target_sequence_sha256": "3f29f0b8a434f462fc137895da86055ffc765440996599e1aaae32e79af2ebaa",
+    "group_id": "accepted-review-3bee9d7898fc7a2230ea16008849786e",
+    "structure_id": "structure-180d571e7ea3173acf3bc49acaac88d6",
+    "source_job_reference": "design/20261031-112832-fae83c41",
+    "campaign_id": null,
+    "campaign_name": "Tau 214\u2013283 IDR \u00b7 RFD4 native refold \u00b7 200 passing \u00b7 50 designs per job \u00b7 max 3000-00000002",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261031-145314-b1338cc5",
+    "candidate_id": "rfd4_000004_idr_peptide_binder_rep11",
+    "evaluation_run_id": "20261103-180843-1d6453ac",
+    "structure_digest": "56c705897430d97435ee9633e407a20035672d23e4a717d3c5e9185a31a116ab",
+    "source_complex_molecule_id": "mol-f692750cdfaa9a399f3c1742de60acbd",
+    "binder_molecule_id": "mol-60318f41a77dd79f6603a7589411d9c2",
+    "target_molecule_id": "mol-5b8294fd0a0b697c318184f64286a427",
+    "target_sequence_sha256": "3f29f0b8a434f462fc137895da86055ffc765440996599e1aaae32e79af2ebaa",
+    "group_id": "accepted-review-3c89e12ac25c3e22a1d0998b92a5d6dc",
+    "structure_id": "structure-bffd7da052b4e5c256aff7262324945b",
+    "source_job_reference": "design/20261031-145314-b1338cc5",
+    "campaign_id": null,
+    "campaign_name": "R3 IDR \u00b7 RFD4 50 designs/job \u00b7 200 passing \u00b7 restart 2026-10-31-00000004",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261031-160237-c6289aad",
+    "candidate_id": "rfd4_000001_idr_peptide_binder_rep0",
+    "evaluation_run_id": "20261103-181702-7218c575",
+    "structure_digest": "78246a4ad188c8ad29cd7d03570e41310732d64c180111462600b31246d720fd",
+    "source_complex_molecule_id": "mol-fee30da8ea4f3d5d5d212122096d9ff9",
+    "binder_molecule_id": "mol-3a149efd97c9263c246b902a843c8004",
+    "target_molecule_id": "mol-5b8294fd0a0b697c318184f64286a427",
+    "target_sequence_sha256": "3f29f0b8a434f462fc137895da86055ffc765440996599e1aaae32e79af2ebaa",
+    "group_id": "accepted-review-d07be897405780ca84ab7a3b98d01739",
+    "structure_id": "structure-96367216a31522b11bde2f9515e8f978",
+    "source_job_reference": "design/20261031-160237-c6289aad",
+    "campaign_id": null,
+    "campaign_name": "R3 IDR \u00b7 RFD4 50 designs/job \u00b7 200 passing \u00b7 restart 2026-10-31-00000007",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "pc002975",
+    "source_run_id": "20261031-160237-c6289aad",
+    "candidate_id": "rfd4_000047_idr_peptide_binder_rep6",
+    "evaluation_run_id": "20261103-181702-7218c575",
+    "structure_digest": "cfe453ff3043de3d2ddbf5f3c1a87dc5a65f0d363c46adfbda5e742862785e82",
+    "source_complex_molecule_id": "mol-39e5708bdb32f169a4d9365f6d098da0",
+    "binder_molecule_id": "mol-f4d6bae6de76f66abf47cd3cb3cb511b",
+    "target_molecule_id": "mol-5b8294fd0a0b697c318184f64286a427",
+    "target_sequence_sha256": "3f29f0b8a434f462fc137895da86055ffc765440996599e1aaae32e79af2ebaa",
+    "group_id": "accepted-review-d07be897405780ca84ab7a3b98d01739",
+    "structure_id": "structure-1cbeed9041ffcd86ddfaf8f9bd520819",
+    "source_job_reference": "design/20261031-160237-c6289aad",
+    "campaign_id": null,
+    "campaign_name": "R3 IDR \u00b7 RFD4 50 designs/job \u00b7 200 passing \u00b7 restart 2026-10-31-00000007",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "PC004032",
+    "source_run_id": "20261029-221404-cd102de0",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-180657-148621cb",
+    "structure_digest": "d7b08403c58aaba2b264b2679ab1697b90d48cbfff5ba28d0bdbfb35faa6edfb",
+    "source_complex_molecule_id": "mol-0c1f941ac00e6e5ac4a384123bf0f856",
+    "binder_molecule_id": "mol-5e4cb3b019315464150527612a2c0c89",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-0d9e36d1d2d6e0000bb221f76e3e700c",
+    "structure_id": "structure-8ece7307f3de354db3e6874357fe0740",
+    "source_job_reference": "cluster:1d1e6398-6932-4400-ba09-a045a0336b19",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native design campaign \u00b7 stop 08:00 Rome-00000008",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "PC004032",
+    "source_run_id": "20261029-222041-77ebddb1",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-180645-c07a7dee",
+    "structure_digest": "9046e0dcade89c6d16eabfc285fb095d520155465926696ab96e448f0245111b",
+    "source_complex_molecule_id": "mol-3d5f9d11da9270b69c86183bfea2bde2",
+    "binder_molecule_id": "mol-d16586efdf4c433f46c121cdd93e101f",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-5196d91b7da51b054ef2d7e7b2be4eda",
+    "structure_id": "structure-5398cdad428e2fbf91012acd931662e1",
+    "source_job_reference": "cluster:4142148b-6a46-436d-8878-ceeb850b32ed",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native design campaign \u00b7 stop 08:00 Rome-00000015",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "PC004032",
+    "source_run_id": "20261029-224332-fc49da28",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-180855-43c8835c",
+    "structure_digest": "7a5b6f2eb3e72137500cb080e144d662e4848ba44002e5885de98cf4ec62f98f",
+    "source_complex_molecule_id": "mol-b60b1d688f50e566b2cdb139c80671d2",
+    "binder_molecule_id": "mol-febc4f68b30a695285a8b211d1281cc6",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-ce63c43f34d821b553f5f789c07ef4f3",
+    "structure_id": "structure-ee6bd4b744e374fa922ef9b819bd7f4d",
+    "source_job_reference": "cluster:2c08a8e8-0fb4-4bd3-8255-1e65651ea756",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native design campaign \u00b7 stop 08:00 Rome-00000036",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "PC004032",
+    "source_run_id": "20261029-232920-63df616b",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-181254-60e493cd",
+    "structure_digest": "e69193dcc596b6476dcb2277ef848f01b5c21ae89d910cb1327501465b0b09ac",
+    "source_complex_molecule_id": "mol-fba4eb082b7e788675a0aafb507534e1",
+    "binder_molecule_id": "mol-4b3af88eb5cd9b5602d9b0e6cc8e3848",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-36525e2cc8d921e263de3ea2262757a1",
+    "structure_id": "structure-c945dac1c202936c9679ea710c1e8e54",
+    "source_job_reference": "cluster:c406767a-db93-4a50-87e4-39dc84281c8c",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native design campaign \u00b7 stop 08:00 Rome-00000063",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "PC004032",
+    "source_run_id": "20261030-000340-234abf1c",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-181133-fff9e7f4",
+    "structure_digest": "6c37b8bf8146837d10c9fda6b6d9e39ce22a5b12ae17ca34a25a62f6fe989c4d",
+    "source_complex_molecule_id": "mol-499f211402dd5b41abac7ac63d4dbcb5",
+    "binder_molecule_id": "mol-46ed633dca0155c37c03d8cd263c1ddb",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-840b186a82c5148ca605a41def5620cd",
+    "structure_id": "structure-095d2b1c838df8856d76ea8cd0f1b566",
+    "source_job_reference": "cluster:9aae32af-2ea3-412c-84e7-1183029f8d8b",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native campaign \u00b7 stop 08:00 Rome-00000009",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "PC004032",
+    "source_run_id": "20261030-001630-e964a707",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-180749-0fcc792a",
+    "structure_digest": "c21b761e937f7869735679425b79211a6909904fa332325138134238f7688f5b",
+    "source_complex_molecule_id": "mol-a029c256ac93d15353f7d98a945f9933",
+    "binder_molecule_id": "mol-97a20675c446539e7986d42b195b094d",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-8e5318d5838665192da88323ccf91859",
+    "structure_id": "structure-daa771e766930559ba53de591cc38fc1",
+    "source_job_reference": "cluster:750c2053-0cb4-49ed-8bd5-28222ba5d5e6",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native campaign \u00b7 stop 08:00 Rome \u00b7 ledger fix-00000008",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "PC004032",
+    "source_run_id": "20261030-002343-acb60e3d",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-180700-39b7be26",
+    "structure_digest": "699a988260d301f03e626a14f6810b3b14b25dd11ecbfdeb9ef65cb18191db16",
+    "source_complex_molecule_id": "mol-65392550025a9b90fbd4a6706a3c09a4",
+    "binder_molecule_id": "mol-fe188e13a3f2a4122fda135929cca7b3",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-305ea3a6709dab8bd0ab97dd6a2eee77",
+    "structure_id": "structure-3857742207f7f95017951823fc9b3574",
+    "source_job_reference": "cluster:83987b8b-9b59-459f-93fe-72047f096dfc",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native campaign \u00b7 stop 08:00 Rome \u00b7 ledger fix-00000018",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "PC004032",
+    "source_run_id": "20261030-002632-50c941eb",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-181423-27503fef",
+    "structure_digest": "be071951a4b4dd49498292b5e258ec250c965a2764b0c4b5a1cd1163f08774d8",
+    "source_complex_molecule_id": "mol-e7c2d094debac7e5f91426a2e57f5c76",
+    "binder_molecule_id": "mol-e55a09cce0879613d707897ca0e1f17b",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-2ba1182f9847344ee02e7ad519e18c71",
+    "structure_id": "structure-918ba6c4be5af649e8698198ea9a1843",
+    "source_job_reference": "cluster:15fe111a-c265-4c5f-ae8e-6a18a83cdafc",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native campaign \u00b7 stop 08:00 Rome \u00b7 ledger fix-00000022",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "PC004032",
+    "source_run_id": "20261031-150152-08926421",
+    "candidate_id": "rfd4_000044_idr_peptide_binder_rep48",
+    "evaluation_run_id": "20261103-180726-bcaa3e7c",
+    "structure_digest": "604cb786052c0da2c2a6bdcbd171373d9cec4c089a024aaf559bf4239c2fe964",
+    "source_complex_molecule_id": "mol-3987d39635390db3c0626d7df23d07b0",
+    "binder_molecule_id": "mol-9842541cfb19705e0b025da4b0158218",
+    "target_molecule_id": "mol-5b8294fd0a0b697c318184f64286a427",
+    "target_sequence_sha256": "3f29f0b8a434f462fc137895da86055ffc765440996599e1aaae32e79af2ebaa",
+    "group_id": "accepted-review-79d582906c1d24aeaa5cda18a4301411",
+    "structure_id": "structure-3eee1b6247a7c4cb2434f57a73e0b58e",
+    "source_job_reference": "cluster:7f09cc82-167e-41a6-a782-a4d346e10b11",
+    "campaign_id": null,
+    "campaign_name": "R3 IDR \u00b7 RFD4 50 designs/job \u00b7 200 passing \u00b7 restart 2026-10-31-00000005",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "PC004033",
+    "source_run_id": "20261029-221654-188443c8",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-180819-314a6368",
+    "structure_digest": "0f0a25e1f8fa7f1099c7d5debd503a0e2a3104129596dbebdd0a49b891d09650",
+    "source_complex_molecule_id": "mol-ca6856c81f6b46232434ec7da1869794",
+    "binder_molecule_id": "mol-00e4d9fbd14b68fffa8377231a34dc27",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-5dbd0c24e5b87612940bbfac7dddaafd",
+    "structure_id": "structure-e09c5c91170bfed8aba0ee28ea7697bf",
+    "source_job_reference": "cluster:4ccb112c-64c8-4d92-8843-d667ea5787e6",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native design campaign \u00b7 stop 08:00 Rome-00000011",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "PC004033",
+    "source_run_id": "20261029-222907-c48c2e45",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-181107-d34de042",
+    "structure_digest": "effcb2071280c9ed75f9ff2755075fe45b02819af7fffdbaddd55c0764db3cad",
+    "source_complex_molecule_id": "mol-f98f1f33bf2d0a947b160dc9329c5a33",
+    "binder_molecule_id": "mol-26c6e0fdc938fee97c5eb82c11e4e462",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-2068470f6fffc54ca93d3f0a237f49f0",
+    "structure_id": "structure-e79a77fbd543efa5fc8f923b6a047ed5",
+    "source_job_reference": "cluster:ba3d7a1a-1749-4fb8-b560-aaac39addcf9",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native design campaign \u00b7 stop 08:00 Rome-00000023",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "PC004033",
+    "source_run_id": "20261029-223219-472d1388",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-180744-b77b2fac",
+    "structure_digest": "2a69a986ee5c4f71a7b04a783b82f97a41e1ef00486146b22c8b3b4ee9e9303d",
+    "source_complex_molecule_id": "mol-cd8e3216789d8266c1a41a29174c1c0b",
+    "binder_molecule_id": "mol-da722f27b0678979800cc4d0b0c97843",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-99381aa3e488799941a85ca947531faa",
+    "structure_id": "structure-0c3765cae66aafa43ce1532f5a9a62ef",
+    "source_job_reference": "cluster:aa2d77a8-1259-4fba-9ac9-3d2880ab93cf",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native design campaign \u00b7 stop 08:00 Rome-00000026",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "PC004033",
+    "source_run_id": "20261029-225019-99e54a02",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-180916-6f0fa372",
+    "structure_digest": "bf1554535b3883ca7f847828f9021a7f45aa642b267aabb30996cc5069ab71c6",
+    "source_complex_molecule_id": "mol-78216f3c15af67f5a7a1fa9f225db872",
+    "binder_molecule_id": "mol-d4997ec8af3730d3877f57266493beb5",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-52e108b07b9128f939b530b3f1ab5498",
+    "structure_id": "structure-94b237a61b88fdd4edf1d8f4f13ab5e4",
+    "source_job_reference": "cluster:95ad5b60-5d1c-4b45-8e07-5fd3392cf4f5",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native design campaign \u00b7 stop 08:00 Rome-00000039",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "PC004033",
+    "source_run_id": "20261030-000436-e9e86efc",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-180749-e672394a",
+    "structure_digest": "0d0a840c495d414ce17e545017342e0cd245f3b2e93af2ce49ab2ffc91181f07",
+    "source_complex_molecule_id": "mol-e1430df4de43470cae7e4d013acee763",
+    "binder_molecule_id": "mol-c3d6346025ced07337a8f15e725c86b7",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-49b76d52c45cd644eae9eca676018602",
+    "structure_id": "structure-6df7c68182e48ab852ea369c4974ad78",
+    "source_job_reference": "cluster:7f1a5f18-5d4d-4ba0-b78b-fe8e8c32595e",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native campaign \u00b7 stop 08:00 Rome-00000008",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "PC004033",
+    "source_run_id": "20261030-002125-77cb7092",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-180837-c159a956",
+    "structure_digest": "9b612c1d39b530ef2965a39adb2ef73b157e00f48f1cbb05d9ae1dbcfd3ac5a0",
+    "source_complex_molecule_id": "mol-0f7612c939cdfd234d6e44a507f78ec9",
+    "binder_molecule_id": "mol-141fa6dff3afc8d63f3639e4b45bb0de",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-e5bc3274878c17c7df3bf5d4d09e77af",
+    "structure_id": "structure-c0124edc34ce6f104e8b6e1455de4e09",
+    "source_job_reference": "cluster:8811598b-c5d9-4e22-903f-674efc425a6a",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native campaign \u00b7 stop 08:00 Rome \u00b7 ledger fix-00000014",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  },
+  {
+    "host": "PC004033",
+    "source_run_id": "20261030-003118-346c854d",
+    "candidate_id": "rfd4_000001_idr_peptide_binder",
+    "evaluation_run_id": "20261103-180937-d63cd6ea",
+    "structure_digest": "11a250d38dc4ec05a948c129ddb6942020b6bdb4648cddb4bf015f2d98802823",
+    "source_complex_molecule_id": "mol-cb1ec182536455ca441a4a97b08bae56",
+    "binder_molecule_id": "mol-ee625f6a5ddd7345e5e09bc818eea533",
+    "target_molecule_id": "mol-d2b7e1fd31ce750c4b75fe0b20119197",
+    "target_sequence_sha256": "caa1c53eb13ffe8c33538badeb186ac564c612941baa6c2fb41dc59f93f53d3d",
+    "group_id": "accepted-review-6c3776d3144d9a706bbf39711bb9aa00",
+    "structure_id": "structure-954ec607547d6b1823aa317f97c5fb47",
+    "source_job_reference": "cluster:a2b21904-de23-4e87-80fd-4e1e4741da2a",
+    "campaign_id": null,
+    "campaign_name": "Michele Tau R3 IDR \u00b7 RFD4 native campaign \u00b7 stop 08:00 Rome \u00b7 ledger fix-00000028",
+    "binder_chains": [
+      "B"
+    ],
+    "target_chains": [
+      "A"
+    ]
+  }
+]
