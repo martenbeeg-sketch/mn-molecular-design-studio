@@ -516,7 +516,8 @@ _render_inspector_tag_fusion(items, "fixture")
     assert app.session_state["fixture-inspector-highlights"] == ["A:20^_"]
 
 
-def test_database_workspace_launches_intrinsic_tag_fusion_with_selected_chain_provenance(tmp_path, monkeypatch):
+@pytest.mark.parametrize("saved_roles", [False, True])
+def test_database_workspace_launches_intrinsic_tag_fusion_with_selected_chain_provenance(tmp_path, monkeypatch, saved_roles):
     from streamlit.testing.v1 import AppTest
     from mn_molecular_design_studio import complex_analysis_ui, molecule_imports, molecular_database
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
@@ -531,6 +532,8 @@ def test_database_workspace_launches_intrinsic_tag_fusion_with_selected_chain_pr
     imported = database.import_records(USER, [parsed], name="Tag/fusion UI fixture")
     record = database.list_molecules(USER, molecule_ids=imported["molecule_ids"], collection="all")["items"][0]
     structure = record["representations"][0]
+    if saved_roles:
+        structure["context"].update(binder_chains=["B"], target_chains=["A"])
     structure_path = database.structure_file(USER, structure["id"])
     components = complex_analysis_ui.component_inventory(structure_path.read_bytes(), structure_path.name)
     monkeypatch.setattr(molecular_database, "MolecularDatabase", lambda: database)
@@ -554,12 +557,16 @@ _render_database_analysis(USER, RECORD, STRUCTURE, __import__("pathlib").Path(PA
 '''
     app = AppTest.from_string(script, default_timeout=20).run()
     assert not app.exception
+    assessed, partner = (["B"], ["A"]) if saved_roles else (["A"], ["B"])
+    for label in ("Interface chain group A", "Protein chain(s) to assess", "PEP-Patch surface chain group"):
+        assert next(widget.value for widget in app.multiselect if widget.label == label) == assessed
+    assert next(widget.value for widget in app.multiselect if widget.label == "Interface chain group B") == partner
     run_key = f"complex-analysis-db-run-analysis-tag_fusion_suitability-{source_key}-tag-fusion"
     app.button(key=run_key).click().run()
     assert app.session_state["submitted_workflow"] == "analysis.tag_fusion_suitability"
     parameters = app.session_state["submitted_parameters"]
     assert parameters["database_source"]["molecule_id"] == record["id"]
     assert parameters["database_source"]["structure_id"] == structure["id"]
-    assert parameters["database_source"]["binder_chains"] == ["A"]
-    assert parameters["database_source"]["target_chains"] == ["B"]
+    assert parameters["database_source"]["binder_chains"] == assessed
+    assert parameters["database_source"]["target_chains"] == partner
     assert parameters["termini_confirmed"] is False

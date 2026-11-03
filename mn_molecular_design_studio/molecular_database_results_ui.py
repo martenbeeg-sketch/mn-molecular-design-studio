@@ -204,6 +204,21 @@ def _render_accepted_design_promotion(run_path: Path, user: dict) -> bool:
         return True
 
 
+def _render_saved_run_collections(run_path, user, database):
+    from mn_molecular_design_studio.molecular_database_results import list_saved_run_collections
+    try:
+        groups = list_saved_run_collections(run_path, user, database=database)
+    except (FileNotFoundError, PermissionError):
+        return
+    for group in groups:
+        if st.button("Open saved collection · " + group["name"], key="run-saved-collection-" + group["id"]):
+            st.session_state["molecular-preselect-group"] = group["id"]
+            st.session_state["molecular-preselect-collection"] = "library"
+            st.session_state["molecular-preselect-molecule"] = group["molecule_ids"][0]
+            st.session_state["page"] = "Database"
+            st.rerun()
+
+
 def render_run_database_actions(run_dir, user: dict, projects: list[dict]) -> None:
     """Render selective promotion and database navigation for a local run."""
     run_path = Path(run_dir).expanduser().resolve()
@@ -224,6 +239,7 @@ def render_run_database_actions(run_dir, user: dict, projects: list[dict]) -> No
         return
 
     _render_accepted_design_promotion(run_path, user)
+    _render_saved_run_collections(run_path, user, database)
 
     if not isinstance(records, list):
         return

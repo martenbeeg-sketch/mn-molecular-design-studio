@@ -391,8 +391,14 @@ def _database_analysis_subject(database, user, owner, project, source):
         path = database.structure_file(user, structure_id, materialize=True)
         if _file_sha256(path) != digest:
             return None
+        context = representation.get("context") or {}
+        target_id = context.get("design_target_molecule_id") if (
+            source.get("target_chains") and
+            set(source["target_chains"]) == set(context.get("target_chains") or [])
+        ) else None
         return {"molecule_id": molecule_id, "structure_id": structure_id, "group_id": group_id,
-                "structure_digest": digest, "record": record, "representation": representation}
+                "structure_digest": digest, "record": record, "representation": representation,
+                "target_molecule_id": target_id}
     except (FileNotFoundError, OSError, PermissionError, ValueError, TypeError):
         return None
 
@@ -882,6 +888,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             ).fetchone()
         prediction_candidate_ids.add(candidate_id)
         identity_record = {**record, "files": []}
+        designed_target_components = []
         ligand_analysis = (candidate.get("raw_metadata") or {}).get("analysis_subject") == "ligand"
         protein_analysis = (candidate.get("raw_metadata") or {}).get("analysis_subject") == "protein"
         prediction_ligand = prediction_run and sum(
@@ -917,11 +924,41 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             ]
             if binder_components:
                 identity_record["components"] = binder_components
+                designed_target_components = [
+                    component for component in record.get("components") or []
+                    if component.get("role") == "target" and component.get("type") == "protein"
+                    and component.get("sequence")
+                ]
+                provenance.update(
+                    binder_chains=[str(component["chain"]) for component in binder_components],
+                    target_chains=[str(component["chain"]) for component in designed_target_components],
+                )
 
         # An explicit owner/admin removal applies only to this run's group.
         # Preserve its Results candidate and memberships in all other runs.
         if ("mol-" + _canonical_fingerprint(identity_record)[:32]) in removed_ids:
             continue
+
+        if designed_target_components:
+            # Preserve a molecule relationship as well as the complex coordinates.
+            # This is the exact modeled target sequence, which may be a crop of
+            # the campaign input; it is not a native structural reference.
+            target_record = {"name": f"{name} · modeled target", "components": designed_target_components,
+                             "files": [], "metadata": {}}
+            target_id, _, _ = _find_or_create_input(
+                database, user, project, name, source_for_molecule, target_record,
+                provenance={**provenance, "input_role": "modeled_target"}, source_key_suffix=":target",
+            )
+            relationship = {
+                "design_target_molecule_id": target_id,
+                "design_target_relationship": "exact modeled target sequence",
+                "design_target_sequence_sha256": hashlib.sha256(
+                    ":".join(component["sequence"] for component in designed_target_components).encode()
+                ).hexdigest(),
+                "design_target_is_structural_reference": False,
+            }
+            provenance.update(relationship)
+            identity_record["metadata"] = {**identity_record.get("metadata", {}), **relationship}
 
         if database_subject is not None:
             molecule_id, destination = database_subject["molecule_id"], database_subject["group_id"]
@@ -1011,6 +1048,10 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             target_source = _path(candidate.get("target_pdb"), run_dir)
             target_components = [component for component in record.get("components", []) if component.get("role") == "target"]
             evaluation_target = {"target_id": _id("target-", _json(target_components))} if target_components else {}
+            if provenance.get("design_target_molecule_id"):
+                evaluation_target["target_id"] = provenance["design_target_molecule_id"]
+            elif database_subject is not None and database_subject.get("target_molecule_id"):
+                evaluation_target["target_id"] = database_subject["target_molecule_id"]
             analysis_source_context = ({
                 "source_kind": "database",
                 "source_molecule_id": database_subject["molecule_id"],

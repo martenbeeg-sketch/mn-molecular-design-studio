@@ -129,6 +129,44 @@ def list_run_molecules(run_dir, user, *, database=None) -> list[dict]:
     return _list_authorized_run(run_dir, user, database)[5]
 
 
+def list_saved_run_collections(run_dir, user, *, database=None) -> list[dict]:
+    """Find accessible explicit selections linked to an authorized source run.
+
+    Saved selections remain separate from automatic run outputs: a Results
+    cleanup must preserve them, while its navigation may still show the link.
+    """
+    database = database or MolecularDatabase()
+    _, task_group, run_id, _, _ = _authorized_run(run_dir, user)
+    from mn_molecular_design_studio.cluster import config
+
+    with database.connection() as connection:
+        rows = connection.execute(
+            "SELECT g.*,s.molecule_id,s.provenance FROM molecule_groups g "
+            "JOIN molecule_sources s ON s.group_id=g.id "
+            "WHERE json_extract(s.provenance,'$.task_group')=? "
+            "AND json_extract(s.provenance,'$.run_id')=? "
+            "AND json_extract(s.provenance,'$.saved_selection')=1 "
+            "ORDER BY g.name,g.id,s.molecule_id", (task_group, run_id),
+        ).fetchall()
+    groups = {}
+    for row in rows:
+        if not database._can_read(row, user):
+            continue
+        provenance = json.loads(row["provenance"])
+        source_node = provenance.get("source_node")
+        if source_node and source_node != config.identity():
+            continue
+        if not source_node and provenance.get("workstation") not in (None, "", socket.gethostname()):
+            continue
+        item = groups.setdefault(row["id"], {
+            "id": row["id"], "name": row["name"], "project_id": row["project_id"],
+            "origin": json.loads(row["origin"]), "molecule_ids": [],
+        })
+        if row["molecule_id"] not in item["molecule_ids"]:
+            item["molecule_ids"].append(row["molecule_id"])
+    return list(groups.values())
+
+
 def remove_run_records(task_group, run_id, user, *, owner_id=None, project_id=None, database=None) -> dict:
     """Remove only automatically indexed Database records originating in a run.
 

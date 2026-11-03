@@ -2717,6 +2717,20 @@ def _render_optional_reference_context(user: dict, record: dict, structure: dict
                     st.error(f"Could not clear this component reference: {exc}")
 
 
+def _database_chain_defaults(context: dict, protein_chains: list[str]) -> tuple[list[str], list[str]]:
+    """Use roles recorded for this representation, validated against its chains."""
+    binder = context.get("binder_chains")
+    target = context.get("target_chains")
+    if (isinstance(binder, list) and isinstance(target, list) and binder
+            and all(isinstance(chain, str) for chain in binder + target)
+            and len(binder) == len(set(binder)) and len(target) == len(set(target))
+            and set(binder + target) <= set(protein_chains)
+            and not set(binder) & set(target)
+            and (target or len(protein_chains) == len(binder))):
+        return list(binder), list(target)
+    return protein_chains[:1], protein_chains[1:]
+
+
 def _render_database_analysis(user: dict, record: dict, structure: dict, path: Path,
                               components: list[dict], evaluation_id: str, *,
                               workflow_schema=None, submit=None) -> None:
@@ -2728,6 +2742,7 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
     db_group = MolecularDatabase().group(group_id, user)
     project_id = str(db_group.get("project_id") or "")
     context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
+    default_binder, default_target = _database_chain_defaults(context, protein_chains)
     model_id = str(context.get("model_id") or context.get("model_index") or context.get("model") or structure.get("model_index") or structure["id"])
     source = {
         "molecule_id": str(record["id"]), "structure_id": str(structure["id"]),
@@ -2765,9 +2780,9 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
         left, right = st.columns(2)
         group_a_key, group_b_key = f"complex-analysis-db-a-{key}", f"complex-analysis-db-b-{key}"
         if group_a_key not in st.session_state:
-            st.session_state[group_a_key] = protein_chains[:1]
+            st.session_state[group_a_key] = default_binder
         if group_b_key not in st.session_state:
-            st.session_state[group_b_key] = protein_chains[1:]
+            st.session_state[group_b_key] = default_target
         binder_chains = left.multiselect("Interface chain group A", protein_chains, key=group_a_key)
         target_chains = right.multiselect("Interface chain group B", protein_chains, key=group_b_key)
         source["binder_chains"], source["target_chains"] = list(binder_chains), list(target_chains)
@@ -2848,7 +2863,7 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
         st.caption("Post-hoc sequence and model screen. Exact saved Biotite, PEP-Patch, PLIP, PandaMap and Sequence Composition Evaluations are reused when available; this workflow does not rerun those scientific tools.")
         liability_component_key = f"complex-analysis-liability-components-{key}"
         if st.session_state.get(liability_component_key) is None:
-            st.session_state[liability_component_key] = protein_chains[:1]
+            st.session_state[liability_component_key] = default_binder
         selected_liability_chains = st.multiselect(
             "Protein chain(s) to assess", protein_chains,
             key=liability_component_key,
@@ -2925,7 +2940,7 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
         st.caption("Post-hoc advisory for one selected protein component against a selected protein interface. Flexible tags use geometric clearance paths; folded fusions use a spherical clearance envelope. Neither model simulates the actual tag or predicts assay performance.")
         component_key = f"complex-analysis-tag-fusion-component-{key}"
         if st.session_state.get(component_key) not in protein_chains:
-            st.session_state[component_key] = protein_chains[0]
+            st.session_state[component_key] = default_binder[0]
         assessed_chain = st.selectbox("Protein component to assess", protein_chains,
                                       key=component_key)
         partner_options = [chain for chain in protein_chains if chain != assessed_chain]
@@ -3132,7 +3147,7 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
         st.markdown("#### Protein surface analysis")
         pep_key = f"complex-analysis-db-pep-chains-{key}"
         if pep_key not in st.session_state:
-            st.session_state[pep_key] = protein_chains[:1]
+            st.session_state[pep_key] = default_binder
         surface_chains = st.multiselect("PEP-Patch surface chain group", protein_chains, key=pep_key)
         st.number_input("PEP-Patch pH", min_value=0.0, max_value=14.0, value=7.4, step=0.1,
                         key=f"complex-analysis-db-pep-ph-{key}")

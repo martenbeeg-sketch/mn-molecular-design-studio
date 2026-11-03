@@ -614,9 +614,14 @@ class MolecularDatabase:
                 validate_record(record, group["schema"])
         else:
             group_id = self.create_group(user, name, project_id=project_id, import_method=import_method, origin=origin)
+            group = self.group(group_id, user, write=True)
         audit_batch_id = uuid.uuid4().hex if import_audit else None
         with self.connection() as connection:
-            origin = origin or {"type": "user", "user_id": user["id"]}
+            origin = dict(origin or {"type": "user", "user_id": user["id"]})
+            if self._collection_kind(group) == "curated" and origin.get("run_id") and origin.get("task_group"):
+                # Explicit imports into a curated collection are saved selections,
+                # even when their provenance retains the source run identity.
+                origin["saved_selection"] = True
             ids = []
             for index, record in enumerate(records):
                 source_key = record.get("source_key") or _id("import-", _json([group_id, index, record["name"]]))

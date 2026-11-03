@@ -195,3 +195,22 @@ render_database({USER!r}, [])
     assert not app.exception
     assert {kind for _, kind in calls if kind is not None} == {"all", "library"}
     assert calls[-1] == ("list_molecules", "all")
+
+
+def test_saved_collection_navigation_survives_an_empty_automatic_output_list(tmp_path, monkeypatch):
+    _isolate_workspace(tmp_path, monkeypatch)
+    from mn_molecular_design_studio import molecular_database_results
+    monkeypatch.setattr(molecular_database_results, 'list_run_molecules', lambda *args, **kwargs: [])
+    monkeypatch.setattr(molecular_database_results, 'list_saved_run_collections', lambda *args, **kwargs: [
+        {'id':'accepted-run', 'name':'Accepted binders', 'molecule_ids':['binder-1']}])
+    app = AppTest.from_string(f'''
+from pathlib import Path
+from mn_molecular_design_studio.molecular_database_results_ui import render_run_database_actions
+render_run_database_actions(Path({str(tmp_path / 'runs/design/original')!r}), {USER!r}, [])
+''').run()
+    assert not app.exception
+    app.button(key='run-saved-collection-accepted-run').click().run()
+    assert not app.exception
+    assert app.session_state['molecular-preselect-group'] == 'accepted-run'
+    assert app.session_state['molecular-preselect-molecule'] == 'binder-1'
+    assert app.session_state['page'] == 'Database'

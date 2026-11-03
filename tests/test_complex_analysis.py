@@ -1083,27 +1083,35 @@ render_complex_analysis_workspace({USER!r}, workflow_schema=schema_provider, sub
     assert source["target_chains"] == ["B"]
 
 
-def test_database_analysis_ingestion_attaches_evaluation_to_exact_existing_representation(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reverse_roles", [False, True])
+def test_database_analysis_ingestion_attaches_evaluation_to_exact_existing_representation(tmp_path, monkeypatch, reverse_roles):
     database = _isolated_database(tmp_path, monkeypatch)
     imported_record = molecule_imports.parse_structure(_complex_pdb("protein"), "imported-ppi.pdb")[0]
+    target = database.import_records(USER, [{"name":"Target", "components":[
+        component for component in imported_record["components"] if component.get("chain") == "B"
+    ]}])
+    target_id = target["molecule_ids"][0]
+    imported_record["files"][0].update(design_target_molecule_id=target_id,
+                                       binder_chains=["A"], target_chains=["B"])
     imported = database.import_records(USER, [imported_record], name="Database PPI")
     record = database.list_molecules(USER, molecule_ids=imported["molecule_ids"])["items"][0]
     structure = record["representations"][0]
     from mn_molecular_design_studio.complex_analysis_sources import build_database_analysis_source
+    binders, targets = (["B"], ["A"]) if reverse_roles else (["A"], ["B"])
     adapter = build_database_analysis_source(USER, {
         "molecule_id": record["id"], "structure_id": structure["id"], "group_id": imported["group_id"],
-        "model_id": structure["id"], "binder_chains": ["A"], "target_chains": ["B"],
+        "model_id": structure["id"], "binder_chains": binders, "target_chains": targets,
     }, workflow_id="analysis.biotite_interface", project_id=None, database=database)
     run = tmp_path / "workspace" / "runs" / "analysis" / "database-interface-evaluation"
     candidate = {
         "candidate_id": adapter["candidate_id"] + "_biotite_interface_001",
         "source_molecule_id": record["id"], "stage": "analysis",
         "source_tool": "biotite_interface", "tool": "biotite_interface",
-        "complex_pdb": adapter["selected_structure_path"], "binder_chains": ["A"], "target_chains": ["B"],
+        "complex_pdb": adapter["selected_structure_path"], "binder_chains": binders, "target_chains": targets,
         "metrics": {"biotite_interface_residue_pair_count": 1},
         "raw_metadata": {"database_source": adapter["source_manifest"], "complex_analysis_selection": {
             "structure_digest": adapter["source"]["structure_digest"], "model_id": structure["id"],
-            "binder_chains": ["A"], "target_chains": ["B"],
+            "binder_chains": binders, "target_chains": targets,
         }},
     }
     (run / "artifacts/normalized_candidates").mkdir(parents=True)
@@ -1124,6 +1132,7 @@ def test_database_analysis_ingestion_attaches_evaluation_to_exact_existing_repre
     assert evaluations[0]["context"]["representation_id"] == structure["id"]
     assert evaluations[0]["context"]["structure_digest"] == adapter["source"]["structure_digest"]
     assert evaluations[0]["context"]["source_structure_digest"] == adapter["source"]["structure_digest"]
+    assert (evaluations[0]["context"]["target_id"] == target_id) is not reverse_roles
     assert len(after["representations"]) == 1
 
 

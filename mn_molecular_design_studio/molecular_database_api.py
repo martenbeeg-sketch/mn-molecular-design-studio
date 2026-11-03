@@ -224,11 +224,12 @@ def install(app, current_user):
     @router.get("/jobs/{task_group}/{run_id}")
     def run_molecules(task_group: str, run_id: str, user=Depends(current_user)):
         from mn_molecular_design_studio.runtime import runs_root
-        from mn_molecular_design_studio.molecular_database_results import list_run_molecules
+        from mn_molecular_design_studio.molecular_database_results import list_run_molecules, list_saved_run_collections
         if Path(task_group).name != task_group or Path(run_id).name != run_id or task_group in {".", ".."} or run_id in {".", ".."}:
             raise HTTPException(404, "Studio run not found.")
         items = call(list_run_molecules, Path(runs_root()) / task_group / run_id, user)
-        return {"items": items, "total": len(items)}
+        saved = call(list_saved_run_collections, Path(runs_root()) / task_group / run_id, user)
+        return {"items": items, "total": len(items), "saved_collections": saved}
 
     @router.post("/jobs/{task_group}/{run_id}/selections")
     def save_run_molecules(task_group: str, run_id: str, payload: RunSelectionRequest, user=Depends(current_user)):

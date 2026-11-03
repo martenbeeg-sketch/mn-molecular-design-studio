@@ -185,6 +185,46 @@ def test_generated_complex_reindex_keeps_binder_identity_and_only_passing_design
     assert rows[0]["structures"][0]["context"]["portable"] is True
 
 
+def test_generated_binder_links_existing_exact_modeled_target_and_preserves_complex(database):
+    import hashlib
+    target = database.import_records(A, molecule_imports.parse_sequences("ACD"),
+                                     name="Canonical target", project_id="project-1")
+    target_id = target["molecule_ids"][0]
+    complex_text = _pdb_acd().replace("TER\nEND", "TER\n" + "\n".join([
+        "ATOM      4  CA  GLU B   1       8.000   1.000   1.000  1.00 20.00           C",
+        "ATOM      5  CA  PHE B   2       9.000   1.000   1.000  1.00 20.00           C",
+        "ATOM      6  CA  GLY B   3      10.000   1.000   1.000  1.00 20.00           C",
+        "END",
+    ]))
+    passing = {"candidate_id":"rfd4-pass", "stage":"generation.backbone_sequence",
+               "binder_sequence":"EFG", "binder_chains":["B"], "target_chains":["A"],
+               "complex_pdb":"complex.pdb", "metrics":{"native_pass_filters":True}}
+    rejected = {**passing, "candidate_id":"rfd4-reject", "binder_sequence":"VVV",
+                "metrics":{"native_pass_filters":False}}
+    run = _make_run(database, "design", "rfd4-target-link", workflow="design_generation",
+                    tool="rfd4_proteina", candidates=[passing, rejected])
+    (run/"complex.pdb").write_text(complex_text)
+    for force in (False, True):
+        assert ingest_run(run, database=database, force=force) == 1
+        group = next(g for g in database.groups(A, collection="library")
+                     if g["origin"].get("run_id") == run.name)
+        rows = database.list_molecules(A, group_id=group["id"])["items"]
+        assert len(rows) == 1
+        binder = rows[0]
+        assert [(c["chain"],c["sequence"]) for c in binder["components"]] == [("B","EFG")]
+        assert binder["metadata"]["design_target_molecule_id"] == target_id
+        assert len(binder["representations"]) == 1
+        structure = binder["representations"][0]
+        assert structure["context"]["design_target_molecule_id"] == target_id
+        assert structure["context"]["design_target_sequence_sha256"] == hashlib.sha256(b"ACD").hexdigest()
+        assert structure["context"]["design_target_is_structural_reference"] is False
+        assert structure["context"]["binder_chains"] == ["B"]
+        assert structure["context"]["target_chains"] == ["A"]
+        assert database.structure_file(A, structure["id"]).read_bytes() == complex_text.encode()
+        assert binder["observations"][0]["context"]["target_id"] == target_id
+        assert database.list_molecules(A, molecule_ids=[target_id])["total"] == 1
+
+
 def test_filtered_campaign_ingests_only_acceptance_passes(database):
     passing = {
         "candidate_id": "campaign-pass", "stage": "generation.backbone_sequence",
@@ -571,6 +611,9 @@ def test_run_results_api_lists_and_promotes_only_selected_ids(database, monkeypa
             assert saved.status_code == 200, saved.text
             assert saved.json()["molecule_ids"] == [selected]
             assert database.list_molecules(A, group_id=saved.json()["group_id"])["total"] == 1
+            linked = client.get("/api/v1/molecules/jobs/proteinmpnn/api-results")
+            assert linked.status_code == 200
+            assert [g["id"] for g in linked.json()["saved_collections"]] == [saved.json()["group_id"]]
             app.dependency_overrides[_current_user] = lambda: B
             denied = client.get("/api/v1/molecules/jobs/proteinmpnn/api-results")
             assert denied.status_code == 404
@@ -594,3 +637,29 @@ def test_sync_throttle_preserves_last_indexing_warning(database, monkeypatch):
     monkeypatch.setattr(ingest, "migrate_legacy_groups", lambda *args: None)
     assert ingest.sync_workspace(A, force=True, database=database) == []
     assert ingest.sync_workspace(A, database=database) == []
+
+
+def test_saved_collection_is_navigable_from_run_but_not_removed_with_automatic_outputs(database, monkeypatch):
+    from mn_molecular_design_studio.molecular_database_results import list_saved_run_collections, remove_run_records
+    from mn_molecular_design_studio.cluster import config
+    run = _make_run(database, 'design', 'original-run', project='', tool='rfd4_proteina', candidates=[])
+    monkeypatch.setattr(config, 'identity', lambda: 'source-node')
+    origin = {'type':'user', 'collection_kind':'curated', 'run_id':run.name, 'task_group':'design'}
+    group = database.create_group(A, 'Accepted binders', origin=origin)
+    record = {'name':'passing', 'components':molecule_imports.parse_sequences('ACDEFG')[0]['components'],
+              'files':[{'name':'complex.pdb', 'content':b'HEADER existing conformation\nEND\n'}]}
+    provenance = {**origin, 'source_node':'source-node'}
+    imported = database.import_records(A, [record], group_id=group, origin=provenance)
+    assert 'saved_selection' not in provenance  # Do not mutate callers' provenance.
+    dbrow = database.list_molecules(A, group_id=group)['items'][0]
+    sid = dbrow['representations'][0]['id']
+    other = database.create_group(A, 'Same run ID from another machine', origin=origin)
+    database.import_records(A, [record], group_id=other, origin={**provenance,'source_node':'other-node'})
+    private = database.create_group(B, 'Inaccessible selection', origin=origin)
+    database.import_records(B, [record], group_id=private, origin=provenance)
+    before = list_saved_run_collections(run, A, database=database)
+    assert [g['id'] for g in before] == [group]
+    assert before[0]['molecule_ids'] == imported['molecule_ids']
+    remove_run_records('design', run.name, A, owner_id=A['id'], project_id='', database=database)
+    assert list_saved_run_collections(run, A, database=database) == before
+    assert database.structure_file(A, sid).read_bytes() == b'HEADER existing conformation\nEND\n'
