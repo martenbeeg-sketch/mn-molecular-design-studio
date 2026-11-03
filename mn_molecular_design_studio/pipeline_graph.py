@@ -1963,6 +1963,17 @@ def _compile_campaign_stop(graph: dict, nodes: dict, incoming: dict, *, allow_un
         binder_format=resolved_binder_format,
         source_tools=[route["tool"]],
     )
+    analysis_nodes = [ancestor for ancestor in ancestors
+                      if nodes[ancestor]["data"]["kind"] == "ipsae"]
+    if analysis_nodes:
+        # The current native controller can filter generator evidence directly;
+        # its ipSAE stage requires an independent refolding stage first. Do not
+        # silently compile away a visible analysis node and count/promote early.
+        raise ValueError(
+            "Campaign Stop cannot count the upstream ipSAE & Structure Analysis step on this native-evidence route. "
+            "Analyze the saved candidate collection without Campaign Stop, or configure a supported independent-refolding campaign. "
+            "The analysis node must not be skipped when deciding campaign acceptance."
+        )
     runtime_hours = float(params["max_runtime_hours"])
     deadline = str(params.get("deadline_at") or "").strip()
     if runtime_hours < 0:
