@@ -2108,6 +2108,7 @@ def _run_ipsae(
     structure_contact_cutoff: float = 4.0,
     hotspot_contact_cutoff: float = 5.0,
 ) -> list[dict[str, Any]]:
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.quality import docker_user_args
     ipsae_dir = run_dir / "artifacts" / "analysis" / "ipsae"
     input_dir = ipsae_dir / "inputs"
     output_dir = ipsae_dir / "rows"
@@ -2268,6 +2269,7 @@ def _run_ipsae(
             "docker",
             "run",
             "--rm",
+            *docker_user_args(),
             "-v",
             f"{run_dir}:/work",
             "-v",
@@ -2483,6 +2485,7 @@ def run_rosetta_metrics_contract(
 ) -> Path:
     """Score one-binder/one-target complex structures using the installed PyRosetta image."""
     source_run_dir = Path(source_run_dir)
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.quality import docker_user_args
     candidates_jsonl = Path(candidates_jsonl)
     nprocs = _allocated_cpu_cores(nprocs)
     candidates = _analysis_source_candidates(source_run_dir, candidates_jsonl)
@@ -2588,6 +2591,7 @@ def run_rosetta_metrics_contract(
             "docker",
             "run",
             "--rm",
+            *docker_user_args(),
             "-v",
             f"{job.run_dir}:{job.run_dir}",
             "-w",
