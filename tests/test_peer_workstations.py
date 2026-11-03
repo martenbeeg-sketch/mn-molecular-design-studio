@@ -855,3 +855,19 @@ def test_independent_workstation_settings_render_without_coordinator_controls(pe
         assert app.selectbox[0].value=='peer'
         assert any('stored locally' in c.value for c in app.caption)
         assert not any('coordinator' in e.label.casefold() for e in app.expander)
+
+
+def test_acceptance_reply_releases_next_staging_request_without_catalog_heartbeat(peers):
+    nodes, on = peers
+    user, project = account(on)
+    with on(0):
+        store = Store()
+        request = {'kind':'workflow', 'project_id':project['id'], 'payload':{'workflow':'analysis.ipsae'}}
+        store.submit(request, NEEDS, user, origin_node=nodes[0]['id'], placement=nodes[0]['id'])
+        second = store.submit(request, NEEDS, user, origin_node=nodes[0]['id'], placement=nodes[0]['id'])['job']
+        assert store.job(second['cluster_job_id'], user)['status'] == 'waiting_for_workstation'
+        command = store.claim(nodes[0]['id'])
+        store.finish(nodes[0]['id'], command['id'], command['lease_token'], response={'job':{
+            'task_group':'analysis', 'run_id':'accepted-first', 'run_dir':'/runs/analysis/accepted-first',
+            'status':'queued', 'tool':'ipsae'}})
+        assert store.job(second['cluster_job_id'], user)['status'] == 'dispatching'

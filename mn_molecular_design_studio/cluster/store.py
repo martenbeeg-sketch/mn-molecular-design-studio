@@ -1058,6 +1058,12 @@ class Store:
                 if bundle_id and not still_referenced:
                     unreferenced_bundle_id = bundle_id
 
+        if row["kind"] in {"workflow", "pipeline"}:
+            # Acceptance releases the staging reservation. Dispatch the next
+            # compatible request immediately; a large catalog heartbeat can
+            # take minutes even while the worker has ample execution capacity.
+            self.dispatch()
+
         if re.fullmatch(r"[0-9a-f]{64}", unreferenced_bundle_id):
             blob = self.root / "transfer-cache" / unreferenced_bundle_id
             if blob.is_file() and not blob.is_symlink():
