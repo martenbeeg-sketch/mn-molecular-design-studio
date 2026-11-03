@@ -40,3 +40,27 @@ def test_pae_lookup_does_not_assign_another_same_length_models_sidecar(tmp_path)
     assert _find_pae_path(tmp_path, {"raw_metadata": {"pae_path": str(sidecar)}}, selected) == sidecar
     # Missing explicit evidence must remain missing rather than falling back.
     assert _find_pae_path(tmp_path, {"raw_metadata": {"pae_path": "missing.json"}}, selected) is None
+
+
+def test_database_pae_sidecar_requires_authorized_exact_source_structure(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import auth, job_catalog, runtime
+    from mn_molecular_design_studio.complex_analysis_sources import database_pae_evidence
+    from mn_molecular_design_studio.evaluations import file_digest
+    run = tmp_path / "design" / "source-run"
+    manifest = run / "artifacts/normalized_candidates/candidates.jsonl"
+    manifest.parent.mkdir(parents=True)
+    structure = run / "exact-model.cif"
+    structure.write_text("data_exact\n")
+    sidecar = run / "exact-model.pae.json"
+    sidecar.write_text(json.dumps({"pae": [[0, 2], [3, 0]]}))
+    manifest.write_text(json.dumps({"candidate_id":"original", "complex_pdb":str(structure),
+        "source_tool":"bindcraft2", "raw_metadata":{"pae_path":str(sidecar)}}) + "\n")
+    monkeypatch.setattr(runtime, "runs_root", lambda: tmp_path)
+    monkeypatch.setattr(job_catalog, "get_job_access_record", lambda *a: {"owner_id":"owner"})
+    monkeypatch.setattr(auth, "can_access_job", lambda *a: True)
+    source = {"structure_digest":file_digest(structure), "structure_context":{
+        "task_group":"design", "run_id":"source-run", "candidate_id":"original"}}
+    assert database_pae_evidence({"id":"owner"}, source)["sha256"] == file_digest(sidecar)
+    assert database_pae_evidence({"id":"owner"}, {**source,"structure_digest":"different-model"}) is None
+    monkeypatch.setattr(auth, "can_access_job", lambda *a: False)
+    assert database_pae_evidence({"id":"other"}, source) is None

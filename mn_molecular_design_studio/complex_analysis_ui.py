@@ -1771,6 +1771,8 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
                        accessible_project_ids=accessible_project_ids(user),
                        access_admin=user.get("role") == "admin")["items"]
     identity_keys = ("molecule_id", "structure_id", "group_id", "structure_digest", "model_id")
+    if workflow_id == "analysis.ipsae":
+        identity_keys = (*identity_keys, "pae_digest")
     if workflow_id == "analysis.sequence_liability":
         identity_keys = (*identity_keys, "ligand_selection")
     if workflow_id == "analysis.reference_environment":
@@ -2731,12 +2733,16 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
         "molecule_id": str(record["id"]), "structure_id": str(structure["id"]),
         "group_id": group_id, "evaluation_id": evaluation_id, "model_id": model_id,
         "binder_chains": [], "target_chains": [],
+        "structure_context": context, "group_origin": db_group.get("origin") or {},
     }
     digest = _structure_digest(path)
     if not digest:
         st.info("The selected structure cannot be checksummed, so contextual analysis is unavailable.")
         return
     source["structure_digest"] = digest
+    from mn_molecular_design_studio.complex_analysis_sources import database_pae_evidence
+    pae_evidence = database_pae_evidence(user, source)
+    source["pae_digest"] = pae_evidence["sha256"] if pae_evidence else ""
     key = hashlib.sha256(f"database:{record['id']}:{structure['id']}".encode()).hexdigest()[:14]
     st.markdown("### Available analyses")
     st.caption("Choose a registered analysis explicitly. Opening a Database structure does not start calculations.")

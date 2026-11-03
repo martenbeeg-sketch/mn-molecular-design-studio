@@ -462,6 +462,41 @@ def authorize_database_structure(
     }
 
 
+def database_pae_evidence(user: dict, source: dict) -> dict | None:
+    """Find a local source-model sidecar only through exact, authorized lineage."""
+    from mn_molecular_design_studio.auth import can_access_job
+    from mn_molecular_design_studio.job_catalog import get_job_access_record
+    from mn_molecular_design_studio.runtime import runs_root
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.analysis import _find_pae_path, _resolve_path
+
+    context = source.get("structure_context") or {}
+    origin = source.get("group_origin") or {}
+    if context.get("_replica_node") or origin.get("_replica_node"):
+        # A peer's cached coordinates alone do not authorize guessing paths to
+        # its confidence files. Run this evaluation on the owning workstation.
+        return None
+    group = str(context.get("task_group") or origin.get("task_group") or "")
+    run_id = str(context.get("run_id") or origin.get("run_id") or "")
+    candidate_id = str(context.get("candidate_id") or "")
+    if (not group or not run_id or not candidate_id or Path(group).name != group or Path(run_id).name != run_id
+            or not can_access_job(user, get_job_access_record(group, run_id))):
+        return None
+    run = runs_root() / group / run_id
+    candidates = [row for row in read_candidates(run) if str(row.get("candidate_id") or "") == candidate_id]
+    if len(candidates) != 1:
+        return None
+    candidate = candidates[0]
+    structure = _resolve_path(run, candidate.get("complex_pdb"))
+    if not structure or file_digest(structure) != source.get("structure_digest"):
+        return None
+    pae = _find_pae_path(run, candidate, structure)
+    if not pae or not pae.is_file():
+        return None
+    return {"path": str(pae), "sha256": file_digest(pae), "source_run_id": run_id,
+            "candidate_id": candidate_id, "source_tool": str(candidate.get("source_tool") or "")}
+
+
 def build_database_analysis_source(
     user: dict,
     selection: dict,
@@ -478,6 +513,9 @@ def build_database_analysis_source(
         "kind", "molecule_id", "structure_id", "group_id", "project_id", "evaluation_id",
         "model_id", "structure_digest", "binder_chains", "target_chains", "ligand_selection",
     )}
+    pae_evidence = database_pae_evidence(user, source) if workflow_id == "analysis.ipsae" else None
+    if workflow_id == "analysis.ipsae":
+        identity["pae_digest"] = pae_evidence["sha256"] if pae_evidence else ""
     context_association = None
     context_placement = None
     if workflow_id in {"analysis.reference_placement", "analysis.tag_fusion_context", "analysis.reference_environment"}:
@@ -630,6 +668,14 @@ def build_database_analysis_source(
         "complex_analysis_selection": selection_context,
         "model_index": source["model_id"],
     }
+    if pae_evidence:
+        pae_path = Path(pae_evidence["path"])
+        staged_pae = bundle_dir / ("selected_model_pae" + pae_path.suffix.lower())
+        shutil.copyfile(pae_path, staged_pae)
+        if file_digest(staged_pae) != pae_evidence["sha256"]:
+            raise ValueError("The saved model PAE changed while its Database input was staged.")
+        raw_metadata["pae_path"] = str(staged_pae)
+        raw_metadata["database_pae_evidence"] = {k: v for k, v in pae_evidence.items() if k != "path"}
     candidate = {
         "candidate_id": candidate_id,
         "source_molecule_id": source["molecule_id"],
