@@ -424,6 +424,11 @@ def render_details(database, user, record):
         st.caption("Scores and structure belong to this evaluation. Target: " + (evaluation.get("target_id") or "unspecified in historical result"))
     st.markdown("**" + html.escape(record["name"]) + "**")
     st.caption(record["id"])
+    linked_target = (record.get("metadata") or {}).get("design_target_molecule_id")
+    if linked_target:
+        target_rows = database.list_molecules(user, molecule_ids=[linked_target], collection="all", limit=1)["items"]
+        if target_rows:
+            st.caption("Design target: " + str((record.get("metadata") or {}).get("design_target_name") or target_rows[0]["name"]) + " · " + linked_target)
     source_workstation = _remote_source_workstation(record.get("origin"))
     if source_workstation:
         st.caption("Synced from " + source_workstation)
@@ -693,7 +698,7 @@ def render_details(database, user, record):
                 if source.get("run_id"):
                     st.caption(source["run_id"])
                     if st.button("Open job", key="database-open-job-" + hashlib.sha1(source["source_key"].encode()).hexdigest()):
-                        st.session_state["selected-job-reference"] = source["task_group"] + "/" + source["run_id"]
+                        st.session_state["selected-job-reference"] = source.get("job_reference") or source["task_group"] + "/" + source["run_id"]
                         st.session_state["page"] = "Job details"
                         st.rerun()
                 if source.get("parents"):
