@@ -22,7 +22,7 @@ dependencies = [
   "plotly>=5.24,<7",
   "pyyaml",
   "py2Dmol @ git+https://github.com/sokrypton/py2Dmol.git@67cbe73f06f49645291ea3e79a06293b0abaa3a7",
-  "rdkit",
+  "rdkit==2026.9.1",
   "scipy>=1.17.1,<2",
   "streamlit>=1.65",
   "zstandard",

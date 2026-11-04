@@ -265,6 +265,12 @@ class Replica:
                         )
                         if (previous and not promote_candidate
                                 and (counter, author) <= (previous['counter'], previous['author'])):
+                            # A failed import may have left a conflict behind
+                            # before a newer source revision (often a tombstone)
+                            # arrived. Once that newer revision is present, the
+                            # stale snapshot is no longer actionable and must
+                            # not remain visible or be retried indefinitely.
+                            db.execute("DELETE FROM conflicts WHERE key=?", (key,))
                             continue
                         old = json.loads(previous['value']) if previous else None
                         if kind == 'job' and value is not None:
@@ -283,6 +289,7 @@ class Replica:
                         if kind == 'job' and (old or {}).get('local_reference') and not (value or {}).get('local_reference'):
                             continue
                         if previous and not promote and (counter, author) <= (previous['counter'], previous['author']):
+                            db.execute("DELETE FROM conflicts WHERE key=?", (key,))
                             continue
                         try:
                             token = _importing.set(True)

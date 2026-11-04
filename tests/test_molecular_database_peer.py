@@ -199,6 +199,60 @@ def _entry_record(database, group_id, molecule_id, *, digest=True):
             "structures": structures, "observations": observations, "sources": sources}
 
 
+def test_small_molecule_replication_preserves_source_smiles_across_rdkit_versions(roots, monkeypatch):
+    from mn_molecular_design_studio import molecular_database_peer
+
+    source = MolecularDatabase(roots / "source")
+    components = molecule_imports.parse_smiles("C[C@H](O)C(=O)N")[0]["components"]
+    imported = source.import_records(OWNER, [{"name": "chiral input", "components": components}], name="Inputs")
+    group_id, molecule_id = imported["group_id"], imported["molecule_ids"][0]
+    group_value = {"node_id": SOURCE, "group": _group_record(source, group_id)}
+    entry_value = _entry_record(source, group_id, molecule_id)
+    target = MolecularDatabase(roots / "target")
+    apply_record("molecule_group", f"molecule_group:{SOURCE}:{group_id}", group_value, SOURCE, database=target)
+
+    # Receiving peers must not use their local RDKit canonicalizer to rewrite a
+    # source's stored SMILES. That can change the string and stereochemistry.
+    monkeypatch.setattr(
+        molecular_database_peer, "_canonical_components",
+        lambda *_args, **_kwargs: pytest.fail("peer replication recanonicalized a source molecule"),
+    )
+    apply_record(
+        "molecule_entry", f"molecule_entry:{SOURCE}:{group_id}:{molecule_id}",
+        entry_value, SOURCE, database=target,
+    )
+    with target.connection() as connection:
+        stored = connection.execute("SELECT fingerprint,components FROM molecules WHERE id=?", (molecule_id,)).fetchone()
+        assert stored["fingerprint"] == entry_value["molecule"]["fingerprint"]
+        assert stored["components"] == entry_value["molecule"]["components"]
+
+
+def test_small_molecule_replication_rejects_fingerprint_mismatch_atomically(roots):
+    source = MolecularDatabase(roots / "source")
+    components = molecule_imports.parse_smiles("C[C@H](O)C(=O)N")[0]["components"]
+    imported = source.import_records(OWNER, [{"name": "chiral input", "components": components}], name="Inputs")
+    group_id, molecule_id = imported["group_id"], imported["molecule_ids"][0]
+    target = MolecularDatabase(roots / "target")
+    apply_record(
+        "molecule_group", f"molecule_group:{SOURCE}:{group_id}",
+        {"node_id": SOURCE, "group": _group_record(source, group_id)}, SOURCE, database=target,
+    )
+    malformed = _entry_record(source, group_id, molecule_id)
+    changed = json.loads(malformed["molecule"]["components"])
+    changed[0]["smiles"] = "C[C@@H](O)C(=O)N"
+    malformed["molecule"]["components"] = _json(changed)
+    malformed["member"]["components"] = _json(changed)
+
+    with pytest.raises(ValueError, match="fingerprint"):
+        apply_record(
+            "molecule_entry", f"molecule_entry:{SOURCE}:{group_id}:{molecule_id}",
+            malformed, SOURCE, database=target,
+        )
+    with target.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM molecules WHERE id=?", (molecule_id,)).fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM molecule_members WHERE molecule_id=?", (molecule_id,)).fetchone()[0] == 0
+
+
 def test_group_snapshot_round_trips_schema_curated_flags_and_project_acl(roots):
     source = MolecularDatabase(roots / "source")
     replica = MolecularDatabase(roots / "replica")

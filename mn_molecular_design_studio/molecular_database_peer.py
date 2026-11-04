@@ -37,6 +37,81 @@ def _canonical_components(value, label):
         raise ValueError(f"Invalid {label} components.") from exc
 
 
+def _source_components(value, label):
+    """Validate a peer's stored components without rewriting small-molecule SMILES.
+
+    Canonical SMILES are produced by RDKit, whose traversal and stereochemical
+    serialization can change between releases. A molecule's persisted
+    fingerprint is a hash of the source serialization, so receiving peers must
+    validate that serialization and preserve it instead of canonicalizing it
+    again with their local RDKit version.
+    """
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"Invalid {label} components.")
+
+    normalized = []
+    identities = []
+    types = set()
+    chains = set()
+    for source_component in value:
+        if not isinstance(source_component, dict):
+            raise ValueError(f"Invalid {label} components.")
+        kind = str(source_component.get("type") or "protein").lower()
+        if kind not in molecule_imports.KINDS:
+            raise ValueError(f"Invalid {label} components.")
+
+        if kind == "small_molecule":
+            component = {
+                "type": kind,
+                "chain": str(source_component.get("chain") or "A"),
+                "role": str(source_component.get("role") or ""),
+            }
+            smiles = str(source_component.get("smiles") or "").strip()
+            if smiles:
+                try:
+                    from rdkit import Chem
+                    parsed = Chem.MolFromSmiles(smiles)
+                except (ImportError, TypeError, ValueError) as exc:
+                    raise ValueError(f"Invalid SMILES for chain {component['chain']}.") from exc
+                if parsed is None:
+                    raise ValueError(f"Invalid SMILES for chain {component['chain']}.")
+                # Do not call MolToSmiles here: the exact source string is part
+                # of this identity and may encode a different stereochemical
+                # traversal under a newer RDKit release.
+                component["smiles"] = smiles
+            elif (source_component.get("ccd")
+                  and re.fullmatch(r"[A-Za-z0-9_-]{1,20}", str(source_component["ccd"]))):
+                component["ccd"] = str(source_component["ccd"]).upper()
+            else:
+                raise ValueError("A small molecule needs valid SMILES or a CCD component code.")
+            if source_component.get("residue_key"):
+                component["residue_key"] = str(source_component["residue_key"])
+        else:
+            try:
+                component = molecule_imports.canonical_component(source_component)
+            except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid {label} components.") from exc
+
+        try:
+            if _json(component) != _json(source_component):
+                raise ValueError(f"Invalid {label} component serialization.")
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid {label} component serialization.") from exc
+
+        chain = component["chain"]
+        if chain in chains:
+            raise ValueError("Chain IDs must be unique within a molecule.")
+        chains.add(chain)
+        types.add(component["type"])
+        identities.append((component["type"], component.get("sequence") or component.get("smiles")
+                           or "ccd:" + component["ccd"]))
+        normalized.append(component)
+
+    fingerprint = hashlib.sha256(json.dumps(sorted(identities), separators=(",", ":")).encode()).hexdigest()
+    molecule_type = next(iter(types)) if len(types) == 1 else "complex"
+    return normalized, fingerprint, molecule_type
+
+
 def _owned_group(connection, group_id, author, original_group):
     row = connection.execute("SELECT origin FROM molecule_groups WHERE id=?", (group_id,)).fetchone()
     if not row:
@@ -100,11 +175,14 @@ def _validate_entry(value, author, original_group, molecule_id):
         raise ValueError("Invalid molecular entry JSON.") from exc
     if not isinstance(components, list) or not isinstance(member_components, list) or not isinstance(member_metadata, dict):
         raise ValueError("Invalid molecular entry JSON.")
-    canonical, molecule_composition, molecule_type = _canonical_components(components, "molecule")
-    member_canonical, member_composition, member_type = _canonical_components(member_components, "member")
-    if (_json(canonical) != molecule["components"] or _json(member_canonical) != member["components"]
+    source_components, molecule_composition, molecule_type = _source_components(components, "molecule")
+    member_source_components, member_composition, member_type = _source_components(member_components, "member")
+    if (_json(source_components) != molecule["components"]
+            or _json(member_source_components) != member["components"]
+            or molecule_composition != molecule["fingerprint"]
+            or member_composition != molecule["fingerprint"]
             or molecule_type != member_type or molecule_composition != member_composition):
-        raise ValueError("Molecular components are not in canonical form.")
+        raise ValueError("Molecular identity fingerprint does not match its source components.")
     try:
         _json(member_metadata)
     except (TypeError, ValueError) as exc:
@@ -392,13 +470,13 @@ def apply_record(kind, key, value, author, *, database=None, connection=None):
         molecule, member, structures, observations, sources = _validate_entry(value, author, original_group, molecule_id)
         if not _owned_group(connection, group_id, author, original_group):
             raise ValueError("The source molecular group has not synchronized yet.")
-        _, composition_fingerprint, molecule_type = _canonical_components(json.loads(molecule["components"]), "molecule")
+        _, composition_fingerprint, molecule_type = _source_components(json.loads(molecule["components"]), "molecule")
         if molecule.get("type") != molecule_type:
             raise ValueError("Molecular type does not match its components.")
         existing_molecule = connection.execute("SELECT * FROM molecules WHERE id=?", (molecule_id,)).fetchone()
         if existing_molecule:
             try:
-                _, existing_composition, existing_type = _canonical_components(json.loads(existing_molecule["components"]), "existing molecule")
+                _, existing_composition, existing_type = _source_components(json.loads(existing_molecule["components"]), "existing molecule")
             except (TypeError, json.JSONDecodeError, ValueError) as exc:
                 raise ValueError("An existing molecular identity has invalid components.") from exc
             if (existing_molecule["fingerprint"] != molecule["fingerprint"] or

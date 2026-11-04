@@ -663,6 +663,29 @@ def test_conflicting_new_usernames_are_preserved_for_admin_review(peers):
             assert db.execute('SELECT count(*) FROM conflicts').fetchone()[0]==1
 
 
+def test_retry_discards_molecular_conflict_superseded_by_tombstone(peers):
+    nodes,on=peers
+    key='molecule_entry:source-group:mol-stale-entry'
+    stale={'key':key,'kind':'molecule_entry','author':nodes[1]['id'],'counter':7,
+           'value':{'stale':'snapshot that must not be restored'}}
+    with on(2):
+        replica=Replica()
+        with replica.db() as db:
+            replica._write(db,key,'molecule_entry',None,author=nodes[0]['id'],counter=12)
+            db.execute('INSERT INTO conflicts VALUES (?,?,?)',
+                       (key,json.dumps(stale,separators=(',',':')),'Molecular components are not canonical.'))
+
+        replica.retry_conflicts()
+
+        with replica.db() as db:
+            stored=db.execute('SELECT author,counter,value FROM records WHERE key=?',(key,)).fetchone()
+            assert (stored['author'],stored['counter'],stored['value'])==(nodes[0]['id'],12,'null')
+            assert db.execute('SELECT count(*) FROM conflicts WHERE key=?',(key,)).fetchone()[0]==0
+        from mn_molecular_design_studio.molecular_database import MolecularDatabase
+        with MolecularDatabase().connection() as db:
+            assert db.execute('SELECT count(*) FROM molecules WHERE id=?',('mol-stale-entry',)).fetchone()[0]==0
+
+
 def test_missing_results_storage_never_dispatches_a_local_peer_job(peers):
     nodes,on=peers
     user,project=account(on)

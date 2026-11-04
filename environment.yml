@@ -9,7 +9,7 @@ dependencies:
   - gemmi
   - pdbfixer
   - pymol-open-source
-  - rdkit
+  - rdkit=2026.09.1
   - pyyaml
   - openjdk=17
   - nextflow
