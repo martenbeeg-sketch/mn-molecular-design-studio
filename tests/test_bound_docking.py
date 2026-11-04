@@ -223,7 +223,6 @@ _render_database_source({USER!r}, {opened!r}, workflow_schema=lambda workflow_id
                       if f"run-{workflow_id.replace('.', '-')}" in str(item.key))
     assert key in run_button.key
     run_button.click().run()
-
     assert not app.exception
     submitted = app.session_state["submitted"]
     assert submitted["workflow"] == workflow_id
@@ -233,6 +232,74 @@ _render_database_source({USER!r}, {opened!r}, workflow_schema=lambda workflow_id
     assert submitted["parameters"]["ligand_selection"] == {
         "chain": "Z", "residue_key": "Z:1", "ccd": "LIG", "smiles": "CCO",
     }
+
+
+@pytest.mark.parametrize(("calculated_receptor", "expected_ingestions"), [("AAAAA", 1), ("GGGGG", 0)])
+def test_ligand_owned_bound_complex_plip_checks_selected_representation(
+        bound, tmp_path, calculated_receptor, expected_ingestions):
+    db, molecule, source_pose_id, _, _, _ = bound
+    registered = bound_docking.register_bound_complex(db, USER, molecule, structure_id=source_pose_id)
+    canonical = db.list_molecules(USER, molecule_ids=[molecule], collection="all")["items"][0]
+    assert canonical["components"] == [
+        {"type": "small_molecule", "chain": "L", "role": "", "smiles": "CCO"}
+    ]
+    complex_structure = next(item for item in canonical["representations"]
+                             if item["id"] == registered["complex_structure_id"])
+    selection = complex_structure["context"]["ligand_selection"]
+    from mn_molecular_design_studio.complex_analysis_sources import build_database_analysis_source
+    adapter = build_database_analysis_source(USER, {
+        "molecule_id": molecule, "structure_id": complex_structure["id"],
+        "group_id": registered["group_id"],
+        "model_id": complex_structure.get("context", {}).get("model_id") or complex_structure["id"],
+        "ligand_selection": selection,
+    }, workflow_id="analysis.plip", project_id="", database=db)
+
+    original = Path(adapter["selected_structure_path"]).read_text()
+    receptor_names = {"A": "ALA", "G": "GLY"}
+    calculation_text = "REMARK PLIP evaluator-prepared complex\n" + "\n".join(
+        (line[:17] + receptor_names[calculated_receptor[0]] + line[20:])
+        if line.startswith("ATOM  ") and line[21:22] == "L" else line
+        for line in original.splitlines()
+    ) + "\n"
+    calculation = tmp_path / f"plip-{calculated_receptor}.pdb"
+    calculation.write_text(calculation_text)
+    candidate = json.loads(Path(adapter["candidates_jsonl"]).read_text().splitlines()[0])
+    candidate.update({
+        "candidate_id": candidate["candidate_id"] + f"_plip_{calculated_receptor}",
+        "source_tool": "plip", "tool": "plip", "stage": "analysis", "complex_pdb": str(calculation),
+        "metrics": {"plip_success": True, "plip_interaction_count": 2},
+    })
+    raw = candidate["raw_metadata"]
+    raw["analysis_subject"] = "ligand"
+    raw["complex_analysis_selection"]["source_structure_digest"] = adapter["source"]["structure_digest"]
+    raw["complex_analysis_selection"]["structure_digest"] = adapter["source"]["structure_digest"]
+    raw["complex_analysis_selection"]["ligand_selection"] = selection
+    raw["structure_digest"] = __import__("hashlib").sha256(calculation.read_bytes()).hexdigest()
+
+    run = tmp_path / "runs" / "analysis" / f"plip-ligand-only-{calculated_receptor.lower()}"
+    candidate_path = run / "artifacts/normalized_candidates/candidates.jsonl"
+    candidate_path.parent.mkdir(parents=True)
+    candidate_path.write_text(json.dumps(candidate) + "\n")
+    (run / "molecular_design_studio.json").write_text(json.dumps({
+        "application": "mn-molecular-design-studio", "studio_owner_id": USER["id"], "project_id": "",
+    }))
+    (run / "metadata.json").write_text(json.dumps({
+        "status": "completed", "tool": "plip", "workflow": "analysis.plip",
+        "upstream_source_kind": "database", "database_collection_policy": "automatic",
+    }))
+    (run / "input.json").write_text(json.dumps({"tool": "plip", "workflow": "analysis.plip",
+                                                  "params": {"ligand_selection": selection}}))
+    (run / "result.json").write_text(json.dumps({"success": True, "execution_status": "completed"}))
+
+    from mn_molecular_design_studio.molecular_database_ingest import ingest_run
+    assert ingest_run(run, database=db, force=True) == expected_ingestions
+    after = db.list_molecules(USER, molecule_ids=[molecule], collection="all")["items"][0]
+    evaluations = [item for item in after["observations"] if item.get("namespace") == "plip"]
+    assert len(evaluations) == expected_ingestions
+    assert after["components"] == canonical["components"]
+    if expected_ingestions:
+        assert evaluations[0]["context"]["representation_id"] == complex_structure["id"]
+
 
 
 def test_compare_saved_complexes_resolves_attached_docking_complex_as_protein_ligand(bound, monkeypatch):

@@ -747,7 +747,7 @@ def test_three_workstations_ingest_offline_converge_retrieve_evaluate_and_tombst
                                       (original_group,)).fetchone()[0] == 1
 
 
-def test_results_source_evaluation_preserves_owner_reference_across_three_peers_and_delivery_orders(roots):
+def test_results_source_evaluation_preserves_owner_reference_across_three_peers_and_delivery_orders(roots, monkeypatch):
     from mn_molecular_design_studio.molecular_database_ingest import ingest_run
 
     node_a, node_b = "results-owner-a", "results-evaluator-b"
@@ -776,6 +776,16 @@ def test_results_source_evaluation_preserves_owner_reference_across_three_peers_
     replica = Replica()
     capture(replica, database=database_a, node_id=node_a)
     _apply_author_records(replica, node_a, database_b)
+    # Simulate the already-authorized portable structure read on B. Metadata
+    # replication alone does not transfer coordinate bytes; evaluation must
+    # parse those exact source bytes before it can claim composition match.
+    from mn_molecular_design_studio.cluster import transport
+    (roots / "cluster" / "config.json").write_text(json.dumps({
+        "peers": [{"id": node_a, "url": "http://results-owner-a"}],
+    }))
+    monkeypatch.setattr(transport, "node_request", lambda path, *args, **kwargs: content
+                        if path == "/molecules/structures/" + structure_a else
+                        (_ for _ in ()).throw(AssertionError("unexpected peer structure request")))
 
     remote_group_a = _id("peer-", node_a + ":" + group_a)
     with database_b.connection() as connection:

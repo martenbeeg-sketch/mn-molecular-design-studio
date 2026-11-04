@@ -39,6 +39,23 @@ def _complex_pdb(second_type: str, *, x: float = 2.0) -> bytes:
     return ("\n".join([*lines, "END", ""])).encode()
 
 
+def _two_protein_chain_pdb(first_sequence: str, second_sequence: str) -> str:
+    residue_names = {"A": "ALA", "C": "CYS", "D": "ASP", "E": "GLU", "F": "PHE",
+                     "G": "GLY", "H": "HIS", "I": "ILE", "K": "LYS", "L": "LEU",
+                     "M": "MET", "N": "ASN", "P": "PRO", "Q": "GLN", "R": "ARG",
+                     "S": "SER", "T": "THR", "V": "VAL", "W": "TRP", "Y": "TYR"}
+    lines, serial = [], 1
+    for chain, sequence, offset in (("A", first_sequence, 0.0), ("B", second_sequence, 10.0)):
+        for number, residue in enumerate(sequence, start=1):
+            lines.append(
+                f"ATOM  {serial:5d}  CA  {residue_names[residue]} {chain}{number:4d}    "
+                f"{offset + number:8.3f}{1.0:8.3f}{1.0:8.3f}{1.00:6.2f}{20.00:6.2f}           C"
+            )
+            serial += 1
+        lines.append("TER")
+    return "\n".join([*lines, "END", ""])
+
+
 def _isolated_database(tmp_path, monkeypatch) -> MolecularDatabase:
     workspace = tmp_path / "workspace"
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_HOME", str(workspace))
@@ -1239,6 +1256,89 @@ def test_database_ligand_analysis_ingestion_keeps_original_digest_after_evaluato
     after_bad = database.list_molecules(USER, molecule_ids=[record["id"]])["items"][0]
     assert len([item for item in after_bad["observations"] if item.get("namespace") == "plip"]) == 1
     assert len(after_bad["representations"]) == 1
+
+
+@pytest.mark.parametrize(("calculated_target", "expected_ingestions"), [("EFG", 1), ("KLM", 0)])
+def test_binder_owned_complex_analysis_matches_selected_representation_composition(
+        tmp_path, monkeypatch, calculated_target, expected_ingestions):
+    """A binder identity may own a complex representation, whose target must also match."""
+    database = _isolated_database(tmp_path, monkeypatch)
+    source = tmp_path / "workspace" / "runs" / "design" / "bindcraft2-binder-complex-source"
+    source_candidate = {
+        "candidate_id": "bindcraft2_00001", "stage": "complex_refolding",
+        "binder_sequence": "ACD", "binder_chains": ["B"], "target_chains": ["A"],
+        "complex_pdb": "source-complex.pdb",
+        "raw_metadata": {"validation_acceptance": {"status": "accepted"}},
+        "metrics": {"native_pass_filters": True},
+    }
+    source_candidate_path = source / "artifacts/normalized_candidates/candidates.jsonl"
+    source_candidate_path.parent.mkdir(parents=True)
+    source_candidate_path.write_text(json.dumps(source_candidate) + "\n")
+    (source / "source-complex.pdb").write_text(_two_protein_chain_pdb("EFG", "ACD"))
+    (source / "molecular_design_studio.json").write_text(json.dumps({
+        "application": "mn-molecular-design-studio", "studio_owner_id": USER["id"], "project_id": None,
+    }))
+    (source / "metadata.json").write_text(json.dumps({
+        "status": "completed", "tool": "bindcraft2", "workflow": "design_generation",
+        "database_collection_policy": "automatic",
+    }))
+    (source / "input.json").write_text(json.dumps({"tool": "bindcraft2", "workflow": "design_generation"}))
+    (source / "result.json").write_text(json.dumps({"success": True, "execution_status": "completed"}))
+
+    from mn_molecular_design_studio.molecular_database_ingest import ingest_run
+    from mn_molecular_design_studio.complex_analysis_sources import build_database_analysis_source
+    assert ingest_run(source, database=database, force=True) == 1
+    molecule = next(item for item in database.list_molecules(USER, collection="all")["items"]
+                    if any(component.get("type") == "protein" and component.get("sequence") == "ACD"
+                           for component in item["components"]))
+    assert [component.get("sequence") for component in molecule["components"]
+            if component.get("type") == "protein"] == ["ACD"]
+    molecules_before_analysis = database.list_molecules(USER, collection="all")["total"]
+    representation = molecule["representations"][0]
+    adapter = build_database_analysis_source(USER, {
+        "molecule_id": molecule["id"], "structure_id": representation["id"],
+        "group_id": representation["group_id"],
+        "model_id": representation.get("context", {}).get("model_id") or representation["id"],
+        "binder_chains": ["B"], "target_chains": ["A"],
+    }, workflow_id="analysis.biotite_interface", project_id=None, database=database)
+
+    calculated = tmp_path / "calculation-complex.pdb"
+    calculated.write_text(_two_protein_chain_pdb(calculated_target, "ACD"))
+    run = tmp_path / "workspace" / "runs" / "analysis" / f"target-{calculated_target.lower()}-analysis"
+    candidate = {
+        "candidate_id": adapter["candidate_id"] + "_biotite_interface",
+        "source_molecule_id": molecule["id"], "stage": "analysis", "source_tool": "biotite_interface",
+        "tool": "biotite_interface", "complex_pdb": str(calculated),
+        "binder_chains": ["B"], "target_chains": ["A"],
+        "metrics": {"biotite_interface_residue_pair_count": 1},
+        "raw_metadata": {"database_source": adapter["source_manifest"],
+                         "complex_analysis_selection": {
+                             "source_structure_digest": adapter["source"]["structure_digest"],
+                             "model_id": adapter["selected_model_id"],
+                             "binder_chains": ["B"], "target_chains": ["A"],
+                         }},
+    }
+    candidate_path = run / "artifacts/normalized_candidates/candidates.jsonl"
+    candidate_path.parent.mkdir(parents=True)
+    candidate_path.write_text(json.dumps(candidate) + "\n")
+    (run / "molecular_design_studio.json").write_text(json.dumps({
+        "application": "mn-molecular-design-studio", "studio_owner_id": USER["id"], "project_id": None,
+    }))
+    (run / "metadata.json").write_text(json.dumps({
+        "status": "completed", "tool": "biotite_interface", "workflow": "analysis.biotite_interface",
+        "database_collection_policy": "automatic",
+    }))
+    (run / "input.json").write_text(json.dumps({"tool": "biotite_interface", "workflow": "analysis.biotite_interface"}))
+    (run / "result.json").write_text(json.dumps({"success": True, "execution_status": "completed"}))
+
+    ingested = ingest_run(run, database=database, force=True)
+    assert ingested == expected_ingestions
+    after = database.list_molecules(USER, molecule_ids=[molecule["id"]], collection="all")["items"][0]
+    evaluations = [item for item in after["observations"] if item.get("namespace") == "biotite_interface"]
+    assert len(evaluations) == expected_ingestions
+    assert database.list_molecules(USER, collection="all")["total"] == molecules_before_analysis
+    if expected_ingestions:
+        assert evaluations[0]["context"]["representation_id"] == representation["id"]
 
 
 def test_interface_clustering_collection_stages_authorized_results_and_database_sources(tmp_path, monkeypatch):

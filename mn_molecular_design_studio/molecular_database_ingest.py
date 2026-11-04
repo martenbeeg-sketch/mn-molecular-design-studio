@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import hashlib
 import io
 import json
 import logging
+import math
 import re
 import socket
 import threading
@@ -660,6 +662,14 @@ def _database_analysis_subject(database, user, owner, project, source):
         if _file_sha256(path) != digest:
             return None
         context = representation.get("context") or {}
+        represented_context = dict(context)
+        if (isinstance(source.get("ligand_selection"), dict)
+                and not represented_context.get("ligand_selection")):
+            represented_context["ligand_selection"] = source["ligand_selection"]
+        representation_components, selected_model_id = _selected_representation_components(
+            path.read_bytes(), path.name, represented_context,
+        )
+        _apply_representation_identity_annotations(representation_components, record.get("components") or [])
         target_id = context.get("design_target_molecule_id") if (
             source.get("target_chains") and
             set(source["target_chains"]) == set(context.get("target_chains") or [])
@@ -678,7 +688,10 @@ def _database_analysis_subject(database, user, owner, project, source):
             source_owner_group_id = group_id
             source_owner_structure_id = structure_id
         return {"molecule_id": molecule_id, "structure_id": structure_id, "group_id": group_id,
-                "structure_digest": digest, "record": record, "representation": representation,
+                "structure_digest": digest, "record": record,
+                "representation": {**representation, "context": represented_context},
+                "representation_path": str(path), "representation_components": representation_components,
+                "representation_model_id": selected_model_id,
                 "source_reference_kind": "database",
                 "target_molecule_id": target_id, "source_owner_id": str(group.get("owner_id") or ""),
                 "source_node": source_owner_node,
@@ -689,8 +702,171 @@ def _database_analysis_subject(database, user, owner, project, source):
         return None
 
 
+def _selected_representation_components(content, filename, context):
+    """Read composition from the exact saved coordinate model, then apply its provenance."""
+    context = context if isinstance(context, dict) else {}
+    model_id = next((context.get(key) for key in ("model_id", "model_index", "model")
+                     if context.get(key) is not None and str(context.get(key)).strip()), None)
+    parsed = imports.parse_structure(
+        content, filename, include_ligands=True, model_id=model_id,
+        require_model_selection=True,
+    )[0]
+    components = [dict(item) for item in parsed.get("components") or []]
+    binder_chains = {str(value) for value in context.get("binder_chains") or []}
+    target_chains = {str(value) for value in context.get("target_chains") or []}
+    if binder_chains & target_chains:
+        raise ValueError("Saved representation has overlapping binder and target chain assignments.")
+    ligand_selection = context.get("ligand_selection") if isinstance(context.get("ligand_selection"), dict) else {}
+    for component in components:
+        chain = str(component.get("chain") or "")
+        if component.get("type") == "protein":
+            if chain in binder_chains:
+                component["role"] = "binder"
+            elif chain in target_chains:
+                component["role"] = "target"
+        if component.get("type") == "small_molecule":
+            if (ligand_selection and
+                    str(component.get("residue_key") or "") == str(ligand_selection.get("residue_key") or "") and
+                    (not ligand_selection.get("ccd") or
+                     str(component.get("ccd") or "").casefold() == str(ligand_selection["ccd"]).casefold())):
+                component["smiles"] = str(ligand_selection.get("smiles") or context.get("ligand_isomeric_smiles") or "")
+    return components, str(parsed.get("model_id") or "")
+
+
+def _apply_representation_identity_annotations(components, identity_components):
+    """Carry stored chemistry labels onto coordinates only by exact residue correspondence."""
+    for component in components:
+        if component.get("type") != "small_molecule" or component.get("smiles"):
+            continue
+        matches = [identity for identity in identity_components
+                   if identity.get("type") == "small_molecule"
+                   and str(identity.get("chain") or "") == str(component.get("chain") or "")
+                   and str(identity.get("residue_key") or "") == str(component.get("residue_key") or "")
+                   and (not identity.get("ccd") or not component.get("ccd")
+                        or str(identity.get("ccd") or "").casefold() == str(component.get("ccd") or "").casefold())
+                   and identity.get("smiles")]
+        if len(matches) == 1:
+            component["smiles"] = str(matches[0]["smiles"])
+
+
+def _canonical_smiles(value):
+    if not value:
+        return ""
+    try:
+        from rdkit import Chem
+        molecule = Chem.MolFromSmiles(str(value))
+        return Chem.MolToSmiles(molecule, isomericSmiles=True) if molecule else ""
+    except (ImportError, TypeError, ValueError):
+        return ""
+
+
+def _representation_contains_identity(identity_components, representation_components):
+    """Confirm canonical identity components occur in the selected representation."""
+    remaining = [dict(item) for item in representation_components]
+    for identity in identity_components:
+        kind = str(identity.get("type") or "")
+        if kind not in {"protein", "small_molecule", "dna", "rna"}:
+            return False
+        candidates = [item for item in remaining if str(item.get("type") or "") == kind]
+        if kind in {"protein", "dna", "rna"}:
+            sequence = str(identity.get("sequence") or "").replace(" ", "").upper()
+            candidates = [item for item in candidates
+                          if str(item.get("sequence") or "").replace(" ", "").upper() == sequence]
+            role = str(identity.get("role") or "").casefold()
+            if role and any(str(item.get("role") or "").casefold() == role for item in candidates):
+                candidates = [item for item in candidates if str(item.get("role") or "").casefold() == role]
+        else:
+            smiles = _canonical_smiles(identity.get("smiles"))
+            if smiles:
+                candidates = [item for item in candidates if _canonical_smiles(item.get("smiles")) == smiles]
+            elif identity.get("ccd"):
+                ccd = str(identity.get("ccd") or "").casefold()
+                candidates = [item for item in candidates if str(item.get("ccd") or "").casefold() == ccd]
+            else:
+                return False
+        identity_chain = str(identity.get("chain") or "")
+        exact_chain = [item for item in candidates if identity_chain and
+                       str(item.get("chain") or "") == identity_chain]
+        if exact_chain:
+            candidates = exact_chain
+        if not candidates:
+            return False
+        remaining.remove(candidates[0])
+    return True
+
+
+def _protein_chain_composition(components):
+    result = {}
+    for item in components:
+        if item.get("type") != "protein":
+            continue
+        chain = str(item.get("chain") or "")
+        sequence = str(item.get("sequence") or "").replace(" ", "").upper()
+        if not chain or not sequence or chain in result:
+            return {}
+        result[chain] = sequence
+    return result
+
+
+def _mapped_protein_compositions_match(source_map, calculation_map, chain_map):
+    if not source_map or not calculation_map:
+        return False
+    if chain_map is None:
+        return source_map == calculation_map
+    if not isinstance(chain_map, dict) or set(map(str, chain_map)) != set(source_map):
+        return False
+    mapped = {str(chain_map.get(chain) or ""): sequence for chain, sequence in source_map.items()}
+    return bool(all(mapped) and len(mapped) == len(set(mapped)) and mapped == calculation_map)
+
+
+def _ligand_geometry(path, residue_key):
+    """Return heavy-atom composition and intramolecular distances for one mapped residue."""
+    from Bio.PDB import PDBParser, MMCIFParser
+    try:
+        path = Path(path)
+        filename = path.name[:-3] if path.name.casefold().endswith(".gz") else path.name
+        content = path.read_bytes()
+        if path.name.casefold().endswith(".gz"):
+            content = gzip.decompress(content)
+        parser = MMCIFParser(QUIET=True) if Path(filename).suffix.casefold() in {".cif", ".mmcif"} else PDBParser(QUIET=True)
+        structure = parser.get_structure("ligand-correspondence", io.StringIO(content.decode("utf-8")))
+        models = list(structure.get_models())
+        if len(models) != 1:
+            return None
+        chain_id, _, position = str(residue_key).partition(":")
+        match = re.fullmatch(r"(-?\d+)([A-Za-z]?)", position)
+        if not match:
+            return None
+        number, insertion = int(match.group(1)), match.group(2)
+        chain = models[0].child_dict.get(chain_id)
+        if chain is None:
+            return None
+        residues = [residue for residue in chain
+                    if int(residue.id[1]) == number and str(residue.id[2]).strip() == insertion]
+        if len(residues) != 1:
+            return None
+        atoms = []
+        for atom in residues[0].get_atoms():
+            element = str(atom.element or atom.get_name()[:1]).strip().upper()
+            if element in {"H", "D"}:
+                continue
+            xyz = tuple(float(value) for value in atom.coord)
+            if not all(math.isfinite(value) for value in xyz):
+                return None
+            atoms.append((element, xyz))
+        if not atoms:
+            return None
+        distances = []
+        for index, (_, left) in enumerate(atoms):
+            for _, right in atoms[index + 1:]:
+                distances.append(round(math.sqrt(sum((left[axis] - right[axis]) ** 2 for axis in range(3))), 1))
+        return tuple(sorted(element for element, _ in atoms)), tuple(sorted(distances))
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
 def _analysis_calculation_matches_source(source, candidate, record):
-    """Require the analyzed chains to represent the exact selected molecule."""
+    """Compare calculation coordinates with the exact selected representation, not its owner identity alone."""
     if not isinstance(source, dict) or not isinstance(candidate, dict):
         return False
     selected_calculation_field = next((field for field in ("complex_pdb", "binder_pdb")
@@ -700,153 +876,74 @@ def _analysis_calculation_matches_source(source, candidate, record):
             str(item.get("field") or "") == selected_calculation_field
             for item in rejected_structures if isinstance(item, dict)):
         return False
-    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
-    selected_source = raw.get("source_candidate") if isinstance(raw.get("source_candidate"), dict) else {}
-    source_components = (source.get("record") or {}).get("components") or []
-    source_proteins = [item for item in source_components if item.get("type") == "protein"]
+    source_components = source.get("representation_components") or []
+    identity_components = (source.get("record") or {}).get("components") or []
     calculation_components = (record or {}).get("components") or []
+    if (not source_components or not calculation_components
+            or not _representation_contains_identity(identity_components, source_components)):
+        return False
+    source_proteins = [item for item in source_components if item.get("type") == "protein"]
     calculation_proteins = [item for item in calculation_components if item.get("type") == "protein"]
-    if str(raw.get("analysis_subject") or "").casefold() == "ligand":
-        selection = raw.get("complex_analysis_selection") if isinstance(raw.get("complex_analysis_selection"), dict) else {}
-        ligand_selection = selection.get("ligand_selection") if isinstance(selection.get("ligand_selection"), dict) else {}
-        source_ligands = [item for item in source_components if item.get("type") == "small_molecule"]
-        calculation_ligands = [item for item in calculation_components if item.get("type") == "small_molecule"]
-        residue_key = str(ligand_selection.get("residue_key") or "")
-        def _selected_ligand_component(item):
-            if residue_key and str(item.get("residue_key") or "") != residue_key:
-                return False
-            requested_ccd = str(ligand_selection.get("ccd") or "").casefold()
-            actual_ccd = str(item.get("ccd") or "").casefold()
-            requested_smiles = str(ligand_selection.get("smiles") or "")
-            actual_smiles = str(item.get("smiles") or "")
-            if requested_ccd and actual_ccd:
-                return requested_ccd == actual_ccd
-            if requested_smiles and actual_smiles:
-                try:
-                    from rdkit import Chem
-                    expected_mol = Chem.MolFromSmiles(requested_smiles)
-                    actual_mol = Chem.MolFromSmiles(actual_smiles)
-                    return bool(expected_mol and actual_mol and
-                                Chem.MolToSmiles(expected_mol, isomericSmiles=True) ==
-                                Chem.MolToSmiles(actual_mol, isomericSmiles=True))
-                except (ImportError, TypeError, ValueError):
-                    return False
-            return not requested_ccd and not requested_smiles
-        selected_source = [item for item in source_ligands if _selected_ligand_component(item)]
-        selected_calculation = [item for item in calculation_ligands if _selected_ligand_component(item)]
-        if len(selected_source) != 1 or len(selected_calculation) != 1:
-            return False
-        source_ligand, calculation_ligand = selected_source[0], selected_calculation[0]
-        source_smiles = str(ligand_selection.get("smiles") or source_ligand.get("smiles") or "")
-        calculation_smiles = str(calculation_ligand.get("smiles") or "")
-        if source_smiles and calculation_smiles:
-            try:
-                from rdkit import Chem
-                source_mol = Chem.MolFromSmiles(source_smiles)
-                calculation_mol = Chem.MolFromSmiles(calculation_smiles)
-                if source_mol is None or calculation_mol is None:
-                    return False
-                ligand_matches = Chem.MolToSmiles(source_mol, isomericSmiles=True) == Chem.MolToSmiles(
-                    calculation_mol, isomericSmiles=True)
-            except (ImportError, TypeError, ValueError):
-                return False
-        elif source_ligand.get("ccd") and calculation_ligand.get("ccd"):
-            ligand_matches = str(source_ligand["ccd"]).casefold() == str(calculation_ligand["ccd"]).casefold()
-        else:
-            ligand_matches = bool(ligand_selection.get("ccd") and
-                                  str(ligand_selection["ccd"]).casefold() ==
-                                  str(calculation_ligand.get("ccd") or "").casefold() and source_smiles)
-        if not ligand_matches:
-            return False
-        source_chain_sequences = {str(item.get("chain") or ""):
-                                  str(item.get("sequence") or "").replace(" ", "").upper()
-                                  for item in source_proteins if item.get("chain") and item.get("sequence")}
-        calculation_chain_sequences = {str(item.get("chain") or ""):
-                                       str(item.get("sequence") or "").replace(" ", "").upper()
-                                       for item in calculation_proteins if item.get("chain") and item.get("sequence")}
-        chain_map = raw.get("source_to_calculation_chain_map")
-        if isinstance(chain_map, dict) and source_chain_sequences:
-            source_chain_sequences = {str(chain_map.get(chain) or ""): sequence
-                                      for chain, sequence in source_chain_sequences.items()}
-        return bool(source_chain_sequences and source_chain_sequences == calculation_chain_sequences)
-
-    source_sequence = str(selected_source.get("binder_sequence") or selected_source.get("sequence") or "")
-    calculation_sequence = str(candidate.get("binder_sequence") or candidate.get("sequence") or "")
-    source_sequences = [part.replace(" ", "").upper() for part in re.split(r"[:/]", source_sequence) if part]
-    calculation_sequences = [part.replace(" ", "").upper() for part in re.split(r"[:/]", calculation_sequence) if part]
-    if source_sequences and calculation_sequences and sorted(source_sequences) != sorted(calculation_sequences):
+    if not source_proteins or not calculation_proteins:
         return False
-
-    source_chains = [str(value) for value in selected_source.get("binder_chains") or []]
-    source_representation = (source.get("representation") or {}) if isinstance(source.get("representation"), dict) else {}
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    selection = raw.get("complex_analysis_selection") if isinstance(raw.get("complex_analysis_selection"), dict) else {}
+    source_representation = source.get("representation") if isinstance(source.get("representation"), dict) else {}
     source_context = source_representation.get("context") if isinstance(source_representation.get("context"), dict) else {}
-    # A Database complex is a single molecular identity even when a later
-    # analysis selects its chains in the opposite binder/target orientation.
-    # Preserve that supported reciprocal analysis when the complete chain to
-    # sequence map still matches the selected source exactly.
-    if source.get("source_reference_kind") == "database" or not selected_source:
-        source_chain_sequences = {str(item.get("chain") or ""):
-                                  str(item.get("sequence") or "").replace(" ", "").upper()
-                                  for item in source_proteins if item.get("chain") and item.get("sequence")}
-        calculation_chain_sequences = {str(item.get("chain") or ""):
-                                       str(item.get("sequence") or "").replace(" ", "").upper()
-                                       for item in calculation_proteins if item.get("chain") and item.get("sequence")}
-        if (len(source_chain_sequences) >= 2 and source_chain_sequences == calculation_chain_sequences):
-            return True
-    source_chains = source_chains or [str(value) for value in source_context.get("binder_chains") or []]
-    calculation_chains = [str(value) for value in candidate.get("binder_chains") or []]
-    if source_chains and calculation_chains and source_chains != calculation_chains:
-        chain_map = raw.get("source_to_calculation_chain_map")
-        if not isinstance(chain_map, dict) or [str(chain_map.get(chain) or "") for chain in source_chains] != calculation_chains:
-            return False
+    ligand_selection = selection.get("ligand_selection") if isinstance(selection.get("ligand_selection"), dict) else {}
+    if not ligand_selection and isinstance(source_context.get("ligand_selection"), dict):
+        ligand_selection = source_context["ligand_selection"]
+    ligand_analysis = str(raw.get("analysis_subject") or "").casefold() == "ligand" or bool(ligand_selection)
+    chain_map = raw.get("source_to_calculation_chain_map")
+    source_protein_map = _protein_chain_composition(source_proteins)
+    calculation_protein_map = _protein_chain_composition(calculation_proteins)
+    if not _mapped_protein_compositions_match(source_protein_map, calculation_protein_map, chain_map):
+        return False
+    if not ligand_analysis:
+        return True
 
-    if source_sequences:
-        expected = source_sequences
-    else:
-        source_binders = [item for item in source_proteins if str(item.get("role") or "").casefold() == "binder"]
-        if source_chains:
-            source_binders = [item for item in source_proteins if str(item.get("chain") or "") in source_chains]
-        if not source_binders and calculation_sequences:
-            source_binders = [item for item in source_proteins
-                              if str(item.get("sequence") or "").replace(" ", "").upper()
-                              in calculation_sequences]
-        expected = [str(item.get("sequence") or "").replace(" ", "").upper() for item in source_binders]
-        if not source_chains:
-            source_chains = [str(item.get("chain") or "") for item in source_binders]
-    if not expected:
+    residue_key = str(ligand_selection.get("residue_key") or "")
+    if not residue_key:
         return False
-    if calculation_chains:
-        selected = [item for item in calculation_proteins if str(item.get("chain") or "") in calculation_chains]
-    else:
-        selected = [item for item in calculation_proteins
-                    if str(item.get("sequence") or "").replace(" ", "").upper() in expected]
-    observed = [str(item.get("sequence") or "").replace(" ", "").upper() for item in selected]
-    if sorted(observed) != sorted(expected):
+    source_ligand_chain, _, residue_position = residue_key.partition(":")
+    calculation_ligand_chain = str(chain_map.get(source_ligand_chain) or "") if isinstance(chain_map, dict) else ""
+    calculation_residue_key = (
+        calculation_ligand_chain + ":" + residue_position
+        if calculation_ligand_chain else residue_key
+    )
+    source_ligands = [item for item in source_components if item.get("type") == "small_molecule"
+                      and str(item.get("residue_key") or "") == residue_key]
+    calculation_ligands = [item for item in calculation_components if item.get("type") == "small_molecule"
+                            and str(item.get("residue_key") or "") == calculation_residue_key]
+    requested_ccd = str(ligand_selection.get("ccd") or "").casefold()
+    if requested_ccd:
+        source_ligands = [item for item in source_ligands
+                          if str(item.get("ccd") or "").casefold() == requested_ccd]
+        calculation_ligands = [item for item in calculation_ligands
+                                if str(item.get("ccd") or "").casefold() == requested_ccd]
+    if len(source_ligands) != 1 or len(calculation_ligands) != 1:
         return False
-    source_target_chains = [str(value) for value in selected_source.get("target_chains") or []]
-    source_target_chains = source_target_chains or [str(value) for value in source_context.get("target_chains") or []]
-    declared_sequences = selected_source.get("sequences_by_chain") if isinstance(
-        selected_source.get("sequences_by_chain"), dict) else {}
-    expected_targets = [str(item.get("sequence") or "").replace(" ", "").upper()
-                        for item in source_proteins if str(item.get("role") or "").casefold() == "target"]
-    if source_target_chains:
-        expected_targets = [str(declared_sequences.get(chain) or "").replace(" ", "").upper()
-                            for chain in source_target_chains if declared_sequences.get(chain)] or expected_targets
-    calculation_target_chains = [str(value) for value in candidate.get("target_chains") or []]
-    if expected_targets:
-        if source_target_chains and calculation_target_chains and source_target_chains != calculation_target_chains:
-            chain_map = raw.get("source_to_calculation_chain_map")
-            if not isinstance(chain_map, dict) or [str(chain_map.get(chain) or "")
-                    for chain in source_target_chains] != calculation_target_chains:
-                return False
-        calculated_targets = [item for item in calculation_proteins
-                              if (str(item.get("chain") or "") in calculation_target_chains
-                                  if calculation_target_chains else
-                                  str(item.get("sequence") or "").replace(" ", "").upper() in expected_targets)]
-        if sorted(str(item.get("sequence") or "").replace(" ", "").upper()
-                  for item in calculated_targets) != sorted(expected_targets):
+    ligand_smiles = str(ligand_selection.get("smiles") or source_ligands[0].get("smiles") or "")
+    if not ligand_smiles:
+        return False
+    try:
+        from rdkit import Chem
+        molecule = Chem.MolFromSmiles(ligand_smiles)
+        if molecule is None:
             return False
-    return True
+        expected_elements = tuple(sorted(atom.GetSymbol().upper() for atom in molecule.GetAtoms()))
+    except (ImportError, TypeError, ValueError):
+        return False
+    source_path = source.get("representation_path")
+    calculation_path = next((item.get("path") for item in (record.get("files") or [])
+                             if item.get("source_file_field") == selected_calculation_field and item.get("path")), None)
+    if not calculation_path:
+        calculation_path = next((item.get("path") for item in (record.get("files") or []) if item.get("path")), None)
+    source_geometry = _ligand_geometry(source_path, residue_key) if source_path else None
+    calculation_geometry = _ligand_geometry(calculation_path, calculation_residue_key) if calculation_path else None
+    return bool(source_geometry and calculation_geometry
+                and source_geometry == calculation_geometry
+                and source_geometry[0] == expected_elements)
 
 
 def _results_analysis_subject(database, user, owner, project, analysis_run, inputs, candidate, metadata=None):
@@ -1020,6 +1117,24 @@ def _results_analysis_subject(database, user, owner, project, analysis_run, inpu
                 context = json.loads(structure["context"])
                 actual_digest = str(context.get("portable_sha256") or "") or _file_sha256(structure["path"])
                 if actual_digest == digest:
+                    represented_context = dict(context)
+                    selected_ligand = raw.get("complex_analysis_selection")
+                    selected_ligand = selected_ligand if isinstance(selected_ligand, dict) else {}
+                    if selected_ligand.get("ligand_selection") and not represented_context.get("ligand_selection"):
+                        represented_context["ligand_selection"] = selected_ligand["ligand_selection"]
+                    try:
+                        stored_path = str(structure["path"])
+                        representation_path = (
+                            database.structure_file(user, str(structure["id"]))
+                            if stored_path.startswith("cluster-library://") else Path(stored_path)
+                        )
+                        representation_components, selected_model_id = _selected_representation_components(
+                            representation_path.read_bytes(), representation_path.name, represented_context,
+                        )
+                        _apply_representation_identity_annotations(representation_components, source_components)
+                    except (OSError, ValueError, TypeError):
+                        representation_path = None
+                        representation_components, selected_model_id = [], ""
                     source_origin = json.loads(source["origin"] or "{}")
                     if source_origin.get("_replica_node"):
                         source_owner_node = str(source_origin["_replica_node"])
@@ -1047,7 +1162,10 @@ def _results_analysis_subject(database, user, owner, project, analysis_run, inpu
                         "source_structure_owner_group_id": source_owner_group,
                         "source_structure_owner_structure_id": source_owner_structure,
                         "record": {"components": source_components},
-                        "representation": {"id": str(structure["id"]), "context": context},
+                        "representation": {"id": str(structure["id"]), "context": represented_context},
+                        "representation_path": str(representation_path) if representation_path else "",
+                        "representation_components": representation_components,
+                        "representation_model_id": selected_model_id,
                     })
     return matches[0] if len(matches) == 1 else None
 
