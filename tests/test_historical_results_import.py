@@ -15,6 +15,21 @@ def _write_csv(path, headers, rows):
         writer.writerows(rows)
 
 
+def _pdb_for_chains(chains):
+    from Bio.SeqUtils import seq3
+
+    lines, serial = [], 1
+    offset = 0.0
+    for chain, sequence in chains.items():
+        for index, letter in enumerate(sequence, 1):
+            lines.append(f"ATOM  {serial:5d}  CA  {seq3(letter).upper():3s} {chain}{index:4d}    "
+                         f"{offset + index:8.3f}{1.0:8.3f}{1.0:8.3f}{1.00:6.2f}{20.00:6.2f}           C")
+            serial += 1
+        lines.append("TER")
+        offset += 10.0
+    return "\n".join([*lines, "END", ""])
+
+
 def _bindcraft2_campaign(root):
     trajectory = root / "1_Trajectories"
     refolded = root / "2_Refolded"
@@ -33,9 +48,11 @@ def _bindcraft2_campaign(root):
     _write_csv(ranked / "!_Ranked.csv", list(ranked_row), [ranked_row])
     complex_dir = refolded / "Complexes"
     complex_dir.mkdir(parents=True, exist_ok=True)
-    (complex_dir / f"campaign_binder_l4_{hashes[0]}_candidate0.cif").write_text("refolded structure")
-    (ranked / f"{ranked_row['design']}.cif").write_text("ranked structure")
-    (root / "target.pdb").write_text("HEADER    target source\nEND\n")
+    (complex_dir / f"campaign_binder_l4_{hashes[0]}_candidate0.pdb").write_text(
+        _pdb_for_chains({"A": "ACDEFG", "B": "ACDE"}))
+    (ranked / f"{ranked_row['design']}.pdb").write_text(
+        _pdb_for_chains({"A": "ACDEFG", "B": "ACDE"}))
+    (root / "target.pdb").write_text(_pdb_for_chains({"A": "ACDEFG"}))
     (root / "campaign_metadata.json").write_text(json.dumps({
         "version": "BindCraft 2 v1.0.3",
         "settings": {"modality": "binder", "filters": {"i_pTM": {"threshold": 0.7, "higher": True}},
@@ -63,7 +80,10 @@ def test_bindcraft2_keeps_trajectory_refold_pass_and_rank_counts_separate(tmp_pa
     assert ranked[0]["native_filter_status"] == "passed"
     assert ranked[0]["association_status"] == "exact_hash_and_sequence"
     assert ranked[0]["ranked_design_id"].endswith("_seq0")
-    assert ranked[0]["structure"]["stage"] == "ranked"
+    assert ranked[0]["structure"]["stage"] == "refolded"
+    assert ranked[0]["structure"]["status"] == "available"
+    assert ranked[0]["ranked_structure"]["stage"] == "ranked"
+    assert ranked[0]["ranked_structure"]["status"] == "available"
     assert ranked[0]["native_metrics"]["i_pTM"] == "0.81"
     assert ranked[0]["retention_selected"] is False
     assert preview["target"]["sequence_or_chain_sequences"] == "ACDEFG"
@@ -124,6 +144,47 @@ def test_unsafe_zip_paths_are_rejected_before_reading_campaign(tmp_path):
         preview_historical_campaign(archive_path)
 
 
+def test_historical_source_rejects_symlinked_files_and_root_symlinks(tmp_path):
+    campaign = _bindcraft2_campaign(tmp_path / "campaign")
+    outside = tmp_path / "external.csv"
+    outside.write_text("design,hash\nexternal,deadbeef\n")
+    linked = campaign / "1_Trajectories" / "external.csv"
+    linked.symlink_to(outside)
+    with pytest.raises(ValueError, match="may not contain symlinks"):
+        preview_historical_campaign(campaign)
+    linked.unlink()
+    alias = tmp_path / "campaign-link"
+    alias.symlink_to(campaign, target_is_directory=True)
+    with pytest.raises(ValueError, match="may not be symlinks"):
+        preview_historical_campaign(alias)
+
+
+def test_historical_zip_rejects_duplicate_normalized_paths(tmp_path):
+    archive_path = tmp_path / "duplicate.zip"
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr("campaign/a.txt", "first")
+            archive.writestr("campaign/a.txt", "second")
+    with pytest.raises(ValueError, match="duplicate path"):
+        preview_historical_campaign(archive_path)
+
+
+def test_historical_preview_requires_actual_matching_coordinates_for_structures(tmp_path):
+    root = _bindcraft2_campaign(tmp_path / "campaign")
+    first = root / "2_Refolded" / "Complexes" / "campaign_binder_l4_aaaaaaaaaaaaaaaa_candidate0.pdb"
+    first.write_text("not a coordinate file\n")
+    original = preview_historical_campaign(root)
+    preview = preview_historical_campaign(root, selected_candidate_ids=[original["candidates"][0]["candidate_id"]])
+    row = preview["candidates"][0]
+    assert row["structure"]["status"] == "invalid_coordinates"
+    assert all(not item["path"].startswith("2_Refolded/") for item in preview["proposed_structures"])
+    assert any(item["status"] == "invalid_coordinates" for item in preview["unresolved_structures"])
+
+    first.write_text(_pdb_for_chains({"A": "ACDEFG", "B": "KLMN"}))
+    mismatch = preview_historical_campaign(root)
+    assert mismatch["candidates"][0]["structure"]["status"] == "binder_sequence_mismatch"
+
+
 def test_bindcraft1_native_tables_are_detected_without_inventing_acceptance(tmp_path):
     root = tmp_path / "bindcraft1"
     _write_csv(root / "final_design_stats.csv", ["design", "Binder_Sequence", "i_pTM"], [
@@ -133,7 +194,8 @@ def test_bindcraft1_native_tables_are_detected_without_inventing_acceptance(tmp_
         {"design": "mpnn-A", "Binder_Sequence": "ACDE"},
     ])
     _write_csv(root / "trajectory_stats.csv", ["trajectory"], [{"trajectory": "traj-A"}])
-    (root / "final-A.pdb").write_text("HEADER    final\nEND\n")
+    (root / "final-A_model0.pdb").write_text(_pdb_for_chains({"B": "ACDE"}))
+    (root / "2_final-A_model1.pdb").write_text(_pdb_for_chains({"B": "ACDE"}))
 
     preview = preview_historical_campaign(root)
     assert preview["engine"] == "bindcraft1"
@@ -142,8 +204,29 @@ def test_bindcraft1_native_tables_are_detected_without_inventing_acceptance(tmp_
     assert preview["counts"]["ranked_designs"] == 0
     assert preview["counts"]["final_designs"] == 1
     assert preview["candidates"][0]["native_filter_status"] == "unknown"
-    assert preview["candidates"][0]["structure"]["status"] == "available"
+    assert preview["candidates"][0]["structure"]["status"] == "multiple_models"
+    assert preview["candidates"][0]["structure_layout_status"] == "supported_native_models"
+    assert [item["layout"] for item in preview["candidates"][0]["structures"]] == [
+        "native_model_suffix", "native_model_suffix",
+    ]
     assert preview["candidates"][0]["native_metrics"]["i_pTM"] == "0.8"
+
+
+def test_bindcraft1_reports_unrecognized_native_metric_definitions_and_layouts(tmp_path):
+    root = tmp_path / "bindcraft1"
+    _write_csv(root / "final_design_stats.csv", ["design", "Binder_Sequence", "Average_i_pTM"], [
+        {"design": "final-A", "Binder_Sequence": "ACDE", "Average_i_pTM": "0.8"},
+    ])
+    _write_csv(root / "mpnn_design_stats.csv", ["design"], [{"design": "mpnn-A"}])
+    _write_csv(root / "trajectory_stats.csv", ["trajectory"], [{"trajectory": "traj-A"}])
+    (root / "final-A_model2.pdb").write_text(_pdb_for_chains({"B": "KLMN"}))
+
+    preview = preview_historical_campaign(root)
+    candidate = preview["candidates"][0]
+    assert candidate["structure_layout_status"] == "recognized_layout_unvalidated_coordinates"
+    assert candidate["structures"][0]["status"] == "binder_sequence_mismatch"
+    assert "Average_i_pTM" in candidate["native_metric_compatibility"]["unsupported_native_fields"]
+    assert candidate["native_filter_status"] == "unknown"
 
 
 def test_optional_database_identity_lookup_is_read_only_and_acl_limited(tmp_path):

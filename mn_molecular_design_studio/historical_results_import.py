@@ -73,6 +73,7 @@ def _safe_extract_zip(archive_path: Path, destination: Path) -> None:
         total = sum(item.file_size for item in members)
         if total > MAX_ARCHIVE_BYTES:
             raise ValueError("Campaign archive expands beyond the 512 MB limit.")
+        seen_paths = set()
         for item in members:
             raw_name = item.filename.replace("\\", "/")
             name = PurePosixPath(raw_name)
@@ -81,6 +82,10 @@ def _safe_extract_zip(archive_path: Path, destination: Path) -> None:
                     or re.match(r"^[A-Za-z]:", raw_name)
                     or stat.S_ISLNK(mode)):
                 raise ValueError(f"Campaign archive contains an unsafe path: {item.filename!r}.")
+            normalized_name = name.as_posix().rstrip("/")
+            if normalized_name in seen_paths:
+                raise ValueError(f"Campaign archive contains a duplicate path: {item.filename!r}.")
+            seen_paths.add(normalized_name)
             if item.is_dir():
                 continue
             target = destination.joinpath(*name.parts)
@@ -97,8 +102,17 @@ def _safe_extract_zip(archive_path: Path, destination: Path) -> None:
 
 
 def _source_root(source: str | Path):
-    path = Path(source).expanduser().resolve(strict=True)
+    selected = Path(source).expanduser()
+    if selected.is_symlink():
+        raise ValueError("Campaign source paths may not be symlinks.")
+    path = selected.resolve(strict=True)
     if path.is_dir():
+        for current, directories, names in os.walk(path, followlinks=False):
+            current_path = Path(current)
+            symlink_names = [name for name in [*directories, *names] if (current_path / name).is_symlink()]
+            if symlink_names:
+                relative = (current_path / sorted(symlink_names)[0]).relative_to(path).as_posix()
+                raise ValueError(f"Campaign folders may not contain symlinks: {relative}.")
         return path, None
     if path.is_file() and path.suffix.lower() == ".zip":
         temporary = tempfile.TemporaryDirectory(prefix="studio-bindcraft-preview-")
@@ -327,8 +341,78 @@ def _find_exact_structure(root: Path, stage: str, design: str, *, allow_rank_pre
     return path.relative_to(root).as_posix(), _sha256_file(path), []
 
 
+def _inspect_native_structure(root: Path, relative_path: str, binder_sequence: str, target: dict,
+                              *, model_id: str = "") -> dict:
+    """Validate native coordinates, model count, and exact chain sequences."""
+    path = (root / relative_path).resolve(strict=True)
+    if not path.is_relative_to(root.resolve()):
+        return {"path": relative_path, "sha256": _sha256_file(path), "status": "unsafe_path"}
+    digest = _sha256_file(path)
+    try:
+        from mn_molecular_design_studio.molecule_imports import parse_structure
+        parsed = parse_structure(path.read_bytes(), path.name, require_model_selection=True)[0]
+    except (OSError, ValueError) as exc:
+        return {"path": relative_path, "sha256": digest, "status": "invalid_coordinates",
+                "validation_error": str(exc)}
+    coordinate_model_id = str(parsed.get("model_id") or "")
+    selected_model_id = str(model_id or coordinate_model_id)
+    proteins = {str(item.get("chain") or ""): str(item.get("sequence") or "")
+                for item in parsed["components"] if item.get("type") == "protein"}
+    expected_binders = [re.sub(r"\s+", "", part).upper() for part in re.split(r"[/ :]", binder_sequence) if part]
+    if not expected_binders:
+        return {"path": relative_path, "sha256": digest, "status": "binder_sequence_unavailable",
+                "model_id": selected_model_id, "coordinate_model_id": coordinate_model_id,
+                "chain_sequences": proteins}
+    observed_sequences = list(proteins.values())
+    unmatched = list(observed_sequences)
+    binder_chains = []
+    for expected in expected_binders:
+        matches = [chain for chain, sequence in proteins.items() if sequence == expected and chain not in binder_chains]
+        if len(matches) != 1:
+            return {"path": relative_path, "sha256": digest,
+                    "status": "binder_sequence_mismatch" if not matches else "ambiguous_binder_chain",
+                    "model_id": selected_model_id, "coordinate_model_id": coordinate_model_id,
+                    "chain_sequences": proteins}
+        binder_chains.append(matches[0])
+        unmatched.remove(expected)
+    target_identity = target.get("identity") if isinstance(target, dict) else None
+    target_components = target_identity.get("components") if isinstance(target_identity, dict) else []
+    expected_targets = [str(item.get("sequence") or "") for item in target_components
+                        if isinstance(item, dict) and item.get("type") == "protein"]
+    if unmatched:
+        if not expected_targets:
+            return {"path": relative_path, "sha256": digest, "status": "target_correspondence_unresolved",
+                    "model_id": selected_model_id, "coordinate_model_id": coordinate_model_id,
+                    "chain_sequences": proteins,
+                    "binder_chains": binder_chains}
+        remaining = list(unmatched)
+        target_chains = []
+        for expected in expected_targets:
+            matches = [chain for chain, sequence in proteins.items()
+                       if sequence == expected and chain not in binder_chains and chain not in target_chains]
+            if len(matches) != 1:
+                return {"path": relative_path, "sha256": digest, "status": "target_sequence_mismatch",
+                        "model_id": selected_model_id, "coordinate_model_id": coordinate_model_id,
+                        "chain_sequences": proteins,
+                        "binder_chains": binder_chains}
+            target_chains.append(matches[0])
+            remaining.remove(expected)
+        if remaining:
+            return {"path": relative_path, "sha256": digest, "status": "unexpected_protein_chains",
+                    "model_id": selected_model_id, "coordinate_model_id": coordinate_model_id,
+                    "chain_sequences": proteins,
+                    "binder_chains": binder_chains, "target_chains": target_chains}
+    else:
+        target_chains = []
+    return {"path": relative_path, "sha256": digest, "status": "available",
+            "model_id": selected_model_id, "coordinate_model_id": coordinate_model_id,
+            "chain_sequences": proteins,
+            "binder_chains": binder_chains, "target_chains": target_chains,
+            "validation": "exact_protein_sequences_and_single_model"}
+
+
 def _row_candidate(row: dict, *, stage: str, row_index: int, engine: str, root: Path,
-                   candidate_key: str, warnings: list[str]) -> dict:
+                   candidate_key: str, warnings: list[str], target: dict | None = None) -> dict:
     sequence = _value(row, "Binder_Sequence", "binder_sequence", "sequence", "designed_sequence")
     normalized_sequence = "/".join(re.sub(r"\s+", "", part).upper() for part in sequence.split("/"))
     identity = _sequence_identity(normalized_sequence)
@@ -346,6 +430,17 @@ def _row_candidate(row: dict, *, stage: str, row_index: int, engine: str, root: 
     structure_path, structure_digest, structure_warnings = _find_exact_structure(
         root, structure_stage, design, allow_rank_prefix=(stage == "ranked")) if engine == "bindcraft2" else ("", "", [])
     warnings.extend(structure_warnings)
+    structure = (_inspect_native_structure(root, structure_path, normalized_sequence, target or {})
+                 if structure_path else {"path": None, "sha256": None, "status": "missing_or_unmatched"})
+    structure["stage"] = "ranked" if stage == "ranked" else "refolded"
+    unsupported_fields = sorted(set(metric_values) - {
+                         str(item.get("source_field", "")).split(".")[-1]
+                         for entries in metric_projection["provenance"].values()
+                         for item in entries.get("aliases", [])
+                     })
+    compatibility = {"status": "partial" if unsupported_fields or metric_projection["issues"] else "normalized_subset",
+                     "normalized_fields": sorted(metric_projection["metrics"]),
+                     "unsupported_native_fields": unsupported_fields}
     return {
         "candidate_id": candidate_key,
         "native_design_id": design,
@@ -369,13 +464,14 @@ def _row_candidate(row: dict, *, stage: str, row_index: int, engine: str, root: 
             str(item.get("source_field", "")).split(".")[-1]
             for entries in metric_projection["provenance"].values() for item in entries.get("aliases", [])
         }),
-        "structure": {"path": structure_path or None, "sha256": structure_digest or None,
-                      "status": "available" if structure_path else "missing_or_unmatched"},
+        "structure": structure,
+        "structures": [structure] if structure_path else [],
+        "native_metric_compatibility": compatibility,
         "retention_selected": False,
     }
 
 
-def _bindcraft2(root: Path, source_id: str, warnings: list[str]) -> dict:
+def _bindcraft2(root: Path, source_id: str, warnings: list[str], target: dict | None = None) -> dict:
     stage_dirs = _stage_dirs(root)
     tables, headers = {}, {}
     for stage, (filename, _) in _BC2_STAGES.items():
@@ -403,7 +499,7 @@ def _bindcraft2(root: Path, source_id: str, warnings: list[str]) -> dict:
         candidate = _row_candidate(row, stage="refolded", row_index=index, engine="bindcraft2", root=root,
                                    candidate_key="historical-" + hashlib.sha256(
                                        f"{source_id}\0refolded\0{index}\0{digest}\0{normalized}".encode()).hexdigest()[:24],
-                                   warnings=warnings)
+                                   warnings=warnings, target=target)
         if digest and normalized:
             refolds_by_pair.setdefault(pair, []).append(candidate)
         else:
@@ -426,6 +522,10 @@ def _bindcraft2(root: Path, source_id: str, warnings: list[str]) -> dict:
             ranked_structure, ranked_digest, ranked_warnings = _find_exact_structure(
                 root, "3_Ranked", _value(row, "design"), allow_rank_prefix=True)
             warnings.extend(ranked_warnings)
+            ranked_structure_record = (_inspect_native_structure(root, ranked_structure, normalized, target or {})
+                                       if ranked_structure else {"path": None, "sha256": None,
+                                                                  "status": "missing_or_unmatched"})
+            ranked_structure_record["stage"] = "ranked"
             ranked_values = _numeric_metrics(row, {"design", "binder_sequence", "sequence", "outcome", "status", "failed_filters"})
             ranked_projection = normalize_metrics(ranked_values, tool="bindcraft2", context={
                 "candidate": {"source_tool": "bindcraft2", "stage": "complex_refolding", "binder_sequence": normalized,
@@ -435,15 +535,17 @@ def _bindcraft2(root: Path, source_id: str, warnings: list[str]) -> dict:
             candidate["ranked_normalized_metrics"] = ranked_projection["metrics"]
             candidate["ranked_metric_provenance"] = ranked_projection["provenance"]
             candidate["ranked_metric_conflicts"] = ranked_projection["conflicts"]
+            candidate["ranked_structure"] = ranked_structure_record
             if ranked_structure:
-                candidate["structure"] = {"path": ranked_structure, "sha256": ranked_digest,
-                                           "status": "available", "stage": "ranked"}
+                candidate.setdefault("structures", []).append(ranked_structure_record)
+            if ranked_structure_record["status"] != "available":
+                warnings.append(f"Ranked structure for {candidate['candidate_id']} is unresolved: {ranked_structure_record['status']}.")
             candidate["association_status"] = "exact_hash_and_sequence"
             continue
         candidate = _row_candidate(row, stage="ranked", row_index=index, engine="bindcraft2", root=root,
                                    candidate_key="historical-" + hashlib.sha256(
                                        f"{source_id}\0ranked\0{index}\0{digest}\0{normalized}".encode()).hexdigest()[:24],
-                                   warnings=warnings)
+                                   warnings=warnings, target=target)
         candidate["association_status"] = "unmatched_refolded" if not matches else "ambiguous_refolded_matches"
         candidate["native_filter_status"] = "unknown"
         candidate["native_outcome"] = None
@@ -485,7 +587,27 @@ def _bindcraft2(root: Path, source_id: str, warnings: list[str]) -> dict:
             "tables": {"trajectories": headers["1_trajectories"], "refolded": headers["2_refolded"], "ranked": headers["3_ranked"]}}
 
 
-def _bindcraft1(root: Path, source_id: str, warnings: list[str]) -> dict:
+def _bindcraft1_structure_paths(root: Path, design: str) -> list[dict]:
+    """Recognize native <Design>_modelN and ranked-prefix model layouts."""
+    rows = []
+    exact = re.compile(r"^" + re.escape(design) + r"_model_?(\d+)$", re.IGNORECASE)
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix.casefold() not in {".pdb", ".cif", ".mmcif", ".ent"}:
+            continue
+        stem = path.stem
+        rank_prefix = _RANK_PREFIX.match(stem)
+        normalized = stem[rank_prefix.end():] if rank_prefix else stem
+        model_match = exact.fullmatch(normalized)
+        layout = "native_model_suffix" if model_match else "exact_design_stem" if normalized.casefold() == design.casefold() else ""
+        if not layout:
+            continue
+        rows.append({"path": path.relative_to(root).as_posix(),
+                     "model_id": model_match.group(1) if model_match else "",
+                     "layout": layout, "rank_prefix": rank_prefix.group(0) if rank_prefix else ""})
+    return sorted(rows, key=lambda item: (item["model_id"], item["path"].casefold()))
+
+
+def _bindcraft1(root: Path, source_id: str, warnings: list[str], target: dict | None = None) -> dict:
     table_paths = {path.name.casefold(): path for path in root.iterdir() if path.is_file()}
     parsed, headers = {}, {}
     for filename in _BC1_TABLES:
@@ -502,19 +624,36 @@ def _bindcraft1(root: Path, source_id: str, warnings: list[str]) -> dict:
         candidate = _row_candidate(row, stage="final_design", row_index=index, engine="bindcraft1", root=root,
                                    candidate_key="historical-" + hashlib.sha256(
                                        f"{source_id}\0final_design\0{index}\0{design}\0{sequence}".encode()).hexdigest()[:24],
-                                   warnings=warnings)
+                                   warnings=warnings, target=target)
         candidate["native_filter_status"] = _native_status(row)[0]
         candidate["association_status"] = "native_final_design_table"
-        # BindCraft1 structure naming varies across releases. No substring search
-        # is used here; only a unique exact stem is considered a match.
-        paths = [path for path in root.rglob("*") if path.is_file() and path.suffix.casefold() in {".pdb", ".cif", ".mmcif"}
-                 and path.stem.casefold() == design.casefold()]
-        if len(paths) == 1:
-            candidate["structure"] = {"path": paths[0].relative_to(root).as_posix(),
-                                      "sha256": _sha256_file(paths[0]), "status": "available"}
-        elif len(paths) > 1:
-            candidate["structure"] = {"path": None, "sha256": None, "status": "ambiguous_exact_stem"}
-            warnings.append(f"Multiple exact-stem BindCraft1 structures match {design}.")
+        matched_paths = _bindcraft1_structure_paths(root, design)
+        structures = []
+        for item in matched_paths:
+            structure = _inspect_native_structure(root, item["path"], sequence or "", target or {},
+                                                   model_id=item["model_id"])
+            structure.update(model_id=item["model_id"] or structure.get("model_id"),
+                             layout=item["layout"], rank_prefix=item["rank_prefix"], stage="final_design")
+            structures.append(structure)
+        candidate["structures"] = structures
+        if len(structures) == 1:
+            candidate["structure"] = structures[0]
+        elif len(structures) > 1:
+            candidate["structure"] = {"path": None, "sha256": None, "status": "multiple_models",
+                                       "model_ids": [item.get("model_id") for item in structures]}
+        else:
+            candidate["structure"] = {"path": None, "sha256": None, "status": "missing_or_unmatched"}
+            if sequence:
+                warnings.append(f"No supported native BindCraft1 exact-design or _modelN structure matches {design}.")
+        metric_names = set(candidate.get("unrecognized_metrics") or [])
+        if any("average_iptm" in key.casefold() for key in metric_names | set(row)):
+            warnings.append(f"BindCraft1 {design} has averaged iPTM evidence preserved as native data; no verified normalized mapping is available.")
+        if structures and all(item.get("status") == "available" for item in structures):
+            candidate["structure_layout_status"] = "supported_native_models"
+        elif structures:
+            candidate["structure_layout_status"] = "recognized_layout_unvalidated_coordinates"
+        else:
+            candidate["structure_layout_status"] = "unsupported_or_missing_layout"
         candidates.append(candidate)
     if not final_rows:
         warnings.append("BindCraft1 final_design_stats.csv contains no design rows.")
@@ -547,6 +686,9 @@ def _target_summary(root: Path, campaign_metadata: dict, source_files: list[dict
         target_sequence = _first_metadata_value(objects, {"target_sequence", "target_fasta_sequence"})
     if isinstance(target_sequence, str):
         target_sequence = re.sub(r"\s+", "", target_sequence).upper().rstrip("*")
+    elif isinstance(target_sequence, dict):
+        target_sequence = {str(chain): re.sub(r"\s+", "", str(sequence)).upper().rstrip("*")
+                           for chain, sequence in target_sequence.items()}
     else:
         target_sequence = None
     target_value = next((target_record.get(key) for key in ("target_path", "target_file", "target_structure", "construct_path")
@@ -558,6 +700,7 @@ def _target_summary(root: Path, campaign_metadata: dict, source_files: list[dict
     target_path = None
     source_status = "not_declared"
     digest = None
+    coordinate_validation = "not_applicable"
     sequence_source = "campaign_metadata" if target_sequence else None
     if isinstance(target_value, str) and target_value.strip():
         raw_path = Path(target_value).expanduser()
@@ -569,23 +712,46 @@ def _target_summary(root: Path, campaign_metadata: dict, source_files: list[dict
                 source_status = "available_inside_campaign"
                 digest = _sha256_file(resolved)
                 if resolved.suffix.casefold() in {".pdb", ".ent", ".cif", ".mmcif"}:
-                    if not target_sequence:
-                        try:
-                            from Bio.PDB import MMCIFParser, PDBParser
-                            from Bio.SeqUtils import seq1
-                            parser = MMCIFParser(QUIET=True) if resolved.suffix.casefold() in {".cif", ".mmcif"} else PDBParser(QUIET=True)
-                            structure = parser.get_structure("historical_target", str(resolved))
-                            sequences = {}
-                            for chain in structure[0].get_chains():
-                                residues = [residue for residue in chain.get_residues() if residue.id[0] == " " and residue.resname]
-                                sequence = "".join(seq1(residue.resname, custom_map={"MSE": "M"}) for residue in residues)
-                                if sequence:
-                                    sequences[str(chain.id)] = sequence
-                            if sequences:
-                                target_sequence = sequences
-                                sequence_source = "source_structure_chain_sequences"
-                        except Exception as exc:
-                            warnings.append(f"Target coordinates were found but their sequence could not be parsed ({type(exc).__name__}).")
+                    try:
+                        from mn_molecular_design_studio.molecule_imports import parse_structure
+                        parsed_target = parse_structure(resolved.read_bytes(), resolved.name,
+                                                        require_model_selection=True)[0]
+                        sequences = {str(component.get("chain") or ""): str(component.get("sequence") or "")
+                                     for component in parsed_target.get("components") or []
+                                     if component.get("type") == "protein"}
+                        selected_chains = ([str(value) for value in chain_value]
+                                           if isinstance(chain_value, (list, tuple))
+                                           else [value.strip() for value in str(chain_value or "").split(",") if value.strip()])
+                        if selected_chains:
+                            if set(selected_chains) - set(sequences):
+                                raise ValueError("Declared target chains are absent from the source coordinates.")
+                            observed = {chain: sequences[chain] for chain in selected_chains}
+                        elif isinstance(target_sequence, str) and target_sequence:
+                            matches = {chain: sequence for chain, sequence in sequences.items()
+                                       if sequence == target_sequence}
+                            if len(matches) != 1:
+                                raise ValueError("Target sequence does not map to exactly one source coordinate chain.")
+                            observed = matches
+                        else:
+                            observed = sequences
+                        expected = ({str(chain): str(sequence).upper() for chain, sequence in target_sequence.items()}
+                                    if isinstance(target_sequence, dict) else None)
+                        if expected:
+                            if any(observed.get(chain) != sequence for chain, sequence in expected.items()):
+                                raise ValueError("Target sequence metadata does not match the declared source chains.")
+                        elif isinstance(target_sequence, str) and target_sequence:
+                            if sorted(observed.values()) != [target_sequence]:
+                                raise ValueError("Target sequence metadata does not match source coordinates.")
+                        elif observed:
+                            target_sequence = observed
+                            sequence_source = "source_structure_chain_sequences"
+                        if not observed:
+                            raise ValueError("No protein chains were found in the target coordinates.")
+                        coordinate_validation = "exact_chain_sequence_single_model"
+                    except (OSError, ValueError, TypeError) as exc:
+                        coordinate_validation = "invalid_or_mismatched"
+                        source_status = "invalid_or_mismatched_coordinates"
+                        warnings.append(f"Target source coordinates were not validated: {exc}")
                 elif not target_sequence and resolved.suffix.casefold() in {".fa", ".fasta", ".faa"}:
                     text = resolved.read_text(encoding="utf-8-sig")
                     target_sequence = "".join(line.strip() for line in text.splitlines() if line.strip() and not line.startswith(">" )).upper()
@@ -627,6 +793,7 @@ def _target_summary(root: Path, campaign_metadata: dict, source_files: list[dict
             "source_structure": {"path": target_path.relative_to(root).as_posix() if target_path else None,
                                  "sha256": digest,
                                  "status": source_status,
+                                 "validation": coordinate_validation,
                                  "coordinate_type": "source_coordinates_unspecified" if target_path and target_path.suffix.casefold() in {".pdb", ".ent", ".cif", ".mmcif"} else None,
                                  "experimental_or_native_claim": False}}
 
@@ -676,9 +843,9 @@ def preview_historical_campaign(source: str | Path, *, selected_candidate_ids=No
         campaign_root, engine, warnings = _find_campaign_root(root_container)
         source_id, source_files = _content_identity(campaign_root)
         metadata = _campaign_metadata(campaign_root)
-        result = (_bindcraft2(campaign_root, source_id, warnings) if engine == "bindcraft2"
-                  else _bindcraft1(campaign_root, source_id, warnings))
         target = _target_summary(campaign_root, metadata, source_files, warnings)
+        result = (_bindcraft2(campaign_root, source_id, warnings, target) if engine == "bindcraft2"
+                  else _bindcraft1(campaign_root, source_id, warnings, target))
         candidates = result["candidates"]
         candidate_ids = [row["candidate_id"] for row in candidates]
         if len(candidate_ids) != len(set(candidate_ids)):
@@ -709,12 +876,22 @@ def preview_historical_campaign(source: str | Path, *, selected_candidate_ids=No
             row["existing_identity_matches"] = matches.get(row.get("identity_id"), [])
         selected_rows = [row for row in candidates if row["retention_selected"]]
         proposed_eval = []
+        proposed_structures = []
+        unresolved_structures = []
         for row in selected_rows:
-            if row.get("identity_id") and row.get("structure", {}).get("sha256"):
-                proposed_eval.append({"candidate_id": row["candidate_id"], "molecule_id": row["identity_id"],
-                                      "structure_digest": row["structure"]["sha256"],
-                                      "evaluator": engine, "status": "preview_only_not_attached",
-                                      "native_metrics_preserved": True})
+            structures = row.get("structures") or ([row.get("structure")] if row.get("structure") else [])
+            for structure in structures:
+                if not isinstance(structure, dict) or not structure.get("path"):
+                    continue
+                if structure.get("status") != "available":
+                    unresolved_structures.append({"candidate_id": row["candidate_id"], **structure})
+                    continue
+                proposed_structures.append({"candidate_id": row["candidate_id"], **structure})
+                if row.get("identity_id") and structure.get("sha256"):
+                    proposed_eval.append({"candidate_id": row["candidate_id"], "molecule_id": row["identity_id"],
+                                          "structure_digest": structure["sha256"], "model_id": structure.get("model_id"),
+                                          "stage": structure.get("stage"), "evaluator": engine,
+                                          "status": "preview_only_not_attached", "native_metrics_preserved": True})
         return {
             "status": "preview_only",
             "production_import_enabled": False,
@@ -733,8 +910,8 @@ def preview_historical_campaign(source: str | Path, *, selected_candidate_ids=No
             "tables": result["tables"],
             "candidates": candidates,
             "proposed_identities": identities,
-            "proposed_structures": [{"candidate_id": row["candidate_id"], **row["structure"]}
-                                    for row in selected_rows if row.get("structure", {}).get("path")],
+            "proposed_structures": proposed_structures,
+            "unresolved_structures": unresolved_structures,
             "proposed_evaluations": proposed_eval,
             "evaluations_reused": [],
             "proposed_collection": {"name": f"{engine} · {campaign_root.name}", "selected_candidate_ids": sorted(selected),
