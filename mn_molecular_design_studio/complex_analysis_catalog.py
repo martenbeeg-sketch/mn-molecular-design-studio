@@ -1,7 +1,7 @@
 """ACL-revalidated, paged Database structure choices for Complex Analysis UI."""
 from __future__ import annotations
 
-from typing import Any, MutableMapping
+from typing import Any, Callable, MutableMapping
 
 
 def authorized_structure_catalog(
@@ -14,13 +14,18 @@ def authorized_structure_catalog(
     limit: int = 100,
     advance: bool = False,
     refresh: bool = False,
+    eligible: Callable[[dict[str, Any]], bool] | None = None,
 ) -> dict[str, Any]:
     """Return a small fresh authorized page, rechecking cached IDs on reruns.
 
     Broad discovery is performed once per search/page. Streamlit reruns reuse
     only the IDs from pages already discovered, then ask the canonical
     ``list_structure_records`` API to reapply current ACLs and return fresh
-    labels/representations. No molecule names or source metadata are cached.
+    labels/representations. When ``eligible`` is supplied, raw Database pages
+    are scanned only until the requested number of eligible rows is found. This
+    prevents a page of unrelated structures from appearing empty when later
+    Database pages contain valid complexes. No molecule names or source
+    metadata are cached.
     """
     page_size = int(limit)
     if not 1 <= page_size <= 5000:
@@ -35,7 +40,76 @@ def authorized_structure_catalog(
         and str(cached.get("user_id") or "") == user_id
         and str(cached.get("query") or "") == search
         and int(cached.get("page_size") or 0) == page_size
+        and bool(cached.get("eligibility_filter")) == bool(eligible)
     )
+
+    def scan_eligible(start_offset: int, wanted: int) -> tuple[list[dict[str, Any]], int | None]:
+        found: list[dict[str, Any]] = []
+        offset = int(start_offset)
+        next_offset: int | None = offset
+        while len(found) < wanted and next_offset is not None:
+            page = database.list_structure_records(
+                user, collection="all", query=search,
+                limit=min(page_size, wanted - len(found)), offset=next_offset,
+            )
+            page_rows = [row for row in page.get("items", []) if isinstance(row, dict)]
+            found.extend(row for row in page_rows if eligible is None or eligible(row))
+            returned_offset = page.get("next_offset")
+            next_offset = int(returned_offset) if returned_offset is not None else None
+            if not page_rows:
+                next_offset = None
+        return found[:wanted], next_offset
+
+    if eligible is not None:
+        if not reusable:
+            rows, next_offset = scan_eligible(0, page_size)
+            ids = list(dict.fromkeys(str(row.get("id") or "") for row in rows if row.get("id")))
+            cached = {
+                "user_id": user_id, "query": search, "page_size": page_size,
+                "ids": ids, "authorized_ids": ids, "next_offset": next_offset,
+                "eligibility_filter": True,
+            }
+            session_state[cache_key] = cached
+            return {"records": rows, "next_offset": next_offset, "discovered": True,
+                    "authorized_count": len(rows)}
+
+        ids = list(dict.fromkeys(str(value) for value in cached.get("ids", []) if str(value)))
+        next_offset = cached.get("next_offset")
+        authorized_rows: list[dict[str, Any]] = []
+        if ids:
+            for start in range(0, len(ids), 5000):
+                chunk = ids[start:start + 5000]
+                page = database.list_structure_records(
+                    user, collection="all", query=search, molecule_ids=chunk,
+                    limit=max(1, len(chunk)), offset=0,
+                )
+                authorized_rows.extend(row for row in page.get("items", [])
+                                       if isinstance(row, dict) and eligible(row))
+        authorized_by_id = {str(row.get("id") or ""): row for row in authorized_rows if row.get("id")}
+        authorized_ids = [value for value in ids if value in authorized_by_id]
+        access_changed = authorized_ids != list(cached.get("authorized_ids", []))
+
+        if advance and next_offset is not None and not access_changed:
+            new_rows, next_offset = scan_eligible(int(next_offset), page_size)
+            new_ids = [str(row.get("id") or "") for row in new_rows if row.get("id")]
+            for row in new_rows:
+                if row.get("id"):
+                    authorized_by_id[str(row["id"])] = row
+            ids = list(dict.fromkeys([*ids, *new_ids]))
+        elif access_changed:
+            # Offset pages can shift when access or eligibility changes. Rebuild
+            # the loaded eligible prefix from the canonical ACL-filtered order.
+            wanted = len(ids) + (page_size if advance and next_offset is not None else 0)
+            rebuilt, next_offset = scan_eligible(0, wanted)
+            ids = list(dict.fromkeys(str(row.get("id") or "") for row in rebuilt if row.get("id")))
+            authorized_by_id = {str(row.get("id") or ""): row for row in rebuilt if row.get("id")}
+
+        records = [authorized_by_id[value] for value in ids if value in authorized_by_id]
+        cached = {**cached, "ids": ids, "authorized_ids": [str(row["id"]) for row in records],
+                  "next_offset": next_offset}
+        session_state[cache_key] = cached
+        return {"records": records, "next_offset": next_offset,
+                "discovered": bool(advance), "authorized_count": len(records)}
 
     if not reusable:
         page = database.list_structure_records(
@@ -45,6 +119,7 @@ def authorized_structure_catalog(
         cached = {
             "user_id": user_id, "query": search, "page_size": page_size,
             "ids": ids, "authorized_ids": ids, "next_offset": page.get("next_offset"),
+            "eligibility_filter": False,
         }
         session_state[cache_key] = cached
         rows = list(page.get("items") or [])

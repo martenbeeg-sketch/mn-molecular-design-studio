@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import time
 import zipfile
 from pathlib import Path
@@ -297,6 +298,31 @@ def poll_summary(batch, *, owner_id, project_id, allow_development=False):
                 or any(type(acceptance_counts.get(key)) is not int or acceptance_counts[key] < 0
                        for key in ("accepted", "rejected", "unresolved", "not_evaluated"))
                 or sum(acceptance_counts[key] for key in ("accepted", "rejected", "unresolved", "not_evaluated")) != count):
+            return "summary_unavailable", job
+        structure_count = summary.get("structure_count")
+        complex_count = summary.get("complex_count")
+        target_systems = summary.get("target_systems")
+        if (structure_count is not None and (type(structure_count) is not int or not 0 <= structure_count <= count)
+                or complex_count is not None and (type(complex_count) is not int or complex_count < 0
+                                                  or (structure_count is not None and complex_count > structure_count))):
+            return "summary_unavailable", job
+        if target_systems is not None:
+            if (not isinstance(target_systems, list) or len(target_systems) > count
+                    or any(not isinstance(target, dict)
+                           or not isinstance(target.get("identity"), str)
+                           or not re.fullmatch(r"sequence:[0-9a-f]{64}", target["identity"])
+                           or type(target.get("sequence_length")) is not int
+                           or target["sequence_length"] < 1
+                           or not isinstance(target.get("label"), str)
+                           or len(target["label"]) > 160
+                           or ("reference_type" in target and target["reference_type"] not in
+                               {"sequence_only", "structure_backed", "unknown"})
+                           or {"sequence", "target_sequence", "candidate_id"}.intersection(target)
+                           for target in target_systems)):
+                return "summary_unavailable", job
+        target_reference_type = summary.get("target_reference_type")
+        if target_reference_type is not None and target_reference_type not in {
+                "sequence_only", "structure_backed", "unknown"}:
             return "summary_unavailable", job
         if native_vs_acceptance is not None:
             expected_acceptance = {"accepted", "rejected", "unresolved", "not_evaluated"}

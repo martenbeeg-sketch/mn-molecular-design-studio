@@ -38,6 +38,57 @@ def _path(value, run_dir):
     return path if path.is_file() else None
 
 
+def _target_structure_path(inputs, run_dir):
+    """Resolve a supplied target structure, excluding sequence carrier CIFs."""
+    from mn_molecular_design_studio.target_identity import is_sequence_carrier_reference
+
+    for relative in ("artifacts/input/receptor.pdb", "artifacts/input/target.pdb", "artifacts/input/complex.pdb"):
+        path = Path(run_dir) / relative
+        if path.is_file() and not is_sequence_carrier_reference(path, run_dir=run_dir):
+            return path
+    mappings = [inputs.get("inputs") or {}, inputs.get("params") or {}, inputs]
+    for mapping in mappings:
+        if not isinstance(mapping, dict):
+            continue
+        for key in ("complex_pdb", "target_pdb", "protein_pdb", "target_structure"):
+            path = _path(mapping.get(key), run_dir)
+            if path is not None and not is_sequence_carrier_reference(path, run_dir=run_dir):
+                return path
+    return None
+
+
+def _remove_sequence_carrier_structures(database, user, run_dir):
+    """Remove stale Database representations that misclassified IDR carriers."""
+    from mn_molecular_design_studio.target_identity import is_sequence_carrier_reference, sequence_carrier_path
+
+    if not sequence_carrier_path(_read(Path(run_dir) / "input.json"), run_dir=run_dir):
+        return 0
+    removed = 0
+    with database.connection() as connection:
+        rows = connection.execute(
+            "SELECT s.id,s.group_id,s.path,s.context FROM molecule_structures s "
+            "JOIN molecule_groups g ON g.id=s.group_id WHERE g.owner_id=?",
+            (str(user.get("id") or ""),),
+        ).fetchall()
+    stale = []
+    for row in rows:
+        try:
+            context = json.loads(row["context"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        if (str(context.get("run_id") or "") == Path(run_dir).name
+                and is_sequence_carrier_reference(row["path"], run_dir=run_dir)):
+            stale.append((row["id"], row["group_id"]))
+    if stale:
+        with database.connection() as connection:
+            for structure_id, group_id in stale:
+                connection.execute("DELETE FROM molecule_structures WHERE id=? AND group_id=?",
+                                   (structure_id, group_id))
+                connection.execute("UPDATE molecule_groups SET updated_at=? WHERE id=?", (_now(), group_id))
+                removed += 1
+    return removed
+
+
 def _legacy_attempt_target_context(run_dir, attempt_id, run_metadata):
     """Resolve the copied receptor and provenance for one bundled MN-Ligand attempt."""
     attempt_id = str(attempt_id or "").strip()
@@ -480,6 +531,126 @@ def _find_or_create_input(database, user, project, run_name, source_key, record,
     return molecule_id, group_id, False
 
 
+def _target_sequence_components(candidate=None, inputs=None, metadata=None, run_dir=None):
+    """Return target protein chains only when their role is explicit."""
+    raw = candidate.get("raw_metadata") if isinstance(candidate, dict) else {}
+    raw = raw if isinstance(raw, dict) else {}
+    target_chains = candidate.get("target_chains") if isinstance(candidate, dict) else None
+    target_chains = target_chains or raw.get("target_chains") or []
+    if not isinstance(target_chains, (list, tuple)):
+        target_chains = []
+    sequences_by_chain = raw.get("sequences_by_chain")
+    if isinstance(sequences_by_chain, dict) and target_chains:
+        rows = [{"type": "protein", "chain": str(chain), "role": "target",
+                 "sequence": sequences_by_chain.get(str(chain))}
+                for chain in target_chains if sequences_by_chain.get(str(chain))]
+        if rows:
+            try:
+                return imports.canonical_components(rows)[0]
+            except (KeyError, TypeError, ValueError):
+                pass
+
+    raw_components = raw.get("components")
+    if isinstance(raw_components, list):
+        rows = [dict(component, role="target") for component in raw_components
+                if isinstance(component, dict) and str(component.get("role") or "").casefold() == "target"
+                and str(component.get("type") or "protein").casefold() == "protein"]
+        if rows:
+            try:
+                return imports.canonical_components(rows)[0]
+            except (KeyError, TypeError, ValueError):
+                pass
+
+    # Only standalone run inputs are considered here. Do not interpret a
+    # generic sequence field or infer target identity from a binder sequence.
+    mappings = [metadata or {}, inputs or {}, (inputs or {}).get("inputs") or {},
+                (inputs or {}).get("params") or {}]
+    for mapping in mappings:
+        if not isinstance(mapping, dict):
+            continue
+        value = next((mapping.get(key) for key in
+                      ("target_sequence", "target_protein_sequences", "target_fasta")
+                      if mapping.get(key) is not None), None)
+        if value is None:
+            continue
+        rows = []
+        if (isinstance(value, dict) and any(key in value for key in ("sequence", "fasta", "path"))):
+            text = str(value.get("sequence") or value.get("fasta") or value.get("path") or "")
+            source = _path(text, Path(run_dir)) if run_dir is not None else None
+            if source and source.is_file():
+                try:
+                    text = source.read_text(encoding="utf-8-sig")
+                except (OSError, UnicodeError):
+                    continue
+            try:
+                parsed = imports.parse_sequences(text)
+            except (TypeError, ValueError):
+                continue
+            rows = [{**component, "role": "target"} for parsed_row in parsed
+                    for component in parsed_row.get("components") or []]
+        elif isinstance(value, dict) and value and all(isinstance(sequence, str) for sequence in value.values()):
+            rows = [{"type": "protein", "chain": str(chain), "role": "target", "sequence": sequence}
+                    for chain, sequence in value.items()]
+        elif isinstance(value, list):
+            rows = [{"type": "protein", "chain": str(item.get("chain") or chr(65 + index)),
+                     "role": "target", "sequence": item.get("sequence") or item.get("fasta") or ""}
+                    if isinstance(item, dict) else {"type": "protein", "chain": chr(65 + index),
+                                                    "role": "target", "sequence": str(item)}
+                    for index, item in enumerate(value)]
+        else:
+            text = str(value.get("sequence") or value.get("fasta") or value.get("path") or "") if isinstance(value, dict) else str(value)
+            source = _path(text, Path(run_dir)) if run_dir is not None else None
+            if source and source.is_file():
+                try:
+                    text = source.read_text(encoding="utf-8-sig")
+                except (OSError, UnicodeError):
+                    continue
+            try:
+                parsed = imports.parse_sequences(text)
+            except (TypeError, ValueError):
+                continue
+            rows = [{**component, "role": "target"} for parsed_row in parsed
+                    for component in parsed_row.get("components") or []]
+        if rows:
+            try:
+                return imports.canonical_components(rows)[0]
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    # RFD4's IDR preset stages an ideal backbone CIF only so the native
+    # condition file can address target residues by sequence. Preserve that
+    # sequence as the target identity, but never import its carrier coordinates
+    # as a structural reference.
+    if run_dir is not None:
+        from mn_molecular_design_studio.target_identity import sequence_carrier_path
+
+        carrier = sequence_carrier_path(inputs or {}, run_dir=run_dir)
+        if carrier:
+            try:
+                parsed = imports.parse_structure(carrier.read_bytes(), carrier.name)[0]
+                rows = [dict(component, role="target") for component in parsed.get("components") or []
+                        if component.get("type") == "protein" and component.get("sequence")]
+                if rows:
+                    return imports.canonical_components(rows)[0]
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+    return []
+
+
+def _target_sequence_record(inputs, metadata, run_dir):
+    components = _target_sequence_components(inputs=inputs, metadata=metadata, run_dir=run_dir)
+    if not components:
+        return None
+    label = next((str(mapping.get(key) or "").strip() for mapping in
+                  (metadata or {}, inputs or {}, (inputs or {}).get("inputs") or {}, (inputs or {}).get("params") or {})
+                  if isinstance(mapping, dict) for key in ("target_name", "target_label", "target_id")
+                  if mapping.get(key)), "Sequence-defined target")
+    sequence_hash = hashlib.sha256(":".join(sorted(component["sequence"] for component in components)).encode()).hexdigest()
+    return {"name": label, "components": components, "files": [],
+            "metadata": {"target_identity_type": "sequence_only", "target_sequence_sha256": sequence_hash,
+                         "structural_reference": False}}
+
+
 def _is_completed_success(metadata, result):
     status = str(metadata.get("status") or "").strip().casefold()
     return status in {"completed", "complete", "success", "succeeded"} and result.get("success") is True
@@ -758,7 +929,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                     "artifacts/prepared/receptor.pdb",
                 ))
     database_analysis_run = str(metadata.get("upstream_source_kind") or "") == "database"
-    ingestion_version = 9 if database_analysis_run else (8 if is_legacy_aggregate else (7 if needs_compound_identity_refresh else 6))
+    ingestion_version = 11 if database_analysis_run else (10 if is_legacy_aggregate else (9 if needs_compound_identity_refresh else 8))
     signature = _json({"ingestion_version": ingestion_version, "files": [
         (str(path.relative_to(run_dir)), path.stat().st_mtime_ns, path.stat().st_size)
         for path in observed_paths if path.is_file()],
@@ -807,6 +978,24 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         record = _record(candidate, run_dir)
         if record is not None:
             candidate_records.append((candidate, record))
+    input_target_record = _target_sequence_record(inputs, metadata, run_dir)
+    _remove_sequence_carrier_structures(database, user, run_dir)
+    target_path = _target_structure_path(inputs, run_dir)
+    source_target_sequences = []
+    if target_path:
+        try:
+            parsed_target = imports.parse_structure(target_path.read_bytes(), target_path.name)[0]
+            requested_chains = []
+            for mapping in (inputs.get("inputs") or {}, inputs.get("params") or {}, inputs):
+                if isinstance(mapping, dict) and mapping.get("target_chains"):
+                    requested_chains = [str(chain) for chain in mapping["target_chains"]]
+                    break
+            source_target_sequences = [str(component.get("sequence") or "")
+                for component in parsed_target.get("components") or []
+                if component.get("type") == "protein" and component.get("sequence")
+                and (not requested_chains or str(component.get("chain") or "") in requested_chains)]
+        except (OSError, ValueError, KeyError, TypeError):
+            source_target_sequences = []
     if prediction_run and candidate_records:
         from mn_molecular_design_studio.cofolding_results import best_candidates_by_complex
         with_structures = [candidate for candidate, record in candidate_records if record.get("files")]
@@ -817,7 +1006,8 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     generated_set_path = run_dir / "artifacts/generated_compound_set.json"
     score_paths = [run_dir / "artifacts" / filename for filename in ("docking_scores.csv", "nesso_affinity.csv")]
     md_metrics_supported = "md" in run_dir.parent.name and bool(result.get("metrics"))
-    if not candidate_records and not generated_set_path.is_file() and not (input_compounds and any(path.is_file() for path in score_paths)) and not md_metrics_supported:
+    if (not candidate_records and not input_target_record and not generated_set_path.is_file()
+            and not (input_compounds and any(path.is_file() for path in score_paths)) and not md_metrics_supported):
         with database.connection() as connection:
             connection.execute("INSERT INTO molecular_ingestions VALUES (?,?,?) ON CONFLICT(source_key) DO UPDATE SET signature=excluded.signature,updated_at=excluded.updated_at",
                                (source_key, signature, _now()))
@@ -929,6 +1119,10 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                     if component.get("role") == "target" and component.get("type") == "protein"
                     and component.get("sequence")
                 ]
+                if not designed_target_components:
+                    designed_target_components = _target_sequence_components(
+                        candidate=candidate, inputs=inputs, metadata=metadata, run_dir=run_dir,
+                    )
                 provenance.update(
                     binder_chains=[str(component["chain"]) for component in binder_components],
                     target_chains=[str(component["chain"]) for component in designed_target_components],
@@ -944,7 +1138,8 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             # This is the exact modeled target sequence, which may be a crop of
             # the campaign input; it is not a native structural reference.
             target_record = {"name": f"{name} · modeled target", "components": designed_target_components,
-                             "files": [], "metadata": {}}
+                             "files": [], "metadata": {"target_identity_type": "sequence_only",
+                                                         "structural_reference": False}}
             target_id, _, _ = _find_or_create_input(
                 database, user, project, name, source_for_molecule, target_record,
                 provenance={**provenance, "input_role": "modeled_target"}, source_key_suffix=":target",
@@ -953,9 +1148,13 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                 "design_target_molecule_id": target_id,
                 "design_target_relationship": "exact modeled target sequence",
                 "design_target_sequence_sha256": hashlib.sha256(
-                    ":".join(component["sequence"] for component in designed_target_components).encode()
+                ":".join(sorted(component["sequence"] for component in designed_target_components)).encode()
                 ).hexdigest(),
-                "design_target_is_structural_reference": False,
+                "design_target_is_structural_reference": bool(
+                    source_target_sequences
+                    and sorted(sequence for sequence in source_target_sequences)
+                    == sorted(component["sequence"] for component in designed_target_components)
+                ),
             }
             provenance.update(relationship)
             identity_record["metadata"] = {**identity_record.get("metadata", {}), **relationship}
@@ -1118,11 +1317,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                     _put_source(database, destination, molecule_id, row_source_key, provenance)
             compound_rows[compound["compound_id"]] = (molecule_id, destination, record)
             seen_molecules.add(molecule_id)
-    # Preserve target context for docking/affinity and other structure-based tools.
-    target_path = next((path for name in ("artifacts/input/receptor.pdb", "artifacts/input/target.pdb", "artifacts/input/complex.pdb") if (path := run_dir / name).is_file()), None)
-    if target_path is None:
-        input_values = inputs.get("inputs") or {}
-        target_path = next((path for key in ("complex_pdb", "target_pdb", "protein_pdb", "target_structure") if (path := _path(input_values.get(key), run_dir)) is not None), None)
+    # Preserve the explicit target structure parsed before candidate ingestion.
     target_id = None
     target_group_id = None
     target_record = None
@@ -1130,6 +1325,9 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         try:
             target_record = imports.parse_structure(target_path.read_bytes(), target_path.name)[0]
             target_record["files"] = [{"path": str(target_path), "label": "Input receptor", "dimensions": 3}]
+            target_record["metadata"] = {**(target_record.get("metadata") or {}),
+                                         "target_identity_type": "structure_backed",
+                                         "structural_reference": True}
             target_id, target_group_id, matched = _find_original_group(database, user["id"], project, target_record)
             target_provenance = {**origin, "input_role": "receptor", "collection_kind": "inputs"}
             if not matched:
@@ -1142,9 +1340,23 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                 _put_source(database, target_group_id, target_id, source_key + ":target", target_provenance)
                 for item in target_record.get("files") or []:
                     database.attach_structure(target_group_id, target_id, item, context=target_provenance, created_at=stamp)
+                database.update_metadata(user, target_group_id, target_id, {
+                    "target_identity_type": "structure_backed", "structural_reference": True,
+                })
             seen_molecules.add(target_id)
         except ValueError as exc:
             log.info("Could not index receptor for %s: %s", run_dir, exc)
+    elif input_target_record:
+        target_provenance = {**origin, "input_role": "sequence_defined_target",
+                             "collection_kind": "inputs", "structural_reference": False}
+        target_id, target_group_id, _ = _find_or_create_input(
+            database, user, project, name, source_key, input_target_record,
+            provenance=target_provenance, source_key_suffix=":target-sequence",
+        )
+        database.update_metadata(user, target_group_id, target_id, {
+            "target_identity_type": "sequence_only", "structural_reference": False,
+        })
+        seen_molecules.add(target_id)
     params = inputs.get("params") or {}
     context = {**origin, "target_molecule_id": target_id, "target_path": str(target_path) if target_path else None,
                "settings": params, "units": (result.get("metrics") or {}).get("score_units"),

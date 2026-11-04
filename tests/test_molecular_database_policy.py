@@ -225,6 +225,109 @@ def test_generated_binder_links_existing_exact_modeled_target_and_preserves_comp
         assert database.list_molecules(A, molecule_ids=[target_id])["total"] == 1
 
 
+def test_generated_binder_registers_explicit_sequence_only_target_and_links_identity(database):
+    import hashlib
+
+    candidate = {
+        "candidate_id": "sequence-target-design", "stage": "generation.backbone_sequence",
+        "binder_sequence": "ACD", "binder_chains": ["A"], "target_chains": ["B"],
+        "binder_pdb": "binder.pdb", "metrics": {"native_pass_filters": True},
+        "raw_metadata": {"sequences_by_chain": {"B": "EFGH"}},
+    }
+    run = _make_run(database, "design_generation", "sequence-target-link", workflow="design_generation",
+                    tool="rfd4_proteina", candidates=[candidate])
+    (run / "binder.pdb").write_text(_pdb_acd())
+
+    assert ingest_run(run, database=database, force=True) == 1
+    group = next(g for g in database.groups(A, collection="library")
+                 if g["origin"].get("run_id") == run.name)
+    binder = database.list_molecules(A, group_id=group["id"])["items"][0]
+    target_id = binder["metadata"]["design_target_molecule_id"]
+    target = database.list_molecules(A, molecule_ids=[target_id], collection="all")["items"][0]
+    assert [(component["chain"], component["sequence"], component["role"])
+            for component in target["components"]] == [("B", "EFGH", "target")]
+    assert target["metadata"]["target_identity_type"] == "sequence_only"
+    assert target["representations"] == []
+    assert binder["metadata"]["design_target_is_structural_reference"] is False
+    assert binder["metadata"]["design_target_sequence_sha256"] == hashlib.sha256(b"EFGH").hexdigest()
+
+
+def test_sequence_only_run_target_is_ingested_without_candidate_structures(database):
+    run = _make_run(database, "design_generation", "target-only-run", workflow="design_generation",
+                    tool="rfd4_proteina", candidates=())
+    (run / "input.json").write_text(json.dumps({
+        "tool": "rfd4_proteina", "workflow": "design_generation",
+        "params": {"target_fasta": ">IDR target\nACDEFG"},
+    }))
+
+    assert ingest_run(run, database=database, force=True) == 1
+    target = next(item for item in database.list_molecules(A, collection="all")["items"]
+                  if item.get("metadata", {}).get("target_identity_type") == "sequence_only")
+    assert target["components"][0]["sequence"] == "ACDEFG"
+    assert target["representations"] == []
+
+
+def test_rfd4_idr_sequence_carrier_is_indexed_as_sequence_not_structure(database):
+    from mn_molecular_design_studio.rfd4_proteina_input import write_idr_sequence_carrier
+    from mn_molecular_design_studio.target_identity import is_sequence_carrier_reference, target_reference_type
+
+    run = _make_run(database, "design_generation", "idr-carrier-input", tool="rfd4_proteina",
+                    workflow="design_generation")
+    carrier = run / "artifacts/rfd4_proteina/input/idr_sequence_carrier.cif"
+    write_idr_sequence_carrier("ACDE", carrier)
+    (run / "input.json").write_text(json.dumps({
+        "tool": "rfd4_proteina", "workflow": "design_generation",
+        "inputs": {"target_structure": str(carrier), "input_files": [str(carrier)]},
+        "params": {"task": "protein_binder", "input_mode": "condition_spec"},
+    }))
+    old_target = database.import_records(A, [{
+        "name": "Previously misclassified IDR carrier",
+        "components": [{"type": "protein", "chain": "A", "role": "target", "sequence": "ACDE"}],
+        "metadata": {"target_identity_type": "structure_backed", "structural_reference": True},
+    }], name="Old target import", project_id="project-1", import_method="tool_output")
+    database.attach_structure(old_target["group_id"], old_target["molecule_ids"][0],
+                              {"path": str(carrier), "label": "Input receptor"},
+                              context={"run_id": run.name, "input_role": "receptor"})
+
+    assert is_sequence_carrier_reference(str(carrier), run_dir=run)
+    assert target_reference_type(json.loads((run / "input.json").read_text()), run_dir=run) == "sequence_only"
+    assert ingest_run(run, database=database) == 1
+    records = database.list_molecules(A, project_id="project-1", collection="all")["items"]
+    target = next(row for row in records if [component.get("sequence") for component in row["components"]] == ["ACDE"])
+    assert target["metadata"]["target_identity_type"] == "sequence_only"
+    assert target["metadata"]["structural_reference"] is False
+    assert target["representations"] == []
+
+
+def test_design_target_links_to_matching_structure_backed_target(database):
+    candidate = {
+        "candidate_id": "structure-target-design", "stage": "generation.backbone_sequence",
+        "binder_sequence": "EFG", "binder_chains": ["B"], "target_chains": ["A"],
+        "raw_metadata": {"components": [
+            {"type": "protein", "chain": "A", "sequence": "ACD", "role": "target"},
+            {"type": "protein", "chain": "B", "sequence": "EFG", "role": "binder"},
+        ]},
+        "metrics": {"native_pass_filters": True},
+    }
+    run = _make_run(database, "design_generation", "structure-target-link", tool="rfd4_proteina",
+                    workflow="design_generation", candidates=[candidate])
+    target_path = run / "target.pdb"
+    target_path.write_text(_pdb_acd())
+    (run / "input.json").write_text(json.dumps({
+        "tool": "rfd4_proteina", "workflow": "design_generation",
+        "inputs": {"target_structure": "target.pdb"}, "params": {"target_chains": ["A"]},
+    }))
+
+    assert ingest_run(run, database=database) == 2
+    rows = database.list_molecules(A, collection="all")["items"]
+    binder = next(row for row in rows if row["name"] == "structure-target-design")
+    target_id = binder["metadata"]["design_target_molecule_id"]
+    assert binder["metadata"]["design_target_is_structural_reference"] is True
+    target = database.list_molecules(A, molecule_ids=[target_id], collection="all")["items"][0]
+    assert target["metadata"]["target_identity_type"] == "structure_backed"
+    assert target["representations"]
+
+
 def test_filtered_campaign_ingests_only_acceptance_passes(database):
     passing = {
         "candidate_id": "campaign-pass", "stage": "generation.backbone_sequence",

@@ -10088,6 +10088,13 @@ elif page == "Job details":
 elif page == "Database":
     _render_database()
 elif page == "Complex Analysis":
+    if st.session_state.get("complex-analysis-dashboard-version") != "run-first-v1":
+        # Existing browser sessions may retain the old Database/Results radio
+        # state; enter the new run-first landing page once when the page opens.
+        if not st.session_state.get("complex-analysis-open"):
+            st.session_state["complex-analysis-workspace-view"] = "dashboard"
+            st.session_state.pop("complex-analysis-source-kind", None)
+        st.session_state["complex-analysis-dashboard-version"] = "run-first-v1"
     from mn_molecular_design_studio.complex_analysis_ui import render_complex_analysis_workspace
     render_complex_analysis_workspace(
         CURRENT_USER,

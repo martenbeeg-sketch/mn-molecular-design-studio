@@ -31,7 +31,8 @@ def docker_user_args():
 
 def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4, gpu_device=None,
                 candidate_ids=None, selected_structure_path=None, selected_model_id=None,
-                binder_chains=None, target_chains=None, ligand_selection=None):
+                selected_model_ids=None, binder_chains=None, target_chains=None,
+                ligand_selection=None, ligand_selections=None):
     if tool not in TOOLS:
         raise ValueError("Unknown QC tool.")
     for field in ("ph", "contact_distance", "similarity_threshold", "coverage"):
@@ -59,6 +60,31 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
         candidates = [by_id[identifier] for identifier in requested]
     if selected_structure_path is not None and len(candidates) != 1:
         raise ValueError("An exact selected structure can only be applied to one candidate per analysis request.")
+    if selected_model_ids is not None:
+        if not isinstance(selected_model_ids, dict):
+            raise ValueError("selected_model_ids must map selected candidate IDs to model identities.")
+        if selected_model_id:
+            raise ValueError("Use either selected_model_id or selected_model_ids, not both.")
+        allowed_ids = {str(row.get("candidate_id") or "") for row in candidates}
+        selected_model_ids = {str(key): str(value or "").strip() for key, value in selected_model_ids.items()}
+        if set(selected_model_ids) != allowed_ids or any(not value for value in selected_model_ids.values()):
+            raise ValueError("selected_model_ids must identify every selected candidate exactly once.")
+    if ligand_selections is not None:
+        if profile["kind"] != "ligand" or not isinstance(ligand_selections, dict):
+            raise ValueError("ligand_selections is supported only by ligand analysis workflows.")
+        allowed = {"chain", "residue_key", "ccd", "smiles"}
+        allowed_ids = {str(row.get("candidate_id") or "") for row in candidates}
+        if set(map(str, ligand_selections)) != allowed_ids:
+            raise ValueError("ligand_selections must identify every selected candidate exactly once.")
+        normalized_selections = {}
+        for candidate_id, value in ligand_selections.items():
+            if not isinstance(value, dict) or set(value) - allowed:
+                raise ValueError("Each ligand selection must contain only chain, residue_key, ccd and smiles.")
+            selection = {key: str(value.get(key) or "").strip() for key in allowed if value.get(key)}
+            if not (selection.get("chain") or selection.get("residue_key")) or not selection.get("smiles"):
+                raise ValueError("Each ligand needs an exact residue identity and a recorded SMILES.")
+            normalized_selections[str(candidate_id)] = selection
+        ligand_selections = normalized_selections
     if ligand_selection is not None:
         if profile["kind"] != "ligand" or not isinstance(ligand_selection, dict):
             raise ValueError("An exact ligand selection is supported only by a ligand analysis workflow.")
@@ -68,8 +94,10 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
         ligand_selection = {key: str(value or "").strip() for key, value in ligand_selection.items() if key in allowed}
         if not (ligand_selection.get("chain") or ligand_selection.get("residue_key")):
             raise ValueError("Select a ligand by its source chain and residue identity.")
-        if len(candidates) != 1:
+        if len(candidates) != 1 and ligand_selections is None:
             raise ValueError("An exact ligand selection can only be applied to one candidate per analysis request.")
+        if ligand_selections is not None:
+            raise ValueError("Use either one ligand_selection or the per-candidate ligand_selections map.")
     selected_structure = Path(selected_structure_path).expanduser().resolve(strict=True) if selected_structure_path is not None else None
     if selected_structure is not None:
         try:
@@ -125,23 +153,28 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
     for index, candidate in enumerate(enhanced):
         identifier = f"item_{index:06d}"
         raw = candidate.get("raw_metadata") or {}
+        candidate_id = str(candidate.get("candidate_id") or identifier)
+        candidate_model_id = (selected_model_ids.get(candidate_id) if selected_model_ids is not None
+                              else str(selected_model_id or raw.get("model_index") or ""))
+        candidate_ligand_selection = (ligand_selections.get(candidate_id) if ligand_selections is not None
+                                      else ligand_selection)
         if selected_structure is not None:
             candidate["complex_pdb"] = str(selected_structure)
         selected_source_path = _resolve_path(source_run_dir, str(candidate.get("complex_pdb") or candidate.get("binder_pdb") or ""))
         source_structure_digest = _digest(selected_source_path) if selected_source_path and selected_source_path.is_file() else ""
-        if selected_structure is not None or selected_model_id:
+        if selected_structure is not None or candidate_model_id:
             raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
             raw["complex_analysis_selection"] = {
                 "structure_path": str(selected_structure or candidate.get("complex_pdb") or ""),
-                "model_id": str(selected_model_id or raw.get("model_index") or ""),
+                "model_id": str(candidate_model_id),
             }
             if source_structure_digest:
                 raw["complex_analysis_selection"]["structure_digest"] = source_structure_digest
-        if ligand_selection is not None:
+        if candidate_ligand_selection is not None:
             raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else raw
             raw["complex_analysis_selection"] = {
                 **(raw.get("complex_analysis_selection") if isinstance(raw.get("complex_analysis_selection"), dict) else {}),
-                "ligand_selection": dict(ligand_selection),
+                "ligand_selection": dict(candidate_ligand_selection),
             }
             candidate["raw_metadata"] = raw
         if binder_chains is not None:
@@ -151,8 +184,8 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
         item = {"id": identifier, "candidate_id": str(candidate.get("candidate_id") or identifier),
                 "sequence": candidate.get("binder_sequence") or "",
                 "binder_chains": candidate.get("binder_chains") or [], "target_chains": candidate.get("target_chains") or []}
-        if ligand_selection is not None:
-            item["ligand_selection"] = dict(ligand_selection)
+        if candidate_ligand_selection is not None:
+            item["ligand_selection"] = dict(candidate_ligand_selection)
         for key in ("complex_pdb", "binder_pdb", "target_pdb"):
             path = _resolve_path(source_run_dir, str(candidate.get(key) or ""))
             if path and path.is_file():
@@ -175,14 +208,14 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
         item["target_key"] = _digest(target_path) if target_path and Path(target_path).is_file() else raw.get("target_structure_digest", "")
         if source_structure_digest:
             item["source_structure_digest"] = source_structure_digest
-        if selected_model_id:
-            item["model_id"] = str(selected_model_id)
+        if candidate_model_id:
+            item["model_id"] = str(candidate_model_id)
         if profile["kind"] == "interface" and (not item["binder_chains"] or not item["target_chains"]):
             item["input_error"] = "Declare binder and target chain groups before interface analysis."
         if profile["kind"] == "ligand" and not item.get("input_error"):
             from mn_molecular_design_studio.engine.workflow_engine.workflows.quality_ligands import prepare
             try:
-                prepare(item, candidate, run, ligand_selection=ligand_selection)
+                prepare(item, candidate, run, ligand_selection=candidate_ligand_selection)
                 item["structure_digest"] = _digest(candidate["complex_pdb"])
                 item["target_key"] = _digest(candidate["target_pdb"])
             except (OSError, ValueError, RuntimeError, StopIteration) as exc:
@@ -194,8 +227,12 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
                           "structure_path": str(selected_structure) if selected_structure else "",
                           "model_id": str(selected_model_id or ""),
                           "binder_chains": list(binder_chains or []), "target_chains": list(target_chains or [])}
+    if selected_model_ids is not None:
+        selection_manifest["model_ids"] = dict(selected_model_ids)
     if ligand_selection is not None:
         selection_manifest["ligand_selection"] = dict(ligand_selection)
+    if ligand_selections is not None:
+        selection_manifest["ligand_selections"] = dict(ligand_selections)
     manifest = {"schema": "studio.qc.v1", "tool": tool, "items": items, "settings": settings,
                 "selection": selection_manifest, "output": "/work/artifacts/analysis"}
     write_json(output / "batch_manifest.json", manifest)
@@ -263,9 +300,11 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
     return run
 
 
-def run_sequence_qc(source_run_dir: Path, candidates_jsonl: Path, ph: float = 7.4, cpu_cores: int = 4) -> Path:
+def run_sequence_qc(source_run_dir: Path, candidates_jsonl: Path, ph: float = 7.4, cpu_cores: int = 4,
+                    candidate_ids: list[str] | None = None) -> Path:
     """Sequence composition, charge at the declared pH, pI, entropy, GRAVY and aromaticity."""
-    return run_quality(source_run_dir, candidates_jsonl, tool="sequence_qc", settings={"ph": ph}, cpu_cores=cpu_cores)
+    return run_quality(source_run_dir, candidates_jsonl, tool="sequence_qc", settings={"ph": ph},
+                       cpu_cores=cpu_cores, candidate_ids=candidate_ids)
 
 
 def run_proteinsol(source_run_dir: Path, candidates_jsonl: Path, cpu_cores: int = 4) -> Path:
@@ -277,13 +316,15 @@ def run_biotite_interface(source_run_dir: Path, candidates_jsonl: Path, contact_
                           cpu_cores: int = 4, candidate_ids: list[str] | None = None,
                           selected_structure_path: Path | None = None,
                           selected_model_id: str | None = None,
+                          selected_model_ids: dict[str, str] | None = None,
                           binder_chains: list[str] | None = None,
                           target_chains: list[str] | None = None) -> Path:
     """Run the existing interface evaluator on selected candidate/model and chain groups."""
+    model_parameters = {"selected_model_ids": selected_model_ids} if selected_model_ids is not None else {}
     return run_quality(source_run_dir, candidates_jsonl, tool="biotite_interface",
         settings={"contact_distance": contact_distance}, cpu_cores=cpu_cores,
         candidate_ids=candidate_ids, selected_structure_path=selected_structure_path,
-        selected_model_id=selected_model_id,
+        selected_model_id=selected_model_id, **model_parameters,
         binder_chains=binder_chains, target_chains=target_chains)
 
 
@@ -304,11 +345,14 @@ def run_foldseek(source_run_dir: Path, candidates_jsonl: Path, similarity_thresh
 
 def run_pep_patch(source_run_dir: Path, candidates_jsonl: Path, ph: float = 7.4, cpu_cores: int = 4,
                   candidate_ids: list[str] | None = None, selected_structure_path: Path | None = None,
-                  selected_model_id: str | None = None, binder_chains: list[str] | None = None) -> Path:
+                  selected_model_id: str | None = None, selected_model_ids: dict[str, str] | None = None,
+                  binder_chains: list[str] | None = None) -> Path:
     """Hydrophobic and electrostatic surface patches on the declared binder chains."""
+    model_parameters = {"selected_model_ids": selected_model_ids} if selected_model_ids is not None else {}
     return run_quality(source_run_dir, candidates_jsonl, tool="pep_patch", settings={"ph": ph}, cpu_cores=cpu_cores,
         candidate_ids=candidate_ids, selected_structure_path=selected_structure_path,
-        selected_model_id=selected_model_id, binder_chains=binder_chains)
+        selected_model_id=selected_model_id, **model_parameters,
+        binder_chains=binder_chains)
 
 
 def run_esm1v_score(source_run_dir: Path, candidates_jsonl: Path, cpu_cores: int = 4, gpu_device: str = "0") -> Path:
@@ -324,34 +368,40 @@ def run_esmif_score(source_run_dir: Path, candidates_jsonl: Path, cpu_cores: int
 def run_plip(source_run_dir: Path, candidates_jsonl: Path | None = None, cpu_cores: int = 4,
              candidate_ids: list[str] | None = None, selected_structure_path: Path | None = None,
              selected_model_id: str | None = None, ligand_selection: dict | None = None,
+             ligand_selections: dict[str, dict] | None = None,
              binder_chains: list[str] | None = None, target_chains: list[str] | None = None) -> Path:
     """PLIP interactions on the best docking pose per compound or declared cofolded complexes."""
     if binder_chains or target_chains:
         raise ValueError("PLIP selects one ligand residue and does not accept protein interface chain groups.")
+    ligand_parameters = {"ligand_selections": ligand_selections} if ligand_selections is not None else {}
     return run_quality(source_run_dir, candidates_jsonl, tool="plip", settings={}, cpu_cores=cpu_cores,
         candidate_ids=candidate_ids, selected_structure_path=selected_structure_path,
-        selected_model_id=selected_model_id, ligand_selection=ligand_selection)
+        selected_model_id=selected_model_id, ligand_selection=ligand_selection, **ligand_parameters)
 
 
 def run_pandamap(source_run_dir: Path, candidates_jsonl: Path | None = None, cpu_cores: int = 4,
                  candidate_ids: list[str] | None = None, selected_structure_path: Path | None = None,
                  selected_model_id: str | None = None, ligand_selection: dict | None = None,
+                 ligand_selections: dict[str, dict] | None = None,
                  binder_chains: list[str] | None = None, target_chains: list[str] | None = None) -> Path:
     """PandaMap interactions on selected ligand poses, preserving source receptor residue numbering."""
     if binder_chains or target_chains:
         raise ValueError("PandaMap selects one ligand residue and does not accept protein interface chain groups.")
+    ligand_parameters = {"ligand_selections": ligand_selections} if ligand_selections is not None else {}
     return run_quality(source_run_dir, candidates_jsonl, tool="pandamap", settings={}, cpu_cores=cpu_cores,
         candidate_ids=candidate_ids, selected_structure_path=selected_structure_path,
-        selected_model_id=selected_model_id, ligand_selection=ligand_selection)
+        selected_model_id=selected_model_id, ligand_selection=ligand_selection, **ligand_parameters)
 
 
 def run_posebusters(source_run_dir: Path, candidates_jsonl: Path | None = None, cpu_cores: int = 4,
                     candidate_ids: list[str] | None = None, selected_structure_path: Path | None = None,
                     selected_model_id: str | None = None, ligand_selection: dict | None = None,
+                    ligand_selections: dict[str, dict] | None = None,
                     binder_chains: list[str] | None = None, target_chains: list[str] | None = None) -> Path:
     """PoseBusters geometry/chemistry checks using a SMILES-matched native ligand pose and receptor."""
     if binder_chains or target_chains:
         raise ValueError("PoseBusters selects one ligand residue and does not accept protein interface chain groups.")
+    ligand_parameters = {"ligand_selections": ligand_selections} if ligand_selections is not None else {}
     return run_quality(source_run_dir, candidates_jsonl, tool="posebusters", settings={}, cpu_cores=cpu_cores,
         candidate_ids=candidate_ids, selected_structure_path=selected_structure_path,
-        selected_model_id=selected_model_id, ligand_selection=ligand_selection)
+        selected_model_id=selected_model_id, ligand_selection=ligand_selection, **ligand_parameters)

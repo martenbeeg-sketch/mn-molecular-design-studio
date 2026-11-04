@@ -80,6 +80,12 @@ def _accepted_candidate_artifacts(run: Path, job: dict, artifacts: list[dict]) -
 
 def _candidate_summary(run: Path, job: dict, acceptance_policy: dict | None = None) -> dict:
     """Publish campaign counts only; full candidate records stay on this worker."""
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+    from mn_molecular_design_studio.target_identity import target_reference_type
+
+    input_data = read_json(Path(run) / "input.json")
+    metadata_data = read_json(Path(run) / "metadata.json")
+    reference_type = target_reference_type(input_data, metadata_data, run_dir=run)
     path = Path(run) / "artifacts" / "normalized_candidates" / "candidates.jsonl"
     if not path.is_file():
         return {"schema_version": 1, "status": "unavailable", "candidate_count": None}
@@ -90,7 +96,28 @@ def _candidate_summary(run: Path, job: dict, acceptance_policy: dict | None = No
                             if acceptance_policy else None)
     candidate_count = 0
     eligible_count = 0
+    structure_count = 0
+    complex_count = 0
+    target_systems = {}
     accepted_rows = []
+    run_root = Path(run).resolve()
+
+    def structure_file(value):
+        from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+
+        path_value = resolve_stored_path(value, run_dir=run_root, must_exist=True) if value else None
+        if path_value is None:
+            return None
+        try:
+            resolved = path_value.resolve(strict=True)
+            resolved.relative_to(run_root)
+        except (OSError, ValueError):
+            return None
+        if resolved.is_file() and resolved.name.casefold().endswith(
+                (".pdb", ".ent", ".cif", ".mmcif", ".bcif", ".pdbqt", ".pdb.gz", ".cif.gz", ".mmcif.gz")):
+            return resolved
+        return None
+
     try:
         with path.open(encoding="utf-8") as handle:
             for line in handle:
@@ -103,6 +130,29 @@ def _candidate_summary(run: Path, job: dict, acceptance_policy: dict | None = No
                 if not isinstance(raw, dict):
                     raw = {}
                     row["raw_metadata"] = raw
+                complex_path = structure_file(row.get("complex_pdb"))
+                candidate_structure = any(structure_file(row.get(key) or raw.get("structure_file"))
+                                           for key in ("complex_pdb", "binder_pdb", "structure"))
+                if candidate_structure:
+                    structure_count += 1
+                if complex_path is not None:
+                    complex_count += 1
+                target_chains = [str(value) for value in row.get("target_chains") or raw.get("target_chains") or []]
+                sequences_by_chain = raw.get("sequences_by_chain") if isinstance(raw.get("sequences_by_chain"), dict) else {}
+                target_sequences = [str(sequences_by_chain.get(chain) or "") for chain in target_chains
+                                    if sequences_by_chain.get(chain)]
+                if not target_sequences:
+                    target_sequences = [str(component.get("sequence") or "") for component in raw.get("components") or []
+                                        if isinstance(component, dict) and component.get("sequence")
+                                        and str(component.get("role") or "").casefold() == "target"]
+                normalized_target = ["".join(sequence.split()).upper() for sequence in target_sequences if sequence]
+                if normalized_target:
+                    target_digest = hashlib.sha256(":".join(sorted(normalized_target)).encode()).hexdigest()
+                    identity = "sequence:" + target_digest
+                    target_systems[identity] = {"identity": identity, "identity_kind": "sequence",
+                                                "sequence_length": sum(map(len, normalized_target)),
+                                                "reference_type": reference_type,
+                                                "label": f"Sequence-defined target · {sum(map(len, normalized_target))} aa · {target_digest[:8]}"}
                 decision = (raw.get("validation_acceptance")
                             if isinstance(raw.get("validation_acceptance"), dict) else {})
                 eligible = (
@@ -154,6 +204,10 @@ def _candidate_summary(run: Path, job: dict, acceptance_policy: dict | None = No
         "status": "complete",
         "candidate_count": candidate_count,
         "eligible_count": eligible_count,
+        "structure_count": structure_count,
+        "complex_count": complex_count,
+        "target_systems": sorted(target_systems.values(), key=lambda item: item["identity"]),
+        "target_reference_type": reference_type,
         "native_filter_counts": counts,
         "acceptance_counts": acceptance,
     }

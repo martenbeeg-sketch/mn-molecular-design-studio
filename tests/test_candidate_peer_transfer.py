@@ -1,5 +1,6 @@
 import json
 import zipfile
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,10 @@ def test_candidate_bundle_is_content_stable_and_does_not_copy_checkpoints(tmp_pa
 def test_poll_summary_reads_counts_without_requesting_candidate_artifacts(monkeypatch):
     summary = {
         "schema_version": 1, "status": "complete", "candidate_count": 4, "eligible_count": 3,
+        "structure_count": 2, "complex_count": 1,
+        "target_systems": [{"identity": "sequence:" + hashlib.sha256(b"ACDE").hexdigest(),
+                            "identity_kind": "sequence", "sequence_length": 4,
+                            "label": "Sequence-defined target · 4 aa · " + hashlib.sha256(b"ACDE").hexdigest()[:8]}],
         "native_filter_counts": {"passed": 2, "failed": 1, "unavailable": 0},
         "acceptance_counts": {"accepted": 0, "rejected": 0, "unresolved": 0, "not_evaluated": 4},
     }

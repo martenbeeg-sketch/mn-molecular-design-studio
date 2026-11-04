@@ -227,6 +227,37 @@ def test_worker_candidate_summary_counts_rfd4_native_ppi_decisions(tmp_path):
                    ("native-pass", "native-fail", "native-incomplete"))
 
 
+def test_worker_candidate_summary_reports_only_verified_structures_and_hashed_targets(tmp_path):
+    run = tmp_path / "design" / "structure-summary"
+    candidates = run / "artifacts/normalized_candidates"
+    candidates.mkdir(parents=True)
+    (run / "artifacts/poses").mkdir(parents=True)
+    (run / "artifacts/poses/complex.pdb").write_text("ATOM\n")
+    rows = [{
+        "candidate_id": "private-candidate", "stage": "complex_refolding",
+        "complex_pdb": "artifacts/poses/complex.pdb", "target_chains": ["A"],
+        "raw_metadata": {"sequences_by_chain": {"A": "ACDEFG"}},
+    }, {
+        "candidate_id": "sequence-only", "stage": "complex_refolding",
+        "target_chains": ["A"], "raw_metadata": {"sequences_by_chain": {"A": "ACDEFG"}},
+    }]
+    (candidates / "candidates.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    summary = _candidate_summary(run, {"tool": "rfd4_proteina"})
+
+    assert summary["candidate_count"] == 2
+    assert summary["structure_count"] == 1
+    assert summary["complex_count"] == 1
+    assert summary["target_systems"] == [{
+        "identity": "sequence:" + hashlib.sha256(b"ACDEFG").hexdigest(),
+        "identity_kind": "sequence", "sequence_length": 6,
+        "reference_type": "unknown",
+        "label": "Sequence-defined target · 6 aa · " + hashlib.sha256(b"ACDEFG").hexdigest()[:8],
+    }]
+    assert "private-candidate" not in json.dumps(summary)
+    assert "ACDEFG" not in json.dumps(summary)
+
+
 def test_worker_acceptance_is_count_only_and_keeps_only_accepted_rows_for_final_collection(tmp_path, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.workflows import distributed_campaign
 

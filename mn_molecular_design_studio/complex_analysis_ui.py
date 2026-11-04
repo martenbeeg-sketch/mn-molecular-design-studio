@@ -34,6 +34,7 @@ def open_database_complex(molecule_id: str, *, evaluation_id: str = "", structur
         "evaluation_id": str(evaluation_id or ""), "structure_id": str(structure_id or ""),
     }
     st.session_state["complex-analysis-source-kind"] = "Database"
+    st.session_state["complex-analysis-workspace-view"] = "inspector"
     st.session_state["page"] = "Complex Analysis"
     st.rerun()
 
@@ -60,6 +61,7 @@ def open_result_complex(run_dir: Path | str, structure_path: Path | str, candida
         "relative_path": relative_path,
     }
     st.session_state["complex-analysis-source-kind"] = "Results"
+    st.session_state["complex-analysis-workspace-view"] = "inspector"
     st.session_state["page"] = "Complex Analysis"
     st.rerun()
 
@@ -432,9 +434,6 @@ def _matching_biotite_jobs(user: dict, *, source_task_group: str, source_run_id:
         if saved_distance != float(contact_distance):
             continue
         selection = manifest.get("selection") if isinstance(manifest.get("selection"), dict) else {}
-        saved_model_id = str(selection.get("model_id") or "")
-        if saved_model_id != model_id:
-            continue
         desired_binder, desired_target = sorted(map(str, binder_chains)), sorted(map(str, target_chains))
         selected_item = next((item for item in manifest.get("items", [])
                               if str(item.get("candidate_id") or "") == candidate_id
@@ -442,6 +441,9 @@ def _matching_biotite_jobs(user: dict, *, source_task_group: str, source_run_id:
                               and sorted(map(str, item.get("binder_chains") or [])) == desired_binder
                               and sorted(map(str, item.get("target_chains") or [])) == desired_target), None)
         if selected_item is None:
+            continue
+        saved_model_id = str(selected_item.get("model_id") or selection.get("model_id") or "")
+        if saved_model_id != model_id:
             continue
         status = str(row.get("status") or metadata.get("status") or "unknown").casefold()
         result = _read_json(run_dir / "artifacts" / "analysis" / "batch_status.json")
@@ -521,7 +523,8 @@ def _matching_contextual_jobs(user: dict, *, workflow_id: str, source_task_group
             item = next((candidate for candidate in manifest.get("items", [])
                          if str(candidate.get("candidate_id") or "") == candidate_id
                          and str(candidate.get("source_structure_digest") or "") == structure_digest
-                         and str(candidate.get("model_id") or selection.get("model_id") or "") == model_id
+                         and str(candidate.get("model_id") or (selection.get("model_ids") or {}).get(candidate_id)
+                                 or selection.get("model_id") or "") == model_id
                          and candidate.get("ligand_selection") == (ligand_selection or {})), None)
             saved_parameters = {key: value for key, value in (manifest.get("settings") or {}).items()
                                 if key not in {"workers", "protocol_revision", "checkpoint_sha256"}}
@@ -544,6 +547,8 @@ def _matching_contextual_jobs(user: dict, *, workflow_id: str, source_task_group
             saved_model_id = str(manifest.get("model_id") or "")
         if not item:
             continue
+        saved_model_id = str(item.get("model_id") or (selection.get("model_ids") or {}).get(candidate_id)
+                             or saved_model_id or "")
         item_digest = (str(item.get("source_structure_digest") or "")
                        if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
                        else str(item.get("structure_digest") or ""))
@@ -556,8 +561,9 @@ def _matching_contextual_jobs(user: dict, *, workflow_id: str, source_task_group
                     and sorted(map(str, item.get("target_chains") or [])) != desired_target)
                 or saved_parameters != parameters
                 or (workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
-                    and (selection.get("ligand_selection") != (ligand_selection or {})
-                         or item.get("ligand_selection") != (ligand_selection or {})))):
+                    and ((selection.get("ligand_selections") or {}).get(candidate_id)
+                         or selection.get("ligand_selection") or item.get("ligand_selection") or {})
+                    != (ligand_selection or {}))):
             continue
         status = str(row.get("status") or metadata.get("status") or "unknown").casefold()
         error = str(metadata.get("error") or "")
@@ -3269,11 +3275,11 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
     catalog = authorized_structure_catalog(
         database, user, session_state=st.session_state, cache_key=catalog_key,
         query=query, limit=100, advance=load_next, refresh=refresh_catalog,
+        eligible=lambda item: bool(item.get("representations") and _has_database_analysis_complex(item)),
     )
-    records = [item for item in catalog["records"]
-               if item.get("representations") and _has_database_analysis_complex(item)]
-    st.caption(f"Showing {len(records):,} authorized complex choices on this page"
-               + ("; additional pages are available." if catalog.get("next_offset") is not None else "."))
+    records = catalog["records"]
+    st.caption(f"Loaded {len(records):,} authorized Database records with eligible complex structures"
+               + ("; more eligible records may be available." if catalog.get("next_offset") is not None else "."))
     by_id = {str(item["id"]): item for item in records}
     requested_id = str(opened.get("molecule_id") or st.session_state.get("complex-analysis-molecule-id") or "")
     if requested_id and requested_id not in by_id:
@@ -3595,8 +3601,8 @@ def _render_results_source(user: dict, opened: dict, *, workflow_schema=None, pr
     )
 
 
-def render_complex_analysis_workspace(user: dict, *, workflow_schema=None, project_selector=None, submit=None) -> None:
-    """Render the shared Database/Results structure and provenance workspace."""
+def _render_complex_analysis_inspector(user: dict, *, workflow_schema=None, project_selector=None, submit=None) -> None:
+    """Render the detailed Database/Results structure and provenance workspace."""
     opened = st.session_state.pop("complex-analysis-open", None)
     if opened:
         st.session_state["complex-analysis-active"] = opened
@@ -3604,6 +3610,12 @@ def render_complex_analysis_workspace(user: dict, *, workflow_schema=None, proje
     if active.get("kind") and "complex-analysis-source-kind" not in st.session_state:
         st.session_state["complex-analysis-source-kind"] = "Database" if active["kind"] == "database" else "Results"
     st.title("Complex Analysis")
+    if st.button("← Run-first dashboard", key="complex-analysis-return-dashboard"):
+        st.session_state["complex-analysis-workspace-view"] = "dashboard"
+        st.session_state.pop("complex-analysis-source-kind", None)
+        st.session_state.pop("complex-analysis-active", None)
+        st.session_state.pop("complex-analysis-detail-visible", None)
+        st.rerun()
     st.caption("Inspect saved molecular structures, component identities, model metadata, and source provenance.")
     source = st.radio("Source", ["Database", "Results"], horizontal=True, key="complex-analysis-source-kind")
     try:
@@ -3635,3 +3647,20 @@ def render_complex_analysis_workspace(user: dict, *, workflow_schema=None, proje
             from mn_molecular_design_studio.complex_analysis_comparison_ui import render_comparison
             render_comparison(user, workflow_schema=workflow_schema,
                               project_selector=project_selector, submit=submit)
+
+
+def render_complex_analysis_workspace(user: dict, *, workflow_schema=None, project_selector=None, submit=None) -> None:
+    """Render the run-first dashboard, preserving deep links to the Inspector."""
+    opened = bool(st.session_state.get("complex-analysis-open"))
+    view = str(st.session_state.get("complex-analysis-workspace-view") or "")
+    # Existing code paths and tests that set the explicit Database/Results
+    # source continue to open the advanced inspector. New app sessions are
+    # initialized to the run-first dashboard by run_app.py.
+    legacy_source = "complex-analysis-source-kind" in st.session_state
+    if opened or view == "inspector" or (legacy_source and view != "dashboard"):
+        _render_complex_analysis_inspector(user, workflow_schema=workflow_schema,
+                                           project_selector=project_selector, submit=submit)
+        return
+    from mn_molecular_design_studio.complex_analysis_dashboard import render_complex_analysis_dashboard
+    render_complex_analysis_dashboard(user, workflow_schema=workflow_schema,
+                                      project_selector=project_selector, submit=submit)

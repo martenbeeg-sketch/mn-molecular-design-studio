@@ -16,7 +16,8 @@ SUCCESS = {"completed", "succeeded"}
 IDENTITY_FIELDS = ("studio_run_id", "studio_run_name", "studio_run_output_id", "studio_run_output_name",
                    "parent_run_id", "parent_node_id", "parent_role", "distributed_campaign_id",
                    "campaign_group_id", "campaign_group_name", "has_candidate_collection", "has_docking_results",
-                   "cluster_job_id", "organizer_node_id", "graph_node_id", "execution_proxy")
+                   "cluster_job_id", "organizer_node_id", "graph_node_id", "execution_proxy",
+                   "upstream_task_group", "upstream_run_id")
 
 
 def reference(row):

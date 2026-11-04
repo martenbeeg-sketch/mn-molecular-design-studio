@@ -76,3 +76,55 @@ def test_catalog_acl_revocation_of_every_loaded_row_does_not_skip_from_stale_off
     assert next_page["records"] == []
     assert next_page["next_offset"] is None
     assert database.calls[-1]["offset"] == 0
+
+
+def test_eligible_catalog_scans_past_unrelated_records_before_showing_empty_page():
+    database = FakeDatabase()
+    database.rows = [
+        {"id": f"molecule-{index}", "name": f"Record {index}", "complex": index in {2, 4}}
+        for index in range(6)
+    ]
+    database.visible = {row["id"] for row in database.rows}
+    state = {}
+    eligible = lambda row: row.get("complex") is True
+
+    first = authorized_structure_catalog(
+        database, {"id": "user-1"}, session_state=state, cache_key="eligible",
+        limit=2, eligible=eligible,
+    )
+
+    assert [row["id"] for row in first["records"]] == ["molecule-2", "molecule-4"]
+    assert first["authorized_count"] == 2
+    # The page is full before the raw catalog is exhausted. The next click
+    # continues at the first unscanned row, where the last molecule lives.
+    assert first["next_offset"] == 5
+    assert [call["offset"] for call in database.calls if call["molecule_ids"] is None] == [0, 2, 4]
+
+
+def test_eligible_catalog_paginates_by_eligible_count_and_revalidates_acl():
+    database = FakeDatabase()
+    database.rows = [
+        {"id": f"molecule-{index}", "name": f"Record {index}", "complex": index >= 1}
+        for index in range(6)
+    ]
+    database.visible = {row["id"] for row in database.rows}
+    state = {}
+    eligible = lambda row: row.get("complex") is True
+    user = {"id": "user-1"}
+
+    first = authorized_structure_catalog(database, user, session_state=state, cache_key="eligible",
+                                         limit=2, eligible=eligible)
+    assert [row["id"] for row in first["records"]] == ["molecule-1", "molecule-2"]
+    assert first["next_offset"] == 3
+
+    repeated = authorized_structure_catalog(database, user, session_state=state, cache_key="eligible",
+                                            limit=2, eligible=eligible)
+    assert [row["id"] for row in repeated["records"]] == ["molecule-1", "molecule-2"]
+
+    database.visible.remove("molecule-1")
+    next_page = authorized_structure_catalog(database, user, session_state=state, cache_key="eligible",
+                                             limit=2, eligible=eligible, advance=True)
+    assert [row["id"] for row in next_page["records"]] == [
+        "molecule-2", "molecule-3", "molecule-4", "molecule-5",
+    ]
+    assert next_page["next_offset"] is None

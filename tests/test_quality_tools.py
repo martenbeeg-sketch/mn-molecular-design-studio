@@ -140,6 +140,55 @@ def test_biotite_interface_runs_exact_candidate_model_and_chain_groups(tmp_path,
     assert outputs[0]["binder_chains"] == ["B"] and outputs[0]["target_chains"] == ["A"]
 
 
+def test_biotite_batch_preserves_per_candidate_model_identity(tmp_path, monkeypatch, design_source_factory):
+    source, candidate = design_source_factory()
+    candidate_path = source / "artifacts/normalized_candidates/candidates.jsonl"
+    second = {**candidate, "candidate_id": "passing-design-2", "model_index": 2}
+    candidate_path.write_text(json.dumps(candidate) + "\n" + json.dumps(second) + "\n")
+    run = tmp_path / "analysis" / "batch-models"
+    run.mkdir(parents=True)
+    monkeypatch.setattr(quality, "_analysis_job", lambda *a, **k: SimpleNamespace(run_dir=run))
+    monkeypatch.setattr(quality, "_allocated_cpu_cores", lambda *a: 2)
+    monkeypatch.setattr(quality, "apply_docker_cpu_limits_to_steps", lambda run, steps: steps)
+    monkeypatch.setattr(quality, "docker_user_args", lambda: [])
+    monkeypatch.setattr(quality, "finish_job", lambda *a: None)
+
+    def fake(command, **kwargs):
+        if command[:3] == ["docker", "image", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout="")
+        (run / "artifacts/analysis/batch_status.json").write_text(json.dumps({"items": [
+            {"id": "item_000000", "status": "completed", "metrics": {}},
+            {"id": "item_000001", "status": "completed", "metrics": {}},
+        ]}))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(quality.subprocess, "run", fake)
+    quality.run_biotite_interface(
+        source, candidate_path, candidate_ids=["passing-design", "passing-design-2"],
+        selected_model_ids={"passing-design": "pose-A", "passing-design-2": "pose-B"},
+        binder_chains=["B"], target_chains=["A"],
+    )
+    manifest = json.loads((run / "artifacts/analysis/batch_manifest.json").read_text())
+    assert manifest["selection"]["model_ids"] == {"passing-design": "pose-A", "passing-design-2": "pose-B"}
+    assert [item["model_id"] for item in manifest["items"]] == ["pose-A", "pose-B"]
+    results = [json.loads(line) for line in (run / "artifacts/normalized_candidates/candidates.jsonl").read_text().splitlines()]
+    assert [row["raw_metadata"]["complex_analysis_selection"]["model_id"] for row in results] == ["pose-A", "pose-B"]
+
+
+def test_ligand_batch_requires_an_exact_selection_for_every_candidate(design_source_factory):
+    source, candidate = design_source_factory()
+    candidate_path = source / "artifacts/normalized_candidates/candidates.jsonl"
+    second = {**candidate, "candidate_id": "candidate-two"}
+    candidate_path.write_text(json.dumps(candidate) + "\n" + json.dumps(second) + "\n")
+    with pytest.raises(ValueError, match="identify every selected candidate exactly once"):
+        quality.run_plip(
+            source, candidate_path, candidate_ids=[candidate["candidate_id"], "candidate-two"],
+            ligand_selections={candidate["candidate_id"]: {
+                "chain": "L", "residue_key": "L:1", "smiles": "CC",
+            }},
+        )
+
+
 def test_biotite_interface_selection_rejects_unknown_candidates_and_overlapping_groups(tmp_path, design_source_factory):
     source, candidate = design_source_factory()
     candidate_path = source / "artifacts/normalized_candidates/candidates.jsonl"
