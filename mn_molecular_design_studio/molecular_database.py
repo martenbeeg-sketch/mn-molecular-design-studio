@@ -30,6 +30,36 @@ _SYNC_TIMES: dict[str, float] = {}
 _CAPTURE_REVISION_SCHEMA_READY: set[str] = set()
 
 
+def _structure_model_evidence_compatible(path, content, existing_context, incoming_context):
+    """Conservatively reconcile absent legacy model metadata from single-model coordinates."""
+    model_fields = ("model_id", "model_index", "model")
+    existing_values = {key: str(existing_context[key]).strip() for key in model_fields
+                       if existing_context.get(key) is not None and str(existing_context[key]).strip()}
+    incoming_values = {key: str(incoming_context[key]).strip() for key in model_fields
+                       if incoming_context.get(key) is not None and str(incoming_context[key]).strip()}
+    if existing_values and incoming_values and existing_values == incoming_values:
+        return True
+    if existing_values and incoming_values and existing_values != incoming_values:
+        return False
+    suffix = str(path).casefold()
+    if suffix.endswith(".gz"):
+        suffix = suffix[:-3]
+    if not suffix.endswith((".pdb", ".ent", ".cif", ".mmcif")):
+        return False
+    try:
+        parsed = imports.parse_structure(
+            bytes(content), Path(path).name, include_ligands=True, require_model_selection=True,
+        )[0]
+    except (OSError, ValueError, TypeError):
+        return False
+    actual_model = str(parsed.get("model_id") or "")
+    if not actual_model:
+        return False
+    # A missing value is unknown. Reuse is allowed only when the bytes contain
+    # exactly one model and every recorded selector identifies that model.
+    return all(value == actual_model for value in (*existing_values.values(), *incoming_values.values()))
+
+
 def _json(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False, default=str)
 
@@ -699,15 +729,18 @@ class MolecularDatabase:
             # can be reused by a producer, so its bytes must participate in
             # representation identity before a portable copy replaces it.
             if item.get("content") is not None:
-                content_digest = hashlib.sha256(bytes(item["content"])).hexdigest()
+                content_bytes = bytes(item["content"])
+                content_digest = hashlib.sha256(content_bytes).hexdigest()
             elif path.is_file():
-                content_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                content_bytes = path.read_bytes()
+                content_digest = hashlib.sha256(content_bytes).hexdigest()
             else:
+                content_bytes = b""
                 content_digest = ""
             validated_digest = str(item.get("validated_content_sha256") or "")
             if validated_digest and validated_digest != content_digest:
                 raise ValueError("The source structure changed after molecular validation.")
-            revision_fields = ("source_file_field", "model_id", "model_index", "representation_type",
+            revision_fields = ("source_file_field", "representation_type",
                                "database_structure_label", "database_structure_policy", "binder_chains",
                                "target_chains", "pose_id", "pose_rank", "ligand_selection", "candidate_id")
             existing_rows = connection.execute(
@@ -720,6 +753,9 @@ class MolecularDatabase:
                                    or (hashlib.sha256(Path(existing["path"]).read_bytes()).hexdigest()
                                        if Path(existing["path"]).is_file() else ""))
                 if existing_digest != content_digest:
+                    continue
+                if not _structure_model_evidence_compatible(
+                        path, content_bytes, existing_context, structure_context):
                     continue
                 if all(existing_context.get(key) == structure_context.get(key)
                        for key in revision_fields

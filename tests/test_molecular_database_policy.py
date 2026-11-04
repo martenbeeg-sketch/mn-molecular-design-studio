@@ -562,7 +562,8 @@ def test_changed_calculation_evidence_preserves_frozen_evaluation_and_is_idempot
     assert database.structure_file(A, original_structure_id).read_bytes() == _pdb_acd().encode()
 
 
-def test_legacy_structure_reference_is_reused_for_identical_reingestion(database):
+@pytest.mark.parametrize("legacy_model_id", ["0", None])
+def test_legacy_structure_reference_is_reused_for_identical_reingestion(database, legacy_model_id):
     from mn_molecular_design_studio.molecular_database import _id, _json
     from mn_molecular_design_studio.molecular_database_ingest import _results_analysis_subject
 
@@ -571,7 +572,9 @@ def test_legacy_structure_reference_is_reused_for_identical_reingestion(database
     group, molecule = imported["group_id"], imported["molecule_ids"][0]
     path = database.root.parent / "legacy-source.pdb"
     path.write_text(_pdb_acd())
-    context = {"source_file_field": "complex_pdb", "model_id": "0"}
+    context = {"source_file_field": "complex_pdb"}
+    if legacy_model_id is not None:
+        context["model_id"] = legacy_model_id
     current_id = database.attach_structure(group, molecule,
         {"path": str(path), "label": "legacy-source.pdb"}, context=context)
     with database.connection() as connection:
@@ -599,7 +602,7 @@ def test_legacy_structure_reference_is_reused_for_identical_reingestion(database
     assert source["structure_id"] == legacy_id
 
     repeated = database.attach_structure(group, molecule,
-        {"path": str(path), "label": "legacy-source.pdb"}, context=context)
+        {"path": str(path), "label": "legacy-source.pdb"}, context={**context, "model_id": "0"})
     assert repeated == legacy_id
     repeated_source = _results_analysis_subject(database, A, A["id"], "project-1", source_run,
         {"source_run_dir": str(source_run)}, analysis_candidate)
