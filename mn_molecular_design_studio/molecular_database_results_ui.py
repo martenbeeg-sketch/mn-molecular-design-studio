@@ -271,10 +271,13 @@ def render_run_database_actions(run_dir, user: dict, projects: list[dict]) -> No
             st.caption("The source collection could not be verified; Database will open in All indexed.")
             source_group = None
     collection = _collection_for_group(source_group)
+    indexed_records = [record for record in records if not record.get("result_only")]
     st.markdown("#### Molecular Database")
     st.caption(f"{len(records):,} distinct molecular record{'s' if len(records) != 1 else ''} associated with this run.")
     open_col, context_col = st.columns([1.25, 4])
-    if source_group:
+    if not indexed_records:
+        context_col.caption("These candidates remain in Results until selected for the curated Database.")
+    elif source_group:
         group_members = sum(
             any(isinstance(group, dict) and str(group.get("id")) == source_group["id"] for group in (record.get("groups") or []))
             for record in records
@@ -282,7 +285,7 @@ def render_run_database_actions(run_dir, user: dict, projects: list[dict]) -> No
         context_col.caption(f"Open source collection · {group_members:,} of {len(records):,} run records are in this group.")
     else:
         context_col.caption("Open All indexed and focus a molecular record from this run.")
-    if open_col.button("Open in Database", key=f"run-database-open-{run_key}"):
+    if indexed_records and open_col.button("Open in Database", key=f"run-database-open-{run_key}"):
         st.session_state["molecular-preselect-group"] = source_group.get("id") if source_group else None
         st.session_state["molecular-preselect-collection"] = collection
         focus_id = next(
@@ -291,7 +294,7 @@ def render_run_database_actions(run_dir, user: dict, projects: list[dict]) -> No
                 for record in records
                 if source_group and _record_belongs_to_group(record, source_group["id"])
             ),
-            ids[0],
+            str(indexed_records[0]["id"]),
         )
         st.session_state["molecular-preselect-molecule"] = focus_id
         if source_group and database._is_smoke_test_group(source_group):

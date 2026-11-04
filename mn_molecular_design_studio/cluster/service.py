@@ -38,7 +38,7 @@ def schema_check(payload, kind, request_dir):
     if spec is None:
         raise ValueError("Unknown workflow.")
     from mn_molecular_design_studio.collection_policy import validate_policy
-    validate_policy(payload.get("database_collection_policy", "automatic"))
+    validate_policy(payload.get("database_collection_policy", "manual"))
     with workflows.deferred_path_validation():
         from mn_molecular_design_studio.batching import parameter_items
         for item in parameter_items(payload.get("parameters", {})):

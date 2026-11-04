@@ -124,6 +124,32 @@ def test_protocol_digest_ignores_execution_placement_and_paths():
     assert evaluation_descriptor(a)["parameters_digest"] != evaluation_descriptor(b)["parameters_digest"]
 
 
+def test_evaluation_identity_keeps_exact_structure_pose_and_native_parameters():
+    first = {"id": "obs-1", "molecule_id": "mol-a", "group_id": "group-a", "run_id": "run-1",
+             "namespace": "ipsae", "context": {
+                 "candidate_id": "candidate-1", "source_structure_digest": "a" * 64,
+                 "representation_id": "structure-a", "pose_identity": {"id": "pose-1"},
+                 "settings": {"pae_cutoff": 10.0, "dist_cutoff": 8.0},
+                 "candidate": {"source_tool": "ipsae", "stage": "analysis", "binder_chains": ["B"], "target_chains": ["A"]},
+             }}
+    second = {**first, "id": "obs-2", "context": {**first["context"],
+              "source_structure_digest": "b" * 64, "representation_id": "structure-b",
+              "pose_identity": {"id": "pose-2"}}}
+    changed_settings = {**first, "id": "obs-3", "context": {**first["context"],
+                       "settings": {"pae_cutoff": 8.0, "dist_cutoff": 8.0}}}
+
+    first_descriptor = evaluation_descriptor(first)
+    second_descriptor = evaluation_descriptor(second)
+    changed_descriptor = evaluation_descriptor(changed_settings)
+    assert first_descriptor["structure_digest"] == "a" * 64
+    assert first_descriptor["pose_id"] == "pose-1"
+    assert first_descriptor["native_parameters"] == {"pae_cutoff": 10.0, "dist_cutoff": 8.0}
+    assert first_descriptor["normalized_parameters"]["analysis.ipsae.pae_cutoff"] == 10.0
+    assert first_descriptor["subject_id"] != second_descriptor["subject_id"]
+    assert first_descriptor["instance_id"] != second_descriptor["instance_id"]
+    assert first_descriptor["parameters_digest"] != changed_descriptor["parameters_digest"]
+
+
 def test_comparison_view_restores_exact_saved_rules():
     from streamlit.testing.v1 import AppTest
     settings = {"fields": ["x", "y"], "directions": {"x": "lower", "y": "higher"}, "weights": {"x": 2., "y": 1.},

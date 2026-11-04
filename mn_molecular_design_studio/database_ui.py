@@ -791,7 +791,7 @@ def render_column_dialog(user, group_id):
 
 def render_database(user, projects):
     database = MolecularDatabase()
-    errors = sync_workspace(user, database=database)
+    errors = st.session_state.pop("molecular-indexing-errors", [])
     if workspace_sync_running(user, database=database):
         st.caption("Showing saved Database records. Job indexing is updating in the background.")
     st.markdown(CSS, unsafe_allow_html=True)
@@ -829,7 +829,7 @@ def render_database(user, projects):
                 st.session_state["molecular-import-open"] = True
                 st.session_state["molecular-import-step"] = 0
             if refresh.button("↻", key="molecular-database-refresh", help="Refresh molecules and job results"):
-                sync_workspace(user, database=database, force=True)
+                st.session_state["molecular-indexing-errors"] = sync_workspace(user, database=database, force=True)
                 st.rerun()
             group_query = st.text_input("Search groups", placeholder="Search groups…", label_visibility="collapsed", key="molecular-group-search")
             collection_label = st.segmented_control(

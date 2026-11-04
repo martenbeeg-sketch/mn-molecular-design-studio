@@ -1306,7 +1306,9 @@ def test_ipsae_analysis_api_emits_directional_contact_pae_and_bc2_definition_ipd
     monkeypatch.setattr(workflow_automation, "enqueue_workflow_call", execute_analysis_inline)
     from mn_molecular_design_studio.engine.workflow_engine.workflows import analysis
 
-    def fake_container(command, stdout=None, stderr=None, check=False):
+    def fake_container(command, stdout=None, stderr=None, check=False, **kwargs):
+        if "-v" not in command:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         run_dir = Path(command[command.index("-v") + 1].split(":", 1)[0])
         manifest_path = run_dir / "artifacts/analysis/ipsae/batch_manifest.json"
         manifest = json.loads(manifest_path.read_text())
@@ -1380,7 +1382,7 @@ def test_ipsae_analysis_api_emits_directional_contact_pae_and_bc2_definition_ipd
             })
         (run_dir / "artifacts/analysis/ipsae/batch_status.json").write_text(json.dumps({"jobs": [
             {"id": step["id"], "return_code": 0, "log_path": step["log_path"]}]}))
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(analysis.subprocess, "run", fake_container)
     response = client.post("/api/v1/workflows", json={

@@ -11,7 +11,7 @@ import math
 from pathlib import Path
 from functools import lru_cache
 
-from mn_molecular_design_studio.output_vocabulary import PREFIX, VERSION, normalize_metrics
+from mn_molecular_design_studio.output_vocabulary import PREFIX, VERSION, normalize_metrics, normalize_parameters
 
 PROJECTION_VERSION = "evaluation.v5:" + VERSION
 
@@ -60,22 +60,39 @@ def evaluation_descriptor(observation):
     candidate_id = str(context.get("candidate_id") or candidate.get("candidate_id") or row.get("compound_id") or "")
     target = str(context.get("target_molecule_id") or context.get("target_id") or context.get("target") or "")
     target_revision = context.get("target_structure_digest") or ""
-    representation = context.get("structure_digest") or context.get("_replica_representation") or context.get("representation_id") or row.get("pose_path") or candidate.get("complex_pdb") or candidate.get("binder_pdb") or ""
-    settings = context.get("settings") or {}
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    pose = context.get("pose_identity") or candidate.get("pose_identity") or row.get("pose_identity") or {}
+    pose_id = str(pose.get("id") or context.get("pose_id") or "") if isinstance(pose, dict) else str(pose or "")
+    model_id = str(context.get("model_id") or candidate.get("model_id") or row.get("model_id") or "")
+    structure_digest = str(context.get("source_structure_digest") or context.get("structure_digest")
+                           or context.get("pose_digest") or row.get("pose_digest")
+                           or raw.get("source_structure_digest") or "")
+    representation = (structure_digest or context.get("_replica_representation") or context.get("representation_id")
+                      or pose_id or row.get("pose_path") or candidate.get("complex_pdb") or candidate.get("binder_pdb") or "")
+    settings = context.get("settings") or raw.get("analysis_parameters") or {}
     runtime_fields = {"source_run_dir", "candidates_jsonl", "job_name", "campaign_name", "cpu_cores", "cpu_threads", "nprocs", "workers", "gpu_device", "backend", "output_dir"}
     scientific_settings = {k: v for k, v in settings.items() if k not in runtime_fields}
-    instance = identifier("instance-", [context.get("node_id"), context.get("task_group"), run, candidate_id, candidate.get("stage")])
+    parameter_projection = normalize_parameters(scientific_settings, candidate.get("source_tool") or observation.get("namespace"))
+    parameters_digest = identifier("params-", scientific_settings)
+    instance = identifier("instance-", [context.get("node_id"), context.get("task_group"), run, candidate_id,
+                                        candidate.get("stage"), model_id, pose_id, structure_digest, parameters_digest])
     subject = identifier("subject-", [observation.get("molecule_id"), target, target_revision, representation,
-                                     candidate.get("binder_chains"), candidate.get("target_chains"), context.get("prepared_variant_id")])
+                                     candidate.get("binder_chains"), candidate.get("target_chains"),
+                                     context.get("prepared_variant_id"), model_id, pose_id])
     canonical_id = identifier("evaluation-", [context.get("workstation"), context.get("_replica_observation") or observation["id"]])
     return {"id": canonical_id, "observation_id": observation["id"], "instance_id": instance, "subject_id": subject,
             "target_id": target, "target_revision": str(target_revision or ""),
             "representation_id": str(context.get("representation_id") or ""),
-            "representation": str(representation), "candidate_id": candidate_id,
+            "representation": str(representation), "structure_digest": structure_digest,
+            "model_id": model_id, "pose_id": pose_id, "candidate_id": candidate_id,
             "evaluator": str(candidate.get("source_tool") or observation.get("namespace") or ""),
             "run_id": run, "stage": str(candidate.get("stage") or context.get("stage") or ""),
-            "parameters_digest": identifier("params-", scientific_settings),
-            "engine_version": str((candidate.get("raw_metadata") or {}).get("engine_version") or settings.get("engine_version") or ""),
+            "parameters_digest": parameters_digest, "native_parameters": scientific_settings,
+            "normalized_parameters": parameter_projection["normalized"],
+            "parameter_provenance": parameter_projection["provenance"],
+            "parameter_conflicts": parameter_projection["conflicts"],
+            "engine_version": str(raw.get("engine_version") or settings.get("engine_version") or ""),
+            "source_workstation": str(context.get("workstation") or context.get("source_workstation") or ""),
             "image_digest": str(context.get("image_digest") or settings.get("image_digest") or ""),
             "status": str(context.get("status") or "completed"),
             "preferred": bool(context.get("is_representative") or context.get("representation_id")) and context.get("status", "completed") == "completed",

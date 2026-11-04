@@ -8839,9 +8839,7 @@ def _database_compound_set_path(compound_set_id: str) -> Path:
 
 def _database_compound_tool_options() -> list[dict[str, Any]]:
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
-    from mn_molecular_design_studio.molecular_database_ingest import sync_workspace
     library = MolecularDatabase()
-    sync_workspace(CURRENT_USER, database=library)
     options = library.compound_options(CURRENT_USER)
     selection = st.session_state.get("database-pending-compound-selection")
     if selection and Path(selection["path"]).is_file():

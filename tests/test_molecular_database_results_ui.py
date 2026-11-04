@@ -156,6 +156,29 @@ render_run_database_actions(Path({str(run_dir)!r}), {USER!r}, [])
     assert app.session_state["molecular-hide-smoke-test-groups"] is False
 
 
+def test_results_only_candidates_are_not_opened_as_database_records(tmp_path, monkeypatch):
+    _isolate_workspace(tmp_path, monkeypatch)
+    from mn_molecular_design_studio import molecular_database_results, molecular_database_results_ui
+
+    database = MolecularDatabase(tmp_path / "database")
+    row = {"id": "result-1", "molecule_id": "mol-1", "name": "Unselected candidate",
+           "type": "protein", "components": [{"type": "protein", "chain": "A", "sequence": "ACDE"}],
+           "groups": [], "run_groups": [], "run_group_ids": [], "structures": [], "representations": [],
+           "result_only": True, "acceptance_status": "unknown"}
+    monkeypatch.setattr(molecular_database_results_ui, "MolecularDatabase", lambda: database)
+    monkeypatch.setattr(molecular_database_results, "list_run_molecules", lambda *args, **kwargs: [row])
+    run_dir = (tmp_path / "runs" / "design" / "run-1").resolve()
+    script = f'''\
+from pathlib import Path
+from mn_molecular_design_studio.molecular_database_results_ui import render_run_database_actions
+render_run_database_actions(Path({str(run_dir)!r}), {USER!r}, [])
+'''
+    app = AppTest.from_string(script, default_timeout=10).run()
+    assert not app.exception
+    assert not any(button.label == "Open in Database" for button in app.button)
+    assert any("remain in Results" in item.value for item in app.caption)
+
+
 def test_database_defaults_to_library_and_passes_collection_to_queries(tmp_path, monkeypatch):
     _isolate_workspace(tmp_path, monkeypatch)
     from mn_molecular_design_studio import database_ui

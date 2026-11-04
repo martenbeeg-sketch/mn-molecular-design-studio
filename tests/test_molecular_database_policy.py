@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -23,7 +24,8 @@ def database(tmp_path, monkeypatch):
 
 
 def _make_run(database, task, run_id, *, owner=A["id"], project="project-1", tool="boltz2",
-              workflow="refolding.optimized_prediction", status="completed", success=True, candidates=(), metrics=None):
+              workflow="refolding.optimized_prediction", status="completed", success=True, candidates=(), metrics=None,
+              collection_policy="automatic"):
     from mn_molecular_design_studio.workspace import STUDIO_SOURCE_ID
 
     run_dir = database.root.parent / "runs" / task / run_id
@@ -31,10 +33,13 @@ def _make_run(database, task, run_id, *, owner=A["id"], project="project-1", too
     (run_dir / "molecular_design_studio.json").write_text(json.dumps({
         "application": STUDIO_SOURCE_ID, "studio_owner_id": owner, "project_id": project,
     }))
-    (run_dir / "metadata.json").write_text(json.dumps({
+    metadata = {
         "studio_owner_id": owner, "project_id": project, "task_group": task,
         "tool": tool, "workflow": workflow, "status": status, "campaign_name": run_id,
-    }))
+    }
+    if collection_policy is not None:
+        metadata["database_collection_policy"] = collection_policy
+    (run_dir / "metadata.json").write_text(json.dumps(metadata))
     (run_dir / "input.json").write_text(json.dumps({"tool": tool, "workflow": workflow, "params": {}}))
     (run_dir / "result.json").write_text(json.dumps({"success": success, "metrics": metrics or {}}))
     if candidates:
@@ -50,6 +55,58 @@ def _pdb_acd():
     for serial, (residue, x) in enumerate((("ALA", 1.0), ("CYS", 2.0), ("ASP", 3.0)), start=1):
         lines.append(f"ATOM  {serial:5d}  CA  {residue} A{serial:4d}    {x:8.3f}{1.0:8.3f}{1.0:8.3f}{1.00:6.2f}{20.00:6.2f}           C")
     return "\n".join([*lines, "TER", "END", ""])
+
+
+def _pdb_efg_acd_complex():
+    residue_names = {"A": "ALA", "C": "CYS", "D": "ASP", "E": "GLU", "F": "PHE", "G": "GLY"}
+    lines = []
+    serial = 1
+    for chain, sequence, x_offset in (("A", "EFG", 0.0), ("B", "ACD", 8.0)):
+        for residue_index, amino_acid in enumerate(sequence, start=1):
+            x = x_offset + residue_index
+            lines.append(
+                f"ATOM  {serial:5d}  CA  {residue_names[amino_acid]} {chain}{residue_index:4d}    "
+                f"{x:8.3f}{1.0:8.3f}{1.0:8.3f}{1.00:6.2f}{20.00:6.2f}           C"
+            )
+            serial += 1
+        lines.append("TER")
+    return "\n".join([*lines, "END", ""])
+
+
+def _pdb_acd_efg_complex():
+    text = _pdb_efg_acd_complex()
+    return "\n".join([line[:21] + ("B" if line[21:22] == "A" else "A") + line[22:]
+                       if line.startswith("ATOM") else line for line in text.splitlines()]) + "\n"
+
+
+def _pdb_for_sequence(sequence, chain="A", x_offset=0.0):
+    residue_names = {"A": "ALA", "C": "CYS", "D": "ASP", "E": "GLU", "F": "PHE",
+                     "G": "GLY", "H": "HIS", "I": "ILE", "K": "LYS", "L": "LEU",
+                     "M": "MET", "N": "ASN", "P": "PRO", "Q": "GLN", "R": "ARG",
+                     "S": "SER", "T": "THR", "V": "VAL", "W": "TRP", "Y": "TYR"}
+    lines = []
+    for serial, residue in enumerate(sequence, start=1):
+        if residue not in residue_names:
+            raise ValueError(f"No fixture residue mapping for {residue}.")
+        lines.append(f"ATOM  {serial:5d}  CA  {residue_names[residue]} {chain}{serial:4d}    "
+                     f"{x_offset + serial:8.3f}{1.0:8.3f}{1.0:8.3f}{1.00:6.2f}{20.00:6.2f}           C")
+    return "\n".join([*lines, "TER", "END", ""])
+
+
+def _database_source(database, sequence):
+    content = _pdb_for_sequence(sequence).encode()
+    record = {"name": "Source molecule", "components": molecule_imports.parse_sequences(sequence)[0]["components"],
+              "files": [{"name": "source.pdb", "content": content}]}
+    imported = database.import_records(A, [record], name="Source molecule", project_id="project-1")
+    molecule_id, group_id = imported["molecule_ids"][0], imported["group_id"]
+    with database.connection() as connection:
+        structure = connection.execute(
+            "SELECT id,path FROM molecule_structures WHERE group_id=? AND molecule_id=?", (group_id, molecule_id)
+        ).fetchone()
+    digest = hashlib.sha256(Path(structure["path"]).read_bytes()).hexdigest()
+    return ({"schema": "studio.complex_analysis_database_source.v1", "molecule_id": molecule_id,
+             "structure_id": structure["id"], "group_id": group_id, "structure_digest": digest},
+            molecule_id, group_id, structure["id"], digest)
 
 
 def _pdb_acd_with_generic_ligand():
@@ -79,7 +136,7 @@ def test_library_collection_is_curated_by_origin_and_accumulates_accessible_scor
     assert database.metric_fields(A, group_id=imported["group_id"], collection="library") == ["vina.energy"]
 
 
-def test_failed_or_empty_runs_do_not_create_groups_and_backbones_stay_all_indexed(database):
+def test_failed_or_empty_runs_and_raw_backbones_do_not_create_groups(database):
     empty = _make_run(database, "empty", "no-output", workflow="design_generation", tool="rfdiffusion3", candidates=())
     assert ingest_run(empty, database=database) == 0
     failed = _make_run(database, "failed", "candidate", workflow="design_generation", tool="bindcraft2", status="failed", success=False,
@@ -89,17 +146,36 @@ def test_failed_or_empty_runs_do_not_create_groups_and_backbones_stay_all_indexe
     backbone = _make_run(database, "design_generation", "backbone", workflow="design_generation", tool="rfdiffusion3",
                          candidates=[{"candidate_id": "bb-1", "stage": "generation.backbone", "binder_pdb": "backbone.pdb"}])
     (backbone / "backbone.pdb").write_text(_pdb_acd())
-    assert ingest_run(backbone, database=database) == 1
+    assert ingest_run(backbone, database=database) == 0
     assert database.groups(A, collection="library") == []
-    all_groups = database.groups(A, collection="all")
-    assert len(all_groups) == 1
-    assert all_groups[0]["origin"]["collection_kind"] == "intermediate"
+    assert database.groups(A, collection="all") == []
+
+
+def test_policyless_legacy_generation_is_results_only(database):
+    from mn_molecular_design_studio.collection_policy import policy_for_run
+    run = _make_run(database, "design", "legacy-no-policy", workflow="design_generation", tool="boltzgen",
+                    collection_policy=None, candidates=[{
+                        "candidate_id": "accepted-looking", "stage": "complex_refolding",
+                        "binder_sequence": "ACDE", "metrics": {"native_pass_filters": True},
+                    }])
+    assert policy_for_run(run) == "manual"
+    assert ingest_run(run, database=database) == 0
+    assert database.groups(A, collection="all") == []
+
+
+def test_unknown_generated_candidate_is_not_retained_as_accepted(database):
+    run = _make_run(database, "design", "unknown-native-status", workflow="design_generation", tool="boltzgen",
+                    candidates=[{"candidate_id": "unknown", "stage": "complex_refolding", "binder_sequence": "ACDE"}])
+    assert ingest_run(run, database=database) == 0
+    assert database.groups(A, collection="all") == []
 
 
 def test_generated_complex_refolding_is_library_output(database):
     run = _make_run(database, "design", "boltzgen-final", workflow="design_generation", tool="boltzgen",
-                    candidates=[{"candidate_id": "design-1", "stage": "complex_refolding", "binder_sequence": "ACDE",
-                                 "metrics": {"confidence": 0.91}}])
+                    candidates=[{"candidate_id": "design-1", "stage": "complex_refolding", "binder_sequence": "ACD",
+                                 "binder_chains": ["A"], "complex_pdb": "complex.pdb",
+                                 "metrics": {"confidence": 0.91, "native_pass_filters": True}}])
+    (run / "complex.pdb").write_text(_pdb_acd())
     assert ingest_run(run, database=database) == 1
     library = database.groups(A, project_id="project-1", collection="library")
     assert len(library) == 1
@@ -110,7 +186,10 @@ def test_generated_complex_refolding_is_library_output(database):
 def test_explicit_run_membership_removal_survives_forced_reindex(database):
     run = _make_run(database, "design", "removed-rfd4", tool="rfd4_proteina",
         workflow="design_generation", candidates=[{
-            "candidate_id": "saved-1", "stage": "generation.backbone_sequence", "binder_sequence": "ACDE"}])
+            "candidate_id": "saved-1", "stage": "generation.backbone_sequence", "binder_sequence": "ACD",
+            "binder_chains": ["A"], "binder_pdb": "binder.pdb",
+            "metrics": {"native_pass_filters": True}}])
+    (run / "binder.pdb").write_text(_pdb_acd())
     assert ingest_run(run, database=database) == 1
     group = next(g for g in database.groups(A, collection="all") if g["origin"].get("run_id") == run.name)
     molecule = database.list_molecules(A, group_id=group["id"])["items"][0]["id"]
@@ -122,24 +201,133 @@ def test_explicit_run_membership_removal_survives_forced_reindex(database):
     assert database.list_molecules(A, group_id=other)["total"] == 1
 
 
-@pytest.mark.parametrize("status,expected", [("rejected", 0), ("unresolved", 1), ("accepted", 1)])
-def test_saved_acceptance_decisions_are_not_confused_with_candidate_execution_status(database, status, expected):
+@pytest.mark.parametrize("status", ["rejected", "unresolved", "accepted"])
+def test_saved_acceptance_decisions_are_not_confused_with_candidate_execution_status(database, status):
+    source, molecule_id, source_group, source_structure, digest = _database_source(database, "ACDE")
     run = _make_run(database, "analysis", "acceptance-" + status, tool="validation_acceptance",
         workflow="analysis.validation_acceptance", candidates=[{
             "candidate_id": "source-1", "source_tool": "rfd4_proteina", "stage": "generation.backbone_sequence",
-            "binder_sequence": "ACDE", "raw_metadata": {"validation_acceptance": {"status": status}},
+            "binder_sequence": "ACDE", "complex_pdb": "evaluated.pdb",
+            "raw_metadata": {"database_source": source,
+                             "complex_analysis_selection": {"source_structure_digest": digest},
+                             "validation_acceptance": {"status": status}},
             "metrics": {"native_score": .8}}])
-    assert ingest_run(run, database=database) == expected
+    (run / "evaluated.pdb").write_text(_pdb_for_sequence("ACDE"))
+    assert ingest_run(run, database=database) == 1
+    evaluation = next(group for group in database.groups(A, collection="all")
+                      if group["origin"].get("collection_kind") == "evaluation")
+    row = database.list_molecules(A, group_id=evaluation["id"])["items"][0]
+    assert row["id"] == molecule_id
+    assert row["scores"]["validation_acceptance.native_score"] == .8
+    observation = row["observations"][0]
+    assert observation["context"]["source_group_id"] == source_group
+    assert observation["context"]["source_structure_id"] == source_structure
+    assert observation["context"]["source_structure_digest"] == digest
+    assert observation["context"]["acceptance_decision"]["status"] == status
+
+
+@pytest.mark.parametrize(
+    "task_group,workflow,input_shape",
+    [
+        ("analysis", "analysis.plip.evaluation", "top_level"),
+        ("pipeline", "pipeline.analysis.plip.evaluation", "nested_inputs"),
+    ],
+)
+def test_results_and_pipeline_evaluations_attach_to_exact_source_structure(
+        database, task_group, workflow, input_shape):
+    source = _make_run(database, "design", "results-source", tool="rfd4_proteina",
+        workflow="design_generation", candidates=[{
+            "candidate_id": "accepted-source", "stage": "generation.backbone_sequence",
+            "binder_sequence": "ACD", "binder_chains": ["B"], "target_chains": ["A"],
+            "complex_pdb": "source-complex.pdb",
+            "raw_metadata": {"validation_acceptance": {"status": "accepted"}},
+        }])
+    (source / "source-complex.pdb").write_text(_pdb_efg_acd_complex())
+    assert ingest_run(source, database=database) == 1
+    source_group = next(group for group in database.groups(A, collection="all")
+                        if group["origin"].get("run_id") == source.name)
+    source_rows = database.list_molecules(A, group_id=source_group["id"], collection="all")["items"]
+    molecule = next(row for row in source_rows
+                    if any(component.get("sequence") == "ACD" for component in row["components"]))
+    source_structure = molecule["representations"][0]
+    source_path = database.structure_file(A, source_structure["id"])
+    source_digest = hashlib.sha256(Path(source_path).read_bytes()).hexdigest()
+
+    analysis = _make_run(database, task_group, f"{task_group}-analysis", tool="plip",
+        workflow=workflow, candidates=[{
+            "candidate_id": "plip-evaluation", "stage": "analysis", "source_tool": "plip",
+            "binder_sequence": "ACD", "binder_chains": ["B"], "target_chains": ["A"],
+            "complex_pdb": "analysis-complex.pdb",
+            "metrics": {"plip_interaction_count": 8},
+            "raw_metadata": {
+                "source_candidate": {"candidate_id": "accepted-source"},
+                "complex_analysis_selection": {"source_structure_digest": source_digest},
+            },
+        }])
+    (analysis / "analysis-complex.pdb").write_text(_pdb_efg_acd_complex())
+    input_record = {"tool": "plip", "workflow": workflow, "params": {}}
+    if input_shape == "top_level":
+        input_record["source_run_dir"] = str(source)
+    else:
+        input_record["inputs"] = {"source_run_dir": str(source)}
+    (analysis / "input.json").write_text(json.dumps(input_record))
+
+    assert ingest_run(analysis, database=database) == 1
+    evaluation_group = next(group for group in database.groups(A, collection="all")
+                            if group["origin"].get("collection_kind") == "evaluation")
+    evaluated = database.list_molecules(A, group_id=evaluation_group["id"], collection="all")["items"]
+    assert [row["id"] for row in evaluated] == [molecule["id"]]
+    observation = next(row for row in evaluated[0]["observations"] if row["namespace"] == "plip")
+    assert observation["context"]["source_kind"] == "results"
+    assert observation["context"]["source_group_id"] == source_group["id"]
+    assert observation["context"]["source_structure_id"] == source_structure["id"]
+    assert observation["context"]["source_structure_digest"] == source_digest
+    assert observation["context"]["representation_id"] == source_structure["id"]
+    original_after = database.list_molecules(A, group_id=source_group["id"], collection="all")["items"][0]
+    assert original_after["id"] == molecule["id"]
+    assert len(original_after["representations"]) == 1
+
+
+def test_accepted_binder_waits_for_structure_then_imports_it_on_next_sync(database):
+    run = _make_run(database, "design", "accepted-rfd4-late-structure", tool="rfd4_proteina",
+        workflow="design_generation", candidates=[{
+            "candidate_id": "accepted-rfd4-1", "stage": "generation.backbone_sequence",
+            "binder_sequence": "ACD", "binder_chains": ["B"], "target_chains": ["A"],
+            "complex_pdb": "accepted-complex.pdb",
+            "raw_metadata": {"validation_acceptance": {"status": "accepted"}},
+        }])
+
+    # Do not promote a sequence-only accepted design to the reusable library.
+    assert ingest_run(run, database=database) == 0
+    assert database.groups(A, collection="library") == []
+
+    # A later sync sees the changed structure signature and imports the exact
+    # target-binder complex, without rerunning acceptance or prediction.
+    (run / "accepted-complex.pdb").write_text(_pdb_efg_acd_complex())
+    assert ingest_run(run, database=database) == 1
+    group = next(group for group in database.groups(A, collection="library")
+                 if group["origin"].get("run_id") == run.name)
+    rows = database.list_molecules(A, group_id=group["id"], collection="library")["items"]
+    binder = next(row for row in rows if any(component.get("sequence") == "ACD" for component in row["components"]))
+    assert len(binder["representations"]) == 1
+    structure_path = database.structure_file(A, binder["representations"][0]["id"])
+    components = molecule_imports.parse_structure(Path(structure_path).read_bytes(), "accepted-complex.pdb")[0]["components"]
+    assert {(component.get("chain"), component.get("sequence")) for component in components} == {
+        ("A", "EFG"), ("B", "ACD"),
+    }
+    assert binder["components"][0]["role"] == "binder"
 
 
 def test_generated_complex_reindex_keeps_binder_identity_and_only_passing_designs(database):
     candidate = {
         "candidate_id": "bindcraft2_00001", "stage": "complex_refolding",
-        "binder_sequence": "EFG", "binder_chains": ["B"],
+        "binder_sequence": "EFG", "binder_chains": ["B"], "target_chains": ["A"],
+        "complex_pdb": "complex.pdb",
         "metrics": {"native_pass_filters": True},
     }
     run = _make_run(database, "design", "bindcraft2-reindex", workflow="design_generation",
                     tool="bindcraft2", candidates=[candidate])
+    (run / "complex.pdb").write_text(_pdb_acd_efg_complex())
 
     assert ingest_run(run, database=database) == 1
     group = next(group for group in database.groups(A, collection="all") if group["origin"].get("run_id") == "bindcraft2-reindex")
@@ -147,15 +335,7 @@ def test_generated_complex_reindex_keeps_binder_identity_and_only_passing_design
 
     # Recreate the earlier duplicate full-complex row produced when structure
     # parsing changed a candidate's identity from binder-only to target+binder.
-    complex_text = "\n".join([
-        "ATOM      1  CA  ALA A   1       1.000   1.000   1.000  1.00 20.00           C",
-        "ATOM      2  CA  CYS A   2       2.000   1.000   1.000  1.00 20.00           C",
-        "ATOM      3  CA  ASP A   3       3.000   1.000   1.000  1.00 20.00           C",
-        "ATOM      4  CA  GLU B   1       8.000   1.000   1.000  1.00 20.00           C",
-        "ATOM      5  CA  PHE B   2       9.000   1.000   1.000  1.00 20.00           C",
-        "ATOM      6  CA  GLY B   3      10.000   1.000   1.000  1.00 20.00           C",
-        "END", "",
-    ])
+    complex_text = _pdb_acd_efg_complex()
     complex_path = run / "complex.pdb"
     complex_path.write_text(complex_text)
     full_components = molecule_imports.parse_structure(complex_text.encode(), "complex.pdb")[0]["components"]
@@ -178,11 +358,12 @@ def test_generated_complex_reindex_keeps_binder_identity_and_only_passing_design
 
     assert ingest_run(run, database=database, force=True) == 1
     rows = database.list_molecules(A, group_id=group["id"])["items"]
-    assert len(rows) == 1
-    assert rows[0]["id"] == original_id
-    assert [(component["chain"], component["sequence"]) for component in rows[0]["components"]] == [("B", "EFG")]
-    assert len(rows[0]["structures"]) == 1
-    assert rows[0]["structures"][0]["context"]["portable"] is True
+    assert len(rows) == 2  # preserve the already-indexed full complex identity
+    binder = next(row for row in rows if row["id"] == original_id)
+    assert [(component["chain"], component["sequence"]) for component in binder["components"]] == [("B", "EFG")]
+    assert len(binder["structures"]) == 1
+    assert binder["structures"][0]["context"]["portable"] is True
+    assert not any(any(component.get("sequence") == "VVV" for component in row["components"]) for row in rows)
 
 
 def test_generated_binder_links_existing_exact_modeled_target_and_preserves_complex(database):
@@ -252,6 +433,50 @@ def test_generated_binder_registers_explicit_sequence_only_target_and_links_iden
     assert binder["metadata"]["design_target_sequence_sha256"] == hashlib.sha256(b"EFGH").hexdigest()
 
 
+def test_curated_design_keeps_binder_complex_and_supplied_target_as_distinct_representations(database):
+    import hashlib
+
+    complex_text = _pdb_efg_acd_complex()
+    binder_text = _pdb_for_sequence("ACD", chain="B")
+    target_text = _pdb_for_sequence("EFG", chain="A")
+    candidate = {
+        "candidate_id": "design-with-three-structures", "stage": "generation.backbone_sequence",
+        "binder_sequence": "ACD", "binder_chains": ["B"], "target_chains": ["A"],
+        "binder_pdb": "binder.pdb", "complex_pdb": "complex.pdb", "target_pdb": "target.pdb",
+        "raw_metadata": {"validation_acceptance": {"status": "accepted"}, "structure_kind": "predicted"},
+    }
+    run = _make_run(database, "design", "three-structure-design", workflow="design_generation",
+                    tool="rfd4_proteina", candidates=[candidate])
+    (run / "binder.pdb").write_text(binder_text)
+    (run / "complex.pdb").write_text(complex_text)
+    (run / "target.pdb").write_text(target_text)
+    (run / "input.json").write_text(json.dumps({"tool": "rfd4_proteina", "workflow": "design_generation",
+                                                "params": {"target_pdb": "target.pdb"}}))
+
+    assert ingest_run(run, database=database) == 2
+    group = next(row for row in database.groups(A, collection="library")
+                 if row["origin"].get("run_id") == run.name)
+    binder = next(row for row in database.list_molecules(A, group_id=group["id"], collection="library")["items"]
+                  if row["components"][0].get("sequence") == "ACD")
+    assert len(binder["representations"]) == 2
+    by_field = {item["context"]["source_file_field"]: item for item in binder["representations"]}
+    assert set(by_field) == {"complex_pdb", "binder_pdb"}
+    assert by_field["complex_pdb"]["context"]["representation_type"] == "predicted"
+    assert by_field["binder_pdb"]["context"]["representation_type"] == "predicted"
+    assert database.structure_file(A, by_field["complex_pdb"]["id"]).read_bytes() == complex_text.encode()
+    assert database.structure_file(A, by_field["binder_pdb"]["id"]).read_bytes() == binder_text.encode()
+    assert by_field["complex_pdb"]["context"]["portable_sha256"] == hashlib.sha256(complex_text.encode()).hexdigest()
+    assert by_field["binder_pdb"]["context"]["portable_sha256"] == hashlib.sha256(binder_text.encode()).hexdigest()
+
+    target_id = binder["metadata"]["design_target_molecule_id"]
+    target = database.list_molecules(A, molecule_ids=[target_id], collection="all")["items"][0]
+    assert len(target["representations"]) == 1
+    target_structure = target["representations"][0]
+    assert target_structure["context"]["input_role"] == "receptor"
+    assert database.structure_file(A, target_structure["id"]).read_bytes() == target_text.encode()
+    assert target_structure["context"]["portable_sha256"] == hashlib.sha256(target_text.encode()).hexdigest()
+
+
 def test_sequence_only_run_target_is_ingested_without_candidate_structures(database):
     run = _make_run(database, "design_generation", "target-only-run", workflow="design_generation",
                     tool="rfd4_proteina", candidates=())
@@ -303,6 +528,7 @@ def test_design_target_links_to_matching_structure_backed_target(database):
     candidate = {
         "candidate_id": "structure-target-design", "stage": "generation.backbone_sequence",
         "binder_sequence": "EFG", "binder_chains": ["B"], "target_chains": ["A"],
+        "complex_pdb": "complex.pdb",
         "raw_metadata": {"components": [
             {"type": "protein", "chain": "A", "sequence": "ACD", "role": "target"},
             {"type": "protein", "chain": "B", "sequence": "EFG", "role": "binder"},
@@ -313,6 +539,7 @@ def test_design_target_links_to_matching_structure_backed_target(database):
                     workflow="design_generation", candidates=[candidate])
     target_path = run / "target.pdb"
     target_path.write_text(_pdb_acd())
+    (run / "complex.pdb").write_text(_pdb_acd_efg_complex())
     (run / "input.json").write_text(json.dumps({
         "tool": "rfd4_proteina", "workflow": "design_generation",
         "inputs": {"target_structure": "target.pdb"}, "params": {"target_chains": ["A"]},
@@ -331,7 +558,8 @@ def test_design_target_links_to_matching_structure_backed_target(database):
 def test_filtered_campaign_ingests_only_acceptance_passes(database):
     passing = {
         "candidate_id": "campaign-pass", "stage": "generation.backbone_sequence",
-        "source_tool": "rfd4_proteina", "binder_sequence": "ACDE",
+        "source_tool": "rfd4_proteina", "binder_sequence": "ACD", "binder_pdb": "pass.pdb",
+        "binder_chains": ["A"],
         "metrics": {"native_pass_filters": True},
         "raw_metadata": {"distributed_campaign": {
             "validation_required": True, "validated_acceptance": "accepted",
@@ -355,15 +583,16 @@ def test_filtered_campaign_ingests_only_acceptance_passes(database):
         database, "design", "filtered-campaign", workflow="rfd4_proteina_campaign",
         tool="rfd4_proteina", candidates=[passing, rejected, pending],
     )
+    (run / "pass.pdb").write_text(_pdb_acd())
 
     assert ingest_run(run, database=database) == 1
     group = next(group for group in database.groups(A, collection="library")
                  if group["origin"].get("run_id") == "filtered-campaign")
     items = database.list_molecules(A, group_id=group["id"], collection="library")["items"]
-    assert [item["components"][0]["sequence"] for item in items] == ["ACDE"]
+    assert [item["components"][0]["sequence"] for item in items] == ["ACD"]
 
 
-def test_failed_native_refold_is_kept_as_intermediate_observation(database):
+def test_failed_native_refold_stays_in_results_without_database_group(database):
     complex_text = "\n".join([
         "ATOM      1  CA  ALA A   1       1.000   1.000   1.000  1.00 20.00           C",
         "ATOM      2  CA  CYS A   2       2.000   1.000   1.000  1.00 20.00           C",
@@ -387,16 +616,10 @@ def test_failed_native_refold_is_kept_as_intermediate_observation(database):
                     candidates=[candidate])
     (run / "complex.pdb").write_text(complex_text)
 
-    assert ingest_run(run, database=database) == 1
+    assert ingest_run(run, database=database) == 0
     assert database.groups(A, collection="library") == []
-    group = next(group for group in database.groups(A, collection="all")
-                 if group["origin"].get("run_id") == "failed-native-refold")
-    assert group["origin"]["collection_kind"] == "intermediate"
-    items = database.list_molecules(A, group_id=group["id"], collection="all")["items"]
-    assert len(items) == 1
-    assert len(items[0]["structures"]) == 1
-    assert len(items[0]["observations"]) == 1
-    assert items[0]["observations"][0]["metrics"]["refolded_motif_rmsd_angstrom"] == 3.2
+    assert not [group for group in database.groups(A, collection="all")
+                if group["origin"].get("run_id") == "failed-native-refold"]
 
 
 @pytest.mark.parametrize("complex_identity", [False, True])
@@ -459,6 +682,8 @@ def test_prediction_indexes_only_the_best_structure_per_input(database):
 def test_docking_indexes_only_the_top_pose_for_each_compound(database):
     from mn_molecular_design_studio import ligand_compounds
 
+    database.import_records(A, [{"name": "Ethanol", "components": molecule_imports.parse_smiles("CCO")[0]["components"],
+                                 "metadata": {"compound_id": "CMP1"}}], name="Imported compounds", project_id="project-1")
     run = _make_run(database, "vina", "best-pose", tool="vina", workflow="ligand.docking")
     ligand_compounds.write_compound_set(
         run / "artifacts/input/compound_set.json", name="Inputs",
@@ -467,8 +692,12 @@ def test_docking_indexes_only_the_top_pose_for_each_compound(database):
     )
     poses = run / "artifacts/poses"
     poses.mkdir(parents=True)
-    (poses / "pose-1.pdbqt").write_text("REMARK top-ranked pose\n")
-    (poses / "pose-2.pdbqt").write_text("REMARK lower-ranked pose\n")
+    mapped_pose = "\n".join(["MODEL 1", "REMARK SMILES CCO", "REMARK SMILES IDX 1 3 2 2 3 1",
+        "ATOM      1 O    UNL     1       8.000   3.000   4.000  0.000 O",
+        "ATOM      2 C    UNL     1       7.000   3.000   4.000  0.000 C",
+        "ATOM      3 C    UNL     1       6.000   3.000   4.000  0.000 C", "ENDMDL", ""])
+    (poses / "pose-1.pdbqt").write_text(mapped_pose.replace("MODEL 1", "REMARK top-ranked pose\nMODEL 1"))
+    (poses / "pose-2.pdbqt").write_text(mapped_pose.replace("MODEL 1", "REMARK lower-ranked pose\nMODEL 1"))
     (run / "artifacts/docking_scores.csv").write_text(
         "compound_id\tstatus\tpose_rank\tbest_score_kcal_mol\tpose_path\n"
         "CMP1\tcompleted\t1\t-7.1\tartifacts/poses/pose-1.pdbqt\n"
@@ -494,24 +723,28 @@ def test_generator_contracts_ingest_common_fields_and_preserve_output_identity(d
     for index, (tool, stage, sequence, metrics) in enumerate(definitions):
         candidate = {"candidate_id": f"design-{index}", "source_tool": tool, "stage": stage,
                      "binder_sequence": sequence, "binder_chains": ["A"], "metrics": metrics}
+        if sequence:
+            candidate["binder_pdb"] = f"binder-{index}.pdb"
+            candidate["metrics"]["native_pass_filters"] = True
         if not sequence:
             candidate["binder_pdb"] = "backbone.pdb"
         run = _make_run(database, "design", f"generator-{index}", tool=tool, workflow="design_generation", candidates=[candidate])
         if not sequence:
             (run / "backbone.pdb").write_text(_pdb_acd())
-        assert ingest_run(run, database=database) == 1
+        else:
+            (run / f"binder-{index}.pdb").write_text(_pdb_for_sequence(sequence))
+        assert ingest_run(run, database=database) == (1 if sequence else 0)
         assert ingest_run(run, database=database) == 0
     page = database.list_molecules(A, sort="common.geometry.binder.ca_rg", descending=False)
-    assert page["total"] == 3
-    assert [row["scores"]["common.geometry.binder.ca_rg"] for row in page["items"]] == [10, 11, 12]
+    assert page["total"] == 2
+    assert [row["scores"]["common.geometry.binder.ca_rg"] for row in page["items"]] == [10, 11]
     first = page["items"][0]
     assert first["scores"]["common.confidence.generator.complex.ptm"] == .8
     assert first["metadata"]["output_kind"] == "designed_structure"
     assert len(first["observations"]) == 1
     assert first["components"][0]["role"] == "binder"
     assert len(database.list_molecules(A, collection="library")["items"]) == 2
-    assert page["items"][2]["metadata"]["output_kind"] == "backbone_proposal"
-    assert "common.design.sequence_length" not in page["items"][2]["scores"]
+    assert not any(row["metadata"].get("output_kind") == "backbone_proposal" for row in page["items"])
 
 
 def test_sequence_only_design_is_not_identified_as_target_structure(database):
@@ -640,16 +873,17 @@ def test_save_run_selection_is_exact_repeatable_and_copies_run_context(database)
                          "metrics": {"rank": 2}},
                     ])
     (run / "chosen.pdb").write_text(_pdb_acd())
-    assert ingest_run(run, database=database) == 2
+    assert ingest_run(run, database=database) == 0
     run_records = list_run_molecules(run, A, database=database)
     assert len(run_records) == 2
     chosen = next(row for row in run_records if row["name"] == "chosen")
-    assert chosen["run_group_ids"] and chosen["run_groups"][0]["collection_kind"] == "generated"
+    assert chosen["result_only"] is True
+    assert chosen["representations"]
 
     first = save_run_selection(run, A, [chosen["id"]], database=database, name="Saved", project_id="")
     again = save_run_selection(run, A, [chosen["id"]], database=database, group_id=first["group_id"], project_id="")
     second = save_run_selection(run, A, [chosen["id"]], database=database, name="Saved again", project_id="")
-    assert first["molecule_ids"] == again["molecule_ids"] == second["molecule_ids"] == [chosen["id"]]
+    assert first["molecule_ids"] == again["molecule_ids"] == second["molecule_ids"] == [chosen["molecule_id"]]
     assert first["saved_count"] == again["saved_count"] == second["saved_count"] == 1
     assert database.group(first["group_id"], A)["project_id"] == ""
     assert database.list_molecules(A, group_id=first["group_id"])["total"] == 1
@@ -662,7 +896,7 @@ def test_save_run_selection_is_exact_repeatable_and_copies_run_context(database)
             copied_sources = connection.execute("SELECT count(*) FROM molecule_sources WHERE group_id=? AND json_extract(provenance,'$.saved_selection')=1", (destination,)).fetchone()[0]
             assert copied_sources == 1
         members = connection.execute("SELECT molecule_id FROM molecule_members WHERE group_id=?", (first["group_id"],)).fetchall()
-    assert [row[0] for row in members] == [chosen["id"]]
+    assert [row[0] for row in members] == [chosen["molecule_id"]]
 
 
 def test_run_result_acl_destination_schema_and_project_are_enforced(database):
@@ -693,7 +927,7 @@ def test_run_results_api_lists_and_promotes_only_selected_ids(database, monkeypa
     from mn_molecular_design_studio import molecular_database_api
     from mn_molecular_design_studio import runtime
 
-    monkeypatch.setattr(molecular_database_api, "sync_workspace", lambda *args, **kwargs: [])
+    monkeypatch.setattr(molecular_database_api, "sync_workspace_async", lambda *args, **kwargs: [])
     # The application module may already have loaded a site-level runtime path
     # before this isolated test fixture set its environment variables.
     monkeypatch.setattr(runtime, "runs_root", lambda: database.root.parent / "runs")
@@ -712,7 +946,7 @@ def test_run_results_api_lists_and_promotes_only_selected_ids(database, monkeypa
                 "molecule_ids": [selected], "name": "Only selected", "project_id": "",
             })
             assert saved.status_code == 200, saved.text
-            assert saved.json()["molecule_ids"] == [selected]
+            assert saved.json()["molecule_ids"] == [response.json()["items"][0]["molecule_id"]]
             assert database.list_molecules(A, group_id=saved.json()["group_id"])["total"] == 1
             linked = client.get("/api/v1/molecules/jobs/proteinmpnn/api-results")
             assert linked.status_code == 200
@@ -722,6 +956,21 @@ def test_run_results_api_lists_and_promotes_only_selected_ids(database, monkeypa
             assert denied.status_code == 404
     finally:
         app.dependency_overrides.pop(_current_user, None)
+
+
+def test_results_listing_is_a_read_and_leaves_candidates_unindexed(database, monkeypatch):
+    from mn_molecular_design_studio import molecular_database_ingest
+    from mn_molecular_design_studio.molecular_database_results import list_run_molecules
+
+    run = _make_run(database, "proteinmpnn", "read-only-results", tool="proteinmpnn", workflow="sequence_design",
+                    candidates=[{"candidate_id": "candidate-1", "stage": "sequence_design",
+                                 "binder_sequence": "ACDE", "metrics": {"rank": 1}}])
+    monkeypatch.setattr(molecular_database_ingest, "ingest_run",
+                        lambda *args, **kwargs: pytest.fail("Results listing must not ingest candidates"))
+    rows = list_run_molecules(run, A, database=database)
+    assert len(rows) == 1
+    assert rows[0]["result_only"] is True
+    assert database.groups(A, collection="all") == []
 
 
 def test_sync_throttle_preserves_last_indexing_warning(database, monkeypatch):

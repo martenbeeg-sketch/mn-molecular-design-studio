@@ -1,9 +1,10 @@
 """Opt-in collection boundaries for bulk campaigns and their child jobs.
 
-No policy preserves existing automatic collection. A restricted run can only be
-promoted through a separately created, explicitly selected collection snapshot.
-Context scopes are process-local: a scheduler controller must persist/inherit the
-policy before dispatching a child; context variables do not cross processes.
+Policy-less historical jobs remain available in Results without automatic
+Database ingestion. A restricted run can only be promoted through a separately
+created, explicitly selected collection snapshot. Context scopes are
+process-local: a scheduler controller must persist/inherit the policy before
+dispatching a child; context variables do not cross processes.
 """
 from __future__ import annotations
 
@@ -40,6 +41,34 @@ def validate_policy(mode):
     return mode
 
 
+def default_policy_for_workflow(workflow_id):
+    """Declare ingestion only for known workflow purposes; unknown stays Results-only."""
+    workflow = str(workflow_id or "").strip().casefold()
+    if workflow.startswith(("design.", "sequence.", "ligand.generation.")):
+        return "automatic"
+    if workflow.startswith(("analysis.", "refolding.", "ligand.docking.", "ligand.affinity.",
+                            "ligand.md.", "simulation.")):
+        return "automatic"
+    return "manual"
+
+
+def default_policy_for_job(metadata):
+    """Infer purpose only from the job's explicit task group and job type."""
+    group = str(metadata.get("task_group") or "").strip().casefold()
+    job_type = str(metadata.get("job_type") or "").strip().casefold()
+    if group == "analysis" and job_type == "analysis":
+        return "automatic"
+    if group == "design" and job_type in {"design_generation", "design_campaign", "sequence_design"}:
+        return "automatic"
+    if group == "refolding-validation" and job_type in {"complex_refolding", "monomer_refolding"}:
+        return "automatic"
+    if group == "ligand-docking" and job_type in {"ligand_docking", "ligand_affinity"}:
+        return "automatic"
+    if group in {"ligand-affinity", "ligand-md", "md-analysis", "simulation"}:
+        return "automatic"
+    return "manual"
+
+
 @contextmanager
 def collection_scope(mode="manual"):
     mode = validate_policy(mode)
@@ -53,10 +82,13 @@ def collection_scope(mode="manual"):
 
 
 def tag_created_metadata(metadata):
+    # New jobs must opt into output ingestion. A missing policy used to mean
+    # automatic, which made every new workflow an implicit Database writer.
     mode = _CURRENT.get()
-    if mode is not None:
-        existing = validate_policy(metadata.get(POLICY_KEY, "automatic"))
-        metadata[POLICY_KEY] = max((mode, existing), key=_MODES.__getitem__)
+    if mode is None:
+        mode = validate_policy(metadata.get(POLICY_KEY, default_policy_for_job(metadata)))
+    existing = validate_policy(metadata.get(POLICY_KEY, mode))
+    metadata[POLICY_KEY] = max((mode, existing), key=_MODES.__getitem__)
 
 
 def _object(path):
@@ -83,7 +115,9 @@ def policy_for_run(run_dir, _seen=None):
         if not parent.is_absolute() or not (parent / "metadata.json").is_file():
             raise ValueError("The collection-policy parent is unavailable.")
         modes.append(policy_for_run(parent, seen))
-    return max(modes or ["automatic"], key=_MODES.__getitem__)
+    # Policy-less historical runs stay available in Results but are not
+    # treated as affirmative evidence that their outputs belong in Library.
+    return max(modes or ["manual"], key=_MODES.__getitem__)
 
 
 def automatic_collection_allowed(run_dir):

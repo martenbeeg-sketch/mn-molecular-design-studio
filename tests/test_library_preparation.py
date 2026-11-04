@@ -139,7 +139,8 @@ def _run(path):
 def test_collection_policy_survives_refresh_and_parent_restrictions(tmp_path, monkeypatch):
     parent = _run(tmp_path / "parent")
     child = _run(tmp_path / "child")
-    assert automatic_collection_allowed(child)
+    assert not automatic_collection_allowed(child)
+    assert policy_for_run(child) == "manual"
     set_run_policy(parent, "manual")
     set_run_policy(child, "automatic", parent_run_dir=parent)
     assert policy_for_run(child) == "manual"

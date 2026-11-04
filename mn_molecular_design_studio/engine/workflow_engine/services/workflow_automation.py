@@ -1143,11 +1143,13 @@ def _submit_workflow_request(request_file: str | Path, *, defer_dispatch: bool =
     spec = WORKFLOWS[workflow_id]
     parameters, function, cpu_cores, resource_gpu = _prepare_selection(spec, payload, request_path)
 
-    from mn_molecular_design_studio.collection_policy import collection_scope, validate_policy
+    from mn_molecular_design_studio.collection_policy import collection_scope, default_policy_for_workflow, validate_policy
     items = parameters if isinstance(parameters, list) else [parameters]
     external_only = workflow_id in {"library.prepare", "library.centroids", "library.seed_dock"} or any(
         item.get("import_to_database") is False for item in items)
-    requested_collection_policy = validate_policy(payload.get("database_collection_policy", "automatic"))
+    requested_collection_policy = validate_policy(
+        payload.get("database_collection_policy", default_policy_for_workflow(workflow_id))
+    )
     collection_mode = "manual" if external_only else requested_collection_policy
     with submission_priority(priority), collection_scope(collection_mode):
         if isinstance(parameters, list):
@@ -1229,8 +1231,8 @@ def validate_workflow_request(request_file: str | Path) -> dict[str, Any]:
     unknown = sorted(set(payload) - allowed_fields)
     if unknown:
         raise AutomationError(f"Unsupported workflow request field(s): {', '.join(unknown)}")
-    from mn_molecular_design_studio.collection_policy import validate_policy
-    validate_policy(payload.get("database_collection_policy", "automatic"))
+    from mn_molecular_design_studio.collection_policy import default_policy_for_workflow, validate_policy
+    validate_policy(payload.get("database_collection_policy", default_policy_for_workflow(workflow_id)))
     priority = _request_priority(payload)
     parameters, function, cpu_cores, gpu_device = _prepare_selection(spec, payload, request_path)
     return {

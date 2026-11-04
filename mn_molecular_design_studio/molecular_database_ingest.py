@@ -61,7 +61,7 @@ def _target_structure_path(inputs, run_dir):
 
 
 def _remove_sequence_carrier_structures(database, user, run_dir):
-    """Remove stale Database representations that misclassified IDR carriers."""
+    """Avoid misclassified IDR carrier structures without touching curated rows."""
     from mn_molecular_design_studio.target_identity import is_sequence_carrier_reference, sequence_carrier_path
 
     if not sequence_carrier_path(_read(Path(run_dir) / "input.json"), run_dir=run_dir):
@@ -69,7 +69,7 @@ def _remove_sequence_carrier_structures(database, user, run_dir):
     removed = 0
     with database.connection() as connection:
         rows = connection.execute(
-            "SELECT s.id,s.group_id,s.path,s.context FROM molecule_structures s "
+            "SELECT s.id,s.group_id,s.path,s.context,g.origin FROM molecule_structures s "
             "JOIN molecule_groups g ON g.id=s.group_id WHERE g.owner_id=?",
             (str(user.get("id") or ""),),
         ).fetchall()
@@ -81,6 +81,12 @@ def _remove_sequence_carrier_structures(database, user, run_dir):
             continue
         if (str(context.get("run_id") or "") == Path(run_dir).name
                 and is_sequence_carrier_reference(row["path"], run_dir=run_dir)):
+            try:
+                group_origin = json.loads(row["origin"] or "{}")
+            except (TypeError, ValueError):
+                group_origin = {}
+            if group_origin.get("collection_kind") == "curated":
+                continue
             stale.append((row["id"], row["group_id"]))
     if stale:
         with database.connection() as connection:
@@ -181,8 +187,12 @@ def _record(candidate, run_dir):
     files = []
     components = None
     sequence = candidate.get("binder_sequence") or candidate.get("sequence")
+    raw_metadata = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    representation_type = str(raw_metadata.get("structure_kind") or raw_metadata.get("representation_type") or "unknown")
     # A candidate has one molecular identity. Do not attach target-only or
     # binder-only files as if they represented a different complex's identity.
+    # Keep every available candidate representation on that identity, while
+    # choosing the first valid structure (complex first) for component parsing.
     for key in ("complex_pdb", "binder_pdb", "target_pdb"):
         if key == "target_pdb" and sequence:
             # A target-only file cannot identify the newly designed sequence.
@@ -191,11 +201,14 @@ def _record(candidate, run_dir):
         if not path:
             continue
         try:
-            components = imports.parse_structure(path.read_bytes(), path.name)[0]["components"]
+            parsed_components = imports.parse_structure(path.read_bytes(), path.name)[0]["components"]
         except ValueError:
             continue
-        files = [{"path": str(path), "label": key.replace("_", " ").title(), "dimensions": 3}]
-        break
+        if components is None:
+            components = parsed_components
+        if all(existing.get("path") != str(path) for existing in files):
+            files.append({"path": str(path), "label": key.replace("_", " ").title(), "dimensions": 3,
+                          "source_file_field": key, "representation_type": representation_type})
     raw_components = (candidate.get("raw_metadata") or {}).get("components")
     validation_path = _path((candidate.get("raw_metadata") or {}).get("validation_complex_pdb"), run_dir)
     if validation_path and validation_path.is_file() and all(row.get("path") != str(validation_path) for row in files):
@@ -206,13 +219,14 @@ def _record(candidate, run_dir):
         if validation_components:
             if components is None:
                 components = validation_components
-            files.append({"path": str(validation_path), "label": "Independent validation complex", "dimensions": 3})
+            files.append({"path": str(validation_path), "label": "Independent validation complex", "dimensions": 3,
+                          "source_file_field": "validation_complex_pdb",
+                          "representation_type": str(raw_metadata.get("validation_structure_kind") or "unknown")})
     if components is None and isinstance(raw_components, list):
         try:
             components = imports.canonical_components(raw_components)[0]
         except (KeyError, TypeError, ValueError):
             components = None
-    raw_metadata = candidate.get("raw_metadata") or {}
     small_molecules = [component for component in components or [] if component.get("type") == "small_molecule"]
     raw_smiles = raw_metadata.get("ligand_smiles") or []
     if isinstance(raw_smiles, (str, dict)):
@@ -353,6 +367,39 @@ def _candidate_rejected(candidate):
             or metrics.get("pass_filters") is False or metrics.get("native_pass_filters") is False)
 
 
+def _candidate_acceptance_state(candidate):
+    """Return only explicit candidate decisions; missing evidence stays unknown."""
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
+    campaign = raw.get("distributed_campaign") if isinstance(raw.get("distributed_campaign"), dict) else {}
+    if campaign.get("validation_required"):
+        campaign_status = str(campaign.get("validated_acceptance") or "").strip().casefold()
+        if campaign_status in {"accepted", "accept", "passed", "pass"}:
+            return "accepted"
+        if campaign_status in {"rejected", "reject", "failed", "filtered", "discarded", "not_accepted"}:
+            return "rejected"
+        if campaign_status:
+            return "unresolved"
+        return "unknown"
+    decision = raw.get("validation_acceptance") if isinstance(raw.get("validation_acceptance"), dict) else {}
+    status = str(decision.get("status") or candidate.get("status") or raw.get("status") or "").strip().casefold()
+    if status in {"accepted", "accept", "passed", "pass"}:
+        return "accepted"
+    if status in {"rejected", "reject", "failed", "filtered", "discarded", "not_accepted"}:
+        return "rejected"
+    if status in {"unresolved", "unknown", "not_evaluated", "pending"}:
+        return "unresolved"
+    if candidate.get("accepted") is True or raw.get("accepted") is True:
+        return "accepted"
+    if candidate.get("accepted") is False or raw.get("accepted") is False:
+        return "rejected"
+    if metrics.get("native_pass_filters") is True or metrics.get("pass_filters") is True:
+        return "accepted"
+    if metrics.get("native_pass_filters") is False or metrics.get("pass_filters") is False:
+        return "rejected"
+    return "unknown"
+
+
 def _run_mode(run_dir, metadata, inputs):
     if run_dir.parent.name == "candidate-import":
         return "curated"
@@ -360,7 +407,7 @@ def _run_mode(run_dir, metadata, inputs):
     for mapping in (metadata, inputs, inputs.get("params") or {}):
         values.extend(str(mapping.get(key) or "") for key in ("tool", "workflow", "workflow_id", "job_type", "engine", "task"))
     text = " ".join(values).casefold().replace("-", "_")
-    if any(token in text for token in ("optimized_prediction", "refolding.optimized", "vina", "docking", "affinity", "rescoring", "evaluation", "boltz2", "boltz_2", "molecule_selection")):
+    if any(token in text for token in ("optimized_prediction", "refolding.optimized", "validation_acceptance", "vina", "docking", "affinity", "rescoring", "evaluation", "boltz2", "boltz_2", "molecule_selection")):
         return "evaluation"
     if any(token in text for token in (
         "ligand.generation.", "design_generation", "bindcraft2", "rfantibody", "proteina_complexa_generator",
@@ -450,11 +497,93 @@ def _database_analysis_subject(database, user, owner, project, source):
             source.get("target_chains") and
             set(source["target_chains"]) == set(context.get("target_chains") or [])
         ) else None
+        origin = group.get("origin") if isinstance(group.get("origin"), dict) else {}
         return {"molecule_id": molecule_id, "structure_id": structure_id, "group_id": group_id,
                 "structure_digest": digest, "record": record, "representation": representation,
-                "target_molecule_id": target_id}
+                "target_molecule_id": target_id, "source_owner_id": str(group.get("owner_id") or ""),
+                "source_node": str(origin.get("_replica_node") or "")}
     except (FileNotFoundError, OSError, PermissionError, ValueError, TypeError):
         return None
+
+
+def _results_analysis_subject(database, user, owner, project, analysis_run, inputs, candidate):
+    """Resolve Results-launched analysis by source run, candidate, and exact structure digest."""
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    source_candidate = raw.get("source_candidate") if isinstance(raw.get("source_candidate"), dict) else {}
+    source_candidate = source_candidate or candidate
+    params = inputs.get("params") if isinstance(inputs.get("params"), dict) else {}
+    nested = inputs.get("inputs") if isinstance(inputs.get("inputs"), dict) else {}
+    source_ref = inputs.get("source_run_dir") or params.get("source_run_dir") or nested.get("source_run_dir")
+    if not source_ref:
+        return None
+    from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+    source_dir = resolve_stored_path(source_ref, must_exist=True)
+    if source_dir is None:
+        source_path = Path(str(source_ref)).expanduser()
+        if not source_path.is_absolute():
+            source_path = Path(analysis_run) / source_path
+        try:
+            source_dir = source_path.resolve(strict=True)
+        except OSError:
+            return None
+    source_dir = Path(source_dir)
+    if not source_dir.is_dir():
+        return None
+    source_metadata = _read(source_dir / "metadata.json")
+    source_run_id = str(source_metadata.get("run_id") or source_dir.name)
+    source_task_group = str(source_metadata.get("task_group") or source_dir.parent.name)
+    source_candidate_id = str(source_candidate.get("candidate_id") or raw.get("analysis_source_candidate_id") or "")
+    if not source_candidate_id:
+        return None
+
+    selection = raw.get("complex_analysis_selection") if isinstance(raw.get("complex_analysis_selection"), dict) else {}
+    digest = str(selection.get("source_structure_digest") or selection.get("structure_digest")
+                 or raw.get("source_structure_digest") or "")
+    if not digest:
+        for key in ("complex_pdb", "binder_pdb"):
+            path = _path(source_candidate.get(key), source_dir)
+            if path and path.is_file():
+                digest = _file_sha256(path)
+                if digest:
+                    break
+    if len(digest) != 64:
+        return None
+
+    source_marker = _read(source_dir / "molecular_design_studio.json")
+    workstation = str(source_marker.get("workstation") or source_metadata.get("workstation") or "")
+    with database.connection() as connection:
+        sources = connection.execute(
+            "SELECT s.molecule_id,s.group_id,s.provenance,g.owner_id,g.project_id,g.origin "
+            "FROM molecule_sources s JOIN molecule_groups g ON g.id=s.group_id "
+            "WHERE g.owner_id=? AND g.project_id=? AND json_extract(s.provenance,'$.run_id')=? "
+            "AND json_extract(s.provenance,'$.task_group')=? AND json_extract(s.provenance,'$.candidate_id')=?",
+            (str(owner), str(project or ""), source_run_id, source_task_group, source_candidate_id),
+        ).fetchall()
+        matches = []
+        for source in sources:
+            provenance = json.loads(source["provenance"])
+            if workstation and str(provenance.get("workstation") or "") != workstation:
+                continue
+            group_access = {"owner_id": source["owner_id"], "project_id": source["project_id"]}
+            if not database._can_read(group_access, user):
+                continue
+            structures = connection.execute(
+                "SELECT id,path,context FROM molecule_structures WHERE molecule_id=? AND group_id=?",
+                (source["molecule_id"], source["group_id"]),
+            ).fetchall()
+            for structure in structures:
+                context = json.loads(structure["context"])
+                actual_digest = str(context.get("portable_sha256") or "") or _file_sha256(structure["path"])
+                if actual_digest == digest:
+                    matches.append({
+                        "molecule_id": str(source["molecule_id"]), "group_id": str(source["group_id"]),
+                        "structure_id": str(structure["id"]), "structure_digest": digest,
+                        "target_molecule_id": str(raw.get("target_molecule_id")
+                                                  or source_candidate.get("target_molecule_id") or ""),
+                        "source_owner_id": str(source["owner_id"] or ""),
+                        "source_node": str((json.loads(source["origin"] or "{}")).get("_replica_node") or ""),
+                    })
+    return matches[0] if len(matches) == 1 else None
 
 
 def _file_sha256(path):
@@ -832,22 +961,6 @@ def _run_input_compounds(run_dir):
     return []
 
 
-def _prune_generated_group(database, group_id, keep_ids):
-    """Remove superseded or rejected entries from one run's generated group."""
-    keep_ids = set(keep_ids)
-    with database.connection() as connection:
-        members = connection.execute(
-            "SELECT molecule_id FROM molecule_members WHERE group_id=?", (group_id,)
-        ).fetchall()
-        for member in members:
-            molecule_id = member["molecule_id"]
-            if molecule_id in keep_ids:
-                continue
-            for table in ("molecule_sources", "molecule_structures", "molecule_observations"):
-                connection.execute(f"DELETE FROM {table} WHERE group_id=? AND molecule_id=?", (group_id, molecule_id))
-            connection.execute("DELETE FROM molecule_members WHERE group_id=? AND molecule_id=?", (group_id, molecule_id))
-
-
 def _candidate_structure_signature(run_dir):
     """Track referenced structure files so late-written outputs are re-indexed."""
     manifest = Path(run_dir) / "artifacts" / "normalized_candidates" / "candidates.jsonl"
@@ -1004,12 +1117,10 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         with_structures = [candidate for candidate, record in candidate_records if record.get("files")]
         best_prediction_ids = {id(candidate) for candidate in best_candidates_by_complex(with_structures)}
 
-    input_set_path = run_dir / "artifacts/input/compound_set.json"
     input_compounds = _run_input_compounds(run_dir)
-    generated_set_path = run_dir / "artifacts/generated_compound_set.json"
     score_paths = [run_dir / "artifacts" / filename for filename in ("docking_scores.csv", "nesso_affinity.csv")]
     md_metrics_supported = "md" in run_dir.parent.name and bool(result.get("metrics"))
-    if (not candidate_records and not input_target_record and not generated_set_path.is_file()
+    if (not candidate_records and not input_target_record
             and not (input_compounds and any(path.is_file() for path in score_paths)) and not md_metrics_supported):
         with database.connection() as connection:
             connection.execute("INSERT INTO molecular_ingestions VALUES (?,?,?) ON CONFLICT(source_key) DO UPDATE SET signature=excluded.signature,updated_at=excluded.updated_at",
@@ -1032,15 +1143,46 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
         stage = str(candidate.get("stage") or "")
         sequence = candidate.get("binder_sequence") or candidate.get("sequence")
         is_backbone = stage == "generation.backbone" and not sequence
-        rejected = _candidate_rejected(candidate)
         raw_candidate = candidate.get("raw_metadata") or {}
-        if (raw_candidate.get("validation_acceptance") or {}).get("status") == "rejected":
+        acceptance = raw_candidate.get("validation_acceptance")
+        acceptance = acceptance if isinstance(acceptance, dict) else {}
+        acceptance_state = _candidate_acceptance_state(candidate)
+        # A saved Studio acceptance decision is a separate policy from native
+        # generator diagnostics (for example, the native PPI diagnostic may
+        # fail while a saved campaign policy accepts the candidate).
+        rejected = acceptance_state == "rejected"
+        is_library_design = (
+            mode in {"generated", "curated"}
+            or (mode == "auto" and stage in {"sequence_design", "generation.backbone_sequence"})
+        )
+        if ((mode == "generated" or (mode == "auto" and is_library_design))
+                and acceptance_state != "accepted"):
+            # Full generator history remains in Results. Unknown, rejected,
+            # and unresolved outputs do not become reusable Database rows.
+            continue
+        if (acceptance_state == "accepted" and candidate.get("binder_sequence")
+                and is_library_design and not (record.get("files") or [])):
+            # An accepted binder must retain its design coordinates in a
+            # reusable collection. Keep the run's evidence intact, but defer
+            # Database promotion until its referenced structure is available.
+            # _candidate_structure_signature includes unresolved references,
+            # so the next workspace sync retries once the source file lands.
+            log.warning(
+                "Deferred accepted design %s from %s: its source structure is not available yet.",
+                candidate.get("candidate_id") or "<unknown>", run_dir,
+            )
             continue
         database_source = raw_candidate.get("database_source") if isinstance(raw_candidate, dict) else None
+        raw_candidate_metadata = raw_candidate.get("raw_metadata") if isinstance(raw_candidate, dict) else None
+        raw_candidate_metadata = raw_candidate_metadata if isinstance(raw_candidate_metadata, dict) else {}
+        if database_source is None:
+            database_source = raw_candidate_metadata.get("database_source")
+        if database_source is None and isinstance(metadata.get("database_source"), dict):
+            database_source = metadata["database_source"]
         database_subject = None
         if database_source is not None:
             database_subject = _database_analysis_subject(database, user, owner, project, database_source)
-            selection = raw_candidate.get("complex_analysis_selection")
+            selection = raw_candidate.get("complex_analysis_selection") or raw_candidate_metadata.get("complex_analysis_selection")
             selection = selection if isinstance(selection, dict) else {}
             source_selection_digest = str(
                 selection.get("source_structure_digest") or selection.get("structure_digest") or ""
@@ -1055,30 +1197,54 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                     or (source_selection_digest and source_selection_digest != database_subject["structure_digest"])):
                 log.warning("Skipped Database evaluation projection for %s: its source structure is no longer an exact accessible representation.", run_dir)
                 continue
+        elif (mode == "evaluation" and not prediction_run
+              and (run_dir.parent.name == "analysis" or stage in {"analysis", "benchmark"})):
+            database_subject = _results_analysis_subject(database, user, owner, project, run_dir, inputs, candidate)
+            if database_subject is None:
+                log.warning("Skipped Database evaluation projection for %s: its Results source did not resolve to one exact saved molecule and structure.", run_dir)
+                continue
         campaign_filter = raw_candidate.get("distributed_campaign") if isinstance(raw_candidate.get("distributed_campaign"), dict) else {}
-        if campaign_filter.get("validation_required") and rejected:
+        if mode == "generated" and campaign_filter.get("validation_required") and rejected:
             # Campaign validation is an eligibility gate, not an intermediate
             # library observation. Keep failures in campaign Results only.
             continue
-        preserve_failed_native_refold = (
-            mode == "generated" and rejected and stage == "complex_refolding"
-            and raw_candidate.get("result_kind") == "native_pipeline"
-            and raw_candidate.get("candidate_pool_level") == "native_pipeline"
-        )
-        # A failed generated design remains visible in its job results and
-        # native tables, but it is not a reusable library candidate. Native
-        # pipeline refolds with failed tool filters remain as intermediate
-        # observations so their structures and stage metrics are auditable.
-        if mode == "generated" and rejected and not preserve_failed_native_refold:
-            continue
-        provenance = {**origin, "candidate_id": candidate.get("candidate_id"), "parents": candidate.get("parents") or []}
+        acceptance_evidence = {
+            "validation_acceptance": raw_candidate.get("validation_acceptance"),
+            "distributed_campaign": raw_candidate.get("distributed_campaign"),
+            "native_filter_metrics": {key: (candidate.get("metrics") or {}).get(key)
+                                      for key in ("native_pass_filters", "pass_filters")
+                                      if key in (candidate.get("metrics") or {})},
+        }
+        provenance = {**origin, "candidate_id": candidate.get("candidate_id"),
+                      "parents": candidate.get("parents") or [],
+                      "acceptance_decision": {"status": acceptance_state, "evidence": acceptance_evidence}}
         candidate_id = str(candidate.get("candidate_id") or _canonical_fingerprint(record))
         source_for_molecule = f"{source_key}:{candidate_id}"
         with database.connection() as connection:
             previous_source = connection.execute(
-                "SELECT molecule_id,group_id FROM molecule_sources WHERE source_key=?",
+                "SELECT s.molecule_id,s.group_id,s.provenance,mm.metadata FROM molecule_sources s "
+                "LEFT JOIN molecule_members mm ON mm.group_id=s.group_id AND mm.molecule_id=s.molecule_id "
+                "WHERE s.source_key=?",
                 (source_for_molecule,),
             ).fetchone()
+        if previous_source:
+            previous_provenance = json.loads(previous_source["provenance"] or "{}")
+            previous_decision = previous_provenance.get("acceptance_decision")
+            if not previous_decision and previous_source["metadata"]:
+                previous_metadata = json.loads(previous_source["metadata"] or "{}")
+                prior_validation = previous_metadata.get("validation_acceptance")
+                prior_campaign = previous_metadata.get("distributed_campaign")
+                if prior_validation or prior_campaign:
+                    previous_decision = {"status": prior_validation.get("status") if prior_validation else None,
+                                         "evidence": {"validation_acceptance": prior_validation,
+                                                      "distributed_campaign": prior_campaign}}
+            history = list(previous_provenance.get("acceptance_history") or [])
+            if previous_decision and previous_decision != provenance["acceptance_decision"]:
+                if previous_decision not in history:
+                    history.append(previous_decision)
+                history.append(provenance["acceptance_decision"])
+            if history:
+                provenance["acceptance_history"] = history
         prediction_candidate_ids.add(candidate_id)
         identity_record = {**record, "files": []}
         designed_target_components = []
@@ -1164,13 +1330,25 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
 
         if database_subject is not None:
             molecule_id, destination = database_subject["molecule_id"], database_subject["group_id"]
+            # Evaluations authored on this workstation belong to its local
+            # Evaluation collection, even when the selected molecule and
+            # representation are owned by a remote peer. Reuse the exact
+            # canonical identity; never write an observation/source row into
+            # the source owner's replicated group.
+            destination = output_group("evaluation")
+            database.add_to_group(user, destination, [molecule_id])
+            provenance.update(
+                source_kind="database",
+                source_molecule_id=molecule_id,
+                source_structure_id=database_subject["structure_id"],
+                source_group_id=database_subject["group_id"],
+                source_structure_digest=database_subject["structure_digest"],
+                source_owner_id=database_subject.get("source_owner_id") or "",
+                source_node=database_subject.get("source_node") or "",
+            )
             _put_source(database, destination, molecule_id, source_for_molecule, provenance)
         elif mode == "curated":
             destination = output_group("curated")
-            with database.connection() as connection:
-                molecule_id = database._put(connection, destination, identity_record, source_key=source_for_molecule, origin=provenance, stamp=stamp)
-        elif preserve_failed_native_refold:
-            destination = output_group("intermediate")
             with database.connection() as connection:
                 molecule_id = database._put(connection, destination, identity_record, source_key=source_for_molecule, origin=provenance, stamp=stamp)
         elif not rejected and not is_backbone and (mode == "generated" or (mode == "auto" and stage in {"sequence_design", "generation.backbone_sequence"})):
@@ -1255,7 +1433,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             elif database_subject is not None and database_subject.get("target_molecule_id"):
                 evaluation_target["target_id"] = database_subject["target_molecule_id"]
             analysis_source_context = ({
-                "source_kind": "database",
+                "source_kind": "database" if database_source is not None else "results",
                 "source_molecule_id": database_subject["molecule_id"],
                 "source_structure_id": database_subject["structure_id"],
                 "source_group_id": database_subject["group_id"],
@@ -1275,51 +1453,32 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                          "is_representative": not prediction_run or id(candidate) in best_prediction_ids},
                 source_key=f"{source_for_molecule}:metrics", created_at=stamp)
 
-    if mode == "generated":
-        _prune_generated_group(database, _id("job-", source_key), generated_molecule_ids)
+    # Re-indexing is additive. A changed or incomplete historical decision
+    # must not erase a previously retained candidate; explicit user removal
+    # remains represented by the run-group tombstone checked above.
 
     if prediction_run:
         _prune_stale_run_structures(database, run_dir.parent.name, run_dir.name,
                                     preferred_prediction_structure_ids, candidate_ids=prediction_candidate_ids)
     _prune_empty_evaluation_members(database, stale_evaluation_memberships)
 
-    # The ligand contracts preserve exactly the consumed and generated sets.
+    # Screening inputs stay in Results. Docking rows may still attach to an
+    # already imported canonical compound, but never create one just because
+    # it appeared in a large campaign input set.
     compound_rows = {}
-    set_payloads = [(input_compounds, False)]
-    if generated_set_path.is_file():
-        from mn_molecular_design_studio.ligand_compounds import load_compound_set
-        try:
-            set_payloads.append((list(load_compound_set(generated_set_path).get("compounds") or []), True))
-        except (OSError, ValueError, KeyError, TypeError):
-            log.info("Could not read generated compound set %s", generated_set_path)
-    for compounds, generated in set_payloads:
-        if not compounds:
+    for compound in input_compounds:
+        record = {"name": compound.get("compound_name") or compound["compound_id"],
+                  "components": [{"type": "small_molecule", "chain": "L", "smiles": compound["smiles"]}],
+                  "metadata": {**(compound.get("properties") or {}), "compound_id": compound["compound_id"],
+                               "source_tool": tool, "stage": "input"}}
+        molecule_id, destination, matched = _find_original_group(database, user["id"], project, record)
+        if not matched:
             continue
-        destination = output_group("generated") if generated else None
-        for index, compound in enumerate(compounds):
-            record = {"name": compound.get("compound_name") or compound["compound_id"], "components": [{"type": "small_molecule", "chain": "L", "smiles": compound["smiles"]}],
-                      "metadata": {**(compound.get("properties") or {}), "compound_id": compound["compound_id"],
-                                   "source_tool": tool, "stage": "generated" if generated else "input"}}
-            coordinates = run_dir / "artifacts/generated_compounds.sdf"
-            if generated and coordinates.is_file():
-                record["files"] = [{"path": str(coordinates), "label": "Generated coordinates", "molecule_index": index}]
-            row_source_key = f"{source_key}:{'generated-' if generated else 'input-'}compound:{compound['compound_id']}"
-            provenance = {**origin, "compound_id": compound["compound_id"], "collection_kind": "generated" if generated else "inputs"}
-            if generated:
-                with database.connection() as connection:
-                    molecule_id = database._put(connection, destination, record, source_key=row_source_key, origin=provenance, stamp=stamp)
-            else:
-                molecule_id, destination, matched = _find_original_group(database, user["id"], project, record)
-                if not matched:
-                    destination = _ensure_group(database, user, _id("inputs-", f"{user['id']}:{project or ''}"),
-                        "Tool inputs", project, "tool_inputs",
-                        {"type": "job", "owner_id": user["id"], "project_id": project}, "inputs")
-                    with database.connection() as connection:
-                        molecule_id = database._put(connection, destination, record, source_key=row_source_key, origin=provenance, stamp=stamp)
-                else:
-                    _put_source(database, destination, molecule_id, row_source_key, provenance)
-            compound_rows[compound["compound_id"]] = (molecule_id, destination, record)
-            seen_molecules.add(molecule_id)
+        row_source_key = f"{source_key}:input-compound:{compound['compound_id']}"
+        _put_source(database, destination, molecule_id, row_source_key,
+                    {**origin, "compound_id": compound["compound_id"], "collection_kind": "inputs"})
+        compound_rows[compound["compound_id"]] = (molecule_id, destination, record)
+        seen_molecules.add(molecule_id)
     # Preserve the explicit target structure parsed before candidate ingestion.
     target_id = None
     target_group_id = None
@@ -1339,10 +1498,20 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                     {"type": "job", "owner_id": user["id"], "project_id": project}, "inputs")
                 with database.connection() as connection:
                     target_id = database._put(connection, target_group_id, target_record, source_key=source_key + ":target", origin=target_provenance, stamp=stamp)
+                with database.connection() as connection:
+                    target_structures = connection.execute(
+                        "SELECT id FROM molecule_structures WHERE group_id=? AND molecule_id=?",
+                        (target_group_id, target_id),
+                    ).fetchall()
+                for structure in target_structures:
+                    database.make_structure_portable(user, str(structure["id"]))
             else:
                 _put_source(database, target_group_id, target_id, source_key + ":target", target_provenance)
                 for item in target_record.get("files") or []:
-                    database.attach_structure(target_group_id, target_id, item, context=target_provenance, created_at=stamp)
+                    structure_id = database.attach_structure(
+                        target_group_id, target_id, item, context=target_provenance, created_at=stamp,
+                    )
+                    database.make_structure_portable(user, structure_id)
                 database.update_metadata(user, target_group_id, target_id, {
                     "target_identity_type": "structure_backed", "structural_reference": True,
                 })
@@ -1401,6 +1570,16 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             legacy_run_id = str(row.get("legacy_run_id") or "").strip()
             row_target_context = target_context_by_attempt.get(legacy_run_id, {})
             pose = pose_paths[index]
+            pose_digest = _file_sha256(pose) if pose and pose.is_file() else ""
+            pose_identity = {
+                "id": _id("pose-", _json([tool, str(row.get("compound_id") or ""),
+                                          legacy_run_id, row.get("attempt_index"), row.get("pose_rank"), pose_digest])),
+                "compound_id": str(row.get("compound_id") or ""),
+                "pose_rank": str(row.get("pose_rank") or ""),
+                "legacy_run_id": legacy_run_id,
+                "attempt_index": row.get("attempt_index"),
+                "structure_digest": pose_digest,
+            }
             if filename == "docking_scores.csv" and index in best_pose_indices and pose:
                 attempt_label = f" · attempt {legacy_run_id[:8]}" if legacy_run_id else ""
                 structure_id = database.attach_structure(
@@ -1411,8 +1590,12 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                 database.make_structure_portable(user, structure_id)
                 preferred_docking_structure_ids.add(structure_id)
             database.add_observation(destination, molecule_id, tool, run_dir.name, _numeric({key: value for key, value in row.items() if key != "compound_id"}),
-                context={**context, **row_target_context, "row": row, "legacy_run_id": row.get("legacy_run_id"),
-                         "attempt_index": row.get("attempt_index"), "is_representative": index in best_pose_indices},
+                context={**context, **row_target_context, "row": row, "legacy_run_id": legacy_run_id,
+                         "attempt_index": row.get("attempt_index"), "pose_identity": pose_identity,
+                         "pose_id": pose_identity["id"], "pose_digest": pose_digest,
+                         "structure_digest": pose_digest, "model_id": row.get("model_id") or "",
+                         "representation_id": structure_id if filename == "docking_scores.csv" and index in best_pose_indices and pose else "",
+                         "is_representative": index in best_pose_indices},
                 source_key=f"{source_key}:{filename}:{index}", created_at=stamp)
     if has_docking_scores:
         _prune_stale_run_structures(database, run_dir.parent.name, run_dir.name,
@@ -1607,12 +1790,16 @@ def record_completed_run(run_dir):
         run_dir = Path(run_dir).resolve()
         if not is_studio_job(run_dir):
             return
-        from mn_molecular_design_studio.collection_policy import automatic_collection_allowed
-        if not automatic_collection_allowed(run_dir):
-            return
+        from mn_molecular_design_studio.collection_policy import automatic_collection_allowed, policy_for_run
         from mn_molecular_design_studio.protein_library import record_run_inputs
 
-        record_run_inputs(run_dir)
+        if policy_for_run(run_dir) != "none":
+            # Source capture is independent of output promotion. A user's
+            # Protein Library input remains useful even when the prediction
+            # fails or the run's output policy is Results-only.
+            record_run_inputs(run_dir)
+        if not automatic_collection_allowed(run_dir):
+            return
         metadata = _read(run_dir / "metadata.json")
         result = _read(run_dir / "result.json")
         if not _is_completed_success(metadata, result):

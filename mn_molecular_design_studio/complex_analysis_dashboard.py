@@ -130,6 +130,8 @@ def _result_sources(runs: list[dict]) -> list[dict]:
             acceptance_observed = sum(int(item.get("acceptance_observed") or 0) for item in summaries)
             accepted_count = sum(int(item.get("accepted_count") or 0) for item in summaries)
             rejected_count = sum(int(item.get("rejected_count") or 0) for item in summaries)
+            unresolved_count = sum(int(item.get("unresolved_count") or 0) for item in summaries)
+            not_evaluated_count = sum(int(item.get("not_evaluated_count") or 0) for item in summaries)
             root = dict(logical_run.get("root") or {})
             row = {
                 **root,
@@ -153,6 +155,8 @@ def _result_sources(runs: list[dict]) -> list[dict]:
                 "acceptance_observed": acceptance_observed,
                 "accepted_count": accepted_count,
                 "rejected_count": rejected_count,
+                "unresolved_count": unresolved_count,
+                "not_evaluated_count": not_evaluated_count,
                 "is_local": any(source.get("is_local") for source in sources),
                 "updated_at": max((str(source.get("updated_at") or source.get("created_at") or "") for source in sources), default=""),
             }
@@ -280,7 +284,7 @@ def _local_candidate_summary(run_dir: str) -> dict:
     metadata_data = _read_json(run_path / "metadata.json")
     target_reference = target_reference_type(input_data, metadata_data, run_dir=run_path)
     observed_acceptance = 0
-    accepted = rejected = 0
+    accepted = rejected = unresolved = not_evaluated = 0
     structures = complexes = 0
     target_systems = {}
     from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
@@ -347,10 +351,12 @@ def _local_candidate_summary(run_dir: str) -> dict:
             add_target("sequence:" + digest, normalized, name)
         native = raw.get("validation_acceptance") if isinstance(raw.get("validation_acceptance"), dict) else {}
         status = str(native.get("status") or "").casefold()
-        if status in {"accepted", "rejected"}:
+        if status in {"accepted", "rejected", "unresolved", "not_evaluated"}:
             observed_acceptance += 1
             accepted += status == "accepted"
             rejected += status == "rejected"
+            unresolved += status == "unresolved"
+            not_evaluated += status == "not_evaluated"
         elif metrics.get("native_pass_filters") in (True, False):
             observed_acceptance += 1
             accepted += metrics["native_pass_filters"] is True
@@ -368,7 +374,8 @@ def _local_candidate_summary(run_dir: str) -> dict:
     summary = {
         "candidate_count": len(candidates), "structure_count": structures, "complex_count": complexes,
         "acceptance_observed": observed_acceptance, "accepted_count": accepted,
-        "rejected_count": rejected, "target_systems": list(target_systems.values()),
+        "rejected_count": rejected, "unresolved_count": unresolved,
+        "not_evaluated_count": not_evaluated, "target_systems": list(target_systems.values()),
     }
     cache_entry = {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size, "summary": summary}
     _CANDIDATE_SUMMARY_CACHE[cache_key] = cache_entry
@@ -395,28 +402,39 @@ def _source_summary(row: dict) -> dict:
     acceptance = candidate_summary.get("acceptance_counts") if isinstance(candidate_summary.get("acceptance_counts"), dict) else {}
     accepted = candidate_summary.get("accepted_count", acceptance.get("accepted"))
     rejected = candidate_summary.get("rejected_count", acceptance.get("rejected"))
+    unresolved = candidate_summary.get("unresolved_count", acceptance.get("unresolved"))
+    not_evaluated = candidate_summary.get("not_evaluated_count", acceptance.get("not_evaluated"))
     observed = candidate_summary.get("acceptance_observed")
     if observed is None:
-        observed = int(accepted or 0) + int(rejected or 0)
+        observed = sum(int(value or 0) for value in (accepted, rejected, unresolved, not_evaluated))
     return {
         "candidate_count": candidate_summary.get("candidate_count", row.get("candidate_count")),
         "structure_count": candidate_summary.get("structure_count", row.get("structure_count")),
         "complex_count": candidate_summary.get("complex_count", row.get("complex_count")),
         "acceptance_observed": int(observed or 0), "accepted_count": accepted,
-        "rejected_count": rejected,
+        "rejected_count": rejected, "unresolved_count": unresolved,
+        "not_evaluated_count": not_evaluated,
         "target_systems": candidate_summary.get("target_systems") or row.get("target_systems") or [],
     }
+
+
+def _format_recorded_acceptance(row: dict) -> str:
+    if not int(row.get("acceptance_observed") or 0):
+        return "Not recorded"
+    parts = []
+    for key, label in (("accepted_count", "accepted"), ("rejected_count", "rejected"),
+                       ("unresolved_count", "unresolved"), ("not_evaluated_count", "not evaluated")):
+        count = int(row.get(key) or 0)
+        if count:
+            parts.append(f"{count:,} {label}")
+    return " · ".join(parts) if parts else "Recorded; status unavailable"
 
 
 def _table_rows(rows: list[dict], selected_ref: str = "") -> list[dict]:
     result = []
     for row in rows:
         stats = row
-        status_count = int(stats.get("acceptance_observed") or 0)
-        native_acceptance = (
-            f"{int(stats.get('accepted_count') or 0)} accepted / {int(stats.get('rejected_count') or 0)} rejected"
-            if status_count else "Not recorded"
-        )
+        recorded_acceptance = _format_recorded_acceptance(stats)
         structure_count = stats.get("structure_count")
         if structure_count is not None and int(stats.get("unknown_structure_candidates") or 0):
             structure_count = f"{int(structure_count)} confirmed · {int(stats['unknown_structure_candidates'])} remote unverified"
@@ -437,7 +455,7 @@ def _table_rows(rows: list[dict], selected_ref: str = "") -> list[dict]:
             "Target / system": _target_label(row),
             "Engine": ", ".join(engines) if engines else (row.get("display_tool") or row.get("tool") or row.get("job_type") or "Unknown"),
             "Structures": structure_count if structure_count is not None else "—",
-            "Native acceptance": native_acceptance,
+            "Recorded acceptance": recorded_acceptance,
             "Analysis coverage": coverage,
             "Status": display_status,
             "Updated": updated[:10] if updated else "—",
@@ -662,6 +680,37 @@ def _discover_structures(user: dict, job: dict) -> list[dict]:
             "components": components,
         })
     return structures
+
+
+def _candidate_acceptance_status(candidate: dict) -> str:
+    """Return only an explicitly saved candidate acceptance decision."""
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    decision = raw.get("validation_acceptance") if isinstance(raw.get("validation_acceptance"), dict) else {}
+    status = str(decision.get("status") or "").casefold()
+    if status in {"accepted", "rejected", "unresolved", "not_evaluated"}:
+        return status
+    metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
+    native_pass = metrics.get("native_pass_filters")
+    if native_pass is True:
+        return "accepted"
+    if native_pass is False:
+        return "rejected"
+    return "unknown"
+
+
+def _filter_structures_by_acceptance(structures: list[dict], selection: str) -> list[dict]:
+    """Filter poses by saved acceptance metadata, preserving unknowns as a separate choice."""
+    status_groups = {
+        "Accepted only": {"accepted"},
+        "Rejected only": {"rejected"},
+        "Unresolved / not evaluated": {"unresolved", "not_evaluated"},
+        "Acceptance unknown": {"unknown"},
+    }
+    statuses = status_groups.get(selection)
+    if statuses is None:
+        return list(structures)
+    return [item for item in structures
+            if _candidate_acceptance_status(item.get("candidate") or {}) in statuses]
 
 
 def _component_profile(item: dict) -> dict:
@@ -973,6 +1022,46 @@ def _render_job_detail(user: dict, job: dict, *, workflow_schema=None, project_s
             st.session_state["complex-analysis-detail-visible"] = False
             st.rerun()
         return
+    all_structures = structures
+    candidate_statuses = {}
+    for item in all_structures:
+        candidate = item.get("candidate") if isinstance(item.get("candidate"), dict) else {}
+        candidate_id = str(item.get("candidate_id") or candidate.get("candidate_id") or item.get("relative_path") or "")
+        if candidate_id:
+            source = item.get("source_job") if isinstance(item.get("source_job"), dict) else {}
+            candidate_statuses[f"{_source_job_ref(source)}::{candidate_id}"] = _candidate_acceptance_status(candidate)
+    local_acceptance_counts = {status: list(candidate_statuses.values()).count(status)
+                                for status in ("accepted", "rejected", "unresolved", "not_evaluated", "unknown")}
+    filter_options = ["All structures", "Accepted only", "Rejected only",
+                      "Unresolved / not evaluated", "Acceptance unknown"]
+    has_saved_acceptance = any(local_acceptance_counts[status]
+                               for status in ("accepted", "rejected", "unresolved", "not_evaluated"))
+    default_filter = "Accepted only" if local_acceptance_counts["accepted"] else "All structures"
+    filter_key = "complex-analysis-acceptance-filter-" + hashlib.sha256(_job_ref(job).encode()).hexdigest()[:12]
+    if filter_key not in st.session_state:
+        st.session_state[filter_key] = default_filter
+    selected_filter = st.selectbox(
+        "Candidate acceptance filter", filter_options,
+        key=filter_key,
+        help="The run list keeps every Results run. This filter narrows the poses used in this review and analysis plan. Saved passing decisions default to accepted candidates; other statuses remain available here.",
+        disabled=not has_saved_acceptance,
+    )
+    structures = _filter_structures_by_acceptance(all_structures, selected_filter)
+    if has_saved_acceptance:
+        st.caption(
+            f"Showing {len(structures):,} of {len(all_structures):,} local pose structures · "
+            f"{local_acceptance_counts['accepted']:,} accepted · {local_acceptance_counts['rejected']:,} rejected · "
+            f"{local_acceptance_counts['unresolved'] + local_acceptance_counts['not_evaluated']:,} unresolved/not evaluated · "
+            f"{local_acceptance_counts['unknown']:,} without a saved decision."
+        )
+    else:
+        st.caption("No per-candidate acceptance decisions are saved with these local pose files; all structures remain available.")
+    if not structures:
+        st.info("This acceptance filter has no matching pose structures. Choose All structures or another acceptance category to inspect the run.")
+        if st.button("Back to run list", key="complex-analysis-detail-back-empty-filter"):
+            st.session_state["complex-analysis-detail-visible"] = False
+            st.rerun()
+        return
     options = structures
     unique_candidates = {}
     for option in options:
@@ -980,11 +1069,11 @@ def _render_job_detail(user: dict, job: dict, *, workflow_schema=None, project_s
         unique_candidates.setdefault(cid, option)
     st.markdown("#### Run inventory")
     a, b, c, d = st.columns(4)
-    a.metric("Structures available here", len(options))
+    a.metric("Structures in this view", len(options))
     a.metric("Distinct candidates / poses", len(unique_candidates))
     b.metric("Run status", str(job.get("logical_run_status") or job.get("status") or "Unknown").replace("_", " ").title())
     acceptance_count = int(job.get("acceptance_observed") or 0)
-    c.metric("Native acceptance", f"{int(job.get('accepted_count') or 0)} accepted · {int(job.get('rejected_count') or 0)} rejected" if acceptance_count else "Not recorded")
+    c.metric("Recorded acceptance", _format_recorded_acceptance(job) if acceptance_count else "Not recorded")
     d.metric("Project", job.get("project_name") or job.get("project_id") or "No project")
     if remote_sources:
         st.info(f"This grouped Run also has {remote_structure_count} reported structures and {remote_unverified_count} candidates with unconfirmed structure counts on other workstations. Those remote files are not included in the local Evaluation inventory.")
@@ -1350,7 +1439,7 @@ def _landing_rows(rows: list[dict], coverage_cache: dict | None = None) -> list[
                         (row.get("engine_names") or [row.get("tool") or "Unknown"])],
             "structures": int(row.get("structure_count") or 0),
             "unverified": int(row.get("unknown_structure_candidates") or 0),
-            "acceptance": table["Native acceptance"], "analysis_jobs": activity_count,
+            "acceptance": table["Recorded acceptance"], "analysis_jobs": activity_count,
             "coverage": coverage, "status": status, "status_tone": tone,
             "project": str(row.get("project_name") or row.get("project_id") or "No project"),
             "workstations": list(row.get("workstation_names") or [row.get("node_name") or "This workstation"]),

@@ -463,6 +463,52 @@ MEASURES.extend([
 ])
 DEFINITIONS = {measure.key: measure for measure in reversed(MEASURES)}
 
+# Scientific parameters share labels only within a verified method. The native
+# key/value is always retained; these rows do not merge settings across engines.
+PARAMETER_DEFINITIONS = (
+    {"field": "analysis.ipsae.pae_cutoff", "label": "ipSAE PAE cutoff", "unit": "Å",
+     "method": "ipSAE", "engines": ("ipsae",), "aliases": ("pae_cutoff",)},
+    {"field": "analysis.ipsae.distance_cutoff", "label": "ipSAE structural contact cutoff", "unit": "Å",
+     "method": "ipSAE", "engines": ("ipsae",), "aliases": ("dist_cutoff",)},
+    {"field": "analysis.ipsae.bindcraft2_ipdae_contact_cutoff", "label": "BindCraft2-definition i_pDAE contact cutoff", "unit": "Å",
+     "method": "BindCraft2-definition i_pDAE recomputation", "engines": ("ipsae",), "aliases": ("ipdae_contact_cutoff",)},
+    {"field": "analysis.ipsae.structure_contact_cutoff", "label": "ipSAE structure contact cutoff", "unit": "Å",
+     "method": "ipSAE structure analysis", "engines": ("ipsae",), "aliases": ("structure_contact_cutoff",)},
+    {"field": "analysis.ipsae.hotspot_contact_cutoff", "label": "ipSAE hotspot contact cutoff", "unit": "Å",
+     "method": "ipSAE hotspot analysis", "engines": ("ipsae",), "aliases": ("hotspot_contact_cutoff",)},
+    {"field": "analysis.tag_fusion.interface_contact_cutoff", "label": "Tag/Fusion interface contact cutoff", "unit": "Å",
+     "method": "Studio Tag/Fusion Suitability", "engines": ("tag_fusion_suitability", "tag_fusion_context"),
+     "aliases": ("interface_contact_cutoff", "interface_contact_cutoff_angstrom")},
+)
+
+
+def normalize_parameters(parameters, tool=""):
+    """Add method-scoped readable parameter names without rewriting native settings."""
+    native = dict(parameters or {}) if isinstance(parameters, dict) else {}
+    engine = engine_name(tool)
+    normalized, provenance, conflicts = {}, {}, []
+    for definition in PARAMETER_DEFINITIONS:
+        if engine not in definition["engines"]:
+            continue
+        found = [(alias, native[alias]) for alias in definition["aliases"] if alias in native]
+        if not found:
+            continue
+        values = {json.dumps(value, sort_keys=True, default=str) for _, value in found}
+        if len(values) != 1:
+            conflicts.append({"field": definition["field"], "native_values": found})
+            continue
+        alias, value = found[0]
+        normalized[definition["field"]] = value
+        provenance[definition["field"]] = {"native_field": alias, "native_value": value,
+                                            "method": definition["method"], "unit": definition["unit"]}
+    return {"version": VERSION, "native": native, "normalized": normalized,
+            "provenance": provenance, "conflicts": conflicts}
+
+
+def parameter_vocabulary():
+    return [{**definition, "engines": list(definition["engines"]), "aliases": list(definition["aliases"])}
+            for definition in PARAMETER_DEFINITIONS]
+
 
 def field_label(field):
     measure = DEFINITIONS.get(str(field).removeprefix(PREFIX)) if str(field).startswith(PREFIX) else None
@@ -474,6 +520,7 @@ def vocabulary():
     return {"version": VERSION, "field_prefix": PREFIX, "engine_aliases": dict(ENGINE_ALIASES),
             "generator_workflows": dict(GENERATOR_WORKFLOWS),
             "prediction_measurements": prediction_engine_catalog(),
+            "parameters": parameter_vocabulary(),
             "measures": [{"field": PREFIX + key, "key": key,
                           **{name: getattr(definition, name) for name in ("label", "unit", "scope", "direction", "minimum", "maximum", "description", "value_type", "prerequisites", "aggregation")},
                           "range_semantics": "Physical/value-domain validation only; these limits are not quality thresholds.",

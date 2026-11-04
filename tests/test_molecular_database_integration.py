@@ -42,13 +42,18 @@ def test_docking_result_index_is_idempotent_and_links_existing_compound(isolated
     run = tmp_path / "runs/ligand-docking/run-1"
     (run / "artifacts/input").mkdir(parents=True)
     (run / "molecular_design_studio.json").write_text(json.dumps({"application": STUDIO_SOURCE_ID, "project_id": "project-1", "studio_owner_id": A["id"]}))
-    (run / "metadata.json").write_text(json.dumps({"tool": "vina", "status": "completed", "campaign_name": "Docking", "completed_at": "2026-10-20T12:00:00Z"}))
+    (run / "metadata.json").write_text(json.dumps({"tool": "vina", "status": "completed", "campaign_name": "Docking", "completed_at": "2026-10-20T12:00:00Z", "database_collection_policy": "automatic"}))
     (run / "input.json").write_text(json.dumps({"tool": "vina", "params": {"exhaustiveness": 32}}))
     (run / "result.json").write_text(json.dumps({"success": True, "metrics": {"primary_ranking_metric": "best_score_kcal_mol"}}))
-    ligand_compounds.write_compound_set(run / "artifacts/input/compound_set.json", name="Consumed", compounds=[{"compound_id": "ethanol", "smiles": "OCC"}], owner_id=A["id"], project_id="project-1", created_at="now")
-    (run / "artifacts/docking_scores.csv").write_text("compound_id\tstatus\tbest_score_kcal_mol\tpose_path\nethanol\tcompleted\t-7.5\t\n")
+    ligand_compounds.write_compound_set(run / "artifacts/input/compound_set.json", name="Consumed", compounds=[
+        {"compound_id": "ethanol", "smiles": "OCC"}, {"compound_id": "screen-only", "smiles": "CCN"}],
+        owner_id=A["id"], project_id="project-1", created_at="now")
+    (run / "artifacts/docking_scores.csv").write_text(
+        "compound_id\tstatus\tbest_score_kcal_mol\tpose_path\n"
+        "ethanol\tcompleted\t-7.5\t\nscreen-only\tcompleted\t-6.1\t\n")
     assert ingest_run(run, database=isolated) == 1
     assert ingest_run(run, database=isolated) == 0
+    assert isolated.list_molecules(A)["total"] == 1
     row = isolated.list_molecules(A, group_id=original["group_id"])["items"][0]
     assert row["id"] == original["molecule_ids"][0]
     assert row["scores"]["vina.best_score_kcal_mol"] == -7.5
@@ -79,11 +84,26 @@ render_database({A!r}, [])
     assert any("Imported 2 rows" in element.value for element in app.success)
 
 
+def test_database_ui_read_does_not_start_background_ingestion(isolated, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import database_ui
+
+    monkeypatch.setattr(database_ui, "sync_workspace",
+                        lambda *args, **kwargs: pytest.fail("Database reads must not trigger ingestion"))
+    monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
+    script = f'''\
+from mn_molecular_design_studio.database_ui import render_database
+render_database({A!r}, [])
+'''
+    app = AppTest.from_string(script, default_timeout=10).run()
+    assert not app.exception
+
+
 def test_api_import_search_export_and_access(isolated, monkeypatch):
     from fastapi.testclient import TestClient
     from mn_molecular_design_studio.api import app, _current_user
     from mn_molecular_design_studio import molecular_database_api
-    monkeypatch.setattr(molecular_database_api, "sync_workspace", lambda *args, **kwargs: [])
+    monkeypatch.setattr(molecular_database_api, "sync_workspace_async", lambda *args, **kwargs: [])
     app.dependency_overrides[_current_user] = lambda: A
     try:
         with TestClient(app) as client:
@@ -100,6 +120,27 @@ def test_api_import_search_export_and_access(isolated, monkeypatch):
             assert rejected.status_code == 201
             molecule = client.get("/api/v1/molecules/" + rejected.json()["molecule_ids"][0]).json()
             assert molecule["structures"] == []
+    finally:
+        app.dependency_overrides.pop(_current_user, None)
+
+
+def test_database_reads_do_not_start_ingestion_but_explicit_refresh_does(isolated, monkeypatch):
+    from fastapi.testclient import TestClient
+    from mn_molecular_design_studio.api import app, _current_user
+    from mn_molecular_design_studio import molecular_database_api
+    calls = []
+    monkeypatch.setattr(molecular_database_api, "MolecularDatabase", lambda: isolated)
+    monkeypatch.setattr(molecular_database_api, "sync_workspace_async",
+                        lambda user, **kwargs: calls.append((user, kwargs)) or [])
+    app.dependency_overrides[_current_user] = lambda: A
+    try:
+        with TestClient(app) as client:
+            assert client.get("/api/v1/molecules/groups").status_code == 200
+            assert client.get("/api/v1/molecules/metrics").status_code == 200
+            assert calls == []
+            refreshed = client.post("/api/v1/molecules/refresh")
+            assert refreshed.status_code == 202, refreshed.text
+            assert calls == [(A, {"force": True})]
     finally:
         app.dependency_overrides.pop(_current_user, None)
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import socket
 from pathlib import Path
 
@@ -75,16 +76,114 @@ def _run_sources(database, task_group, run_id):
     return [dict(row) for row in rows], [dict(row) for row in groups]
 
 
+def _result_candidate_token(task_group, run_id, candidate_id):
+    return _id("result-", _json([socket.gethostname(), str(task_group), str(run_id), str(candidate_id)]))
+
+
+def _candidate_for_explicit_selection(candidate, run_dir):
+    """Resolve one authorized Results candidate into its selected library identity."""
+    from mn_molecular_design_studio.molecular_database_ingest import _candidate_acceptance_state, _record
+
+    record = _record(candidate, run_dir)
+    if record is None:
+        return None
+    identity = dict(record)
+    identity["files"] = list(record.get("files") or [])
+    sequence = candidate.get("binder_sequence") or candidate.get("sequence")
+    binder_chains = {str(value) for value in candidate.get("binder_chains") or []}
+    if sequence:
+        binders = [component for component in record.get("components") or []
+                   if component.get("role") == "binder" or str(component.get("chain") or "") in binder_chains]
+        if binders:
+            identity["components"] = binders
+    state = _candidate_acceptance_state(candidate)
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    identity["metadata"] = {
+        **(identity.get("metadata") or {}),
+        "result_selection": True,
+        "original_acceptance_status": state,
+        "acceptance_evidence": raw.get("validation_acceptance") or raw.get("distributed_campaign") or {},
+    }
+    return identity
+
+
+def _unindexed_result_rows(run_dir, task_group, run_id, owner_id, project_id, indexed_sources, items):
+    """Expose valid candidates in Results without promoting or ingesting them."""
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+    from mn_molecular_design_studio.molecular_database_ingest import _candidate_acceptance_state, _record
+    from mn_molecular_design_studio.molecule_imports import canonical_components
+
+    indexed_candidates = set()
+    for source in indexed_sources:
+        try:
+            provenance = json.loads(source["provenance"])
+        except (TypeError, ValueError):
+            continue
+        if provenance.get("candidate_id"):
+            indexed_candidates.add(str(provenance["candidate_id"]))
+    for candidate in read_candidates(run_dir):
+        candidate_id = str(candidate.get("candidate_id") or "")
+        if not candidate_id or candidate_id in indexed_candidates:
+            continue
+        record = _record(candidate, run_dir)
+        if record is None:
+            continue
+        identity = _candidate_for_explicit_selection(candidate, run_dir)
+        if identity is None:
+            continue
+        components, fingerprint, molecule_type = canonical_components(identity["components"])
+        if identity.get("identity_context"):
+            fingerprint = hashlib.sha256((fingerprint + _json(identity["identity_context"])).encode()).hexdigest()
+        molecule_id = "mol-" + fingerprint[:32]
+        files = identity.get("files") or []
+        representations = []
+        for index, item in enumerate(files):
+            path = Path(item["path"])
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            representation_id = _id("result-structure-", _json([candidate_id, digest, index]))
+            representations.append({
+                "id": representation_id,
+                "label": str(item.get("label") or path.name),
+                "format": path.suffix.lower().lstrip("."),
+                "digest": digest,
+                "available_in_results": True,
+            })
+        raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+        items.append({
+            "id": _result_candidate_token(task_group, run_id, candidate_id),
+            "molecule_id": molecule_id,
+            "name": str(identity.get("name") or candidate_id),
+            "type": molecule_type,
+            "components": components,
+            "metadata": identity.get("metadata") or {},
+            "groups": [],
+            "representations": representations,
+            "structures": representations,
+            "observations": [],
+            "scores": dict(candidate.get("metrics") or {}),
+            "run_group_ids": [],
+            "run_groups": [],
+            "source_group_id": None,
+            "result_only": True,
+            "candidate_id": candidate_id,
+            "acceptance_status": _candidate_acceptance_state(candidate),
+            "source_run": {"task_group": task_group, "run_id": run_id,
+                           "owner_id": owner_id, "project_id": project_id},
+            "has_structure": bool(representations),
+            "native_metadata": {key: raw[key] for key in (
+                "validation_acceptance", "distributed_campaign", "engine_version", "structure_kind") if key in raw},
+        })
+
+
 def _list_authorized_run(run_dir, user, database):
     selected, task_group, run_id, owner_id, project_id = _authorized_run(run_dir, user)
-    # Authorization is complete before trusted ingestion sees the filesystem path.
-    from mn_molecular_design_studio.molecular_database_ingest import ingest_run
-    ingest_run(selected, database=database)
+    # This is a read path. Candidate previews remain in Results until a user
+    # explicitly promotes them or a separate completion/index operation runs.
     sources, source_groups = _run_sources(database, task_group, run_id)
     molecule_ids = list(dict.fromkeys(row["molecule_id"] for row in sources))
-    if not molecule_ids:
-        return selected, task_group, run_id, owner_id, project_id, [], {}
-    result = database.list_molecules(user, molecule_ids=molecule_ids, collection="all", limit=min(100_000, max(1, len(molecule_ids))))
+    result = (database.list_molecules(user, molecule_ids=molecule_ids, collection="all",
+                                      limit=min(100_000, max(1, len(molecule_ids))))
+              if molecule_ids else {"items": []})
     accessible_groups = {}
     for group in source_groups:
         if database._can_read(group, user):
@@ -120,6 +219,7 @@ def _list_authorized_run(run_dir, user, database):
         record["run_groups"] = [accessible_groups[group_id] for group_id in run_group_ids]
         record["source_group_id"] = run_group_ids[0] if run_group_ids else None
         items.append(record)
+    _unindexed_result_rows(selected, task_group, run_id, owner_id, project_id, sources, items)
     return selected, task_group, run_id, owner_id, project_id, items, accessible_groups
 
 
@@ -302,6 +402,23 @@ def save_run_selection(run_dir, user, molecule_ids, *, database=None, group_id=N
     records_by_id = {row["id"]: row for row in items}
     if set(requested) - set(records_by_id):
         raise PermissionError("Some selected molecules are not associated with this run or are inaccessible.")
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+    candidates_by_id = {
+        str(candidate.get("candidate_id") or ""): candidate
+        for candidate in read_candidates(selected) if candidate.get("candidate_id")
+    }
+    result_selections = {}
+    for selection_id in requested:
+        preview = records_by_id[selection_id]
+        if not preview.get("result_only"):
+            continue
+        candidate = candidates_by_id.get(str(preview.get("candidate_id") or ""))
+        if candidate is None:
+            raise FileNotFoundError("The selected Results candidate is no longer available.")
+        identity_record = _candidate_for_explicit_selection(candidate, selected)
+        if identity_record is None:
+            raise ValueError("The selected Results candidate has no valid molecular identity.")
+        result_selections[selection_id] = (candidate, identity_record, preview)
     from mn_molecular_design_studio.molecule_schema import validate_record
 
     requested_project = None if project_id is None else str(project_id or "")
@@ -340,15 +457,62 @@ def save_run_selection(run_dir, user, molecule_ids, *, database=None, group_id=N
             origin={"type": "user", "user_id": user["id"], "collection_kind": "curated"},
         )
 
-    database.add_to_group(user, group_id, requested)
+    promoted_ids = []
+    result_source_keys = []
+    for selection_id, (candidate, identity_record, preview) in result_selections.items():
+        candidate_id = str(candidate.get("candidate_id") or "")
+        provenance = {
+            "type": "explicit_results_selection",
+            "saved_selection": True,
+            "collection_kind": "curated",
+            "owner_id": owner_id,
+            "project_id": run_project_id,
+            "task_group": task_group,
+            "run_id": run_id,
+            "candidate_id": candidate_id,
+            "workstation": socket.gethostname(),
+            "source_workstation": socket.gethostname(),
+            "acceptance_status": preview.get("acceptance_status", "unknown"),
+            "acceptance_evidence": (candidate.get("raw_metadata") or {}).get("validation_acceptance")
+                                   or (candidate.get("raw_metadata") or {}).get("distributed_campaign") or {},
+            "native_metrics_preserved": True,
+        }
+        source_key = _id("results-selection-", _json([group_id, owner_id, task_group, run_id, candidate_id]))
+        with database.connection() as connection:
+            molecule_id = database._put(connection, group_id, identity_record, source_key=source_key,
+                                         origin=provenance, stamp=_now(), preserve_existing=True)
+        promoted_ids.append(molecule_id)
+        result_source_keys.append(source_key)
+        with database.connection() as connection:
+            structure_ids = [str(row[0]) for row in connection.execute(
+                "SELECT id FROM molecule_structures WHERE group_id=? AND molecule_id=? "
+                "AND json_extract(context,'$.candidate_id')=?",
+                (group_id, molecule_id, candidate_id),
+            ).fetchall()]
+        for structure_id in structure_ids:
+            database.make_structure_portable(user, structure_id)
+        metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
+        if metrics:
+            database.add_observation(
+                group_id, molecule_id, str(candidate.get("source_tool") or "results_candidate"), run_id, metrics,
+                context={**provenance, "candidate": candidate, "settings": {},
+                         "native_metrics": metrics, "is_representative": True},
+                source_key=source_key + ":metrics",
+            )
+
+    existing_ids = [selection_id for selection_id in requested if not records_by_id[selection_id].get("result_only")]
+    if existing_ids:
+        database.add_to_group(user, group_id, existing_ids)
     source_keys = []
     source_group_ids = set()
     sources, _ = _run_sources(database, task_group, run_id)
     for source in sources:
-        if source["molecule_id"] in requested:
+        if source["molecule_id"] in existing_ids:
             source_keys.append(source["source_key"])
             if source["group_id"] in source_groups:
                 source_group_ids.add(source["group_id"])
     # The helper's accessible group map is intentionally limited to this run.
-    _copy_run_associations(database, task_group, run_id, source_keys, sorted(source_group_ids), group_id, requested)
-    return {"group_id": group_id, "molecule_ids": requested, "saved_count": len(requested)}
+    _copy_run_associations(database, task_group, run_id, source_keys, sorted(source_group_ids), group_id, existing_ids)
+    promoted_ids.extend(existing_ids)
+    promoted_ids = list(dict.fromkeys(promoted_ids))
+    return {"group_id": group_id, "molecule_ids": promoted_ids, "saved_count": len(promoted_ids)}

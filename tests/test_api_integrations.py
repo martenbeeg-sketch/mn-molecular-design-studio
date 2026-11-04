@@ -31,7 +31,7 @@ def api_data(tmp_path, monkeypatch):
                              "reference_directory": str(tmp_path / "references")})
     workspace.ensure_studio_workspace()
     config.save({"mode": "disabled"})
-    monkeypatch.setattr(molecular_database_api, "sync_workspace", lambda *a, **k: [])
+    monkeypatch.setattr(molecular_database_api, "sync_workspace_async", lambda *a, **k: [])
     admin = auth.create_initial_admin("instructor", "Instructor", "instructor-password-42")
     project = workspace.create_project("API course", owner_id=admin["id"])
     student = auth.create_user("student", "Student", "temporary-password-42", actor=admin)
@@ -58,6 +58,28 @@ def import_compounds(data):
         "method": "smiles", "text": "CCO ethanol\nCCN ethylamine", "project_id": data["project"]["id"]})
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def test_database_and_results_reads_do_not_trigger_ingestion(api_data, monkeypatch):
+    from mn_molecular_design_studio import molecular_database_api
+
+    monkeypatch.setattr(molecular_database_api, "sync_workspace_async",
+                        lambda *args, **kwargs: pytest.fail("ordinary reads must not trigger ingestion"))
+    data, client = api_data, api_data["client"]
+    imported = import_compounds(data)
+    group_id = imported["group_id"]
+    molecule_id = imported["molecule_ids"][0]
+    assert client.get("/api/v1/molecules/groups").status_code == 200
+    assert client.get("/api/v1/molecules/metrics").status_code == 200
+    assert client.get("/api/v1/molecules").status_code == 200
+    assert client.get(f"/api/v1/molecules/groups/{group_id}").status_code == 200
+    assert client.get(f"/api/v1/molecules/{molecule_id}").status_code == 200
+
+    # The Results endpoint lists accessible run data without asking the
+    # background workspace refresh to ingest it as a side effect.
+    screening_run(data)
+    result = client.get("/api/v1/molecules/jobs/campaign/api-screening")
+    assert result.status_code == 200, result.text
 
 
 def screening_run(data, count=11):

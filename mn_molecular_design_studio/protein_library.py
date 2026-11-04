@@ -88,7 +88,7 @@ def _reference_file(database, pdb_id: str) -> Path:
 
 def collect_run_inputs(run_dir: Path, *, database=None, fetch_references=True) -> dict:
     """Idempotently retain authorized inputs; never import or evaluate outputs."""
-    from mn_molecular_design_studio.collection_policy import automatic_collection_allowed
+    from mn_molecular_design_studio.collection_policy import policy_for_run
     from mn_molecular_design_studio.molecular_database import MolecularDatabase, _id, _now
     from mn_molecular_design_studio.molecular_database_ingest import _ensure_group, _target_sequence_record
     from mn_molecular_design_studio.target_identity import target_reference_type
@@ -96,7 +96,7 @@ def collect_run_inputs(run_dir: Path, *, database=None, fetch_references=True) -
 
     run_dir = Path(run_dir).resolve()
     report = {"molecule_ids": [], "structures": 0, "errors": [], "skipped": []}
-    if not is_studio_job(run_dir) or not automatic_collection_allowed(run_dir):
+    if not is_studio_job(run_dir) or policy_for_run(run_dir) == "none":
         return report
     if run_dir.parent.name == "analysis":
         # Analysis consumes existing scientific representations. Its inputs

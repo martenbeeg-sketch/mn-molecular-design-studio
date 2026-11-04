@@ -7,9 +7,11 @@ from streamlit.testing.v1 import AppTest
 from mn_molecular_design_studio.complex_analysis_dashboard import (
     _component_profile,
     _apply_landing_event,
+    _candidate_acceptance_status,
     _coverage_signature,
     _discover_structures,
     _evaluation_matches_candidate,
+    _filter_structures_by_acceptance,
     _method_status,
     _landing_rows,
     _result_sources,
@@ -48,6 +50,32 @@ def test_component_profile_requires_recorded_roles_and_chemical_ligand_identity(
     assert _component_profile(ligand)["ligand_selection"] == {
         "chain": "L", "residue_key": "L:501", "ccd": "LIG", "smiles": "CCO",
     }
+
+
+def test_candidate_acceptance_filter_keeps_unknown_status_separate():
+    structures = [
+        {"candidate_id": "accepted", "candidate": {"raw_metadata": {
+            "validation_acceptance": {"status": "accepted"}}}},
+        {"candidate_id": "rejected", "candidate": {"raw_metadata": {
+            "validation_acceptance": {"status": "rejected"}}}},
+        {"candidate_id": "unresolved", "candidate": {"raw_metadata": {
+            "validation_acceptance": {"status": "unresolved"}}}},
+        {"candidate_id": "native-pass", "candidate": {"metrics": {"native_pass_filters": True}}},
+        {"candidate_id": "unknown", "candidate": {}},
+    ]
+    assert [_candidate_acceptance_status(item["candidate"]) for item in structures] == [
+        "accepted", "rejected", "unresolved", "accepted", "unknown",
+    ]
+    assert [item["candidate_id"] for item in _filter_structures_by_acceptance(structures, "Accepted only")] == [
+        "accepted", "native-pass",
+    ]
+    assert [item["candidate_id"] for item in _filter_structures_by_acceptance(structures, "Unresolved / not evaluated")] == [
+        "unresolved",
+    ]
+    assert [item["candidate_id"] for item in _filter_structures_by_acceptance(structures, "Acceptance unknown")] == [
+        "unknown",
+    ]
+    assert _filter_structures_by_acceptance(structures, "All structures") == structures
 
 
 def test_evaluation_matching_rejects_a_different_model_even_for_same_candidate():
@@ -126,6 +154,12 @@ def test_landing_does_not_count_completed_jobs_as_verified_coverage():
     assert _landing_rows([row], cache)[0]["status"] == "Review results"
     coverage["local_only"] = False
     assert _landing_rows([row], cache)[0]["status"] == "Analyzed"
+    row.update(acceptance_observed=6700, accepted_count=100, rejected_count=6600)
+    assert _landing_rows([row], cache)[0]["acceptance"] == "100 accepted · 6,600 rejected"
+    row.update(unresolved_count=3, not_evaluated_count=2, acceptance_observed=6705)
+    assert _landing_rows([row], cache)[0]["acceptance"] == (
+        "100 accepted · 6,600 rejected · 3 unresolved · 2 not evaluated"
+    )
     row["structure_count"] += 1
     assert _landing_rows([row], cache)[0]["coverage"] is None
 
@@ -256,9 +290,13 @@ def test_result_sources_aggregates_child_jobs_and_excludes_empty_runs(monkeypatc
     sources = [
         {"task_group": "design", "run_id": "batch-1", "node_id": "local", "tool": "rfd4",
          "candidate_summary": {"candidate_count": 50, "structure_count": 50,
+                                "acceptance_counts": {"accepted": 48, "rejected": 1,
+                                                      "unresolved": 1, "not_evaluated": 0},
                                 "target_systems": [{"identity": "sequence:abc", "label": "R3 · 31 aa"}]}},
         {"task_group": "design", "run_id": "batch-2", "node_id": "local", "tool": "rfd4",
          "candidate_summary": {"candidate_count": 50, "structure_count": 1,
+                                "acceptance_counts": {"accepted": 2, "rejected": 40,
+                                                      "unresolved": 3, "not_evaluated": 5},
                                 "target_systems": [{"identity": "sequence:abc", "label": "R3 · 31 aa"}]}},
         {"task_group": "design", "run_id": "batch-empty", "node_id": "local", "tool": "rfd4",
          "candidate_summary": {"candidate_count": 0, "structure_count": 0}},
@@ -271,6 +309,14 @@ def test_result_sources_aggregates_child_jobs_and_excludes_empty_runs(monkeypatc
     assert rows[0]["source_job_count"] == 3
     assert rows[0]["structure_count"] == 51
     assert rows[0]["candidate_count"] == 100
+    assert rows[0]["acceptance_observed"] == 100
+    assert rows[0]["accepted_count"] == 50
+    assert rows[0]["rejected_count"] == 41
+    assert rows[0]["unresolved_count"] == 4
+    assert rows[0]["not_evaluated_count"] == 5
+    assert _table_rows(rows)[0]["Recorded acceptance"] == (
+        "50 accepted · 41 rejected · 4 unresolved · 5 not evaluated"
+    )
     assert rows[0]["target_summary"]["identity"] == "sequence:abc"
     assert _table_rows(rows)[0]["Structures"] == 51
 

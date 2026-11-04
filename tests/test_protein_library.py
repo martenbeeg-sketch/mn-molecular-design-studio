@@ -51,16 +51,21 @@ def test_source_structure_is_portable_reusable_and_deduplicated_before_job_compl
     assert database.structure_file(USER, representation["id"]).read_text() == PDB
 
 
-def test_restricted_collection_and_idr_carriers_are_not_promoted(source_run):
+def test_results_only_policy_still_captures_source_but_none_policy_and_idr_carriers_do_not(source_run):
     run, database = source_run
     (run / "source.pdb").write_text(PDB)
     (run / "input.json").write_text(json.dumps({"inputs": {"target_structure": "source.pdb"}}))
     (run / "metadata.json").write_text(json.dumps({"database_collection_policy": "manual"}))
-    assert collect_run_inputs(run, database=database)["molecule_ids"] == []
+    captured = collect_run_inputs(run, database=database, fetch_references=False)
+    assert len(captured["molecule_ids"]) == 1
+    assert len(database.groups(USER, collection="library")) == 1
+    (run / "metadata.json").write_text(json.dumps({"database_collection_policy": "none"}))
+    (run / "source.pdb").write_text(PDB.replace("3.800", "4.800"))
+    assert collect_run_inputs(run, database=database, fetch_references=False)["molecule_ids"] == []
     (run / "metadata.json").write_text("{}")
     (run / "idr_sequence_carrier.cif").write_text("data_idr_sequence_carrier\n")
     (run / "input.json").write_text(json.dumps({"inputs": {"target_structure": "idr_sequence_carrier.cif"}}))
-    assert collect_run_inputs(run, database=database)["molecule_ids"] == []
+    assert collect_run_inputs(run, database=database, fetch_references=False)["molecule_ids"] == []
 
 
 def test_validation_input_cannot_promote_an_unaccepted_design(source_run):

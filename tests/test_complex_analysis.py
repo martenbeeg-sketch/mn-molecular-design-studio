@@ -1119,7 +1119,8 @@ def test_database_analysis_ingestion_attaches_evaluation_to_exact_existing_repre
     (run / "molecular_design_studio.json").write_text(json.dumps({
         "application": "mn-molecular-design-studio", "studio_owner_id": USER["id"], "project_id": None,
     }))
-    (run / "metadata.json").write_text(json.dumps({"status": "completed", "tool": "biotite_interface"}))
+    (run / "metadata.json").write_text(json.dumps({"status": "completed", "tool": "biotite_interface",
+        "database_collection_policy": "automatic"}))
     (run / "input.json").write_text(json.dumps({"params": {"contact_distance": 5.0}}))
     (run / "result.json").write_text(json.dumps({"success": True}))
 
@@ -1185,6 +1186,7 @@ def test_database_ligand_analysis_ingestion_keeps_original_digest_after_evaluato
     }))
     (run / "metadata.json").write_text(json.dumps({
         "status": "completed", "tool": "plip", "upstream_source_kind": "database",
+        "database_collection_policy": "automatic",
     }))
     (run / "input.json").write_text(json.dumps({"tool": "plip", "params": {"ligand_selection": ligand_selection}}))
     (run / "result.json").write_text(json.dumps({"success": True, "execution_status": "completed"}))

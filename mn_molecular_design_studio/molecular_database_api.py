@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from mn_molecular_design_studio import molecule_imports as imports
 from mn_molecular_design_studio.molecular_database import MolecularDatabase
-from mn_molecular_design_studio.molecular_database_ingest import sync_workspace
+from mn_molecular_design_studio.molecular_database_ingest import sync_workspace_async
 
 
 class GroupRequest(BaseModel):
@@ -80,7 +80,6 @@ def install(app, current_user):
 
     @router.get("/groups")
     def groups(project_id: str = "", scope: str = "organization", collection: str = "all", user=Depends(current_user)):
-        call(sync_workspace, user)
         return {"items": call(MolecularDatabase().groups, user, project_id=project_id, scope=scope, collection=collection)}
 
     @router.get("/output-vocabulary")
@@ -90,9 +89,13 @@ def install(app, current_user):
 
     @router.get("/metrics")
     def metrics(group_id: str = "", project_id: str = "", scope: str = "organization", collection: str = "all", user=Depends(current_user)):
-        call(sync_workspace, user)
         return {"items": call(MolecularDatabase().metric_fields, user, group_id=group_id,
                               project_id=project_id, scope=scope, collection=collection)}
+
+    @router.post("/refresh", status_code=202)
+    def refresh(user=Depends(current_user)):
+        """Explicitly request an idempotent Results index refresh."""
+        return {"status": "started", "errors": call(sync_workspace_async, user, force=True)}
 
     @router.post("/groups", status_code=201)
     def create_group(payload: GroupRequest, user=Depends(current_user)):
@@ -217,10 +220,6 @@ def install(app, current_user):
         call(MolecularDatabase().set_schema, user, group_id, payload)
         return {"status": "updated"}
 
-    @router.post("/refresh")
-    def refresh(user=Depends(current_user)):
-        return {"indexing_errors": call(sync_workspace, user, force=True)}
-
     @router.get("/jobs/{task_group}/{run_id}")
     def run_molecules(task_group: str, run_id: str, user=Depends(current_user)):
         from mn_molecular_design_studio.runtime import runs_root
@@ -252,7 +251,6 @@ def install(app, current_user):
     @router.get("")
     def molecules(group_id: str = "", project_id: str = "", collection: str = "all", query: str = "", molecule_type: str = "",
                   sort: str = "added", descending: bool = True, limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0), user=Depends(current_user)):
-        call(sync_workspace, user)
         return call(MolecularDatabase().list_molecules, user, group_id=group_id, project_id=project_id, collection=collection, query=query,
                     molecule_type=molecule_type, sort=sort, descending=descending, limit=limit, offset=offset)
 

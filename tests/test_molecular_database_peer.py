@@ -14,8 +14,8 @@ from mn_molecular_design_studio import molecule_imports
 
 SOURCE = "source-node-a"
 OTHER_SOURCE = "source-node-b"
-OWNER = {"id": "owner-1", "role": "user", "_cluster_project_ids": ["project-current", "project-next"]}
-OUTSIDER = {"id": "owner-2", "role": "user", "_cluster_project_ids": []}
+OWNER = {"id": "a" * 32, "role": "user", "_cluster_project_ids": ["project-current", "project-next"]}
+OUTSIDER = {"id": "b" * 32, "role": "user", "_cluster_project_ids": []}
 
 
 @pytest.fixture
@@ -197,6 +197,74 @@ def _entry_record(database, group_id, molecule_id, *, digest=True):
         structure["context"] = _json(context)
     return {"node_id": SOURCE, "group_id": group_id, "molecule": molecule, "member": member,
             "structures": structures, "observations": observations, "sources": sources}
+
+
+def _peer_structure(node):
+    residues = {"A": "ALA", "C": "CYS", "D": "ASP", "E": "GLU"}
+    lines = [f"HEADER    authored by {node}"]
+    for serial, amino_acid in enumerate("ACDE", start=1):
+        lines.append(f"ATOM  {serial:5d}  CA  {residues[amino_acid]} A{serial:4d}    "
+                     f"{serial:8.3f}{1.0:8.3f}{1.0:8.3f}{1.00:6.2f}{20.00:6.2f}           C")
+    return ("\n".join([*lines, "TER", "END", ""])).encode()
+
+
+def _author_peer_entry(database, node, *, project="project-current"):
+    content = _peer_structure(node)
+    imported = database.import_records(
+        OWNER,
+        [{"name": f"ACDE from {node}", "components": molecule_imports.parse_sequences("ACDE")[0]["components"],
+          "files": [{"name": f"{node}.pdb", "content": content}],
+          "metadata": {"source_workstation": node}}],
+        name=f"Local library {node}", project_id=project, import_method="user_uploads",
+        origin={"type": "curated_collection", "collection_kind": "curated", "owner_id": OWNER["id"]},
+    )
+    molecule_id, group_id = imported["molecule_ids"][0], imported["group_id"]
+    with database.connection() as connection:
+        structure_id = connection.execute(
+            "SELECT id FROM molecule_structures WHERE group_id=? AND molecule_id=?", (group_id, molecule_id)
+        ).fetchone()[0]
+    database.make_structure_portable(OWNER, structure_id)
+    database.add_observation(group_id, molecule_id, f"evaluation.{node}", f"run-{node}",
+                             {"quality": 0.7 + len(node) / 100},
+                             context={"source_workstation": node}, source_key=f"{node}-evaluation")
+    return group_id, molecule_id, structure_id, content
+
+
+def _sync_author_records(replica, author, targets):
+    rows = _capture_rows(replica)
+    records = [(key, kind, value) for key, (kind, value) in rows.items()
+               if key.startswith(kind + ":" + author + ":")]
+    records.sort(key=lambda item: (item[1] != "molecule_group", item[0]))
+    for key, kind, value in records:
+        for target in targets:
+            apply_record(kind, key, value, author, database=target)
+
+
+def _evaluation_run(root, node, source, digest):
+    from mn_molecular_design_studio.workspace import STUDIO_SOURCE_ID
+
+    run_dir = root / "runs" / "analysis" / f"remote-evaluation-{node}"
+    candidate_dir = run_dir / "artifacts/normalized_candidates"
+    candidate_dir.mkdir(parents=True)
+    (run_dir / "molecular_design_studio.json").write_text(json.dumps({
+        "application": STUDIO_SOURCE_ID, "studio_owner_id": OWNER["id"], "project_id": "project-current",
+    }))
+    (run_dir / "metadata.json").write_text(json.dumps({
+        "studio_owner_id": OWNER["id"], "project_id": "project-current", "task_group": "analysis",
+        "tool": "complex_analysis", "workflow": "analysis.complex_analysis", "status": "completed",
+        "database_collection_policy": "automatic",
+    }))
+    (run_dir / "input.json").write_text(json.dumps({"tool": "complex_analysis", "workflow": "analysis.complex_analysis", "params": {}}))
+    (run_dir / "result.json").write_text(json.dumps({"success": True, "metrics": {}}))
+    candidate = {
+        "candidate_id": f"analysis-{node}", "stage": "analysis", "binder_sequence": "ACDE",
+        "complex_pdb": "analysis.pdb", "metrics": {"quality": 0.95},
+        "raw_metadata": {"database_source": source,
+                         "complex_analysis_selection": {"source_structure_digest": digest}},
+    }
+    (run_dir / "analysis.pdb").write_bytes(_peer_structure("analysis"))
+    (candidate_dir / "candidates.jsonl").write_text(json.dumps(candidate) + "\n")
+    return run_dir
 
 
 def test_small_molecule_replication_preserves_source_smiles_across_rdkit_versions(roots, monkeypatch):
@@ -468,3 +536,129 @@ def test_group_tombstone_removes_only_that_peer_group(roots):
         assert connection.execute("SELECT count(*) FROM molecule_groups WHERE id=?", (peer_group_id,)).fetchone()[0] == 0
         assert connection.execute("SELECT count(*) FROM molecule_members WHERE group_id=? AND molecule_id=?", (local_group, molecule_id)).fetchone()[0] == 1
         assert connection.execute("SELECT count(*) FROM molecules WHERE id=?", (molecule_id,)).fetchone()[0] == 1
+
+
+def test_three_workstations_ingest_offline_converge_retrieve_evaluate_and_tombstone(roots, monkeypatch):
+    from mn_molecular_design_studio.cluster import config, transport
+    from mn_molecular_design_studio.molecular_database_ingest import ingest_run
+
+    nodes = ("pc002975", "PC004032", "PC004033")
+    databases = {node: MolecularDatabase(roots / f"database-{node}") for node in nodes}
+    authored = {node: _author_peer_entry(databases[node], node) for node in nodes}
+    replica = Replica()
+
+    # PC004033 has authored its own local record but is offline during the
+    # first exchange between pc002975 and PC004032.
+    for node in nodes[:2]:
+        capture(replica, database=databases[node], node_id=node)
+        _sync_author_records(replica, node, [databases[target] for target in nodes[:2] if target != node])
+    assert databases[nodes[0]].list_molecules(OWNER, collection="all")["total"] == 1
+    with databases[nodes[0]].connection() as connection:
+        assert connection.execute("SELECT count(*) FROM molecule_groups").fetchone()[0] == 2
+
+    # The offline writer retains its local record and Evaluation. Reconnection
+    # exchanges all three source-author snapshots; a second replay is idempotent.
+    assert databases[nodes[2]].list_molecules(OWNER, collection="all")["total"] == 1
+    for node in nodes:
+        capture(replica, database=databases[node], node_id=node)
+    for node in nodes:
+        _sync_author_records(replica, node, [databases[target] for target in nodes if target != node])
+    for node in nodes:
+        _sync_author_records(replica, node, [databases[target] for target in nodes if target != node])
+
+    canonical_ids = {authored[node][1] for node in nodes}
+    assert len(canonical_ids) == 1
+    molecule_id = next(iter(canonical_ids))
+    for node in nodes:
+        database = databases[node]
+        with database.connection() as connection:
+            assert connection.execute("SELECT count(*) FROM molecules WHERE id=?", (molecule_id,)).fetchone()[0] == 1
+            assert connection.execute("SELECT count(*) FROM molecule_groups").fetchone()[0] == 3
+            assert connection.execute("SELECT count(*) FROM molecule_structures WHERE molecule_id=?", (molecule_id,)).fetchone()[0] == 3
+            assert connection.execute("SELECT count(*) FROM molecule_observations WHERE molecule_id=?", (molecule_id,)).fetchone()[0] == 3
+            assert connection.execute("SELECT count(*) FROM molecule_sources WHERE molecule_id=?", (molecule_id,)).fetchone()[0] == 3
+
+    # pc002975 authored the representation; PC004032 can retrieve its bytes
+    # through owner-authorized content retrieval and attach a new local
+    # Evaluation to the same canonical identity and remote structure ID.
+    source_node = nodes[0]
+    owner_group, _, source_structure, source_content = authored[source_node]
+    target_database = databases[nodes[1]]
+    remote_group = _id("peer-", source_node + ":" + owner_group)
+    with target_database.connection() as connection:
+        remote_row = dict(connection.execute(
+            "SELECT id,context FROM molecule_structures WHERE group_id=? AND molecule_id=?",
+            (remote_group, molecule_id),
+        ).fetchone())
+    remote_context = json.loads(remote_row["context"])
+    remote_structure_id = remote_row["id"]
+    remote_digest = remote_context.get("portable_sha256") or remote_context.get("sha256")
+    assert remote_context["_replica_node"] == source_node
+    assert remote_context["_replica_structure"] == source_structure
+    source_spec = {"schema": "studio.complex_analysis_database_source.v1", "molecule_id": molecule_id,
+                   "structure_id": remote_structure_id, "group_id": remote_group,
+                   "structure_digest": remote_digest}
+    peer_urls = {node: f"https://{node}.isolated.test" for node in nodes}
+    monkeypatch.setattr(config, "load", lambda: {"mode": "disabled", "peers": [
+        {"id": node, "url": peer_urls[node]} for node in nodes]})
+
+    def fetch_from_owner(path, payload, *, method, base_url, raw, timeout):
+        node = next(node for node, url in peer_urls.items() if url == base_url)
+        requested = path.rsplit("/", 1)[-1]
+        source_db = databases[node]
+        return source_db.structure_file(OWNER, requested).read_bytes()
+
+    monkeypatch.setattr(transport, "node_request", fetch_from_owner)
+    assert target_database.structure_file(OWNER, remote_structure_id).read_bytes() == source_content
+    with pytest.raises(PermissionError):
+        target_database.structure_file(OUTSIDER, remote_structure_id)
+
+    # The simulated remote evaluation output is written only to PC004032's
+    # local Evaluation group. Its source group remains source-authoritative.
+    run_dir = _evaluation_run(roots / "analysis-PC004032", nodes[1], source_spec, remote_digest)
+    assert ingest_run(run_dir, database=target_database) == 1
+    evaluation_groups = [group for group in target_database.groups(OWNER, collection="all")
+                         if group["origin"].get("collection_kind") == "evaluation"]
+    assert len(evaluation_groups) == 1
+    evaluated = target_database.list_molecules(OWNER, group_id=evaluation_groups[0]["id"])["items"]
+    assert len(evaluated) == 1 and evaluated[0]["id"] == molecule_id
+    evaluation = next(observation for observation in evaluated[0]["observations"]
+                      if observation["run_id"] == run_dir.name)
+    assert evaluation["context"]["source_group_id"] == remote_group
+    assert evaluation["context"]["source_structure_id"] == remote_structure_id
+    assert evaluation["context"]["source_structure_digest"] == remote_digest
+    assert evaluation["context"]["source_node"] == source_node
+    with target_database.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM molecule_observations WHERE group_id=? AND molecule_id=?",
+                                  (remote_group, molecule_id)).fetchone()[0] == 1
+        assert connection.execute("SELECT count(*) FROM molecule_observations WHERE group_id=? AND molecule_id=?",
+                                  (evaluation_groups[0]["id"], molecule_id)).fetchone()[0] == 1
+
+    # Materialize an authorized portable copy, then prove it remains openable
+    # when the source workstation is unavailable.
+    assert materialize_portable_structures(database=target_database,
+        peer={"id": source_node, "url": peer_urls[source_node]}) >= 1
+    monkeypatch.setattr(transport, "node_request",
+        lambda *args, **kwargs: (_ for _ in ()).throw(transport.ClusterUnavailable("offline")))
+    assert target_database.structure_file(OWNER, remote_structure_id).read_bytes() == source_content
+
+    # A source-authorized deletion publishes a tombstone for only PC004032's
+    # own imported member; the peer Evaluation and the other authors survive.
+    own_group, own_molecule, _, _ = authored[nodes[1]]
+    databases[nodes[1]].remove_from_group(OWNER, own_group, [own_molecule])
+    capture(replica, database=databases[nodes[1]], node_id=nodes[1])
+    tombstone_key = f"molecule_entry:{nodes[1]}:{own_group}:{own_molecule}"
+    captured = _capture_rows(replica)
+    assert captured[tombstone_key] == ("molecule_entry", None)
+    _sync_author_records(replica, nodes[1], [databases[nodes[0]], databases[nodes[2]]])
+    for node in (nodes[0], nodes[2]):
+        database = databases[node]
+        removed_group = _id("peer-", nodes[1] + ":" + own_group)
+        with database.connection() as connection:
+            assert connection.execute("SELECT count(*) FROM molecule_members WHERE group_id=? AND molecule_id=?",
+                                      (removed_group, molecule_id)).fetchone()[0] == 0
+            assert connection.execute("SELECT count(*) FROM molecule_members WHERE molecule_id=?", (molecule_id,)).fetchone()[0] >= 2
+            original_group = (authored[nodes[0]][0] if node == nodes[0]
+                              else _id("peer-", nodes[0] + ":" + authored[nodes[0]][0]))
+            assert connection.execute("SELECT count(*) FROM molecule_groups WHERE id=?",
+                                      (original_group,)).fetchone()[0] == 1

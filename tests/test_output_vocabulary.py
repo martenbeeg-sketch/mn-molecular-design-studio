@@ -4,7 +4,7 @@ import math
 import pytest
 
 from mn_molecular_design_studio.output_vocabulary import (
-    PREFIX, candidate_output, engine_name, fasta_metrics, normalize_metrics,
+    PREFIX, candidate_output, engine_name, fasta_metrics, normalize_metrics, normalize_parameters,
 )
 from mn_molecular_design_studio.engine.workflow_engine.core.candidates import normalize_candidate, write_candidates, read_candidates
 from mn_molecular_design_studio.molecular_database import MolecularDatabase
@@ -82,6 +82,29 @@ def test_generator_confidence_has_declared_units_scope_and_stage():
     assert native["i_pAE"] == .2
     bad_scale = candidate_output({"source_tool": "bindcraft2_generator", "stage": "generation.backbone_sequence", "metrics": {"Target_pLDDT": 90}})
     assert bad_scale["metrics"] == {}
+
+
+def test_parameter_vocabulary_is_method_scoped_and_keeps_native_values():
+    from mn_molecular_design_studio.output_vocabulary import parameter_vocabulary, vocabulary
+
+    native = {"pae_cutoff": 10.0, "dist_cutoff": 8.0, "ipdae_contact_cutoff": 6.0,
+              "unrecognized_setting": "unchanged"}
+    result = normalize_parameters(native, "ipsae")
+    assert result["native"] == native
+    assert result["normalized"] == {
+        "analysis.ipsae.pae_cutoff": 10.0,
+        "analysis.ipsae.distance_cutoff": 8.0,
+        "analysis.ipsae.bindcraft2_ipdae_contact_cutoff": 6.0,
+    }
+    assert normalize_parameters({"pae_cutoff": 10.0}, "tag_fusion_suitability")["normalized"] == {}
+    assert normalize_parameters({"interface_contact_cutoff": 4.0,
+                                 "interface_contact_cutoff_angstrom": 5.0},
+                                "tag_fusion_context")["conflicts"] == [
+        {"field": "analysis.tag_fusion.interface_contact_cutoff",
+         "native_values": [("interface_contact_cutoff", 4.0), ("interface_contact_cutoff_angstrom", 5.0)]}
+    ]
+    assert any(row["field"] == "analysis.ipsae.pae_cutoff" for row in parameter_vocabulary())
+    assert vocabulary()["parameters"] == parameter_vocabulary()
 
 
 def test_ipsae_analysis_keeps_directional_pae_and_recomputed_ipdae_distinct():
@@ -366,7 +389,7 @@ def test_output_dictionary_api_and_accessible_metric_fields(tmp_path, monkeypatc
     imported = db.import_records(user, molecule_imports.parse_sequences("ACD"))
     db.add_observation(imported["group_id"], imported["molecule_ids"][0], "rfdiffusion3_foundry", "run", {"binder_ca_radius_of_gyration": 11})
     monkeypatch.setattr(molecular_database_api, "MolecularDatabase", lambda: db)
-    monkeypatch.setattr(molecular_database_api, "sync_workspace", lambda user: [])
+    monkeypatch.setattr(molecular_database_api, "sync_workspace_async", lambda user, **kwargs: [])
     app = FastAPI(); molecular_database_api.install(app, lambda: user)
     client = TestClient(app)
     response = client.get("/api/v1/molecules/output-vocabulary")
