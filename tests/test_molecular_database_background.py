@@ -38,7 +38,7 @@ def test_library_refresh_returns_saved_records_while_one_indexer_runs(tmp_path, 
     assert calls == [user['id']]
 
 
-def test_identical_job_refresh_preserves_cached_evaluation_but_changed_scores_invalidate_it(tmp_path):
+def test_identical_job_refresh_is_idempotent_and_changed_scores_create_immutable_revision(tmp_path):
     database = MolecularDatabase(tmp_path / 'database')
     user = {'id': 'stable-index-test', 'role': 'admin'}
     imported = database.import_records(user, molecule_imports.parse_sequences('ACDEFGHIK'))
@@ -51,7 +51,13 @@ def test_identical_job_refresh_preserves_cached_evaluation_but_changed_scores_in
     database.add_observation(group, molecule, 'test', 'run', {'score': .9}, **arguments)
     with database.connection() as connection:
         assert tuple(connection.execute('SELECT * FROM molecule_evaluations WHERE observation_id=?', (observation,)).fetchone()) == cached
-    database.add_observation(group, molecule, 'test', 'run', {'score': .5}, **arguments)
+    revision = database.add_observation(group, molecule, 'test', 'run', {'score': .5},
+                                        **{**arguments, 'created_at': '2026-11-05T12:00:00Z'})
+    assert revision != observation
     with database.connection() as connection:
-        assert connection.execute('SELECT 1 FROM molecule_evaluations WHERE observation_id=?', (observation,)).fetchone() is None
+        old_projection = connection.execute('SELECT * FROM molecule_evaluations WHERE observation_id=?', (observation,)).fetchone()
+        assert old_projection is not None
+        assert old_projection['observation_id'] == observation
+        assert connection.execute('SELECT 1 FROM molecule_observations WHERE id=?', (observation,)).fetchone()
+        assert connection.execute('SELECT 1 FROM molecule_observations WHERE id=?', (revision,)).fetchone()
     assert database.list_molecules(user)['items'][0]['scores']['test.score'] == .5

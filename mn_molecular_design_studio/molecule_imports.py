@@ -578,12 +578,15 @@ def parse_structure(data: bytes, filename: str, *, include_ligands: bool = True,
                     model = models[index]
                 elif 1 <= index <= len(models):
                     model = models[index - 1]
-            if model is None:
-                if require_model_selection:
-                    raise ValueError(f"Model {requested_model!r} is not present in the structure.")
-                model = models[0]
+        if model is None:
+            if require_model_selection:
+                raise ValueError(f"Model {requested_model!r} is not present in the structure.")
+            model = models[0]
     except Exception as exc:
         raise ValueError(f"Could not read {filename}: {exc}") from exc
+    for atom in model.get_atoms():
+        if not all(math.isfinite(float(value)) for value in atom.coord):
+            raise ValueError("The selected coordinate model contains nonfinite atom coordinates.")
     components = []
     for chain in model:
         chain_id = chain.id.strip() or "_"

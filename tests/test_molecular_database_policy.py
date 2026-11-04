@@ -514,6 +514,140 @@ def test_changed_coordinates_at_a_portable_path_create_a_new_measurement_revisio
     assert observation["context"]["structure_digest"] == hashlib.sha256(second_text.encode()).hexdigest()
 
 
+def test_changed_calculation_evidence_preserves_frozen_evaluation_and_is_idempotent(database):
+    candidate = {
+        "candidate_id": "frozen-score", "stage": "generation.backbone_sequence",
+        "binder_sequence": "ACD", "binder_chains": ["A"], "binder_pdb": "binder.pdb",
+        "raw_metadata": {"validation_acceptance": {"status": "accepted"}}, "metrics": {"native_score": 0.8},
+    }
+    run = _make_run(database, "design", "frozen-calculation-revision", tool="rfd4_proteina",
+                    workflow="design_generation", candidates=[candidate])
+    source = run / "binder.pdb"
+    source.write_text(_pdb_acd())
+    assert ingest_run(run, database=database, force=True) == 1
+    group = next(item for item in database.groups(A, collection="library")
+                 if item["origin"].get("run_id") == run.name)
+    molecule_id = database.list_molecules(A, group_id=group["id"])["items"][0]["id"]
+    frozen = database.save_comparison(A, "Frozen 0.8", [molecule_id],
+        settings={"fields": ["rfd4_proteina.native_score"],
+                  "directions": {"rfd4_proteina.native_score": "higher"}})
+    original = database.list_molecules(A, group_id=group["id"])["items"][0]
+    original_observation = next(item for item in original["observations"] if item["namespace"] == "rfd4_proteina")
+    original_evaluation_id = original["selected_evaluation"]["id"]
+    original_structure_id = original_observation["context"]["representation_id"]
+    shifted = []
+    for line in _pdb_acd().splitlines():
+        if line.startswith("ATOM"):
+            x = float(line[30:38]) + 17.0
+            line = line[:30] + f"{x:8.3f}" + line[38:]
+        shifted.append(line)
+    changed_text = "\n".join(shifted) + "\n"
+    source.write_text(changed_text)
+    candidate["metrics"] = {"native_score": 0.4}
+    (run / "artifacts/normalized_candidates/candidates.jsonl").write_text(json.dumps(candidate) + "\n")
+    assert ingest_run(run, database=database, force=True) == 1
+    assert ingest_run(run, database=database, force=True) == 1
+
+    current = database.list_molecules(A, group_id=group["id"])["items"][0]
+    evaluations = [item for item in current["observations"] if item["namespace"] == "rfd4_proteina"]
+    assert len(evaluations) == 2
+    by_score = {item["metrics"]["native_score"]: item for item in evaluations}
+    assert by_score[0.8]["context"]["representation_id"] == original_structure_id
+    assert by_score[0.4]["context"]["structure_digest"] == hashlib.sha256(changed_text.encode()).hexdigest()
+    assert len({item["id"] for item in evaluations}) == 2
+    frozen_row = database.list_molecules(A, group_id=frozen["group_id"])["items"][0]
+    assert frozen_row["selected_evaluation"]["id"] == original_evaluation_id
+    assert frozen_row["scores"]["rfd4_proteina.native_score"] == 0.8
+    assert frozen_row["selected_evaluation"]["representation_id"] == original_structure_id
+    assert database.structure_file(A, original_structure_id).read_bytes() == _pdb_acd().encode()
+
+
+def test_legacy_structure_reference_is_reused_for_identical_reingestion(database):
+    from mn_molecular_design_studio.molecular_database import _id, _json
+    from mn_molecular_design_studio.molecular_database_ingest import _results_analysis_subject
+
+    imported = database.import_records(A, molecule_imports.parse_sequences("ACD"), name="Legacy source",
+                                       project_id="project-1")
+    group, molecule = imported["group_id"], imported["molecule_ids"][0]
+    path = database.root.parent / "legacy-source.pdb"
+    path.write_text(_pdb_acd())
+    context = {"source_file_field": "complex_pdb", "model_id": "0"}
+    current_id = database.attach_structure(group, molecule,
+        {"path": str(path), "label": "legacy-source.pdb"}, context=context)
+    with database.connection() as connection:
+        row = connection.execute("SELECT * FROM molecule_structures WHERE id=?", (current_id,)).fetchone()
+        legacy_context = json.loads(row["context"])
+        legacy_context.pop("content_sha256", None)
+        legacy_id = _id("structure-", _json([molecule, group, str(path), legacy_context]))
+        connection.execute("UPDATE molecule_structures SET id=? WHERE id=?", (legacy_id, current_id))
+        connection.execute("INSERT INTO molecule_sources VALUES (?,?,?,?)", (
+            "legacy-source-provenance", molecule, group,
+            json.dumps({"run_id": "legacy-run", "task_group": "design", "candidate_id": "legacy-candidate",
+                        "workstation": "legacy-owner"}),
+        ))
+    source_run = database.root.parent / "runs" / "design" / "legacy-run"
+    source_run.mkdir(parents=True)
+    (source_run / "metadata.json").write_text(json.dumps({"run_id": "legacy-run", "task_group": "design"}))
+    (source_run / "molecular_design_studio.json").write_text(json.dumps({"workstation": "legacy-owner"}))
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    analysis_candidate = {"binder_sequence": "ACD", "binder_chains": ["A"],
+        "raw_metadata": {"source_candidate": {"candidate_id": "legacy-candidate", "binder_sequence": "ACD",
+                                                 "binder_chains": ["A"]},
+                         "complex_analysis_selection": {"source_structure_digest": digest}}}
+    source = _results_analysis_subject(database, A, A["id"], "project-1", source_run,
+        {"source_run_dir": str(source_run)}, analysis_candidate)
+    assert source["structure_id"] == legacy_id
+
+    repeated = database.attach_structure(group, molecule,
+        {"path": str(path), "label": "legacy-source.pdb"}, context=context)
+    assert repeated == legacy_id
+    repeated_source = _results_analysis_subject(database, A, A["id"], "project-1", source_run,
+        {"source_run_dir": str(source_run)}, analysis_candidate)
+    assert repeated_source["structure_id"] == legacy_id
+    with database.connection() as connection:
+        rows = connection.execute(
+            "SELECT id FROM molecule_structures WHERE group_id=? AND molecule_id=?", (group, molecule)
+        ).fetchall()
+    assert [row["id"] for row in rows] == [legacy_id]
+    revised = database.attach_structure(group, molecule,
+        {"path": str(path), "label": "legacy-source.pdb"}, context={**context, "model_id": "1"})
+    assert revised != legacy_id
+
+
+def test_results_analysis_rejects_calculation_sequence_mismatch_with_exact_source(database):
+    source = _make_run(database, "design", "acd-source-for-analysis", tool="rfd4_proteina",
+        workflow="design_generation", candidates=[{
+            "candidate_id": "selected-acd", "stage": "generation.backbone_sequence",
+            "binder_sequence": "ACD", "binder_chains": ["A"], "binder_pdb": "source.pdb",
+            "raw_metadata": {"validation_acceptance": {"status": "accepted"}},
+        }])
+    (source / "source.pdb").write_text(_pdb_for_sequence("ACD"))
+    assert ingest_run(source, database=database, force=True) == 1
+    source_row = next(item for item in database.list_molecules(A, collection="library")["items"]
+                      if item["components"][0]["sequence"] == "ACD")
+    source_digest = hashlib.sha256(Path(database.structure_file(A, source_row["representations"][0]["id"])).read_bytes()).hexdigest()
+    analysis = _make_run(database, "analysis", "wrong-sequence-analysis", tool="plip",
+        workflow="analysis.plip", candidates=[{
+            "candidate_id": "plip-wrong-molecule", "stage": "analysis", "source_tool": "plip",
+            "binder_sequence": "KLM", "binder_chains": ["A"], "complex_pdb": "calculation.pdb",
+            "metrics": {"interaction_count": 3},
+            "raw_metadata": {"source_candidate": {"candidate_id": "selected-acd", "binder_sequence": "ACD",
+                                                       "binder_chains": ["A"]},
+                             "complex_analysis_selection": {"source_structure_digest": source_digest}},
+        }])
+    (analysis / "input.json").write_text(json.dumps({"tool": "plip", "workflow": "analysis.plip",
+                                                       "source_run_dir": str(source)}))
+    (analysis / "calculation.pdb").write_text(_pdb_for_sequence("KLM"))
+    before = database.list_molecules(A, collection="all")["total"]
+
+    assert ingest_run(analysis, database=database, force=True) == 0
+    assert database.list_molecules(A, collection="all")["total"] == before
+    with database.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM molecule_observations WHERE run_id=?", (analysis.name,)).fetchone()[0] == 0
+    assert (analysis / "calculation.pdb").read_text() == _pdb_for_sequence("KLM")
+    assert (analysis / "artifacts/normalized_candidates/candidates.jsonl").is_file()
+
+
 def test_generated_complex_reindex_keeps_binder_identity_and_only_passing_designs(database):
     candidate = {
         "candidate_id": "bindcraft2_00001", "stage": "complex_refolding",
@@ -757,6 +891,28 @@ def test_rfd4_sequence_input_carrier_is_never_registered_as_native_reference(dat
     assert target["representations"] == []
 
 
+@pytest.mark.parametrize("producer", ["idr", "generic"])
+def test_rfd4_artificial_carrier_remains_nonstructural_after_copy_to_target_cif(database, producer):
+    from mn_molecular_design_studio.rfd4_proteina_input import write_idr_sequence_carrier
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.rfd4_proteina import sequence_structure
+    from mn_molecular_design_studio.target_identity import is_sequence_carrier_reference, target_reference_type
+
+    run = _make_run(database, "design_generation", f"renamed-{producer}-carrier", tool="rfd4_proteina",
+                    workflow="design_generation")
+    original = run / "artifacts" / "conditioning.cif"
+    if producer == "idr":
+        write_idr_sequence_carrier("ACDE", original)
+    else:
+        sequence_structure("ACDE", original)
+    renamed = run / "target.cif"
+    renamed.write_bytes(original.read_bytes())
+    assert is_sequence_carrier_reference(str(renamed), run_dir=run)
+    assert target_reference_type({"inputs": {"target_structure": "target.cif"}}, run_dir=run) == "sequence_only"
+    ordinary = run / "ordinary-target.cif"
+    ordinary.write_text("data_experimental_structure\n#\n")
+    assert not is_sequence_carrier_reference(str(ordinary), run_dir=run)
+
+
 def test_design_target_links_to_matching_structure_backed_target(database):
     candidate = {
         "candidate_id": "structure-target-design", "stage": "generation.backbone_sequence",
@@ -947,6 +1103,41 @@ def test_docking_indexes_only_the_top_pose_for_each_compound(database):
     assert Path(row["structures"][0]["path"]).suffix == ".pdbqt"
     assert "top-ranked pose" in Path(row["structures"][0]["path"]).read_text()
     assert len(row["observations"]) == 2
+
+
+def test_registered_rosettaligand_docking_keeps_selected_pose_and_evaluation(database):
+    from mn_molecular_design_studio import ligand_compounds
+
+    imported = database.import_records(
+        A, [{"name": "Ethanol", "components": molecule_imports.parse_smiles("CCO")[0]["components"],
+             "metadata": {"compound_id": "RL-1"}}], name="Rosetta compounds", project_id="project-1",
+    )
+    molecule_id = imported["molecule_ids"][0]
+    run = _make_run(database, "ligand-docking", "rosetta-ligand-real-workflow", tool="rosetta_ligand",
+                    workflow="ligand.docking.rosetta_ligand")
+    ligand_compounds.write_compound_set(
+        run / "artifacts/input/compound_set.json", name="Rosetta inputs",
+        compounds=[{"compound_id": "RL-1", "compound_name": "Ethanol", "smiles": "CCO"}],
+        owner_id=A["id"], project_id="project-1", created_at="now",
+    )
+    pose = run / "artifacts/poses/rosetta-ligand.pdbqt"
+    pose.parent.mkdir(parents=True)
+    pose.write_text("MODEL 1\nREMARK SMILES CCO\nREMARK SMILES IDX 1 3 2 2 3 1\n"
+                    "ATOM      1 O    UNL     1       8.000   3.000   4.000  0.000 O\n"
+                    "ATOM      2 C    UNL     1       7.000   3.000   4.000  0.000 C\n"
+                    "ATOM      3 C    UNL     1       6.000   3.000   4.000  0.000 C\nENDMDL\n")
+    (run / "artifacts/docking_scores.csv").write_text(
+        "compound_id,status,pose_rank,rosetta_total_score,pose_path\n"
+        "RL-1,completed,1,-12.5,artifacts/poses/rosetta-ligand.pdbqt\n"
+    )
+
+    assert ingest_run(run, database=database, force=True) == 1
+    row = next(item for item in database.list_molecules(A, collection="all")["items"]
+               if item["id"] == molecule_id)
+    assert len(row["representations"]) == 1
+    assert row["representations"][0]["context"]["pose_rank"] == "1"
+    assert any(item["namespace"] == "rosetta_ligand" and item["metrics"].get("rosetta_total_score") == -12.5
+               for item in row["observations"])
 
 
 def test_docking_evaluates_remote_only_compounds_in_a_local_evaluation_group(database):

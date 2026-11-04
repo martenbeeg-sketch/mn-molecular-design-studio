@@ -115,7 +115,8 @@ def evaluation_descriptor(observation):
             "source_workstation": str(context.get("workstation") or context.get("source_workstation") or ""),
             "image_digest": str(context.get("image_digest") or settings.get("image_digest") or ""),
             "status": str(context.get("status") or "completed"),
-            "preferred": bool(context.get("is_representative") or context.get("representation_id")) and context.get("status", "completed") == "completed",
+            "preferred": bool(context.get("is_representative") if context.get("is_representative") is not None
+                               else context.get("representation_id")) and context.get("status", "completed") == "completed",
             "context_complete": bool(target and representation), "created_at": observation.get("created_at", "")}
 
 

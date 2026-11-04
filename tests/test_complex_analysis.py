@@ -1203,6 +1203,29 @@ def test_database_ligand_analysis_ingestion_keeps_original_digest_after_evaluato
     assert evaluations[0]["context"]["candidate"]["raw_metadata"]["database_source"]["structure_id"] == structure["id"]
     assert len(after["representations"]) == 1
 
+    # The selected ligand still matches, but replacing every protein residue
+    # with alanine makes the prepared analysis coordinates a different source
+    # molecule. A valid ligand identity must not mask that receptor mismatch.
+    mismatched_protein = tmp_path / "plip-mismatched-protein-complex.pdb"
+    mismatched_protein.write_text("\n".join(
+        (line[:17] + "ALA" + line[20:]) if line.startswith("ATOM  ") else line
+        for line in prepared_output.read_text().splitlines()
+    ) + "\n")
+    mismatch_run = tmp_path / "workspace" / "runs" / "analysis" / "database-plip-mismatched-protein"
+    mismatch_candidate = json.loads(json.dumps(candidate))
+    mismatch_candidate.update(candidate_id=candidate["candidate_id"] + "_wrong-protein",
+                              complex_pdb=str(mismatched_protein))
+    mismatch_candidate["raw_metadata"]["structure_digest"] = hashlib.sha256(
+        mismatched_protein.read_bytes()).hexdigest()
+    mismatch_path = mismatch_run / "artifacts/normalized_candidates/candidates.jsonl"
+    mismatch_path.parent.mkdir(parents=True)
+    mismatch_path.write_text(json.dumps(mismatch_candidate) + "\n")
+    for name in ("molecular_design_studio.json", "metadata.json", "input.json", "result.json"):
+        (mismatch_run / name).write_text((run / name).read_text())
+    assert ingest_run(mismatch_run, database=database, force=True) == 0
+    after_mismatch = database.list_molecules(USER, molecule_ids=[record["id"]])["items"][0]
+    assert len([item for item in after_mismatch["observations"] if item.get("namespace") == "plip"]) == 1
+
     bad_run = tmp_path / "workspace" / "runs" / "analysis" / "database-plip-bad-provenance"
     bad_candidate = json.loads(json.dumps(candidate))
     bad_candidate["raw_metadata"]["complex_analysis_selection"]["structure_digest"] = "0" * 64

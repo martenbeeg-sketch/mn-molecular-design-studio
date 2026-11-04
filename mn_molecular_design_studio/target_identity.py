@@ -99,6 +99,7 @@ def is_sequence_carrier_reference(value, *, run_dir: Path | str | None = None) -
     }
     marker_set = carrier_markers.get(filename, ())
     named_carrier = bool(marker_set)
+    content_markers = {marker for markers in carrier_markers.values() for marker in markers}
     path = None
     try:
         from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
@@ -125,7 +126,9 @@ def is_sequence_carrier_reference(value, *, run_dir: Path | str | None = None) -
         return named_carrier
     try:
         content = path.read_text(encoding="utf-8", errors="ignore")[:4096].casefold()
-        return path.is_file() and any(marker in content for marker in marker_set)
+        if not path.is_file():
+            return False
+        return any(marker in content for marker in content_markers)
     except OSError:
         return False
 

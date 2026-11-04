@@ -342,7 +342,7 @@ def _find_exact_structure(root: Path, stage: str, design: str, *, allow_rank_pre
 
 
 def _inspect_native_structure(root: Path, relative_path: str, binder_sequence: str, target: dict,
-                              *, model_id: str = "") -> dict:
+                              *, model_id: str = "", require_target_coordinates: bool = False) -> dict:
     """Validate native coordinates, model count, and exact chain sequences."""
     path = (root / relative_path).resolve(strict=True)
     if not path.is_relative_to(root.resolve()):
@@ -379,7 +379,7 @@ def _inspect_native_structure(root: Path, relative_path: str, binder_sequence: s
     target_components = target_identity.get("components") if isinstance(target_identity, dict) else []
     expected_targets = [str(item.get("sequence") or "") for item in target_components
                         if isinstance(item, dict) and item.get("type") == "protein"]
-    if unmatched:
+    if unmatched or (require_target_coordinates and expected_targets):
         if not expected_targets:
             return {"path": relative_path, "sha256": digest, "status": "target_correspondence_unresolved",
                     "model_id": selected_model_id, "coordinate_model_id": coordinate_model_id,
@@ -430,7 +430,8 @@ def _row_candidate(row: dict, *, stage: str, row_index: int, engine: str, root: 
     structure_path, structure_digest, structure_warnings = _find_exact_structure(
         root, structure_stage, design, allow_rank_prefix=(stage == "ranked")) if engine == "bindcraft2" else ("", "", [])
     warnings.extend(structure_warnings)
-    structure = (_inspect_native_structure(root, structure_path, normalized_sequence, target or {})
+    structure = (_inspect_native_structure(root, structure_path, normalized_sequence, target or {},
+                                           require_target_coordinates=(engine == "bindcraft2"))
                  if structure_path else {"path": None, "sha256": None, "status": "missing_or_unmatched"})
     structure["stage"] = "ranked" if stage == "ranked" else "refolded"
     unsupported_fields = sorted(set(metric_values) - {
@@ -522,7 +523,8 @@ def _bindcraft2(root: Path, source_id: str, warnings: list[str], target: dict | 
             ranked_structure, ranked_digest, ranked_warnings = _find_exact_structure(
                 root, "3_Ranked", _value(row, "design"), allow_rank_prefix=True)
             warnings.extend(ranked_warnings)
-            ranked_structure_record = (_inspect_native_structure(root, ranked_structure, normalized, target or {})
+            ranked_structure_record = (_inspect_native_structure(
+                root, ranked_structure, normalized, target or {}, require_target_coordinates=True)
                                        if ranked_structure else {"path": None, "sha256": None,
                                                                   "status": "missing_or_unmatched"})
             ranked_structure_record["stage"] = "ranked"

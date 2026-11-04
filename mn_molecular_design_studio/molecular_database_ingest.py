@@ -525,7 +525,7 @@ def _candidate_acceptance_state(candidate):
 
 
 _ANALYSIS_WORKFLOW_MARKERS = (
-    "analysis.", "analysis_", "biotite_interface", "pep_patch", "ipsae", "rosetta",
+    "analysis.", "analysis_", "biotite_interface", "pep_patch", "ipsae",
     "sequence_qc", "sequence_liability", "plip", "pandamap", "posebusters", "foldseek",
     "tag_fusion", "panda_map",
 )
@@ -679,6 +679,7 @@ def _database_analysis_subject(database, user, owner, project, source):
             source_owner_structure_id = structure_id
         return {"molecule_id": molecule_id, "structure_id": structure_id, "group_id": group_id,
                 "structure_digest": digest, "record": record, "representation": representation,
+                "source_reference_kind": "database",
                 "target_molecule_id": target_id, "source_owner_id": str(group.get("owner_id") or ""),
                 "source_node": source_owner_node,
                 "source_structure_owner_node": source_owner_node,
@@ -686,6 +687,166 @@ def _database_analysis_subject(database, user, owner, project, source):
                 "source_structure_owner_structure_id": source_owner_structure_id}
     except (FileNotFoundError, OSError, PermissionError, ValueError, TypeError):
         return None
+
+
+def _analysis_calculation_matches_source(source, candidate, record):
+    """Require the analyzed chains to represent the exact selected molecule."""
+    if not isinstance(source, dict) or not isinstance(candidate, dict):
+        return False
+    selected_calculation_field = next((field for field in ("complex_pdb", "binder_pdb")
+                                       if candidate.get(field)), "")
+    rejected_structures = ((record or {}).get("metadata") or {}).get("structure_validation") or []
+    if selected_calculation_field and any(
+            str(item.get("field") or "") == selected_calculation_field
+            for item in rejected_structures if isinstance(item, dict)):
+        return False
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    selected_source = raw.get("source_candidate") if isinstance(raw.get("source_candidate"), dict) else {}
+    source_components = (source.get("record") or {}).get("components") or []
+    source_proteins = [item for item in source_components if item.get("type") == "protein"]
+    calculation_components = (record or {}).get("components") or []
+    calculation_proteins = [item for item in calculation_components if item.get("type") == "protein"]
+    if str(raw.get("analysis_subject") or "").casefold() == "ligand":
+        selection = raw.get("complex_analysis_selection") if isinstance(raw.get("complex_analysis_selection"), dict) else {}
+        ligand_selection = selection.get("ligand_selection") if isinstance(selection.get("ligand_selection"), dict) else {}
+        source_ligands = [item for item in source_components if item.get("type") == "small_molecule"]
+        calculation_ligands = [item for item in calculation_components if item.get("type") == "small_molecule"]
+        residue_key = str(ligand_selection.get("residue_key") or "")
+        def _selected_ligand_component(item):
+            if residue_key and str(item.get("residue_key") or "") != residue_key:
+                return False
+            requested_ccd = str(ligand_selection.get("ccd") or "").casefold()
+            actual_ccd = str(item.get("ccd") or "").casefold()
+            requested_smiles = str(ligand_selection.get("smiles") or "")
+            actual_smiles = str(item.get("smiles") or "")
+            if requested_ccd and actual_ccd:
+                return requested_ccd == actual_ccd
+            if requested_smiles and actual_smiles:
+                try:
+                    from rdkit import Chem
+                    expected_mol = Chem.MolFromSmiles(requested_smiles)
+                    actual_mol = Chem.MolFromSmiles(actual_smiles)
+                    return bool(expected_mol and actual_mol and
+                                Chem.MolToSmiles(expected_mol, isomericSmiles=True) ==
+                                Chem.MolToSmiles(actual_mol, isomericSmiles=True))
+                except (ImportError, TypeError, ValueError):
+                    return False
+            return not requested_ccd and not requested_smiles
+        selected_source = [item for item in source_ligands if _selected_ligand_component(item)]
+        selected_calculation = [item for item in calculation_ligands if _selected_ligand_component(item)]
+        if len(selected_source) != 1 or len(selected_calculation) != 1:
+            return False
+        source_ligand, calculation_ligand = selected_source[0], selected_calculation[0]
+        source_smiles = str(ligand_selection.get("smiles") or source_ligand.get("smiles") or "")
+        calculation_smiles = str(calculation_ligand.get("smiles") or "")
+        if source_smiles and calculation_smiles:
+            try:
+                from rdkit import Chem
+                source_mol = Chem.MolFromSmiles(source_smiles)
+                calculation_mol = Chem.MolFromSmiles(calculation_smiles)
+                if source_mol is None or calculation_mol is None:
+                    return False
+                ligand_matches = Chem.MolToSmiles(source_mol, isomericSmiles=True) == Chem.MolToSmiles(
+                    calculation_mol, isomericSmiles=True)
+            except (ImportError, TypeError, ValueError):
+                return False
+        elif source_ligand.get("ccd") and calculation_ligand.get("ccd"):
+            ligand_matches = str(source_ligand["ccd"]).casefold() == str(calculation_ligand["ccd"]).casefold()
+        else:
+            ligand_matches = bool(ligand_selection.get("ccd") and
+                                  str(ligand_selection["ccd"]).casefold() ==
+                                  str(calculation_ligand.get("ccd") or "").casefold() and source_smiles)
+        if not ligand_matches:
+            return False
+        source_chain_sequences = {str(item.get("chain") or ""):
+                                  str(item.get("sequence") or "").replace(" ", "").upper()
+                                  for item in source_proteins if item.get("chain") and item.get("sequence")}
+        calculation_chain_sequences = {str(item.get("chain") or ""):
+                                       str(item.get("sequence") or "").replace(" ", "").upper()
+                                       for item in calculation_proteins if item.get("chain") and item.get("sequence")}
+        chain_map = raw.get("source_to_calculation_chain_map")
+        if isinstance(chain_map, dict) and source_chain_sequences:
+            source_chain_sequences = {str(chain_map.get(chain) or ""): sequence
+                                      for chain, sequence in source_chain_sequences.items()}
+        return bool(source_chain_sequences and source_chain_sequences == calculation_chain_sequences)
+
+    source_sequence = str(selected_source.get("binder_sequence") or selected_source.get("sequence") or "")
+    calculation_sequence = str(candidate.get("binder_sequence") or candidate.get("sequence") or "")
+    source_sequences = [part.replace(" ", "").upper() for part in re.split(r"[:/]", source_sequence) if part]
+    calculation_sequences = [part.replace(" ", "").upper() for part in re.split(r"[:/]", calculation_sequence) if part]
+    if source_sequences and calculation_sequences and sorted(source_sequences) != sorted(calculation_sequences):
+        return False
+
+    source_chains = [str(value) for value in selected_source.get("binder_chains") or []]
+    source_representation = (source.get("representation") or {}) if isinstance(source.get("representation"), dict) else {}
+    source_context = source_representation.get("context") if isinstance(source_representation.get("context"), dict) else {}
+    # A Database complex is a single molecular identity even when a later
+    # analysis selects its chains in the opposite binder/target orientation.
+    # Preserve that supported reciprocal analysis when the complete chain to
+    # sequence map still matches the selected source exactly.
+    if source.get("source_reference_kind") == "database" or not selected_source:
+        source_chain_sequences = {str(item.get("chain") or ""):
+                                  str(item.get("sequence") or "").replace(" ", "").upper()
+                                  for item in source_proteins if item.get("chain") and item.get("sequence")}
+        calculation_chain_sequences = {str(item.get("chain") or ""):
+                                       str(item.get("sequence") or "").replace(" ", "").upper()
+                                       for item in calculation_proteins if item.get("chain") and item.get("sequence")}
+        if (len(source_chain_sequences) >= 2 and source_chain_sequences == calculation_chain_sequences):
+            return True
+    source_chains = source_chains or [str(value) for value in source_context.get("binder_chains") or []]
+    calculation_chains = [str(value) for value in candidate.get("binder_chains") or []]
+    if source_chains and calculation_chains and source_chains != calculation_chains:
+        chain_map = raw.get("source_to_calculation_chain_map")
+        if not isinstance(chain_map, dict) or [str(chain_map.get(chain) or "") for chain in source_chains] != calculation_chains:
+            return False
+
+    if source_sequences:
+        expected = source_sequences
+    else:
+        source_binders = [item for item in source_proteins if str(item.get("role") or "").casefold() == "binder"]
+        if source_chains:
+            source_binders = [item for item in source_proteins if str(item.get("chain") or "") in source_chains]
+        if not source_binders and calculation_sequences:
+            source_binders = [item for item in source_proteins
+                              if str(item.get("sequence") or "").replace(" ", "").upper()
+                              in calculation_sequences]
+        expected = [str(item.get("sequence") or "").replace(" ", "").upper() for item in source_binders]
+        if not source_chains:
+            source_chains = [str(item.get("chain") or "") for item in source_binders]
+    if not expected:
+        return False
+    if calculation_chains:
+        selected = [item for item in calculation_proteins if str(item.get("chain") or "") in calculation_chains]
+    else:
+        selected = [item for item in calculation_proteins
+                    if str(item.get("sequence") or "").replace(" ", "").upper() in expected]
+    observed = [str(item.get("sequence") or "").replace(" ", "").upper() for item in selected]
+    if sorted(observed) != sorted(expected):
+        return False
+    source_target_chains = [str(value) for value in selected_source.get("target_chains") or []]
+    source_target_chains = source_target_chains or [str(value) for value in source_context.get("target_chains") or []]
+    declared_sequences = selected_source.get("sequences_by_chain") if isinstance(
+        selected_source.get("sequences_by_chain"), dict) else {}
+    expected_targets = [str(item.get("sequence") or "").replace(" ", "").upper()
+                        for item in source_proteins if str(item.get("role") or "").casefold() == "target"]
+    if source_target_chains:
+        expected_targets = [str(declared_sequences.get(chain) or "").replace(" ", "").upper()
+                            for chain in source_target_chains if declared_sequences.get(chain)] or expected_targets
+    calculation_target_chains = [str(value) for value in candidate.get("target_chains") or []]
+    if expected_targets:
+        if source_target_chains and calculation_target_chains and source_target_chains != calculation_target_chains:
+            chain_map = raw.get("source_to_calculation_chain_map")
+            if not isinstance(chain_map, dict) or [str(chain_map.get(chain) or "")
+                    for chain in source_target_chains] != calculation_target_chains:
+                return False
+        calculated_targets = [item for item in calculation_proteins
+                              if (str(item.get("chain") or "") in calculation_target_chains
+                                  if calculation_target_chains else
+                                  str(item.get("sequence") or "").replace(" ", "").upper() in expected_targets)]
+        if sorted(str(item.get("sequence") or "").replace(" ", "").upper()
+                  for item in calculated_targets) != sorted(expected_targets):
+            return False
+    return True
 
 
 def _results_analysis_subject(database, user, owner, project, analysis_run, inputs, candidate, metadata=None):
@@ -842,6 +1003,15 @@ def _results_analysis_subject(database, user, owner, project, analysis_run, inpu
                     "source_node": str((json.loads(source["origin"] or "{}")).get("_replica_node") or ""),
                 })
                 continue
+            molecule = connection.execute(
+                "SELECT components FROM molecules WHERE id=?", (source["molecule_id"],)
+            ).fetchone()
+            if molecule is None:
+                continue
+            try:
+                source_components = json.loads(molecule["components"])
+            except (TypeError, ValueError):
+                continue
             structures = connection.execute(
                 "SELECT id,path,context FROM molecule_structures WHERE molecule_id=? AND group_id=?",
                 (source["molecule_id"], source["group_id"]),
@@ -850,6 +1020,21 @@ def _results_analysis_subject(database, user, owner, project, analysis_run, inpu
                 context = json.loads(structure["context"])
                 actual_digest = str(context.get("portable_sha256") or "") or _file_sha256(structure["path"])
                 if actual_digest == digest:
+                    source_origin = json.loads(source["origin"] or "{}")
+                    if source_origin.get("_replica_node"):
+                        source_owner_node = str(source_origin["_replica_node"])
+                        source_owner_group = str(source_origin.get("_replica_group") or source["group_id"])
+                        source_owner_structure = str(context.get("_replica_structure") or structure["id"])
+                    else:
+                        source_owner_node = str(provenance.get("workstation") or workstation)
+                        if not source_owner_node:
+                            try:
+                                from mn_molecular_design_studio.cluster.config import identity as node_identity
+                                source_owner_node = str(node_identity())
+                            except (OSError, RuntimeError, ValueError):
+                                source_owner_node = ""
+                        source_owner_group = str(source["group_id"])
+                        source_owner_structure = str(structure["id"])
                     matches.append({
                         "molecule_id": str(source["molecule_id"]), "group_id": str(source["group_id"]),
                         "structure_id": str(structure["id"]), "structure_digest": digest,
@@ -857,7 +1042,12 @@ def _results_analysis_subject(database, user, owner, project, analysis_run, inpu
                         "target_molecule_id": str(raw.get("target_molecule_id")
                                                   or source_candidate.get("target_molecule_id") or ""),
                         "source_owner_id": str(source["owner_id"] or ""),
-                        "source_node": str((json.loads(source["origin"] or "{}")).get("_replica_node") or ""),
+                        "source_node": source_owner_node,
+                        "source_structure_owner_node": source_owner_node,
+                        "source_structure_owner_group_id": source_owner_group,
+                        "source_structure_owner_structure_id": source_owner_structure,
+                        "record": {"components": source_components},
+                        "representation": {"id": str(structure["id"]), "context": context},
                     })
     return matches[0] if len(matches) == 1 else None
 
@@ -1555,6 +1745,10 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                 if source_selection_digest and source_selection_digest != database_subject["structure_digest"]:
                     log.warning("Skipped Database evaluation projection for %s: its selected structure digest does not match the saved source representation.", run_dir)
                     continue
+        if database_subject is not None and database_subject.get("source_reference_kind") != "sequence":
+            if not _analysis_calculation_matches_source(database_subject, candidate, record):
+                log.warning("Skipped Database evaluation projection for %s: analyzed molecular chains do not correspond to the exact selected source molecule.", run_dir)
+                continue
         if analysis_only and database_subject is None:
             # Analysis output belongs in Results unless an exact existing
             # Database or Results subject was resolved above. In particular,

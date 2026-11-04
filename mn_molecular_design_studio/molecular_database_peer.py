@@ -418,6 +418,22 @@ def _resolve_owner_qualified_structure(connection, context):
     return True
 
 
+def _reconcile_owner_qualified_observations(connection):
+    """Resolve pending Evaluation links after a source group or entry arrives."""
+    rows = connection.execute(
+        "SELECT id,context FROM molecule_observations "
+        "WHERE COALESCE(json_extract(context,'$.source_structure_owner_node'),'')!='' "
+        "AND COALESCE(json_extract(context,'$.source_structure_owner_group_id'),'')!='' "
+        "AND COALESCE(json_extract(context,'$.source_structure_owner_structure_id'),'')!='' "
+        "AND COALESCE(json_extract(context,'$.source_structure_reference_status'),'')!='resolved'"
+    ).fetchall()
+    for row in rows:
+        context = _object_json(row["context"], "observation context")
+        previous = _json(context)
+        if _resolve_owner_qualified_structure(connection, context) and _json(context) != previous:
+            connection.execute("UPDATE molecule_observations SET context=? WHERE id=?", (_json(context), row["id"]))
+
+
 def apply_record(kind, key, value, author, *, database=None, connection=None):
     database = database or MolecularDatabase()
     if not isinstance(kind, str) or kind not in KINDS or not isinstance(author, str) or not author:
@@ -511,6 +527,7 @@ def apply_record(kind, key, value, author, *, database=None, connection=None):
                     raise PermissionError("Peer synchronization cannot transfer a molecular group to another owner.")
             connection.execute("INSERT INTO molecule_groups VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,project_id=excluded.project_id,import_method=excluded.import_method,origin=excluded.origin,schema_json=excluded.schema_json,updated_at=excluded.updated_at",
                 (group_id, str(group["name"]).strip()[:250], str(group["owner_id"]), project_id, import_method, _json(origin), _json(schema), group["created_at"], group["updated_at"]))
+            _reconcile_owner_qualified_observations(connection)
             return
         if value is None:
             if _owned_group(connection, group_id, author, original_group):
@@ -604,6 +621,7 @@ def apply_record(kind, key, value, author, *, database=None, connection=None):
                 from_author = metadata.get("_replica_node") == author or (metadata.get("_replica_node") is None and metadata.get("source_node") == author)
                 if from_author and row[id_column] not in expected:
                     connection.execute(f"DELETE FROM {table} WHERE rowid=?", (row["rowid"],))
+        _reconcile_owner_qualified_observations(connection)
 
 
 def fetch_structure(row, user):

@@ -42,6 +42,12 @@ def _id(prefix, value):
     return prefix + hashlib.sha256(str(value).encode()).hexdigest()[:32]
 
 
+def _finish_projection_upgrade(connection, rebuild_missing):
+    """Complete public-query projection readiness through bounded batches."""
+    while rebuild_missing(connection, batch_size=500):
+        pass
+
+
 def _local_capture_revision_triggers(connection):
     """Track local library edits without invalidating capture on peer imports."""
     connection.execute("BEGIN IMMEDIATE")
@@ -641,7 +647,7 @@ class MolecularDatabase:
             context.setdefault("target_structure_digest", file_digest(context["target_path"]))
         clean = {str(key): value for key, value in metrics.items() if value is not None and
                  not (isinstance(value, float) and not math.isfinite(value))}
-        observation_id = _id("score-", source_key or _json([group_id, molecule_id, namespace, run_id, context or {}]))
+        base_observation_id = _id("score-", source_key or _json([group_id, molecule_id, namespace, run_id, context or {}]))
         with self.connection() as connection:
             if not connection.execute("SELECT 1 FROM molecule_members WHERE group_id=? AND molecule_id=?", (group_id, molecule_id)).fetchone():
                 raise ValueError("The observation's molecule must belong to its source group.")
@@ -655,15 +661,31 @@ class MolecularDatabase:
                     context["representation_id"] = structure["id"]
                     context["structure_digest"] = file_digest(structure["path"])
                     break
-            connection.execute("INSERT INTO molecule_observations VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
-                               "molecule_id=excluded.molecule_id,group_id=excluded.group_id,namespace=excluded.namespace,"
-                               "run_id=excluded.run_id,metrics=excluded.metrics,context=excluded.context,created_at=excluded.created_at "
-                               "WHERE (molecule_observations.molecule_id,molecule_observations.group_id,"
-                               "molecule_observations.namespace,molecule_observations.run_id,molecule_observations.metrics,"
-                               "molecule_observations.context,molecule_observations.created_at) IS NOT "
-                               "(excluded.molecule_id,excluded.group_id,excluded.namespace,excluded.run_id,excluded.metrics,"
-                               "excluded.context,excluded.created_at)", (
-                                   observation_id, molecule_id, group_id, namespace, run_id, _json(clean), _json(context or {}), created_at or _now()))
+            metrics_json, context_json = _json(clean), _json(context or {})
+            identical = connection.execute(
+                "SELECT id FROM molecule_observations WHERE id=? AND molecule_id=? AND group_id=? "
+                "AND namespace=? AND run_id=? AND metrics=? AND context=?",
+                (base_observation_id, molecule_id, group_id, namespace, run_id, metrics_json, context_json),
+            ).fetchone()
+            if identical:
+                return str(identical["id"])
+            existing = connection.execute(
+                "SELECT id FROM molecule_observations WHERE id=?", (base_observation_id,)
+            ).fetchone()
+            if existing:
+                evidence = _json([group_id, molecule_id, namespace, run_id, clean, context or {}])
+                observation_id = _id("score-", _json([base_observation_id, evidence]))
+            else:
+                observation_id = base_observation_id
+            identical_revision = connection.execute(
+                "SELECT id FROM molecule_observations WHERE id=? AND molecule_id=? AND group_id=? "
+                "AND namespace=? AND run_id=? AND metrics=? AND context=?",
+                (observation_id, molecule_id, group_id, namespace, run_id, metrics_json, context_json),
+            ).fetchone()
+            if identical_revision:
+                return str(identical_revision["id"])
+            connection.execute("INSERT OR IGNORE INTO molecule_observations VALUES (?,?,?,?,?,?,?,?)", (
+                observation_id, molecule_id, group_id, namespace, run_id, metrics_json, context_json, created_at or _now()))
         return observation_id
 
     def attach_structure(self, group_id, molecule_id, item, *, context=None, created_at=None):
@@ -685,6 +707,31 @@ class MolecularDatabase:
             validated_digest = str(item.get("validated_content_sha256") or "")
             if validated_digest and validated_digest != content_digest:
                 raise ValueError("The source structure changed after molecular validation.")
+            revision_fields = ("source_file_field", "model_id", "model_index", "representation_type",
+                               "database_structure_label", "database_structure_policy", "binder_chains",
+                               "target_chains", "pose_id", "pose_rank", "ligand_selection", "candidate_id")
+            existing_rows = connection.execute(
+                "SELECT id,path,context FROM molecule_structures WHERE molecule_id=? AND group_id=? ORDER BY id",
+                (molecule_id, group_id),
+            ).fetchall()
+            for existing in existing_rows:
+                existing_context = json.loads(existing["context"] or "{}")
+                existing_digest = (str(existing_context.get("portable_sha256") or existing_context.get("content_sha256") or "")
+                                   or (hashlib.sha256(Path(existing["path"]).read_bytes()).hexdigest()
+                                       if Path(existing["path"]).is_file() else ""))
+                if existing_digest != content_digest:
+                    continue
+                if all(existing_context.get(key) == structure_context.get(key)
+                       for key in revision_fields
+                       if key in existing_context or (key in structure_context and key != "candidate_id")):
+                    # Candidate identity was not persisted by older Phase 1
+                    # structure rows. Treat that missing value as unknown so
+                    # identical legacy evidence keeps its established ID.
+                    if (existing_context.get("candidate_id") and structure_context.get("candidate_id")
+                            and existing_context.get("candidate_id") != structure_context.get("candidate_id")):
+                        continue
+                    connection.execute("UPDATE molecule_groups SET updated_at=? WHERE id=?", (created_at or _now(), group_id))
+                    return str(existing["id"])
             structure_context["content_sha256"] = content_digest
             structure_id = _id("structure-", _json([molecule_id, group_id, str(path), content_digest, structure_context]))
             stamp = created_at or _now()
@@ -886,7 +933,7 @@ class MolecularDatabase:
             clause += f" AND CAST({expression} AS REAL) {operator} ?"
             parameters.append(float(item["value"]))
         with self.connection() as connection:
-            rebuild_missing(connection)
+            _finish_projection_upgrade(connection, rebuild_missing)
             total = connection.execute("SELECT COUNT(*) FROM molecules m WHERE " + clause, parameters).fetchone()[0]
             ordering_params = []
             if sort == "name":
@@ -955,7 +1002,7 @@ class MolecularDatabase:
                                     hide_smoke_test=hide_smoke_test)
         accessible = self._visible_ids(user, project_id=project_id, hide_smoke_test=hide_smoke_test)
         with self.connection() as connection:
-            rebuild_missing(connection)
+            _finish_projection_upgrade(connection, rebuild_missing)
             rows = connection.execute("SELECT DISTINCT e.target_id,e.evaluator,e.run_id FROM molecule_evaluations e "
                 "WHERE e.group_id IN (SELECT value FROM json_each(?)) AND e.molecule_id IN "
                 "(SELECT molecule_id FROM molecule_members WHERE group_id IN (SELECT value FROM json_each(?))) ORDER BY 1,2,3",

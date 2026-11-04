@@ -267,6 +267,55 @@ def _evaluation_run(root, node, source, digest):
     return run_dir
 
 
+def _results_source_directory(root, node, run_id, task_group="design"):
+    source = root / "runs" / task_group / run_id
+    source.mkdir(parents=True)
+    (source / "metadata.json").write_text(json.dumps({"run_id": run_id, "task_group": task_group}))
+    (source / "molecular_design_studio.json").write_text(json.dumps({"workstation": node}))
+    return source
+
+
+def _results_analysis_run(root, node, source_dir, digest):
+    from mn_molecular_design_studio.workspace import STUDIO_SOURCE_ID
+
+    run = root / "runs" / "analysis" / f"results-analysis-{node}"
+    candidates = run / "artifacts/normalized_candidates"
+    candidates.mkdir(parents=True)
+    (run / "molecular_design_studio.json").write_text(json.dumps({
+        "application": STUDIO_SOURCE_ID, "studio_owner_id": OWNER["id"], "project_id": "project-current",
+    }))
+    (run / "metadata.json").write_text(json.dumps({
+        "studio_owner_id": OWNER["id"], "project_id": "project-current", "task_group": "analysis",
+        "tool": "plip", "workflow": "analysis.plip", "status": "completed",
+        "database_collection_policy": "automatic",
+    }))
+    (run / "input.json").write_text(json.dumps({"tool": "plip", "workflow": "analysis.plip",
+                                                 "source_run_dir": str(source_dir)}))
+    (run / "result.json").write_text(json.dumps({"success": True, "metrics": {}}))
+    candidate = {
+        "candidate_id": f"plip-{node}", "stage": "analysis", "source_tool": "plip",
+        "binder_sequence": "ACDE", "binder_chains": ["A"], "complex_pdb": "analysis.pdb",
+        "metrics": {"interaction_count": 4},
+        "raw_metadata": {"source_candidate": {"candidate_id": "source-candidate", "binder_sequence": "ACDE",
+                                                   "binder_chains": ["A"]},
+                         "complex_analysis_selection": {"source_structure_digest": digest}},
+    }
+    (run / "analysis.pdb").write_bytes(_peer_structure("analysis"))
+    (candidates / "candidates.jsonl").write_text(json.dumps(candidate) + "\n")
+    return run
+
+
+def _records_for_author(replica, author):
+    return [(key, kind, value) for key, (kind, value) in _capture_rows(replica).items()
+            if key.startswith(kind + ":" + author + ":")]
+
+
+def _apply_author_records(replica, author, target):
+    for key, kind, value in sorted(_records_for_author(replica, author),
+                                   key=lambda item: (item[1] != "molecule_group", item[0])):
+        apply_record(kind, key, value, author, database=target)
+
+
 def test_small_molecule_replication_preserves_source_smiles_across_rdkit_versions(roots, monkeypatch):
     from mn_molecular_design_studio import molecular_database_peer
 
@@ -696,3 +745,170 @@ def test_three_workstations_ingest_offline_converge_retrieve_evaluate_and_tombst
                               else _id("peer-", nodes[0] + ":" + authored[nodes[0]][0]))
             assert connection.execute("SELECT count(*) FROM molecule_groups WHERE id=?",
                                       (original_group,)).fetchone()[0] == 1
+
+
+def test_results_source_evaluation_preserves_owner_reference_across_three_peers_and_delivery_orders(roots):
+    from mn_molecular_design_studio.molecular_database_ingest import ingest_run
+
+    node_a, node_b = "results-owner-a", "results-evaluator-b"
+    database_a = MolecularDatabase(roots / "results-source-a")
+    database_b = MolecularDatabase(roots / "results-source-b")
+    database_c_early = MolecularDatabase(roots / "results-source-c-evaluation-first")
+    database_c_ordered = MolecularDatabase(roots / "results-source-c-source-first")
+    content = _peer_structure("source")
+    imported = database_a.import_records(OWNER, [{
+        "name": "ACDE source", "components": molecule_imports.parse_sequences("ACDE")[0]["components"],
+        "files": [{"name": "source.pdb", "content": content}],
+    }], name="Results-backed source", project_id="project-current")
+    molecule_id, group_a = imported["molecule_ids"][0], imported["group_id"]
+    with database_a.connection() as connection:
+        structure_a = connection.execute(
+            "SELECT id FROM molecule_structures WHERE group_id=? AND molecule_id=?", (group_a, molecule_id)
+        ).fetchone()[0]
+        connection.execute("INSERT INTO molecule_sources VALUES (?,?,?,?)", (
+            "results-source-entry", molecule_id, group_a,
+            _json({"run_id": "source-results-run", "task_group": "design", "candidate_id": "source-candidate",
+                   "workstation": node_a}),
+        ))
+    database_a.make_structure_portable(OWNER, structure_a)
+    digest = __import__("hashlib").sha256(content).hexdigest()
+    source_dir = _results_source_directory(roots / "results-run-files", node_a, "source-results-run")
+    replica = Replica()
+    capture(replica, database=database_a, node_id=node_a)
+    _apply_author_records(replica, node_a, database_b)
+
+    remote_group_a = _id("peer-", node_a + ":" + group_a)
+    with database_b.connection() as connection:
+        structure_b = connection.execute(
+            "SELECT id FROM molecule_structures WHERE group_id=? AND molecule_id=?", (remote_group_a, molecule_id)
+        ).fetchone()[0]
+    analysis = _results_analysis_run(roots / "results-analysis-files", node_b, source_dir, digest)
+    assert ingest_run(analysis, database=database_b, force=True) == 1
+    evaluation_group_b = next(group["id"] for group in database_b.groups(OWNER, collection="all")
+                              if group["origin"].get("collection_kind") == "evaluation")
+    evaluation = next(item for item in database_b.list_molecules(OWNER, group_id=evaluation_group_b)["items"][0]["observations"]
+                      if item["run_id"] == analysis.name)
+    context_b = evaluation["context"]
+    assert context_b["source_kind"] == "results"
+    assert context_b["source_structure_owner_node"] == node_a
+    assert context_b["source_structure_owner_group_id"] == group_a
+    assert context_b["source_structure_owner_structure_id"] == structure_a
+    assert context_b["source_node"] == node_a
+    assert context_b["workstation"] != node_a  # Evaluator and source author remain distinct.
+
+    capture(replica, database=database_b, node_id=node_b)
+    # Ordered delivery resolves immediately; delayed delivery must converge
+    # after A's source entry arrives without a new evaluation from B.
+    _apply_author_records(replica, node_a, database_c_ordered)
+    _apply_author_records(replica, node_b, database_c_ordered)
+    _apply_author_records(replica, node_b, database_c_early)
+    early_group_b = _id("peer-", node_b + ":" + evaluation_group_b)
+    with database_c_early.connection() as connection:
+        pending = connection.execute(
+            "SELECT context FROM molecule_observations WHERE group_id=? AND run_id=?",
+            (early_group_b, analysis.name),
+        ).fetchone()
+        assert json.loads(pending["context"])["source_structure_reference_status"] == "owner_record_unavailable"
+    _apply_author_records(replica, node_a, database_c_early)
+
+    expected_group_c = _id("peer-", node_a + ":" + group_a)
+    expected_structure_c = _id("peer-structure-", node_a + ":" + structure_a)
+    for receiver in (database_c_ordered, database_c_early):
+        _apply_author_records(replica, node_a, receiver)  # Duplicate source replay is idempotent.
+        _apply_author_records(replica, node_b, receiver)  # Duplicate evaluation replay is idempotent.
+        receiver_group_b = _id("peer-", node_b + ":" + evaluation_group_b)
+        with receiver.connection() as connection:
+            row = connection.execute(
+                "SELECT id,context FROM molecule_observations WHERE group_id=? AND run_id=?",
+                (receiver_group_b, analysis.name),
+            ).fetchone()
+            context = json.loads(row["context"])
+            assert context["source_structure_reference_status"] == "resolved"
+            assert context["source_group_id"] == expected_group_c
+            assert context["source_structure_id"] == expected_structure_c
+            assert context["representation_id"] == expected_structure_c
+            assert connection.execute(
+                "SELECT count(*) FROM molecule_structures WHERE id=? AND group_id=? AND molecule_id=?",
+                (expected_structure_c, expected_group_c, molecule_id),
+            ).fetchone()[0] == 1
+
+    # A -> B -> C -> A: evaluation authorship stays with B while the exact
+    # source relationship resolves back to A's original representation.
+    _apply_author_records(replica, node_b, database_a)
+    with database_a.connection() as connection:
+        row = connection.execute(
+            "SELECT context FROM molecule_observations WHERE run_id=? AND group_id!=?",
+            (analysis.name, group_a),
+        ).fetchone()
+        returned = json.loads(row["context"])
+        assert returned["source_structure_reference_status"] == "resolved"
+        assert returned["source_group_id"] == group_a
+        assert returned["source_structure_id"] == structure_a
+        assert returned["source_structure_owner_node"] == node_a
+        assert returned["_replica_node"] == node_b
+
+
+def test_database_source_evaluation_reconciles_when_owner_records_arrive_late(roots):
+    source = MolecularDatabase(roots / "late-source-a")
+    evaluator = MolecularDatabase(roots / "late-source-b")
+    late = MolecularDatabase(roots / "late-source-c-evaluation-first")
+    ordered = MolecularDatabase(roots / "late-source-c-source-first")
+    owner_group, molecule_id, owner_structure, source_content = _author_peer_entry(source, SOURCE)
+    source_digest = hashlib.sha256(source_content).hexdigest()
+    replica = Replica()
+    capture(replica, database=source, node_id=SOURCE)
+    _apply_author_records(replica, SOURCE, evaluator)
+    local_source_group = _id("peer-", SOURCE + ":" + owner_group)
+    local_source_structure = _id("peer-structure-", SOURCE + ":" + owner_structure)
+    evaluation_group = evaluator.create_group(OWNER, "Local delayed-source Evaluation",
+        project_id="project-current", import_method="tool_output",
+        origin={"type": "job", "collection_kind": "evaluation", "workstation": "evaluator-node-b"})
+    evaluator.add_to_group(OWNER, evaluation_group, [molecule_id])
+    evaluator.add_observation(evaluation_group, molecule_id, "plip", "delayed-source-analysis", {"interactions": 4},
+        context={"source_molecule_id": molecule_id, "source_group_id": local_source_group,
+                 "source_structure_id": local_source_structure, "representation_id": local_source_structure,
+                 "source_structure_digest": source_digest, "source_node": SOURCE,
+                 "source_structure_owner_node": SOURCE,
+                 "source_structure_owner_group_id": owner_group,
+                 "source_structure_owner_structure_id": owner_structure},
+        source_key="delayed-source-evaluation")
+    capture(replica, database=evaluator, node_id=OTHER_SOURCE)
+
+    _apply_author_records(replica, SOURCE, ordered)
+    _apply_author_records(replica, OTHER_SOURCE, ordered)
+    _apply_author_records(replica, OTHER_SOURCE, late)
+    late_group = _id("peer-", OTHER_SOURCE + ":" + evaluation_group)
+    with late.connection() as connection:
+        pending = connection.execute(
+            "SELECT context FROM molecule_observations WHERE group_id=? AND run_id='delayed-source-analysis'",
+            (late_group,),
+        ).fetchone()
+        assert json.loads(pending["context"])["source_structure_reference_status"] == "owner_record_unavailable"
+    _apply_author_records(replica, SOURCE, late)
+    with late.connection() as connection:
+        arrived = json.loads(connection.execute(
+            "SELECT context FROM molecule_observations WHERE group_id=? AND run_id='delayed-source-analysis'",
+            (late_group,),
+        ).fetchone()[0])
+    assert arrived["source_structure_reference_status"] == "resolved"
+    assert arrived["source_structure_id"] == _id("peer-structure-", SOURCE + ":" + owner_structure)
+
+    for receiver in (ordered, late):
+        _apply_author_records(replica, SOURCE, receiver)
+        _apply_author_records(replica, OTHER_SOURCE, receiver)
+        with receiver.connection() as connection:
+            context = json.loads(connection.execute(
+                "SELECT context FROM molecule_observations WHERE group_id=? AND run_id='delayed-source-analysis'",
+                (_id("peer-", OTHER_SOURCE + ":" + evaluation_group),),
+            ).fetchone()[0])
+        assert context["source_structure_reference_status"] == "resolved"
+        assert context["source_structure_id"] == _id("peer-structure-", SOURCE + ":" + owner_structure)
+
+    _apply_author_records(replica, OTHER_SOURCE, source)
+    with source.connection() as connection:
+        returned = json.loads(connection.execute(
+            "SELECT context FROM molecule_observations WHERE run_id='delayed-source-analysis'"
+        ).fetchone()[0])
+    assert returned["_replica_node"] == OTHER_SOURCE
+    assert returned["source_structure_reference_status"] == "resolved"
+    assert returned["source_structure_id"] == owner_structure

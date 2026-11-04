@@ -185,6 +185,58 @@ def test_historical_preview_requires_actual_matching_coordinates_for_structures(
     assert mismatch["candidates"][0]["structure"]["status"] == "binder_sequence_mismatch"
 
 
+@pytest.mark.parametrize("invalid_structure,status", [
+    ("nonfinite_nan", "invalid_coordinates"),
+    ("nonfinite_inf", "invalid_coordinates"),
+    ("binder_only_complex", "target_sequence_mismatch"),
+])
+def test_historical_complex_evidence_requires_finite_coordinates_and_full_composition(tmp_path, invalid_structure, status):
+    root = _bindcraft2_campaign(tmp_path / invalid_structure)
+    refolded = root / "2_Refolded" / "Complexes" / "campaign_binder_l4_aaaaaaaaaaaaaaaa_candidate0.pdb"
+    ranked = root / "3_Ranked" / "campaign_binder_l4_aaaaaaaaaaaaaaaa_seq0.pdb"
+    for path in (refolded, ranked):
+        if invalid_structure.startswith("nonfinite"):
+            text = _pdb_for_chains({"A": "ACDEFG", "B": "ACDE"})
+            first = text.splitlines()[0]
+            coordinate = "     nan" if invalid_structure == "nonfinite_nan" else "     inf"
+            text = text.replace(first[30:38], coordinate, 1)
+        else:
+            text = _pdb_for_chains({"B": "ACDE"})
+        path.write_text(text)
+
+    initial = preview_historical_campaign(root)
+    selected = next(row["candidate_id"] for row in initial["candidates"]
+                    if row["sequence"] == "ACDE" and row["native_stage"] == "refolded")
+    preview = preview_historical_campaign(root, selected_candidate_ids=[selected])
+    candidate = next(row for row in preview["candidates"]
+                     if row["sequence"] == "ACDE" and row["native_stage"] == "refolded")
+    assert candidate["structure"]["status"] == status
+    assert candidate["ranked_structure"]["status"] == status
+    assert all(path["sha256"] not in {
+        candidate["structure"].get("sha256"), candidate["ranked_structure"].get("sha256")
+    } for path in preview["proposed_structures"])
+    assert preview["proposed_evaluations"] == []
+
+
+def test_declared_binder_only_structure_and_sequence_only_target_remain_valid(tmp_path):
+    from mn_molecular_design_studio.historical_results_import import _inspect_native_structure
+
+    root = tmp_path / "binder-only"
+    root.mkdir()
+    (root / "binder.pdb").write_text(_pdb_for_chains({"B": "ACDE"}))
+    target = {"identity": {"components": [{"type": "protein", "chain": "A", "sequence": "ACDEFG"}]},
+              "source_structure": {"path": None}}
+    binder_only = _inspect_native_structure(root, "binder.pdb", "ACDE", target,
+                                            require_target_coordinates=False)
+    complex_interpretation = _inspect_native_structure(root, "binder.pdb", "ACDE", target,
+                                                        require_target_coordinates=True)
+    assert binder_only["status"] == "available"
+    assert binder_only["binder_chains"] == ["B"]
+    assert binder_only["target_chains"] == []
+    assert complex_interpretation["status"] == "target_sequence_mismatch"
+    assert target["source_structure"]["path"] is None
+
+
 def test_bindcraft1_native_tables_are_detected_without_inventing_acceptance(tmp_path):
     root = tmp_path / "bindcraft1"
     _write_csv(root / "final_design_stats.csv", ["design", "Binder_Sequence", "i_pTM"], [

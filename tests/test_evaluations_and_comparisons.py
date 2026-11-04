@@ -221,6 +221,58 @@ def test_legacy_evaluation_projection_upgrade_is_bounded_and_preserves_raw_obser
             rebuild_missing(connection, batch_size=5001)
 
 
+def test_public_queries_do_not_return_stale_or_incomplete_rows_during_bounded_upgrade(tmp_path):
+    from mn_molecular_design_studio.evaluations import PROJECTION_VERSION
+
+    database = MolecularDatabase(tmp_path / "large-legacy-projection")
+    alphabet = "ACDEFGHIKLMNPQRSTVWY"
+    records = []
+    for index in range(501):
+        value, sequence = index, ""
+        for _ in range(4):
+            sequence = alphabet[value % len(alphabet)] + sequence
+            value //= len(alphabet)
+        records.append({"name": f"Legacy design {index:03}",
+                        "components": [{"type": "protein", "chain": "A", "sequence": sequence}],
+                        "metadata": {}})
+    imported = database.import_records(USER, records, name="Legacy designs")
+    group, molecules = imported["group_id"], imported["molecule_ids"]
+    for index in range(501):
+        context = {"candidate": {"candidate_id": f"design-{index:03}", "stage": "complex_refolding",
+                   "raw_metadata": {"complex_analysis_selection": {"model_id": "2"}}},
+                   "representation_id": f"structure-{index:03}", "structure_digest": f"{index:064x}"}
+        database.add_observation(group, molecules[index], "bindcraft2_validation", f"legacy-{index:03}",
+            {"i_pTM": index / 1000}, context=context, created_at=f"2026-01-01T00:{index // 60:02}:{index % 60:02}Z")
+    with database.connection() as connection:
+        selected, selected_molecule = connection.execute(
+            "SELECT id,molecule_id FROM molecule_observations ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        connection.execute("UPDATE molecule_observations SET run_id='legacy-selected',metrics=?,context=? WHERE id=?",
+            (json.dumps({"i_pTM": 0.75}), json.dumps({"candidate": {"candidate_id": "last-legacy",
+                "stage": "complex_refolding", "raw_metadata": {"complex_analysis_selection": {"model_id": "2"}}},
+                "representation_id": "structure-last", "structure_digest": "f" * 64}), selected))
+    database.evaluation_rows(USER, molecule_ids=molecules)
+    with database.connection() as connection:
+        connection.execute("UPDATE molecule_evaluations SET projection_version='evaluation.v5:studio.output.v1'")
+        connection.execute("UPDATE molecule_evaluations SET descriptor=json_set(descriptor,'$.model_id','legacy-model') WHERE observation_id=?", (selected,))
+
+    page = database.list_molecules(USER, group_id=group, molecule_ids=[selected_molecule],
+        evaluation_filters={"run_id": "legacy-selected"},
+        metric_filters=[{"field": "bindcraft2_validation.i_pTM", "operator": "=", "value": 0.75}],
+        sort="bindcraft2_validation.i_pTM", descending=True)
+    assert page["total"] == 1
+    assert page["items"][0]["scores"]["bindcraft2_validation.i_pTM"] == 0.75
+    assert page["items"][0]["selected_evaluation"]["model_id"] == "2"
+    assert page["items"][0]["selected_evaluation"]["instance_id"] != "legacy-instance"
+    sorted_page = database.list_molecules(USER, group_id=group, sort="bindcraft2_validation.i_pTM",
+        descending=True, limit=3)
+    assert [row["scores"]["bindcraft2_validation.i_pTM"] for row in sorted_page["items"]] == [0.75, 0.5, 0.499]
+    with database.connection() as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM molecule_evaluations WHERE projection_version!=?", (PROJECTION_VERSION,)
+        ).fetchone()[0] == 0
+
+
 def test_comparison_view_restores_exact_saved_rules():
     from streamlit.testing.v1 import AppTest
     settings = {"fields": ["x", "y"], "directions": {"x": "lower", "y": "higher"}, "weights": {"x": 2., "y": 1.},
