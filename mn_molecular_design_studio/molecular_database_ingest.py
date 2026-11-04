@@ -188,6 +188,7 @@ def _record(candidate, run_dir):
     components = None
     sequence = candidate.get("binder_sequence") or candidate.get("sequence")
     raw_metadata = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    rejected_files = []
     representation_type = str(raw_metadata.get("structure_kind") or raw_metadata.get("representation_type") or "unknown")
     # A candidate has one molecular identity. Do not attach target-only or
     # binder-only files as if they represented a different complex's identity.
@@ -201,27 +202,59 @@ def _record(candidate, run_dir):
         if not path:
             continue
         try:
-            parsed_components = imports.parse_structure(path.read_bytes(), path.name)[0]["components"]
-        except ValueError:
+            structure_bytes = path.read_bytes()
+            selection = raw_metadata.get("complex_analysis_selection") if isinstance(
+                raw_metadata.get("complex_analysis_selection"), dict) else {}
+            selected_model = _coordinate_model_selection(candidate, raw_metadata, selection)
+            parsed = imports.parse_structure(structure_bytes, path.name, model_id=selected_model,
+                                             require_model_selection=True)[0]
+            parsed_components = parsed["components"]
+        except (OSError, ValueError) as exc:
+            rejected_files.append({"field": key, "path": str(path), "status": "unresolved_model_or_coordinates",
+                                   "reason": str(exc)})
+            continue
+        valid, reason = _candidate_structure_correspondence(key, parsed_components, candidate, components)
+        if not valid:
+            rejected_files.append({"field": key, "path": str(path), "status": "molecular_mismatch", "reason": reason})
             continue
         if components is None:
             components = parsed_components
         if all(existing.get("path") != str(path) for existing in files):
             files.append({"path": str(path), "label": key.replace("_", " ").title(), "dimensions": 3,
-                          "source_file_field": key, "representation_type": representation_type})
+                          "source_file_field": key, "representation_type": representation_type,
+                          "model_id": parsed.get("model_id"),
+                          "validated_content_sha256": hashlib.sha256(structure_bytes).hexdigest()})
     raw_components = (candidate.get("raw_metadata") or {}).get("components")
     validation_path = _path((candidate.get("raw_metadata") or {}).get("validation_complex_pdb"), run_dir)
     if validation_path and validation_path.is_file() and all(row.get("path") != str(validation_path) for row in files):
         try:
-            validation_components = imports.parse_structure(validation_path.read_bytes(), validation_path.name)[0]["components"]
-        except ValueError:
+            validation_bytes = validation_path.read_bytes()
+            selection = raw_metadata.get("complex_analysis_selection") if isinstance(
+                raw_metadata.get("complex_analysis_selection"), dict) else {}
+            selected_model = _coordinate_model_selection(candidate, raw_metadata, selection)
+            validation_components = imports.parse_structure(
+                validation_bytes, validation_path.name, model_id=selected_model,
+                require_model_selection=True,
+            )[0]["components"]
+        except (OSError, ValueError) as exc:
             validation_components = None
+            rejected_files.append({"field": "validation_complex_pdb", "path": str(validation_path),
+                                   "status": "unresolved_model_or_coordinates", "reason": str(exc)})
         if validation_components:
-            if components is None:
+            valid, reason = _candidate_structure_correspondence(
+                "validation_complex_pdb", validation_components, candidate, components,
+            )
+            if not valid:
+                rejected_files.append({"field": "validation_complex_pdb", "path": str(validation_path),
+                                       "status": "molecular_mismatch", "reason": reason})
+            elif components is None:
                 components = validation_components
-            files.append({"path": str(validation_path), "label": "Independent validation complex", "dimensions": 3,
-                          "source_file_field": "validation_complex_pdb",
-                          "representation_type": str(raw_metadata.get("validation_structure_kind") or "unknown")})
+            if valid:
+                files.append({"path": str(validation_path), "label": "Independent validation complex", "dimensions": 3,
+                              "source_file_field": "validation_complex_pdb",
+                              "representation_type": str(raw_metadata.get("validation_structure_kind") or "unknown"),
+                              "model_id": str(selected_model or "0"),
+                              "validated_content_sha256": hashlib.sha256(validation_bytes).hexdigest()})
     if components is None and isinstance(raw_components, list):
         try:
             components = imports.canonical_components(raw_components)[0]
@@ -282,8 +315,99 @@ def _record(candidate, run_dir):
             or candidate.get("candidate_id") or "Molecule", "components": components, "files": files,
             "identity_context": identity_context,
             "metadata": {"status": raw_metadata.get("status") or ("Unsequenced backbone" if unresolved else ""),
+                         "structure_validation": rejected_files,
                          **raw_metadata, "stage": candidate.get("stage"), "source_tool": candidate.get("source_tool"),
                          "output_kind": (candidate.get("normalized_output") or {}).get("kind")}}
+
+
+def _candidate_structure_correspondence(field, components, candidate, primary_components=None):
+    """Check a coordinate file against declared binder/target chains and sequences."""
+    protein_by_chain = {str(item.get("chain") or ""): str(item.get("sequence") or "")
+                        for item in components if item.get("type") == "protein"}
+    if not protein_by_chain:
+        return False, "No protein chain was parsed from the candidate representation."
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    ligand_analysis = str(raw.get("analysis_subject") or "").casefold() == "ligand"
+    declared_components = raw.get("components") if isinstance(raw.get("components"), list) else []
+    declared_proteins = {str(item.get("chain") or ""): str(item.get("sequence") or "").replace(" ", "").upper()
+                         for item in declared_components
+                         if isinstance(item, dict) and item.get("type", "protein") == "protein"
+                         and item.get("sequence")}
+    if field in {"complex_pdb", "validation_complex_pdb"} and declared_proteins \
+            and protein_by_chain != declared_proteins:
+        return False, "Protein chain IDs or sequences do not match the candidate's declared molecular composition."
+    sequences_by_chain = raw.get("sequences_by_chain") if isinstance(raw.get("sequences_by_chain"), dict) else {}
+    binder_chains = [str(value) for value in candidate.get("binder_chains") or []]
+    target_chains = [str(value) for value in candidate.get("target_chains") or []]
+    binder_sequence = str(candidate.get("binder_sequence") or candidate.get("sequence") or "")
+    expected_binder = [part.upper() for part in re.split(r"[:/]", binder_sequence) if part]
+    if binder_chains and field != "target_pdb" and not ligand_analysis:
+        missing = sorted(set(binder_chains) - set(protein_by_chain))
+        if missing:
+            return False, "Declared binder chains are absent: " + ", ".join(missing)
+        selected_binder = [protein_by_chain[chain] for chain in binder_chains]
+        declared = [str(sequences_by_chain[chain]).replace(" ", "").upper()
+                    for chain in binder_chains if chain in sequences_by_chain]
+        expected = declared or expected_binder
+        if expected and sorted(selected_binder) != sorted(expected):
+            return False, "Binder chain sequence does not match the declared design sequence."
+    elif expected_binder and field != "target_pdb" and not ligand_analysis \
+            and sorted(protein_by_chain.values())[:len(expected_binder)] != sorted(expected_binder):
+        # Without chain metadata, exact sequence matching is the only safe
+        # way to identify which parsed component is the designed binder.
+        if not all(sequence in protein_by_chain.values() for sequence in expected_binder):
+            return False, "No parsed chain has the declared binder sequence."
+    if target_chains and field != "binder_pdb":
+        missing = sorted(set(target_chains) - set(protein_by_chain))
+        if missing:
+            return False, "Declared target chains are absent: " + ", ".join(missing)
+        declared_targets = [str(sequences_by_chain[chain]).replace(" ", "").upper()
+                            for chain in target_chains if chain in sequences_by_chain]
+        if declared_targets and sorted(protein_by_chain[chain] for chain in target_chains) != sorted(declared_targets):
+            return False, "Target chain sequence does not match the declared modeled target."
+    if field == "binder_pdb":
+        expected = expected_binder or [str(sequences_by_chain[chain]).replace(" ", "").upper()
+                                       for chain in binder_chains if chain in sequences_by_chain]
+        if expected and sorted(protein_by_chain.values()) != sorted(expected):
+            return False, "Binder-only representation contains a different protein composition."
+        if binder_chains and set(protein_by_chain) != set(binder_chains):
+            return False, "Binder-only representation has different chain identifiers."
+    if field in {"complex_pdb", "validation_complex_pdb"} and primary_components:
+        primary = {str(item.get("chain") or ""): str(item.get("sequence") or "")
+                   for item in primary_components if item.get("type") == "protein"}
+        if primary and primary != protein_by_chain:
+            return False, "Complex representation does not preserve the primary structure's protein composition."
+    return True, ""
+
+
+def _candidate_calculation_digest(record):
+    """Return the validated digest for the exact coordinates analyzed by a candidate."""
+    files = (record or {}).get("files") or []
+    for field in ("complex_pdb", "binder_pdb", "validation_complex_pdb", "target_pdb"):
+        match = next((item for item in files if item.get("source_file_field") == field
+                      and item.get("validated_content_sha256")), None)
+        if match:
+            return str(match["validated_content_sha256"])
+    return ""
+
+
+def _coordinate_model_selection(candidate, raw_metadata, selection):
+    """Return an actual coordinate-model selector, excluding representation IDs."""
+    for mapping, keys in (
+        (candidate, ("model_index",)),
+        (raw_metadata, ("model_index",)),
+        (selection, ("model_index",)),
+        (candidate, ("model_id",)),
+        (raw_metadata, ("model_id",)),
+        (selection, ("model_id",)),
+    ):
+        if not isinstance(mapping, dict):
+            continue
+        for key in keys:
+            value = mapping.get(key)
+            if value is not None and re.fullmatch(r"\d+", str(value).strip()):
+                return value
+    return None
 
 
 def _prediction_tasks_by_id(run_dir, inputs):
@@ -400,6 +524,25 @@ def _candidate_acceptance_state(candidate):
     return "unknown"
 
 
+_ANALYSIS_WORKFLOW_MARKERS = (
+    "analysis.", "analysis_", "biotite_interface", "pep_patch", "ipsae", "rosetta",
+    "sequence_qc", "sequence_liability", "plip", "pandamap", "posebusters", "foldseek",
+    "tag_fusion", "panda_map",
+)
+
+
+def _analysis_only_workflow(run_dir, metadata, inputs):
+    values = [Path(run_dir).parent.name]
+    for mapping in (metadata, inputs, inputs.get("params") or {}):
+        if isinstance(mapping, dict):
+            values.extend(str(mapping.get(key) or "") for key in
+                          ("tool", "workflow", "workflow_id", "job_type", "engine", "task"))
+    text = " ".join(values).casefold().replace("-", "_")
+    return Path(run_dir).parent.name.casefold() == "analysis" or any(
+        marker in text for marker in _ANALYSIS_WORKFLOW_MARKERS
+    )
+
+
 def _run_mode(run_dir, metadata, inputs):
     if run_dir.parent.name == "candidate-import":
         return "curated"
@@ -407,6 +550,11 @@ def _run_mode(run_dir, metadata, inputs):
     for mapping in (metadata, inputs, inputs.get("params") or {}):
         values.extend(str(mapping.get(key) or "") for key in ("tool", "workflow", "workflow_id", "job_type", "engine", "task"))
     text = " ".join(values).casefold().replace("-", "_")
+    # Analysis workflows are Evaluation producers even when their registered
+    # workflow ID does not contain the word "evaluation". Keep this explicit
+    # so their candidates cannot fall through into identity-creating modes.
+    if _analysis_only_workflow(run_dir, metadata, inputs):
+        return "evaluation"
     if any(token in text for token in ("optimized_prediction", "refolding.optimized", "validation_acceptance", "vina", "docking", "affinity", "rescoring", "evaluation", "boltz2", "boltz_2", "molecule_selection")):
         return "evaluation"
     if any(token in text for token in (
@@ -463,6 +611,25 @@ def _find_original_group(database, owner, project, record, candidate=None):
     return (local[0]["id"], local[0]["group_id"], True) if local else (None, None, False)
 
 
+def _find_accessible_group(database, user, project, record):
+    """Find the exact identity in any ACL-readable group, including replicas."""
+    fingerprint = _canonical_fingerprint(record)
+    with database.connection() as connection:
+        rows = connection.execute(
+            "SELECT m.id,mm.group_id,g.project_id,g.updated_at FROM molecules m "
+            "JOIN molecule_members mm ON mm.molecule_id=m.id JOIN molecule_groups g ON g.id=mm.group_id "
+            "WHERE m.fingerprint=? AND g.project_id=? ORDER BY g.updated_at,mm.group_id",
+            (fingerprint, str(project or "")),
+        ).fetchall()
+    for row in rows:
+        try:
+            database.group(str(row["group_id"]), user)
+        except (FileNotFoundError, PermissionError, ValueError):
+            continue
+        return str(row["id"]), str(row["group_id"]), True
+    return None, None, False
+
+
 def _database_analysis_subject(database, user, owner, project, source):
     """Resolve a completed Database analysis to its exact original structure."""
     if not isinstance(source, dict) or source.get("schema") != "studio.complex_analysis_database_source.v1":
@@ -498,23 +665,94 @@ def _database_analysis_subject(database, user, owner, project, source):
             set(source["target_chains"]) == set(context.get("target_chains") or [])
         ) else None
         origin = group.get("origin") if isinstance(group.get("origin"), dict) else {}
+        if origin.get("_replica_node"):
+            source_owner_node = str(origin.get("_replica_node") or "")
+            source_owner_group_id = str(origin.get("_replica_group") or group_id)
+            source_owner_structure_id = str(context.get("_replica_structure") or structure_id)
+        else:
+            try:
+                from mn_molecular_design_studio.cluster.config import identity as node_identity
+                source_owner_node = str(origin.get("workstation") or origin.get("source_workstation") or node_identity())
+            except (OSError, RuntimeError, ValueError):
+                source_owner_node = str(origin.get("workstation") or origin.get("source_workstation") or "")
+            source_owner_group_id = group_id
+            source_owner_structure_id = structure_id
         return {"molecule_id": molecule_id, "structure_id": structure_id, "group_id": group_id,
                 "structure_digest": digest, "record": record, "representation": representation,
                 "target_molecule_id": target_id, "source_owner_id": str(group.get("owner_id") or ""),
-                "source_node": str(origin.get("_replica_node") or "")}
+                "source_node": source_owner_node,
+                "source_structure_owner_node": source_owner_node,
+                "source_structure_owner_group_id": source_owner_group_id,
+                "source_structure_owner_structure_id": source_owner_structure_id}
     except (FileNotFoundError, OSError, PermissionError, ValueError, TypeError):
         return None
 
 
-def _results_analysis_subject(database, user, owner, project, analysis_run, inputs, candidate):
-    """Resolve Results-launched analysis by source run, candidate, and exact structure digest."""
+def _results_analysis_subject(database, user, owner, project, analysis_run, inputs, candidate, metadata=None):
+    """Resolve Results analysis to one exact source structure or sequence identity."""
     raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
     source_candidate = raw.get("source_candidate") if isinstance(raw.get("source_candidate"), dict) else {}
     source_candidate = source_candidate or candidate
     params = inputs.get("params") if isinstance(inputs.get("params"), dict) else {}
     nested = inputs.get("inputs") if isinstance(inputs.get("inputs"), dict) else {}
+    workflow_values = []
+    for mapping in (metadata or {}, inputs, params):
+        if isinstance(mapping, dict):
+            workflow_values.extend(str(mapping.get(key) or "") for key in
+                                   ("tool", "workflow", "workflow_id", "job_type", "engine", "task"))
+    workflow_text = " ".join(workflow_values).casefold().replace("-", "_")
+    sequence_only = any(name in workflow_text for name in ("sequence_qc", "sequence_liability"))
     source_ref = inputs.get("source_run_dir") or params.get("source_run_dir") or nested.get("source_run_dir")
     if not source_ref:
+        # Sequence analyses may be launched directly against an already
+        # selected Database molecule without a Results run directory. Accept
+        # that explicit source only when its saved protein sequence exactly
+        # matches the analyzed binder; never infer an identity from the
+        # analysis output's own coordinates.
+        molecule_id = str(raw.get("studio_molecule_id") or source_candidate.get("studio_molecule_id") or "")
+        expected_sequence = str(source_candidate.get("binder_sequence") or source_candidate.get("sequence") or "")
+        expected_sequences = [part.replace(" ", "").upper() for part in re.split(r"[:/]", expected_sequence) if part]
+        if sequence_only and molecule_id and expected_sequences:
+            selected_chains = {str(value) for value in source_candidate.get("binder_chains") or []}
+            with database.connection() as connection:
+                source_rows = connection.execute(
+                    "SELECT m.components,g.id AS group_id,g.owner_id,g.project_id,g.origin "
+                    "FROM molecules m JOIN molecule_members mm ON mm.molecule_id=m.id "
+                    "JOIN molecule_groups g ON g.id=mm.group_id WHERE m.id=? "
+                    "AND g.project_id=? ORDER BY g.updated_at, g.id",
+                    (molecule_id, str(project or "")),
+                ).fetchall()
+            for source in source_rows:
+                if not database._can_read({"owner_id": source["owner_id"], "project_id": source["project_id"]}, user):
+                    continue
+                try:
+                    source_components = json.loads(source["components"])
+                except (TypeError, ValueError):
+                    continue
+                proteins = [item for item in source_components if item.get("type") == "protein"]
+                selected = ([item for item in proteins if str(item.get("chain") or "") in selected_chains]
+                            if selected_chains else [item for item in proteins
+                                                     if str(item.get("role") or "").casefold() == "binder"])
+                if not selected and not selected_chains:
+                    selected = [item for item in proteins if str(item.get("sequence") or "").upper()
+                                in expected_sequences]
+                actual_sequences = [str(item.get("sequence") or "").replace(" ", "").upper()
+                                    for item in selected]
+                if sorted(actual_sequences) != sorted(expected_sequences):
+                    continue
+                try:
+                    source_origin = json.loads(source["origin"] or "{}")
+                except (TypeError, ValueError):
+                    source_origin = {}
+                return {
+                    "molecule_id": molecule_id, "group_id": str(source["group_id"]),
+                    "structure_id": "", "structure_digest": "", "source_reference_kind": "sequence",
+                    "source_sequence_sha256": hashlib.sha256(":".join(sorted(expected_sequences)).encode()).hexdigest(),
+                    "target_molecule_id": str(raw.get("target_molecule_id")
+                                              or source_candidate.get("target_molecule_id") or ""),
+                    "source_owner_id": str(source["owner_id"] or ""),
+                    "source_node": str(source_origin.get("_replica_node") or ""),
+                }
         return None
     from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
     source_dir = resolve_stored_path(source_ref, must_exist=True)
@@ -539,14 +777,18 @@ def _results_analysis_subject(database, user, owner, project, analysis_run, inpu
     selection = raw.get("complex_analysis_selection") if isinstance(raw.get("complex_analysis_selection"), dict) else {}
     digest = str(selection.get("source_structure_digest") or selection.get("structure_digest")
                  or raw.get("source_structure_digest") or "")
-    if not digest:
+    if not sequence_only and not digest:
         for key in ("complex_pdb", "binder_pdb"):
             path = _path(source_candidate.get(key), source_dir)
             if path and path.is_file():
                 digest = _file_sha256(path)
                 if digest:
                     break
-    if len(digest) != 64:
+    if not sequence_only and len(digest) != 64:
+        return None
+    expected_sequence = str(source_candidate.get("binder_sequence") or source_candidate.get("sequence") or "")
+    expected_sequences = [part.replace(" ", "").upper() for part in re.split(r"[:/]", expected_sequence) if part]
+    if sequence_only and not expected_sequences:
         return None
 
     source_marker = _read(source_dir / "molecular_design_studio.json")
@@ -567,6 +809,39 @@ def _results_analysis_subject(database, user, owner, project, analysis_run, inpu
             group_access = {"owner_id": source["owner_id"], "project_id": source["project_id"]}
             if not database._can_read(group_access, user):
                 continue
+            if sequence_only:
+                molecule = connection.execute(
+                    "SELECT components FROM molecules WHERE id=?", (source["molecule_id"],)
+                ).fetchone()
+                if molecule is None:
+                    continue
+                try:
+                    components = json.loads(molecule["components"])
+                except (TypeError, ValueError):
+                    continue
+                proteins = [item for item in components if item.get("type") == "protein"]
+                selected_chains = [str(value) for value in source_candidate.get("binder_chains") or []]
+                if selected_chains:
+                    selected = [item for item in proteins if str(item.get("chain") or "") in selected_chains]
+                else:
+                    role_binders = [item for item in proteins if str(item.get("role") or "").casefold() == "binder"]
+                    selected = role_binders or [
+                        item for item in proteins if str(item.get("sequence") or "").upper() in expected_sequences
+                    ]
+                selected_sequences = [str(item.get("sequence") or "").replace(" ", "").upper()
+                                      for item in selected]
+                if sorted(selected_sequences) != sorted(expected_sequences):
+                    continue
+                matches.append({
+                    "molecule_id": str(source["molecule_id"]), "group_id": str(source["group_id"]),
+                    "structure_id": "", "structure_digest": "", "source_reference_kind": "sequence",
+                    "source_sequence_sha256": hashlib.sha256(":".join(sorted(expected_sequences)).encode()).hexdigest(),
+                    "target_molecule_id": str(raw.get("target_molecule_id")
+                                              or source_candidate.get("target_molecule_id") or ""),
+                    "source_owner_id": str(source["owner_id"] or ""),
+                    "source_node": str((json.loads(source["origin"] or "{}")).get("_replica_node") or ""),
+                })
+                continue
             structures = connection.execute(
                 "SELECT id,path,context FROM molecule_structures WHERE molecule_id=? AND group_id=?",
                 (source["molecule_id"], source["group_id"]),
@@ -578,6 +853,7 @@ def _results_analysis_subject(database, user, owner, project, analysis_run, inpu
                     matches.append({
                         "molecule_id": str(source["molecule_id"]), "group_id": str(source["group_id"]),
                         "structure_id": str(structure["id"]), "structure_digest": digest,
+                        "source_reference_kind": "structure", "source_sequence_sha256": "",
                         "target_molecule_id": str(raw.get("target_molecule_id")
                                                   or source_candidate.get("target_molecule_id") or ""),
                         "source_owner_id": str(source["owner_id"] or ""),
@@ -767,6 +1043,65 @@ def _target_sequence_components(candidate=None, inputs=None, metadata=None, run_
             except (OSError, ValueError, KeyError, TypeError):
                 pass
     return []
+
+
+def _validated_target_structure(path, inputs, metadata, run_dir, expected_record=None):
+    """Parse one explicit target model and verify its declared chains/sequences."""
+    mappings = [metadata or {}, inputs or {}, (inputs or {}).get("inputs") or {},
+                (inputs or {}).get("params") or {}]
+    requested_chains = []
+    selected_model = None
+    for mapping in mappings:
+        if not isinstance(mapping, dict):
+            continue
+        if not requested_chains and mapping.get("target_chains"):
+            requested_chains = [str(chain) for chain in mapping["target_chains"]]
+        if selected_model is None:
+            for key in ("target_model_index", "target_model_id", "model_index", "model_id"):
+                value = mapping.get(key)
+                if value is not None and re.fullmatch(r"\d+", str(value).strip()):
+                    selected_model = value
+                    break
+    structure_bytes = path.read_bytes()
+    parsed = imports.parse_structure(structure_bytes, path.name, model_id=selected_model,
+                                     require_model_selection=True)[0]
+    components = parsed.get("components") or []
+    proteins = {str(item.get("chain") or ""): str(item.get("sequence") or "")
+                for item in components if item.get("type") == "protein" and item.get("sequence")}
+    if not proteins:
+        raise ValueError("The target structure has no protein coordinates.")
+    if requested_chains and set(requested_chains) - set(proteins):
+        raise ValueError("Declared target chains are absent from the selected coordinate model.")
+    selected_sequences = ([proteins[chain] for chain in requested_chains] if requested_chains
+                          else list(proteins.values()))
+    expected = sorted(str(item.get("sequence") or "").replace(" ", "").upper()
+                      for item in (expected_record or {}).get("components", [])
+                      if item.get("type") == "protein")
+    if expected:
+        if requested_chains:
+            if sorted(selected_sequences) != expected:
+                raise ValueError("Target coordinate chain sequences do not match the declared target sequence.")
+        else:
+            unmatched = list(proteins.values())
+            mapped = []
+            for sequence in expected:
+                matches = [value for value in unmatched if value == sequence]
+                if len(matches) != 1:
+                    raise ValueError("Target sequence does not map uniquely to the coordinate model.")
+                unmatched.remove(sequence)
+                mapped.append(sequence)
+            selected_sequences = mapped
+    elif requested_chains:
+        selected_sequences = [proteins[chain] for chain in requested_chains]
+    else:
+        requested_chains = list(proteins)
+    return {**parsed, "files": [{"path": str(path), "label": "Input receptor", "dimensions": 3,
+                                 "validated_content_sha256": hashlib.sha256(structure_bytes).hexdigest()}],
+            "metadata": {"target_identity_type": "structure_backed", "structural_reference": True,
+                         "validated_model_id": str(parsed.get("model_id") or ""),
+                         "validated_target_chains": requested_chains,
+                         "validated_target_sequence_sha256": hashlib.sha256(
+                             ":".join(sorted(selected_sequences)).encode()).hexdigest()}}
 
 
 def _target_sequence_record(inputs, metadata, run_dir):
@@ -1019,6 +1354,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     user = {"id": owner, "role": "admin"}  # Trusted job adapter; all reads still enforce group access.
     tool = str(metadata.get("tool") or inputs.get("tool") or run_dir.parent.name)
     mode = _run_mode(run_dir, metadata, inputs)
+    analysis_only = _analysis_only_workflow(run_dir, metadata, inputs)
     needs_compound_identity_refresh = run_dir.parent.name == "ligand-docking" or _is_cofolding_prediction(tool, metadata, inputs, mode)
     is_legacy_aggregate = (run_dir / "mn_ligand_aggregate.json").is_file()
     source_key = f"{socket.gethostname()}/{run_dir.parent.name}/{run_dir.name}"
@@ -1098,19 +1434,22 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     _remove_sequence_carrier_structures(database, user, run_dir)
     target_path = _target_structure_path(inputs, run_dir)
     source_target_sequences = []
+    target_structure_record = None
     if target_path:
         try:
-            parsed_target = imports.parse_structure(target_path.read_bytes(), target_path.name)[0]
-            requested_chains = []
-            for mapping in (inputs.get("inputs") or {}, inputs.get("params") or {}, inputs):
-                if isinstance(mapping, dict) and mapping.get("target_chains"):
-                    requested_chains = [str(chain) for chain in mapping["target_chains"]]
-                    break
+            target_structure_record = _validated_target_structure(
+                target_path, inputs, metadata, run_dir, expected_record=input_target_record,
+            )
             source_target_sequences = [str(component.get("sequence") or "")
-                for component in parsed_target.get("components") or []
+                for component in target_structure_record.get("components") or []
                 if component.get("type") == "protein" and component.get("sequence")
-                and (not requested_chains or str(component.get("chain") or "") in requested_chains)]
-        except (OSError, ValueError, KeyError, TypeError):
+                and (not target_structure_record["metadata"]["validated_target_chains"]
+                     or str(component.get("chain") or "") in target_structure_record["metadata"]["validated_target_chains"])]
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            log.warning("Skipped target structure for %s because its model or molecular correspondence is invalid: %s",
+                        run_dir, exc)
+            target_path = None
+            target_structure_record = None
             source_target_sequences = []
     if prediction_run and candidate_records:
         from mn_molecular_design_studio.cofolding_results import best_candidates_by_complex
@@ -1198,11 +1537,30 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                 log.warning("Skipped Database evaluation projection for %s: its source structure is no longer an exact accessible representation.", run_dir)
                 continue
         elif (mode == "evaluation" and not prediction_run
-              and (run_dir.parent.name == "analysis" or stage in {"analysis", "benchmark"})):
-            database_subject = _results_analysis_subject(database, user, owner, project, run_dir, inputs, candidate)
+              and (analysis_only or run_dir.parent.name == "analysis" or stage in {"analysis", "benchmark"})):
+            database_subject = _results_analysis_subject(database, user, owner, project, run_dir, inputs, candidate,
+                                                         metadata=metadata)
             if database_subject is None:
-                log.warning("Skipped Database evaluation projection for %s: its Results source did not resolve to one exact saved molecule and structure.", run_dir)
+                log.warning("Skipped Database evaluation projection for %s: its Results source did not resolve to one exact saved molecule, structure, or sequence.", run_dir)
                 continue
+            if database_subject.get("source_reference_kind") != "sequence":
+                if not (record.get("files") or []):
+                    log.warning("Skipped Database evaluation projection for %s: its source structure has no validated analysis representation.", run_dir)
+                    continue
+                selection = raw_candidate.get("complex_analysis_selection") or raw_candidate_metadata.get("complex_analysis_selection")
+                selection = selection if isinstance(selection, dict) else {}
+                source_selection_digest = str(
+                    selection.get("source_structure_digest") or selection.get("structure_digest") or ""
+                )
+                if source_selection_digest and source_selection_digest != database_subject["structure_digest"]:
+                    log.warning("Skipped Database evaluation projection for %s: its selected structure digest does not match the saved source representation.", run_dir)
+                    continue
+        if analysis_only and database_subject is None:
+            # Analysis output belongs in Results unless an exact existing
+            # Database or Results subject was resolved above. In particular,
+            # do not fall through to an Evaluation/intermediate identity.
+            log.warning("Skipped Database association for %s: analysis source is unresolved.", run_dir)
+            continue
         campaign_filter = raw_candidate.get("distributed_campaign") if isinstance(raw_candidate.get("distributed_campaign"), dict) else {}
         if mode == "generated" and campaign_filter.get("validation_required") and rejected:
             # Campaign validation is an eligibility gate, not an intermediate
@@ -1345,6 +1703,11 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                 source_structure_digest=database_subject["structure_digest"],
                 source_owner_id=database_subject.get("source_owner_id") or "",
                 source_node=database_subject.get("source_node") or "",
+                source_structure_owner_node=database_subject.get("source_structure_owner_node") or "",
+                source_structure_owner_group_id=database_subject.get("source_structure_owner_group_id") or "",
+                source_structure_owner_structure_id=database_subject.get("source_structure_owner_structure_id") or "",
+                source_reference_kind=database_subject.get("source_reference_kind") or "structure",
+                source_sequence_sha256=database_subject.get("source_sequence_sha256") or "",
             )
             _put_source(database, destination, molecule_id, source_for_molecule, provenance)
         elif mode == "curated":
@@ -1385,6 +1748,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
 
         attach_candidate_structure = (database_subject is None) and (not prediction_run or id(candidate) in best_prediction_ids)
         candidate_files = (record.get("files") or []) if attach_candidate_structure else []
+        candidate_structure_ids = {}
         for item in candidate_files:
             selected_item = dict(item)
             if prediction_run:
@@ -1396,6 +1760,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                 selected_item["database_structure_label"] = label
             structure_id = database.attach_structure(destination, molecule_id, selected_item,
                                                     context=provenance, created_at=stamp)
+            candidate_structure_ids[str(item.get("source_file_field") or "")] = structure_id
             # These are the representative structures users expect to open
             # from any workstation. Keep a content-addressed copy in the
             # shared Database store before peer replication captures the row.
@@ -1410,7 +1775,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             # Include the actual producing adapter, rather than only the run's
             # parent engine (a generator may contain several sequence methods).
             raw = candidate.get("raw_metadata") or {}
-            candidate_context = {key: candidate.get(key) for key in ("candidate_id", "source_tool", "stage", "binder_sequence", "binder_chains", "target_chains", "complex_pdb", "binder_pdb", "target_pdb")}
+            candidate_context = {key: candidate.get(key) for key in ("candidate_id", "source_tool", "stage", "binder_sequence", "binder_chains", "target_chains", "complex_pdb", "binder_pdb", "target_pdb", "model_id", "model_index")}
             # String QC markers are deliberately excluded from native numeric
             # observation metrics, but shared output measures may depend on
             # them for provenance (for example, heavy-atom geometry status).
@@ -1439,9 +1804,30 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                 "source_group_id": database_subject["group_id"],
                 "source_structure_digest": database_subject["structure_digest"],
                 "representation_id": database_subject["structure_id"],
-                "structure_digest": database_subject["structure_digest"],
-                "is_representative": True,
+                "structure_digest": _candidate_calculation_digest(record) or database_subject["structure_digest"],
+                "calculation_structure_digest": _candidate_calculation_digest(record),
+                "source_reference_kind": database_subject.get("source_reference_kind") or "structure",
+                "source_sequence_sha256": database_subject.get("source_sequence_sha256") or "",
+                "is_representative": bool(database_subject["structure_id"]),
             } if database_subject is not None else {})
+            if database_subject is None and candidate_structure_ids:
+                selected_structure_id = next((candidate_structure_ids[key] for key in (
+                    "complex_pdb", "binder_pdb", "validation_complex_pdb", "target_pdb")
+                    if candidate_structure_ids.get(key)), "")
+                if selected_structure_id:
+                    with database.connection() as connection:
+                        selected_row = connection.execute(
+                            "SELECT context FROM molecule_structures WHERE id=?", (selected_structure_id,)
+                        ).fetchone()
+                    selected_context = json.loads(selected_row["context"] or "{}") if selected_row else {}
+                    selected_digest = str(selected_context.get("content_sha256") or selected_context.get("portable_sha256") or "")
+                    analysis_source_context = {
+                        "representation_id": selected_structure_id,
+                        "structure_digest": selected_digest,
+                        "source_structure_digest": selected_digest,
+                        "calculation_structure_digest": selected_digest,
+                        "is_representative": True,
+                    }
             database.add_observation(destination, molecule_id, tool, run_dir.name, metrics,
                 context={**provenance, **evaluation_target, **analysis_source_context,
                          "candidate": candidate_context, "settings": settings,
@@ -1449,7 +1835,9 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
                          "error": (candidate.get("metrics") or {}).get("qc_error") or "",
                          "image_digest": raw.get("image_digest") or "",
                          "target_structure_digest": raw.get("target_structure_digest") or (file_digest(target_source) if target_source else ""),
-                         "structure_digest": raw.get("structure_digest") or analysis_source_context.get("structure_digest") or "",
+                         "structure_digest": analysis_source_context.get("structure_digest") or raw.get("structure_digest") or "",
+                         "model_id": str(candidate.get("model_id") or candidate.get("model_index") or
+                                         ((raw.get("complex_analysis_selection") or {}).get("model_id") if isinstance(raw.get("complex_analysis_selection"), dict) else "") or ""),
                          "is_representative": not prediction_run or id(candidate) in best_prediction_ids},
                 source_key=f"{source_for_molecule}:metrics", created_at=stamp)
 
@@ -1466,30 +1854,35 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
     # already imported canonical compound, but never create one just because
     # it appeared in a large campaign input set.
     compound_rows = {}
-    for compound in input_compounds:
+    for compound in (() if analysis_only else input_compounds):
         record = {"name": compound.get("compound_name") or compound["compound_id"],
                   "components": [{"type": "small_molecule", "chain": "L", "smiles": compound["smiles"]}],
                   "metadata": {**(compound.get("properties") or {}), "compound_id": compound["compound_id"],
                                "source_tool": tool, "stage": "input"}}
         molecule_id, destination, matched = _find_original_group(database, user["id"], project, record)
+        remote_match = False
         if not matched:
-            continue
+            molecule_id, source_group_id, remote_match = _find_accessible_group(database, user, project, record)
+            if remote_match:
+                destination = output_group("evaluation")
+                database.add_to_group(user, destination, [molecule_id])
+        if not matched:
+            if not remote_match:
+                continue
         row_source_key = f"{source_key}:input-compound:{compound['compound_id']}"
         _put_source(database, destination, molecule_id, row_source_key,
-                    {**origin, "compound_id": compound["compound_id"], "collection_kind": "inputs"})
+                    {**origin, "compound_id": compound["compound_id"],
+                     "source_group_id": source_group_id if remote_match else destination,
+                     "collection_kind": "evaluation" if remote_match else "inputs"})
         compound_rows[compound["compound_id"]] = (molecule_id, destination, record)
         seen_molecules.add(molecule_id)
     # Preserve the explicit target structure parsed before candidate ingestion.
     target_id = None
     target_group_id = None
     target_record = None
-    if target_path:
+    if target_path and not analysis_only:
         try:
-            target_record = imports.parse_structure(target_path.read_bytes(), target_path.name)[0]
-            target_record["files"] = [{"path": str(target_path), "label": "Input receptor", "dimensions": 3}]
-            target_record["metadata"] = {**(target_record.get("metadata") or {}),
-                                         "target_identity_type": "structure_backed",
-                                         "structural_reference": True}
+            target_record = target_structure_record
             target_id, target_group_id, matched = _find_original_group(database, user["id"], project, target_record)
             target_provenance = {**origin, "input_role": "receptor", "collection_kind": "inputs"}
             if not matched:
@@ -1518,7 +1911,7 @@ def ingest_run(run_dir: Path, *, database=None, force=False):
             seen_molecules.add(target_id)
         except ValueError as exc:
             log.info("Could not index receptor for %s: %s", run_dir, exc)
-    elif input_target_record:
+    elif input_target_record and not analysis_only:
         target_provenance = {**origin, "input_role": "sequence_defined_target",
                              "collection_kind": "inputs", "structural_reference": False}
         target_id, target_group_id, _ = _find_or_create_input(

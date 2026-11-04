@@ -673,7 +673,20 @@ class MolecularDatabase:
                 raise ValueError("The structure's molecule must belong to its source group.")
             path = Path(item["path"]) if item.get("path") else self._store_file(item["name"], item["content"])
             structure_context = {**(context or {}), **{key: value for key, value in item.items() if key not in {"path", "content", "name", "label"}}}
-            structure_id = _id("structure-", _json([molecule_id, group_id, str(path), structure_context]))
+            # Coordinate revisions are immutable scientific subjects. A path
+            # can be reused by a producer, so its bytes must participate in
+            # representation identity before a portable copy replaces it.
+            if item.get("content") is not None:
+                content_digest = hashlib.sha256(bytes(item["content"])).hexdigest()
+            elif path.is_file():
+                content_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            else:
+                content_digest = ""
+            validated_digest = str(item.get("validated_content_sha256") or "")
+            if validated_digest and validated_digest != content_digest:
+                raise ValueError("The source structure changed after molecular validation.")
+            structure_context["content_sha256"] = content_digest
+            structure_id = _id("structure-", _json([molecule_id, group_id, str(path), content_digest, structure_context]))
             stamp = created_at or _now()
             connection.execute("INSERT OR IGNORE INTO molecule_structures VALUES (?,?,?,?,?,?,?,?)", (
                 structure_id, molecule_id, group_id, str(path), str(item.get("label") or path.name),

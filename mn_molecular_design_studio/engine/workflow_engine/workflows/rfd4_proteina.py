@@ -55,6 +55,9 @@ def sequence_structure(text: str, destination: Path) -> Path:
             for atom,offset,element in [('N',0.,'N'),('CA',1.4,'C'),('C',2.8,'C'),('O',3.3,'O')]:
                 residue.add(Atom.Atom(atom,np.array([i*3.8+offset,0.,0.]),0.,1.,' ',atom,serial,element=element)); serial+=1
     destination.parent.mkdir(parents=True,exist_ok=True)
+    # Mark the generated placeholder-coordinate file as a sequence carrier so
+    # downstream source collectors cannot mistake it for a supplied target.
+    structure.id = 'studio_sequence_carrier'
     writer=MMCIFIO(); writer.set_structure(structure); writer.save(str(destination))
     return destination
 

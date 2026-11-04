@@ -523,7 +523,8 @@ def parse_sdf(data: bytes, filename: str = "molecules.sdf") -> list[dict]:
     return result
 
 
-def parse_structure(data: bytes, filename: str, *, include_ligands: bool = True, chains: list[str] | None = None) -> list[dict]:
+def parse_structure(data: bytes, filename: str, *, include_ligands: bool = True, chains: list[str] | None = None,
+                    model_id: str | int | None = None, require_model_selection: bool = False) -> list[dict]:
     from Bio.PDB import PDBParser, MMCIFParser
     try:
         from Bio.Data.PDBData import protein_letters_3to1_extended
@@ -560,7 +561,27 @@ def parse_structure(data: bytes, filename: str, *, include_ligands: bool = True,
     else:
         parser = PDBParser(QUIET=True)
     try:
-        model = next(parser.get_structure("molecule", io.StringIO(data.decode("utf-8"))).get_models())
+        structure = parser.get_structure("molecule", io.StringIO(data.decode("utf-8")))
+        models = list(structure.get_models())
+        if not models:
+            raise ValueError("No coordinate models were found.")
+        if model_id is None:
+            if require_model_selection and len(models) != 1:
+                raise ValueError("The structure contains multiple models and no exact model was selected.")
+            model = models[0]
+        else:
+            requested_model = str(model_id)
+            model = next((candidate for candidate in models if str(candidate.id) == requested_model), None)
+            if model is None and requested_model.isdigit():
+                index = int(requested_model)
+                if 0 <= index < len(models):
+                    model = models[index]
+                elif 1 <= index <= len(models):
+                    model = models[index - 1]
+            if model is None:
+                if require_model_selection:
+                    raise ValueError(f"Model {requested_model!r} is not present in the structure.")
+                model = models[0]
     except Exception as exc:
         raise ValueError(f"Could not read {filename}: {exc}") from exc
     components = []
@@ -590,7 +611,7 @@ def parse_structure(data: bytes, filename: str, *, include_ligands: bool = True,
     if not components:
         raise ValueError("No supported molecular chains were found in the structure.")
     components, _, _ = canonical_components(components)
-    return [{"name": Path(filename).stem, "components": components, "metadata": {},
+    return [{"name": Path(filename).stem, "components": components, "metadata": {}, "model_id": str(model.id),
              "files": [{"name": Path(filename).name, "content": data, "label": "Imported structure", "dimensions": 3}]}]
 
 

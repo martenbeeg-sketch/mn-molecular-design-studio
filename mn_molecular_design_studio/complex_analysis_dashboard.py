@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import time
+from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
@@ -818,7 +820,7 @@ def _analysis_job_index(user: dict, job: dict) -> dict:
                 model_id = ""
             settings = manifest.get("settings") if isinstance(manifest.get("settings"), dict) else {}
             relevant_setting = (settings.get("contact_distance") if tool == "biotite_interface" else
-                                settings.get("ph", 7.4) if tool in {"pep_patch", "sequence_qc"} else None)
+                                settings.get("ph") if tool in {"pep_patch", "sequence_qc"} else None)
             key = (tool, str(item.get("candidate_id") or ""),
                    item_digest,
                    model_id, binder, target, json.dumps(ligand, sort_keys=True), relevant_setting)
@@ -827,6 +829,21 @@ def _analysis_job_index(user: dict, job: dict) -> dict:
                 "created_at": str(row.get("created_at") or "")})
     st.session_state[cache_key] = {"loaded_at": time.monotonic(), "index": index}
     return index
+
+
+@lru_cache(maxsize=16)
+def _qc_runtime_identity(method: str) -> tuple[str, str]:
+    """Return the current QC protocol and locally installed container digests."""
+    try:
+        from mn_molecular_design_studio.engine.workflow_engine.workflows.quality import protocol_revision
+        from mn_molecular_design_studio.quality_tools import TOOLS
+        image = str(TOOLS[method]["image"])
+        inspected = subprocess.run(["docker", "image", "inspect", image, "--format", "{{.Id}}"],
+                                   capture_output=True, text=True, check=False, timeout=5)
+        image_digest = inspected.stdout.strip() if inspected.returncode == 0 else ""
+        return protocol_revision(), image_digest
+    except (KeyError, OSError, RuntimeError, subprocess.SubprocessError, TypeError, ValueError):
+        return "", ""
 
 
 def _method_status(database_index: dict, job_index: dict, item: dict, profile: dict,
@@ -868,21 +885,33 @@ def _method_status(database_index: dict, job_index: dict, item: dict, profile: d
             if method in {"biotite_interface", "sequence_liability"} and tuple(sorted(map(str, saved_target))) != target:
                 continue
             expected_model = "" if method == "sequence_qc" else str(item.get("model_id") or "")
-            saved_model = str(selection.get("model_id") or "")
+            saved_model = str(selection.get("model_id") or selection.get("model_index")
+                              or saved_candidate.get("model_id") or saved_candidate.get("model_index")
+                              or context.get("model_id") or "")
             if expected_model and saved_model != expected_model:
                 continue
             try:
-                if method == "biotite_interface" and float(settings.get("contact_distance", 5.0)) != contact_distance:
+                if method == "biotite_interface" and (
+                        "contact_distance" not in settings or float(settings["contact_distance"]) != contact_distance):
                     continue
-                if method == "pep_patch" and float(settings.get("ph", 7.4)) != ph:
-                    continue
-                if method == "sequence_qc" and float(settings.get("ph", 7.4)) != ph:
+                if method in {"pep_patch", "sequence_qc"} and (
+                        "ph" not in settings or float(settings["ph"]) != ph):
                     continue
             except (TypeError, ValueError):
                 continue
             if method in {"plip", "pandamap", "posebusters"} and json.dumps(
                     selection.get("ligand_selection") or {}, sort_keys=True) != setting:
                 continue
+            if method in {"sequence_qc", "biotite_interface", "pep_patch", "plip", "pandamap", "posebusters"}:
+                expected_protocol, expected_image = _qc_runtime_identity(method)
+                saved_protocol = str(settings.get("protocol_revision") or raw.get("analysis_parameters", {}).get("protocol_revision")
+                                     if isinstance(raw.get("analysis_parameters"), dict) else settings.get("protocol_revision") or "")
+                saved_image = str(raw.get("image_digest") or context.get("image_digest")
+                                  or value["descriptor"].get("image_digest") or "")
+                if not expected_protocol or saved_protocol != expected_protocol:
+                    continue
+                if not expected_image or saved_image != expected_image:
+                    continue
             exact_matches.append(value)
         completed = [value for value in exact_matches if str(value["descriptor"].get("status") or "").casefold() in {"completed", "succeeded"}
                      and not str((value["observation"].get("context") or {}).get("error") or "")]

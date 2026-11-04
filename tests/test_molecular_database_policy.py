@@ -93,6 +93,21 @@ def _pdb_for_sequence(sequence, chain="A", x_offset=0.0):
     return "\n".join([*lines, "TER", "END", ""])
 
 
+def _pdb_for_two_sequences(first, second):
+    residue_names = {"A": "ALA", "C": "CYS", "D": "ASP", "E": "GLU", "F": "PHE",
+                     "G": "GLY", "H": "HIS", "I": "ILE", "K": "LYS", "L": "LEU",
+                     "M": "MET", "N": "ASN", "P": "PRO", "Q": "GLN", "R": "ARG",
+                     "S": "SER", "T": "THR", "V": "VAL", "W": "TRP", "Y": "TYR"}
+    lines, serial = [], 1
+    for chain, sequence, offset in (("A", first, 0.0), ("B", second, 10.0)):
+        for index, residue in enumerate(sequence, 1):
+            lines.append(f"ATOM  {serial:5d}  CA  {residue_names[residue]} {chain}{index:4d}    "
+                         f"{offset + index:8.3f}{1.0:8.3f}{1.0:8.3f}{1.00:6.2f}{20.00:6.2f}           C")
+            serial += 1
+        lines.append("TER")
+    return "\n".join([*lines, "END", ""])
+
+
 def _database_source(database, sequence):
     content = _pdb_for_sequence(sequence).encode()
     record = {"name": "Source molecule", "components": molecule_imports.parse_sequences(sequence)[0]["components"],
@@ -170,6 +185,26 @@ def test_unknown_generated_candidate_is_not_retained_as_accepted(database):
     assert database.groups(A, collection="all") == []
 
 
+@pytest.mark.parametrize("workflow,tool,task", [
+    ("analysis.biotite_interface", "biotite_interface", "analysis"),
+    ("analysis.plip", "plip", "analysis"),
+    ("analysis.pep_patch", "pep_patch", "analysis"),
+    ("analysis.ipsae", "ipsae", "analysis"),
+    ("analysis.rosetta", "rosetta", "analysis"),
+    ("pipeline.analysis.plip", "plip", "pipeline"),
+])
+def test_real_analysis_workflows_without_exact_sources_create_no_library_records(database, workflow, tool, task):
+    run = _make_run(database, task, "unresolved-" + tool + "-" + task, tool=tool, workflow=workflow,
+        candidates=[{"candidate_id": "unresolved-analysis", "stage": "analysis", "source_tool": tool,
+                    "binder_sequence": "ACD", "complex_pdb": "analysis.pdb", "metrics": {"score": 0.4}}])
+    (run / "analysis.pdb").write_text(_pdb_acd())
+    (run / "input.json").write_text(json.dumps({"tool": tool, "workflow": workflow,
+                                                 "params": {"target_fasta": ">target\nEFG"}}))
+
+    assert ingest_run(run, database=database, force=True) == 0
+    assert database.groups(A, collection="all") == []
+
+
 def test_generated_complex_refolding_is_library_output(database):
     run = _make_run(database, "design", "boltzgen-final", workflow="design_generation", tool="boltzgen",
                     candidates=[{"candidate_id": "design-1", "stage": "complex_refolding", "binder_sequence": "ACD",
@@ -229,8 +264,8 @@ def test_saved_acceptance_decisions_are_not_confused_with_candidate_execution_st
 @pytest.mark.parametrize(
     "task_group,workflow,input_shape",
     [
-        ("analysis", "analysis.plip.evaluation", "top_level"),
-        ("pipeline", "pipeline.analysis.plip.evaluation", "nested_inputs"),
+        ("analysis", "analysis.plip", "top_level"),
+        ("pipeline", "pipeline.analysis.plip", "nested_inputs"),
     ],
 )
 def test_results_and_pipeline_evaluations_attach_to_exact_source_structure(
@@ -288,6 +323,47 @@ def test_results_and_pipeline_evaluations_attach_to_exact_source_structure(
     assert len(original_after["representations"]) == 1
 
 
+def test_sequence_analysis_resolves_exact_sequence_identity_without_coordinates(database):
+    molecule = database.import_records(
+        A, molecule_imports.parse_sequences("ACDE"), name="Sequence-only input",
+        project_id="project-1", origin={"collection_kind": "curated"},
+    )
+    molecule_id, group_id = molecule["molecule_ids"][0], molecule["group_id"]
+    source = _make_run(database, "design", "sequence-source-run", tool="rfd4_proteina",
+                       workflow="design.rfd4_proteina", candidates=())
+    with database.connection() as connection:
+        connection.execute(
+            "INSERT INTO molecule_sources VALUES (?,?,?,?)",
+            ("exact-sequence-source", molecule_id, group_id, json.dumps({
+                "run_id": source.name, "task_group": "design", "candidate_id": "sequence-source",
+            })),
+        )
+    analysis = _make_run(database, "analysis", "sequence-qc-result", tool="sequence_qc",
+        workflow="analysis.sequence_qc", candidates=[{
+            "candidate_id": "sequence-qc-result", "source_tool": "sequence_qc", "stage": "analysis",
+            "binder_sequence": "ACDE", "binder_chains": ["A"], "metrics": {"sequence_valid": True},
+            "raw_metadata": {"source_candidate": {
+                "candidate_id": "sequence-source", "binder_sequence": "ACDE", "binder_chains": ["A"],
+            }},
+        }])
+    (analysis / "input.json").write_text(json.dumps({
+        "tool": "sequence_qc", "workflow": "analysis.sequence_qc", "source_run_dir": str(source),
+    }))
+
+    assert ingest_run(analysis, database=database, force=True) == 1
+    assert database.list_molecules(A, collection="all")["total"] == 1
+    evaluation = next(group for group in database.groups(A, collection="all")
+                      if group["origin"].get("collection_kind") == "evaluation")
+    row = database.list_molecules(A, group_id=evaluation["id"], collection="all")["items"][0]
+    assert row["id"] == molecule_id
+    assert row["representations"] == []
+    observation = next(item for item in row["observations"] if item["namespace"] == "sequence_qc")
+    assert observation["context"]["source_reference_kind"] == "sequence"
+    assert observation["context"]["source_sequence_sha256"] == hashlib.sha256(b"ACDE").hexdigest()
+    assert observation["context"]["source_structure_id"] == ""
+    assert observation["context"]["representation_id"] == ""
+
+
 def test_accepted_binder_waits_for_structure_then_imports_it_on_next_sync(database):
     run = _make_run(database, "design", "accepted-rfd4-late-structure", tool="rfd4_proteina",
         workflow="design_generation", candidates=[{
@@ -316,6 +392,126 @@ def test_accepted_binder_waits_for_structure_then_imports_it_on_next_sync(databa
         ("A", "EFG"), ("B", "ACD"),
     }
     assert binder["components"][0]["role"] == "binder"
+
+
+def test_secondary_candidate_structures_must_match_declared_chains_and_sequences(database):
+    complex_text = _pdb_efg_acd_complex()
+    wrong_binder = _pdb_for_sequence("KLM", chain="B")
+    wrong_validation = _pdb_for_two_sequences("EFG", "KLM")
+    candidate = {
+        "candidate_id": "structure-correspondence", "stage": "generation.backbone_sequence",
+        "binder_sequence": "ACD", "binder_chains": ["B"], "target_chains": ["A"],
+        "complex_pdb": "complex.pdb", "binder_pdb": "binder.pdb",
+        "raw_metadata": {"components": [
+                             {"type": "protein", "chain": "A", "role": "target", "sequence": "EFG"},
+                             {"type": "protein", "chain": "B", "role": "binder", "sequence": "ACD"},
+                         ],
+                         "validation_acceptance": {"status": "accepted"},
+                         "validation_complex_pdb": "validation.pdb"},
+        "metrics": {"native_pass_filters": True},
+    }
+    run = _make_run(database, "design", "mismatched-secondary-structures", tool="rfd4_proteina",
+                    workflow="design_generation", candidates=[candidate])
+    (run / "complex.pdb").write_text(complex_text)
+    (run / "binder.pdb").write_text(wrong_binder)
+    (run / "validation.pdb").write_text(wrong_validation)
+
+    assert ingest_run(run, database=database, force=True) == 1
+    group = next(row for row in database.groups(A, collection="library")
+                 if row["origin"].get("run_id") == run.name)
+    molecule = database.list_molecules(A, group_id=group["id"]) ["items"][0]
+    fields = {row["context"].get("source_file_field") for row in molecule["representations"]}
+    assert fields == {"complex_pdb"}
+    assert database.structure_file(A, molecule["representations"][0]["id"]).read_bytes() == complex_text.encode()
+    rejected = molecule["metadata"]["structure_validation"]
+    assert {row["field"] for row in rejected} == {"binder_pdb", "validation_complex_pdb"}
+    assert all(row["status"] == "molecular_mismatch" for row in rejected)
+
+
+def test_candidate_structure_model_selection_is_applied_before_attachment(database):
+    model_lines = []
+    for model_number, binder in ((1, "KLM"), (2, "ACD")):
+        atoms = [line for line in _pdb_for_two_sequences("EFG", binder).splitlines()
+                 if line.startswith("ATOM") or line == "TER"]
+        model_lines.extend([f"MODEL     {model_number:4d}", *atoms, "ENDMDL"])
+    model_text = "\n".join([*model_lines, "END", ""])
+    components = [
+        {"type": "protein", "chain": "A", "role": "target", "sequence": "EFG"},
+        {"type": "protein", "chain": "B", "role": "binder", "sequence": "ACD"},
+    ]
+    candidate = {
+        "candidate_id": "selected-model", "stage": "generation.backbone_sequence",
+        "binder_sequence": "ACD", "binder_chains": ["B"], "target_chains": ["A"],
+        "complex_pdb": "complex.pdb", "metrics": {"native_pass_filters": True},
+        "raw_metadata": {"components": components,
+                         "complex_analysis_selection": {"model_id": "1"},
+                         "validation_acceptance": {"status": "accepted"}},
+    }
+    run = _make_run(database, "design", "selected-model-attachment", tool="rfd4_proteina",
+                    workflow="design_generation", candidates=[candidate])
+    (run / "complex.pdb").write_text(model_text)
+
+    assert ingest_run(run, database=database, force=True) == 1
+    group = next(item for item in database.groups(A, collection="library")
+                 if item["origin"].get("run_id") == run.name)
+    molecule = database.list_molecules(A, group_id=group["id"], collection="library")["items"][0]
+    assert [(item["chain"], item["sequence"]) for item in molecule["components"]] == [("B", "ACD")]
+    structure = molecule["representations"][0]
+    assert structure["context"]["model_id"] == "1"
+    parsed = molecule_imports.parse_structure(
+        database.structure_file(A, structure["id"]).read_bytes(), "selected.pdb", model_id="1",
+        require_model_selection=True,
+    )[0]
+    assert {(item["chain"], item["sequence"]) for item in parsed["components"]} == {
+        ("A", "EFG"), ("B", "ACD"),
+    }
+
+    unresolved = {**candidate, "candidate_id": "unselected-model",
+                  "raw_metadata": {"components": components,
+                                   "validation_acceptance": {"status": "accepted"}}}
+    unresolved_run = _make_run(database, "design", "unselected-model-attachment", tool="rfd4_proteina",
+                               workflow="design_generation", candidates=[unresolved])
+    (unresolved_run / "complex.pdb").write_text(model_text)
+    assert ingest_run(unresolved_run, database=database, force=True) == 0
+
+
+def test_changed_coordinates_at_a_portable_path_create_a_new_measurement_revision(database):
+    candidate = {
+        "candidate_id": "same-path-revision", "stage": "generation.backbone_sequence",
+        "binder_sequence": "ACD", "binder_chains": ["A"], "binder_pdb": "binder.pdb",
+        "raw_metadata": {"validation_acceptance": {"status": "accepted"}},
+        "metrics": {"native_score": 0.8},
+    }
+    run = _make_run(database, "design", "coordinate-revision", tool="rfd4_proteina",
+                    workflow="design_generation", candidates=[candidate])
+    source = run / "binder.pdb"
+    source.write_text(_pdb_acd())
+    assert ingest_run(run, database=database, force=True) == 1
+    group = next(row for row in database.groups(A, collection="library")
+                 if row["origin"].get("run_id") == run.name)
+    molecule = database.list_molecules(A, group_id=group["id"])["items"][0]
+    first_structure = molecule["representations"][0]
+    first_digest = first_structure["context"]["portable_sha256"]
+
+    shifted = []
+    for line in _pdb_acd().splitlines():
+        if line.startswith("ATOM"):
+            x = float(line[30:38]) + 17.0
+            line = line[:30] + f"{x:8.3f}" + line[38:]
+        shifted.append(line)
+    second_text = "\n".join(shifted) + "\n"
+    source.write_text(second_text)
+    candidate["metrics"] = {"native_score": 0.4}
+    (run / "artifacts/normalized_candidates/candidates.jsonl").write_text(json.dumps(candidate) + "\n")
+    assert ingest_run(run, database=database, force=True) == 1
+
+    refreshed = database.list_molecules(A, group_id=group["id"])["items"][0]
+    assert len(refreshed["representations"]) == 2
+    observation = next(row for row in refreshed["observations"] if row["namespace"] == "rfd4_proteina")
+    assert observation["metrics"]["native_score"] == 0.4
+    assert observation["context"]["representation_id"] != first_structure["id"]
+    assert observation["context"]["structure_digest"] != first_digest
+    assert observation["context"]["structure_digest"] == hashlib.sha256(second_text.encode()).hexdigest()
 
 
 def test_generated_complex_reindex_keeps_binder_identity_and_only_passing_designs(database):
@@ -492,6 +688,22 @@ def test_sequence_only_run_target_is_ingested_without_candidate_structures(datab
     assert target["representations"] == []
 
 
+def test_mismatched_input_target_coordinates_do_not_attach_to_sequence_identity(database):
+    run = _make_run(database, "design_generation", "mismatched-input-target", tool="rfd4_proteina",
+                    workflow="design.rfd4_proteina", candidates=())
+    (run / "target.pdb").write_text(_pdb_for_sequence("KLMN"))
+    (run / "input.json").write_text(json.dumps({
+        "tool": "rfd4_proteina", "workflow": "design.rfd4_proteina",
+        "params": {"target_pdb": "target.pdb", "target_sequence": "ACDE", "target_chains": ["A"]},
+    }))
+
+    assert ingest_run(run, database=database, force=True) == 1
+    rows = database.list_molecules(A, project_id="project-1", collection="all")["items"]
+    target = next(row for row in rows if row.get("metadata", {}).get("target_identity_type") == "sequence_only")
+    assert target["components"][0]["sequence"] == "ACDE"
+    assert target["representations"] == []
+
+
 def test_rfd4_idr_sequence_carrier_is_indexed_as_sequence_not_structure(database):
     from mn_molecular_design_studio.rfd4_proteina_input import write_idr_sequence_carrier
     from mn_molecular_design_studio.target_identity import is_sequence_carrier_reference, target_reference_type
@@ -521,6 +733,27 @@ def test_rfd4_idr_sequence_carrier_is_indexed_as_sequence_not_structure(database
     target = next(row for row in records if [component.get("sequence") for component in row["components"]] == ["ACDE"])
     assert target["metadata"]["target_identity_type"] == "sequence_only"
     assert target["metadata"]["structural_reference"] is False
+    assert target["representations"] == []
+
+
+def test_rfd4_sequence_input_carrier_is_never_registered_as_native_reference(database):
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.rfd4_proteina import sequence_structure
+    from mn_molecular_design_studio.target_identity import is_sequence_carrier_reference, target_reference_type
+
+    run = _make_run(database, "design_generation", "sequence-input-carrier", tool="rfd4_proteina",
+                    workflow="design.rfd4_proteina")
+    carrier = sequence_structure("ACDE", run / "artifacts/sequence_input.cif")
+    (run / "input.json").write_text(json.dumps({
+        "tool": "rfd4_proteina", "workflow": "design.rfd4_proteina",
+        "params": {"target_structure": str(carrier), "target_sequence": "ACDE", "target_chains": ["A"]},
+    }))
+
+    assert is_sequence_carrier_reference(str(carrier), run_dir=run)
+    assert target_reference_type(json.loads((run / "input.json").read_text()), run_dir=run) == "sequence_only"
+    assert ingest_run(run, database=database, force=True) == 1
+    target = next(row for row in database.list_molecules(A, project_id="project-1", collection="all")["items"]
+                  if row.get("metadata", {}).get("target_identity_type") == "sequence_only")
+    assert target["components"][0]["sequence"] == "ACDE"
     assert target["representations"] == []
 
 
@@ -641,7 +874,9 @@ def test_protein_qc_reuses_the_exact_frozen_database_identity(database, complex_
     assert len(rows) == 1
     assert rows[0]["id"] == molecule
     assert rows[0]["scores"]["sequence_qc.qc_sequence_length"] == 3
-    assert rows[0]["structures"]
+    # The sequence check resolves to this exact molecular identity, but its
+    # analysis artifact is not asserted to be the molecule's source structure.
+    assert rows[0]["structures"] == []
 
 
 def test_prediction_indexes_only_the_best_structure_per_input(database):
@@ -712,6 +947,79 @@ def test_docking_indexes_only_the_top_pose_for_each_compound(database):
     assert Path(row["structures"][0]["path"]).suffix == ".pdbqt"
     assert "top-ranked pose" in Path(row["structures"][0]["path"]).read_text()
     assert len(row["observations"]) == 2
+
+
+def test_docking_evaluates_remote_only_compounds_in_a_local_evaluation_group(database):
+    from mn_molecular_design_studio.cluster.replication import Replica
+    from mn_molecular_design_studio.molecular_database_peer import apply_record, capture
+    from mn_molecular_design_studio.molecular_database import _id
+    from mn_molecular_design_studio import ligand_compounds
+
+    owner_node = "remote-compound-owner"
+    remote = MolecularDatabase(database.root.parent / "remote-owner-database")
+    imported = remote.import_records(
+        A, [{"name": "Remote ethanol", "components": molecule_imports.parse_smiles("CCO")[0]["components"],
+             "metadata": {"compound_id": "CMP-REMOTE"}}],
+        name="Remote compound collection", project_id="project-1",
+        origin={"collection_kind": "curated", "owner_id": A["id"]},
+    )
+    molecule_id, owner_group = imported["molecule_ids"][0], imported["group_id"]
+    replica = Replica()
+    capture(replica, database=remote, node_id=owner_node)
+    with replica.db() as connection:
+        records = [(row["key"], row["kind"], json.loads(row["value"])) for row in connection.execute(
+            "SELECT key,kind,value FROM records WHERE author=? ORDER BY kind,key", (owner_node,)
+        )]
+    for key, kind, value in sorted(records, key=lambda item: (item[1] != "molecule_group", item[0])):
+        apply_record(kind, key, value, owner_node, database=database)
+    peer_group = _id("peer-", owner_node + ":" + owner_group)
+    before = database.list_molecules(A, collection="all")
+    assert before["total"] == 1
+    assert before["items"][0]["id"] == molecule_id
+    assert before["items"][0]["groups"][0]["id"] == peer_group
+
+    run = _make_run(database, "vina", "remote-best-pose", tool="vina", workflow="ligand.docking")
+    ligand_compounds.write_compound_set(
+        run / "artifacts/input/compound_set.json", name="Screen inputs",
+        compounds=[{"compound_id": "CMP-REMOTE", "compound_name": "Remote ethanol", "smiles": "CCO"}],
+        owner_id=A["id"], project_id="project-1", created_at="now",
+    )
+    poses = run / "artifacts/poses"
+    poses.mkdir(parents=True)
+    pose = "\n".join(["MODEL 1", "REMARK SMILES CCO", "REMARK SMILES IDX 1 3 2 2 3 1",
+                      "ATOM      1 O    UNL     1       8.000   3.000   4.000  0.000 O",
+                      "ATOM      2 C    UNL     1       7.000   3.000   4.000  0.000 C",
+                      "ATOM      3 C    UNL     1       6.000   3.000   4.000  0.000 C", "ENDMDL", ""])
+    (poses / "pose.pdbqt").write_text(pose)
+    (run / "artifacts/docking_scores.csv").write_text(
+        "compound_id\tstatus\tpose_rank\tbest_score_kcal_mol\tpose_path\n"
+        "CMP-REMOTE\tcompleted\t1\t-7.1\tartifacts/poses/pose.pdbqt\n"
+    )
+
+    assert ingest_run(run, database=database) == 1
+    after = database.list_molecules(A, collection="all")
+    assert after["total"] == 1
+    molecule = after["items"][0]
+    assert molecule["id"] == molecule_id
+    assert peer_group in {group["id"] for group in molecule["groups"]}
+    evaluation_groups = [group for group in database.groups(A, collection="all")
+                         if group["origin"].get("collection_kind") == "evaluation"]
+    assert len(evaluation_groups) == 1
+    assert molecule["observations"]
+    assert any(row["namespace"] == "vina" for row in molecule["observations"])
+    with database.connection() as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM molecule_members WHERE group_id=? AND molecule_id=?",
+            (peer_group, molecule_id),
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT count(*) FROM molecule_observations WHERE group_id=? AND molecule_id=?",
+            (peer_group, molecule_id),
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT count(*) FROM molecule_groups WHERE owner_id=? AND id=?",
+            (A["id"], owner_group),
+        ).fetchone()[0] == 0
 
 
 def test_generator_contracts_ingest_common_fields_and_preserve_output_identity(database):

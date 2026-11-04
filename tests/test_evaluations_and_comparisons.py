@@ -150,6 +150,77 @@ def test_evaluation_identity_keeps_exact_structure_pose_and_native_parameters():
     assert first_descriptor["parameters_digest"] != changed_descriptor["parameters_digest"]
 
 
+def test_nested_model_and_ligand_residue_selections_are_part_of_evaluation_identity():
+    base = {"id": "obs-1", "molecule_id": "mol-a", "group_id": "group-a", "run_id": "run-1",
+            "namespace": "plip", "context": {"source_structure_digest": "a" * 64,
+                "candidate": {"candidate_id": "pose-1", "raw_metadata": {
+                    "complex_analysis_selection": {"model_id": "2", "ligand_selection": {
+                        "chain": "L", "residue_key": "L:501", "ccd": "LIG"}}}}}}
+    first = evaluation_descriptor(base)
+    changed_model = copy.deepcopy(base)
+    changed_model["id"] = "obs-2"
+    changed_model["context"]["candidate"]["raw_metadata"]["complex_analysis_selection"]["model_id"] = "3"
+    changed_residue = copy.deepcopy(base)
+    changed_residue["id"] = "obs-3"
+    changed_residue["context"]["candidate"]["raw_metadata"]["complex_analysis_selection"]["ligand_selection"]["residue_key"] = "L:502"
+
+    model = evaluation_descriptor(changed_model)
+    residue = evaluation_descriptor(changed_residue)
+    assert first["model_id"] == "2"
+    assert first["ligand_selection"]["residue_key"] == "L:501"
+    assert first["subject_id"] != model["subject_id"]
+    assert first["instance_id"] != model["instance_id"]
+    assert first["selection_id"] != residue["selection_id"]
+    assert first["subject_id"] != residue["subject_id"]
+    assert first["instance_id"] != residue["instance_id"]
+
+
+def test_legacy_evaluation_projection_upgrade_is_bounded_and_preserves_raw_observations(tmp_path):
+    from mn_molecular_design_studio.evaluations import PROJECTION_VERSION, rebuild_missing
+
+    database = MolecularDatabase(tmp_path / "projection-upgrade")
+    imported = database.import_records(USER, molecule_imports.parse_smiles("CCO"))
+    group, molecule = imported["group_id"], imported["molecule_ids"][0]
+    first = database.add_observation(group, molecule, "rosetta_metrics", "legacy-rosetta", {
+        "interface_percent_of_binder_in_intf": 17.0, "score": -4.0,
+    }, context={"structure_digest": "pose-1"})
+    second = database.add_observation(group, molecule, "vina", "current", {"energy": -7.0})
+    database.evaluation_rows(USER)  # Build current projections before isolating legacy rows.
+
+    with database.connection() as connection:
+        raw_before = connection.execute(
+            "SELECT metrics,context FROM molecule_observations WHERE id=?", (first,)
+        ).fetchone()
+        connection.execute("UPDATE molecule_evaluations SET projection_version='evaluation.v5:studio.output.v1'")
+        ordered = [row[0] for row in connection.execute(
+            "SELECT observation_id FROM molecule_evaluations ORDER BY observation_id")]
+        assert set(ordered) == {first, second}
+        connection.execute("DELETE FROM molecule_metric_values WHERE observation_id=?", (first,))
+
+        assert rebuild_missing(connection, batch_size=1) == 1
+        versions = dict(connection.execute(
+            "SELECT observation_id,projection_version FROM molecule_evaluations").fetchall())
+        assert versions[ordered[0]] == PROJECTION_VERSION
+        assert versions[ordered[1]] == "evaluation.v5:studio.output.v1"
+        assert connection.execute(
+            "SELECT count(*) FROM molecule_metric_values WHERE observation_id=? AND field='vina.energy'", (second,)
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT count(*) FROM molecule_metric_values WHERE observation_id=? "
+            "AND field='common.geometry.rosetta_metrics.interface_percent_of_binder_in_intf'", (first,)
+        ).fetchone()[0] == 0
+        assert tuple(connection.execute(
+            "SELECT metrics,context FROM molecule_observations WHERE id=?", (first,)
+        ).fetchone()) == tuple(raw_before)
+
+        assert rebuild_missing(connection, batch_size=1) == 1
+        assert connection.execute(
+            "SELECT count(*) FROM molecule_metric_values WHERE observation_id=? AND field='vina.energy'", (second,)
+        ).fetchone()[0] == 1
+        with pytest.raises(ValueError, match="between 1 and 5,000"):
+            rebuild_missing(connection, batch_size=5001)
+
+
 def test_comparison_view_restores_exact_saved_rules():
     from streamlit.testing.v1 import AppTest
     settings = {"fields": ["x", "y"], "directions": {"x": "lower", "y": "higher"}, "weights": {"x": 2., "y": 1.},

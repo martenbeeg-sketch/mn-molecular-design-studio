@@ -83,16 +83,22 @@ def _mappings(input_data: dict | None, metadata: dict | None = None) -> list[dic
 
 
 def is_sequence_carrier_reference(value, *, run_dir: Path | str | None = None) -> bool:
-    """Recognize the RFD4 CIF generated only to carry an IDR sequence.
+    """Recognize Studio-generated CIFs that carry sequences, not structures.
 
-    The filename is an explicit marker emitted by Studio; when the referenced
-    file is available, also verify its CIF data block before classifying it.
+    RFD4 has emitted both ``idr_sequence_carrier.cif`` and
+    ``sequence_input.cif``. Their placeholder coordinates are computational
+    conditioning artifacts and are never source/native structure evidence.
     """
     text = str(value or "").strip()
     if not text:
         return False
     filename = text.replace("\\", "/").split("?", 1)[0].rsplit("/", 1)[-1].casefold()
-    named_carrier = filename == "idr_sequence_carrier.cif"
+    carrier_markers = {
+        "idr_sequence_carrier.cif": ("data_idr_sequence_carrier",),
+        "sequence_input.cif": ("data_sequence", "data_studio_sequence_carrier"),
+    }
+    marker_set = carrier_markers.get(filename, ())
+    named_carrier = bool(marker_set)
     path = None
     try:
         from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
@@ -107,6 +113,8 @@ def is_sequence_carrier_reference(value, *, run_dir: Path | str | None = None) -
         for relative in (
             "artifacts/rfd4_proteina/input/idr_sequence_carrier.cif",
             "artifacts/input/idr_sequence_carrier.cif",
+            "artifacts/sequence_input.cif",
+            "sequence_input.cif",
         ):
             candidate = root / relative
             if candidate.is_file():
@@ -116,8 +124,8 @@ def is_sequence_carrier_reference(value, *, run_dir: Path | str | None = None) -
         # Historical/remote job metadata can retain only the portable URI.
         return named_carrier
     try:
-        return path.is_file() and "data_idr_sequence_carrier" in path.read_text(
-            encoding="utf-8", errors="ignore")[:4096].casefold()
+        content = path.read_text(encoding="utf-8", errors="ignore")[:4096].casefold()
+        return path.is_file() and any(marker in content for marker in marker_set)
     except OSError:
         return False
 
@@ -142,6 +150,8 @@ def sequence_carrier_path(input_data: dict, *, run_dir: Path | str) -> Path | No
             for relative in (
                 "artifacts/rfd4_proteina/input/idr_sequence_carrier.cif",
                 "artifacts/input/idr_sequence_carrier.cif",
+                "artifacts/sequence_input.cif",
+                "sequence_input.cif",
             ):
                 candidate = Path(run_dir) / relative
                 if candidate.is_file():

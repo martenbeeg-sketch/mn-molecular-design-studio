@@ -369,6 +369,55 @@ def _record_transaction(database, shared_connection):
         yield shared_connection
 
 
+def _resolve_owner_qualified_structure(connection, context):
+    """Translate a source-owned structure reference into this node's row ID."""
+    owner_node = str(context.get("source_structure_owner_node") or context.get("source_node") or "")
+    owner_group = str(context.get("source_structure_owner_group_id") or "")
+    owner_structure = str(context.get("source_structure_owner_structure_id") or "")
+    if not (owner_node and owner_group and owner_structure):
+        return False
+    group = connection.execute("SELECT id,origin FROM molecule_groups WHERE id=?", (owner_group,)).fetchone()
+    local_group = None
+    if group:
+        origin = _object_json(group["origin"], "source structure group origin")
+        if not origin.get("_replica_node"):
+            local_group = group
+    if local_group is None:
+        local_group = connection.execute(
+            "SELECT id,origin FROM molecule_groups WHERE json_extract(origin,'$._replica_node')=? "
+            "AND json_extract(origin,'$._replica_group')=? LIMIT 1",
+            (owner_node, owner_group),
+        ).fetchone()
+    if local_group is None:
+        context["representation_id"] = ""
+        context["source_structure_id"] = ""
+        context["source_group_id"] = ""
+        context["source_structure_reference_status"] = "owner_record_unavailable"
+        return True
+    structure = connection.execute(
+        "SELECT id FROM molecule_structures WHERE id=? AND group_id=? AND molecule_id=?",
+        (owner_structure, local_group["id"], context.get("source_molecule_id") or ""),
+    ).fetchone()
+    if structure is None:
+        structure = connection.execute(
+            "SELECT s.id FROM molecule_structures s WHERE s.group_id=? AND s.molecule_id=? "
+            "AND json_extract(s.context,'$._replica_node')=? "
+            "AND json_extract(s.context,'$._replica_structure')=? LIMIT 1",
+            (local_group["id"], context.get("source_molecule_id") or "", owner_node, owner_structure),
+        ).fetchone()
+    if structure is None:
+        context["representation_id"] = ""
+        context["source_structure_id"] = ""
+        context["source_group_id"] = str(local_group["id"])
+        context["source_structure_reference_status"] = "owner_structure_unavailable"
+        return True
+    context["representation_id"] = str(structure["id"])
+    context["source_structure_id"] = str(structure["id"])
+    context["source_group_id"] = str(local_group["id"])
+    context["source_structure_reference_status"] = "resolved"
+    return True
+
+
 def apply_record(kind, key, value, author, *, database=None, connection=None):
     database = database or MolecularDatabase()
     if not isinstance(kind, str) or kind not in KINDS or not isinstance(author, str) or not author:
@@ -527,10 +576,12 @@ def apply_record(kind, key, value, author, *, database=None, connection=None):
         for row, context in observations:
             current_observations.add(_id("peer-score-", author + ":" + row["id"]))
             context.pop("target_path", None)
-            if context.get("representation_id"):
+            has_owner_qualified_reference = _resolve_owner_qualified_structure(connection, context)
+            if context.get("representation_id") and not has_owner_qualified_reference:
                 context["_replica_representation"] = context["representation_id"]
                 context["representation_id"] = _id("peer-structure-", author + ":" + context["representation_id"])
-            context.update(source_node=author, _replica_node=author, _replica_observation=row["id"])
+            context.setdefault("source_node", author)
+            context.update(_replica_node=author, _replica_observation=row["id"])
             connection.execute("INSERT OR REPLACE INTO molecule_observations VALUES (?,?,?,?,?,?,?,?)", (_id("peer-score-", author + ":" + row["id"]), molecule_id, group_id, row["namespace"], row["run_id"], row["metrics"], _json(context), row["created_at"]))
         current_sources = set()
         for row, provenance in sources:

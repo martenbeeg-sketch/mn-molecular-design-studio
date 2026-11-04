@@ -634,6 +634,40 @@ def test_three_workstations_ingest_offline_converge_retrieve_evaluate_and_tombst
         assert connection.execute("SELECT count(*) FROM molecule_observations WHERE group_id=? AND molecule_id=?",
                                   (evaluation_groups[0]["id"], molecule_id)).fetchone()[0] == 1
 
+    # PC004032's Evaluation is authored in its own collection but names
+    # pc002975's structure. A third workstation and the structure owner must
+    # resolve the same owner-qualified reference when that Evaluation is
+    # replayed onward.
+    capture(replica, database=target_database, node_id=nodes[1])
+    _sync_author_records(replica, nodes[1], [databases[nodes[0]], databases[nodes[2]]])
+    expected_owner_group = owner_group
+    expected_owner_structure = source_structure
+    for receiver_node in (nodes[0], nodes[2]):
+        receiver = databases[receiver_node]
+        replicated_evaluation_group = _id("peer-", nodes[1] + ":" + evaluation_groups[0]["id"])
+        with receiver.connection() as connection:
+            row = connection.execute(
+                "SELECT context FROM molecule_observations WHERE group_id=? AND run_id=?",
+                (replicated_evaluation_group, run_dir.name),
+            ).fetchone()
+            assert row is not None
+            context = json.loads(row["context"])
+            assert context["source_structure_owner_node"] == source_node
+            assert context["source_structure_owner_group_id"] == expected_owner_group
+            assert context["source_structure_owner_structure_id"] == expected_owner_structure
+            assert context["source_structure_reference_status"] == "resolved"
+            expected_group = (expected_owner_group if receiver_node == source_node else
+                              _id("peer-", source_node + ":" + expected_owner_group))
+            expected_structure = (expected_owner_structure if receiver_node == source_node else
+                                  _id("peer-structure-", source_node + ":" + expected_owner_structure))
+            assert context["source_group_id"] == expected_group
+            assert context["source_structure_id"] == expected_structure
+            assert context["representation_id"] == expected_structure
+            assert connection.execute(
+                "SELECT count(*) FROM molecule_structures WHERE id=? AND group_id=? AND molecule_id=?",
+                (expected_structure, expected_group, molecule_id),
+            ).fetchone()[0] == 1
+
     # Materialize an authorized portable copy, then prove it remains openable
     # when the source workstation is unavailable.
     assert materialize_portable_structures(database=target_database,

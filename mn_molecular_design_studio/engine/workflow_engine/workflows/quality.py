@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+from functools import lru_cache
 
 import pandas as pd
 
@@ -21,6 +22,19 @@ from mn_molecular_design_studio.engine.workflow_engine.workflows.analysis import
 def _digest(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+@lru_cache(maxsize=1)
+def protocol_revision():
+    """Hash the exact local QC runtime sources used for Evaluation reuse."""
+    module = Path(__file__).parent
+    runtime_files = [module / "quality.py", module / "quality_runner.py", module / "quality_ligands.py",
+                     *sorted((module / "qc_ovo").glob("*.py")), *sorted((module / "qc_ovo").glob("*.json"))]
+    digest = hashlib.sha256()
+    for path in runtime_files:
+        digest.update(path.name.encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def docker_user_args():
@@ -134,13 +148,8 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
                 raise ValueError("Required analysis checkpoint is missing: " + relative)
             references.append(path)
         settings["checkpoint_sha256"] = {path.name: file_digest(path) for path in references}
+    settings["protocol_revision"] = protocol_revision()
     module = Path(__file__).parent
-    runtime_files = [module / "quality.py", module / "quality_runner.py", module / "quality_ligands.py", *sorted((module / "qc_ovo").glob("*.py")), *sorted((module / "qc_ovo").glob("*.json"))]
-    protocol = hashlib.sha256()
-    for path in runtime_files:
-        protocol.update(path.name.encode())
-        protocol.update(path.read_bytes())
-    settings["protocol_revision"] = protocol.hexdigest()
     job = _analysis_job(source_run_dir, Path(candidates_jsonl), tool=tool, params={**settings, "cpu_cores": workers},
                         note="One collection, one batch job; per-item progress is in artifacts/analysis/batch_status.json.", mode="docker-batch")
     run = job.run_dir

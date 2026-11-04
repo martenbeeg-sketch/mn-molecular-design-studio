@@ -261,6 +261,42 @@ def test_inventory_distinguishes_not_applicable_unavailable_and_stale_methods():
     assert _method_status(database_index, {}, item, profile, "biotite_interface")[0] == "Stale or nonmatching"
 
 
+def test_qc_reuse_requires_saved_parameters_protocol_and_image_identity(monkeypatch):
+    from mn_molecular_design_studio import complex_analysis_dashboard as dashboard
+
+    protocol, image = "protocol-sha256", "sha256:container-image"
+    monkeypatch.setattr(dashboard, "_qc_runtime_identity", lambda _method: (protocol, image))
+    item = {"candidate_id": "design-1", "digest": "a" * 64, "model_id": "2",
+            "candidate": {"candidate_id": "design-1"}}
+    profile = {"binder_chains": ["B"], "target_chains": ["A"]}
+
+    def indexed(settings, *, saved_protocol=protocol, saved_image=image):
+        candidate = {"candidate_id": "design-1", "binder_chains": ["B"], "target_chains": ["A"],
+                     "raw_metadata": {"complex_analysis_selection": {"model_id": "2"}}}
+        if saved_protocol:
+            candidate["raw_metadata"]["analysis_parameters"] = {"protocol_revision": saved_protocol}
+        if saved_image:
+            candidate["raw_metadata"]["image_digest"] = saved_image
+        return {("design-1", "biotite_interface"): [{
+            "match": "Exact", "descriptor": {"status": "completed", "image_digest": saved_image},
+            "observation": {"context": {"candidate": candidate, "settings": settings,
+                                         "source_structure_digest": "a" * 64}},
+        }]}
+
+    # The former path substituted the dashboard's current cutoff when this
+    # historical observation had no cutoff saved.
+    assert _method_status(indexed({}, saved_protocol="", saved_image=""), {}, item, profile,
+                          "biotite_interface")[0] == "Stale or nonmatching"
+    assert _method_status(indexed({"contact_distance": 5.0}, saved_protocol="", saved_image=""),
+                          {}, item, profile, "biotite_interface")[0] == "Stale or nonmatching"
+    assert _method_status(indexed({"contact_distance": 5.0}, saved_protocol="old-protocol"),
+                          {}, item, profile, "biotite_interface")[0] == "Stale or nonmatching"
+    assert _method_status(indexed({"contact_distance": 5.0}, saved_image="old-image"),
+                          {}, item, profile, "biotite_interface")[0] == "Stale or nonmatching"
+    assert _method_status(indexed({"contact_distance": 5.0}), {}, item, profile,
+                          "biotite_interface")[0] == "Completed"
+
+
 def test_result_run_rows_show_only_exact_linked_analysis_activity(monkeypatch):
     from mn_molecular_design_studio import cluster
 
