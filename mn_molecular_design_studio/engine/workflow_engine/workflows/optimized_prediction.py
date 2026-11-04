@@ -2420,6 +2420,10 @@ def _prepare_prediction(
         item_id = "i" + hashlib.sha256(
             f"{job_name}:{engine}:{index}".encode("utf-8")
         ).hexdigest()[:16]
+        from mn_molecular_design_studio.target_identity import protein_sequence_reference
+
+        sequence_reference = (protein_sequence_reference([row["sequence"] for row in task_proteins])
+                              if not (dna_chains or rna_chains or task_ccd_codes or task_smiles) else {})
         normalized_tasks.append({
             "index": index,
             "id": item_id,
@@ -2431,6 +2435,7 @@ def _prepare_prediction(
             "job_name": task_job_name,
             "proteins": task_proteins,
             "scientific_contract": scientific_contract,
+            "sequence_source_reference": sequence_reference,
             "target_protein_ids": target_ids,
             "binder_protein_ids": binder_ids,
             "dna": dna_chains,
@@ -2703,6 +2708,7 @@ def run_optimized_prediction(
             "tasks": [{
                 "name": task["name"],
                 "source_input_name": task["source_input_name"],
+                "sequence_source_reference": task.get("sequence_source_reference") or {},
                 "protein_chains": [
                     {"id": row["id"], "sequence": row["sequence"],
                      "role": (
@@ -2721,6 +2727,7 @@ def run_optimized_prediction(
                 "target_chain_id": task["target_chain_id"] if is_boltzgen else None,
                 "binder_sequence": task["binder_sequence"] if is_boltzgen else None,
                 "has_target_structure": bool(task["target_pdb_text"]) if is_boltzgen else False,
+                "source_target_pdb_text": task["target_pdb_text"] if is_boltzgen else "",
             } for task in normalized_tasks],
             "engine": str(engine),
         },
@@ -2805,6 +2812,7 @@ def run_optimized_prediction(
                 chai_template_hits.append(input_details["chai_template_hits"])
             input_mappings.append({
                 "id": task["id"], "name": task["name"], "source_input_name": task["source_input_name"],
+                "sequence_source_reference": task.get("sequence_source_reference") or {},
                 "compound_id": task["compound_id"], "compound_name": task["compound_name"],
                 "protein_chains": [
                     {"id": row["id"], "length": len(row["sequence"]),
@@ -3157,6 +3165,7 @@ def run_optimized_prediction(
                         "confidence_outputs": confidence, "batch_item_id": task["id"],
                         "input_name": task["source_input_name"], "source_compound_id": task["source_compound_id"],
                         "source_compound_name": task["source_compound_name"],
+                        "sequence_source_reference": task.get("sequence_source_reference") or {},
                         "compound_id": task["compound_id"], "compound_name": task["compound_name"],
                         "ligand_smiles": task["compound_smiles"],
                         "ligand_ccd_codes": task["ligand_ccd_codes"],

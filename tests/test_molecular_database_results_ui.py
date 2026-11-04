@@ -164,6 +164,8 @@ def test_database_defaults_to_library_and_passes_collection_to_queries(tmp_path,
     database = MolecularDatabase(tmp_path / "database")
 
     class DatabaseSpy:
+        path = database.path
+
         def evaluation_options(self, user, **kwargs):
             return database.evaluation_options(user, **kwargs)
 

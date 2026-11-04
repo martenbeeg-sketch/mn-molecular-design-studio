@@ -6,9 +6,12 @@ from streamlit.testing.v1 import AppTest
 
 from mn_molecular_design_studio.complex_analysis_dashboard import (
     _component_profile,
+    _apply_landing_event,
+    _coverage_signature,
     _discover_structures,
     _evaluation_matches_candidate,
     _method_status,
+    _landing_rows,
     _result_sources,
     _run_action_label,
     _status_frame,
@@ -87,17 +90,114 @@ def test_complex_analysis_defaults_to_run_first_dashboard():
         "jobs": [],
     }
     script = f'''import streamlit as st
+from unittest.mock import patch
 from mn_molecular_design_studio import logical_runs
+from mn_molecular_design_studio import complex_analysis_landing
 from mn_molecular_design_studio.complex_analysis_ui import render_complex_analysis_workspace
-logical_runs.catalog = lambda user, token="": [{run!r}]
-render_complex_analysis_workspace({user!r})
+def capture_landing(**kwargs):
+    st.session_state["test-landing-payload"] = kwargs
+    return None
+with patch.object(logical_runs, "catalog", return_value=[{run!r}]), patch.object(complex_analysis_landing, "render_landing", side_effect=capture_landing):
+    render_complex_analysis_workspace({user!r})
 '''
     app = AppTest.from_string(script, default_timeout=10).run()
     assert not app.exception
-    assert any(item.value == "Complex Analysis" for item in app.title)
-    assert any("Run-first workflow" in item.value for item in app.info)
-    assert any(item.label == "Select a run" for item in app.button)
-    assert any("R3 BindCraft campaign" in str(item.value) for item in app.dataframe)
+    payload = app.session_state["test-landing-payload"]
+    assert payload["view"] == "Runs"
+    assert payload["selected_view"] == "analyze"
+    assert len(payload["rows"]) == 1
+    assert payload["rows"][0]["name"] == "R3 BindCraft campaign"
+    assert payload["rows"][0]["structures"] == 65
+    assert not app.session_state["complex-analysis-detail-visible"]
+
+
+def test_landing_does_not_count_completed_jobs_as_verified_coverage():
+    row = {"logical_run_id": "run-a", "logical_run_name": "Run A", "structure_count": 65,
+           "analysis_job_count": 6, "analysis_job_statuses": ["completed"] * 6,
+           "engine_names": ["bindcraft2"], "target_summary": {
+               "label": "R3 · 31 aa", "reference_type": "sequence_only"}}
+    result = _landing_rows([row])[0]
+    assert result["coverage"] is None
+    assert result["status"] == "Review results"
+    assert result["engines"] == ["BindCraft2"]
+    assert result["target_reference"] == "Sequence only"
+    coverage = {"completed": 20, "total": 20, "local_only": True}
+    cache = {"run-a~results": {"signature": _coverage_signature(row), "coverage": coverage}}
+    assert _landing_rows([row], cache)[0]["status"] == "Review results"
+    coverage["local_only"] = False
+    assert _landing_rows([row], cache)[0]["status"] == "Analyzed"
+    row["structure_count"] += 1
+    assert _landing_rows([row], cache)[0]["coverage"] is None
+
+
+def test_structured_target_uses_structure_label_even_when_identity_is_sequence_based():
+    row = {"logical_run_id": "pd-l1-run", "structure_count": 100,
+           "target_summary": {"identity": "sequence:abc", "label": "Target sequence · 115 aa · abc",
+                              "reference_type": "structure_backed"}}
+    result = _landing_rows([row])[0]
+    assert result["target_name"] == "Structured target"
+    assert result["target"] == "Target structure · 115 aa · abc"
+    assert result["target_detail"] == "115 aa · Structure supplied"
+    assert result["target_kind"] == "structure_backed"
+    grouped, _ = _target_rows([row])
+    assert grouped[0]["Target / system"] == result["target"]
+    assert grouped[0]["Input target"] == "Structure-backed"
+    row["target_summary"]["reference_type"] = "sequence_only"
+    assert _landing_rows([row])[0]["target_name"] == "Sequence target"
+
+
+def test_landing_navigation_rejects_unknown_runs_and_deduplicates_events():
+    rows = [{"logical_run_id": "run-a"}, {"logical_run_id": "run-b"}]
+    state = {}
+    assert not _apply_landing_event({"token": "1", "action": "open_run", "ref": "unknown"}, rows, state)
+    assert state == {}
+    event = {"token": "2", "action": "open_run", "ref": "run-a~results", "intent": "minimum"}
+    assert _apply_landing_event(event, rows, state)
+    assert state["complex-analysis-selected-run"] == "run-a~results"
+    assert state["complex-analysis-detail-visible"] is True
+    assert not _apply_landing_event(event, rows, state)
+    assert not _apply_landing_event({"token": "3", "action": "submit"}, rows, state)
+    assert _apply_landing_event({"token": "4", "action": "compare_runs",
+                               "selected_refs": ["run-b~results", "unknown", "run-a~results"]}, rows, state)
+    assert state["complex-analysis-comparison-runs"] == ["run-b~results", "run-a~results"]
+    assert state["complex-analysis-secondary-view"] == "compare"
+
+
+def test_run_comparison_intersects_selected_run_with_authorized_local_sources():
+    from mn_molecular_design_studio.complex_analysis_comparison_ui import _jobs_for_selected_run
+
+    jobs = [{"task_group": "design", "run_id": value} for value in ["allowed", "remote", "other", "empty"]]
+    group = {"run_sources": [
+        {"task_group": "design", "run_id": "allowed", "is_local": True, "source_summary": {"structure_count": 3}},
+        {"task_group": "design", "run_id": "remote", "is_local": False, "source_summary": {"structure_count": 3}},
+        {"task_group": "design", "run_id": "empty", "is_local": True, "source_summary": {"structure_count": 0}},
+        {"task_group": "design", "run_id": "unauthorized", "is_local": True, "source_summary": {"structure_count": 3}},
+    ]}
+    assert _jobs_for_selected_run(jobs, group) == [jobs[0]]
+
+
+def test_selected_run_comparison_can_inspect_retained_structures_from_failed_job(monkeypatch):
+    from mn_molecular_design_studio import auth, job_catalog, complex_analysis_ui
+    from mn_molecular_design_studio import complex_analysis_comparison_ui as view
+
+    seen = []
+    monkeypatch.setattr(auth, "can_access_job", lambda user, record: record["run_id"] == "retained")
+    monkeypatch.setattr(job_catalog, "get_job_access_record", lambda group, run_id: {"run_id": run_id})
+    monkeypatch.setattr(complex_analysis_ui, "_job_structure_options", lambda user, job: seen.append(job) or [])
+    group = {"logical_run_name": "Retained run", "run_sources": [
+        {"task_group": "design", "run_id": "retained", "is_local": True, "status": "failed",
+         "source_summary": {"structure_count": 1}},
+        {"task_group": "design", "run_id": "denied", "is_local": True, "status": "completed",
+         "source_summary": {"structure_count": 1}},
+    ]}
+    script = f'''from mn_molecular_design_studio.complex_analysis_comparison_ui import _comparison_slot
+_comparison_slot({{"id": "user-1"}}, "a", run_group={group!r})
+'''
+    app = AppTest.from_string(script, default_timeout=10).run()
+    assert not app.exception
+    assert app.selectbox[0].label == "Results source job"
+    assert app.selectbox[0].options == ["Result · design/retained"]
+    assert seen[0]["run_id"] == "retained"
 
 
 def test_inventory_distinguishes_not_applicable_unavailable_and_stale_methods():

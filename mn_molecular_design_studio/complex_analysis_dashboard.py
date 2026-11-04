@@ -175,10 +175,17 @@ def _source_job_ref(row: dict) -> str:
     return f"{row.get('task_group') or 'pending'}/{row.get('run_id') or row.get('cluster_job_id') or ''}"
 
 
+def _target_system_label(target: dict) -> str:
+    label = str(target.get("label") or "")
+    if target.get("reference_type") == "structure_backed" and label.startswith("Target sequence · "):
+        return label.replace("Target sequence · ", "Target structure · ", 1)
+    return label
+
+
 def _target_label(row: dict) -> str:
     target = row.get("target_summary") if isinstance(row.get("target_summary"), dict) else {}
     if target.get("label"):
-        return str(target["label"])
+        return _target_system_label(target)
     for key in ("target_name", "target_id", "system_name", "molecule_name"):
         value = str(row.get(key) or "").strip()
         if value:
@@ -256,7 +263,7 @@ def _local_candidate_summary(run_dir: str) -> dict:
         stat = path.stat()
     except OSError:
         return {}
-    cache_key = f"complex-analysis-candidate-summary-v3-{hashlib.sha256(str(path).encode()).hexdigest()[:20]}"
+    cache_key = f"complex-analysis-candidate-summary-v4-{hashlib.sha256(str(path).encode()).hexdigest()[:20]}"
     cached = _CANDIDATE_SUMMARY_CACHE.get(cache_key)
     if isinstance(cached, dict) and cached.get("mtime_ns") == stat.st_mtime_ns and cached.get("size") == stat.st_size:
         return dict(cached.get("summary") or {})
@@ -354,6 +361,10 @@ def _local_candidate_summary(run_dir: str) -> dict:
         target = _target_from_saved_inputs(run_path, input_data, metadata_data)
         if target:
             add_target(target["identity"], target.get("sequence") or "", target.get("label") or "")
+    if not target_systems:
+        from mn_molecular_design_studio.target_identity import prediction_input_systems
+
+        target_systems.update({system["identity"]: system for system in prediction_input_systems(input_data)})
     summary = {
         "candidate_count": len(candidates), "structure_count": structures, "complex_count": complexes,
         "acceptance_observed": observed_acceptance, "accepted_count": accepted,
@@ -456,15 +467,16 @@ def _target_rows(rows: list[dict]) -> tuple[list[dict], int]:
             continue
         for identity, target in targets.items():
             entry = grouped.setdefault(identity, {
-                "Target / system": target.get("label") or "Sequence-defined target",
+                "Target / system": _target_system_label(target) or "Recorded target",
                 "Identity": ("sequence:" + identity.partition(":")[2][:12]
                              if identity.startswith("sequence:") else identity),
                 "Identity type": target.get("identity_kind") or ("sequence" if identity.startswith("sequence:") else "named target"),
-                "Input target": set(), "Runs": set(), "Result structures": 0, "Engines": set(),
+                "Input target": set(), "Reference roles": set(), "Runs": set(), "Result structures": 0, "Engines": set(),
             })
             reference_type = str(target.get("reference_type") or "unknown")
             entry["Input target"].add(reference_type if reference_type in {
                 "sequence_only", "structure_backed", "unknown"} else "unknown")
+            entry["Reference roles"].add(str(target.get("reference_role") or ""))
             entry["Runs"].add(_job_ref(row))
             entry["Result structures"] += int(row.get("structure_count") or 0)
             entry["Engines"].update(row.get("engine_names") or [])
@@ -478,12 +490,17 @@ def _target_rows(rows: list[dict]) -> tuple[list[dict], int]:
         known = [labels[value] for value in ("sequence_only", "structure_backed") if value in reference_types]
         if len(known) == 2:
             input_target = "Sequence-only and structure-backed runs"
+            for prefix in ("Target sequence · ", "Target structure · "):
+                if str(entry["Target / system"]).startswith(prefix):
+                    entry["Target / system"] = str(entry["Target / system"]).replace(prefix, "Target · ", 1)
         elif known and "unknown" in reference_types:
             input_target = known[0] + " · some runs unrecorded"
         elif known:
             input_target = known[0]
         else:
             input_target = "Not recorded"
+        if entry["Reference roles"] == {"sequence_source"}:
+            input_target = "PDB sequence source"
         result.append({**entry, "Input target": input_target,
                        "Runs": len(entry["Runs"]),
                        "Engines": ", ".join(sorted(entry["Engines"], key=str.casefold))})
@@ -1013,6 +1030,15 @@ def _render_job_detail(user: dict, job: dict, *, workflow_schema=None, project_s
     database_index = _database_evaluations(database_records, structures)
     job_index = _analysis_job_index(user, job)
     matrix = _status_frame(structures, database_index, job_index)
+    applicable = matrix[matrix["Status"] != "Not applicable"] if not matrix.empty else matrix
+    coverage_cache = dict(st.session_state.get("complex-analysis-coverage-cache") or {})
+    coverage_cache[_job_ref(job)] = {
+        "signature": _coverage_signature(job),
+        "coverage": {"completed": int((applicable["Status"] == "Completed").sum()) if not applicable.empty else 0,
+                     "total": len(applicable),
+                     "local_only": bool(remote_structure_count or remote_unverified_count)},
+    }
+    st.session_state["complex-analysis-coverage-cache"] = coverage_cache
     linked = sum(bool(item.get("database_structure_id")) for item in structures)
     by_structure = matrix.groupby("Candidate / pose")["Status"].agg(list) if not matrix.empty else pd.Series(dtype=object)
     applicable_by_structure = [[value for value in statuses if value != "Not applicable"] for statuses in by_structure]
@@ -1264,7 +1290,139 @@ def _render_job_detail(user: dict, job: dict, *, workflow_schema=None, project_s
         actions[2].caption(f"Exact artifact: {selected_item.get('relative_path')} · SHA-256 {str(selected_item.get('digest') or '')[:16]}…")
 
 
-def _render_secondary(user: dict, mode: str, *, workflow_schema=None, project_selector=None, submit=None) -> None:
+def _coverage_signature(row: dict) -> str:
+    return hashlib.sha256(json.dumps([
+        row.get("structure_count"), row.get("updated_at"), row.get("last_analysis_activity"),
+        row.get("analysis_job_count"), row.get("analysis_job_statuses"),
+    ], sort_keys=True).encode()).hexdigest()
+
+
+def _landing_rows(rows: list[dict], coverage_cache: dict | None = None) -> list[dict]:
+    """Send presentation data only; never infer Evaluation coverage from job counts."""
+    engine_labels = {"bindcraft2": "BindCraft2", "rfd4_proteina": "RFD4", "rfd4": "RFD4",
+                     "optimized_prediction_localfold": "LocalFold", "gnina": "GNINA",
+                     "optimized_prediction_opendde_native": "OpenDDE", "openfold3": "OpenFold3"}
+    active = {"queued", "pending", "submitted", "scheduled", "starting", "preparing",
+              "running", "staging", "waiting"}
+    result = []
+    for row, table in zip(rows, _table_rows(rows)):
+        target = row.get("target_summary") or {}
+        reference = str(target.get("reference_type") or "unknown")
+        target_label = _target_label(row)
+        label_parts = target_label.split(" · ")
+        generic_target = target_label.startswith(("Target sequence · ", "Target structure · "))
+        reference_label = {"sequence_only": "Sequence only", "structure_backed": "Structure supplied"}.get(reference, "Input type not recorded")
+        if target.get("reference_role") == "sequence_source":
+            reference_label = "PDB sequence source"
+        if generic_target:
+            target_name = "Structured target" if reference == "structure_backed" else "Sequence target"
+        else:
+            target_name = "Not recorded" if target_label == "Target not recorded" else label_parts[0]
+        target_detail = " · ".join(label_parts[1:2])
+        if target.get("identity_kind") == "system":
+            target_detail = f"{int(target.get('chain_count') or 1)} protein chain(s)"
+        if reference != "unknown":
+            target_detail = " · ".join(filter(None, [target_detail, reference_label]))
+        statuses = {str(value).casefold() for value in row.get("analysis_job_statuses") or []}
+        activity_count = int(row.get("analysis_job_count") or 0)
+        cached = (coverage_cache or {}).get(_job_ref(row)) or {}
+        coverage = cached.get("coverage") if cached.get("signature") == _coverage_signature(row) else None
+        if statuses & active:
+            status, tone = "In progress", "blue"
+        elif statuses & {"failed", "cancelled", "canceled"}:
+            status, tone = "Needs attention", "amber"
+        elif coverage and coverage["total"] and coverage["completed"] == coverage["total"] and not coverage["local_only"]:
+            status, tone = "Analyzed", "green"
+        elif coverage and coverage["total"] and not coverage["completed"]:
+            status, tone = "Missing analysis", "blue"
+        elif coverage or activity_count:
+            status, tone = "Review results", "blue"
+        else:
+            status, tone = "Not checked", ""
+        sources = row.get("run_sources") or []
+        exact_id = str(sources[0].get("run_id") or "") if len(sources) == 1 else _job_ref(row).split("~", 1)[0].rsplit(":", 1)[-1][-8:]
+        result.append({
+            "id": _job_ref(row), "name": str(row.get("logical_run_name") or row.get("campaign_name") or row.get("tool") or "Results run"),
+            "run_id": exact_id, "jobs": int(row.get("logical_run_job_count") or len(sources) or 1),
+            "target": target_label, "target_name": target_name, "target_detail": target_detail,
+            "target_kind": reference, "target_reference": reference_label,
+            "engines": [engine_labels.get(str(value).casefold(), str(value)) for value in
+                        (row.get("engine_names") or [row.get("tool") or "Unknown"])],
+            "structures": int(row.get("structure_count") or 0),
+            "unverified": int(row.get("unknown_structure_candidates") or 0),
+            "acceptance": table["Native acceptance"], "analysis_jobs": activity_count,
+            "coverage": coverage, "status": status, "status_tone": tone,
+            "project": str(row.get("project_name") or row.get("project_id") or "No project"),
+            "workstations": list(row.get("workstation_names") or [row.get("node_name") or "This workstation"]),
+            "created": str(row.get("created_at") or ""), "updated": str(row.get("updated_at") or ""),
+            "last_analysis": str(row.get("last_analysis_activity") or ""),
+        })
+    return result
+
+
+def _apply_landing_event(event: dict | None, rows: list[dict], state) -> bool:
+    """Validate client navigation against the current authorized run catalog."""
+    if not isinstance(event, dict) or not isinstance(event.get("token"), str):
+        return False
+    token = event["token"][:128]
+    if not token or token == state.get("complex-analysis-landing-event"):
+        return False
+    known = {_job_ref(row) for row in rows}
+    ref = str(event.get("ref") or "")
+    selected = event.get("selected_refs")
+    selected = list(dict.fromkeys(value for value in selected if isinstance(value, str) and value in known)) if isinstance(selected, list) else []
+    action = event.get("action")
+    if action == "open_run":
+        if ref not in known:
+            return False
+        state["complex-analysis-selected-run"] = ref
+        state["complex-analysis-detail-visible"] = True
+        state["complex-analysis-detail-intent"] = str(event.get("intent") or "review")
+        state["complex-analysis-secondary-view"] = "analyze"
+        state["complex-analysis-main-tab"] = "Runs"
+    elif action == "compare_runs":
+        if not 2 <= len(selected) <= 5:
+            return False
+        state["complex-analysis-comparison-runs"] = selected
+        state["complex-analysis-secondary-view"] = "compare"
+        state["complex-analysis-detail-visible"] = False
+    elif action == "view":
+        view = event.get("view")
+        if view not in {"analyze", "compare", "collections", "analyses"}:
+            return False
+        state["complex-analysis-secondary-view"] = view
+        state["complex-analysis-detail-visible"] = False
+        state.pop("complex-analysis-comparison-runs", None)
+        if view == "analyze":
+            state["complex-analysis-main-tab"] = "Runs"
+    elif action == "tab":
+        tab = event.get("tab")
+        if tab not in {"Runs", "Targets", "Molecules", "Collections"}:
+            return False
+        state["complex-analysis-main-tab"] = tab
+        state["complex-analysis-secondary-view"] = "analyze"
+        state["complex-analysis-detail-visible"] = False
+    elif action == "refresh":
+        state["complex-analysis-refresh-requested"] = True
+    else:
+        return False
+    saved = event.get("view_state")
+    saved = saved if isinstance(saved, dict) else {}
+    view_state = {key: str(saved.get(key) or "")[:500] for key in
+                  ("query", "project", "engine", "target", "workstation", "status", "since")}
+    view_state.update({"selected_refs": selected, "focus_ref": ref if ref in known else "",
+                       "sort": saved.get("sort") if saved.get("sort") in {
+                           "name", "target", "engine", "structures", "coverage", "status", "updated"} else "updated",
+                       "direction": "asc" if saved.get("direction") == "asc" else "desc",
+                       "page": min(max(1, saved["page"]), 10000) if isinstance(saved.get("page"), int) else 1,
+                       "more": bool(saved.get("more"))})
+    state["complex-analysis-landing-state"] = view_state
+    state["complex-analysis-landing-event"] = token
+    return True
+
+
+def _render_secondary(user: dict, mode: str, *, workflow_schema=None, project_selector=None, submit=None,
+                      run_rows: list[dict] | None = None) -> None:
     if mode == "collections":
         from mn_molecular_design_studio.complex_analysis_collection_ui import render_collection_workspace
         render_collection_workspace(user)
@@ -1272,7 +1430,13 @@ def _render_secondary(user: dict, mode: str, *, workflow_schema=None, project_se
         st.markdown("#### Compare saved structures across runs")
         st.caption("The existing comparison view resolves structures by their Molecular Database identity and target/molecule provenance.")
         from mn_molecular_design_studio.complex_analysis_comparison_ui import render_comparison
-        render_comparison(user, workflow_schema=workflow_schema, project_selector=project_selector, submit=submit)
+        selected_refs = st.session_state.get("complex-analysis-comparison-runs") or []
+        by_ref = {_job_ref(row): row for row in run_rows or []}
+        groups = [by_ref[ref] for ref in selected_refs if ref in by_ref]
+        if groups:
+            st.caption("Selected runs: " + " · ".join(str(group.get("logical_run_name") or "Run") for group in groups))
+        render_comparison(user, workflow_schema=workflow_schema, project_selector=project_selector,
+                          submit=submit, run_groups=groups or None)
     elif mode == "analyses":
         st.markdown("#### Existing analysis activity")
         from mn_molecular_design_studio.logical_runs import catalog
@@ -1290,56 +1454,62 @@ def _render_secondary(user: dict, mode: str, *, workflow_schema=None, project_se
 
 
 def render_complex_analysis_dashboard(user: dict, *, workflow_schema=None, project_selector=None, submit=None) -> None:
+    from mn_molecular_design_studio.complex_analysis_landing import render_landing
+
+    st.html("""<style>
+    [data-testid="stMainBlockContainer"]{max-width:1800px;padding:1.35rem 1.6rem 3rem}
+    [data-testid="stHeader"]{height:0;background:transparent}
+    [data-testid="stToolbar"]{display:none}
+    [data-testid="stSidebar"]{min-width:240px!important;max-width:240px!important;background:linear-gradient(120deg,#f7f9fc,#fafbfc);border-right:1px solid #edf0f5}
+    [data-testid="stSidebarHeader"]{height:12px;min-height:12px}
+    [data-testid="stSidebarUserContent"]{padding-top:.25rem}
+    [data-testid="stSidebarCollapseButton"]{position:absolute;right:3px;top:6px;opacity:.4}
+    [data-testid="stSidebarCollapseButton"]:hover{opacity:1}
+    [data-testid="stSidebar"] h3{font-size:1rem;letter-spacing:-.3px}
+    [data-testid="stSidebar"] [data-testid="stVerticalBlock"]{gap:.8rem}
+    [data-testid="stSidebar"] hr{margin:1.1rem 0}
+    iframe[title*="studio_analysis_landing"]{display:block;border:0;color-scheme:light}
+    @media(max-width:800px){[data-testid="stMainBlockContainer"]{padding:1rem}}
+    </style>""")
     next_tab = st.session_state.pop("complex-analysis-next-tab", None)
     if next_tab:
         st.session_state["complex-analysis-main-tab"] = next_tab
-    st.title("Complex Analysis")
-    st.caption("Start from an existing Results run, inspect saved Evaluations, and submit only scientifically applicable missing analyses.")
-    st.info("Run-first workflow · Select a run, review its exact structure and Evaluation inventory, then submit a prepared minimum plan. Selecting a run never starts computation or imports it into the Database.", icon="ℹ️")
-    selected_view = st.session_state.get("complex-analysis-secondary-view")
-    cards = st.columns(4)
-    card_data = [
-        ("Analyze a run", "Inspect one Results run and its missing minimum.", "analyze"),
-        ("Compare runs", "Compare saved structures by target or molecule identity.", "compare"),
-        ("Explore collections", "Review saved sets and Evaluation coverage.", "collections"),
-        ("View analyses", "Browse existing evaluations and run activity.", "analyses"),
-    ]
-    for column, (title, description, mode) in zip(cards, card_data):
-        with column.container(border=True):
-            st.markdown(f"**{title}**")
-            st.caption(description)
-            if st.button("Open" if mode != "analyze" else "Select a run", type="primary" if mode == "analyze" else "secondary",
-                         key=f"complex-analysis-card-{mode}"):
-                st.session_state["complex-analysis-secondary-view"] = "analyze" if mode == "analyze" else mode
-                if mode == "analyze":
-                    st.session_state["complex-analysis-next-tab"] = "Runs"
-                st.session_state.pop("complex-analysis-selected-run", None)
-                st.session_state["complex-analysis-detail-visible"] = False
-                st.rerun()
-    if selected_view in {"compare", "collections", "analyses"}:
-        if st.button("← Back to runs", key="complex-analysis-secondary-back"):
-            st.session_state["complex-analysis-secondary-view"] = "analyze"
-            st.rerun()
-        _render_secondary(user, selected_view, workflow_schema=workflow_schema,
-                          project_selector=project_selector, submit=submit)
-        return
-
-    nav = st.segmented_control("Browse by", ["Runs", "Targets", "Molecules", "Collections"],
-                                default="Runs", label_visibility="collapsed",
-                                key="complex-analysis-main-tab", selection_mode="single")
-    heading, refresh_col = st.columns([0.82, 0.18])
-    heading.subheader("Results runs" if nav in (None, "Runs") else str(nav))
-    refresh = refresh_col.button("Refresh runs", key="complex-analysis-refresh-runs")
+    refresh = bool(st.session_state.pop("complex-analysis-refresh-requested", False))
     try:
         runs = _run_catalog(user, refresh=refresh)
         rows = _result_sources(runs)
     except (OSError, RuntimeError, ValueError, PermissionError) as exc:
         st.error(f"Could not load accessible Results runs: {exc}")
         return
-    if not rows:
-        st.info("No accessible Results runs with verified pose structures are available. Empty and sequence-only jobs remain available in Results and the Database.")
+    selected_ref = str(st.session_state.get("complex-analysis-selected-run") or "")
+    selected = next((row for row in rows if _job_ref(row) == selected_ref), None)
+    if st.session_state.get("complex-analysis-detail-visible") and selected:
+        st.title("Complex Analysis")
+        if st.button("← Back to runs", key="complex-analysis-run-detail-back-top"):
+            st.session_state["complex-analysis-detail-visible"] = False
+            st.rerun()
+        if st.session_state.get("complex-analysis-detail-intent") == "additional":
+            st.info("Review the run inventory below. To configure additional analyses for a specific pose, choose a structure and open its detailed Inspector.")
+        _render_job_detail(user, selected, workflow_schema=workflow_schema,
+                           project_selector=project_selector, submit=submit)
+        return
+    st.session_state["complex-analysis-detail-visible"] = False
+    selected_view = str(st.session_state.get("complex-analysis-secondary-view") or "analyze")
+    nav = str(st.session_state.get("complex-analysis-main-tab") or "Runs")
+    event = render_landing(
+        rows=_landing_rows(rows, st.session_state.get("complex-analysis-coverage-cache")),
+        view=nav, selected_view=selected_view,
+        view_state=st.session_state.get("complex-analysis-landing-state") or {},
+        key="complex-analysis-landing",
+    )
+    if _apply_landing_event(event, rows, st.session_state):
+        st.rerun()
+    if selected_view in {"compare", "collections", "analyses"}:
+        _render_secondary(user, selected_view, workflow_schema=workflow_schema,
+                          project_selector=project_selector, submit=submit, run_rows=rows)
         return
     if nav == "Targets":
+        st.subheader("Targets")
         target_rows, unrecorded_count = _target_rows(rows)
         st.caption("Targets are grouped by exact recorded sequence identity. Input target distinguishes a supplied structure from sequence-only design; generated IDR sequence carriers are not treated as target structures.")
         if target_rows:
@@ -1352,104 +1522,11 @@ def render_complex_analysis_dashboard(user: dict, *, workflow_schema=None, proje
             st.info("The accessible structure-bearing runs do not contain a recorded target identity yet.")
         if unrecorded_count:
             st.caption(f"{unrecorded_count} structure-bearing run(s) do not record a separate target identity; some are standalone prediction runs. Chain roles are not inferred from order.")
-        return
-    if nav == "Molecules":
+    elif nav == "Molecules":
         _render_secondary(user, "compare", workflow_schema=workflow_schema,
-                          project_selector=project_selector, submit=submit)
-        return
-    if nav == "Collections":
+                          project_selector=project_selector, submit=submit, run_rows=rows)
+    elif nav == "Collections":
         _render_secondary(user, "collections", workflow_schema=workflow_schema,
-                          project_selector=project_selector, submit=submit)
-        return
-
-    filtered = _filter_runs(rows)
-    if not filtered:
-        st.info("No runs match the current filters.")
-        return
-    main, side = st.columns([0.76, 0.24], gap="large")
-    with side:
-        with st.container(border=True):
-            st.markdown("### Quick actions")
-            st.caption("Available through the existing Studio workflows.")
-            if st.button("Analyze missing minimum", type="primary", key="complex-analysis-quick-analyze"):
-                st.session_state["complex-analysis-secondary-view"] = "analyze"
-                st.session_state["complex-analysis-detail-visible"] = True
-                st.rerun()
-            if st.button("Select target systems", key="complex-analysis-quick-target"):
-                st.session_state["complex-analysis-next-tab"] = "Targets"
-                st.rerun()
-            if st.button("Compare by molecule", key="complex-analysis-quick-molecule"):
-                st.session_state["complex-analysis-next-tab"] = "Molecules"
-                st.rerun()
-            if st.button("Open analysis dashboard", key="complex-analysis-quick-dashboard"):
-                st.session_state["complex-analysis-secondary-view"] = "analyses"
-                st.rerun()
-        with st.container(border=True):
-            st.markdown("### Recent activity")
-            recent = sorted(rows, key=lambda row: str(row.get("last_analysis_activity") or row.get("updated_at") or ""), reverse=True)[:3]
-            for row in recent:
-                activity = "analysis updated" if row.get("last_analysis_activity") else "Results run updated"
-                st.markdown(f"**{row.get('logical_run_name') or row.get('tool') or 'Run'}**")
-                st.caption(f"{activity} · {str(row.get('last_analysis_activity') or row.get('updated_at') or '')[:10] or 'date unavailable'}")
-        with st.container(border=True):
-            st.markdown("### Minimum analysis")
-            st.caption("Select a run to inspect exact Evaluations and missing input requirements. A candidate count is never substituted for a structure count.")
-    with main:
-        heading, filters_col = st.columns([0.78, 0.22])
-        heading.markdown("### Results runs")
-        filters_col.caption(f"{len(filtered)} structure-bearing runs")
-        selected_token = str(st.session_state.get("complex-analysis-selected-run") or "")
-        if selected_token not in {_job_ref(row) for row in filtered}:
-            selected_token = _job_ref(filtered[0])
-        page_size = 10
-        page_count = max(1, (len(filtered) + page_size - 1) // page_size)
-        page_key = "complex-analysis-runs-page"
-        page = min(max(1, int(st.session_state.get(page_key) or 1)), page_count)
-        page_rows = filtered[(page - 1) * page_size:page * page_size]
-        selected_ref_for_table = selected_token if st.session_state.get("complex-analysis-detail-visible") else ""
-        frame_rows = _table_rows(page_rows, selected_ref=selected_ref_for_table)
-        visible_columns = ["Run (ID)", "Target / system", "Engine", "Structures", "Native acceptance",
-                           "Analysis coverage", "Status", "Updated"]
-        frame = pd.DataFrame([{key: value for key, value in row.items() if key in visible_columns} for row in frame_rows],
-                             columns=visible_columns)
-        st.dataframe(frame, hide_index=True, use_container_width=True, key="complex-analysis-run-table",
-            column_config={
-                "Run (ID)": st.column_config.TextColumn(width="medium"),
-                "Target / system": st.column_config.TextColumn(width="small"),
-                "Engine": st.column_config.TextColumn(width="small"),
-                "Structures": st.column_config.TextColumn(width="small"),
-                "Native acceptance": st.column_config.TextColumn(width="medium"),
-                "Analysis coverage": st.column_config.TextColumn(width="medium"),
-                "Status": st.column_config.TextColumn(width="small"),
-                "Updated": st.column_config.TextColumn(width="small"),
-            })
-        refs = [_job_ref(row) for row in page_rows]
-        labels = {ref: f"{row.get('logical_run_name') or row.get('campaign_name') or row.get('tool') or 'Run'} · {_target_label(row)} · {int(row.get('structure_count') or 0)} structures"
-                  for ref, row in zip(refs, page_rows)}
-        if selected_token not in refs:
-            selected_token = refs[0]
-        select_col, action_col, activity_col = st.columns([0.62, 0.18, 0.2])
-        selected_token = select_col.selectbox("Select a run", refs, index=refs.index(selected_token),
-                                              format_func=lambda value: labels[value], key="complex-analysis-run-choice")
-        st.session_state["complex-analysis-selected-run"] = selected_token
-        selected_row = next((row for row, ref in zip(page_rows, refs) if ref == selected_token), {})
-        action_label = _run_action_label(selected_row)
-        action_col.write("")
-        if action_col.button(action_label, type="primary", key="complex-analysis-analyze-selected"):
-            st.session_state["complex-analysis-selected-run"] = selected_token
-            st.session_state["complex-analysis-detail-visible"] = True
-            st.rerun()
-        activity_col.caption(f"Showing {(page - 1) * page_size + 1}–{min(page * page_size, len(filtered))} of {len(filtered)} runs")
-        previous_col, page_col, next_col = st.columns([1, 4, 1])
-        if previous_col.button("←", disabled=page <= 1, key="complex-analysis-page-prev"):
-            st.session_state[page_key] = page - 1
-            st.rerun()
-        page_col.caption(f"Page {page} of {page_count}")
-        if next_col.button("→", disabled=page >= page_count, key="complex-analysis-page-next"):
-            st.session_state[page_key] = page + 1
-            st.rerun()
-        if st.session_state.get("complex-analysis-detail-visible"):
-            selected = next((row for row, ref in zip(page_rows, refs) if ref == selected_token), None)
-            if selected:
-                _render_job_detail(user, selected, workflow_schema=workflow_schema,
-                                   project_selector=project_selector, submit=submit)
+                          project_selector=project_selector, submit=submit, run_rows=rows)
+    elif not rows:
+        st.info("No accessible Results runs with verified pose structures are available. Empty and sequence-only jobs remain available in Results and the Database.")

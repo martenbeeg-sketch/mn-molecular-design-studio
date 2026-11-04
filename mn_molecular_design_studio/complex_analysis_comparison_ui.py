@@ -30,18 +30,42 @@ def _read_json(path: Path) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def _comparison_slot(user: dict, slot: str) -> dict | None:
+def _jobs_for_selected_run(jobs: list[dict], run_group: dict) -> list[dict]:
+    """Intersect a selected logical run with the independently authorized local jobs."""
+    sources = {(str(source.get("task_group") or ""), str(source.get("run_id") or ""))
+               for source in run_group.get("run_sources") or [] if source.get("is_local")
+               and int((source.get("source_summary") or {}).get("structure_count") or 0) > 0}
+    return [job for job in jobs if (str(job.get("task_group") or ""), str(job.get("run_id") or "")) in sources]
+
+
+def _comparison_slot(user: dict, slot: str, run_group: dict | None = None) -> dict | None:
     """Resolve one independently authorized Results or Database structure."""
     from mn_molecular_design_studio import complex_analysis_ui as workspace
     from mn_molecular_design_studio.complex_analysis_catalog import authorized_structure_catalog
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
 
-    source_kind = st.selectbox("Structure source", ["Results", "Database"], key=f"complex-analysis-compare-{slot}-source")
+    if run_group:
+        st.caption("Run: " + str(run_group.get("logical_run_name") or "Selected run"))
+        source_kind = "Results"
+    else:
+        source_kind = st.selectbox("Structure source", ["Results", "Database"], key=f"complex-analysis-compare-{slot}-source")
     source: dict = {"kind": source_kind.casefold()}
     if source_kind == "Results":
-        jobs = workspace._accessible_result_jobs(user)
+        if run_group:
+            from mn_molecular_design_studio.auth import can_access_job
+            from mn_molecular_design_studio.job_catalog import get_job_access_record
+
+            # A failed/partial generator can retain valid result structures.
+            # Keep those poses available while rechecking ordinary job access.
+            jobs = [source for source in run_group.get("run_sources") or []
+                    if source.get("is_local") and source.get("task_group") and source.get("run_id")
+                    and can_access_job(user, get_job_access_record(str(source["task_group"]), str(source["run_id"])))]
+            jobs = _jobs_for_selected_run(jobs, run_group)
+        else:
+            jobs = workspace._accessible_result_jobs(user)
         if not jobs:
-            st.info("No accessible completed Results jobs are available for this comparison slot.")
+            st.info("No accessible Results jobs with local structures are available for this selected run. Remote files can be inspected on their source workstation." if run_group else
+                    "No accessible completed Results jobs are available for this comparison slot.")
             return None
         # A BioEmu trajectory topology is not a coordinate-bearing pose, so
         # don't make it the first comparison choice when static predictions
@@ -54,14 +78,22 @@ def _comparison_slot(user: dict, slot: str) -> dict | None:
         )
         refs = [f"{row.get('task_group')}/{row.get('run_id')}" for row in jobs]
         by_ref = {f"{row.get('task_group')}/{row.get('run_id')}": row for row in jobs}
+        job_key = f"complex-analysis-compare-{slot}-job"
+        if st.session_state.get(job_key) not in refs:
+            st.session_state[job_key] = refs[default_job_index]
         selected_ref = st.selectbox(
-            "Completed Results job", refs,
+            "Results source job" if run_group else "Completed Results job", refs,
             format_func=lambda ref: f"{by_ref[ref].get('display_tool') or by_ref[ref].get('tool') or 'Result'} · {by_ref[ref].get('job_code') or ref}",
             index=default_job_index,
-            key=f"complex-analysis-compare-{slot}-job",
+            key=job_key,
         )
         job = by_ref[selected_ref]
-        options = workspace._job_structure_options(user, job)
+        if run_group:
+            from mn_molecular_design_studio.complex_analysis_dashboard import _discover_structures
+
+            options = _discover_structures(user, job)
+        else:
+            options = workspace._job_structure_options(user, job)
         # BioEmu stores topology separately from trajectory coordinates. A
         # topology-only artifact is not a selected structural sample/pose.
         if str(job.get("display_tool") or job.get("tool") or "").casefold() == "bioemu2":
@@ -936,11 +968,12 @@ def _render_foldseek(user: dict, sources: list[dict], *, workflow_schema=None, s
         st.rerun()
 
 
-def render_comparison(user: dict, *, workflow_schema=None, project_selector=None, submit=None) -> None:
+def render_comparison(user: dict, *, workflow_schema=None, project_selector=None, submit=None,
+                      run_groups: list[dict] | None = None) -> None:
     """Render an additive multi-source comparison panel for existing structures."""
     st.subheader("Compare saved complexes")
     st.caption("Select 2–5 existing representations independently. Registered workflows can analyze a compatible selection while preserving each source structure and evaluation's provenance.")
-    n_structures = int(st.number_input(
+    n_structures = len(run_groups) if run_groups else int(st.number_input(
         "Complexes to compare", min_value=2, max_value=5, value=2, step=1,
         key="complex-analysis-compare-count",
     ))
@@ -950,7 +983,10 @@ def render_comparison(user: dict, *, workflow_schema=None, project_selector=None
         for offset, column in enumerate(columns):
             slot_index = start + offset
             with column:
-                source = _comparison_slot(user, chr(ord("a") + slot_index))
+                if run_groups:
+                    source = _comparison_slot(user, chr(ord("a") + slot_index), run_group=run_groups[slot_index])
+                else:
+                    source = _comparison_slot(user, chr(ord("a") + slot_index))
             if source:
                 sources.append(source)
     if len(sources) != n_structures:

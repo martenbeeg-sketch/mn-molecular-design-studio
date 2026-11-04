@@ -24,7 +24,7 @@ from mn_molecular_design_studio.runtime import app_home
 from mn_molecular_design_studio.output_vocabulary import PREFIX, normalize_metrics, sql_common_metrics
 
 IMPORT_METHODS = {"user_uploads": "User uploads", "tool_inputs": "Tool inputs", "tool_output": "Tool output", "agent_inputs": "Agent inputs"}
-COLLECTION_KINDS = {"curated", "generated", "inputs", "evaluation", "intermediate"}
+COLLECTION_KINDS = {"curated", "generated", "reference", "inputs", "evaluation", "intermediate"}
 _SMOKE_TEST_GROUP = re.compile(r"(?<![a-z0-9])(smoke|test|testing)(?![a-z0-9])", re.IGNORECASE)
 _SYNC_TIMES: dict[str, float] = {}
 _CAPTURE_REVISION_SCHEMA_READY: set[str] = set()
@@ -324,7 +324,7 @@ class MolecularDatabase:
                 continue
             if not row["molecule_count"] and row["import_method"] not in {"user_uploads", "agent_inputs"}:
                 continue
-            if collection == "library" and item["collection_kind"] not in {"curated", "generated"}:
+            if collection == "library" and item["collection_kind"] not in {"curated", "generated", "reference"}:
                 continue
             if methods and row["import_method"] not in methods:
                 continue
@@ -657,7 +657,12 @@ class MolecularDatabase:
                     break
             connection.execute("INSERT INTO molecule_observations VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
                                "molecule_id=excluded.molecule_id,group_id=excluded.group_id,namespace=excluded.namespace,"
-                               "run_id=excluded.run_id,metrics=excluded.metrics,context=excluded.context,created_at=excluded.created_at", (
+                               "run_id=excluded.run_id,metrics=excluded.metrics,context=excluded.context,created_at=excluded.created_at "
+                               "WHERE (molecule_observations.molecule_id,molecule_observations.group_id,"
+                               "molecule_observations.namespace,molecule_observations.run_id,molecule_observations.metrics,"
+                               "molecule_observations.context,molecule_observations.created_at) IS NOT "
+                               "(excluded.molecule_id,excluded.group_id,excluded.namespace,excluded.run_id,excluded.metrics,"
+                               "excluded.context,excluded.created_at)", (
                                    observation_id, molecule_id, group_id, namespace, run_id, _json(clean), _json(context or {}), created_at or _now()))
         return observation_id
 

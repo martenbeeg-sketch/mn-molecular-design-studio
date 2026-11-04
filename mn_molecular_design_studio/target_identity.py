@@ -2,10 +2,78 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections import Counter
+from functools import lru_cache
+import hashlib
+import json
+import re
 
 
 _STRUCTURE_KEYS = ("target_structure", "target_pdb", "protein_pdb", "complex_pdb")
 _SEQUENCE_KEYS = ("target_sequence", "target_protein_sequences", "target_fasta")
+
+
+@lru_cache(maxsize=1)
+def _pdb_example_sequences() -> dict[str, Counter]:
+    path = Path(__file__).parent / "components" / "cofolding_editor" / "examples.json"
+    examples = json.loads(path.read_text(encoding="utf-8"))
+    return {code: Counter(str(card.get("value") or "").upper() for card in value.get("cards") or []
+                          if card.get("kind") == "protein")
+            for code, value in examples.items() if re.fullmatch(r"[0-9][A-Za-z0-9]{3}", code)}
+
+
+def protein_sequence_reference(sequences: list[str]) -> dict:
+    """Identify an exact, unique chain-sequence match to a bundled PDB example.
+
+    This is reference evidence, not a claim that coordinates were provided to
+    the prediction engine. Chain order and biological roles are never inferred.
+    Copy counts matter, and changing even one residue invalidates the match.
+    """
+    normalized = ["".join(str(value).split()).upper() for value in sequences if value]
+    if not normalized:
+        return {}
+    observed = Counter(normalized)
+    matches = [(code, known) for code, known in _pdb_example_sequences().items() if observed <= known]
+    if len(matches) != 1:
+        return {}
+    code, known = matches[0]
+    return {"pdb_id": code.upper(), "basis": "exact_bundled_example_chain_sequences",
+            "matched_chain_count": len(normalized), "reference_chain_count": sum(known.values()),
+            "sequence_sha256": hashlib.sha256(":".join(sorted(normalized)).encode()).hexdigest()}
+
+
+def prediction_input_systems(input_data: dict) -> list[dict]:
+    """Describe saved protein-only prediction systems without inventing a target.
+
+    An explicitly assigned target is handled by the ordinary target resolver.
+    For inputs with unspecified roles, retain the whole molecular composition.
+    """
+    inputs = input_data.get("inputs") if isinstance(input_data.get("inputs"), dict) else input_data
+    systems = {}
+    for task in inputs.get("tasks") or []:
+        if not isinstance(task, dict) or any(task.get(key) for key in
+                ("dna_chains", "rna_chains", "ligand_ccd_codes", "ligand_smiles")):
+            continue
+        chains = task.get("protein_chains") or []
+        if not chains or any(not isinstance(chain, dict) for chain in chains):
+            continue
+        if any(chain.get("role") in {"target", "binder"} for chain in chains):
+            continue
+        sequences = ["".join(str(chain.get("sequence") or "").split()).upper() for chain in chains]
+        if not all(sequences):
+            continue
+        reference = protein_sequence_reference(sequences)
+        digest = hashlib.sha256(":".join(sorted(sequences)).encode()).hexdigest()
+        identity = "sequence:" + digest
+        systems[identity] = {
+            "identity": identity, "identity_kind": "system", "sequence_length": sum(map(len, sequences)),
+            "chain_count": len(chains), "label": (reference["pdb_id"] + " system" if reference else
+                                                    f"Protein system · {len(chains)} chain(s) · {digest[:8]}"),
+            "reference_type": "structure_backed" if reference else "sequence_only",
+            "reference_role": "sequence_source" if reference else "prediction_sequence_input",
+            "pdb_id": reference.get("pdb_id", ""), "reference_basis": reference.get("basis", ""),
+        }
+    return list(systems.values())
 
 
 def _mappings(input_data: dict | None, metadata: dict | None = None) -> list[dict]:

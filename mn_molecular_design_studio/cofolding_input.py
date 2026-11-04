@@ -194,6 +194,12 @@ def model_to_payload(model: dict[str, Any]) -> dict[str, Any]:
         "input_error": errors[0] if errors else "", "chain_catalog": catalog,
     }
     has_ligand = bool(groups["ccd"] or groups["smiles"])
+    if not has_ligand and not groups["dna"] and not groups["rna"]:
+        from mn_molecular_design_studio.target_identity import protein_sequence_reference
+
+        reference = protein_sequence_reference([row["value"] for row in groups["protein"]])
+        if reference:
+            values["sequence_source_reference"] = reference
     compound_name = str(model.get("compound_name") or "").strip()
     compound_id = str(model.get("compound_id") or "").strip() or compound_name
     if has_ligand and not compound_name:

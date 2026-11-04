@@ -92,6 +92,7 @@ include = ["mn_molecular_design_studio*"]
   "components/molecule_sketcher/**/*",
   "components/molecule_sketcher/*",
   "components/molecule_table/*",
+  "components/complex_analysis/*",
 ]
 
 [tool.pytest.ini_options]

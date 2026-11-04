@@ -14,7 +14,7 @@ import streamlit as st
 
 from mn_molecular_design_studio import molecule_imports as imports
 from mn_molecular_design_studio.molecular_database import MolecularDatabase, IMPORT_METHODS
-from mn_molecular_design_studio.molecular_database_ingest import sync_workspace
+from mn_molecular_design_studio.molecular_database_ingest import sync_workspace_async as sync_workspace, workspace_sync_running
 from mn_molecular_design_studio.output_vocabulary import PREFIX, field_label
 
 TYPE_LABELS = {"protein": "Protein", "small_molecule": "Small molecule", "dna": "DNA", "rna": "RNA", "complex": "Complex"}
@@ -424,6 +424,18 @@ def render_details(database, user, record):
         st.caption("Scores and structure belong to this evaluation. Target: " + (evaluation.get("target_id") or "unspecified in historical result"))
     st.markdown("**" + html.escape(record["name"]) + "**")
     st.caption(record["id"])
+    sequence_reference = (record.get("metadata") or {}).get("sequence_source_reference") or {}
+    if sequence_reference.get("pdb_id"):
+        st.caption("Sequence reference: PDB " + str(sequence_reference["pdb_id"]) + " · "
+                   + str(sequence_reference.get("matched_chain_count") or "") + " matched chain(s). Target roles and template use are recorded per run.")
+    reference_id = (record.get("metadata") or {}).get("sequence_source_reference_molecule_id")
+    if reference_id:
+        references = database.list_molecules(user, molecule_ids=[reference_id], collection="all", limit=1)["items"]
+        if references and st.button("Open source PDB in Protein Library", key="database-open-source-reference-" + record["id"]):
+            st.session_state["molecular-preselect-collection"] = "library"
+            st.session_state["molecular-preselect-group"] = references[0]["groups"][0]["id"]
+            st.session_state["molecular-preselect-molecule"] = reference_id
+            st.rerun()
     linked_target = (record.get("metadata") or {}).get("design_target_molecule_id")
     if linked_target:
         target_rows = database.list_molecules(user, molecule_ids=[linked_target], collection="all", limit=1)["items"]
@@ -435,6 +447,14 @@ def render_details(database, user, record):
     molecule_tab, scores_tab = st.tabs(["This molecule", "Group scores"])
     with molecule_tab:
         structures = record["structures"]
+        references = [item for item in record.get("representations") or []
+                      if (item.get("context") or {}).get("structure_role") == "source_reference"]
+        if references and evaluation:
+            structure_view = st.segmented_control("Structure view", ["Evaluation structures", "Source references"],
+                default="Evaluation structures", key="database-structure-view-" + record["id"])
+            if structure_view == "Source references":
+                structures = references
+                st.caption("These are source reference coordinates. The selected Evaluation scores describe its prediction or analysis representation.")
         if structures:
             # The available representations are filtered to the selected
             # evaluation. Include that evaluation in the widget key so
@@ -771,8 +791,9 @@ def render_column_dialog(user, group_id):
 
 def render_database(user, projects):
     database = MolecularDatabase()
-    with st.spinner("Updating molecular records…"):
-        errors = sync_workspace(user, database=database)
+    errors = sync_workspace(user, database=database)
+    if workspace_sync_running(user, database=database):
+        st.caption("Showing saved Database records. Job indexing is updating in the background.")
     st.markdown(CSS, unsafe_allow_html=True)
     pending_group = st.session_state.pop("molecular-preselect-group", None)
     pending_collection = st.session_state.pop("molecular-preselect-collection", None)
@@ -816,7 +837,7 @@ def render_database(user, projects):
                 ["Library", "All indexed"],
                 default="Library",
                 key="molecular-collection-view",
-                help="Library shows imported, curated, and final generated collections. All indexed also shows automatic and intermediate job collections.",
+                help="Library includes imported molecules, the Protein Library, and final generated collections. All indexed also shows evaluation and intermediate job collections.",
             )
             collection = "library" if collection_label == "Library" else "all"
             scope_options = ["Mine", "Shared", "All"]
@@ -861,6 +882,10 @@ def render_database(user, projects):
                     if row is None:
                         return "All molecules"
                     label = f"{row['name']} · {row['molecule_count']:,}"
+                    if row.get("collection_kind") == "reference":
+                        project_label = next((project["name"] for project in projects if project["id"] == row["project_id"]),
+                                             row["project_id"][:8] if row["project_id"] else "Personal")
+                        label += " · " + project_label
                     source = _remote_source_workstation(row.get("origin"))
                     return label + (f" · from {source}" if source else "")
                 group_id = st.radio("Molecule groups", options, format_func=group_label, key="database-selected-group", label_visibility="collapsed")
@@ -1139,7 +1164,8 @@ def render_use_selection(database, user, projects, ids, project_id=""):
 
 
 def render_molecule_picker(user, *, key, allowed_types=None, multiple=False, lazy=False):
-    popover = st.popover("My molecules", icon=":material/storage:",
+    library_label = "Protein Library" if allowed_types and set(allowed_types) <= {"protein"} else "Molecular Library"
+    popover = st.popover(library_label, icon=":material/storage:",
                          key=key + "-library-open" if lazy else None,
                          on_change="rerun" if lazy else "ignore")
     with popover:

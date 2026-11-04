@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import socket
+import threading
 import time
 from pathlib import Path
 
@@ -17,6 +18,8 @@ from mn_molecular_design_studio.molecular_database import MolecularDatabase, _id
 log = logging.getLogger(__name__)
 _LAST_SYNC = {}
 _LAST_SYNC_ERRORS = {}
+_SYNC_WORKERS = set()
+_SYNC_WORKERS_LOCK = threading.Lock()
 
 
 def _read(path):
@@ -1562,6 +1565,41 @@ def sync_workspace(user, *, force=False, database=None):
     return errors
 
 
+def sync_workspace_async(user, *, force=False, database=None):
+    """Refresh rebuildable job indexes without blocking the saved Library view."""
+    database = database or MolecularDatabase()
+    key = (str(database.path), str(user["id"]))
+    with _SYNC_WORKERS_LOCK:
+        if key in _SYNC_WORKERS or (not force and time.monotonic() - _LAST_SYNC.get(key, 0) < 30):
+            return list(_LAST_SYNC_ERRORS.get(key, []))
+        _SYNC_WORKERS.add(key)
+    actor = dict(user)
+
+    def refresh():
+        try:
+            sync_workspace(actor, force=force, database=database)
+        except Exception as exc:
+            log.exception("Molecular workspace refresh failed for %s", actor["id"])
+            _LAST_SYNC_ERRORS[key] = [{"run_id": "workspace-index", "error": str(exc)}]
+        finally:
+            with _SYNC_WORKERS_LOCK:
+                _LAST_SYNC[key] = time.monotonic()
+                _SYNC_WORKERS.discard(key)
+
+    try:
+        threading.Thread(target=refresh, name="studio-molecular-index", daemon=True).start()
+    except RuntimeError:
+        with _SYNC_WORKERS_LOCK:
+            _SYNC_WORKERS.discard(key)
+        log.exception("Could not start molecular workspace refresh")
+    return list(_LAST_SYNC_ERRORS.get(key, []))
+
+
+def workspace_sync_running(user, *, database):
+    with _SYNC_WORKERS_LOCK:
+        return (str(database.path), str(user["id"])) in _SYNC_WORKERS
+
+
 def record_completed_run(run_dir):
     """Indexing cannot change the scientific job's completion status."""
     try:
@@ -1572,6 +1610,9 @@ def record_completed_run(run_dir):
         from mn_molecular_design_studio.collection_policy import automatic_collection_allowed
         if not automatic_collection_allowed(run_dir):
             return
+        from mn_molecular_design_studio.protein_library import record_run_inputs
+
+        record_run_inputs(run_dir)
         metadata = _read(run_dir / "metadata.json")
         result = _read(run_dir / "result.json")
         if not _is_completed_success(metadata, result):

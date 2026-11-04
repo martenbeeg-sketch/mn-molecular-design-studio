@@ -199,6 +199,10 @@ def _candidate_summary(run: Path, job: dict, acceptance_policy: dict | None = No
             encoding="utf-8",
         )
         temporary.replace(accepted_path)
+    if candidate_count and not target_systems:
+        from mn_molecular_design_studio.target_identity import prediction_input_systems
+
+        target_systems.update({system["identity"]: system for system in prediction_input_systems(input_data)})
     summary = {
         "schema_version": 1,
         "status": "complete",
