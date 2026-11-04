@@ -78,15 +78,21 @@ calibration between models.
   `mn-bindcraft2:v1.0.4-cu13-pae-v1` image. Its `pLDDT` is binder confidence in
   the complex, `Target_pLDDT` is target confidence, and
   `Unbound_Binder_pLDDT` refers to the binder alone. The declared 0–1 readings
-  become separate 0–100 fields. Native `i_pAE` is divided by 31; the common
-  interface mean PAE multiplies it by 31 to report Å. RFD4 native
-  `oracle_ppi.ipae_coi` is a chain-of-interest/partner mean PAE in Å averaged
-  across both directions; COI is the chain of interest, ordinarily the designed
-  chain. Its configured oracle engine is retained on the candidate (the current
-  Studio default is OpenFold3 JAX). `common.confidence.generator.interface.pae_norm31`
-  divides the raw value by 31 to expose a shared numeric scale, not a calibrated
-  score equivalence.
-  Aggregation definitions, raw scores and producing predictors remain distinct.
+  become separate 0–100 fields. BindCraft2 `i_pAE` is the binder-to-target
+  directional mean already divided by 31. Generator output maps it to
+  `common.confidence.generator.interface.pae_binder_to_target_norm31`;
+  validation output maps the same producer metric to
+  `common.confidence.validation.interface.pae_binder_to_target_norm31`.
+  Validation i_pAE is never projected as generator evidence.
+- RFD4 native `oracle_ppi.ipae_coi` is a chain-of-interest/partner mean PAE in Å
+  averaged across both directions; COI is the chain of interest, ordinarily the
+  designed chain. Its configured oracle engine is retained on the candidate
+  (the current Studio default is OpenFold3 JAX). The RFD4 generator field
+  `common.confidence.generator.interface.pae_bidirectional_norm31` divides
+  this bidirectional mean by 31. The BindCraft2 directional field and RFD4
+  bidirectional field share a scale conversion, not a measurement definition
+  or calibrated score equivalence. Aggregation definitions, raw scores and
+  producing predictors remain distinct.
 - A generic `plddt`, a whole-complex pLDDT, a binder pLDDT and a composite
   confidence score are not interchangeable. Minimum, mean and directional PAE
   also remain distinct. RMSDs with different atoms, alignment or references do

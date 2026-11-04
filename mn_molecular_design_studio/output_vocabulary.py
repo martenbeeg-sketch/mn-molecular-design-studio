@@ -12,7 +12,7 @@ import re
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 
-VERSION = "studio.output.v1"
+VERSION = "studio.output.v2"
 PREFIX = "common."
 ENGINE_ALIASES = {
     "rfdiffusion_generator": "rfdiffusion", "rfdiffusion3_foundry": "rfdiffusion3",
@@ -158,11 +158,13 @@ for role, stages in (("generator", ("generation.backbone_sequence",)),
 # directions. Keep raw producer metrics and expose the numeric /31 scale;
 # provenance retains aggregation and the selected oracle engine.
 MEASURES.extend([
-    Measure("confidence.generator.interface.pae_norm31", "Generator interface PAE normalized by 31 Å", "PAE / 31 Å", "producer-defined interchain PAE aggregation",
-        "BindCraft2 AF2 i_pAE: binder-to-target directional mean, already normalized by 31 Å", ("i_pAE",), "lower", minimum=0, maximum=1, engines=("bindcraft2",)),
-    Measure("confidence.generator.interface.pae_norm31", "Generator interface PAE normalized by 31 Å", "PAE / 31 Å", "producer-defined interchain PAE aggregation",
+    Measure("confidence.generator.interface.pae_binder_to_target_norm31", "Generator directional interface PAE / 31 Å", "PAE / 31 Å", "binder-to-target directional mean",
+        "BindCraft2 AF2 i_pAE: binder-to-target directional mean, already normalized by 31 Å", ("i_pAE",), "lower", minimum=0, maximum=1, engines=("bindcraft2",), stages=("generation.backbone_sequence",)),
+    Measure("confidence.generator.interface.pae_bidirectional_norm31", "Generator bidirectional interface PAE / 31 Å", "PAE / 31 Å", "mean of both directional COI/partner means",
         "RFD4 native PPI oracle ipae_coi: COI-to-partner mean averaged across both directions, divided by 31 Å; folding_engine is retained per run", ("oracle_ppi.ipae_coi",), "lower", minimum=0,
         maximum=1, engines=("rfd4_proteina",), transform="divide_31", stages=("generation.backbone_sequence",)),
+    Measure("confidence.validation.interface.pae_binder_to_target_norm31", "Validation directional interface PAE / 31 Å", "PAE / 31 Å", "binder-to-target directional mean",
+        "BindCraft2 AF2 validation i_pAE: binder-to-target directional mean, already normalized by 31 Å", ("i_pAE",), "lower", minimum=0, maximum=1, engines=("bindcraft2",), stages=("complex_refolding",)),
 ])
 # RFD4's oracle flattens AF3-shaped confidence outputs after scaling pLDDT/pTM by
 # 100; PAE remains in Å. These aliases are scoped to RFD4's generator stage,

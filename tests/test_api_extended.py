@@ -888,7 +888,7 @@ def test_rfd4_native_refold_acceptance_campaign_validates_through_workflow_api(a
         "mandatory_filters": [
             {"field": METRICS["rfd4_native_ptm"]["field"], "operator": ">=", "value": .55},
             {"field": METRICS["rfd4_native_iptm"]["field"], "operator": ">=", "value": .70},
-            {"field": METRICS["interface_pae_norm31"]["field"], "operator": "<=", "value": .35},
+            {"field": METRICS["rfd4_generator_interface_pae_norm31"]["field"], "operator": "<=", "value": .35},
         ],
     }
     request = {

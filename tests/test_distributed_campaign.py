@@ -2916,7 +2916,7 @@ def test_rfd4_native_refold_acceptance_uses_available_metrics_without_extra_pred
         "miniprotein", "fasta_idr", "complex", {**mandatory, **informational},
     )
     assert {rule["metric_id"] for rule in rules} == {
-        "rfd4_native_ptm", "rfd4_native_iptm", "interface_pae_norm31",
+        "rfd4_native_ptm", "rfd4_native_iptm", "rfd4_generator_interface_pae_norm31",
         "rfd4_interface_residues_4a", "rfd4_backbone_clashes_2_5a",
     }
     # The tiny shared fixture cannot contain seven binder residues; retain the
@@ -2986,7 +2986,7 @@ def test_rfd4_native_refold_acceptance_uses_available_metrics_without_extra_pred
     assert decisions["rfd4-reject"]["status"] == "rejected"
     assert "common.confidence.generator.complex.iptm" in ";".join(decisions["rfd4-reject"]["reasons"])
     assert decisions["rfd4-unresolved"]["status"] == "unresolved"
-    pae_field = METRICS["interface_pae_norm31"]["field"]
+    pae_field = METRICS["rfd4_generator_interface_pae_norm31"]["field"]
     observed = decisions["rfd4-pass"]["measurements"][pae_field]
     assert observed["value"] == pytest.approx(9.3 / 31)
     assert "averaged across both directions" in observed["method"]

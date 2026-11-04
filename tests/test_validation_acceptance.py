@@ -54,7 +54,7 @@ def test_graph_bindcraft2_profile_resolves_criteria_from_target_and_source():
         "common.confidence.generator.complex.iptm",
         "common.interface.native.rfd4_proteina.binder_residue_count_4a",
         "common.geometry.native.rfd4_proteina.backbone_ca_clashes_2_5a",
-        "common.confidence.generator.interface.pae_norm31",
+        "common.confidence.generator.interface.pae_bidirectional_norm31",
     }
     vhh = campaign_policy_from_node(
         {**base, "binder_format": "auto"}, target_type="structured",
@@ -124,13 +124,13 @@ def test_rfd4_idr_policy_uses_its_native_openfold3_metrics_and_saved_geometry():
     by_id = {row["metric_id"]: row for row in rules}
     assert set(by_id) == {
         "rfd4_native_ptm", "rfd4_native_iptm",
-        "interface_pae_norm31",
+        "rfd4_generator_interface_pae_norm31",
         "rfd4_interface_residues_4a", "rfd4_backbone_clashes_2_5a",
     }
     assert by_id["rfd4_native_ptm"]["value"] == 0.55
     assert by_id["rfd4_native_iptm"]["value"] == 0.70
-    assert by_id["interface_pae_norm31"]["value"] == 0.35
-    assert by_id["interface_pae_norm31"]["operator"] == "<="
+    assert by_id["rfd4_generator_interface_pae_norm31"]["value"] == 0.35
+    assert by_id["rfd4_generator_interface_pae_norm31"]["operator"] == "<="
     assert not any("normalized by 31 Å" in item for item in unavailable)
 
 
@@ -149,8 +149,8 @@ def test_rfd4_native_oracle_aliases_are_normalized_without_losing_raw_scores():
     assert output["metrics"]["confidence.generator.complex.iptm"] == 0.78
     assert output["metrics"]["confidence.generator.complex.plddt"] == 81.65
     assert output["metrics"]["confidence.generator.interface.ipae_coi"] == 17.48
-    assert output["metrics"]["confidence.generator.interface.pae_norm31"] == pytest.approx(17.48 / 31)
-    pae_provenance = output["provenance"]["confidence.generator.interface.pae_norm31"]
+    assert output["metrics"]["confidence.generator.interface.pae_bidirectional_norm31"] == pytest.approx(17.48 / 31)
+    pae_provenance = output["provenance"]["confidence.generator.interface.pae_bidirectional_norm31"]
     assert pae_provenance["unit"] == "PAE / 31 Å"
     assert pae_provenance["aliases"][0]["raw_value"] == 17.48
     assert pae_provenance["aliases"][0]["conversion"] == "divide_31"
@@ -158,21 +158,20 @@ def test_rfd4_native_oracle_aliases_are_normalized_without_losing_raw_scores():
 
 
 def test_bindcraft_and_rfd4_interface_pae_share_31a_normalization_but_keep_provenance():
-    policy = {
-        "binder_format": "miniprotein", "target_type": "fasta_idr",
-        "mandatory_filters": [{"field": METRICS["interface_pae_norm31"]["field"],
-                               "operator": "<=", "value": 0.35}],
-    }
     bindcraft, _ = apply_acceptance([{
         "candidate_id": "bc2", "source_tool": "bindcraft2", "stage": "generation.backbone_sequence",
         "metrics": {"i_pAE": 0.35}, "raw_metadata": {},
-    }], policy)
+    }], {"binder_format": "miniprotein", "target_type": "fasta_idr", "mandatory_filters": [
+        {"field": METRICS["bindcraft2_generator_interface_pae_norm31"]["field"],
+         "operator": "<=", "value": 0.35}]})
     rfd4, _ = apply_acceptance([{
         "candidate_id": "rfd4", "source_tool": "rfd4_proteina", "stage": "generation.backbone_sequence",
         "metrics": {"oracle_ppi.ipae_coi": 10.85}, "raw_metadata": {},
-    }], policy)
-    bc2_measurement = bindcraft[0]["raw_metadata"]["validation_acceptance"]["measurements"][METRICS["interface_pae_norm31"]["field"]]
-    rfd4_measurement = rfd4[0]["raw_metadata"]["validation_acceptance"]["measurements"][METRICS["interface_pae_norm31"]["field"]]
+    }], {"binder_format": "miniprotein", "target_type": "fasta_idr", "mandatory_filters": [
+        {"field": METRICS["rfd4_generator_interface_pae_norm31"]["field"],
+         "operator": "<=", "value": 0.35}]})
+    bc2_measurement = bindcraft[0]["raw_metadata"]["validation_acceptance"]["measurements"][METRICS["bindcraft2_generator_interface_pae_norm31"]["field"]]
+    rfd4_measurement = rfd4[0]["raw_metadata"]["validation_acceptance"]["measurements"][METRICS["rfd4_generator_interface_pae_norm31"]["field"]]
     assert bc2_measurement["value"] == pytest.approx(0.35)
     assert rfd4_measurement["value"] == pytest.approx(0.35)
     assert bc2_measurement["source_tool"] == "bindcraft2"

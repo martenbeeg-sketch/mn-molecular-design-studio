@@ -20,7 +20,10 @@ iPTM are retained as source-model measurements. For BindCraft2 and RFD4 native
 evidence, PAE can be displayed on the shared `PAE / 31 Å` numeric scale:
 BindCraft2 `i_pAE` is a binder-to-target directional mean already normalized
 by 31, while RFD4 `oracle_ppi.ipae_coi` is a bidirectional chain-of-interest
-summary in Å. COI means the chain of interest selected by RFD4 (normally the
+summary in Å. They use separate generator fields and acceptance definitions.
+BindCraft2 validation-stage i_pAE is recorded under the validation scope and is
+never projected as generator evidence. COI means the chain of interest selected
+by RFD4 (normally the
 designed chain). The RFD4 candidate records the configured oracle engine; the
 current Studio default is OpenFold3 JAX, while the upstream oracle keeps the
 AF3-shaped metric contract. Dividing by 31 is an arithmetic scale conversion,

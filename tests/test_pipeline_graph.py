@@ -83,7 +83,7 @@ def test_shared_filter_preview_resolves_effective_rfd4_reference_thresholds():
             for rule in policy["mandatory_filters"]} == {
         ("rfd4_native_ptm", ">=", 0.55),
         ("rfd4_native_iptm", ">=", 0.70),
-        ("interface_pae_norm31", "<=", 0.35),
+        ("rfd4_generator_interface_pae_norm31", "<=", 0.35),
         ("rfd4_interface_residues_4a", ">=", 7),
         ("rfd4_backbone_clashes_2_5a", "<=", 0),
     }
@@ -1561,7 +1561,7 @@ def test_campaign_stop_compiles_filter_and_limits_to_existing_native_rfd4_contro
             {"field": "common.confidence.generator.complex.iptm", "operator": ">=", "value": .7},
             {"field": "common.interface.native.rfd4_proteina.binder_residue_count_4a", "operator": ">=", "value": 7},
             {"field": "common.geometry.native.rfd4_proteina.backbone_ca_clashes_2_5a", "operator": "<=", "value": 0},
-            {"field": "common.confidence.generator.interface.pae_norm31", "operator": "<=", "value": .35},
+            {"field": "common.confidence.generator.interface.pae_bidirectional_norm31", "operator": "<=", "value": .35},
         ],
         informational_scores=["common.confidence.generator.complex.plddt", "common.confidence.generator.interface.ipae_coi"],
     )

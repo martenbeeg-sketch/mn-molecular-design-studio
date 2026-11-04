@@ -73,8 +73,10 @@ def test_generator_confidence_has_declared_units_scope_and_stage():
     assert trajectory["metrics"]["confidence.generator.bound_binder.plddt"] == 88
     assert trajectory["metrics"]["confidence.generator.unbound_binder.plddt"] == 80
     assert trajectory["metrics"]["confidence.generator.interface.mean_pae"] == pytest.approx(6.2)
-    assert trajectory["metrics"]["confidence.generator.interface.pae_norm31"] == pytest.approx(.2)
+    assert trajectory["metrics"]["confidence.generator.interface.pae_binder_to_target_norm31"] == pytest.approx(.2)
     assert validation["metrics"]["confidence.validation.complex.iptm"] == .7
+    assert validation["metrics"]["confidence.validation.interface.pae_binder_to_target_norm31"] == pytest.approx(.2)
+    assert "confidence.generator.interface.pae_binder_to_target_norm31" not in validation["metrics"]
     assert "confidence.generator.complex.iptm" not in validation["metrics"]
     assert not any("binder.plddt" == key for key in trajectory["metrics"])
     # The same spelling from an unaudited tool is not assigned BindCraft's scope.
@@ -394,7 +396,7 @@ def test_output_dictionary_api_and_accessible_metric_fields(tmp_path, monkeypatc
     client = TestClient(app)
     response = client.get("/api/v1/molecules/output-vocabulary")
     assert response.status_code == 200
-    assert response.json()["version"] == "studio.output.v1"
+    assert response.json()["version"] == "studio.output.v2"
     prediction_measurements = response.json()["prediction_measurements"]
     assert prediction_measurements["version"] == "studio.prediction-measurements.v1"
     assert {"alphafold3", "boltz2", "protenix_v1", "protenix_v2", "mol1", "esmfold2"} <= {

@@ -214,7 +214,9 @@ METRICS = {
     "rfd4_native_iptm": {"label": "RFD4 native oracle · complex iPTM", "field": PREFIX + "confidence.generator.complex.iptm", "unit": "0–1", "direction": "higher", "modes": ("complex",), "source_tools": ("rfd4_proteina",)},
     "rfd4_native_plddt": {"label": "RFD4 native oracle · complex pLDDT", "field": PREFIX + "confidence.generator.complex.plddt", "unit": "0–100", "direction": "higher", "modes": ("complex",), "source_tools": ("rfd4_proteina",), "informational_only": True},
     "rfd4_native_interface_pae": {"label": "RFD4 native oracle · chain-of-interest iPAE", "field": PREFIX + "confidence.generator.interface.ipae_coi", "unit": "Å", "direction": "lower", "modes": ("complex",), "source_tools": ("rfd4_proteina",), "informational_only": True},
-    "interface_pae_norm31": {"label": "Native interface PAE normalized by 31 Å", "field": PREFIX + "confidence.generator.interface.pae_norm31", "unit": "PAE / 31 Å", "direction": "lower", "modes": ("complex",), "source_tools": ("rfd4_proteina", "bindcraft2")},
+    "bindcraft2_generator_interface_pae_norm31": {"label": "BindCraft2 generator · binder→target i_pAE / 31 Å", "field": PREFIX + "confidence.generator.interface.pae_binder_to_target_norm31", "unit": "PAE / 31 Å", "direction": "lower", "modes": ("complex",), "source_tools": ("bindcraft2",)},
+    "bindcraft2_validation_interface_pae_norm31": {"label": "BindCraft2 validation · binder→target i_pAE / 31 Å", "field": PREFIX + "confidence.validation.interface.pae_binder_to_target_norm31", "unit": "PAE / 31 Å", "direction": "lower", "modes": ("complex",), "source_tools": ("bindcraft2",), "stages": ("complex_refolding",), "informational_only": True},
+    "rfd4_generator_interface_pae_norm31": {"label": "RFD4 generator · bidirectional COI iPAE / 31 Å", "field": PREFIX + "confidence.generator.interface.pae_bidirectional_norm31", "unit": "PAE / 31 Å", "direction": "lower", "modes": ("complex",), "source_tools": ("rfd4_proteina",)},
     "rfd4_interface_residues_4a": {"label": "Saved RFD4 complex · binder residues within 4 Å", "field": PREFIX + "interface.native.rfd4_proteina.binder_residue_count_4a", "unit": "residues", "direction": "higher", "modes": ("complex",), "source_tools": ("rfd4_proteina",)},
     "rfd4_backbone_clashes_2_5a": {"label": "Saved RFD4 complex · interchain Cα clashes ≤2.5 Å", "field": PREFIX + "geometry.native.rfd4_proteina.backbone_ca_clashes_2_5a", "unit": "atom pairs", "direction": "lower", "modes": ("complex",), "source_tools": ("rfd4_proteina",)},
     "ipsae_min": {"label": "ipSAE · minimum direction", "field": PREFIX + "interface.ipsae.minimum", "unit": "0–1", "direction": "higher", "modes": ("complex",), "engines": ("ipsae", "boltz2", "proteina_complexa")},
@@ -328,13 +330,17 @@ def bindcraft2_reference_policy(binder_format: str, target_type: str, mode: str,
     metric_aliases = {
         "ptm": "rfd4_native_ptm",
         "iptm": "rfd4_native_iptm",
-        "ipae": "interface_pae_norm31",
         "interface_residues_4a": "rfd4_interface_residues_4a",
         "backbone_clashes_2_5a": "rfd4_backbone_clashes_2_5a",
     }
     compatible = []
     for metric_id, (comparison, threshold) in criteria.items():
-        selected_metric_id = metric_aliases.get(metric_id) if metric_aliases.get(metric_id) in available else metric_id
+        if metric_id == "ipae":
+            selected_metric_id = next((key for key in (
+                "bindcraft2_generator_interface_pae_norm31", "rfd4_generator_interface_pae_norm31"
+            ) if key in available), None)
+        else:
+            selected_metric_id = metric_aliases.get(metric_id) if metric_aliases.get(metric_id) in available else metric_id
         spec = available.get(selected_metric_id)
         if spec is None or mode not in spec.get("modes", ()):
             inactive.append(f"{metric_id}: no compatible measurement is available for this source and mode")
@@ -343,9 +349,11 @@ def bindcraft2_reference_policy(binder_format: str, target_type: str, mode: str,
                            "value": threshold, "metric_id": selected_metric_id})
     if mode == "complex":
         unsupported = [f"Unbound_Binder_pLDDT ≥{format_spec.get('unbound_plddt', 0.8)}"]
-        if format_spec.get("ipae") is not None and not any(row.get("metric_id") == "interface_pae_norm31" for row in compatible):
+        if format_spec.get("ipae") is not None and not any(row.get("metric_id") in {
+                "bindcraft2_generator_interface_pae_norm31", "rfd4_generator_interface_pae_norm31"
+        } for row in compatible):
             unsupported.append(f"Interface PAE normalized by 31 Å ≤{format_spec['ipae']}")
-        if "rfd4_native_interface_pae" in available and "interface_pae_norm31" not in available:
+        if "rfd4_native_interface_pae" in available and "rfd4_generator_interface_pae_norm31" not in available:
             inactive.append("RFD4 raw chain-of-interest iPAE is recorded as information only because no verified 31 Å normalization is available.")
         if format_spec.get("binder_rmsd") is not None:
             unsupported.append(f"Binder_RMSD ≤{format_spec['binder_rmsd']} Å")
