@@ -6,17 +6,17 @@
 
 **Source instructions:** [Original request with user-recovered continuation and subsequent clarifications](database-phase1-source-instructions.md)
 
-**Status:** The relevant isolated regression selection passes. Phase 1 remains in progress; the open items below are not production verifications.
+**Status:** Corrective regression selection passes. Phase 1 remains in progress and awaits another independent Sol review. This report is not production verification or Phase 1 approval.
 
 ## Scope and safety
 
-This checkpoint covers the existing working tree, isolated test databases and fixtures, and read-only R3 audit exports. It did not modify production Database content, run a rebuild or bulk import, contact or synchronize production peers, restart a service, deploy, or push changes. The three-machine test uses simulated peer nodes and temporary isolated stores.
+This checkpoint covers the corrective implementation, isolated test databases and fixtures, and read-only R3 audit exports. It did not modify or rebuild production Database content, run a bulk import, contact or synchronize production peers, restart a service, deploy, or push changes. The three-machine test uses simulated peer nodes and temporary isolated stores.
 
 ## Test environment and result
 
 Tests were run with the app’s configured Conda interpreter, `/home/user/mambaforge/envs/mn-molecular-design-studio/bin/python` (Python 3.11, Streamlit 1.65.0, Plotly 6.9.0, pytest 9.1.1). This is the interpreter configured by the Studio UI service. No package was installed or changed in that environment.
 
-The expanded relevant regression selection passed **967 tests, 15 skipped, 0 failed**, in 307.07 seconds across 56 test files. The 15 skips require explicit QC-container or GPU-test opt-in: 10 QC-container checks and 5 GPU-inference checks. Pytest emitted 84 warnings (80 Biopython alignment deprecation warnings and 4 Pydssp runtime warnings); they did not affect the result. This rerun includes the failures previously seen with the base Python environment and the Streamlit job-hierarchy test that could not run against the base environment’s older Streamlit.
+After the corrective changes, the expanded relevant regression selection passed **987 tests, 15 skipped, 0 failed**, in 284.01 seconds across 56 test files. The 15 skips require explicit QC-container or GPU-test opt-in: 10 QC-container checks and 5 GPU-inference checks. Pytest emitted 84 warnings (80 Biopython alignment deprecation warnings and 4 Pydssp runtime warnings); they did not affect the result. The selection includes the previously affected Complex Analysis and ligand-preparation tests.
 
 The selection was:
 
@@ -129,21 +129,56 @@ UI/API fixtures pass showing ordinary Database reads, background refresh paths, 
 - Complex Analysis exact-source authorization and bound-docking reconstruction/export with atom-map validation.
 - Results retained separately from curated Database records.
 
-### Corrected in the working tree
+### Corrected by this implementation
 
 - Policy-less or unclassified historical runs no longer imply automatic promotion. Rejected, unknown, intermediate, and bulk screen inputs remain Results-only unless explicitly selected/accepted under the established policy.
 - Source capture and output promotion are handled separately; reindexing is additive and does not reinterpret earlier saved acceptance decisions.
 - Database UI/API reads and background refresh do not initiate ingestion; explicit refresh/import paths remain available.
-- Analysis identity includes exact source run/candidate/workstation and structure digest where available; local analyses of remote records preserve owner provenance and create local Evaluation membership.
-- Evaluation identity/provenance carries representation, pose/model, native settings, and method-scoped metric/parameter normalization.
-- A read-only historical BindCraft preview and location-independent, content-derived source key are implemented; no commit path is exposed.
+- Every real analysis workflow resolves to an exact source or sequence-defined subject; unresolved workflows do not create Database identities. Sequence-only analysis does not invent a structure association.
+- Attached coordinate files are checked against molecular composition, chains, sequence, and selected coordinate model. Coordinate content participates in immutable structure identity; Evaluations preserve both the source representation digest and the validated calculation-coordinate digest.
+- Evaluation identity includes nested model, chain, ligand-residue selections, and scientific parameters. Missing historical settings do not inherit current defaults for compatibility or reuse.
+- Local Evaluations on readable remote-only molecules preserve owner-qualified source structure references and create local Evaluation membership without modifying the remote owner's collection.
+- Evaluation projection version v6 upgrades stale rows in bounded batches and preserves raw observations.
+- Historical preview validates actual coordinate content and molecular correspondence, supports native BC1 model/rank naming with explicit compatibility limits, and rejects symlinked/unsafe/duplicate archive paths. No commit path is exposed.
+- BindCraft2 generator/validation PAE and RFD4 bidirectional PAE are separate normalized measurements with stage and aggregation provenance.
+- Both RFD4 sequence-carrier producers are classified as artificial sequence carriers; they remain valid sequence inputs and are not recorded as native structures.
 - Input receptor structures attached during ingestion are made portable in the existing Database store.
+
+## Independent review resolution matrix
+
+| Finding | Original defect | Correction | Regression coverage | Result | Remaining limitation |
+|---|---|---|---|---|---|
+| H1 | Real `analysis.*` jobs could fall through to identity creation when Results/Database source resolution failed. | Analysis purpose is classified explicitly; structural analyses require exact source run/candidate/workstation and digest; sequence-only QC requires an exact explicit or source molecule and sequence. Unresolved analysis remains Results-only. | `test_real_analysis_workflows_without_exact_sources_create_no_library_records`; `test_results_and_pipeline_evaluations_attach_to_exact_source_structure`; `test_protein_qc_reuses_the_exact_frozen_database_identity`. | Passed in the expanded suite. | Not every registered adapter or historic output schema has a dedicated fixture; sequence-only matching is limited to supported sequence workflows. |
+| H2 | Parseable secondary binder/target/complex/validation files could be attached despite wrong molecule, chain, sequence or model. | Validate each attached representation's coordinates and protein composition against declared chains/sequences and primary structure; require an actual selected model for multi-model coordinates; validate target input coordinates separately. | `test_secondary_candidate_structures_must_match_declared_chains_and_sequences`; `test_candidate_structure_model_selection_is_applied_before_attachment`; `test_mismatched_input_target_coordinates_do_not_attach_to_sequence_identity`. | Passed in focused and expanded tests. | Unsupported or ambiguous chain mappings and multi-model files without a numeric coordinate-model selector remain unresolved and are not attached. |
+| H3 | Replacing coordinates at a reused path could leave the old portable structure attached to new metrics. | Structure IDs include the bytes' SHA-256; attachment checks the validated digest again; Evaluation context and identity distinguish source-structure and calculation-coordinate digests. | `test_changed_coordinates_at_a_portable_path_create_a_new_measurement_revision`; `test_database_ligand_analysis_ingestion_keeps_original_digest_after_evaluator_preparation`. | Passed in focused and expanded tests. | Calculation artifacts remain in Results unless an existing supported path stores them as Database representations; their validated digest is preserved in the Evaluation. |
+| H4 | A remote-source Evaluation could replicate with a structure ID that did not resolve on a third workstation. | Preserve source owner workstation, group and structure IDs separately from local replica IDs through capture/apply and onward replication. | `test_three_workstations_ingest_offline_converge_retrieve_evaluate_and_tombstone` now covers owner A → Evaluation on B → C → return to A. | Passed in isolated three-node simulation. | This verifies the simulated transport and temporary stores, not production peer convergence or every network-failure mode. |
+| H5 | Nested model, ligand residue and component selections were omitted from Evaluation identity. | Build a canonical nested selection digest and include it in Evaluation subject/instance projections. | `test_nested_model_and_ligand_residue_selections_are_part_of_evaluation_identity`. | Passed in the expanded suite. | Unrecognized selection schemas are retained as native metadata but are not normalized into a common selection vocabulary. |
+| H6 | Missing historical settings were treated as today's pH/cutoff/protocol/image defaults during reuse. | Missing pH/cutoffs remain unknown; reuse also requires exact stored protocol revision and installed image digest. | `test_qc_reuse_requires_saved_parameters_protocol_and_image_identity`. | Passed in the expanded suite. | Reuse stays conservative when an old run lacks parameter, protocol or image provenance. |
+| H7 | Local docking analysis of a remote-only compound could create another identity or attempt a write in its owner's collection. | Resolve the accessible canonical identity across readable memberships and create the Observation in the local Evaluation group. | `test_docking_evaluates_remote_only_compounds_in_a_local_evaluation_group`. | Passed in the expanded suite. | Requires the remote molecule to be readable and replicated locally; no identity is fabricated when exact chemistry does not resolve. |
+| M1 | Evaluation projection version changes had no safe incremental upgrade path; old metric rows could be destructively cleared. | Versioned `evaluation.v6` projection rebuild processes bounded batches and replaces metrics per observation without deleting unrelated or raw observations. | `test_legacy_evaluation_projection_upgrade_is_bounded_and_preserves_raw_observations`. | Passed on an isolated legacy fixture. | Production projections were not rebuilt; deployment-time continuation remains outside this task. |
+| M2 | Historical structure checks relied on filenames/checksums without verifying valid coordinates and molecular correspondence. | Preview parses actual structures and checks binder/target chain sequences; ranked and refolded structures remain distinct. | `test_historical_preview_requires_actual_matching_coordinates_for_structures`; BC2 stage-separation tests. | Passed in synthetic fixtures. | R3 original structures and raw source files are unavailable here, so no real-campaign coordinate or checksum claims are made. |
+| M3 | Native BC1 `<Design>_modelN.pdb` and rank-prefix files were missed; unsupported metrics could imply full compatibility. | Recognize exact design/model suffix and ranked prefixes; preserve native metrics and report unsupported mappings/layouts explicitly. | `test_bindcraft1_reports_unrecognized_native_metric_definitions_and_layouts`; `test_bindcraft1_native_tables_are_detected_without_inventing_acceptance`. | Passed in synthetic fixtures. | No verified normalized mapping for averaged native iPTM and no user-visible commit/reconciliation workflow. |
+| M4 | Symlinked source tables could alter consumed evidence without changing historical import identity. | Reject root/nested symlinks, unsafe archive paths and duplicate normalized ZIP entries; source identity covers the accepted file tree. | `test_historical_source_rejects_symlinked_files_and_root_symlinks`; `test_historical_zip_rejects_duplicate_normalized_paths`; unsafe ZIP path test. | Passed in synthetic fixtures. | Historical import stays preview-only; source trees outside the tested directory/ZIP formats are unsupported. |
+| M5 | BindCraft2 validation PAE projected as generator PAE, and BC2 directional/RFD4 bidirectional values shared a metric identity. | Split generator/validation and directional/bidirectional normalized fields; apply stage restrictions and retain method/aggregation provenance. | `test_generator_confidence_has_declared_units_scope_and_stage`; `test_rfd4_oracle_aliases_preserve_native_scale_and_require_rfd4_generation`; `test_bindcraft_and_rfd4_interface_pae_share_31a_normalization_but_keep_provenance`. | Passed in the expanded suite. | No universal comparison across these scientifically different aggregations is provided. |
+| M6 | `sequence_input.cif` placeholder coordinates were treated as native structural evidence. | Classify both RFD4 artificial sequence-carrier outputs as sequence-only conditioning artifacts across generic source capture. | `test_rfd4_idr_sequence_carrier_is_indexed_as_sequence_not_structure`; `test_rfd4_sequence_input_carrier_is_never_registered_as_native_reference`. | Passed in the expanded suite. | Other third-party artificial carriers require explicit producer/representation provenance; unknown layouts remain unclassified. |
 
 ### Unsupported or still open
 
 - Direct checksum and structural validation of the R3 source files is blocked because the original campaign directories and structures are missing from this host; only the read-only audit-row export was available.
 - Historical BindCraft import/commit and cross-peer replay of committed imports are not implemented or authorized in Phase 1.
-- Full preservation of every original/prepared SDF/PDBQT and complete structural mapping across all workflow producers remains unverified.
+- Full preservation of every original/prepared SDF/PDBQT and complete structural mapping across all workflow producers remains unverified. Unsupported or ambiguous coordinate-model and chain mappings are rejected rather than inferred.
 - Evaluation attachment was verified for representative standalone, Database, Complex Analysis, Results, pipeline, and peer-local paths, not every registered adapter or legacy schema.
+- Historical parameter/protocol/image provenance remains unavailable for older QC runs; they conservatively do not qualify for exact reuse.
+- Artificial sequence carriers from the two known RFD4 producers are classified; other third-party carrier layouts need explicit provenance and remain unknown.
 - Existing forensic differences remain unresolved: 3 memberships, 3 structures, and 128 observations/source links across peer audit snapshots. The audit’s 631,100 tombstones remain untouched; 2,230 representation rows remain unclassified; possible content-store orphans were not deleted.
 - Production peer convergence, migration/rebuild, and any cutover require separate authorization and are outside this Phase 1 checkpoint.
+
+## Local corrective commits
+
+The verified implementation is recorded in three local code/test commits:
+
+- `86ec13b` — exact Evaluation source, coordinate revision and ownership provenance corrections.
+- `92517ec` — historical campaign coordinate, naming and source-path validation.
+- `b2d0908` — separate generator, validation and directional PAE definitions.
+
+The contract and this verification report are updated in the documentation commit recorded in the handover. The earlier Phase 1 commits remain in history. No commit was pushed.
