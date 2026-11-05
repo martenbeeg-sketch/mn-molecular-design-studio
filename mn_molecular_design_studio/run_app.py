@@ -8350,6 +8350,9 @@ def _render_job_details() -> None:
         candidates_path = run_dir / "artifacts/normalized_candidates/candidates.jsonl"
         if candidates_path.is_file():
             result_candidates = read_candidates(candidates_path)
+            if result_candidates and st.button("Review acceptance & Complex Analysis", key=f"job-complex-board-{run_id}", icon=":material/biotech:"):
+                from mn_molecular_design_studio.complex_analysis_results_ui import open_results_board
+                open_results_board(run_dir)
             if any((row.get("raw_metadata") or {}).get(key) for row in result_candidates for key in ("measurement_status", "selection", "source_candidate", "candidate_set")):
                 from mn_molecular_design_studio.result_presentation import candidate_state_rows
                 with st.expander("Candidate measurement and selection outcomes", expanded=True):
@@ -10086,14 +10089,8 @@ elif page == "Job details":
 elif page == "Database":
     _render_database()
 elif page == "Complex Analysis":
-    if st.session_state.get("complex-analysis-dashboard-version") != "run-first-v1":
-        # Existing browser sessions may retain the old Database/Results radio
-        # state; enter the new run-first landing page once when the page opens.
-        if not st.session_state.get("complex-analysis-open"):
-            st.session_state["complex-analysis-workspace-view"] = "dashboard"
-            st.session_state.pop("complex-analysis-source-kind", None)
-        st.session_state["complex-analysis-dashboard-version"] = "run-first-v1"
-    from mn_molecular_design_studio.complex_analysis_ui import render_complex_analysis_workspace
+    from mn_molecular_design_studio.complex_analysis_ui import initialize_workspace_view, render_complex_analysis_workspace
+    initialize_workspace_view(st.session_state)
     render_complex_analysis_workspace(
         CURRENT_USER,
         workflow_schema=workflow_schema,

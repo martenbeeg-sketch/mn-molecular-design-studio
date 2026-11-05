@@ -969,16 +969,16 @@ def _render_foldseek(user: dict, sources: list[dict], *, workflow_schema=None, s
 
 
 def render_comparison(user: dict, *, workflow_schema=None, project_selector=None, submit=None,
-                      run_groups: list[dict] | None = None) -> None:
+                      run_groups: list[dict] | None = None, selected_sources: list[dict] | None = None) -> None:
     """Render an additive multi-source comparison panel for existing structures."""
     st.subheader("Compare saved complexes")
     st.caption("Select 2–5 existing representations independently. Registered workflows can analyze a compatible selection while preserving each source structure and evaluation's provenance.")
-    n_structures = len(run_groups) if run_groups else int(st.number_input(
+    n_structures = len(selected_sources) if selected_sources else len(run_groups) if run_groups else int(st.number_input(
         "Complexes to compare", min_value=2, max_value=5, value=2, step=1,
         key="complex-analysis-compare-count",
     ))
-    sources: list[dict] = []
-    for start in range(0, n_structures, 2):
+    sources: list[dict] = list(selected_sources or [])
+    for start in range(0, 0 if selected_sources else n_structures, 2):
         columns = st.columns(min(2, n_structures - start))
         for offset, column in enumerate(columns):
             slot_index = start + offset
@@ -1085,7 +1085,25 @@ def render_comparison(user: dict, *, workflow_schema=None, project_selector=None
                 molstar_custom_component(visualizations, key="complex-analysis-compatible-overlay", height=650,
                                          show_controls=True, show_structure_tools=False, force_reload=True)
         else:
-            st.caption("Automatic shared-frame overlay is unavailable because these sources do not establish a common coordinate frame. Use the supplied-transform panel below only when you have an externally reviewed transform and explicit residue map.")
+            st.caption("These structures do not establish a common coordinate frame. Fit identical target residues explicitly below, or supply a reviewed external transform.")
+        if len(sources) == 2 and st.checkbox("Fit identical target C-alpha residues and show overlay", key="complex-analysis-fit-targets"):
+            from mn_molecular_design_studio.complex_analysis_comparison import fit_matching_targets
+            try:
+                fit = fit_matching_targets(sources[0], sources[1])
+                st.metric("Target C-alpha RMSD (Å)", f"{fit['target_ca_rmsd_angstrom']:.3f}")
+                st.caption(fit["interpretation"])
+                from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer import molstar_custom_component
+                from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer.dataclasses import StructureVisualization
+                molstar_custom_component([
+                    StructureVisualization(pdb=workspace._viewer_text(sample["path"], sample.get("context") or {}),
+                        color="chain-id", representation_type="cartoon+ball-and-stick",
+                        transform_matrix=fit["matrix_4x4"] if index else None)
+                    for index, sample in enumerate(sources)], key="complex-analysis-target-fit-overlay", height=650,
+                    show_controls=True, show_structure_tools=False, force_reload=True)
+                st.download_button("Download target-fit provenance", json.dumps(fit, indent=2),
+                                   "target-fit.json", "application/json")
+            except (OSError, ValueError, KeyError) as exc:
+                st.info(f"Target-fit overlay unavailable: {exc}")
     else:
         st.info("Interface residue maps require compatible target sequence and numbering. The structures remain available for independent visual inspection.")
 

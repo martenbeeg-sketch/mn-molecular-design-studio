@@ -266,14 +266,22 @@ def _render_evaluation_board(samples: list[dict]) -> list[dict]:
     )
     import pandas as pd
 
+    comparison_columns = st.multiselect('Comparison measurement columns', numeric_metrics,
+        default=[key for key in ('i_pTM', 'i_pDAE', 'qc_interface_contact_pairs', 'qc_interface_residue_pairs', 'plip_interaction_count') if key in numeric_metrics],
+        key='collection-eval-comparison-columns')
+
     display_rows = [{
         "Structure": row["structure_label"], "Kind": row["category"], "Method": row["method"],
         "Source engine": row["source_engine"], "Status": row["status"], "Created": row["created_at"],
         "Evaluation ID": row["evaluation_id"], "Run ID": row["run_id"] or "Not recorded",
         "Candidate / pose ID": row["candidate_id"] or "Not recorded",
         "Structure digest": row["structure_digest"] or "Not recorded",
+        **({"Native acceptance": row['native_acceptance'],
+            "Exploratory acceptance": row.get('exploratory_acceptance', 'not_evaluated'),
+            "Manual selection": row.get('manual_selection', False)} if 'native_acceptance' in row else {}),
         "Parameters": json.dumps(row["parameters"], sort_keys=True, default=str),
         "Recorded measurements": json.dumps(row["metrics"], sort_keys=True, default=str),
+        **{key: row['metrics'].get(key) for key in comparison_columns},
     } for row in filtered]
     st.caption(f"{len(filtered)} saved Evaluation row(s) match these filters; {len(entries)} are associated with the selected structures.")
     st.dataframe(pd.DataFrame(display_rows), hide_index=True, use_container_width=True)
@@ -560,6 +568,11 @@ def _render_protein_protein_map(samples: list[dict]) -> None:
 def render_collection_workspace(user: dict) -> None:
     """Render a scalable, ACL-scoped collection browser over saved Database data."""
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
+
+    if st.radio('Collection source', ['Database', 'Results'], horizontal=True, key='collection-source') == 'Results':
+        from mn_molecular_design_studio.complex_analysis_results_ui import render_results_board
+        render_results_board(user)
+        return
 
     st.subheader("Collection Map & Evaluation Board")
     st.caption("Explore saved Database structures as a collection. Component correspondence is explicit and sequence-based; unsupported structures stay separate with a reason.")

@@ -384,7 +384,11 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
         stage='generation.backbone' if selected['data']['kind']=='backbone_source' else 'generation.backbone_sequence'
         if project_design:
             from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import source_project_designs
-            candidate_loader=lambda path: source_project_designs(path, project_id)[1]
+            params['source_scope'] = st.selectbox("Source scope", ['designs', 'complex_results'],
+                index=1 if params.get('source_scope') == 'complex_results' else 0,
+                format_func=lambda value: 'Complex Results · any completed project job' if value == 'complex_results' else 'Design jobs', key=key+'-scope')
+            candidate_loader=lambda path: source_project_designs(path, project_id,
+                include_complex_results=params['source_scope'] == 'complex_results')[1]
         else:
             candidate_loader=(lambda path:generated_candidates(path,stage=stage)) if generated else design_candidates
         if not project_id:
@@ -392,11 +396,18 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
             return contexts
         rows=[];cursor=None
         while True:
-            page = search_jobs(project_id=project_id, task_group="design", statuses=["completed", "succeeded"], limit=1000, cursor=cursor)
+            page = search_jobs(project_id=project_id, task_group=None if project_design and params.get('source_scope') == 'complex_results' else "design", statuses=["completed", "succeeded"], limit=1000, cursor=cursor)
             rows.extend(page["items"]);cursor=page.get("next_cursor")
             if not cursor:
                 break
-        eligible = {str(row["run_dir"]): (row, designs) for row in rows if (designs := candidate_loader(Path(row["run_dir"])))}
+        eligible = {}
+        for row in rows:
+            try:
+                designs = candidate_loader(Path(row['run_dir']))
+            except (ValueError, FileNotFoundError):
+                continue
+            if designs:
+                eligible[str(row['run_dir'])] = (row, designs)
         if not eligible:
             st.info("This project has no completed jobs with structure-bearing design candidates." if project_design else "This project has no completed generator jobs with the required output type." if generated else "This project has no successful design jobs with filter-passing designs.")
             return contexts
@@ -405,9 +416,11 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
         source_dir = st.selectbox("Completed design job" if project_design else "Generator job" if generated else "Successful design job", options, index=default, format_func=lambda p: f"{eligible[p][0].get('campaign_name') or eligible[p][0]['tool']} · {eligible[p][0].get('job_code')}", key=key+"-source")
         ids = [c["candidate_id"] for c in eligible[source_dir][1]]
         chosen = st.multiselect("Project design candidates" if project_design else "Generated designs" if generated else "Filter-passing designs", ids, default=[c for c in params.get("selected_candidate_ids", ids) if c in ids], key=key+"-designs-"+Path(source_dir).name)
-        if project_design:st.caption("Choose structures from any completed generator or design job. Antibody designs are annotated by SAbR before AbMPNN redesign.")
+        if project_design:st.caption("Choose saved structures with explicit target chains. Complex Results also includes non-binder predictions. Connect Candidate collection → Complex Analysis with Manual selection to analyze them without an acceptance decision.")
         elif generated:st.caption("These designs have not been validated. Connect sequence design and structure prediction steps to assess them.")
         contexts[node_id] = {"source_run_dir": source_dir, "selected_candidate_ids": chosen}
+        if project_design:
+            contexts[node_id]['source_scope'] = params['source_scope']
         params.update(contexts[node_id])
     return contexts
 

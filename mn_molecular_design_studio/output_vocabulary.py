@@ -717,7 +717,7 @@ def candidate_evidence(candidate):
                         "source_tool": item.get("source_tool") or item.get("tool"),
                         "parents": list(item.get("parents") or []), "depth": depth,
                         "same_sequence": compatible, "role": "candidate" if depth == 0 else "evidence" if compatible else "comparator",
-                        "status": "error" if errors else outcome.get("status") or metrics.get("analysis_status") or "unverified",
+                        "status": "error" if errors else outcome.get("status") or metrics.get("analysis_status") or "not_measured",
                         "error": "; ".join(errors) or outcome.get("error", ""), "candidate": item})
         parent = raw.get("source_candidate")
         if isinstance(parent, dict):

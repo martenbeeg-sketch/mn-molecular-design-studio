@@ -1,8 +1,7 @@
 """Compatibility helpers for browsing saved complex structures side by side.
 
-This module does not calculate a new structural score. It validates explicit
-component selections and exposes residue identifiers from saved structures and
-evaluation artifacts for comparison in the Complex Analysis UI.
+Validates component selections and exposes saved evidence. Explicit target
+superposition reuses Studio's existing Kabsch fitter and records its inputs.
 """
 from __future__ import annotations
 
@@ -460,6 +459,43 @@ def compatibility_report(left: dict, right: dict) -> dict[str, Any]:
         "overlay_compatible": not errors and (coordinate_overlay or shared_frame),
         "overlay_basis": "identical structure coordinates" if coordinate_overlay else "matching saved coordinate-frame identifier" if shared_frame else "",
     }
+
+
+def fit_matching_targets(reference: dict, moving: dict) -> dict[str, Any]:
+    """Explicit single-chain fit; flexible-target RMSD is a comparison only."""
+    from mn_molecular_design_studio.complex_analysis_placement import fit_ca_atom_superimposer, PLACEMENT_METHOD
+
+    report = compatibility_report(reference, moving)
+    if not report["compatible"]:
+        raise ValueError(" ".join(report["errors"]))
+    selected_atoms = []
+    correspondence = []
+    for item in (reference, moving):
+        chains = item.get("target_chains") or []
+        if len(chains) != 1:
+            raise ValueError("Target fitting currently requires one explicitly selected target chain per structure.")
+        path = Path(item["path"])
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != item.get("structure_digest"):
+            raise ValueError("The selected structure bytes changed; refresh the comparison.")
+        models = list(_read_biopython_structure(path).get_models())
+        if len(models) != 1:
+            raise ValueError("Select a single saved model before target fitting.")
+        chain = models[0][chains[0]]
+        residues = [residue for residue in chain if residue.id[0] == " "]
+        if not residues or any("CA" not in residue for residue in residues):
+            raise ValueError("Every selected target residue must have a saved C-alpha atom.")
+        correspondence.append([(residue.resname, residue.id[1], residue.id[2]) for residue in residues])
+        selected_atoms.append([residue["CA"] for residue in residues])
+    if correspondence[0] != correspondence[1]:
+        raise ValueError("Target fitting requires identical residue identities and author numbering.")
+    fitter, matrix = fit_ca_atom_superimposer(*selected_atoms, require_non_collinear=True)
+    return {"schema": "studio.target-fit-comparison.v1", "method": PLACEMENT_METHOD,
+            "target_ca_rmsd_angstrom": float(fitter.rms), "mapped_residues": len(selected_atoms[0]),
+            "matrix_4x4": matrix,
+            "reference": {key: reference.get(key) for key in ("identity", "model_id", "structure_digest", "target_chains")},
+            "moving": {key: moving.get(key) for key in ("identity", "model_id", "structure_digest", "target_chains")},
+            "interpretation": "Rigid target C-alpha superposition of saved models; not native-state accuracy or experimental binding evidence."}
 
 
 def saved_target_contact_rows(contact_sets: dict[str, list[dict]]) -> list[dict[str, Any]]:

@@ -26,7 +26,7 @@ from mn_molecular_design_studio.measurement_status import finite_number, RANGES
 from mn_molecular_design_studio.native_filter_metrics import native_filter_evidence
 
 SCHEMA = "studio.candidate-set.v1"
-KINDS = {"candidate_merge", "shared_filter", "candidate_analyzer", "candidate_rank"}
+KINDS = {"candidate_merge", "shared_filter", "candidate_analyzer", "candidate_rank", "complex_analysis"}
 COMPARISONS = {">=": operator.ge, "<=": operator.le, ">": operator.gt, "<": operator.lt}
 
 
@@ -253,7 +253,7 @@ def source_record(row, source, node_id, target):
     variant = identity(backbone, native_id, row.get("binder_sequence"))
     row["candidate_id"] = "cs_" + variant
     raw["candidate_set"] = dict(schema_version=SCHEMA, target_id=target["target_id"],
-        generator=row["source_tool"], source_run=run_id, source_run_dir=source["run_dir"],
+        generator=row["source_tool"], source_run=run_id, source_run_dir=source.get("source_run_dir", source["run_dir"]),
         source_node=node_id, native_candidate_id=native_id,
         native_attempt_id=campaign.get("attempt_id") or raw.get("trajectory_id"),
         backbone_id=backbone, variant_id=variant, parent_variant_ids=[], record_kind="variant",
@@ -337,9 +337,15 @@ def merge(parent, node_id, sources, params):
                     count = db.execute("SELECT count(*) FROM records WHERE seq=?", (seq,)).fetchone()[0]
                     metadata(row)["deduplication"] = dict(policy=policy, group=identity(target_info["target_id"], seq), members=count)
                 yield row
-        result = write_collection(parent, node_id, merged(), target, details=dict(deduplication=policy,
+        records = merged()
+        if params.get("data_handler", "studio") == "chaperone":
+            from mn_molecular_design_studio.chaperone_adapter import roundtrip_candidates
+            records = roundtrip_candidates(
+                records, filter_expression=params.get("chaperone_filter_expression") or None)
+        result = write_collection(parent, node_id, records, target, details=dict(deduplication=policy,
             sources=[dict(node=branch, manifest=source.get("candidate_set_manifest"),
-                          run_dir=source["run_dir"], provenance=source.get("source_provenance", {})) for branch, source in sources]))
+                          run_dir=source["run_dir"], provenance=source.get("source_provenance", {})) for branch, source in sources],
+            data_handler=params.get("data_handler", "studio")))
         totals = Counter()
         seen_runs = set()
         for _, source in sources:
@@ -351,9 +357,19 @@ def merge(parent, node_id, sources, params):
 
 
 def validate_settings(kind, params):
+    if kind == "complex_analysis":
+        if params.get("entry_mode", "accepted_only") not in {"accepted_only", "manual_selection"}:
+            raise ValueError("Unknown Complex Analysis entry mode.")
+        selected = params.get("selected_candidate_ids", [])
+        if not isinstance(selected, list) or any(not isinstance(value, str) or not value for value in selected):
+            raise ValueError("Complex Analysis candidate IDs must be a list of nonempty strings.")
     if kind == "candidate_merge":
         if params.get("deduplication") not in {"keep_all", "mark_duplicates"}:
             raise ValueError("Choose keep_all or mark_duplicates; histories are never deleted.")
+        if params.get("data_handler", "studio") not in {"studio", "chaperone"}:
+            raise ValueError("Choose Studio or Chaperone as the candidate data handler.")
+        if params.get("chaperone_filter_expression", "") and params.get("data_handler", "studio") != "chaperone":
+            raise ValueError("Select Chaperone as the candidate data handler to run its auxiliary filter expression.")
     if kind in {"shared_filter", "candidate_rank"}:
         for rule in params.get("rules", []):
             if not isinstance(rule, dict) or set(rule) != {"field", "operator", "value"} or not isinstance(rule["field"], str) or not rule["field"] or rule["operator"] not in COMPARISONS or finite_number(rule["value"]) is None:

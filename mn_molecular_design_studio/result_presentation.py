@@ -13,8 +13,26 @@ def candidate_state_rows(candidates):
     rows = []
     for candidate in candidates:
         current = candidate_evidence(candidate)[0]
-        selection = (candidate.get("raw_metadata") or {}).get("selection") or {}
-        rows.append({"Candidate": candidate.get("candidate_id"), "Measurement": current["status"],
+        raw = candidate.get("raw_metadata") or {}
+        selection = raw.get("selection") or {}
+        collection = raw.get("candidate_set")
+        collection = collection if isinstance(collection, dict) else {}
+        source = raw.get("source_candidate")
+        source = source if isinstance(source, dict) else {}
+        source_candidate_id = (collection.get("native_candidate_id") or collection.get("native_backbone_identity")
+                               or raw.get("native_candidate_id") or source.get("candidate_id") or candidate.get("candidate_id"))
+        validation = raw.get("validation_acceptance")
+        validation = validation if isinstance(validation, dict) else {}
+        shared_filter = collection.get("shared_filter")
+        shared_filter = shared_filter if isinstance(shared_filter, dict) else {}
+        measurement_detail = current["error"] or (
+            "No independent measurement was recorded for this candidate."
+            if current["status"] == "not_measured" else "")
+        rows.append({"Candidate": candidate.get("candidate_id"), "Source candidate": source_candidate_id,
+                     "Native generator acceptance": collection.get("native_filter") or "unavailable",
+                     "Studio filtering": shared_filter.get("status") or validation.get("status", "not_evaluated"),
+                     "Manual selection": bool((raw.get("human_review") or {}).get("selected", False)),
+                     "Measurement": current["status"], "Measurement detail": measurement_detail,
                      "Selection": selection.get("status", "not_evaluated"), "Selected": selection.get("selected", False),
                      "Rank within protocol": selection.get("rank"), "Cause": current["error"],
                      "Selection reasons": "; ".join(selection.get("reasons") or []),
@@ -29,7 +47,6 @@ def candidate_state_rows(candidates):
                 "Campaign decision": campaign["reason"],
                 "Campaign attempt": campaign["attempt_id"],
             })
-        collection = (candidate.get('raw_metadata') or {}).get('candidate_set')
         if collection:
             native_execution = (candidate.get('raw_metadata') or {}).get('distributed_campaign', {})
             predictor_execution = [{'predictor': item['branch'],

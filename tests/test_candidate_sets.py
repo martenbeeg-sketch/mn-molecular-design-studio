@@ -380,8 +380,10 @@ rows = list(iter_candidates({{'run_dir': {str(run)!r}, 'candidates_jsonl': {str(
 st.dataframe(candidate_state_rows(rows))
 ''').run(timeout=45)
     assert not app.exception
-    assert any(s.label == "Generator operations" for s in app.multiselect)
-    assert any(s.label == "Enable branch" for s in app.checkbox)
+    # Branch operations are edited in the graphical canvas/node dialog now.
+    # Verify the saved graph is retained by that editor, not removed controls.
+    assert app.session_state['visual-pipeline-project-graph']['id'] == graph['id']
+    assert {node['id'] for node in app.session_state['visual-pipeline-project-graph']['nodes']} == {node['id'] for node in graph['nodes']}
     assert any("Native filter" in table.value.columns and len(table.value) == 3 for table in app.dataframe)
 
 

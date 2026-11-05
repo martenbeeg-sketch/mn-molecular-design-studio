@@ -15,6 +15,17 @@ STRUCTURE_SUFFIXES = {".pdb", ".ent", ".cif", ".mmcif", ".pdbqt", ".sdf", ".mol"
 VIEWER_MAX_BYTES = 50 * 1024 * 1024
 
 
+def initialize_workspace_view(session_state) -> None:
+    """Set the run-first default without replacing explicit deep links."""
+    if session_state.get("complex-analysis-dashboard-version") == "run-first-v1":
+        return
+    view = session_state.get("complex-analysis-workspace-view")
+    if not session_state.get("complex-analysis-open") and view not in {"results_board", "inspector"}:
+        session_state["complex-analysis-workspace-view"] = "dashboard"
+        session_state.pop("complex-analysis-source-kind", None)
+    session_state["complex-analysis-dashboard-version"] = "run-first-v1"
+
+
 def _structure_suffix(path: Path) -> str:
     name = path.name.casefold()
     if name.endswith(".pdb.gz"):
@@ -398,6 +409,26 @@ def _ligand_selection_for_component(component: dict, ligand_components: list[dic
     return {"chain": chain, "residue_key": residue_key, "ccd": ccd, "smiles": smiles}
 
 
+def _biotite_item_matches_source(item: dict, outputs: dict[str, dict], *, candidate_id: str,
+                                structure_digest: str, binder_chains: list[str],
+                                target_chains: list[str], source_run_id: str) -> tuple[bool, dict]:
+    """Match a tool input to native or CandidateSet identity by its exact receipt."""
+    if (str(item.get("structure_digest") or "") != structure_digest
+            or sorted(map(str, item.get("binder_chains") or [])) != sorted(map(str, binder_chains))
+            or sorted(map(str, item.get("target_chains") or [])) != sorted(map(str, target_chains))):
+        return False, {}
+    if str(item.get("candidate_id") or "") == candidate_id:
+        return True, {}
+    output = outputs.get(str(item.get("candidate_id") or ""), {})
+    raw = output.get("raw_metadata") if isinstance(output.get("raw_metadata"), dict) else {}
+    receipt = raw.get("complex_analysis_entry") if isinstance(raw.get("complex_analysis_entry"), dict) else {}
+    receipt_candidate = str(receipt.get("native_candidate_id") or receipt.get("candidate_id") or "")
+    receipt_run = str(receipt.get("source_run") or Path(str(receipt.get("source_run_dir") or "")).name)
+    matches = (receipt_candidate == candidate_id and receipt_run == source_run_id
+               and str(receipt.get("structure_sha256") or "") == structure_digest)
+    return matches, receipt if matches else {}
+
+
 def _matching_biotite_jobs(user: dict, *, source_task_group: str, source_run_id: str,
                            candidate_id: str, structure_digest: str,
                            binder_chains: list[str], target_chains: list[str],
@@ -413,6 +444,7 @@ def _matching_biotite_jobs(user: dict, *, source_task_group: str, source_run_id:
         access_admin=user.get("role") == "admin", sort_by="active_desc",
     )["items"]
     matches = []
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
     for row in rows:
         task_group = str(row.get("task_group") or "")
         run_id = str(row.get("run_id") or "")
@@ -435,14 +467,22 @@ def _matching_biotite_jobs(user: dict, *, source_task_group: str, source_run_id:
             continue
         selection = manifest.get("selection") if isinstance(manifest.get("selection"), dict) else {}
         desired_binder, desired_target = sorted(map(str, binder_chains)), sorted(map(str, target_chains))
-        selected_item = next((item for item in manifest.get("items", [])
-                              if str(item.get("candidate_id") or "") == candidate_id
-                              and str(item.get("structure_digest") or "") == structure_digest
-                              and sorted(map(str, item.get("binder_chains") or [])) == desired_binder
-                              and sorted(map(str, item.get("target_chains") or [])) == desired_target), None)
+        output_path = run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+        outputs = {str(candidate.get("candidate_id") or ""): candidate
+                   for candidate in read_candidates(output_path)} if output_path.is_file() else {}
+        selected_item = None
+        matched_receipt = {}
+        for item in manifest.get("items", []):
+            identity_matches, receipt = _biotite_item_matches_source(
+                item, outputs, candidate_id=candidate_id, structure_digest=structure_digest,
+                binder_chains=desired_binder, target_chains=desired_target, source_run_id=source_run_id)
+            if identity_matches:
+                selected_item, matched_receipt = item, receipt
+                break
         if selected_item is None:
             continue
-        saved_model_id = str(selected_item.get("model_id") or selection.get("model_id") or "")
+        saved_model_id = str(selected_item.get("model_id") or matched_receipt.get("model_id")
+                              or selection.get("model_id") or "")
         if saved_model_id != model_id:
             continue
         status = str(row.get("status") or metadata.get("status") or "unknown").casefold()
@@ -1913,6 +1953,30 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
     candidate_file = source_run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl"
     source_project = str(job.get("project_id") or "")
     candidate_metadata = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    entry = candidate_metadata.get("complex_analysis_entry") or {}
+    if entry:
+        st.caption(f"Analysis entry: {entry.get('entry_mode')} · source candidate {entry.get('native_candidate_id')} · "
+                   f"model {entry.get('model_id') or 'unspecified'} · {entry.get('method')}")
+        with st.expander("Original candidate and structure provenance", expanded=False):
+            st.json({key: entry.get(key) for key in (
+                "candidate_id", "native_candidate_id", "variant_id", "parents", "parent_variant_ids", "target",
+                "source_run_dir", "source_run", "source_structure", "structure_sha256", "model_id", "prediction_id", "method", "acceptance")})
+            origin = Path(str(entry.get("source_run_dir") or ""))
+            from mn_molecular_design_studio.auth import can_access_job
+            from mn_molecular_design_studio.job_catalog import get_job_access_record
+            if origin.name and can_access_job(user, get_job_access_record(origin.parent.name, origin.name)):
+                if st.button("Return to original Results", key="complex-analysis-return-original"):
+                    st.session_state["selected-job-reference"] = f"{origin.parent.name}/{origin.name}"
+                    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+                    original_rows = read_candidates(origin / "artifacts/normalized_candidates/candidates.jsonl")
+                    index = next((index for index, item in enumerate(original_rows)
+                                  if item.get("candidate_id") == entry.get("native_candidate_id")), None)
+                    if index is not None:
+                        st.session_state[f"job-candidate-{origin.name}"] = index
+                        st.session_state[f"cofolding-prediction-{origin.name}"] = index
+                        st.session_state[f"job-design-scope-{origin.name}"] = "All"
+                    st.session_state["page"] = "Job details"
+                    st.rerun()
     candidate_binder = [str(value) for value in candidate.get("binder_chains") or candidate_metadata.get("binder_chains") or []]
     candidate_target = [str(value) for value in candidate.get("target_chains") or candidate_metadata.get("target_chains") or []]
     candidate_binder = [value for value in candidate_binder if value in protein_chains]
@@ -3651,6 +3715,10 @@ def _render_complex_analysis_inspector(user: dict, *, workflow_schema=None, proj
 
 def render_complex_analysis_workspace(user: dict, *, workflow_schema=None, project_selector=None, submit=None) -> None:
     """Render the run-first dashboard, preserving deep links to the Inspector."""
+    if st.session_state.get('complex-analysis-workspace-view') == 'results_board':
+        from mn_molecular_design_studio.complex_analysis_results_ui import render_results_board
+        render_results_board(user, workflow_schema=workflow_schema, submit=submit)
+        return
     opened = bool(st.session_state.get("complex-analysis-open"))
     view = str(st.session_state.get("complex-analysis-workspace-view") or "")
     # Existing code paths and tests that set the explicit Database/Results
@@ -3662,5 +3730,8 @@ def render_complex_analysis_workspace(user: dict, *, workflow_schema=None, proje
                                            project_selector=project_selector, submit=submit)
         return
     from mn_molecular_design_studio.complex_analysis_dashboard import render_complex_analysis_dashboard
+    if st.button('Results Evaluation Board', key='complex-analysis-results-board'):
+        st.session_state['complex-analysis-workspace-view'] = 'results_board'
+        st.rerun()
     render_complex_analysis_dashboard(user, workflow_schema=workflow_schema,
                                       project_selector=project_selector, submit=submit)

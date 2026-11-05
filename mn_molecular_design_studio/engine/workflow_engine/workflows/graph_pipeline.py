@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import signal
+import subprocess
 import tempfile
 import time
 import secrets
@@ -129,7 +130,7 @@ def source_generations(source_run_dir: str, project_id: str, selected_ids=None, 
     return run_dir,candidates
 
 
-def source_project_designs(source_run_dir: str, project_id: str, selected_ids=None) -> tuple[Path, list[dict]]:
+def source_project_designs(source_run_dir: str, project_id: str, selected_ids=None, *, include_complex_results=False) -> tuple[Path, list[dict]]:
     """Load structure-bearing candidates from any completed design job in this project."""
     from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
 
@@ -139,14 +140,16 @@ def source_project_designs(source_run_dir: str, project_id: str, selected_ids=No
     result = read_json(run_dir / "result.json")
     if str(marker.get("project_id") or "") != str(project_id):
         raise ValueError("The selected design job must belong to this project.")
-    if metadata.get("task_group") != "design" or metadata.get("status") not in {"completed", "succeeded"} or result.get("success") is not True:
+    if (not include_complex_results and metadata.get("task_group") != "design") or metadata.get("status") not in {"completed", "succeeded"} or result.get("success") is not True:
         raise ValueError("Choose a completed design job with successful outputs.")
 
     rows = []
     for candidate in read_candidates(run_dir / "artifacts/normalized_candidates/candidates.jsonl"):
-        if candidate.get("stage") not in {"generation.backbone", "generation.backbone_sequence", "sequence_design", "complex_refolding"}:
+        if not include_complex_results and candidate.get("stage") not in {"generation.backbone", "generation.backbone_sequence", "sequence_design", "complex_refolding"}:
             continue
-        if not candidate.get("binder_chains"):
+        if not include_complex_results and not candidate.get("binder_chains"):
+            continue
+        if include_complex_results and not (candidate.get("complex_pdb") and candidate.get("target_chains")):
             continue
         structure = candidate.get("complex_pdb") or candidate.get("binder_pdb")
         if not structure:
@@ -817,6 +820,9 @@ def _submit(request: dict, parent: Path, node: dict, *, owner_id: str, project_i
     from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import submit_workflow_request
     from mn_molecular_design_studio.workspace import mark_studio_job
     request = copy.deepcopy(request)
+    # Graph-produced intermediates stay in the workflow's ordinary outputs.
+    # Curated database promotion remains an explicit, separate user action.
+    request["database_collection_policy"] = "none"
     from mn_molecular_design_studio.quality_tools import WORKFLOWS as quality_workflows
     workflow = str(request.get("workflow", ""))
     cpu_analysis = workflow.startswith("analysis.") and not quality_workflows.get(workflow, {}).get("gpu", False)
@@ -1197,22 +1203,23 @@ def cancel_graph_children(run_dir: Path) -> None:
 
 def enqueue_graph_pipeline(graph: dict, *, pipeline_name: str, owner_id: str, project_id: str, reuse_completed=True, gpu_device="all") -> Path:
     from mn_molecular_design_studio.engine.workflow_engine.core.workflow_queue import enqueue_workflow_call
+    from mn_molecular_design_studio.collection_policy import collection_scope
     plan = validate_graph(graph, require_inputs=True)
     graph = plan["graph"]
     from mn_molecular_design_studio.candidate_pipeline import preflight
     preflight(graph, plan, project_id)
     if graph.get("template_id") == "unidock_active_learning":
         from mn_molecular_design_studio.engine.workflow_engine.workflows.active_learning_controller import run_active_learning_pipeline
-        from mn_molecular_design_studio.collection_policy import collection_scope
-        with collection_scope("manual"):
+        with collection_scope("none"):
             return enqueue_workflow_call(
                 run_active_learning_pipeline, task_group="campaign", tool="visual_pipeline", job_type="visual_pipeline",
                 kwargs={"graph": graph, "pipeline_name": pipeline_name, "owner_id": owner_id,
                         "project_id": project_id, "reuse_completed": False, "gpu_device": "none"},
                 cpu_cores=1, gpu_device="none",
             )
-    return enqueue_workflow_call(run_graph_pipeline, task_group="campaign", tool="visual_pipeline", job_type="visual_pipeline",
-        kwargs={"graph": graph, "pipeline_name": pipeline_name, "owner_id": owner_id, "project_id": project_id, "reuse_completed": reuse_completed, "gpu_device": gpu_device}, cpu_cores=1, gpu_device="none")
+    with collection_scope("none"):
+        return enqueue_workflow_call(run_graph_pipeline, task_group="campaign", tool="visual_pipeline", job_type="visual_pipeline",
+            kwargs={"graph": graph, "pipeline_name": pipeline_name, "owner_id": owner_id, "project_id": project_id, "reuse_completed": reuse_completed, "gpu_device": gpu_device}, cpu_cores=1, gpu_device="none")
 
 
 def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_id: str, reuse_completed: bool = True, gpu_device: str = "all") -> Path:
@@ -1279,6 +1286,9 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                 evidence_namespace=nodes[node_id]["data"].get("evidence_namespace"))
         if analysis_refs:
             output["analysis_runs"] = analysis_refs
+        if category == "Analysis" and source_parents:
+            from mn_molecular_design_studio.complex_analysis_handoff import inherit_review
+            output = inherit_review(parent, node_id, output, source_parents[0])
         from mn_molecular_design_studio.candidate_execution import inherit_partial_pool
         pool = inherit_partial_pool(output, [outputs[p] for p in plan['incoming'][node_id] if p in outputs],
                                     missing_branches=node_states.get(node_id, {}).get('missing_branches', []))
@@ -1479,7 +1489,37 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                              retained=bool(nodes[p]["data"].get("retained_run_dir")),
                                              status=node_states.get(p, {}).get("status"), params=nodes[p]["data"]["params"])
                                     for p in plan["incoming"][node_id] if NODE_CATALOG[nodes[p]["data"]["kind"]]["category"] == "Structure prediction"}
-                        key = fingerprint(kind, {**params, "adapter_digest": file_digest(Path(candidate_sets.__file__)),
+                        handoff_revision = {}
+                        if kind == "complex_analysis":
+                            from mn_molecular_design_studio import complex_analysis_handoff
+                            handoff_revision["handoff_digest"] = file_digest(Path(complex_analysis_handoff.__file__))
+                        interop_digest = {}
+                        if kind == "candidate_merge" and params.get("data_handler") == "chaperone":
+                            from mn_molecular_design_studio import chaperone_adapter
+                            interop_digest["chaperone_adapter_digest"] = file_digest(Path(chaperone_adapter.__file__))
+                            worker_config = chaperone_adapter.worker_configuration()
+                            worker = worker_config["python"]
+                            interop_digest["chaperone_worker"] = worker
+                            interop_digest["chaperone_source_revision"] = worker_config["source_revision"]
+                            if worker:
+                                try:
+                                    version = subprocess.run([worker, "--version"], capture_output=True,
+                                                             text=True, timeout=5, check=False)
+                                    interop_digest["chaperone_python_version"] = (version.stdout or version.stderr).strip()
+                                except (OSError, subprocess.TimeoutExpired):
+                                    interop_digest["chaperone_python_version"] = "unavailable"
+                            for source_root, relative in (
+                                (worker_config["source"], "chaperone/data/handler.py"),
+                                (worker_config["source"], "chaperone/data/schema.py"),
+                                (worker_config["source"], "chaperone/block_config/base.py"),
+                                (worker_config["source"], "chaperone/block_config/inline.py"),
+                                (worker_config["blocks"], "blocks/__init__.py"),
+                                (worker_config["blocks"], "blocks/util_blocks/filter.py"),
+                            ):
+                                implementation = Path(source_root) / relative
+                                if implementation.is_file():
+                                    interop_digest[f"chaperone:{relative}"] = file_digest(implementation)
+                        key = fingerprint(kind, {**params, "adapter_digest": file_digest(Path(candidate_sets.__file__)), **handoff_revision, **interop_digest,
                                                  "expected_predictors": expected}, [o["fingerprint"] for o in upstream])
                         cached = read_json(cache_root / f"{key}.json").get("output") if reuse_completed else None
                         if cached and _cache_valid(cached):
@@ -1494,6 +1534,9 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                 _candidate_sources_with_target_identity(sources), params, expected)
                         elif kind == "candidate_rank":
                             output = candidate_sets.rank(parent, node_id, source, params)
+                        elif kind == "complex_analysis":
+                            from mn_molecular_design_studio.complex_analysis_handoff import build_collection
+                            output = build_collection(parent, node_id, source, params)
                         else:
                             output = candidate_sets.write_collection(parent, node_id, candidate_sets.iter_candidates(source, review=True), source["target"])
                         complete(node_id, output, key); progressed = True; continue
@@ -1541,6 +1584,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     if kind in {"design_source","generation_source","backbone_source","molecule_source","project_design_source"}:
                         loader=(source_molecule_selection if kind == 'molecule_source' else source_project_designs if kind == 'project_design_source' else source_generations if kind in {'generation_source','backbone_source'} else source_designs)
                         extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind in {'generation_source','backbone_source'} else {}
+                        if kind == 'project_design_source':
+                            extra['include_complex_results'] = params.get('source_scope') == 'complex_results'
                         source_dir, _ = loader(params["source_run_dir"], project_id, params.get("selected_candidate_ids"),**extra)
                         key_params["source_digest"] = file_digest(source_dir / "artifacts/normalized_candidates/candidates.jsonl")
                         from mn_molecular_design_studio.cache_provenance import referenced_files
@@ -1684,7 +1729,12 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                 persist()
                             progressed=True
                         elif current["status"] == "completed" and child_result.get("success") is True:
-                            if is_analysis_node:
+                            if is_analysis_node and (child / "artifacts/normalized_candidates/candidates.jsonl").is_file():
+                                # Candidate-aware QC (Biotite, clustering, PLIP)
+                                # publishes measurements, not surface tool_status.
+                                complete(node_id, _child_analysis_output(child, source.get("target", {})), key)
+                                progressed = True
+                            elif is_analysis_node:
                                 current.update(status="failed", error="The surface-analysis job completed without reporting method results.")
                                 persist();progressed=True
                             else:
@@ -1745,6 +1795,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     if kind in {"design_source","generation_source","backbone_source","molecule_source","project_design_source"}:
                         loader=(source_molecule_selection if kind == 'molecule_source' else source_project_designs if kind == 'project_design_source' else source_generations if kind in {'generation_source','backbone_source'} else source_designs)
                         extra={'stage':'generation.backbone' if kind=='backbone_source' else 'generation.backbone_sequence'} if kind in {'generation_source','backbone_source'} else {}
+                        if kind == 'project_design_source':
+                            extra['include_complex_results'] = params.get('source_scope') == 'complex_results'
                         source_dir, selected = loader(params["source_run_dir"], project_id, params.get("selected_candidate_ids"),**extra)
                         all_rows = _absolute_candidates({"run_dir": str(source_dir), "candidates_jsonl": str(source_dir / "artifacts/normalized_candidates/candidates.jsonl")})
                         selected_rows = _selected_source_rows(kind, selected, all_rows)
@@ -1772,13 +1824,19 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         elif kind == 'project_design_source':
                             first = selected_rows[0] if selected_rows else {}
                             target = {
-                                "target_pdb": first.get("target_pdb", ""),
+                                "target_pdb": first.get("target_pdb") or first.get("complex_pdb") or "",
                                 "target_chains": first.get("target_chains") or [],
                                 "hotspots": first.get("hotspots", ""),
+                                "target_type": (first.get("raw_metadata") or {}).get("target_type"),
                             }
                         else:
                             target = {}
-                        complete(node_id, _local_source(parent, node_id, selected_rows,target), key);progressed=True;continue
+                        output = _local_source(parent, node_id, selected_rows, target)
+                        output.update(source_run_id=source_dir.name, source_run_dir=str(source_dir),
+                            source_provenance={"run_dir": str(source_dir), "run_id": source_dir.name,
+                                "task_group": source_dir.parent.name, "input": read_json(source_dir / "input.json"),
+                                "metadata": read_json(source_dir / "metadata.json")})
+                        complete(node_id, output, key);progressed=True;continue
                     if kind in {"filter", "results"}:
                         rows = []
                         analysis_runs = []
@@ -1906,6 +1964,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                     if source.get("candidates_jsonl") and not source.get("candidate_count"):
                         complete(node_id, _local_source(parent, node_id, [], source.get("target")), key, "skipped");progressed=True;continue
                     request = node_request(kind, params, source, f"{pipeline_name} · {node['data']['label']}")
+                    if NODE_CATALOG[kind]["category"] == "Analysis" and source.get("candidate_set_manifest"):
+                        request["database_collection_policy"] = "none"
                     if (shared_campaign and shared_campaign.get('objective_type') in {'accepted', 'time'}
                             and node_id in shared_campaign["generator_nodes"]):
                         from mn_molecular_design_studio.workflow_modes import capability

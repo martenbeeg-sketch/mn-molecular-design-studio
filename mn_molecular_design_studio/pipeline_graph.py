@@ -96,7 +96,7 @@ NODE_CATALOG = {
     "run_source": _spec("run_source", "Run results", "Input", "A complete named Run output across its source computers. Downstream tools process every source collection through the existing scheduler.", output="candidates", color="#758f84", fields=[field("run_reference", "Run output", "", kind="text")]),
     "design_source": _spec("design_source", "Successful project designs", "Input", "Selected filter-passing designs from a successful job in this project.", output="sequence", color="#758f84", fields=[field("source_run_dir", "Source run", "", kind="text")]),
     "generation_source": _spec("generation_source", "Generated project designs", "Input", "Select generated structures and sequences from a completed generator job in this project.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Generator run", "", kind="text")]),
-    "project_design_source": _spec("project_design_source", "Existing project designs", "Input", "Select structure-bearing candidates from any completed design job in this project, including generator and refold outputs.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Design job", "", kind="text")]),
+    "project_design_source": _spec("project_design_source", "Existing project designs", "Input", "Select saved candidates from completed project jobs. Choose Complex Results to include historical predictions and protein–ligand complexes for manual analysis.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Source job", "", kind="text"), field("source_scope", "Source scope", "designs", kind="select", options=["designs", "complex_results"], section="basic")]),
     "rfd4": _spec("rfd4", "RFD4-Proteina", "Design engine", "Co-design sequence and structure. Set task, design count, binder length and sampling in this tile; target structure, chains, hotspots and coldspots come from the connected Target Structure tile. Advanced native inputs stay optional.", accepts=["target"], output="sequence", workflow="design.rfd4_proteina", fields=[
         field("task", "Design task", "protein_binder", kind="select", options=["protein_binder","nanobody","antibody","tcr","motif_scaffolding","enzyme","small_molecule_binder","dna_binder","rna_design","existing_structure","custom_conditions","score_structures","unconditional"], section="basic"),
         field("target_structure", "Input structure", "", kind="text", help="Usually inherited from the connected Target Structure tile."),
@@ -189,6 +189,11 @@ NODE_CATALOG = {
 # controller; the generic DAG runner must not try to schedule these nodes.
 _ACTIVE_STATE = "active_learning_state"
 NODE_CATALOG.update({
+    "complex_analysis": _spec("complex_analysis", "Complex Analysis", "Collection",
+        "Open exact saved complexes for comparison and analysis. Accepted-only requires a completed scientific policy; manual selection keeps acceptance separate. Rejected and unresolved designs remain in Results. Connect Biotite Interface, Interface Clustering or ligand tools after this node.",
+        accepts=["candidates", "sequence", "prediction"], output="candidates", fields=[
+            field("entry_mode", "Analysis entry", "accepted_only", kind="select", options=["accepted_only", "manual_selection"], section="basic"),
+            field("selected_candidate_ids", "Explicit candidate IDs (manual entry only)", [], kind="json", section="basic")]),
     "active_library": _spec("active_library", "Compound library", "Active learning", "Use a registered external library's packed fingerprints for prediction and random exploration. The initial centroid sample has its own independent source. Compound rows remain in external files; only docked batches are materialized.", output=_ACTIVE_STATE, color="#3879a8", formats=(), fields=[
         field("library_id", "Registered library ID", "", kind="text", section="basic"),
         field("feature_manifest", "Fingerprint manifest", "", kind="text", section="basic"),
@@ -655,7 +660,11 @@ for _engine, _metadata in inverse_folding_input.ENGINES.items():
 NODE_CATALOG.update({
     "candidate_merge": _spec("candidate_merge", "Candidate collection", "Collection", "Merge native outputs without replacing sequences or deleting scientific histories.",
         accepts=["backbone", "sequence", "prediction", "candidates"], output="candidates", fields=[
-            field("deduplication", "Sequence deduplication", "mark_duplicates", kind="select", options=["keep_all", "mark_duplicates"], section="basic")]),
+            field("deduplication", "Sequence deduplication", "mark_duplicates", kind="select", options=["keep_all", "mark_duplicates"], section="basic"),
+            field("data_handler", "Candidate data handler", "studio", kind="select", options=["studio", "chaperone"], section="advanced",
+                  help="Optionally roundtrip merged rows through Chaperone's native PipelineDataHandler while preserving each full Studio candidate as the authoritative sidecar." ),
+            field("chaperone_filter_expression", "Auxiliary Chaperone metric expression", "", kind="text", section="advanced",
+                  help="Optional Chaperone FilterBlock expression. Its pass/fail status is recorded as auxiliary evidence; it does not change Studio acceptance or remove rows." )]),
     "shared_filter": _spec("shared_filter", "Shared scientific filters", "Collection", "Keep every decision; route sequence-ready, eligible variants to prediction.",
         accepts=["candidates", "sequence", "prediction"], output="sequence", fields=[
             field("binder_format", "Binder format", "auto", kind="select", options=["auto", "miniprotein", "large_protein", "peptide", "cyclic_peptide", "vhh", "scfv", "fab", "arp", "other"], section="basic",
@@ -781,6 +790,21 @@ ACTIVE_LEARNING_LAYOUT = {
 
 
 def new_graph(template="foundry") -> dict[str, Any]:
+    if template == "accepted_complex_analysis":
+        kinds = ["project_design_source", "candidate_merge", "shared_filter", "complex_analysis", "biotite_interface", "results"]
+        nodes = []
+        for index, kind in enumerate(kinds):
+            spec = NODE_CATALOG[kind]
+            params = {item["name"]: copy.deepcopy(item["default"]) for item in spec["fields"]}
+            if kind == "shared_filter":
+                params.update(binder_format="miniprotein", target_type="auto")
+            nodes.append({"id": kind, "type": "studio", "position": {"x": 50 + 330 * index, "y": 180},
+                          "data": {"kind": kind, "label": spec["label"], "params": params}})
+        return clean_graph({"schema_version": SCHEMA, "id": uuid.uuid4().hex,
+            "name": "Historical Results → acceptance → Complex Analysis", "nodes": nodes,
+            "edges": [{"id": f"edge-{index}", "source": kinds[index], "target": kinds[index + 1],
+                       "sourceHandle": "out", "targetHandle": "in"} for index in range(len(kinds) - 1)],
+            "viewport": {"x": 0, "y": 0, "zoom": .7}})
     if template in MODES:
         from mn_molecular_design_studio.candidate_pipeline import new_pipeline
         return new_pipeline(mode=template)
@@ -940,7 +964,7 @@ def new_graph(template="foundry") -> dict[str, Any]:
         task, label, description = {
             "rfd4_protein_binder": (
                 "protein_binder", "RFD4 Protein Binder",
-                "Co-design a protein binder, then run Boltz-2, ipSAE and Rosetta interface analysis.",
+                "RFD4 co-designs sequence and structure. Optionally enable interface-fixed SolubleMPNN redesign, then run Boltz-2, scientific filters, Complex Analysis and registered interface measurements.",
             ),
             "rfd4_small_molecule": (
                 "small_molecule_binder", "RFD4 Small-Molecule Pocket Design",
@@ -954,9 +978,12 @@ def new_graph(template="foundry") -> dict[str, Any]:
         kinds = ["target"]
         if task == "protein_binder":
             kinds.append("binder_context")
-        kinds.extend(["rfd4", "boltz2"])
+            kinds.extend(["rfd4", "ligandmpnn", "boltz2"])
+        else:
+            kinds.extend(["rfd4", "boltz2"])
         if task == "protein_binder":
-            kinds.extend(["ipsae", "rosetta_metrics"])
+            kinds.extend(["ipsae", "rosetta_metrics", "candidate_merge", "shared_filter",
+                          "complex_analysis", "biotite_interface"])
         kinds.append("results")
 
         nodes = []
@@ -989,6 +1016,12 @@ def new_graph(template="foundry") -> dict[str, Any]:
                     }, indent=2)
                 else:
                     params["options_json"] = "{}"
+            if kind == "ligandmpnn":
+                params.update(sequence_stage="soluble_optimization", model_type="soluble_mpnn",
+                              optimization_enabled=False, fix_interface_residues=True,
+                              backend="shared_ligandmpnn")
+            if kind == "complex_analysis":
+                params["entry_mode"] = "accepted_only"
             if kind == "boltz2":
                 params["write_full_pae"] = True
             nodes.append({
@@ -1000,12 +1033,25 @@ def new_graph(template="foundry") -> dict[str, Any]:
 
         node_by_kind = {node["data"]["kind"]: node for node in nodes}
         if task == "protein_binder":
-            for kind, x in (("target", 40), ("binder_context", 340), ("rfd4", 700),
-                            ("boltz2", 1030), ("ipsae", 1360), ("rosetta_metrics", 1690), ("results", 2020)):
+            protein_binder_layout = {
+                "target": 40, "binder_context": 330, "rfd4": 620, "ligandmpnn": 910,
+                "boltz2": 1200, "ipsae": 1490, "rosetta_metrics": 1780,
+                "candidate_merge": 2070, "shared_filter": 2360, "complex_analysis": 2650,
+                "biotite_interface": 2940, "results": 3230,
+            }
+            for kind, x in protein_binder_layout.items():
                 node_by_kind[kind]["position"] = {"x": x, "y": 180}
             node_by_kind["binder_context"]["data"].update(
                 label="Binder Design Context",
                 description="Set target chains and optional hotspots. RFD4 receives the selected structure and hotspot annotations.",
+            )
+            node_by_kind["ligandmpnn"]["data"].update(
+                label="Optional SolubleMPNN optimization",
+                description="RFD4 already supplies the native binder sequence. Leave optimization disabled to pass it through unchanged; enabling optimization creates child variants while retaining the RFD4 parent.",
+            )
+            node_by_kind["shared_filter"]["data"].update(
+                label="Scientific acceptance filters",
+                description="Review predictive and interface measurements; accepted-only Complex Analysis follows this decision. Rejected and unresolved designs remain in Results.",
             )
         else:
             positions = [(40, 180), (390, 180), (740, 180), (1090, 180)]
@@ -1024,7 +1070,7 @@ def new_graph(template="foundry") -> dict[str, Any]:
             "name": label + " · RFD4 → independent prediction" + (" + interface analysis" if task == "protein_binder" else ""),
             "nodes": nodes,
             "edges": edges,
-            "viewport": {"x": 0, "y": 0, "zoom": 0.5 if task == "protein_binder" else 0.7},
+            "viewport": {"x": 0, "y": 0, "zoom": 0.34 if task == "protein_binder" else 0.7},
             "template_id": template,
         })
     if template == "all_generators_boltz2":
@@ -2065,10 +2111,10 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
     if len(order) != len(nodes):
         raise ValueError("A pipeline cannot contain a cycle. Connect steps in the order data should flow.")
     for node_id, node in nodes.items():
-        if node["data"]["kind"] != "shared_filter":
+        if node["data"]["kind"] not in {"shared_filter", "complex_analysis"}:
             continue
         if len(incoming[node_id]) != 1:
-            raise ValueError("Shared scientific filters need one connected CandidateSet input.")
+            raise ValueError("Scientific filters and Complex Analysis need one connected CandidateSet input.")
         pending, ancestors = list(incoming[node_id]), set()
         while pending:
             ancestor = pending.pop()
@@ -2361,7 +2407,7 @@ for _kind, _specification in NODE_CATALOG.items():
     if _specification['category'] in {'Design engine', 'Design pipeline'}:
         _specification['scientific_workflow'] = workflow_capability(_kind)
 
-STARTER_TEMPLATES = {label: mode for mode, label in MODES.items()} | {spec['label']: key for key, spec in TASKS.items()} | {"Multi-Generator Binder Design & Evaluation": "multi_generator_binder", "Blank canvas": "blank"}
+STARTER_TEMPLATES = {label: mode for mode, label in MODES.items()} | {spec['label']: key for key, spec in TASKS.items()} | {"Accepted Results → Complex Analysis": "accepted_complex_analysis", "Multi-Generator Binder Design & Evaluation": "multi_generator_binder", "Blank canvas": "blank"}
 SUPPORTED_TEMPLATE_IDS = (set(LEGACY_STARTER_TEMPLATES.values()) | set(STARTER_TEMPLATES.values())
                           | {'bindcraft2', 'boltzgen', 'complexa', 'rfdiffusion_beta_pairing'}
                           | {key + '_generated' for key in ('complexa', 'rfdiffusion', 'genie3', 'pxdesign',
