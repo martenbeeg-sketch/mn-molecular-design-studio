@@ -11,7 +11,16 @@ from mn_molecular_design_studio.molecular_database_visibility import (
 )
 
 
-ADMIN = {"id": "pc002975", "role": "admin", "_cluster_project_ids": []}
+# Independent literals from the production origin rows. These must not be
+# imported from the visibility predicate under test.
+PRODUCTION_OWNER_ID = "00000000000000000000000000000001"
+PRODUCTION_SOURCE_NODE = "pc002975"
+PRODUCTION_SOURCE_NODE_ID = "50e484e4-0ad5-47c9-a8c4-b46d4000a59b"
+ADMIN = {"id": PRODUCTION_OWNER_ID, "role": "admin", "_cluster_project_ids": []}
+PRODUCTION_SHORTLISTS = (
+    ("screening-final-a5ba730c962dc449fb40bbab7702a25b", "20261025-220608-e91da528"),
+    ("screening-final-7483c3d8846ffad1263b3b8d78078d3d", "20261026-170220-29a4a53e"),
+)
 
 
 def _add_group(database, user, group_id, name, origin, smiles, *, file_name=None, file_bytes=None):
@@ -38,12 +47,14 @@ def test_historical_spiro_shortlists_are_library_ineligible_but_remain_addressab
     shared_molecule_id = _add_group(
         database, ADMIN, shared_group_id, "SpiroSpace shortlist 1",
         {"type": "job", "collection_kind": "curated", "run_id": shared_run_id,
+         "source_node": PRODUCTION_SOURCE_NODE,
          "saved_selection": True, "final_screening_selection": True},
         "CCO", file_name="shortlist-1.sdf", file_bytes=b"original structure fixture",
     )
     hidden_molecule_id = _add_group(
         database, ADMIN, hidden_group_id, "SpiroSpace shortlist 2",
         {"type": "job", "collection_kind": "curated", "run_id": hidden_run_id,
+         "source_node": PRODUCTION_SOURCE_NODE,
          "saved_selection": True, "final_screening_selection": True},
         "CCN", file_name="shortlist-2.sdf", file_bytes=b"original structure fixture 2",
     )
@@ -151,10 +162,12 @@ def test_hide_smoke_control_matches_only_confirmed_owner_run_pairs(tmp_path):
 
 def test_screening_collection_filter_requires_exact_audited_collection_owner_and_run(tmp_path):
     database = MolecularDatabase(tmp_path / "database")
-    audited_id, (owner, run_id) = next(iter(UNREVIEWED_SCREENING_SHORTLISTS.items()))
+    audited_id, identity = next(iter(UNREVIEWED_SCREENING_SHORTLISTS.items()))
+    owner, run_id = identity["owner_id"], identity["run_id"]
     _add_group(
         database, ADMIN, audited_id, "Exact audited group",
-        {"type": "job", "collection_kind": "curated", "run_id": run_id}, "CO",
+        {"type": "job", "collection_kind": "curated", "run_id": run_id,
+         "source_node": PRODUCTION_SOURCE_NODE}, "CO",
     )
     # Similar names and run IDs do not broaden the exact-ID exclusion.
     _add_group(
@@ -164,14 +177,50 @@ def test_screening_collection_filter_requires_exact_audited_collection_owner_and
     shown = {group["id"] for group in database.groups(ADMIN, collection="library")}
     assert audited_id not in shown
     assert "same-label-different-id" in shown
-    assert owner == "pc002975"
+    assert owner == PRODUCTION_OWNER_ID
+    assert identity["source_node"] == PRODUCTION_SOURCE_NODE
+    assert identity["source_node_id"] == PRODUCTION_SOURCE_NODE_ID
     assert not is_unreviewed_screening_shortlist({
         "id": audited_id, "owner_id": owner,
-        "origin": {"run_id": "different-run"},
+        "origin": {"run_id": "different-run", "source_node": PRODUCTION_SOURCE_NODE},
     })
     assert not is_unreviewed_screening_shortlist({
         "id": audited_id, "owner_id": "different-owner",
-        "origin": {"run_id": run_id},
+        "origin": {"run_id": run_id, "source_node": PRODUCTION_SOURCE_NODE},
+    })
+    assert not is_unreviewed_screening_shortlist({
+        "id": audited_id, "owner_id": owner,
+        "origin": {"run_id": run_id, "source_node": "PC004032"},
+    })
+
+
+@pytest.mark.parametrize("group_id,run_id", PRODUCTION_SHORTLISTS)
+def test_production_shaped_source_and_peer_rows_match_owner_and_provenance(group_id, run_id):
+    source = {
+        "id": group_id,
+        "owner_id": "00000000000000000000000000000001",
+        "origin": {
+            "type": "job", "task_group": "campaign", "source_node": "pc002975",
+            "run_id": run_id, "saved_selection": True, "final_screening_selection": True,
+        },
+    }
+    peer = {
+        "id": "peer-production-shape",
+        "owner_id": "00000000000000000000000000000001",
+        "origin": {
+            "type": "job", "task_group": "campaign", "source_node": "spoofed-source",
+            "_replica_group": group_id,
+            "_replica_node": "50e484e4-0ad5-47c9-a8c4-b46d4000a59b",
+            "run_id": run_id, "saved_selection": True, "final_screening_selection": True,
+        },
+    }
+    assert is_unreviewed_screening_shortlist(source)
+    assert is_unreviewed_screening_shortlist(peer)
+    assert not is_unreviewed_screening_shortlist({**source, "owner_id": "private-owner"})
+    assert not is_unreviewed_screening_shortlist({**source, "origin": {**source["origin"], "run_id": "other-run"}})
+    assert not is_unreviewed_screening_shortlist({
+        **peer,
+        "origin": {**peer["origin"], "_replica_node": "foreign-node", "source_node": "pc002975"},
     })
 
 
@@ -185,7 +234,11 @@ def test_audited_shortlist_visibility_survives_real_peer_replication(tmp_path, m
 
     monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
 
-    owner, run_id = UNREVIEWED_SCREENING_SHORTLISTS[source_group_id]
+    identity = UNREVIEWED_SCREENING_SHORTLISTS[source_group_id]
+    owner, run_id = identity["owner_id"], identity["run_id"]
+    assert owner == PRODUCTION_OWNER_ID
+    assert identity["source_node"] == PRODUCTION_SOURCE_NODE
+    assert identity["source_node_id"] == PRODUCTION_SOURCE_NODE_ID
     user = {"id": owner, "role": "admin", "_cluster_project_ids": []}
     source = MolecularDatabase(tmp_path / "source")
     replica = MolecularDatabase(tmp_path / "replica")
@@ -207,6 +260,7 @@ def test_audited_shortlist_visibility_survives_real_peer_replication(tmp_path, m
     molecule_id = _add_group(
         source, user, source_group_id, "Audited Spiro shortlist",
         {"type": "job", "collection_kind": "curated", "run_id": run_id,
+         "source_node": PRODUCTION_SOURCE_NODE,
          "saved_selection": True, "final_screening_selection": True},
         "CCN",
     )
@@ -246,7 +300,7 @@ def test_audited_shortlist_visibility_survives_real_peer_replication(tmp_path, m
             "SELECT * FROM molecule_sources WHERE group_id=?", (source_group_id,),
         )]
 
-    author = "fixture-source-workstation"
+    author = PRODUCTION_SOURCE_NODE_ID
     apply_record("molecule_group", f"molecule_group:{author}:{source_group_id}",
                  {"node_id": author, "group": source_group}, author, database=replica)
     apply_record("molecule_entry", f"molecule_entry:{author}:{source_group_id}:{molecule_id}",
@@ -259,6 +313,8 @@ def test_audited_shortlist_visibility_survives_real_peer_replication(tmp_path, m
 
     # The source and replica use the same audited source identity and owner/run
     # restrictions; the peer-local primary key is not mistaken for another run.
+    assert is_unreviewed_screening_shortlist(source.groups(user, collection="all")[0])
+    assert is_unreviewed_screening_shortlist(replica.group(replica_group_id, user))
     assert not source.groups(user, collection="library")
     assert not replica.groups(user, collection="library")
     source_history = source.list_molecules(user, molecule_ids=[molecule_id], collection="all")["items"][0]
@@ -268,6 +324,14 @@ def test_audited_shortlist_visibility_survives_real_peer_replication(tmp_path, m
     assert replica.group(replica_group_id, user)["owner_id"] == owner
     assert replica.group(replica_group_id, user)["origin"]["run_id"] == run_id
     assert replica.list_molecules(user, collection="library")["total"] == 0
+
+    # Exact group and run collisions from a foreign workstation stay eligible.
+    foreign_peer = {
+        "id": "peer-foreign-collision", "owner_id": owner,
+        "origin": {"_replica_group": source_group_id, "_replica_node": "foreign-node",
+                   "source_node": PRODUCTION_SOURCE_NODE, "run_id": run_id},
+    }
+    assert not is_unreviewed_screening_shortlist(foreign_peer)
 
     # Independent intentional membership restores this molecular identity to
     # Library without making the unreviewed peer collection eligible.

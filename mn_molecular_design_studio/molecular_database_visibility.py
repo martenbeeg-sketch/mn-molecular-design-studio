@@ -2,11 +2,22 @@
 from __future__ import annotations
 
 
-# Exact owner/run collections confirmed by the 2026-11-05 Database
-# simplification audit. The saved automatic memberships remain in All indexed.
+# Exact collection identities confirmed by the 2026-11-05 Database
+# simplification audit. Workstation provenance and user ownership are separate
+# fields; saved automatic memberships remain in All indexed.
 UNREVIEWED_SCREENING_SHORTLISTS = {
-    "screening-final-a5ba730c962dc449fb40bbab7702a25b": ("pc002975", "20261025-220608-e91da528"),
-    "screening-final-7483c3d8846ffad1263b3b8d78078d3d": ("pc002975", "20261026-170220-29a4a53e"),
+    "screening-final-a5ba730c962dc449fb40bbab7702a25b": {
+        "owner_id": "00000000000000000000000000000001",
+        "run_id": "20261025-220608-e91da528",
+        "source_node": "pc002975",
+        "source_node_id": "50e484e4-0ad5-47c9-a8c4-b46d4000a59b",
+    },
+    "screening-final-7483c3d8846ffad1263b3b8d78078d3d": {
+        "owner_id": "00000000000000000000000000000001",
+        "run_id": "20261026-170220-29a4a53e",
+        "source_node": "pc002975",
+        "source_node_id": "50e484e4-0ad5-47c9-a8c4-b46d4000a59b",
+    },
 }
 
 # Only these eight executions are positively identified as bounded development
@@ -38,16 +49,27 @@ def is_unreviewed_screening_shortlist(group) -> bool:
         return False
     origin = _origin(group)
     group_id = str(group.get("id") or "")
-    if group_id in UNREVIEWED_SCREENING_SHORTLISTS:
-        original_group_id = group_id
-    else:
-        # Replication gives a group a peer-* local ID while preserving the
-        # source ID and publishing workstation in these metadata fields.
-        if not str(origin.get("_replica_node") or "").strip():
-            return False
+    replica_node = str(origin.get("_replica_node") or "").strip().casefold()
+    if replica_node:
+        # A peer marker is authoritative. Do not let a forged source_node
+        # field turn a replica from another workstation into an audited match.
         original_group_id = str(origin.get("_replica_group") or "")
-    owner_run = UNREVIEWED_SCREENING_SHORTLISTS.get(original_group_id)
-    return bool(owner_run and owner_run == (_owner(group), str(origin.get("run_id") or "")))
+    else:
+        # The source database records the workstation name separately from
+        # both the user owner_id and the UUID used in peer replication.
+        original_group_id = group_id
+    identity = UNREVIEWED_SCREENING_SHORTLISTS.get(original_group_id)
+    if not identity:
+        return False
+    if replica_node:
+        if replica_node != identity["source_node_id"].casefold():
+            return False
+    elif str(origin.get("source_node") or "").strip().casefold() != identity["source_node"].casefold():
+        return False
+    return (
+        _owner(group) == identity["owner_id"].casefold()
+        and str(origin.get("run_id") or "") == identity["run_id"]
+    )
 
 
 def is_unreviewed_screening_shortlist_id(group_id) -> bool:
