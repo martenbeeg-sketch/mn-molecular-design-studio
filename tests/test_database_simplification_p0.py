@@ -1,6 +1,8 @@
 """Isolated regressions for the P0 promotion and curated-visibility fixes."""
 from __future__ import annotations
 
+import pytest
+
 from mn_molecular_design_studio.molecular_database import MolecularDatabase
 from mn_molecular_design_studio.molecular_database_visibility import (
     CONFIRMED_DEVELOPMENT_RUNS,
@@ -171,3 +173,135 @@ def test_screening_collection_filter_requires_exact_audited_collection_owner_and
         "id": audited_id, "owner_id": "different-owner",
         "origin": {"run_id": run_id},
     })
+
+
+@pytest.mark.parametrize("source_group_id", sorted(UNREVIEWED_SCREENING_SHORTLISTS))
+def test_audited_shortlist_visibility_survives_real_peer_replication(tmp_path, monkeypatch, source_group_id):
+    import socket
+
+    from mn_molecular_design_studio.molecular_database import _id
+    from mn_molecular_design_studio.molecular_database_peer import apply_record
+    from mn_molecular_design_studio.cluster.replication import Replica
+
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
+
+    owner, run_id = UNREVIEWED_SCREENING_SHORTLISTS[source_group_id]
+    user = {"id": owner, "role": "admin", "_cluster_project_ids": []}
+    source = MolecularDatabase(tmp_path / "source")
+    replica = MolecularDatabase(tmp_path / "replica")
+    replication_state = Replica()
+    with replication_state.db() as connection:
+        replication_state._write(connection, "sentinel:replicated-group", "molecule_group", {"owner": "fixture"},
+                                 author="fixture-source-workstation")
+        replication_state._write(connection, "sentinel:removed-group", "molecule_group", None,
+                                 author="fixture-source-workstation")
+
+    def replication_snapshot():
+        with replication_state.db() as connection:
+            return {
+                table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+                for table in ("records", "state", "conflicts")
+            }
+
+    replication_before = replication_snapshot()
+    molecule_id = _add_group(
+        source, user, source_group_id, "Audited Spiro shortlist",
+        {"type": "job", "collection_kind": "curated", "run_id": run_id,
+         "saved_selection": True, "final_screening_selection": True},
+        "CCN",
+    )
+    # Keep a Results-page source association alongside the audited collection.
+    # The Results reader is run-scoped and does not use the Library predicate.
+    from mn_molecular_design_studio.molecular_database import _json
+    with source.connection() as connection:
+        connection.execute(
+            "INSERT INTO molecule_sources VALUES (?,?,?,?)",
+            (f"{socket.gethostname()}/campaign/{run_id}:historical-results", molecule_id,
+             source_group_id, _json({"task_group": "campaign", "run_id": run_id,
+                                     "compound_id": "historical-shortlist-record"})),
+        )
+
+    def snapshot(database):
+        with database.connection() as connection:
+            return {table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+                    for table in ("molecule_groups", "molecule_members", "molecule_sources",
+                                  "molecule_structures", "molecule_observations")}
+
+    source_before = snapshot(source)
+    with source.connection() as connection:
+        source_group = dict(connection.execute(
+            "SELECT * FROM molecule_groups WHERE id=?", (source_group_id,),
+        ).fetchone())
+        molecule = dict(connection.execute(
+            "SELECT * FROM molecules WHERE id=?", (molecule_id,),
+        ).fetchone())
+        member = dict(connection.execute(
+            "SELECT * FROM molecule_members WHERE group_id=? AND molecule_id=?",
+            (source_group_id, molecule_id),
+        ).fetchone())
+        observations = [dict(row) for row in connection.execute(
+            "SELECT * FROM molecule_observations WHERE group_id=?", (source_group_id,),
+        )]
+        sources = [dict(row) for row in connection.execute(
+            "SELECT * FROM molecule_sources WHERE group_id=?", (source_group_id,),
+        )]
+
+    author = "fixture-source-workstation"
+    apply_record("molecule_group", f"molecule_group:{author}:{source_group_id}",
+                 {"node_id": author, "group": source_group}, author, database=replica)
+    apply_record("molecule_entry", f"molecule_entry:{author}:{source_group_id}:{molecule_id}",
+                 {"node_id": author, "group_id": source_group_id, "molecule": molecule,
+                  "member": member, "structures": [], "observations": observations,
+                  "sources": sources}, author, database=replica)
+    replica_group_id = _id("peer-", author + ":" + source_group_id)
+    assert snapshot(source) == source_before
+    assert replication_snapshot() == replication_before
+
+    # The source and replica use the same audited source identity and owner/run
+    # restrictions; the peer-local primary key is not mistaken for another run.
+    assert not source.groups(user, collection="library")
+    assert not replica.groups(user, collection="library")
+    source_history = source.list_molecules(user, molecule_ids=[molecule_id], collection="all")["items"][0]
+    assert source_history["id"] == molecule_id
+    assert replica.group(replica_group_id, user)["origin"]["_replica_group"] == source_group_id
+    assert replica.group(replica_group_id, user)["origin"]["_replica_node"] == author
+    assert replica.group(replica_group_id, user)["owner_id"] == owner
+    assert replica.group(replica_group_id, user)["origin"]["run_id"] == run_id
+    assert replica.list_molecules(user, collection="library")["total"] == 0
+
+    # Independent intentional membership restores this molecular identity to
+    # Library without making the unreviewed peer collection eligible.
+    independent = replica.import_records(
+        user, [{"name": "Intentional local selection", "components": [
+            {"type": "small_molecule", "chain": "L", "smiles": "CCN"},
+        ]}], name="Intentional local selection", import_method="user_uploads",
+    )
+    assert independent["molecule_ids"] == [molecule_id]
+    library_ids = {row["id"] for row in replica.list_molecules(user, collection="library")["items"]}
+    assert molecule_id in library_ids
+    assert replica_group_id not in {row["id"] for row in replica.groups(user, collection="library")}
+
+    historical = replica.list_molecules(user, molecule_ids=[molecule_id], collection="all")["items"][0]
+    assert historical["id"] == molecule_id
+    assert replica_group_id in {group["id"] for group in historical["groups"]}
+    assert replica.list_molecules(user, group_id=replica_group_id, collection="all")["items"][0]["id"] == molecule_id
+
+    from mn_molecular_design_studio import molecular_database_results
+    run_dir = tmp_path / "campaign" / run_id
+    monkeypatch.setattr(molecular_database_results, "_authorized_run",
+                        lambda _selected, _user: (run_dir, "campaign", run_id, owner, ""))
+    result_rows = molecular_database_results.list_run_molecules(run_dir, user, database=source)
+    assert molecule_id in {row["id"] for row in result_rows}
+
+    stranger = {"id": "unrelated-user", "role": "user", "_cluster_project_ids": []}
+    assert replica_group_id not in {row["id"] for row in replica.groups(stranger, collection="all")}
+    with pytest.raises(PermissionError):
+        replica.group(replica_group_id, stranger)
+
+    replica_before = snapshot(replica)
+    source.groups(user, collection="library")
+    replica.groups(user, collection="library")
+    replica.list_molecules(user, collection="all")
+    assert snapshot(source) == source_before
+    assert snapshot(replica) == replica_before
+    assert replication_snapshot() == replication_before

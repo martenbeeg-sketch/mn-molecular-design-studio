@@ -33,11 +33,21 @@ def _owner(group) -> str:
 
 
 def is_unreviewed_screening_shortlist(group) -> bool:
-    """Match only an audited collection ID and its owner/run pair."""
+    """Match the audited source group or its owner-qualified peer replica."""
     if not isinstance(group, dict):
         return False
-    owner_run = UNREVIEWED_SCREENING_SHORTLISTS.get(str(group.get("id") or ""))
-    return bool(owner_run and owner_run == (_owner(group), str(_origin(group).get("run_id") or "")))
+    origin = _origin(group)
+    group_id = str(group.get("id") or "")
+    if group_id in UNREVIEWED_SCREENING_SHORTLISTS:
+        original_group_id = group_id
+    else:
+        # Replication gives a group a peer-* local ID while preserving the
+        # source ID and publishing workstation in these metadata fields.
+        if not str(origin.get("_replica_node") or "").strip():
+            return False
+        original_group_id = str(origin.get("_replica_group") or "")
+    owner_run = UNREVIEWED_SCREENING_SHORTLISTS.get(original_group_id)
+    return bool(owner_run and owner_run == (_owner(group), str(origin.get("run_id") or "")))
 
 
 def is_unreviewed_screening_shortlist_id(group_id) -> bool:

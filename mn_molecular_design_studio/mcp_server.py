@@ -197,9 +197,13 @@ def create_server(client=None):
         return await call(ctx, "GET", f"/api/v1/screening/{segment(task_group)}/{segment(run_id)}")
 
     @server.tool(annotations=write)
-    async def import_final_shortlist(task_group: str, run_id: str, limit: int, ctx: Context) -> dict[str, Any]:
-        """Explicitly promote 0–1,000 final ranked compounds after successful completion."""
-        return await call(ctx, "POST", f"/api/v1/screening/{segment(task_group)}/{segment(run_id)}/final-selection", body={"limit": limit})
+    async def import_final_shortlist(task_group: str, run_id: str, ctx: Context, limit: int = 0,
+                                     selected_compound_ids: list[str] | None = None) -> dict[str, Any]:
+        """Explicitly select exact IDs or a positive ranked limit; omitted choice imports nothing."""
+        body = {"limit": limit}
+        if selected_compound_ids is not None:
+            body["selected_compound_ids"] = selected_compound_ids
+        return await call(ctx, "POST", f"/api/v1/screening/{segment(task_group)}/{segment(run_id)}/final-selection", body=body)
 
     @server.tool(annotations=write)
     async def export_molecules(molecule_ids: list[str], ctx: Context, format: str = "CSV") -> dict[str, Any]:

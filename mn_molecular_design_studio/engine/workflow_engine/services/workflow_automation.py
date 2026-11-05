@@ -1145,8 +1145,21 @@ def _submit_workflow_request(request_file: str | Path, *, defer_dispatch: bool =
 
     from mn_molecular_design_studio.collection_policy import collection_scope, default_policy_for_workflow, validate_policy
     items = parameters if isinstance(parameters, list) else [parameters]
+    import_parameter = inspect.signature(function).parameters.get("import_to_database")
+    default_import = (
+        import_parameter.default
+        if import_parameter and import_parameter.default is not inspect.Parameter.empty
+        else True
+    )
+    if type(default_import) is not bool:
+        default_import = True
+    # Batch parents are created before their children run, so resolve each
+    # child's effective choice here rather than reading only supplied JSON.
+    effective_import_choices = [item.get("import_to_database", default_import) for item in items]
+    if any(type(choice) is not bool for choice in effective_import_choices):
+        raise AutomationError("Import into Database must be true or false.")
     external_only = workflow_id in {"library.prepare", "library.centroids", "library.seed_dock"} or any(
-        item.get("import_to_database") is False for item in items)
+        choice is False for choice in effective_import_choices)
     requested_collection_policy = validate_policy(
         payload.get("database_collection_policy", default_policy_for_workflow(workflow_id))
     )

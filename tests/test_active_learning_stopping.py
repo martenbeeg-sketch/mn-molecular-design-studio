@@ -11,6 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from mn_molecular_design_studio import pipeline_graph
 from mn_molecular_design_studio.engine.workflow_engine.workflows import active_learning_controller as controller
@@ -54,6 +56,7 @@ def test_top_n_stability_uses_ranked_identity_and_configured_score_tolerance():
     assert maximum_change == pytest.approx(0.04)
 
 
+@pytest.mark.parametrize("saved_import_limit", [0, 1000])
 @pytest.mark.parametrize(
     ("scenario", "expected_stop", "expected_docking_rounds", "expected_model_steps"),
     [
@@ -62,10 +65,13 @@ def test_top_n_stability_uses_ranked_identity_and_configured_score_tolerance():
     ],
 )
 def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
-    monkeypatch, tmp_path, scenario, expected_stop, expected_docking_rounds, expected_model_steps,
+    monkeypatch, tmp_path, saved_import_limit, scenario, expected_stop, expected_docking_rounds, expected_model_steps,
 ):
     campaign = tmp_path / "campaign"
     campaign.mkdir()
+    (campaign / "molecular_design_studio.json").write_text(json.dumps({
+        "studio_owner_id": "test-owner", "project_id": "test-project",
+    }))
     (campaign / "metadata.json").write_text(json.dumps({"status": "running"}))
     target_pdb = tmp_path / "receptor.pdb"
     target_pdb.write_text("fixture")
@@ -87,6 +93,7 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
         top_n=2, stable_rounds=2 if scenario == "stable" else 100,
         score_tolerance=0.05, max_iterations=0 if scenario == "stable" else 2,
     )
+    nodes["active_results"]["data"]["params"]["final_database_import_limit"] = saved_import_limit
 
     docking_rounds = []
     model_steps = []
@@ -178,18 +185,25 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
     monkeypatch.setattr(controller, "_write_selection_table", write_selection)
     monkeypatch.setattr(controller, "_collect_best_poses", collect_poses)
     monkeypatch.setattr(controller, "_cleanup_docking_artifacts", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(controller, "_save_score_table", lambda path, _rows: Path(path).write_text("fixture"))
+    def write_scores(path, rows):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.Table.from_pylist([
+            {**row, "smiles": row.get("smiles") or row.get("source_smiles") or "CCO"}
+            for row in rows
+        ]), path)
+
+    monkeypatch.setattr(controller, "_save_score_table", write_scores)
     monkeypatch.setattr(controller, "_save_failed_compound_table", lambda path, _rows: Path(path).write_text("fixture"))
     from mn_molecular_design_studio import bulk_screening_results
-    monkeypatch.setattr(bulk_screening_results, "publish_final_selection",
-                        lambda *args, **kwargs: (
-                            final_import_limits.append(args[2]) or
-                            {"imported_count": 0, "requested_limit": args[2], "group_id": None}
-                        ))
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    database = MolecularDatabase(tmp_path / "database")
+    real_publisher = bulk_screening_results.publish_final_selection
 
-    # Reproduce a saved graph missing this optional field: the controller must
-    # use the new zero fallback. Explicit historical values are tested above.
-    nodes["active_results"]["data"]["params"].pop("final_database_import_limit", None)
+    def publish_results_only(run, user, limit, **kwargs):
+        final_import_limits.append(limit)
+        return real_publisher(run, user, limit, database=database, **kwargs)
+
+    monkeypatch.setattr(bulk_screening_results, "publish_final_selection", publish_results_only)
 
     from mn_molecular_design_studio import workspace
     from mn_molecular_design_studio.engine.workflow_engine.workflows import ligand_tools
@@ -220,6 +234,18 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
     assert completed
     assert completed[-1][0][2]["metrics"]["stop_reason"] == expected_stop
     assert final_import_limits == [0]
+    saved_graph = json.loads((campaign / "graph_snapshot.json").read_text())
+    saved_limit = next(node["data"]["params"]["final_database_import_limit"]
+                       for node in saved_graph["nodes"] if node["data"]["kind"] == "active_results")
+    assert saved_limit == saved_import_limit
+    external_manifest = json.loads((campaign / "artifacts/active_learning/external_results.json").read_text())
+    assert external_manifest["database_selection"]["saved_import_limit_preserved_but_not_applied"] == saved_import_limit
+    assert external_manifest["compound_count"] == pq.ParquetFile(
+        campaign / "artifacts/active_learning/docking_scores.parquet",
+    ).metadata.num_rows
+    with database.connection() as connection:
+        for table in ("molecules", "molecule_members", "molecule_sources", "molecule_observations"):
+            assert connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0
 
     if scenario == "stable":
         assert [row["top_n_stable"] for row in history["rounds"]] == [False, False, True, True]

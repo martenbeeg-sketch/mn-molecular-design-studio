@@ -185,6 +185,58 @@ def test_final_screening_import_is_explicit_bounded_and_owner_only(api_data):
     assert pq.ParquetFile(run / "artifacts/active_learning/docking_scores.parquet").metadata.num_rows == 11
 
 
+def test_final_selection_api_without_a_choice_is_results_only(api_data):
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+
+    data = api_data
+    run = screening_run(data)
+    response = data["client"].post("/api/v1/screening/campaign/api-screening/final-selection", json={})
+    assert response.status_code == 200, response.text
+    assert response.json()["requested_limit"] == 0
+    assert response.json()["imported_count"] == 0
+    assert response.json()["group_id"] is None
+    with MolecularDatabase().connection() as connection:
+        assert connection.execute("SELECT count(*) FROM molecule_sources").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM molecule_observations").fetchone()[0] == 0
+    assert pq.ParquetFile(run / "artifacts/active_learning/docking_scores.parquet").metadata.num_rows == 11
+
+
+def test_final_selection_api_accepts_exact_ids_and_replays_idempotently(api_data):
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+
+    data = api_data
+    run = screening_run(data)
+    scores_path = run / "artifacts/active_learning/docking_scores.parquet"
+    original_scores = scores_path.read_bytes()
+    endpoint = "/api/v1/screening/campaign/api-screening/final-selection"
+    body = {"limit": 0, "selected_compound_ids": ["c-1", "c-3"]}
+    first = data["client"].post(endpoint, json=body)
+    assert first.status_code == 200, first.text
+    assert first.json()["selected_compound_ids"] == ["c-1", "c-3"]
+    assert first.json()["imported_count"] == 2
+    database = MolecularDatabase()
+    items = database.list_molecules(data["admin"], group_id=first.json()["group_id"])["items"]
+    assert {item["metadata"]["compound_id"] for item in items} == {"c-1", "c-3"}
+
+    replay = data["client"].post(endpoint, json=body)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["group_id"] == first.json()["group_id"]
+    with database.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM molecule_members").fetchone()[0] == 2
+        assert connection.execute("SELECT count(*) FROM molecule_sources").fetchone()[0] == 2
+        assert connection.execute("SELECT count(*) FROM molecule_observations").fetchone()[0] == 2
+    assert scores_path.read_bytes() == original_scores
+
+    for invalid in (
+        {"limit": 0, "selected_compound_ids": []},
+        {"limit": 1, "selected_compound_ids": ["c-1"]},
+        {"limit": 0, "selected_compound_ids": ["missing"]},
+    ):
+        assert data["client"].post(endpoint, json=invalid).status_code == 422
+    with database.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM molecule_members").fetchone()[0] == 2
+
+
 @pytest.mark.parametrize("format,extension", [("CSV", "csv"), ("SMILES", "smi"), ("SDF", "sdf")])
 def test_exports_are_private_downloadable_files(api_data, format, extension):
     data, client = api_data, api_data["client"]

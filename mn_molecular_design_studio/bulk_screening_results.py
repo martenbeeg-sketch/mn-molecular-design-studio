@@ -120,17 +120,19 @@ def publish_final_selection(run_dir, user, limit, *, database=None, selected_com
                             explicit_selection=False):
     """Trusted controller adapter; call after final Parquet export, before finish.
 
-    Automatic ranked publication remains bounded by ``limit``. Public UI calls
-    can instead supply exact IDs (or an explicit reviewed top-N choice) through
-    ``import_final_results``. Explicit selections use a separate stable group so
-    they do not change the historical automatic shortlist or its provenance.
+    Completion callers must publish with a zero limit. Positive ranked imports
+    require ``explicit_selection=True``; public calls use ``import_final_results``.
+    Exact IDs or reviewed top-N choices use a separate stable group so they do
+    not change historical automatic shortlists or their provenance.
     """
     limit = _limit(limit)
+    if limit and selected_compound_ids is not None:
+        raise ValueError("Use either an exact compound selection or a ranked import limit, not both.")
+    if limit and not explicit_selection:
+        raise ValueError("A positive ranked import requires an explicit curation action.")
     run_dir = Path(run_dir).resolve()
     data = run_dir / RESULT_DIRECTORY
     if selected_compound_ids is not None:
-        if limit != 0:
-            raise ValueError("Use either an exact compound selection or a ranked import limit, not both.")
         count, rows = _selected_rows(data / "docking_scores.parquet", selected_compound_ids)
         explicit_selection = True
     else:
@@ -211,20 +213,38 @@ def publish_final_selection(run_dir, user, limit, *, database=None, selected_com
                     connection.execute("INSERT INTO molecule_structures VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET context=excluded.context", (
                         representation, molecule_id, group_id, str(path), item["label"], path.suffix.lstrip("."), _json(structure_context), stamp))
                 context = {**origin, "compound_id": row["compound_id"], "units": units,
+                           "library_id": row.get("library_id"), "compound_key": row.get("compound_key"),
                            "primary_ranking_metric": field, "ranking_direction": direction,
                            **target_context, "representation_id": representation, "settings": docking,
                            "best_round": row.get("best_round"), "first_round": row.get("first_round")}
                 observation_id = _id("score-", source_key)
                 if explicit_selection:
-                    # The exact same source Evaluation may already be retained
-                    # in the historical automatic collection. Keep that row
-                    # immutable and avoid cloning the same score on re-selection.
+                    # Suppress only the matching owner-qualified automatic
+                    # source row. A matching molecule/run/compound label from
+                    # another workstation or private group is independent data.
+                    final_source_key = (
+                        f"{socket.gethostname()}/campaign/{run_dir.name}:final:"
+                        f"{row.get('library_id')}:{row.get('compound_key', rank)}"
+                    )
+                    original_group_id = _id("screening-final-", str(run_dir))
                     exists = connection.execute(
-                        "SELECT 1 FROM molecule_observations WHERE molecule_id=? "
-                        "AND json_extract(context,'$.run_id')=? AND json_extract(context,'$.compound_id')=? "
-                        "AND namespace=? AND run_id=? LIMIT 1",
-                        (molecule_id, run_dir.name, str(row["compound_id"]),
-                         str(docking.get("engine") or "docking"), run_dir.name),
+                        "SELECT 1 FROM molecule_observations o "
+                        "JOIN molecule_sources s ON s.group_id=o.group_id AND s.molecule_id=o.molecule_id "
+                        "JOIN molecule_groups g ON g.id=o.group_id "
+                        "WHERE o.molecule_id=? AND o.namespace=? AND o.run_id=? "
+                        "AND json_extract(o.context,'$.run_id')=? "
+                        "AND json_extract(o.context,'$.compound_id')=? "
+                        "AND json_extract(o.context,'$.source_node')=? "
+                        "AND g.owner_id=? AND json_extract(g.origin,'$.run_id')=? "
+                        "AND json_extract(g.origin,'$.source_node')=? "
+                        "AND (g.id=? OR json_extract(g.origin,'$._replica_group')=?) "
+                        "AND (s.source_key=? OR json_extract(s.provenance,'$._replica_source_key')=?) "
+                        "AND json_extract(s.provenance,'$.run_id')=? "
+                        "AND json_extract(s.provenance,'$.compound_id')=? LIMIT 1",
+                        (molecule_id, str(docking.get("engine") or "docking"), run_dir.name,
+                         run_dir.name, str(row["compound_id"]), socket.gethostname(), owner,
+                         run_dir.name, socket.gethostname(), original_group_id, original_group_id,
+                         final_source_key, final_source_key, run_dir.name, str(row["compound_id"])),
                     ).fetchone()
                     if not exists:
                         connection.execute("INSERT OR IGNORE INTO molecule_observations VALUES (?,?,?,?,?,?,?,?)", (

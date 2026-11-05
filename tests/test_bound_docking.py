@@ -395,7 +395,7 @@ def test_bulk_shortlist_upgrade_links_separate_target_without_duplicating_poses(
     pq.write_table(pa.Table.from_pylist([{"compound_id": "X", "compound_key": 1, "library_id": "L", "score": -9,
         "smiles": "CCO", "pose_path": str(retained)}]), path)
     original = path.read_bytes()
-    result = publish_final_selection(run, USER, 1, database=db)
+    result = publish_final_selection(run, USER, 1, database=db, explicit_selection=True)
     row = db.list_molecules(USER, group_id=result["group_id"])["items"][0]
     assert row["type"] == "small_molecule" and len(row["components"]) == 1
     assert row["structures"][0]["context"]["target_molecule_id"] != row["id"]
@@ -407,7 +407,7 @@ def test_bulk_shortlist_upgrade_links_separate_target_without_duplicating_poses(
         for key in ("target_structure_id", "target_molecule_id", "target_path", "database_structure_policy"):
             context.pop(key)
         c.execute("UPDATE molecule_structures SET context=? WHERE id=?", (json.dumps(context), structure_id))
-    publish_final_selection(run, USER, 1, database=db)
+    publish_final_selection(run, USER, 1, database=db, explicit_selection=True)
     row = db.list_molecules(USER, group_id=result["group_id"])["items"][0]
     assert len(row["structures"]) == 1 and row["structures"][0]["id"] == structure_id
     assert bound_docking.is_bound_pose(row["structures"][0])

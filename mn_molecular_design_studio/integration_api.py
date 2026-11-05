@@ -43,7 +43,10 @@ class ScreeningQuery(Contract):
 
 
 class FinalImport(Contract):
-    limit: int = Field(default=1000, ge=0, le=1000, strict=True)
+    # An empty body is an explicit Results-only no-op. A positive ranked limit
+    # or a nonempty exact-ID list is a curation action supplied by the caller.
+    limit: int = Field(default=0, ge=0, le=1000, strict=True)
+    selected_compound_ids: list[str] | None = Field(default=None, min_length=1, max_length=1000)
 
 
 class ExportRequest(Contract):
@@ -256,7 +259,10 @@ def install(app, current_user, admin_user, *, validate_paths):
     @router.post("/screening/{task_group}/{run_id}/final-selection")
     def screening_final(task_group: str, run_id: str, payload: FinalImport, user=Depends(current_user)):
         from mn_molecular_design_studio.bulk_screening_results import import_final_results
-        return call(import_final_results, run(task_group, run_id, user), user, payload.limit)
+        if payload.limit and payload.selected_compound_ids is not None:
+            raise HTTPException(422, "Choose either a positive ranked limit or exact compound IDs.")
+        return call(import_final_results, run(task_group, run_id, user), user, payload.limit,
+                    selected_compound_ids=payload.selected_compound_ids)
 
     @router.post("/molecules/exports", status_code=201)
     def export(payload: ExportRequest, user=Depends(current_user)):

@@ -270,10 +270,10 @@ NODE_CATALOG.update({
         field("stable_rounds", "Stable rounds before stopping", 3, minimum=1, maximum=100, section="basic"),
         field("max_iterations", "Maximum iterations (0 = unlimited)", 0, minimum=0, maximum=100000, section="basic"),
     ]),
-    "active_results": _spec("active_results", "Active learning results", "Results", "All compound scores, IDs, SMILES, round history, models and retained poses stay in external campaign files. Intermediate rounds never import compound records into Database. Optionally import a bounded selection from the final cumulative ranking after the loop stops.", output=None, accepts=[_ACTIVE_STATE], color="#427f68", formats=(), fields=[
-        field("final_database_import_limit", "Final compounds imported into Database (0 = none)", 0,
+    "active_results": _spec("active_results", "Active learning results", "Results", "All compound scores, IDs, SMILES, round history, models and retained poses stay in external campaign files. Intermediate rounds and ordinary campaign completion never import compound records into Database. Use the Results page for an explicit exact-ID selection or reviewed top-ranked import. Historical final import limits are retained for compatibility and are not applied automatically.", output=None, accepts=[_ACTIVE_STATE], color="#427f68", formats=(), fields=[
+        field("final_database_import_limit", "Legacy final import limit (not applied automatically)", 0,
               minimum=0, maximum=1000, section="basic",
-              help="Import only this many top-ranked final compounds, with scores, original IDs and available retained poses. All other results remain linked as external Parquet files, never as individual Database rows."),
+              help="Retained for saved-graph compatibility. Completion never imports from this value; make a separate selection from Results. Full scores, poses and files stay available externally."),
     ]),
 })
 NODE_CATALOG["active_docking"]["inputs"][0]["multiple"] = True

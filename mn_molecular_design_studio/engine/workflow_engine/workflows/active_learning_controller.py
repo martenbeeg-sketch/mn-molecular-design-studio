@@ -1021,17 +1021,21 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                                   "centroid_manifest": str(features["centroid_manifest"]),
                                   "retained_poses": pose_paths})
         from mn_molecular_design_studio.bulk_screening_results import publish_final_selection
-        import_limit = int(params["active_results"].get("final_database_import_limit", 0))
+        # Preserve old graph values in graph_snapshot.json, but a saved limit is
+        # not a fresh scientific selection. Completion always publishes Results
+        # with no curated molecule rows; a user may select from Results later.
+        saved_import_limit = int(params["active_results"].get("final_database_import_limit", 0))
         try:
-            selection = publish_final_selection(campaign, {"id": owner_id, "role": "admin"}, import_limit)
+            selection = publish_final_selection(campaign, {"id": owner_id, "role": "admin"}, 0)
         except Exception as exc:
             # Scientific outputs remain usable if the optional shortlist import fails.
             selection = publish_final_selection(campaign, {"id": owner_id, "role": "admin"}, 0)
-            manifest_path = data_root / "external_results.json"
-            external_manifest = read_json(manifest_path)
-            selection.update(requested_limit=import_limit, error=f"{type(exc).__name__}: {exc}")
-            external_manifest["database_selection"] = selection
-            write_json(manifest_path, external_manifest)
+            selection["publication_warning"] = f"{type(exc).__name__}: {exc}"
+        selection["saved_import_limit_preserved_but_not_applied"] = saved_import_limit
+        manifest_path = data_root / "external_results.json"
+        external_manifest = read_json(manifest_path)
+        external_manifest["database_selection"] = selection
+        write_json(manifest_path, external_manifest)
         state["database_selection"] = selection
         state["status"] = "completed"
         checkpoint()
