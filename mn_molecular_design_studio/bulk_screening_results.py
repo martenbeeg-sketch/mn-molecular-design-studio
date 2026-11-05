@@ -227,6 +227,16 @@ def publish_final_selection(run_dir, user, limit, *, database=None, selected_com
                         f"{row.get('library_id')}:{row.get('compound_key', rank)}"
                     )
                     original_group_id = _id("screening-final-", str(run_dir))
+                    expected_observation_id = _id("score-", final_source_key)
+                    from mn_molecular_design_studio.cluster import config as cluster_config
+                    authoritative_node = cluster_config.identity()
+                    replica_group_id = _id("peer-", f"{authoritative_node}:{original_group_id}")
+                    replica_observation_id = _id(
+                        "peer-score-", f"{authoritative_node}:{expected_observation_id}"
+                    )
+                    replica_source_id = _id(
+                        "peer-source-", f"{authoritative_node}:{final_source_key}"
+                    )
                     exists = connection.execute(
                         "SELECT 1 FROM molecule_observations o "
                         "JOIN molecule_sources s ON s.group_id=o.group_id AND s.molecule_id=o.molecule_id "
@@ -237,14 +247,26 @@ def publish_final_selection(run_dir, user, limit, *, database=None, selected_com
                         "AND json_extract(o.context,'$.source_node')=? "
                         "AND g.owner_id=? AND json_extract(g.origin,'$.run_id')=? "
                         "AND json_extract(g.origin,'$.source_node')=? "
-                        "AND (g.id=? OR json_extract(g.origin,'$._replica_group')=?) "
-                        "AND (s.source_key=? OR json_extract(s.provenance,'$._replica_source_key')=?) "
                         "AND json_extract(s.provenance,'$.run_id')=? "
-                        "AND json_extract(s.provenance,'$.compound_id')=? LIMIT 1",
+                        "AND json_extract(s.provenance,'$.compound_id')=? AND ("
+                        "(g.id=? AND o.id=? AND s.source_key=? "
+                        "AND json_extract(g.origin,'$._replica_node') IS NULL "
+                        "AND json_extract(o.context,'$._replica_node') IS NULL "
+                        "AND json_extract(s.provenance,'$._replica_node') IS NULL "
+                        "AND json_extract(s.provenance,'$.source_node')=?) OR ("
+                        "g.id=? AND json_extract(g.origin,'$._replica_group')=? "
+                        "AND json_extract(g.origin,'$._replica_node')=? "
+                        "AND o.id=? AND json_extract(o.context,'$._replica_observation')=? "
+                        "AND json_extract(o.context,'$._replica_node')=? "
+                        "AND s.source_key=? AND json_extract(s.provenance,'$._replica_source_key')=? "
+                        "AND json_extract(s.provenance,'$._replica_node')=?)) LIMIT 1",
                         (molecule_id, str(docking.get("engine") or "docking"), run_dir.name,
                          run_dir.name, str(row["compound_id"]), socket.gethostname(), owner,
-                         run_dir.name, socket.gethostname(), original_group_id, original_group_id,
-                         final_source_key, final_source_key, run_dir.name, str(row["compound_id"])),
+                         run_dir.name, socket.gethostname(), run_dir.name, str(row["compound_id"]),
+                         original_group_id, expected_observation_id,
+                         final_source_key, socket.gethostname(), replica_group_id, original_group_id,
+                         authoritative_node, replica_observation_id, expected_observation_id,
+                         authoritative_node, replica_source_id, final_source_key, authoritative_node),
                     ).fetchone()
                     if not exists:
                         connection.execute("INSERT OR IGNORE INTO molecule_observations VALUES (?,?,?,?,?,?,?,?)", (

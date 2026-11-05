@@ -37,7 +37,7 @@ def bulk(tmp_path, monkeypatch):
     return run, MolecularDatabase(tmp_path / "database")
 
 
-def _seed_historical_automatic_selection(run, database, limit):
+def _seed_historical_automatic_selection(run, database, limit, *, score_overrides=None):
     """Build the pre-P0 automatic source rows without invoking the new publisher."""
     import socket
     from mn_molecular_design_studio.molecular_database import _id, _json
@@ -66,8 +66,9 @@ def _seed_historical_automatic_selection(run, database, limit):
             observation_context = {**origin, "compound_id": row["compound_id"], "units": "REU"}
             connection.execute(
                 "INSERT INTO molecule_observations VALUES (?,?,?,?,?,?,?,?)",
-                (_id("score-", source_key), molecule_id, group_id, "docking", run.name,
-                 _json({"test_score": row["score"], "final_rank": rank}),
+                 (_id("score-", source_key), molecule_id, group_id, "docking", run.name,
+                 _json({"test_score": (score_overrides or {}).get(row["compound_id"], row["score"]),
+                        "final_rank": rank}),
                  _json(observation_context), "historical-fixture"),
             )
     return group_id
@@ -83,10 +84,10 @@ def _replicate_group_entry(source, target, group_id, molecule_id, author):
             "SELECT * FROM molecule_members WHERE group_id=? AND molecule_id=?", (group_id, molecule_id),
         ).fetchone())
         observations = [dict(row) for row in connection.execute(
-            "SELECT * FROM molecule_observations WHERE group_id=?", (group_id,),
+            "SELECT * FROM molecule_observations WHERE group_id=? AND molecule_id=?", (group_id, molecule_id),
         )]
         sources = [dict(row) for row in connection.execute(
-            "SELECT * FROM molecule_sources WHERE group_id=?", (group_id,),
+            "SELECT * FROM molecule_sources WHERE group_id=? AND molecule_id=?", (group_id, molecule_id),
         )]
     apply_record("molecule_group", f"molecule_group:{author}:{group_id}",
                  {"node_id": author, "group": group}, author, database=target)
@@ -290,6 +291,132 @@ def test_same_run_evaluation_from_another_workstation_is_a_distinct_source(bulk,
     assert json.loads(other_evaluation[1])["source_node"] == "other-workstation"
 
 
+def test_unrelated_observation_in_matching_group_does_not_suppress_exact_selected_score(bulk, monkeypatch):
+    import socket
+
+    run, database = bulk
+    from mn_molecular_design_studio import molecular_database_results
+    from mn_molecular_design_studio.molecular_database import _id, _json
+    monkeypatch.setattr(molecular_database_results, "_authorized_run", lambda selected, _user: (selected,))
+    historical_group = _seed_historical_automatic_selection(run, database, 2)
+    with database.connection() as connection:
+        original = connection.execute(
+            "SELECT o.*,s.source_key,s.provenance FROM molecule_observations o "
+            "JOIN molecule_sources s ON s.group_id=o.group_id AND s.molecule_id=o.molecule_id "
+            "WHERE o.group_id=? AND json_extract(o.context,'$.compound_id')='original-1'",
+            (historical_group,),
+        ).fetchone()
+        original = dict(original)
+        connection.execute("DELETE FROM molecule_observations WHERE id=?", (original["id"],))
+
+    wrong_source_key = f"{socket.gethostname()}/campaign/{run.name}:final:other-library:999"
+    wrong_context = {
+        **json.loads(original["context"]), "library_id": "other-library", "compound_key": 999,
+    }
+    wrong_provenance = {
+        **json.loads(original["provenance"]), "library_id": "other-library", "compound_key": 999,
+    }
+    wrong_observation_id = _id("score-", wrong_source_key)
+    with database.connection() as connection:
+        connection.execute("INSERT INTO molecule_sources VALUES (?,?,?,?)",
+                           (wrong_source_key, original["molecule_id"], historical_group, _json(wrong_provenance)))
+        connection.execute("INSERT INTO molecule_observations VALUES (?,?,?,?,?,?,?,?)", (
+            wrong_observation_id, original["molecule_id"], historical_group, original["namespace"],
+            original["run_id"], _json({"test_score": -99.0}), _json(wrong_context), "unrelated-fixture",
+        ))
+
+    selected = import_final_results(
+        run, USER, 0, database=database, selected_compound_ids=["original-1"],
+    )
+    with database.connection() as connection:
+        local = dict(connection.execute(
+            "SELECT * FROM molecule_observations WHERE group_id=? AND molecule_id=?",
+            (selected["group_id"], original["molecule_id"]),
+        ).fetchone())
+        unrelated = dict(connection.execute(
+            "SELECT * FROM molecule_observations WHERE id=?", (wrong_observation_id,),
+        ).fetchone())
+        selected_source = connection.execute(
+            "SELECT provenance FROM molecule_sources WHERE group_id=? AND molecule_id=?",
+            (selected["group_id"], original["molecule_id"]),
+        ).fetchone()
+    assert json.loads(local["metrics"]) == {"test_score": -9.0, "final_rank": 2}
+    assert json.loads(local["context"])["library_id"] == "lib"
+    assert json.loads(local["context"])["compound_key"] == 1
+    assert json.loads(selected_source[0])["compound_id"] == "original-1"
+    assert local["id"] != wrong_observation_id
+    assert json.loads(unrelated["metrics"]) == {"test_score": -99.0}
+    assert json.loads(unrelated["context"])["library_id"] == "other-library"
+
+
+@pytest.mark.parametrize("author_kind", ["local_authority", "foreign_authority"])
+def test_final_selection_dedup_uses_real_replica_authority_and_replays_idempotently(
+    bulk, tmp_path, monkeypatch, author_kind,
+):
+    run, database = bulk
+    from mn_molecular_design_studio import molecular_database_results
+    from mn_molecular_design_studio.cluster import config
+    from mn_molecular_design_studio.molecular_database import _id
+    monkeypatch.setattr(molecular_database_results, "_authorized_run", lambda selected, _user: (selected,))
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
+
+    source = MolecularDatabase(tmp_path / "authoritative-source")
+    historical_group = _seed_historical_automatic_selection(
+        run, source, 2, score_overrides={"original-1": -99.0},
+    )
+    author = (config.identity() if author_kind == "local_authority"
+              else "22222222-2222-4222-8222-222222222222")
+    assert (author == config.identity()) is (author_kind == "local_authority")
+    with source.connection() as connection:
+        molecule_id = connection.execute(
+            "SELECT molecule_id FROM molecule_members WHERE group_id=? AND json_extract(metadata,'$.compound_id')='original-1'",
+            (historical_group,),
+        ).fetchone()[0]
+        source_observation = dict(connection.execute(
+            "SELECT * FROM molecule_observations WHERE group_id=? AND molecule_id=?",
+            (historical_group, molecule_id),
+        ).fetchone())
+    _replicate_group_entry(source, database, historical_group, molecule_id, author)
+    replica_group = _id("peer-", f"{author}:{historical_group}")
+
+    selected = import_final_results(
+        run, USER, 0, database=database, selected_compound_ids=["original-1"],
+    )
+    with database.connection() as connection:
+        rows = [dict(row) for row in connection.execute(
+            "SELECT * FROM molecule_observations WHERE group_id=? AND molecule_id=?",
+            (selected["group_id"], molecule_id),
+        )]
+        foreign_or_local_replica = dict(connection.execute(
+            "SELECT * FROM molecule_observations WHERE group_id=? AND molecule_id=?",
+            (replica_group, molecule_id),
+        ).fetchone())
+    expected_local_count = 0 if author_kind == "local_authority" else 1
+    assert len(rows) == expected_local_count
+    assert json.loads(foreign_or_local_replica["metrics"]) == {"test_score": -99.0, "final_rank": 2}
+    assert json.loads(foreign_or_local_replica["context"])["_replica_node"] == author
+    assert json.loads(foreign_or_local_replica["context"])["_replica_observation"] == source_observation["id"]
+    if rows:
+        assert json.loads(rows[0]["metrics"]) == {"test_score": -9.0, "final_rank": 2}
+        assert rows[0]["molecule_id"] == molecule_id
+
+    replay = import_final_results(
+        run, USER, 0, database=database, selected_compound_ids=["original-1"],
+    )
+    assert replay["group_id"] == selected["group_id"]
+    with database.connection() as connection:
+        replay_rows = [tuple(row) for row in connection.execute(
+            "SELECT * FROM molecule_observations WHERE group_id=? AND molecule_id=?",
+            (selected["group_id"], molecule_id),
+        )]
+        unchanged_source = tuple(connection.execute(
+            "SELECT * FROM molecule_observations WHERE id=?", (foreign_or_local_replica["id"],),
+        ).fetchone())
+    expected_rows = [tuple(row.values()) for row in rows]
+    assert replay_rows == expected_rows
+    assert unchanged_source == tuple(foreign_or_local_replica.values())
+
+
 def test_thousand_row_cap_does_not_read_or_import_the_rest(bulk):
     run, db = bulk
     rows = [dict(library_id="lib", compound_key=i, compound_id=f"ID-{i}",
@@ -443,6 +570,181 @@ def test_batch_api_request_and_aggregate_completion_stay_results_only_by_default
     with database.connection() as connection:
         for table in ("molecules", "molecule_members", "molecule_sources", "molecule_observations"):
             assert connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("choices", [
+    (None, None), (False, False), (True, True), (True, False), (False, True),
+    (True, None), (None, True),
+])
+@pytest.mark.parametrize("compatible", [False, True])
+def test_vina_batch_preserves_each_explicit_import_through_real_child_completion(
+    tmp_path, monkeypatch, choices, compatible,
+):
+    """Only Docker is stubbed; request serialization, batch, Vina and ingestion are real."""
+    for key, value in {
+        "MN_MOLECULAR_DESIGN_STUDIO_HOME": tmp_path / "studio",
+        "MN_MOLECULAR_DESIGN_STUDIO_APP_HOME": tmp_path / "studio",
+        "MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR": tmp_path / "runs",
+        "MN_MOLECULAR_DESIGN_STUDIO_RESULTS_PARENT": tmp_path / "runs",
+        "MN_MOLECULAR_DESIGN_STUDIO_REFERENCE_DIR": tmp_path / "references",
+        "MDS_CLUSTER_HOME": tmp_path / "cluster",
+    }.items():
+        monkeypatch.setenv(key, str(value))
+
+    from mn_molecular_design_studio import ligand_compounds, workspace
+    from mn_molecular_design_studio.cluster import config
+    from mn_molecular_design_studio.collection_policy import policy_for_run
+    from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation as automation
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs as jobs_module
+    from mn_molecular_design_studio.engine.workflow_engine.core import workflow_queue as queue
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import ligand_tools as tools
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+
+    config.save({"mode": "disabled"})
+    target, compounds = tmp_path / "target.pdb", tmp_path / "compounds.json"
+    target.write_text(
+        "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00 20.00           C\nEND\n"
+    )
+    ligand_compounds.write_compound_set(
+        compounds, name="Intentional inputs",
+        compounds=[{"compound_id": "ethanol", "smiles": "CCO"}],
+        owner_id=USER["id"], project_id="", created_at="fixture",
+    )
+    database = MolecularDatabase()
+    intentional = database.import_records(USER, [{
+        "name": "HY-L126 fixture",
+        "components": [{"chain": "L", "type": "small_molecule", "smiles": "CCO"}],
+    }], name="Intentional library")
+    canonical_id = intentional["molecule_ids"][0]
+
+    items = []
+    for index, choice in enumerate(choices):
+        item = {
+            "target_pdb": str(target), "compound_set_file": str(compounds),
+            "center_x": 0., "center_y": 0., "center_z": 0.,
+            "exhaustiveness": 8 if compatible else 8 + index,
+        }
+        if choice is not None:
+            item["import_to_database"] = choice
+        items.append(item)
+    request = tmp_path / "request.json"
+    request.write_text(json.dumps({
+        "schema_version": 1, "workflow": "ligand.docking.vina", "parameters": items,
+        "resources": {"cpu_cores": 1, "gpu_device": "none"},
+    }))
+    monkeypatch.setattr(queue, "spawn_worker_for_run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tools, "load_manifest", lambda _name: {"image": "fixture:no-container"})
+
+    launches = []
+
+    def fixture_docker(run_dir, _manifest, _command, *, gpu_device):
+        run_dir = Path(run_dir)
+        launches.append(run_dir)
+        staged = ligand_compounds.load_compound_set(
+            run_dir / "artifacts/input/compound_set.json",
+        )["compounds"]
+        pose_dir = run_dir / "artifacts/poses"
+        pose_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = run_dir / "artifacts/docking_scores.csv"
+        csv_path.write_text(
+            "compound_id\tstatus\tbest_score_kcal_mol\tpose_path\terror\n"
+            + "".join(
+                f"{row['compound_id']}\tcompleted\t-7.5\tartifacts/poses/{row['compound_id']}.pdbqt\t\n"
+                for row in staged
+            )
+        )
+        for row in staged:
+            (pose_dir / f"{row['compound_id']}.pdbqt").write_text(
+                "REMARK deterministic fixture pose\nENDMDL\n"
+            )
+        return 0
+
+    monkeypatch.setattr(tools, "run_docker_job", fixture_docker)
+    submitted = automation.submit_workflow_request(request)
+    parent = Path(submitted["job"]["run_dir"])
+    workspace.mark_studio_job(
+        submitted, owner_id=USER["id"], project_id="", allow_private_source=True,
+    )
+    expected_effective = [choice is True for choice in choices]
+    assert policy_for_run(parent) == ("automatic" if all(expected_effective) else "manual")
+
+    completed = queue.run_workflow_call(parent, jobs_module.read_json(parent / "worker_request.json"))
+    assert completed == parent
+    assert jobs_module.read_json(parent / "result.json")["success"] is True
+    should_coalesce = compatible and choices[0] == choices[1]
+    assert len(launches) == (1 if should_coalesce else 2)
+    csv_bytes = {str(run): (run / "artifacts/docking_scores.csv").read_bytes() for run in launches}
+    pose_bytes = {
+        str(run): {pose.name: pose.read_bytes() for pose in (run / "artifacts/poses").glob("*.pdbqt")}
+        for run in launches
+    }
+    expected_launch_choices = [expected_effective[0]] if should_coalesce else expected_effective
+    assert [policy_for_run(run) for run in launches] == [
+        "automatic" if choice else "manual" for choice in expected_launch_choices
+    ]
+    if should_coalesce and expected_effective[0]:
+        assert policy_for_run(parent) == "automatic"
+    else:
+        # A non-coalesced parent only coordinates children; the aggregate
+        # candidate report is Results data, never a second ingestion source.
+        assert policy_for_run(parent) == "manual"
+
+    for run in launches:
+        assert workspace.is_studio_job(run)
+        marker = json.loads((run / "molecular_design_studio.json").read_text())
+        assert marker["studio_owner_id"] == USER["id"]
+        assert marker.get("project_id") in ("", None)
+        assert b"-7.5" in csv_bytes[str(run)]
+
+    with database.connection() as connection:
+        evaluations = [dict(row) for row in connection.execute(
+            "SELECT o.*,g.owner_id,g.project_id FROM molecule_observations o "
+            "JOIN molecule_groups g ON g.id=o.group_id WHERE o.namespace='vina' ORDER BY o.run_id,o.id"
+        )]
+    expected_count = sum(expected_effective)
+    assert len(evaluations) == expected_count
+    if expected_count:
+        launch_by_id = {run.name: jobs_module.read_json(run / "input.json")["params"]["exhaustiveness"]
+                        for run in launches}
+        assert {row["molecule_id"] for row in evaluations} == {canonical_id}
+        assert {row["owner_id"] for row in evaluations} == {USER["id"]}
+        assert {row["project_id"] for row in evaluations} == {""}
+        assert {row["run_id"] for row in evaluations} <= set(launch_by_id)
+        for row in evaluations:
+            context = json.loads(row["context"])
+            metrics = json.loads(row["metrics"])
+            assert context["row"]["best_score_kcal_mol"] == "-7.5"
+            assert metrics["best_score_kcal_mol"] == -7.5
+            assert context["settings"]["exhaustiveness"] == launch_by_id[row["run_id"]]
+            assert context["representation_id"]
+            assert context["pose_digest"]
+            with database.connection() as connection:
+                source = connection.execute(
+                    "SELECT source_key,provenance FROM molecule_sources WHERE group_id=? AND molecule_id=? "
+                    "AND json_extract(provenance,'$.run_id')=? AND json_extract(provenance,'$.compound_id')='ethanol'",
+                    (row["group_id"], canonical_id, row["run_id"]),
+                ).fetchone()
+            assert source is not None
+            assert row["run_id"] in source[0]
+
+        # Completion retry uses the real ingestion hook; exact source/run IDs
+        # and observations must remain unchanged.
+        before_observations = [tuple(row.values()) for row in evaluations]
+        from mn_molecular_design_studio.molecular_database_ingest import record_completed_run
+        for run, choice in zip(launches, expected_launch_choices):
+            if choice:
+                record_completed_run(run)
+        with database.connection() as connection:
+            after_observations = [tuple(row) for row in connection.execute(
+                "SELECT o.*,g.owner_id,g.project_id FROM molecule_observations o "
+                "JOIN molecule_groups g ON g.id=o.group_id WHERE o.namespace='vina' ORDER BY o.run_id,o.id"
+            )]
+        assert after_observations == before_observations
+        assert {str(run): (run / "artifacts/docking_scores.csv").read_bytes() for run in launches} == csv_bytes
+        assert {
+            str(run): {pose.name: pose.read_bytes() for pose in (run / "artifacts/poses").glob("*.pdbqt")}
+            for run in launches
+        } == pose_bytes
 
 
 def test_direct_publisher_requires_explicit_positive_top_n_action(bulk):

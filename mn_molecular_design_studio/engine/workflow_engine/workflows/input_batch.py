@@ -10,6 +10,28 @@ from mn_molecular_design_studio.engine.workflow_engine.core.jobs import (
 )
 
 
+def _authorized_studio_lineage(run_dir: Path) -> dict | None:
+    """Return only authenticated Studio identity persisted on the batch parent."""
+    from mn_molecular_design_studio.workspace import STUDIO_SOURCE_ID
+
+    marker = read_json(Path(run_dir) / "molecular_design_studio.json")
+    owner_id = marker.get("studio_owner_id")
+    project_id = marker.get("project_id")
+    if (marker.get("application") != STUDIO_SOURCE_ID
+            or not isinstance(owner_id, str) or not owner_id.strip()
+            or (project_id is not None and not isinstance(project_id, str))):
+        return None
+    lineage = {
+        "application": STUDIO_SOURCE_ID,
+        "studio_owner_id": owner_id,
+        "project_id": project_id or "",
+    }
+    workspace = marker.get("workspace")
+    if isinstance(workspace, str) and workspace:
+        lineage["workspace"] = workspace
+    return lineage
+
+
 def _compound_batch(items, run_dir):
     """Send compatible compound selections to the engine in one container."""
     from mn_molecular_design_studio.ligand_compounds import load_compound_set, write_compound_set
@@ -56,6 +78,7 @@ def run_input_batch(workflow_id: str, items: list[dict], cpu_cores: int = 4,
     function = _get_function(spec)
     job = create_job(spec.task_group, spec.job_type, spec.tool, {"items": _jsonable(items)},
                      {"job_name": job_name, "cpu_cores": cpu_cores, "gpu_device": gpu_device})
+    studio_lineage = _authorized_studio_lineage(job.run_dir)
     if items and items[0].get("compound_set_file"):
         merged = _compound_batch(items, job.run_dir)
         if merged is not None:
@@ -89,8 +112,17 @@ def run_input_batch(workflow_id: str, items: list[dict], cpu_cores: int = 4,
             for name in ("stdout.log", "stderr.log"):
                 (child / name).touch()
             inherited = {key: parent[key] for key in ("scheduler_backend", "scheduler_job_id", "resource_allocation", "resource_request") if key in parent}
-            write_json(child / "metadata.json", {**inherited, "run_id": child.name, "task_group": spec.task_group,
-                       "status": "preparing", "hidden": True, "batch_parent_run_id": job.run_id})
+            child_metadata = {**inherited, "run_id": child.name, "task_group": spec.task_group,
+                              "status": "preparing", "hidden": True, "batch_parent_run_id": job.run_id,
+                              "batch_parent_run_dir": str(job.run_dir)}
+            if studio_lineage:
+                # These values come from the trusted parent marker, never from
+                # user-supplied batch parameters. Completion ingestion requires
+                # this child marker to resolve the authorized Studio owner.
+                write_json(child / "molecular_design_studio.json", studio_lineage)
+                child_metadata.update(owner_id=studio_lineage["studio_owner_id"],
+                                      project_id=studio_lineage["project_id"])
+            write_json(child / "metadata.json", child_metadata)
             call = copy.deepcopy(parameters)
             if "gpu_device" in signature:
                 call["gpu_device"] = gpu_device
@@ -118,6 +150,11 @@ def run_input_batch(workflow_id: str, items: list[dict], cpu_cores: int = 4,
             candidates.append(candidate)
         write_json(job.run_dir / "batch_manifest.json", manifest)
     write_candidates(job.run_dir, spec.tool, candidates)
+    # This run only coordinates non-coalesced children. Their individual
+    # completion hooks honor per-item import choices; the aggregate candidates
+    # remain Results data and must not trigger a second, broader ingestion.
+    from mn_molecular_design_studio.collection_policy import set_run_policy
+    set_run_policy(job.run_dir, "manual")
     failed = sum(row["status"] == "failed" for row in rows)
     metadata = read_json(job.run_dir / "metadata.json")
     metadata["batch"] = {"automatic": True, "execution": "managed", "item_count": len(rows),
