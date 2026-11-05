@@ -149,6 +149,51 @@ def test_real_graph_collection_sizes_and_predictor_matrix(collection_harness, si
     assert all(s[1]["data"]["kind"] not in {"ligandmpnn", "foundry_mpnn"} for s in h.submissions)
 
 
+def test_graph_prediction_edge_uses_configured_chaperone_handler(collection_harness, monkeypatch):
+    pytest.importorskip("chaperone")
+    import sys
+    from mn_molecular_design_studio import chaperone_adapter
+
+    monkeypatch.setattr(chaperone_adapter, "worker_configuration", lambda: {
+        "python": sys.executable, "source": "", "blocks": "", "source_revision": "fixture-worker",
+    })
+    h = collection_harness
+    from mn_molecular_design_studio import candidate_execution
+    observations = []
+    original_tick = candidate_execution.tick
+
+    def capture_tick(parent, node, current, source, params, key, settings, **kwargs):
+        kind = node["data"]["kind"]
+        if kind in {"boltz2", "prediction_protenix_v2"}:
+            observations.append((kind, list(cs.iter_candidates(source, review=True))))
+        return original_tick(parent, node, current, source, params, key, settings, **kwargs)
+
+    monkeypatch.setattr(candidate_execution, "tick", capture_tick)
+    run = gp.run_graph_pipeline(h.graph(1, 0), "Chaperone tool-edge fixture", "owner", "project", reuse_completed=False)
+    result = read_json(run / "result.json")
+
+    assert result["success"] is True
+    assert observations
+    assert all(row["candidate_id"] for _, rows in observations for row in rows)
+    assert all(row.get("complex_pdb") and row.get("binder_sequence") for _, rows in observations for row in rows)
+    assert all(row["raw_metadata"].get("chaperone_interop", {}).get("chaperone_record", {}).get("design_id") == row["candidate_id"]
+               or any(receipt.get("design_id") == row["candidate_id"] for receipt in row["raw_metadata"].get("chaperone_handoffs", []))
+               for _, rows in observations for row in rows), [
+                   (kind, [row.get("raw_metadata", {}) for row in rows]) for kind, rows in observations
+               ]
+    results = result["outputs"]["candidates"]
+    assert len(results) == 1
+    record = cs.metadata(results[0])
+    assert record["native_filter"] == "passed"
+    predictions = record["predictions"]
+    assert len(predictions) == 2
+    assert all(any(receipt.get("handoff_node") for receipt in
+                   prediction["candidate"].get("raw_metadata", {}).get("chaperone_handoffs", []))
+               for prediction in predictions), [
+                   prediction["candidate"].get("raw_metadata", {}) for prediction in predictions
+               ]
+
+
 def test_different_generator_sizes_native_rejection_duplicates_and_export(collection_harness):
     h = collection_harness
     graph = h.graph(10, 3, rejected=[0])

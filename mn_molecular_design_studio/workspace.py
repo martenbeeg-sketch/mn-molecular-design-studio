@@ -194,7 +194,13 @@ def validate_project_id(project_id: object, home: Path | None = None) -> str | N
 
 
 def _studio_home() -> Path:
-    configured_home = os.environ.get("MN_MOLECULAR_DESIGN_STUDIO_HOME", "").strip()
+    # APP_HOME is the public runtime setting used by runtime.app_home(). Keep
+    # HOME as the workspace-specific override, but honor APP_HOME when it is
+    # the only root supplied (for example, an isolated restarted preview).
+    configured_home = (
+        os.environ.get("MN_MOLECULAR_DESIGN_STUDIO_HOME", "").strip()
+        or os.environ.get("MN_MOLECULAR_DESIGN_STUDIO_APP_HOME", "").strip()
+    )
     if configured_home:
         return Path(configured_home).expanduser().resolve()
     return (Path.home() / ".local" / "share" / "mn-molecular-design-studio").resolve()

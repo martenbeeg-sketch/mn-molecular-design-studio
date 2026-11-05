@@ -298,6 +298,66 @@ def write_collection(parent, node_id, rows, target, *, details=None):
                 target=target, candidate_set_manifest=str(manifest), stage_counts=dict(counts))
 
 
+def chaperone_handoff(parent, node_id, source):
+    """Round-trip a scientific collection through Chaperone before a tool edge.
+
+    Studio remains authoritative for candidate identity and payloads. Chaperone
+    is used only when a managed worker is configured; its native handler row is
+    retained as an auditable receipt while the exact Studio record is passed to
+    the downstream adapter.
+    """
+    from mn_molecular_design_studio import chaperone_adapter
+
+    if not source.get("candidates_jsonl") or not chaperone_adapter.worker_configuration().get("python"):
+        return source
+    originals = list(iter_candidates(source))
+    if not originals:
+        return source
+
+    def roundtrip(records):
+        returned_rows = chaperone_adapter.roundtrip_candidates(records)
+        if len(returned_rows) != len(records):
+            raise ValueError("Chaperone changed the number of scientific records at a tool handoff.")
+        for original, returned in zip(records, returned_rows):
+            expected = copy.deepcopy(original)
+            actual = copy.deepcopy(returned)
+            interop = (actual.get("raw_metadata") or {}).pop("chaperone_interop", None)
+            if actual.get("raw_metadata") == {} and "raw_metadata" not in expected:
+                actual.pop("raw_metadata")
+            if actual != expected or not interop:
+                raise ValueError(
+                    f"Chaperone did not losslessly preserve candidate {original.get('candidate_id')} at the tool handoff."
+                )
+            returned["raw_metadata"]["chaperone_interop"]["handoff_node"] = node_id
+        return returned_rows
+
+    restored = roundtrip(originals)
+    result = write_collection(
+        parent,
+        node_id + "_chaperone_handoff",
+        restored,
+        source.get("target") or {},
+        details={"data_handler": "chaperone", "handoff_node": node_id},
+    )
+    result["source_provenance"] = copy.deepcopy(source.get("source_provenance") or {})
+    result["analysis_runs"] = copy.deepcopy(source.get("analysis_runs") or [])
+    if source.get("analysis_run"):
+        result["analysis_run"] = copy.deepcopy(source["analysis_run"])
+    if source.get("review_candidates_jsonl"):
+        review_originals = list(iter_candidates(source, review=True))
+        review_rows = roundtrip(review_originals)
+        review_path = Path(result["run_dir"]) / "artifacts/normalized_candidates/review_candidates.jsonl"
+        review_path.write_text("".join(json.dumps(json_safe(normalize_candidate(row)), sort_keys=True, allow_nan=False) + "\n"
+                                                 for row in review_rows))
+        result["review_candidates_jsonl"] = str(review_path)
+    for key in ("require_native_passing", "deferred_run_source"):
+        if key in source:
+            result[key] = source[key]
+    result["chaperone_handoff"] = {"handler": "PipelineDataHandler", "node": node_id,
+                                   "candidate_count": len(restored)}
+    return result
+
+
 def native_counts(provenance):
     metrics = provenance.get("result_metrics", {})
     progress = provenance.get("metadata", {}).get("campaign_progress", {})
@@ -678,10 +738,87 @@ def export_collection(parent, source, graph, node_states):
     return destination
 
 
+def _append_handoff_receipts(row, parent_row):
+    parent_raw = parent_row.get("raw_metadata") or {}
+    row_raw = row.setdefault("raw_metadata", {})
+    inherited = [*copy.deepcopy(parent_raw.get("chaperone_handoffs") or [])]
+    if isinstance(parent_raw.get("chaperone_interop"), dict):
+        inherited.append(copy.deepcopy(parent_raw["chaperone_interop"]))
+    current = row_raw.get("chaperone_handoffs") or []
+    known = {
+        (item.get("handoff_node"), item.get("design_id"), item.get("adapter"))
+        for item in current if isinstance(item, dict)
+    }
+    for receipt in inherited:
+        if not isinstance(receipt, dict):
+            continue
+        key = (receipt.get("handoff_node"), receipt.get("design_id"), receipt.get("adapter"))
+        if key not in known:
+            current.append(receipt)
+            known.add(key)
+    if current:
+        row_raw["chaperone_handoffs"] = current
+
+
+def _inherit_handoff_receipts(parent, node_id, output, source):
+    source_rows = list(iter_candidates(source))
+    if not any((row.get("raw_metadata") or {}).get("chaperone_interop")
+               or (row.get("raw_metadata") or {}).get("chaperone_handoffs") for row in source_rows):
+        return output
+    by_id = {row["candidate_id"]: row for row in source_rows}
+    changed = False
+
+    def transformed():
+        nonlocal changed
+        for row in iter_candidates(output):
+            raw = row.get("raw_metadata") or {}
+            identifiers = [row["candidate_id"], *(row.get("parents") or [])]
+            direct = raw.get("source_candidate", {})
+            if isinstance(direct, dict) and direct.get("candidate_id"):
+                identifiers.append(direct["candidate_id"])
+            matches = [by_id[key] for key in dict.fromkeys(identifiers) if key in by_id]
+            if len(matches) != 1:
+                raise ValueError("Could not uniquely preserve Chaperone handoff provenance for a downstream result.")
+            before = copy.deepcopy(row.get("raw_metadata", {}).get("chaperone_handoffs") or [])
+            _append_handoff_receipts(row, matches[0])
+            changed = changed or before != row.get("raw_metadata", {}).get("chaperone_handoffs", [])
+            yield row
+
+    # Evaluate the generator before deciding whether a provenance copy is needed.
+    rows = list(transformed())
+    if not changed:
+        return output
+    result = write_collection(parent, node_id + "_chaperone_provenance", rows, output.get("target") or source.get("target") or {},
+                              details={"handoff_provenance_for": node_id})
+    for key in ("analysis_runs", "analysis_run", "candidate_execution", "partial_pool", "source_provenance"):
+        if key in output:
+            result[key] = copy.deepcopy(output[key])
+    if output.get("review_candidates_jsonl"):
+        review_source = {**output, "review_candidates_jsonl": output["review_candidates_jsonl"]}
+        review_rows = []
+        for row in iter_candidates(review_source, review=True):
+            raw = row.get("raw_metadata") or {}
+            identifiers = [row["candidate_id"], *(row.get("parents") or [])]
+            direct = raw.get("source_candidate", {})
+            if isinstance(direct, dict) and direct.get("candidate_id"):
+                identifiers.append(direct["candidate_id"])
+            matches = [by_id[key] for key in dict.fromkeys(identifiers) if key in by_id]
+            if len(matches) == 1:
+                _append_handoff_receipts(row, matches[0])
+            review_rows.append(row)
+        review_path = Path(result["run_dir"]) / "artifacts/normalized_candidates/review_candidates.jsonl"
+        review_path.write_text("".join(json.dumps(json_safe(normalize_candidate(row)), sort_keys=True, allow_nan=False) + "\n"
+                                                 for row in review_rows))
+        result["review_candidates_jsonl"] = str(review_path)
+    return result
+
+
 def attach_stage(parent, node_id, output, source, *, category, scientific_key, settings, evidence_namespace=None):
     """Carry stable variant identities through existing MPNN/prediction adapters."""
-    if not source.get("candidate_set_manifest") or output.get("candidate_set_manifest") and not output.get("collection_stage_pending"):
+    if not source.get("candidate_set_manifest"):
         return output
+    if output.get("candidate_set_manifest") and not output.get("collection_stage_pending"):
+        return _inherit_handoff_receipts(parent, node_id, output, source)
     with index() as db:
         db.execute("CREATE TABLE parents (id TEXT PRIMARY KEY, payload TEXT)")
         for row in iter_candidates(source):
@@ -727,7 +864,9 @@ def attach_stage(parent, node_id, output, source, *, category, scientific_key, s
                     info["record_kind"] = "measurement"
                     info["analysis_result_id"] = identity(node_id, scientific_key, info["variant_id"], native_id)
                     info["measurement_node"] = node_id
-                row.setdefault("raw_metadata", {})["candidate_set"] = info
+                row_raw = row.setdefault("raw_metadata", {})
+                row_raw["candidate_set"] = info
+                _append_handoff_receipts(row, original)
                 yield row
         result = write_collection(parent, node_id + "_collection", transformed(), source["target"])
     for key in ("candidate_execution", "partial_pool"):

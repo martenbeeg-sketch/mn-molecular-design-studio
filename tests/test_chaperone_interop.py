@@ -4,6 +4,7 @@ import copy
 import hashlib
 from pathlib import Path
 import shutil
+import sys
 
 import pytest
 
@@ -14,6 +15,8 @@ from mn_molecular_design_studio.chaperone_adapter import (
     roundtrip_candidates,
     to_pipeline_data_handler,
 )
+from mn_molecular_design_studio import candidate_sets
+from mn_molecular_design_studio.engine.workflow_engine.workflows import graph_pipeline
 
 
 def candidates(tmp_path):
@@ -103,3 +106,38 @@ def test_real_chaperone_filter_marks_missing_required_metric_not_passed_and_keep
     assert source == original
     assert all(row["raw_metadata"]["chaperone_interop"]["filter"]["authority"].startswith("auxiliary")
                for row in retained)
+
+
+def test_chaperone_handler_is_used_at_generic_prediction_tool_handoff(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import chaperone_adapter
+
+    monkeypatch.setattr(chaperone_adapter, "worker_configuration", lambda: {
+        "python": sys.executable, "source": "", "blocks": "", "source_revision": "test-worker",
+    })
+    original = candidates(tmp_path)
+    target_path = original[0]["complex_pdb"]
+    from mn_molecular_design_studio.design_validation import protein_chains, read_structure, sequence
+    actual_binder_sequence = sequence(protein_chains(read_structure(Path(target_path)))["B"])
+    for row in original:
+        row["binder_sequence"] = actual_binder_sequence
+    target = {"target_pdb": target_path, "target_chains": ["A"]}
+    source = candidate_sets.write_collection(tmp_path, "prediction-source", original, target)
+
+    handed_off = candidate_sets.chaperone_handoff(tmp_path, "boltz2", source)
+    records = list(candidate_sets.iter_candidates(handed_off))
+    assert [row["candidate_id"] for row in records] == [row["candidate_id"] for row in original]
+    assert [row["parents"] for row in records] == [row["parents"] for row in original]
+    assert [row["binder_sequence"] for row in records] == [row["binder_sequence"] for row in original]
+    assert [row["complex_pdb"] for row in records] == [row["complex_pdb"] for row in original]
+    assert [row["metrics"] for row in records] == [row["metrics"] for row in original]
+    assert all(row["raw_metadata"]["chaperone_interop"]["artifact_kind"] == "structure" for row in records)
+    assert all(row["raw_metadata"]["chaperone_interop"]["model_id"] == row["raw_metadata"]["model_index"]
+               for row in records)
+
+    request = graph_pipeline.node_request("boltz2", {
+        "samples": 1, "num_recycles": 1, "seed": 17, "optimization_mode": "off",
+        "target_use_msa": False,
+    }, handed_off, "Chaperone handoff fixture")
+    tasks = request["parameters"]["tasks"]
+    assert [task["source_candidate_id"] for task in tasks] == [row["candidate_id"] for row in original]
+    assert all(task["binder_sequence"] == row["binder_sequence"] for task, row in zip(tasks, original))

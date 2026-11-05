@@ -1252,6 +1252,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         state["shared_campaign"] = shared_ledger.summary()
     cancelled = [False]
     runtime_identities = {}
+    handoff_sources = {}
     old_handler = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGTERM, lambda *_: cancelled.__setitem__(0, True))
     def persist():
@@ -1270,6 +1271,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         from mn_molecular_design_studio import candidate_sets
         category = NODE_CATALOG[nodes[node_id]["data"]["kind"]]["category"]
         source_parents = [outputs[p] for p in plan['incoming'][node_id] if p in outputs]
+        if len(source_parents) == 1 and node_id in handoff_sources:
+            source_parents[0] = handoff_sources[node_id]
         analysis_refs = []
         seen_analysis_refs = set()
         for item in [*source_parents, output]:
@@ -1289,6 +1292,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         if category == "Analysis" and source_parents:
             from mn_molecular_design_studio.complex_analysis_handoff import inherit_review
             output = inherit_review(parent, node_id, output, source_parents[0])
+        handoff_sources.pop(node_id, None)
         from mn_molecular_design_studio.candidate_execution import inherit_partial_pool
         pool = inherit_partial_pool(output, [outputs[p] for p in plan['incoming'][node_id] if p in outputs],
                                     missing_branches=node_states.get(node_id, {}).get('missing_branches', []))
@@ -1570,6 +1574,20 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                 merged_rows.append(candidate)
                         source = _local_source(parent, f"{node_id}_fan_in", merged_rows, merged_target)
                     key_params = copy.deepcopy(params)
+                    chaperone_handoff_enabled = False
+                    if (source.get("candidates_jsonl") and NODE_CATALOG[kind].get("workflow")
+                            and NODE_CATALOG[kind]["category"] in {"Sequence design", "Structure prediction", "Analysis"}):
+                        from mn_molecular_design_studio import chaperone_adapter
+                        worker_config = chaperone_adapter.worker_configuration()
+                        worker = worker_config.get("python")
+                        if worker:
+                            chaperone_handoff_enabled = True
+                            key_params["chaperone_handoff"] = {
+                                "adapter_digest": file_digest(Path(chaperone_adapter.__file__)),
+                                "handler": "PipelineDataHandler",
+                                "worker": worker,
+                                "source_revision": worker_config.get("source_revision", ""),
+                            }
                     if node["data"].get("evidence_namespace"):
                         key_params["evidence_namespace"] = node["data"]["evidence_namespace"]
                     if settings["mode"] != "native":
@@ -1676,6 +1694,12 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             key_params["effective_parameters"]["seed"] = resolved_seed
                         current["execution_specification"] = key_params
                     key = fingerprint(kind, key_params, [o["fingerprint"] for o in upstream])
+                    if chaperone_handoff_enabled:
+                        cached_handoff = read_json(cache_root / f"{key}.json").get("output") if reuse_completed else None
+                        if not (cached_handoff and _cache_valid(cached_handoff)):
+                            source = candidate_sets.chaperone_handoff(parent, node_id, source)
+                            if source is not None:
+                                handoff_sources[node_id] = source
                     native_invocation = (graph.get('workflow_mode') and settings['placement'] != 'local'
                         and NODE_CATALOG[kind]['category'] in {'Design engine', 'Design pipeline'}
                         and not (shared_campaign and shared_campaign.get('objective_type') in {'accepted', 'time'}
