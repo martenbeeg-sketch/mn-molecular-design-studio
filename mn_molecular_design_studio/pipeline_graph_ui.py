@@ -436,6 +436,35 @@ def _close_node_editor(prefix):
     st.session_state.pop(prefix+"-editor", None)
 
 
+def _filter_observed_candidates(graph, node_id, run_dir):
+    """Read the selected run's exact upstream node outputs for Filter choices."""
+    try:
+        root = resolve_stored_path(run_dir, must_exist=True)
+        snapshot = read_json(root / "graph_snapshot.json")
+        if snapshot != graph:
+            return []
+        execution = read_json(root / "graph_execution.json").get("nodes", {})
+        from mn_molecular_design_studio import candidate_sets
+        rows = []
+        for edge in graph.get("edges", []):
+            if edge.get("target") != node_id:
+                continue
+            source_state = execution.get(edge.get("source"), {})
+            if source_state.get("status") not in {"completed", "cached", "partial"}:
+                continue
+            output = source_state.get("output") or {}
+            output = (output.get("port_outputs") or {}).get(edge.get("sourceHandle", "out"), output)
+            if not output.get("candidates_jsonl"):
+                continue
+            for candidate in candidate_sets.iter_candidates(output):
+                rows.append(candidate)
+                if len(rows) >= 5000:
+                    return rows
+        return rows
+    except (OSError, ValueError, TypeError, KeyError):
+        return []
+
+
 def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs):
     from mn_molecular_design_studio.pipeline_node_ui import render_node_form
     editor = st.session_state.get(prefix+"-editor")
@@ -452,10 +481,14 @@ def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs):
         working = copy.deepcopy(selected)
         working["data"]["params"] = copy.deepcopy(editor["params"])
         key = f"{prefix}-editor-{editor['id']}-{editor['revision']}"
+        last_job = st.session_state.get(prefix + "-last-job") or {}
+        observed_candidates = (_filter_observed_candidates(graph, working["id"], last_job.get("run_dir"))
+                              if working["data"]["kind"] == "filter" and last_job.get("run_dir") else [])
         def render_input():
             return _render_node_input(working, owner_id, project_id, search_jobs, key, graph)
         values, label, action, replacement_kind, node_updates = render_node_form(
-            working, graph, key=key, render_input=render_input, owner_id=owner_id, include_node_updates=True,
+            working, graph, key=key, render_input=render_input, owner_id=owner_id,
+            include_node_updates=True, observed_candidates=observed_candidates,
         )
         if action == "replace":
             try:

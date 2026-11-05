@@ -92,6 +92,30 @@ def test_no_policy_does_not_establish_scientific_acceptance_and_manual_selection
     assert manual[0]["raw_metadata"]["selection"]["selection_method"] == "manual"
 
 
+def test_between_and_any_logic_separate_failure_from_unresolved():
+    rows = [candidate("in-range", .7, quality=.1), candidate("out-of-range", .9, quality=.1),
+            candidate("any-pass", .9, quality=.6), candidate("unresolved", None)]
+    outcomes = evaluate_selection(rows, {
+        "metric": "score", "operator": "between", "threshold": .5, "threshold_max": .8,
+        "rules": [{"field": "quality", "operator": ">=", "value": .5}], "rule_logic": "any",
+    })
+    status = {row["candidate_id"]: row["raw_metadata"]["selection"]["status"] for row in outcomes}
+    assert status == {"in-range": "pass", "out-of-range": "reject", "any-pass": "pass", "unresolved": "missing"}
+    # The primary range and additional rule are OR alternatives under Any.
+    assert {row["candidate_id"] for row in selected_candidates(outcomes)} == {"in-range", "any-pass"}
+
+
+def test_quantile_shortlist_is_protocol_and_parent_scoped():
+    rows = [candidate("a1", .9), candidate("a2", .7), candidate("b1", .8), candidate("b2", .2)]
+    rows[0]["parents"] = ["parent-a"]; rows[1]["parents"] = ["parent-a"]
+    rows[2]["parents"] = ["parent-b"]; rows[3]["parents"] = ["parent-b"]
+    selected = selected_candidates(evaluate_selection(rows, {
+        "ranking_metric": "score", "direction": "higher", "quantile": .5,
+        "quantile_parent_based": True,
+    }))
+    assert {row["candidate_id"] for row in selected} == {"a1", "b1"}
+
+
 def test_stage_specific_rules_combine_prediction_and_qc():
     from test_candidate_evidence import final_candidate
     rules = [{"field": "evidence/complex_refolding/boltz2/iptm", "operator": ">=", "value": .75},
@@ -173,3 +197,62 @@ def test_pipeline_filter_results_keeps_rejected_review_rows(tmp_path, monkeypatc
     assert len((selection_dir / "selected_candidates.jsonl").read_text().splitlines()) == 1
     assert (run / "artifacts/normalized_candidates/final_evidence.csv").is_file()
 
+
+def test_filter_routes_pass_fail_and_unresolved_candidates_through_canvas(tmp_path, monkeypatch, design_source_factory):
+    import uuid
+    from mn_molecular_design_studio.pipeline_graph import NODE_CATALOG, SCHEMA
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import graph_pipeline
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+
+    source, row = design_source_factory()
+    rows = [{**row, "candidate_id": "good", "metrics": {"iptm": .8}},
+            {**row, "candidate_id": "rejected", "metrics": {"iptm": .2}},
+            {**row, "candidate_id": "missing", "metrics": {}}]
+    (source / "artifacts/normalized_candidates/candidates.jsonl").write_text(
+        "".join(json.dumps(item) + "\n" for item in rows))
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_APP_HOME", str(tmp_path / "studio"))
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
+    from mn_molecular_design_studio import workspace
+    monkeypatch.setattr(workspace, "load_organization", lambda home=None: {"projects": [{"id": "test-project"}]})
+    monkeypatch.setattr(graph_pipeline, "scope_root", lambda *args: tmp_path / "scope")
+
+    nodes = []
+    for index, (kind, node_id) in enumerate((
+        ("project_design_source", "source"), ("filter", "filter"),
+        ("results", "pass-results"), ("results", "fail-results"), ("results", "unresolved-results"),
+    )):
+        spec = NODE_CATALOG[kind]
+        params = {field["name"]: copy.deepcopy(field["default"]) for field in spec["fields"]}
+        if kind == "project_design_source":
+            params.update(source_run_dir=str(source), selected_candidate_ids=["good", "rejected", "missing"])
+        if kind == "filter":
+            params.update(metric="iptm", threshold=.5)
+        nodes.append({"id": node_id, "position": {"x": index * 300, "y": 100},
+                      "data": {"kind": kind, "label": spec["label"], "params": params}})
+    graph = {"schema_version": SCHEMA, "id": uuid.uuid4().hex, "name": "filter-routing", "nodes": nodes,
+        "edges": [
+            {"id": "source-filter", "source": "source", "target": "filter"},
+            {"id": "pass", "source": "filter", "target": "pass-results", "sourceHandle": "out"},
+            {"id": "fail", "source": "filter", "target": "fail-results", "sourceHandle": "fail"},
+            {"id": "unresolved", "source": "filter", "target": "unresolved-results", "sourceHandle": "unresolved"},
+        ]}
+    run = graph_pipeline.run_graph_pipeline(graph, "filter-routing", "test-user", "test-project",
+                                             reuse_completed=False, gpu_device="none")
+    state = read_json(run / "graph_execution.json")["nodes"]
+    routed = {}
+    for result_id in ("pass-results", "fail-results", "unresolved-results"):
+        output = state[result_id]["output"]
+        result_rows = read_candidates(output["candidates_jsonl"])
+        routed[result_id] = [item["raw_metadata"].get("pipeline_original_candidate_id") for item in result_rows]
+    # A Results node reached by the pass branch retains the complete review
+    # table; fail/unresolved branches remain separately inspectable.
+    assert routed == {"pass-results": ["good", "rejected", "missing"],
+                      "fail-results": ["rejected"], "unresolved-results": ["missing"]}
+    filter_output = state["filter"]["output"]
+    assert [item["candidate_id"] for item in read_candidates(filter_output["candidates_jsonl"])] == ["good"]
+    all_rows = read_candidates(filter_output["review_candidates_jsonl"])
+    assert {item["raw_metadata"]["selection"]["routed_to"] for item in all_rows} == {"out", "fail", "unresolved"}
+    assert {item["candidate_id"] for item in all_rows} == {"good", "rejected", "missing"}

@@ -27,12 +27,13 @@ def field(name, label, default, *, kind="number", minimum=None, maximum=None, op
             **({"options": options} if options else {})}
 
 
-def _spec(key, label, category, description, *, output="backbone", accepts=None, workflow=None, fields=(), color="#427f68", formats=("pdb", "cif"), coldspot_support=None):
+def _spec(key, label, category, description, *, output="backbone", accepts=None, workflow=None, fields=(), color="#427f68", formats=("pdb", "cif"), coldspot_support=None, output_metrics=()):
     return {"key": key, "label": label, "category": category, "description": description,
             "color": color, "workflow": workflow, "formats": list(formats),
             "inputs": [] if accepts is None else [{"id": "in", "label": "Target" if accepts == ["target"] else "Results" if key == "results" else "Candidates", "accepts": accepts, "multiple": key == "results"}],
             "outputs": [] if output is None else [{"id": "out", "label": {"target": "Target", "backbone": "Backbones", "sequence": "Sequences", "prediction": "Predictions", "candidates": "Candidates", "analysis": "Surface results"}.get(output, output), "type": output}],
-            "fields": list(fields), **({"coldspot_support": coldspot_support} if coldspot_support else {})}
+            "fields": list(fields), **({"coldspot_support": coldspot_support} if coldspot_support else {}),
+            **({"output_metrics": copy.deepcopy(list(output_metrics))} if output_metrics else {})}
 
 
 COUNT = field(
@@ -166,11 +167,13 @@ NODE_CATALOG = {
     ], color="#477e9b", formats=("cif",)),
     "af2": _spec("af2", "AlphaFold2 evaluation", "Structure prediction", "Choose conditioned pose self-consistency or a less-conditioned target-only template prediction.", accepts=["sequence", "prediction", "molecule_task"], output="prediction", workflow="refolding.af2_initial_guess", fields=[field("num_recycles", "Recycles", 3, minimum=1, maximum=30)], color="#477e9b"),
     "esmfold": _spec("esmfold", "ESMFold · binder alone", "Structure prediction", "Predict each designed binder without the target.", accepts=["sequence", "prediction"], output="prediction", workflow="refolding.esmfold_monomer", fields=[], color="#477e9b"),
-    "filter": _spec("filter", "Filter candidates", "Analysis", "Apply a score threshold, require passing filters, or retain the best candidates.", accepts=["backbone", "sequence", "prediction", "candidates"], output="candidates", color="#9a7854", fields=[
-        field("passing_only", "Require an explicit native filter pass", False, kind="boolean"), field("metric", "Threshold measurement", "", kind="text"), field("operator", "Comparison", ">=", kind="select", options=[">=", "<=", ">", "<"]), field("threshold", "Threshold (only used with a measurement)", 0.7), field("limit", "Shortlist per comparable protocol (0 = all)", 0, minimum=0, maximum=100000), field("higher_is_better", "Higher scores rank first", True, kind="boolean"),
+    "filter": _spec("filter", "Filter candidates", "Analysis", "Apply typed metric thresholds and ranking while retaining every decision for Results.", accepts=["backbone", "sequence", "prediction", "candidates"], output="candidates", color="#9a7854", fields=[
+        field("passing_only", "Require an explicit native filter pass", False, kind="boolean"), field("metric", "Threshold measurement", "", kind="text"), field("operator", "Comparison", ">=", kind="select", options=[">=", "<=", ">", "<", "between"]), field("threshold", "Threshold (only used with a measurement)", 0.7), field("threshold_max", "Upper bound (for between)", 1.0), field("rule_logic", "Combine criteria", "all", kind="select", options=["all", "any"]), field("limit", "Shortlist per comparable protocol (0 = all)", 0, minimum=0, maximum=100000), field("higher_is_better", "Higher scores rank first", True, kind="boolean"),
         field("required_metrics", "Required finite measurements", [], kind="json"),
         field("rules", "Additional threshold rules", [], kind="json", help='List of {"field": "...", "operator": ">=", "value": ...}. All rules must pass.'),
         field("ranking_metric", "Ranking measurement (blank = threshold measurement)", "", kind="text"),
+        field("quantile", "Keep top fraction within comparable protocols (0 = disabled)", 0.0, minimum=0, maximum=1),
+        field("quantile_parent_based", "Apply quantile separately per parent backbone", False, kind="boolean"),
         field("manual_ids", "Manually selected candidate IDs (optional)", [], kind="json"),
         field("diversity_field", "Cluster measurement (optional)", "", kind="text"),
         field("max_per_cluster", "Maximum selected per cluster", 1, minimum=1, maximum=100000)]),
@@ -708,6 +711,12 @@ NODE_CATALOG.update({
 })
 for _kind in ("candidate_merge", "candidate_analyzer"):
     NODE_CATALOG[_kind]["inputs"][0]["multiple"] = True
+NODE_CATALOG["filter"]["inputs"][0]["multiple"] = True
+NODE_CATALOG["filter"]["outputs"] = [
+    {"id": "out", "label": "Pass", "type": "candidates"},
+    {"id": "fail", "label": "Fail", "type": "candidates"},
+    {"id": "unresolved", "label": "Unresolved", "type": "candidates"},
+]
 for _kind, _specification in NODE_CATALOG.items():
     if _specification["category"] in {"Sequence design", "Structure prediction"}:
         for _socket in _specification["inputs"]:
@@ -2077,6 +2086,8 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
         raise ValueError("Add at least one input and a Results node.")
     incoming = {n: [] for n in nodes}
     outgoing = {n: [] for n in nodes}
+    incoming_edges = {n: [] for n in nodes}
+    outgoing_edges = {n: [] for n in nodes}
     edge_ids = set()
     for edge in graph["edges"]:
         source, target = edge.get("source"), edge.get("target")
@@ -2086,20 +2097,25 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
             raise ValueError("Connection IDs must be unique.")
         edge_ids.add(edge["id"])
         a, b = (NODE_CATALOG[nodes[i]["data"]["kind"]] for i in (source, target))
-        if not a["outputs"] or not b["inputs"] or edge.get("sourceHandle", "out") != "out" or edge.get("targetHandle", "in") != "in":
-            raise ValueError("Connection references an unavailable socket.")
-        output_type = a["outputs"][0]["type"]
-        accepts = b["inputs"][0]["accepts"]
-        if output_type == "candidates" and accepts == ["target"] or output_type != "candidates" and output_type not in accepts:
-            raise ValueError(f"{a['label']} outputs cannot connect to {b['label']}.")
+        source_handle = edge.get("sourceHandle", "out")
+        target_handle = edge.get("targetHandle", "in")
+        compatibility = connection_compatibility(
+            nodes[source]["data"]["kind"], nodes[target]["data"]["kind"],
+            source_handle=source_handle, target_handle=target_handle,
+        )
+        if not compatibility["compatible"]:
+            raise ValueError(compatibility["reason"])
         if edge.get("loop_back") is True:
             if graph.get("template_id") != "unidock_active_learning" or a["key"] != "active_select" or b["key"] != "active_docking":
                 raise ValueError("Only next-batch selection can return compounds to docking.")
             continue
         incoming[target].append(source)
         outgoing[source].append(target)
-        if len(incoming[target]) > 1 and not b["inputs"][0]["multiple"]:
-            raise ValueError(f"{b['label']} accepts one upstream connection. Branch after its output instead.")
+        incoming_edges[target].append(edge)
+        outgoing_edges[source].append(edge)
+        input_port = next(port for port in b["inputs"] if port.get("id", "in") == target_handle)
+        if sum(1 for item in incoming_edges[target] if item.get("targetHandle", "in") == target_handle) > 1 and not input_port.get("multiple"):
+            raise ValueError(f"{b['label']} accepts one upstream connection on {input_port['label']}. Branch after its output instead.")
     queue = sorted(n for n in nodes if not incoming[n])
     order, degrees = [], {n: len(incoming[n]) for n in nodes}
     while queue:
@@ -2157,14 +2173,20 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
                                    else any(ligand_context[source] for source in incoming[node_id]))
         if kind == 'af2' and ligand_context[node_id]:
             raise ValueError('AlphaFold2 does not predict ligand complexes. Use RosettaFold3, or ESMFold for the binder alone.')
-        for source in incoming[node_id]:
+        for edge in incoming_edges[node_id]:
+            source = edge["source"]
             if nodes[source]["data"]["kind"] == "run_source":
                 from mn_molecular_design_studio.run_graph import compatible
                 if not compatible(kind):
                     raise ValueError("Run results must connect to a tool with a compatible saved-collection input. Connect analysis before cohort ranking or merging.")
-            if output_types[source] != "candidates" and output_types[source] not in spec["inputs"][0]["accepts"]:
-                raise ValueError(f"{nodes[source]['data']['label']} does not supply the data required by {spec['label']}.")
-        output_types[node_id] = (output_types[incoming[node_id][0]] if kind == "filter" and incoming[node_id] else spec["outputs"][0]["type"] if spec["outputs"] else "results")
+            input_port = next(port for port in spec["inputs"] if port.get("id", "in") == edge.get("targetHandle", "in"))
+            upstream_type = output_types[source]
+            if upstream_type != "candidates" and upstream_type not in input_port.get("accepts", []):
+                raise ValueError(f"{nodes[source]['data']['label']} does not supply {upstream_type} artifacts required by {input_port['label']} on {spec['label']}.")
+        inherited_types = {output_types[source] for source in incoming[node_id]}
+        output_types[node_id] = (next(iter(inherited_types)) if kind == "filter" and len(inherited_types) == 1
+                                 else "candidates" if kind == "filter" and inherited_types
+                                 else spec["outputs"][0]["type"] if spec["outputs"] else "results")
         output_formats[node_id] = output_formats[incoming[node_id][0]] if kind == "filter" and incoming[node_id] else spec["formats"]
     for node_id, node in nodes.items():
         kind = node["data"]["kind"]
@@ -2176,8 +2198,9 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
             raise ValueError(f"{node['data']['label']} has no collection-sharding adapter; use native execution.")
         if node["data"].get("enabled") is False:
             continue
-        if NODE_CATALOG[kind]["inputs"] and not incoming[node_id] and not NODE_CATALOG[kind]["inputs"][0].get("optional"):
-            raise ValueError(f"Connect an input to {node['data']['label']}.")
+        for input_port in NODE_CATALOG[kind]["inputs"]:
+            if not input_port.get("optional") and not any(edge.get("targetHandle", "in") == input_port.get("id", "in") for edge in incoming_edges[node_id]):
+                raise ValueError(f"Connect {input_port.get('label', 'an input')} to {node['data']['label']}.")
         if kind not in {"results", "active_results"} and not any(e["source"] == node_id for e in graph["edges"]):
             raise ValueError(f"Connect {node['data']['label']} to a downstream step or Results node.")
         if require_inputs and kind == "target":
@@ -2299,6 +2322,7 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
         graph["shared_campaign"] = shared_campaign
     campaign_stops = _compile_campaign_stop(graph, nodes, incoming, allow_unresolved=not require_inputs)
     return {"graph": graph, "order": order, "incoming": incoming, "outgoing": outgoing,
+            "incoming_edges": incoming_edges, "outgoing_edges": outgoing_edges,
             "campaign_stops": campaign_stops}
 
 
@@ -2412,3 +2436,160 @@ SUPPORTED_TEMPLATE_IDS = (set(LEGACY_STARTER_TEMPLATES.values()) | set(STARTER_T
                           | {'bindcraft2', 'boltzgen', 'complexa', 'rfdiffusion_beta_pairing'}
                           | {key + '_generated' for key in ('complexa', 'rfdiffusion', 'genie3', 'pxdesign',
                                                            'protpardelle', 'kejia_idr', 'peptide_trap', 'rfdiffusion_beta_pairing')})
+
+
+def _declared_output_metrics(kind: str, spec: dict | None = None) -> list[dict]:
+    """Return metric declarations from the registry or shared output vocabulary."""
+    spec = spec or NODE_CATALOG[kind]
+    explicit = spec.get("output_metrics")
+    if explicit is not None:
+        return copy.deepcopy(list(explicit))
+    try:
+        from mn_molecular_design_studio.output_vocabulary import measure_capabilities
+        return measure_capabilities(kind)
+    except (ImportError, KeyError, TypeError, ValueError):
+        return []
+
+
+def capability_contract(kind: str, spec: dict | None = None) -> dict:
+    """Project an existing NODE_CATALOG registration into a uniform tool contract.
+
+    The node catalog remains the sole registry. This contract merely gives the
+    canvas, Filter node, and tests one consistent view of its declared ports,
+    parameters, output metrics, and execution constraints.
+    """
+    spec = spec or NODE_CATALOG[kind]
+    return {
+        "operation": kind,
+        "category": spec.get("category", ""),
+        "inputs": [{
+            "id": port.get("id", "in"),
+            "label": port.get("label", "Input"),
+            "artifact_types": list(port.get("accepts") or []),
+            "required": not bool(port.get("optional")),
+            "multiple": bool(port.get("multiple")),
+        } for port in spec.get("inputs") or []],
+        "outputs": [{
+            "id": port.get("id", "out"),
+            "label": port.get("label", "Output"),
+            "artifact_types": [port.get("type")] if port.get("type") else [],
+            "metrics": _declared_output_metrics(kind, spec),
+        } for port in spec.get("outputs") or []],
+        "parameters": copy.deepcopy(spec.get("fields") or []),
+        "constraints": {
+            "parameter_fields": {
+                item["name"]: {key: copy.deepcopy(item[key]) for key in ("min", "max", "options") if key in item}
+                for item in spec.get("fields") or []
+            },
+            "formats": list(spec.get("formats") or []),
+            "molecule_tasks": list(spec.get("molecule_tasks") or []),
+            "target_types": list(spec.get("target_types") or []),
+            "component_types": list(spec.get("component_types") or []),
+            "requires_target_structure": bool(spec.get("requires_target_structure")),
+            "workflow": spec.get("workflow"),
+            "execution": copy.deepcopy(spec.get("execution_requirements") or {}),
+        },
+    }
+
+
+def connection_compatibility(source_kind: str, target_kind: str, *, source_handle: str = "out", target_handle: str = "in") -> dict:
+    """Explain compatibility using the ports exposed by registered contracts."""
+    if source_kind not in NODE_CATALOG or target_kind not in NODE_CATALOG:
+        return {"compatible": False, "reason": "One of the selected operations is not registered."}
+    source = capability_contract(source_kind)
+    target = capability_contract(target_kind)
+    output = next((item for item in source["outputs"] if item["id"] == source_handle), None)
+    input_port = next((item for item in target["inputs"] if item["id"] == target_handle), None)
+    if output is None or input_port is None:
+        return {"compatible": False, "reason": "The selected connection port is not declared by its operation."}
+    produced = output["artifact_types"]
+    accepted = input_port["artifact_types"]
+    shared = sorted(set(produced) & set(accepted))
+    if shared:
+        return {"compatible": True, "artifact_type": shared[0], "reason": "Compatible scientific artifact types."}
+    return {"compatible": False, "reason": (
+        f"{source['operation']} outputs {', '.join(produced) or 'no artifacts'} on {output['label']}; "
+        f"{target['operation']} accepts {', '.join(accepted) or 'no artifacts'} on {input_port['label']}."
+    )}
+
+
+def filter_metric_options(graph: dict, node_id: str, observed_candidates=()) -> list[dict]:
+    """Discover filterable measurements from upstream contracts and actual rows."""
+    nodes = {item.get("id"): item for item in graph.get("nodes", [])}
+    incoming: dict[str, list[str]] = {}
+    for edge in graph.get("edges", []):
+        if edge.get("target") and edge.get("source"):
+            incoming.setdefault(edge["target"], []).append(edge["source"])
+    pending = list(incoming.get(node_id, []))
+    ancestors = []
+    seen = set()
+    while pending:
+        current = pending.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        ancestors.append(current)
+        pending.extend(incoming.get(current, []))
+
+    options: dict[tuple[str, str], dict] = {}
+    for ancestor in reversed(ancestors):
+        node = nodes.get(ancestor) or {}
+        kind = (node.get("data") or {}).get("kind")
+        if kind not in NODE_CATALOG:
+            continue
+        spec = NODE_CATALOG[kind]
+        for metric in _declared_output_metrics(kind, spec):
+            field_name = str(metric.get("field") or metric.get("key") or "").strip()
+            if not field_name:
+                continue
+            options[(field_name, str(metric.get("method") or ""))] = {
+                **copy.deepcopy(metric), "field": field_name, "availability": "declared",
+            }
+
+    if observed_candidates:
+        from mn_molecular_design_studio.output_vocabulary import candidate_output, candidate_evidence
+        counts: dict[str, int] = {}
+        definitions = {}
+        for candidate in observed_candidates:
+            for field_name, value in (candidate.get("metrics") or {}).items():
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                    continue
+                counts[str(field_name)] = counts.get(str(field_name), 0) + 1
+                definitions[str(field_name)] = {"field": str(field_name), "label": str(field_name), "unit": "native",
+                                                "method": str(candidate.get("source_tool") or "source tool"), "direction": ""}
+            try:
+                normalized = candidate_output(candidate).get("metrics") or {}
+            except (KeyError, TypeError, ValueError):
+                normalized = {}
+            for field_name, value in normalized.items():
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                    continue
+                counts[str(field_name)] = counts.get(str(field_name), 0) + 1
+                definitions[str(field_name)] = {"field": str(field_name), "label": str(field_name), "unit": "typed",
+                                                "method": "Studio output vocabulary", "direction": ""}
+            try:
+                records = candidate_evidence(candidate)
+            except (KeyError, TypeError, ValueError):
+                records = []
+            for record in records:
+                evidence = record.get("candidate") or {}
+                for field_name, value in (evidence.get("metrics") or {}).items():
+                    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                        continue
+                    selector = f"evidence/{record.get('stage')}/{record.get('source_tool')}/{record.get('candidate_id')}/{field_name}"
+                    counts[selector] = counts.get(selector, 0) + 1
+                    definitions[selector] = {"field": selector, "label": f"{record.get('stage')} · {record.get('source_tool')} · {field_name}",
+                                             "unit": "native", "method": str(record.get("source_tool") or "source tool"), "direction": ""}
+        for field_name, count in counts.items():
+            definition = definitions[field_name]
+            key = (field_name, str(definition.get("method") or ""))
+            options[key] = {**options.get(key, {}), **definition,
+                            "availability": "observed", "observed_candidates": count}
+
+    return sorted(options.values(), key=lambda item: (str(item.get("label") or item["field"]).casefold(), item["field"]))
+
+
+# Expose the projection with each registered node so the canvas and future
+# adapters consume the same declarations without maintaining a second registry.
+for _kind, _specification in NODE_CATALOG.items():
+    _specification["capabilities"] = capability_contract(_kind, _specification)

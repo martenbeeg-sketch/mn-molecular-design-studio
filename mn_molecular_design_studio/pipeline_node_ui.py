@@ -513,7 +513,7 @@ def _available_docking_machines(gpu_engine):
     return machines
 
 
-def render_node_form(node, graph, *, key, render_input, owner_id, include_node_updates=False):
+def render_node_form(node, graph, *, key, render_input, owner_id, include_node_updates=False, observed_candidates=()):
     kind = node["data"]["kind"]
     spec = NODE_CATALOG[kind]
     values = {f["name"]:copy.deepcopy(node["data"]["params"].get(f["name"],f["default"])) for f in spec["fields"]}
@@ -874,6 +874,155 @@ def render_node_form(node, graph, *, key, render_input, owner_id, include_node_u
                 for index, field in enumerate(optional):
                     with columns[index % 2]:
                         values[field["name"]] = _render_field(field, values, key)
+        elif kind == "filter":
+            _render_connection_card(node, graph)
+            from mn_molecular_design_studio.pipeline_graph import filter_metric_options
+
+            # Use the registered producer contracts to drive this form.  The
+            # executor still validates measurements against the actual incoming
+            # CandidateSet, so a declared-but-missing value remains unresolved.
+            discovered = filter_metric_options(graph, node["id"], observed_candidates)
+            metric_labels = {str(item["field"]): str(item.get("label") or item["field"])
+                             for item in discovered if item.get("field")}
+            saved_fields = [str(value) for value in (values.get("required_metrics") or []) if value]
+            for value in (values.get("metric"), values.get("ranking_metric")):
+                if value:
+                    saved_fields.append(str(value))
+            for rule in values.get("rules") or []:
+                if isinstance(rule, dict) and rule.get("field"):
+                    saved_fields.append(str(rule["field"]))
+            for field_name in dict.fromkeys(saved_fields):
+                # Keep previously saved workflow settings editable even when
+                # the current graph no longer declares that source.
+                metric_labels.setdefault(field_name, f"{field_name} (saved setting)")
+            metric_fields = list(metric_labels)
+
+            if discovered:
+                observed_count = sum(int(item.get("observed_candidates") or 0) for item in discovered if item.get("availability") == "observed")
+                st.caption("Criteria are discovered from connected operation declarations and observed candidate data. Values are checked again against the incoming CandidateSet when the workflow runs.")
+                if observed_count:
+                    st.caption(f"Observed measurement values are available from {observed_count} upstream candidate records in the latest matching run.")
+            else:
+                st.info("No filterable measurements are declared by the connected upstream operations. No metric criteria have been invented; this node can still route candidates using native-pass status, manual IDs, or ranking data already present at execution time.")
+
+            values["passing_only"] = st.checkbox(
+                "Require an explicit native filter pass",
+                value=bool(values.get("passing_only", False)), key=key + "-passing-only",
+                help="This checks the upstream engine’s recorded native decision. It remains separate from this Studio Filter decision.",
+            )
+
+            with st.container(border=True):
+                st.markdown("**Measurement criterion (optional)**")
+                if metric_fields:
+                    current_metric = str(values.get("metric") or "")
+                    metric_options = [""] + metric_fields
+                    metric_value = current_metric if current_metric in metric_options else ""
+                    values["metric"] = st.selectbox(
+                        "Measurement", metric_options,
+                        index=metric_options.index(metric_value),
+                        format_func=lambda value: "No threshold" if not value else metric_labels.get(value, value),
+                        key=key + "-metric",
+                    )
+                else:
+                    values["metric"] = ""
+                    st.caption("Connect an operation that declares metrics to configure a measurement threshold here.")
+
+                if values.get("metric"):
+                    columns = st.columns(3)
+                    operator_field = next(field for field in spec["fields"] if field["name"] == "operator")
+                    operators = list(operator_field.get("options") or [">=", "<=", ">", "<"])
+                    current_operator = values.get("operator", ">=")
+                    if current_operator not in operators:
+                        current_operator = ">="
+                    with columns[0]:
+                        values["operator"] = st.selectbox("Comparison", operators,
+                            index=operators.index(current_operator), key=key + "-operator")
+                    with columns[1]:
+                        values["threshold"] = st.number_input(
+                            "Threshold" if values["operator"] != "between" else "Minimum",
+                            value=float(values.get("threshold") or 0.0), key=key + "-threshold",
+                        )
+                    if values["operator"] == "between":
+                        with columns[2]:
+                            values["threshold_max"] = st.number_input(
+                                "Maximum", value=float(values.get("threshold_max") or 1.0),
+                                key=key + "-threshold-max",
+                            )
+                        if float(values["threshold_max"]) < float(values["threshold"]):
+                            st.error("The maximum must be greater than or equal to the minimum.")
+                            ready = False
+                else:
+                    values["operator"] = values.get("operator") or ">="
+
+                rules_field = next(field for field in spec["fields"] if field["name"] == "rules")
+                with st.expander("Additional criteria", expanded=bool(values.get("rules"))):
+                    values["rule_logic"] = st.selectbox(
+                        "Combine criteria", ["all", "any"],
+                        index=0 if values.get("rule_logic", "all") != "any" else 1,
+                        format_func=lambda value: "All criteria must pass" if value == "all" else "Any criterion may pass",
+                        key=key + "-rule-logic",
+                    )
+                    values["rules"] = _render_field(rules_field, values, key)
+                    values["required_metrics"] = st.multiselect(
+                        "Require these measurements to be present",
+                        metric_fields,
+                        default=[field for field in values.get("required_metrics", []) if field in metric_fields],
+                        format_func=lambda value: metric_labels.get(value, value),
+                        key=key + "-required-metrics",
+                        help="A missing or invalid required measurement is unresolved, not a scientific threshold failure.",
+                    )
+
+            with st.container(border=True):
+                st.markdown("**Optional ranking and shortlist**")
+                ranking_options = [""] + metric_fields
+                current_ranking = str(values.get("ranking_metric") or "")
+                if current_ranking not in ranking_options:
+                    current_ranking = ""
+                ranking_definition = next((item for item in discovered if item.get("field") == current_ranking), {})
+                declared_direction = ranking_definition.get("direction") if ranking_definition.get("direction") in {"higher", "lower"} else ""
+                current_direction = str(values.get("direction") or ("higher" if values.get("higher_is_better", True) else "lower"))
+                if declared_direction:
+                    current_direction = declared_direction
+                columns = st.columns(2)
+                with columns[0]:
+                    values["ranking_metric"] = st.selectbox(
+                        "Rank by", ranking_options,
+                        index=ranking_options.index(current_ranking),
+                        format_func=lambda value: "No ranking" if not value else metric_labels.get(value, value),
+                        key=key + "-ranking-metric",
+                    )
+                with columns[1]:
+                    values["direction"] = st.selectbox(
+                        "Ranking direction", [declared_direction] if declared_direction else ["higher", "lower"],
+                        index=0 if declared_direction or current_direction == "higher" else 1,
+                        format_func=lambda value: "Higher values first" if value == "higher" else "Lower values first",
+                        key=key + "-ranking-direction",
+                    )
+                columns = st.columns(2)
+                with columns[0]:
+                    values["limit"] = int(st.number_input(
+                        "Maximum selected (0 = all passing)", min_value=0,
+                        value=max(0, int(values.get("limit") or 0)), key=key + "-limit",
+                    ))
+                with columns[1]:
+                    values["quantile"] = st.number_input(
+                        "Top fraction (0 = disabled)", min_value=0.0, max_value=1.0,
+                        value=min(1.0, max(0.0, float(values.get("quantile") or 0.0))),
+                        step=0.05, key=key + "-quantile",
+                    )
+                if float(values.get("quantile") or 0) > 0:
+                    values["quantile_parent_based"] = st.checkbox(
+                        "Apply separately within each parent backbone",
+                        value=bool(values.get("quantile_parent_based", False)),
+                        key=key + "-quantile-parent-based",
+                    )
+                values["manual_ids"] = _render_field(
+                    next(field for field in spec["fields"] if field["name"] == "manual_ids"), values, key)
+                values["diversity_field"] = _render_field(
+                    next(field for field in spec["fields"] if field["name"] == "diversity_field"), values, key)
+                values["max_per_cluster"] = _render_field(
+                    next(field for field in spec["fields"] if field["name"] == "max_per_cluster"), values, key)
+            st.caption("Pass, fail, and unresolved decisions remain recorded for Results. Missing measurements are not treated as passing; native acceptance and manual selection remain separate decisions.")
         elif kind == "shared_filter":
             _render_connection_card(node, graph)
             columns = st.columns(2)
@@ -1076,8 +1225,6 @@ def render_node_form(node, graph, *, key, render_input, owner_id, include_node_u
                 st.caption(AF2_MODES[values.get("af2_validation_mode", "conditioned_self_consistency")])
             if kind == "results":
                 st.info("Collect candidate structures and metrics from the connected branches. Existing results remain available when you edit the pipeline.")
-            if kind == "filter":
-                st.caption("Choose native fields, common fields, or evidence/<stage>/<tool>/<metric>. Add a candidate ID before the metric to resolve repeated stages. Missing, failed and nonfinite required measurements cannot pass. Ranking and limits apply within recorded comparable protocols. All decisions and selected sequence/structure exports remain in this step's selection files.")
             if kind == "campaign_stop":
                 st.info("This node uses the upstream Shared scientific filters policy to configure the existing native distributed campaign controller. The campaign stops at the first reached limit: passing-design target, maximum design attempts, runtime, or absolute deadline.")
                 st.caption("Native jobs retain their engine settings, job identities, retries and recovery. Designs per native job is separate from the model's internal GPU microbatch. Rejected structures remain on their producing workstation when the RFD4 accepted-only transfer path is available.")

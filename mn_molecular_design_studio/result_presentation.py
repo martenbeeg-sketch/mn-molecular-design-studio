@@ -20,7 +20,14 @@ def candidate_state_rows(candidates):
         source = raw.get("source_candidate")
         source = source if isinstance(source, dict) else {}
         source_candidate_id = (collection.get("native_candidate_id") or collection.get("native_backbone_identity")
-                               or raw.get("native_candidate_id") or source.get("candidate_id") or candidate.get("candidate_id"))
+                               or raw.get("native_candidate_id") or raw.get("pipeline_original_candidate_id")
+                               or source.get("candidate_id") or candidate.get("candidate_id"))
+        native_acceptance = (collection.get("native_filter") or raw.get("native_filter")
+                             or candidate.get("metrics", {}).get("native_pass_filters"))
+        if native_acceptance is True:
+            native_acceptance = "passed"
+        elif native_acceptance is False:
+            native_acceptance = "failed"
         validation = raw.get("validation_acceptance")
         validation = validation if isinstance(validation, dict) else {}
         shared_filter = collection.get("shared_filter")
@@ -29,11 +36,15 @@ def candidate_state_rows(candidates):
             "No independent measurement was recorded for this candidate."
             if current["status"] == "not_measured" else "")
         rows.append({"Candidate": candidate.get("candidate_id"), "Source candidate": source_candidate_id,
-                     "Native generator acceptance": collection.get("native_filter") or "unavailable",
-                     "Studio filtering": shared_filter.get("status") or validation.get("status", "not_evaluated"),
+                     "Native generator acceptance": native_acceptance or "unavailable",
+                     "Studio filtering": shared_filter.get("status", "not_evaluated"),
+                     "Filter decision": selection.get("status", "not_evaluated"),
                      "Manual selection": bool((raw.get("human_review") or {}).get("selected", False)),
+                     "Validation": validation.get("status", "not_evaluated"),
                      "Measurement": current["status"], "Measurement detail": measurement_detail,
                      "Selection": selection.get("status", "not_evaluated"), "Selected": selection.get("selected", False),
+                     "Filter route": selection.get("routed_to", ""),
+                     "Filter backend": (selection.get("filter_backend") or {}).get("status", "not_used"),
                      "Rank within protocol": selection.get("rank"), "Cause": current["error"],
                      "Selection reasons": "; ".join(selection.get("reasons") or []),
                      "Sequence": candidate.get("binder_sequence"), "Structure": candidate.get("complex_pdb"),

@@ -16,6 +16,7 @@ from mn_molecular_design_studio.measurement_status import finite_number, RANGES
 from mn_molecular_design_studio.output_vocabulary import DEFINITIONS, candidate_evidence, candidate_output, metric_value
 
 OPERATORS = {">=": operator.ge, "<=": operator.le, ">": operator.gt, "<": operator.lt}
+RULE_OPERATORS = {*OPERATORS, "between"}
 
 
 def selection_policy(settings):
@@ -25,10 +26,17 @@ def selection_policy(settings):
         raise ValueError("Selection rules must be a list.")
     metric = str(policy.get("metric") or "").strip()
     if metric:
-        rules.insert(0, {"field": metric, "operator": policy.get("operator", ">="), "value": policy.get("threshold")})
+        primary = {"field": metric, "operator": policy.get("operator", ">="), "value": policy.get("threshold")}
+        if primary["operator"] == "between":
+            primary["upper_value"] = policy.get("threshold_max")
+        rules.insert(0, primary)
     for rule in rules:
-        if not isinstance(rule, dict) or not rule.get("field") or rule.get("operator") not in OPERATORS or finite_number(rule.get("value")) is None:
+        if not isinstance(rule, dict) or not rule.get("field") or rule.get("operator") not in RULE_OPERATORS or finite_number(rule.get("value")) is None:
             raise ValueError("Each selection rule needs a field, comparison operator and finite numeric value.")
+        if rule["operator"] == "between":
+            upper = finite_number(rule.get("upper_value", rule.get("max_value")))
+            if upper is None or upper < float(rule["value"]):
+                raise ValueError("A between rule needs an upper_value greater than or equal to its lower value.")
     for key in ("required_metrics", "manual_ids"):
         if not isinstance(policy.setdefault(key, []), list) or not all(isinstance(value, str) and value for value in policy[key]):
             raise ValueError(f"{key} must be a list of nonempty strings.")
@@ -46,6 +54,16 @@ def selection_policy(settings):
         raise ValueError(f"The declared output contract ranks {ranking_field} with {known_direction} values first.")
     if policy["ranking_metric"] == "analysis_score":
         raise ValueError("Choose an interpretable measurement instead of the legacy composite analysis_score.")
+    logic = str(policy.get("rule_logic", "all")).casefold()
+    if logic not in {"all", "any"}:
+        raise ValueError("Rule logic must be all or any.")
+    policy["rule_logic"] = logic
+    quantile = finite_number(policy.get("quantile", 0.0))
+    if quantile is None or quantile < 0 or quantile > 1:
+        raise ValueError("Quantile must be between 0 (disabled) and 1.")
+    policy["quantile"] = quantile
+    if quantile and not policy["ranking_metric"]:
+        raise ValueError("Choose a ranking measurement before enabling quantile selection.")
     for key, default in (("limit", 0), ("max_per_cluster", 1)):
         value = policy.setdefault(key, default)
         if isinstance(value, bool) or not isinstance(value, int) or value < (1 if key == "max_per_cluster" else 0):
@@ -110,7 +128,7 @@ def evaluate_selection(candidates, settings):
     required = list(dict.fromkeys([*policy["required_metrics"], *[rule["field"] for rule in policy["rules"]],
                                   *([policy["ranking_metric"]] if policy["ranking_metric"] else []),
                                   *([policy["diversity_field"]] if policy.get("diversity_field") else [])]))
-    explicit = bool(required or policy.get("passing_only") or policy["manual_ids"])
+    explicit = bool(required or policy.get("passing_only") or policy["manual_ids"] or policy.get("limit") or policy.get("quantile"))
     identifiers = [str(row.get("candidate_id") or "") for row in candidates]
     if len(set(identifiers)) != len(identifiers) or not all(identifiers):
         raise ValueError("Selection requires unique nonempty candidate IDs.")
@@ -120,35 +138,86 @@ def evaluate_selection(candidates, settings):
     for candidate in candidates:
         row = copy.deepcopy(candidate)
         observations = {field: _observation(candidate, field) for field in required}
-        reasons = [f"{field}: {value[2]}" for field, value in observations.items() if value[1] != "valid"]
-        status = "failed" if any(value[1] == "failed" for value in observations.values()) else "missing" if reasons else "pass" if explicit else "not_evaluated"
+        reasons = []
+        notes = []
+        hard_measurement_fields = set(policy["required_metrics"])
+        if policy["ranking_metric"]:
+            hard_measurement_fields.add(policy["ranking_metric"])
+        if policy.get("diversity_field"):
+            hard_measurement_fields.add(policy["diversity_field"])
+        hard_measurements = [observations[field] for field in hard_measurement_fields]
+        status = ("failed" if any(value[1] == "failed" for value in hard_measurements)
+                  else "missing" if any(value[1] != "valid" for value in hard_measurements)
+                  else "pass" if explicit else "not_evaluated")
+        for field in hard_measurement_fields:
+            value = observations[field]
+            if value[1] != "valid":
+                reasons.append(f"{field}: {value[2]}")
         if policy.get("passing_only"):
             from mn_molecular_design_studio.design_validation import candidate_passes_filters
             if not candidate_passes_filters(candidate):
                 reasons.append("No affirmative native filter pass")
                 if status == "pass":
                     status = "reject"
+        rule_results = []
         for rule in policy["rules"]:
-            value = observations[rule["field"]][0]
-            if value is not None and not OPERATORS[rule["operator"]](value, float(rule["value"])):
-                reasons.append(f"{rule['field']} = {value:g} fails {rule['operator']} {rule['value']:g}")
-                if status == "pass":
+            value, observation_status, error, _ = observations[rule["field"]]
+            if observation_status != "valid":
+                rule_results.append(None)
+                notes.append(f"{rule['field']}: {error}")
+                continue
+            if rule["operator"] == "between":
+                passed = float(rule["value"]) <= value <= float(rule.get("upper_value", rule.get("max_value")))
+                comparison = f"between {float(rule['value']):g} and {float(rule.get('upper_value', rule.get('max_value'))):g}"
+            else:
+                passed = OPERATORS[rule["operator"]](value, float(rule["value"]))
+                comparison = f"{rule['operator']} {float(rule['value']):g}"
+            rule_results.append(passed)
+            if not passed:
+                notes.append(f"{rule['field']} = {value:g} fails {comparison}")
+        if policy["rules"] and status == "pass":
+            valid_results = [result for result in rule_results if result is not None]
+            missing_rule = len(valid_results) != len(rule_results)
+            if policy["rule_logic"] == "all":
+                if any(result is False for result in valid_results):
                     status = "reject"
+                    reasons.extend(note for note in notes if "fails" in note)
+                elif missing_rule:
+                    status = "failed" if any(observations[rule["field"]][1] == "failed" for rule in policy["rules"]) else "missing"
+                    reasons.extend(note for note in notes if "fails" not in note)
+            else:
+                if any(result is True for result in valid_results):
+                    if missing_rule:
+                        notes.append("One or more criteria were unavailable; another criterion passed under Any logic.")
+                elif missing_rule:
+                    status = "failed" if any(observations[rule["field"]][1] == "failed" for rule in policy["rules"]) else "missing"
+                    reasons.extend(note for note in notes if "fails" not in note)
+                else:
+                    status = "reject"
+                    reasons.extend(note for note in notes if "fails" in note)
         rank_field = policy["ranking_metric"]
         cohort = _digest(_protocol(observations[rank_field][3])) if rank_field and observations[rank_field][3] else "unranked"
         decision = {"status": status, "selected": False, "reasons": reasons, "rank": None, "cohort": cohort,
                     "ranking_metric": rank_field, "direction": policy["direction"], "policy": policy,
+                    "logic": policy["rule_logic"], "criteria_notes": notes,
                     "measurements": {field: {"value": value[0], "status": value[1], "error": value[2],
                         "candidate_id": value[3].get("candidate_id") if value[3] else None} for field, value in observations.items()}}
         row.setdefault("raw_metadata", {})["selection"] = decision
         outputs.append(row)
         if status == "pass":
-            groups.setdefault(cohort, []).append(row)
+            parent_id = (candidate.get("parents") or (candidate.get("raw_metadata") or {}).get("source_candidate", {}).get("parents") or [candidate.get("candidate_id")])[0]
+            group_key = (cohort, str(parent_id)) if policy.get("quantile_parent_based") else (cohort, "")
+            groups.setdefault(group_key, []).append(row)
     for group in groups.values():
         field = policy["ranking_metric"]
         group.sort(key=lambda row: ((-1 if policy["direction"] == "higher" else 1) * row["raw_metadata"]["selection"]["measurements"][field]["value"] if field else 0,
                                     str(row["candidate_id"])))
         clusters, kept = {}, 0
+        limit = policy["limit"]
+        if policy["quantile"]:
+            import math
+            quantile_limit = max(1, math.ceil(len(group) * policy["quantile"]))
+            limit = min(limit, quantile_limit) if limit else quantile_limit
         for rank, row in enumerate(group, 1):
             decision = row["raw_metadata"]["selection"]
             decision["rank"] = rank if field else None
@@ -163,8 +232,8 @@ def evaluate_selection(candidates, settings):
                 if clusters.get(cluster_key, 0) >= policy["max_per_cluster"]:
                     decision["reasons"].append("Diversity cluster quota reached")
                     continue
-            if policy["limit"] and kept >= policy["limit"]:
-                decision["reasons"].append("Shortlist limit reached within comparable protocol")
+            if limit and kept >= limit:
+                decision["reasons"].append("Shortlist or quantile limit reached within comparable protocol")
                 continue
             decision["selected"] = True
             decision["selection_method"] = "manual" if policy["manual_ids"] else "configured_rules"

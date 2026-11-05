@@ -107,7 +107,7 @@ def _chaperone_types():
     return PipelineDataHandler, make_row, make_sequence_row, get_sequences_from_row
 
 
-def to_pipeline_data_handler(candidates: Iterable[dict]):
+def to_pipeline_data_handler(candidates: Iterable[dict], *, filter_values: dict[str, dict] | None = None):
     """Map Studio candidates to the real Chaperone schema with a full sidecar.
 
     Returns ``(handler, sidecar)``. The sidecar stores exact source records so
@@ -136,6 +136,11 @@ def to_pipeline_data_handler(candidates: Iterable[dict]):
         }
         metrics = {"studio": copy.deepcopy(record.get("metrics") or {}),
                    "_studio_interop": lineage}
+        if filter_values and candidate_id in filter_values:
+            # A private projection lets Chaperone's native FilterBlock query
+            # canonical or stage-qualified Studio measurements without
+            # changing the original Studio metrics or sidecar record.
+            metrics["studio_filter"] = copy.deepcopy(filter_values[candidate_id])
         path = record.get("complex_pdb") or record.get("binder_pdb") or record.get("target_pdb")
         sequence = record.get("binder_sequence")
         binder_chains = list(record.get("binder_chains") or [])
@@ -212,7 +217,9 @@ def from_pipeline_data_handler(handler, sidecar: dict[str, dict]) -> list[dict]:
     return output
 
 
-def roundtrip_candidates(candidates: Iterable[dict], *, filter_expression: str | None = None) -> list[dict]:
+def roundtrip_candidates(candidates: Iterable[dict], *, filter_expression: str | None = None,
+                         filter_values: dict[str, dict] | None = None,
+                         filter_authority: str = "auxiliary; Studio acceptance and routing are unchanged") -> list[dict]:
     """Pass Studio candidates through Chaperone's handler and optional filter.
 
     Filter results are attached as auxiliary interoperability evidence while
@@ -221,12 +228,14 @@ def roundtrip_candidates(candidates: Iterable[dict], *, filter_expression: str |
     records = list(candidates)
     worker = worker_configuration()["python"]
     if worker and Path(worker).resolve() != Path(sys.executable).resolve():
-        return _roundtrip_in_worker(records, filter_expression, worker)
-    return _roundtrip_local(records, filter_expression)
+        return _roundtrip_in_worker(records, filter_expression, filter_values, filter_authority, worker)
+    return _roundtrip_local(records, filter_expression, filter_values, filter_authority)
 
 
-def _roundtrip_local(records: list[dict], filter_expression: str | None) -> list[dict]:
-    handler, sidecar = to_pipeline_data_handler(records)
+def _roundtrip_local(records: list[dict], filter_expression: str | None,
+                     filter_values: dict[str, dict] | None = None,
+                     filter_authority: str = "auxiliary; Studio acceptance and routing are unchanged") -> list[dict]:
+    handler, sidecar = to_pipeline_data_handler(records, filter_values=filter_values)
     pass_ids = None
     if filter_expression and filter_expression.strip():
         from blocks.util_blocks.filter import FilterBlock
@@ -242,12 +251,14 @@ def _roundtrip_local(records: list[dict], filter_expression: str | None) -> list
             receipt["filter"] = {
                 "expression": filter_expression.strip(),
                 "status": "passed" if candidate["candidate_id"] in pass_ids else "not_passed",
-                "authority": "auxiliary; Studio acceptance and routing are unchanged",
+                "authority": filter_authority,
             }
     return output
 
 
-def _roundtrip_in_worker(records: list[dict], filter_expression: str | None, python: str) -> list[dict]:
+def _roundtrip_in_worker(records: list[dict], filter_expression: str | None,
+                         filter_values: dict[str, dict] | None,
+                         filter_authority: str, python: str) -> list[dict]:
     """Run Chaperone in its configured interpreter without adding it to Studio."""
     repo_root = str(Path(__file__).resolve().parents[1])
     config = worker_configuration()
@@ -257,7 +268,8 @@ def _roundtrip_in_worker(records: list[dict], filter_expression: str | None, pyt
     environment = {**os.environ, "PYTHONPATH": os.pathsep.join(python_path)}
     process = subprocess.run(
         [python, "-m", "mn_molecular_design_studio.chaperone_adapter", "--worker"],
-        input=json.dumps({"candidates": records, "filter_expression": filter_expression}, allow_nan=False),
+        input=json.dumps({"candidates": records, "filter_expression": filter_expression,
+                          "filter_values": filter_values, "filter_authority": filter_authority}, allow_nan=False),
         text=True, capture_output=True, check=False, env=environment,
     )
     if process.returncode:
@@ -286,6 +298,59 @@ def filter_candidates(candidates: Iterable[dict], expression: str) -> tuple[list
             if candidate["raw_metadata"]["chaperone_interop"]["filter"]["status"] == "passed"], decisions
 
 
+def apply_filter_block(candidates: Iterable[dict], settings: dict) -> dict:
+    """Apply Chaperone's native FilterBlock to metrics declared in Studio rules.
+
+    The adapter projects resolved numeric values into a temporary Chaperone
+    metric namespace; original CandidateSet rows remain unchanged. Candidates
+    with unavailable metrics stay in the Studio decision table and are not
+    silently converted into passes.
+    """
+    from mn_molecular_design_studio.candidate_selection import _observation, selection_policy
+
+    records = list(candidates)
+    policy = selection_policy(settings)
+    rules = policy["rules"]
+    if not rules:
+        return {"status": "skipped", "reason": "No numeric metric rules are configured."}
+    if any(str(rule["field"]).startswith("evidence/") for rule in rules):
+        return {"status": "skipped", "reason": "Stage-qualified evidence selectors are evaluated by Studio's provenance-aware resolver."}
+    fields = list(dict.fromkeys(rule["field"] for rule in rules))
+    values: dict[str, dict] = {}
+    for row in records:
+        candidate_id = str(row.get("candidate_id") or "")
+        for field in fields:
+            value, status, _, _ = _observation(row, field)
+            if status == "valid":
+                values.setdefault(candidate_id, {})[field] = value
+    unavailable = [field for field in fields if not any(field in row_values for row_values in values.values())]
+    if unavailable:
+        return {"status": "skipped", "reason": "Chaperone cannot filter fields with no numeric values: " + ", ".join(unavailable)}
+
+    def comparison(rule):
+        key = f"studio_filter.{rule['field']}"
+        quoted = f"`{key}`"
+        op = rule["operator"]
+        lower = float(rule["value"])
+        if op == "between":
+            upper = float(rule.get("upper_value", rule.get("max_value")))
+            return f"({quoted} >= {lower!r} and {quoted} <= {upper!r})"
+        return f"{quoted} {op} {lower!r}"
+
+    joiner = " and " if policy["rule_logic"] == "all" else " or "
+    expression = joiner.join(comparison(rule) for rule in rules)
+    enriched = roundtrip_candidates(records, filter_expression=expression,
+        filter_values=values,
+        filter_authority="Chaperone FilterBlock metric pass; Studio retains full decisions and provenance")
+    statuses = {row["candidate_id"]: row["raw_metadata"]["chaperone_interop"].get("filter", {}).get("status")
+                for row in enriched}
+    return {"status": "applied", "implementation": "blocks.util_blocks.filter.FilterBlock",
+            "expression": expression,
+            "passed_candidate_ids": sorted(key for key, status in statuses.items() if status == "passed"),
+            "candidate_statuses": statuses, "filtered_candidate_count": sum(status == "passed" for status in statuses.values()),
+            "candidate_count": len(records), "logic": policy["rule_logic"], "fields": fields}
+
+
 def _worker_main() -> None:
     payload = json.load(sys.stdin)
     if payload.get("operation") == "read_catcif":
@@ -294,7 +359,9 @@ def _worker_main() -> None:
         sys.stdout.write(json.dumps({"content_base64": base64.b64encode(content).decode("ascii")},
                                     separators=(",", ":")))
         return
-    rows = _roundtrip_local(payload.get("candidates") or [], payload.get("filter_expression"))
+    rows = _roundtrip_local(payload.get("candidates") or [], payload.get("filter_expression"),
+                            payload.get("filter_values"), payload.get("filter_authority") or
+                            "auxiliary; Studio acceptance and routing are unchanged")
     sys.stdout.write(json.dumps(rows, allow_nan=False, separators=(",", ":")))
 
 

@@ -9,7 +9,22 @@ const post=(type,data={})=>window.parent.postMessage({isStreamlitMessage:true,ty
 const copy=x=>JSON.parse(JSON.stringify(x));
 const uid=()=>crypto.randomUUID().replaceAll('-','');
 let catalog={};
-const authored=(nodes,edges,base,viewport)=>({...base,nodes:nodes.map(n=>({id:n.id,type:'studio',position:n.position,data:{kind:n.data.kind,label:n.data.label,...(n.data.description?{description:n.data.description}:{}),params:n.data.params,...Object.fromEntries(['enabled','retained_run_dir','execution','evidence_namespace'].filter(k=>k in n.data).map(k=>[k,n.data[k]]))}})),edges:edges.map(e=>({id:e.id,source:e.source,target:e.target,sourceHandle:'out',targetHandle:'in',...(e.loop_back?{loop_back:true}:{})})),viewport});
+const semanticHandle=(handle,side,edges)=>{
+  const prefix=side==='source'?'route-out-':'route-in-';
+  if(!handle?.startsWith(prefix))return handle;
+  const edge=edges.find(item=>item.id===handle.slice(prefix.length));
+  return edge?(side==='source'?edge.sourceHandle:edge.targetHandle)|| (side==='source'?'out':'in'):handle;
+};
+const emittedTypes=(node,handle,edges,nodes,seen=new Set())=>{
+  if(!node||seen.has(node.id))return [];
+  const spec=catalog[node.data.kind]||{},port=(spec.capabilities?.outputs||spec.outputs||[]).find(item=>item.id===handle);
+  if(node.data.kind!=='filter')return port?(port.artifact_types||[port.type].filter(Boolean)):[];
+  seen.add(node.id);
+  const parents=edges.filter(edge=>edge.target===node.id).map(edge=>nodes.find(item=>item.id===edge.source));
+  const inherited=parents.flatMap(parent=>emittedTypes(parent,'out',edges,nodes,seen));
+  return [...new Set(inherited.length?inherited:(port?.artifact_types||[port?.type].filter(Boolean)))];
+};
+const authored=(nodes,edges,base,viewport)=>({...base,nodes:nodes.map(n=>({id:n.id,type:'studio',position:n.position,data:{kind:n.data.kind,label:n.data.label,...(n.data.description?{description:n.data.description}:{}),params:n.data.params,...Object.fromEntries(['enabled','retained_run_dir','execution','evidence_namespace'].filter(k=>k in n.data).map(k=>[k,n.data[k]]))}})),edges:edges.map(e=>({id:e.id,source:e.source,target:e.target,sourceHandle:e.sourceHandle||'out',targetHandle:e.targetHandle||'in',...(e.loop_back?{loop_back:true}:{})})),viewport});
 const statusLabels={completed:'Complete',cached:'Reused',running:'Running',queued:'Queued',failed:'Failed',blocked:'Blocked',pending:'Pending'};
 
 const StudioNode=memo(({id,data,selected})=>{
@@ -117,16 +132,18 @@ function Editor({args}){
     const source=ns.find(n=>n.id===connection.source),target=ns.find(n=>n.id===connection.target);
     if(!source||!target||source.id===target.id)return false;
     const a=catalog[source.data.kind],b=catalog[target.data.kind];
-    if(!a.outputs.length||!b.inputs.length)return false;
-    const infer=(n,seen=new Set())=>{if(!n||seen.has(n.id))return null;seen.add(n.id);if(n.data.kind==='filter'){const input=es.find(e=>e.target===n.id);return input?infer(ns.find(v=>v.id===input.source),seen):'candidates';}return catalog[n.data.kind].outputs[0]?.type;};
-    const accepts=b.inputs[0].accepts,output=infer(source);
-    if(output==='candidates'?accepts.includes('target'):!accepts.includes(output))return false;
-    if(!b.inputs[0].multiple&&es.some(e=>e.target===target.id))return false;
+    const outputs=a.capabilities?.outputs||a.outputs||[],inputs=b.capabilities?.inputs||b.inputs||[];
+    const output=outputs.find(port=>port.id===(semanticHandle(connection.sourceHandle,'source',es)||'out'));
+    const input=inputs.find(port=>port.id===(semanticHandle(connection.targetHandle,'target',es)||'in'));
+    if(!output||!input)return false;
+    const produced=emittedTypes(source,semanticHandle(connection.sourceHandle,'source',es)||'out',es,ns),accepts=input.artifact_types||input.accepts||[];
+    if(!produced.some(type=>accepts.includes(type)))return false;
+    if(!input.multiple&&es.some(e=>e.target===target.id))return false;
     if(base.current.template_id==='unidock_active_learning'&&source.data.kind==='active_select'&&target.data.kind==='active_docking')return !es.some(e=>e.loop_back);
     const visit=(id,seen=new Set())=>{if(id===source.id)return true;if(seen.has(id))return false;seen.add(id);return es.filter(e=>e.source===id&&!e.loop_back).some(e=>visit(e.target,seen));};
     return !visit(target.id);
   },[]);
-  const onConnect=useCallback(c=>{if(!compatible(c)){setNotice('These sockets are incompatible, already connected, or would create a loop.');return;}pushHistory();const ns=state.current.nodes,loopBack=ns.find(n=>n.id===c.source)?.data.kind==='active_select'&&ns.find(n=>n.id===c.target)?.data.kind==='active_docking';setEdges(prev=>addEdge({...c,sourceHandle:'out',targetHandle:'in',id:`edge-${uid()}`,...(loopBack?{loop_back:true}:{})},prev));},[compatible,pushHistory]);
+  const onConnect=useCallback(c=>{const es=state.current.edges,normalized={...c,sourceHandle:semanticHandle(c.sourceHandle,'source',es)||'out',targetHandle:semanticHandle(c.targetHandle,'target',es)||'in'};if(!compatible(normalized)){const ns=state.current.nodes,source=ns.find(n=>n.id===c.source),target=ns.find(n=>n.id===c.target);const a=source&&catalog[source.data.kind],b=target&&catalog[target.data.kind];const input=(b?.capabilities?.inputs||b?.inputs||[]).find(p=>p.id===normalized.targetHandle);const produced=emittedTypes(source,normalized.sourceHandle,es,ns),accepted=input?.artifact_types||input?.accepts||[];setNotice(input&&produced.length&&!produced.some(type=>accepted.includes(type))?`${source.data.label||a.label} produces ${produced.join(', ')||'no artifacts'}; ${target.data.label||b.label} accepts ${accepted.join(', ')||'no artifacts'}.`:'These sockets are already occupied or would create a cycle.');return;}pushHistory();const ns=state.current.nodes,loopBack=ns.find(n=>n.id===c.source)?.data.kind==='active_select'&&ns.find(n=>n.id===c.target)?.data.kind==='active_docking';setEdges(prev=>addEdge({...normalized,id:`edge-${uid()}`,...(loopBack?{loop_back:true}:{})},prev));},[compatible,pushHistory]);
   const duplicate=useCallback(()=>{
     const selected=state.current.nodes.filter(n=>n.selected||n.id===selection);if(!selected.length)return;
     pushHistory();const ids=Object.fromEntries(selected.map(n=>[n.id,`${n.data.kind}-${uid().slice(0,10)}`]));

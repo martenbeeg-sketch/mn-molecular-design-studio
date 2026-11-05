@@ -1267,10 +1267,25 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                 ancestors.add(ancestor)
                 pending.extend(plan["incoming"][ancestor])
         return ancestors
+    def output_for_edge(edge):
+        """Select the typed output branch named by an authored canvas edge."""
+        source = outputs[edge["source"]]
+        ports = source.get("port_outputs") or {}
+        handle = edge.get("sourceHandle", "out")
+        branch = ports.get(handle)
+        if branch is None:
+            return source
+        if not branch.get("fingerprint"):
+            branch["fingerprint"] = fingerprint("canvas_port_output", {
+                "source_fingerprint": source.get("fingerprint"), "port": handle,
+                "candidate_digest": file_digest(_path(branch["candidates_jsonl"], branch.get("run_dir"))),
+            }, [])
+        return branch
     def complete(node_id, output, key, status="completed"):
         from mn_molecular_design_studio import candidate_sets
         category = NODE_CATALOG[nodes[node_id]["data"]["kind"]]["category"]
-        source_parents = [outputs[p] for p in plan['incoming'][node_id] if p in outputs]
+        source_parents = [output_for_edge(edge) for edge in plan["incoming_edges"][node_id]
+                          if edge["source"] in outputs]
         if len(source_parents) == 1 and node_id in handoff_sources:
             source_parents[0] = handoff_sources[node_id]
         analysis_refs = []
@@ -1294,7 +1309,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
             output = inherit_review(parent, node_id, output, source_parents[0])
         handoff_sources.pop(node_id, None)
         from mn_molecular_design_studio.candidate_execution import inherit_partial_pool
-        pool = inherit_partial_pool(output, [outputs[p] for p in plan['incoming'][node_id] if p in outputs],
+        pool = inherit_partial_pool(output, source_parents,
                                     missing_branches=node_states.get(node_id, {}).get('missing_branches', []))
         if pool:
             output['partial_pool'] = pool
@@ -1303,7 +1318,7 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
         from mn_molecular_design_studio.candidate_execution import data_hashes
         hash_files = (lambda value, **_: data_hashes(value)) if output.get("candidate_set_manifest") else referenced_files
         output["content_manifest"] = hash_files({k: output.get(k) for k in
-            ("candidates_jsonl", "review_candidates_jsonl", "candidate_set_manifest", "target", "molecule_task", "analysis_runs", "analysis_run")}, base=output.get("run_dir"))
+            ("candidates_jsonl", "review_candidates_jsonl", "candidate_set_manifest", "target", "molecule_task", "analysis_runs", "analysis_run", "port_outputs")}, base=output.get("run_dir"))
         if output.get("candidates_jsonl"):
             for candidate in candidate_sets.iter_candidates(output):
                 output["content_manifest"].update(hash_files(candidate, base=output.get("run_dir")))
@@ -1452,7 +1467,9 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             resolved_target_type = resolve_pipeline_target_type(nodes, plan["incoming"], node_id)
                             if resolved_target_type:
                                 params["resolved_target_type"] = resolved_target_type
-                    upstream = [outputs[p] for p in parents]
+                    input_edges = [edge for edge in plan["incoming_edges"][node_id]
+                                   if edge["source"] in parents and edge["source"] in outputs]
+                    upstream = [output_for_edge(edge) for edge in input_edges]
                     source = upstream[0] if upstream else {}
                     if any(item.get("run_sources") for item in upstream) and len(upstream) > 1:
                         if not all(item.get("run_sources") for item in upstream):
@@ -1876,12 +1893,61 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                                     row["candidate_id"] = f"{source_id}:{row['candidate_id']}"
                                 rows.append(row)
                         if kind == "filter":
-                            from mn_molecular_design_studio.candidate_selection import evaluate_selection, selected_candidates, write_selection_artifacts
+                            from mn_molecular_design_studio.candidate_selection import evaluate_selection, selected_candidates, write_selection_artifacts, selection_policy
                             outcomes = evaluate_selection(rows, params)
-                            write_selection_artifacts(parent / "artifacts/pipeline_nodes" / node_id / "artifacts/selection", outcomes)
+                            policy = selection_policy(params)
+                            filter_backend = None
+                            if policy["rules"]:
+                                try:
+                                    from mn_molecular_design_studio.chaperone_adapter import apply_filter_block
+                                    filter_backend = apply_filter_block(rows, params)
+                                except Exception as exc:
+                                    # Keep every Studio outcome and make the optional
+                                    # Chaperone worker failure visible in its provenance.
+                                    filter_backend = {"status": "error", "error": str(exc),
+                                                      "implementation": "blocks.util_blocks.filter.FilterBlock"}
+                            pass_ids = set(filter_backend.get("passed_candidate_ids", [])) if filter_backend and filter_backend.get("status") == "applied" else None
+                            for row in outcomes:
+                                decision = row["raw_metadata"]["selection"]
+                                if filter_backend:
+                                    decision["filter_backend"] = {key: copy.deepcopy(value) for key, value in filter_backend.items()
+                                                                  if key not in {"passed_candidate_ids", "candidate_statuses"}}
+                                if pass_ids is not None:
+                                    rule_fields = [rule["field"] for rule in policy["rules"]]
+                                    measurements = decision.get("measurements") or {}
+                                    fully_measured = all(measurements.get(field, {}).get("status") == "valid" for field in rule_fields)
+                                    if fully_measured:
+                                        values = [measurements[rule["field"]]["value"] for rule in policy["rules"]]
+                                        matches = []
+                                        for rule, value in zip(policy["rules"], values):
+                                            if rule["operator"] == "between":
+                                                matches.append(float(rule["value"]) <= value <= float(rule.get("upper_value", rule.get("max_value"))))
+                                            else:
+                                                from mn_molecular_design_studio.candidate_selection import OPERATORS
+                                                matches.append(OPERATORS[rule["operator"]](value, float(rule["value"])))
+                                        studio_rule_pass = all(matches) if policy["rule_logic"] == "all" else any(matches)
+                                        chaperone_pass = str(row["candidate_id"]) in pass_ids
+                                        if studio_rule_pass != chaperone_pass:
+                                            decision["status"] = "missing"
+                                            decision["selected"] = False
+                                            decision["reasons"].append("Chaperone FilterBlock and Studio metric evaluation disagreed; held unresolved.")
+                                        else:
+                                            decision["filter_backend_result"] = "passed" if chaperone_pass else "not_passed"
+                            for row in outcomes:
+                                decision = row["raw_metadata"]["selection"]
+                                status = decision["status"]
+                                if status == "pass" and decision.get("selected"):
+                                    route = "out"
+                                elif status in {"pass", "reject"}:
+                                    route = "fail"
+                                else:
+                                    route = "unresolved"
+                                decision["routed_to"] = route
+                            selection_dir = parent / "artifacts/pipeline_nodes" / node_id / "artifacts/selection"
+                            write_selection_artifacts(selection_dir, outcomes)
                             rows = selected_candidates(outcomes)
-                            if outcomes and all(row["raw_metadata"]["selection"]["status"] == "not_evaluated" for row in outcomes):
-                                rows = outcomes[:params["limit"]] if params.get("limit") else outcomes
+                            from mn_molecular_design_studio.pipeline_graph import filter_metric_options
+                            available_metrics = filter_metric_options(graph, node_id, outcomes)
                         missing = sorted(set(current.get('missing_branches', [])) | {
                             missing for upstream_output in upstream for missing in upstream_output.get('partial_pool', {}).get('missing_branches', [])})
                         partial_batches = [upstream_output['candidate_execution'] for upstream_output in upstream
@@ -1898,7 +1964,20 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                             output['partial_pool'] = dict(missing_branches=missing, candidate_batches=partial_batches)
                             current['partial'] = True
                         if kind == "filter":
-                            output["review_candidates_jsonl"] = str(parent / "artifacts/pipeline_nodes" / node_id / "artifacts/selection/all_candidates.jsonl")
+                            all_candidates_path = str(selection_dir / "all_candidates.jsonl")
+                            output["review_candidates_jsonl"] = all_candidates_path
+                            output["available_filter_metrics"] = available_metrics
+                            port_outputs = {}
+                            for port in ("fail", "unresolved"):
+                                branch_rows = [row for row in outcomes if row["raw_metadata"]["selection"]["routed_to"] == port]
+                                branch_id = f"{node_id}_{port}"
+                                branch = _local_source(parent, branch_id, branch_rows, source.get("target"))
+                                if source.get("candidate_set_manifest"):
+                                    branch = candidate_sets.write_collection(parent, branch_id, branch_rows, source["target"])
+                                branch["route_port"] = port
+                                branch["review_candidates_jsonl"] = branch["candidates_jsonl"]
+                                port_outputs[port] = branch
+                            output["port_outputs"] = port_outputs
                         complete(node_id, output, key);progressed=True;continue
                     if kind == "campaign_stop":
                         stop_contract = plan.get("campaign_stops", {}).get(node_id, {})

@@ -11,6 +11,7 @@ import pytest
 pytest.importorskip("chaperone")
 
 from mn_molecular_design_studio.chaperone_adapter import (
+    apply_filter_block,
     filter_candidates,
     roundtrip_candidates,
     to_pipeline_data_handler,
@@ -106,6 +107,15 @@ def test_real_chaperone_filter_marks_missing_required_metric_not_passed_and_keep
     assert source == original
     assert all(row["raw_metadata"]["chaperone_interop"]["filter"]["authority"].startswith("auxiliary")
                for row in retained)
+
+
+def test_registered_canvas_filter_can_use_native_chaperone_filterblock(tmp_path):
+    source = candidates(tmp_path)
+    receipt = apply_filter_block(source, {"metric": "iptm", "operator": ">=", "threshold": .7})
+    assert receipt["status"] == "applied"
+    assert receipt["implementation"] == "blocks.util_blocks.filter.FilterBlock"
+    assert receipt["passed_candidate_ids"] == ["variant-7-boltz-model-0"]
+    assert receipt["candidate_count"] == 2
 
 
 def test_chaperone_handler_is_used_at_generic_prediction_tool_handoff(tmp_path, monkeypatch):
