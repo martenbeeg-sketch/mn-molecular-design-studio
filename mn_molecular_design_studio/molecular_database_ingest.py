@@ -275,7 +275,6 @@ def _record(candidate, run_dir):
     if small_molecules and len(smiles_values) == len(small_molecules):
         for component, smiles in zip(small_molecules, smiles_values):
             component["smiles"] = smiles
-            component.pop("ccd", None)
     raw_ccd = raw_metadata.get("ligand_ccd_codes") or []
     if isinstance(raw_ccd, str):
         raw_ccd = [value for value in re.split(r"[\s,;]+", raw_ccd) if value]
@@ -925,6 +924,9 @@ def _analysis_calculation_matches_source(source, candidate, record):
         return False
     ligand_smiles = str(ligand_selection.get("smiles") or source_ligands[0].get("smiles") or "")
     if not ligand_smiles:
+        return False
+    calculation_smiles = str(calculation_ligands[0].get("smiles") or "")
+    if calculation_smiles and _canonical_smiles(calculation_smiles) != _canonical_smiles(ligand_smiles):
         return False
     try:
         from rdkit import Chem

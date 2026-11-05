@@ -234,9 +234,17 @@ _render_database_source({USER!r}, {opened!r}, workflow_schema=lambda workflow_id
     }
 
 
-@pytest.mark.parametrize(("calculated_receptor", "expected_ingestions"), [("AAAAA", 1), ("GGGGG", 0)])
+@pytest.mark.parametrize(("case", "expected_ingestions"), [
+    ("unannotated", 1),
+    ("correct-smiles", 1),
+    ("conflicting-smiles", 0),
+    ("receptor-substitution", 0),
+    ("ligand-element-substitution", 0),
+    ("ligand-geometry-substitution", 0),
+    ("wrong-ligand-residue", 0),
+])
 def test_ligand_owned_bound_complex_plip_checks_selected_representation(
-        bound, tmp_path, calculated_receptor, expected_ingestions):
+        bound, tmp_path, case, expected_ingestions):
     db, molecule, source_pose_id, _, _, _ = bound
     registered = bound_docking.register_bound_complex(db, USER, molecule, structure_id=source_pose_id)
     canonical = db.list_molecules(USER, molecule_ids=[molecule], collection="all")["items"][0]
@@ -246,6 +254,7 @@ def test_ligand_owned_bound_complex_plip_checks_selected_representation(
     complex_structure = next(item for item in canonical["representations"]
                              if item["id"] == registered["complex_structure_id"])
     selection = complex_structure["context"]["ligand_selection"]
+    assert selection == {"chain": "Z", "residue_key": "Z:1", "ccd": "LIG", "smiles": "CCO"}
     from mn_molecular_design_studio.complex_analysis_sources import build_database_analysis_source
     adapter = build_database_analysis_source(USER, {
         "molecule_id": molecule, "structure_id": complex_structure["id"],
@@ -256,16 +265,31 @@ def test_ligand_owned_bound_complex_plip_checks_selected_representation(
 
     original = Path(adapter["selected_structure_path"]).read_text()
     receptor_names = {"A": "ALA", "G": "GLY"}
-    calculation_text = "REMARK PLIP evaluator-prepared complex\n" + "\n".join(
-        (line[:17] + receptor_names[calculated_receptor[0]] + line[20:])
-        if line.startswith("ATOM  ") and line[21:22] == "L" else line
-        for line in original.splitlines()
-    ) + "\n"
-    calculation = tmp_path / f"plip-{calculated_receptor}.pdb"
+    calculation_lines = ["REMARK PLIP evaluator-prepared complex"]
+    geometry_atom_shifted = False
+    for line in original.splitlines():
+        if case == "receptor-substitution" and line.startswith("ATOM  ") and line[21:22] == "L":
+            line = line[:17] + receptor_names["G"] + line[20:]
+        elif case == "ligand-element-substitution" and line.startswith("HETATM") and line[21:22] == "Z" \
+                and line[76:78].strip() == "O":
+            line = line[:76] + " N" + line[78:]
+        elif (case == "ligand-geometry-substitution" and not geometry_atom_shifted
+              and line.startswith("HETATM") and line[21:22] == "Z"):
+            x = float(line[30:38]) + 4.0
+            line = line[:30] + f"{x:8.3f}" + line[38:]
+            geometry_atom_shifted = True
+        calculation_lines.append(line)
+    calculation_text = "\n".join(calculation_lines) + "\n"
+    if case in {"unannotated", "correct-smiles"}:
+        assert calculation_text == (
+            "REMARK PLIP evaluator-prepared complex\n"
+            + "\n".join(original.splitlines()) + "\n"
+        )
+    calculation = tmp_path / f"plip-{case}.pdb"
     calculation.write_text(calculation_text)
     candidate = json.loads(Path(adapter["candidates_jsonl"]).read_text().splitlines()[0])
     candidate.update({
-        "candidate_id": candidate["candidate_id"] + f"_plip_{calculated_receptor}",
+        "candidate_id": candidate["candidate_id"] + "_plip_selected_representation",
         "source_tool": "plip", "tool": "plip", "stage": "analysis", "complex_pdb": str(calculation),
         "metrics": {"plip_success": True, "plip_interaction_count": 2},
     })
@@ -274,9 +298,18 @@ def test_ligand_owned_bound_complex_plip_checks_selected_representation(
     raw["complex_analysis_selection"]["source_structure_digest"] = adapter["source"]["structure_digest"]
     raw["complex_analysis_selection"]["structure_digest"] = adapter["source"]["structure_digest"]
     raw["complex_analysis_selection"]["ligand_selection"] = selection
+    raw.pop("ligand_smiles", None)
+    if case == "correct-smiles":
+        raw["ligand_smiles"] = ["CCO"]
+    elif case == "conflicting-smiles":
+        raw["ligand_smiles"] = ["COC"]
+    elif case == "wrong-ligand-residue":
+        raw["complex_analysis_selection"]["ligand_selection"] = {
+            **selection, "residue_key": "Z:2",
+        }
     raw["structure_digest"] = __import__("hashlib").sha256(calculation.read_bytes()).hexdigest()
 
-    run = tmp_path / "runs" / "analysis" / f"plip-ligand-only-{calculated_receptor.lower()}"
+    run = tmp_path / "runs" / "analysis" / f"plip-ligand-only-{case}"
     candidate_path = run / "artifacts/normalized_candidates/candidates.jsonl"
     candidate_path.parent.mkdir(parents=True)
     candidate_path.write_text(json.dumps(candidate) + "\n")
@@ -297,8 +330,15 @@ def test_ligand_owned_bound_complex_plip_checks_selected_representation(
     evaluations = [item for item in after["observations"] if item.get("namespace") == "plip"]
     assert len(evaluations) == expected_ingestions
     assert after["components"] == canonical["components"]
+    assert after["id"] == molecule
+    all_records = db.list_molecules(USER, collection="all")["items"]
+    ethanol_records = [item for item in all_records if item["components"] == canonical["components"]]
+    assert [item["id"] for item in ethanol_records] == [molecule]
     if expected_ingestions:
         assert evaluations[0]["context"]["representation_id"] == complex_structure["id"]
+        assert ingest_run(run, database=db, force=True) == 1
+        replayed = db.list_molecules(USER, molecule_ids=[molecule], collection="all")["items"][0]
+        assert len([item for item in replayed["observations"] if item.get("namespace") == "plip"]) == 1
 
 
 
