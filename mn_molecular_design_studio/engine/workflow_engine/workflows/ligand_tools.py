@@ -1606,7 +1606,7 @@ def run_ligand_autodock_gpu(
     scrub_ph: float = 7.4,
     scrub_skip_tautomer: bool = True,
     scrub_protocol: str = DEFAULT_SCRUB_PROTOCOL,
-    import_to_database: bool = True,
+    import_to_database: bool = False,
 ) -> Path:
     """Dock a Database compound set with AutoDock-GPU and AutoGrid maps."""
     validate_target_pdb(target_pdb)
@@ -1784,7 +1784,7 @@ def run_ligand_vina(
     scrub_ph: float = 7.4,
     scrub_skip_tautomer: bool = True,
     scrub_protocol: str = DEFAULT_SCRUB_PROTOCOL,
-    import_to_database: bool = True,
+    import_to_database: bool = False,
 ) -> Path:
     """Dock a Studio Database compound set with AutoDock Vina."""
     return _run_docking(
@@ -1829,7 +1829,7 @@ def run_ligand_gnina(
     scrub_ph: float = 7.4,
     scrub_skip_tautomer: bool = True,
     scrub_protocol: str = DEFAULT_SCRUB_PROTOCOL,
-    import_to_database: bool = True,
+    import_to_database: bool = False,
 ) -> Path:
     """Run GNINA docking and CNN rescoring on a Studio Database compound set."""
     return _run_docking(
@@ -1879,7 +1879,7 @@ def run_ligand_unidock_pro(
     scrub_protocol: str = DEFAULT_SCRUB_PROTOCOL,
     cleanup_preparation: bool = True,
     retained_pose_count: int = 0,
-    import_to_database: bool = True,
+    import_to_database: bool = False,
 ) -> Path:
     """Run a Uni-Dock Pro structure-, ligand-, or hybrid-docking mode."""
     mode = str(mode).strip().lower().replace(" ", "_").replace("-", "_")
@@ -2304,7 +2304,7 @@ def run_ligand_rosetta_ligand(
     replicates: int = 1,
     seed_start: int = 1001,
     job_name: str = "rosettaligand",
-    import_to_database: bool = True,
+    import_to_database: bool = False,
 ) -> Path:
     """Dock a Database compound set with Studio's bundled RosettaLigand runner."""
     protocol = str(protocol).strip().lower()

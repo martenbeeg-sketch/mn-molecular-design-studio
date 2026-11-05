@@ -184,7 +184,13 @@ def enqueue_workflow_call(
     params["gpu_device"] = normalized_gpu
     input_payload = {key: value for key, value in call_kwargs.items() if key in _INPUT_KEYS}
     from mn_molecular_design_studio.collection_policy import collection_scope
-    import_to_database = call_kwargs.get("import_to_database", True)
+    import_parameter = signature.parameters.get("import_to_database")
+    default_import = (
+        import_parameter.default
+        if import_parameter and import_parameter.default is not inspect.Parameter.empty
+        else True
+    )
+    import_to_database = call_kwargs.get("import_to_database", default_import)
     if type(import_to_database) is not bool:
         raise ValueError("Import into Database must be true or false.")
     # Restrict at creation, before a worker or a UI refresh can collect the job.

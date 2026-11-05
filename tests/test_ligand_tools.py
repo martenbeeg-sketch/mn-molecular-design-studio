@@ -117,6 +117,7 @@ ui._render_vina_setup(
     assert app.selectbox(key="ligand-vina-scrub-protocol").value == "molscrub_0_1_0"
     assert app.number_input(key="ligand-vina-scrub-ph").value == pytest.approx(7.4)
     assert app.checkbox(key="ligand-vina-skip-tautomer").value is True
+    assert app.checkbox(key="ligand-vina-import-to-database").value is False
     assert app.number_input(key="ligand-vina-exhaustiveness").value == 32
     assert app.number_input(key="ligand-vina-num-modes").value == 10
     markdown = [block.value for block in app.markdown]
@@ -135,9 +136,16 @@ ui._render_vina_setup(
     assert not app.exception
     submitted = app.session_state["test-vina-submission"]
     assert submitted["workflow"] == "ligand.docking.vina"
+    assert submitted["parameters"]["import_to_database"] is False
     assert submitted["parameters"]["center_y"] == pytest.approx(95.113)
     assert Path(submitted["parameters"]["compound_set_file"]).is_file()
     assert submitted["parameters"]["job_name"] == "autodock-vina-example"
+
+    app.checkbox(key="ligand-vina-import-to-database").set_value(True).run()
+    assert not app.exception
+    app.button(key="ligand-vina-run").click().run()
+    assert not app.exception
+    assert app.session_state["test-vina-submission"]["parameters"]["import_to_database"] is True
 
     app.session_state["ligand-vina-pocket-mode"] = "Predict (Boltz)"
     app.run()

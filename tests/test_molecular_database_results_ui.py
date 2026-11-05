@@ -90,6 +90,8 @@ def test_open_in_database_prefers_generated_group_over_tool_inputs(tmp_path, mon
     _isolate_workspace(tmp_path, monkeypatch)
     from mn_molecular_design_studio import molecular_database_results, molecular_database_results_ui
 
+    confirmed_user = {"id": "pc002975", "role": "admin", "_cluster_project_ids": []}
+
     input_group = {
         "id": "tool-input-group",
         "name": "Tool inputs",
@@ -102,9 +104,10 @@ def test_open_in_database_prefers_generated_group_over_tool_inputs(tmp_path, mon
         "id": "automatic-output-group",
         "name": "RFD4 smoke test generation",
         "project_id": "",
-        "owner_id": USER["id"],
+        "owner_id": confirmed_user["id"],
         "import_method": "tool_output",
-        "origin": {"type": "job", "collection_kind": "generated", "is_test": True},
+        "origin": {"type": "job", "collection_kind": "generated", "is_test": True,
+                   "run_id": "20261016-234215-9257efd9"},
     }
     input_record = {
         "id": "molecule-input", "name": "1AAY", "type": "protein",
@@ -128,7 +131,7 @@ def test_open_in_database_prefers_generated_group_over_tool_inputs(tmp_path, mon
         group_id=input_group["id"],
     )
     database.create_group(
-        USER,
+        confirmed_user,
         output_group["name"],
         import_method="tool_output",
         origin=output_group["origin"],
@@ -141,7 +144,7 @@ def test_open_in_database_prefers_generated_group_over_tool_inputs(tmp_path, mon
     script = f'''\
 from pathlib import Path
 from mn_molecular_design_studio.molecular_database_results_ui import render_run_database_actions
-render_run_database_actions(Path({str(run_dir)!r}), {USER!r}, [])
+render_run_database_actions(Path({str(run_dir)!r}), {confirmed_user!r}, [])
 '''
     app = AppTest.from_string(script, default_timeout=10).run()
     assert not app.exception
@@ -239,3 +242,81 @@ render_run_database_actions(Path({str(tmp_path / 'runs/design/original')!r}), {U
     assert app.session_state['molecular-preselect-group'] == 'accepted-run'
     assert app.session_state['molecular-preselect-molecule'] == 'binder-1'
     assert app.session_state['page'] == 'Database'
+
+
+def test_external_screening_results_wait_for_exact_user_selection(tmp_path, monkeypatch):
+    _isolate_workspace(tmp_path, monkeypatch)
+    from mn_molecular_design_studio import bulk_screening_results, molecular_database_results_ui
+
+    run_dir = (tmp_path / "runs" / "campaign" / "screening-run").resolve()
+    results_path = run_dir / "artifacts" / "active_learning" / "docking_scores.parquet"
+    results_path.parent.mkdir(parents=True)
+    results_path.write_bytes(b"fixture marker")
+    result = {
+        "compound_count": 1_590_790,
+        "rows": [
+            {"compound_id": f"compound-{index}", "compound_name": f"Compound {index}",
+             "score": float(-10 + index), "best_round": 3}
+            for index in range(1, 4)
+        ],
+        "scores_path": str(results_path), "files": {},
+        "selection": {"group_id": None, "imported_count": 0},
+    }
+    imported = []
+    monkeypatch.setattr(bulk_screening_results, "external_results", lambda *_args: result)
+    monkeypatch.setattr(
+        bulk_screening_results,
+        "import_final_results",
+        lambda *args, **kwargs: (
+            imported.append((args[2], kwargs.get("selected_compound_ids"))) or
+            {"imported_count": len(kwargs.get("selected_compound_ids") or [])}
+        ),
+    )
+    monkeypatch.setattr(molecular_database_results_ui, "MolecularDatabase", lambda: None)
+    run_key = hashlib.sha1(str(run_dir).encode()).hexdigest()[:12]
+    app = AppTest.from_string(f'''\
+from pathlib import Path
+from mn_molecular_design_studio.molecular_database_results_ui import render_run_database_actions
+render_run_database_actions(Path({str(run_dir)!r}), {USER!r}, [])
+''').run()
+    assert not app.exception
+    assert app.multiselect(key=f"external-screening-{run_key}-selected-compounds").value == []
+    assert app.number_input(key=f"external-screening-{run_key}-count").value == 0
+    assert app.button(key=f"external-screening-{run_key}-import-selected").disabled
+    assert app.button(key=f"external-screening-{run_key}-import").disabled
+    assert imported == []
+
+    app.multiselect(key=f"external-screening-{run_key}-selected-compounds").set_value(
+        ["compound-1", "compound-3"],
+    ).run()
+    app.button(key=f"external-screening-{run_key}-import-selected").click().run()
+    assert not app.exception
+    assert imported == [(0, ["compound-1", "compound-3"])]
+
+
+def test_historical_spiro_shortlist_result_opens_in_all_indexed(tmp_path, monkeypatch):
+    _isolate_workspace(tmp_path, monkeypatch)
+    from mn_molecular_design_studio import bulk_screening_results
+
+    run_dir = (tmp_path / "runs" / "campaign" / "historical-screening").resolve()
+    results_path = run_dir / "artifacts" / "active_learning" / "docking_scores.parquet"
+    results_path.parent.mkdir(parents=True)
+    results_path.write_bytes(b"fixture marker")
+    group_id = "screening-final-a5ba730c962dc449fb40bbab7702a25b"
+    monkeypatch.setattr(bulk_screening_results, "external_results", lambda *_args: {
+        "compound_count": 1_590_790, "rows": [], "scores_path": str(results_path), "files": {},
+        "selection": {"group_id": group_id, "imported_count": 1000},
+    })
+    run_key = hashlib.sha1(str(run_dir).encode()).hexdigest()[:12]
+    app = AppTest.from_string(f'''\
+from pathlib import Path
+from mn_molecular_design_studio.molecular_database_results_ui import render_run_database_actions
+render_run_database_actions(Path({str(run_dir)!r}), {USER!r}, [])
+''').run()
+    assert not app.exception
+    assert any("original, unreviewed computational shortlist" in item.value for item in app.caption)
+    app.button(key=f"external-screening-{run_key}-open").click().run()
+    assert not app.exception
+    assert app.session_state["page"] == "Database"
+    assert app.session_state["molecular-preselect-group"] == group_id
+    assert app.session_state["molecular-preselect-collection"] == "all"

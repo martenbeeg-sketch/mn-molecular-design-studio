@@ -271,7 +271,7 @@ NODE_CATALOG.update({
         field("max_iterations", "Maximum iterations (0 = unlimited)", 0, minimum=0, maximum=100000, section="basic"),
     ]),
     "active_results": _spec("active_results", "Active learning results", "Results", "All compound scores, IDs, SMILES, round history, models and retained poses stay in external campaign files. Intermediate rounds never import compound records into Database. Optionally import a bounded selection from the final cumulative ranking after the loop stops.", output=None, accepts=[_ACTIVE_STATE], color="#427f68", formats=(), fields=[
-        field("final_database_import_limit", "Final compounds imported into Database (0 = none)", 1000,
+        field("final_database_import_limit", "Final compounds imported into Database (0 = none)", 0,
               minimum=0, maximum=1000, section="basic",
               help="Import only this many top-ranked final compounds, with scores, original IDs and available retained poses. All other results remain linked as external Parquet files, never as individual Database rows."),
     ]),

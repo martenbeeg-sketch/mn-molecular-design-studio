@@ -1293,7 +1293,7 @@ def capabilities(user=Depends(_current_user)):
                                "summary": operation.get("summary", ""), "admin_only": admin_only})
     return {"api_version": "v1", "development_mode": is_development_mode(),
             "file_reference_prefix": "studio-file:///", "operations": operations,
-            "external_screening_page_limit": 1000, "final_database_import_limit": 1000}
+            "external_screening_page_limit": 1000, "final_database_import_limit": 0}
 
 
 def _public_operation(path, method, user):

@@ -25,7 +25,6 @@ from mn_molecular_design_studio.output_vocabulary import PREFIX, normalize_metri
 
 IMPORT_METHODS = {"user_uploads": "User uploads", "tool_inputs": "Tool inputs", "tool_output": "Tool output", "agent_inputs": "Agent inputs"}
 COLLECTION_KINDS = {"curated", "generated", "reference", "inputs", "evaluation", "intermediate"}
-_SMOKE_TEST_GROUP = re.compile(r"(?<![a-z0-9])(smoke|test|testing)(?![a-z0-9])", re.IGNORECASE)
 _SYNC_TIMES: dict[str, float] = {}
 _CAPTURE_REVISION_SCHEMA_READY: set[str] = set()
 
@@ -323,18 +322,8 @@ class MolecularDatabase:
 
     @staticmethod
     def _is_smoke_test_group(group) -> bool:
-        origin = group.get("origin") if isinstance(group, dict) else None
-        if isinstance(origin, str):
-            try:
-                origin = json.loads(origin)
-            except (TypeError, ValueError):
-                origin = {}
-        origin = origin if isinstance(origin, dict) else {}
-        if any(origin.get(key) is True for key in ("is_test", "test", "smoke", "is_smoke_test")):
-            return True
-        labels = [str(group.get("name") or "")]
-        labels.extend(str(origin.get(key) or "") for key in ("name", "label", "run_name", "campaign", "workflow", "description"))
-        return any(_SMOKE_TEST_GROUP.search(label) for label in labels)
+        from mn_molecular_design_studio.molecular_database_visibility import is_confirmed_development_group
+        return is_confirmed_development_group(group)
 
     def groups(self, user: dict, *, project_id="", scope="organization", methods=None, collection="all",
                hide_smoke_test=False) -> list[dict]:
@@ -356,6 +345,10 @@ class MolecularDatabase:
                 continue
             if scope == "shared" and not row["project_id"]:
                 continue
+            if collection == "library":
+                from mn_molecular_design_studio.molecular_database_visibility import is_unreviewed_screening_shortlist
+                if is_unreviewed_screening_shortlist(item):
+                    continue
             if hide_smoke_test and self._is_smoke_test_group(item):
                 continue
             if not row["molecule_count"] and row["import_method"] not in {"user_uploads", "agent_inputs"}:

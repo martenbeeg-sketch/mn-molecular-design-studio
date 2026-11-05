@@ -91,6 +91,7 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
     docking_rounds = []
     model_steps = []
     completed = []
+    final_import_limits = []
 
     def fake_dock_round(*, campaign, round_number, rows, **_kwargs):
         docking_rounds.append(round_number)
@@ -181,7 +182,14 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
     monkeypatch.setattr(controller, "_save_failed_compound_table", lambda path, _rows: Path(path).write_text("fixture"))
     from mn_molecular_design_studio import bulk_screening_results
     monkeypatch.setattr(bulk_screening_results, "publish_final_selection",
-                        lambda *args, **kwargs: {"imported_count": 0, "requested_limit": 0, "group_id": None})
+                        lambda *args, **kwargs: (
+                            final_import_limits.append(args[2]) or
+                            {"imported_count": 0, "requested_limit": args[2], "group_id": None}
+                        ))
+
+    # Reproduce a saved graph missing this optional field: the controller must
+    # use the new zero fallback. Explicit historical values are tested above.
+    nodes["active_results"]["data"]["params"].pop("final_database_import_limit", None)
 
     from mn_molecular_design_studio import workspace
     from mn_molecular_design_studio.engine.workflow_engine.workflows import ligand_tools
@@ -211,6 +219,7 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
     assert graph_state["nodes"][decision_id]["stop_reason"] == expected_stop
     assert completed
     assert completed[-1][0][2]["metrics"]["stop_reason"] == expected_stop
+    assert final_import_limits == [0]
 
     if scenario == "stable":
         assert [row["top_n_stable"] for row in history["rounds"]] == [False, False, True, True]

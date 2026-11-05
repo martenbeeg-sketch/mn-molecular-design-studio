@@ -837,9 +837,11 @@ def render_database(user, projects):
                 ["Library", "All indexed"],
                 default="Library",
                 key="molecular-collection-view",
-                help="Library includes imported molecules, the Protein Library, and final generated collections. All indexed also shows evaluation and intermediate job collections.",
+                help="Library includes eligible imported and selected collections. All indexed also shows historical/unreviewed screening shortlists, evaluations, and intermediate job collections.",
             )
             collection = "library" if collection_label == "Library" else "all"
+            if collection == "all":
+                st.caption("All indexed includes the original unreviewed SpiroSpace screening shortlists and their saved history.")
             scope_options = ["Mine", "Shared", "All"]
             old_scope = st.session_state.get("molecular-scope")
             scope_aliases = {"My groups": "Mine", "Organization": "All", "organization": "All", "mine": "Mine", "shared": "Shared", "all": "All"}
@@ -858,10 +860,10 @@ def render_database(user, projects):
             scope = {"Mine": "mine", "Shared": "shared", "All": "all"}[scope_label]
             st.caption("Mine: personal · Shared: project collections · All: both")
             hide_smoke_test = st.checkbox(
-                "Hide smoke/test groups",
+                "Hide confirmed development runs",
                 value=True,
                 key="molecular-hide-smoke-test-groups",
-                help="Hides collections whose name or source is marked smoke/test. Turn this off to inspect them.",
+                help="Hides only the eight audited owner/run pairs. Names and development-account flags alone do not hide campaigns. Turn this off to inspect those runs.",
             )
             with st.popover("Import Method", use_container_width=True):
                 methods = [value for value, label in IMPORT_METHODS.items() if st.checkbox(label, value=True, key="molecular-method-" + value)]

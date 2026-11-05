@@ -27,7 +27,13 @@ def controlled_import(function):
 
     @wraps(function)
     def wrapped(*args, **kwargs):
-        enabled = signature.bind_partial(*args, **kwargs).arguments.get("import_to_database", True)
+        parameter = signature.parameters.get("import_to_database")
+        default = (
+            parameter.default
+            if parameter and parameter.default is not inspect.Parameter.empty
+            else True
+        )
+        enabled = signature.bind_partial(*args, **kwargs).arguments.get("import_to_database", default)
         if type(enabled) is not bool:
             raise ValueError("Import into Database must be true or false.")
         with collection_scope("automatic" if enabled else "manual"):

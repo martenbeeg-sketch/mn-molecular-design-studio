@@ -1021,7 +1021,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                                   "centroid_manifest": str(features["centroid_manifest"]),
                                   "retained_poses": pose_paths})
         from mn_molecular_design_studio.bulk_screening_results import publish_final_selection
-        import_limit = int(params["active_results"].get("final_database_import_limit", 1000))
+        import_limit = int(params["active_results"].get("final_database_import_limit", 0))
         try:
             selection = publish_final_selection(campaign, {"id": owner_id, "role": "admin"}, import_limit)
         except Exception as exc:

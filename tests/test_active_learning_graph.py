@@ -46,6 +46,9 @@ def test_legacy_study_migration_keeps_selected_inputs_settings_and_ids():
             node["data"]["label"] = "Custom binder schedule"
         if node["data"]["kind"] == "active_docking":
             node["data"]["params"]["batch_size"] = 25_000
+        if node["data"]["kind"] == "active_results":
+            # A saved historical import choice remains an explicit saved value.
+            node["data"]["params"]["final_database_import_limit"] = 1000
     before = copy.deepcopy(study)
     migrated = graph.migrate_template_graph(study)
     assert study == before
@@ -58,6 +61,13 @@ def test_legacy_study_migration_keeps_selected_inputs_settings_and_ids():
         assert new["position"] == {axis: position[axis] for axis in ("x", "y")}
     assert graph.migrate_template_graph(migrated) is migrated
     graph.validate_graph(migrated)
+
+
+def test_new_active_learning_graph_defaults_to_zero_final_database_import():
+    study = graph.new_graph("unidock_active_learning")
+    results = next(node["data"]["params"] for node in study["nodes"]
+                   if node["data"]["kind"] == "active_results")
+    assert results["final_database_import_limit"] == 0
 
 
 def test_canvas_round_trip_preserves_template_version_and_recovers_feedback_flag():

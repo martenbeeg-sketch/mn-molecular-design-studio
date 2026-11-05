@@ -73,6 +73,75 @@ def test_import_can_be_disabled_completely_and_limit_is_hard(bulk):
     assert manifest["compound_count"] == 5 and manifest["database_selection"]["group_id"] is None
 
 
+def test_explicit_compound_ids_import_only_the_selection_and_replay_idempotently(bulk, monkeypatch):
+    run, db = bulk
+    from mn_molecular_design_studio import molecular_database_results
+    monkeypatch.setattr(molecular_database_results, "_authorized_run", lambda selected, _user: (selected,))
+    path = run / "artifacts/active_learning/docking_scores.parquet"
+    original_scores = path.read_bytes()
+    imported = db.import_records(
+        USER,
+        [{"name": "HY-L126 existing identity", "components": [
+            {"type": "small_molecule", "chain": "L", "smiles": "CCN"},
+        ]}],
+        name="Intentional reusable import", import_method="user_uploads",
+    )
+    original_id = imported["molecule_ids"][0]
+
+    automatic = publish_final_selection(run, USER, 2, database=db)
+    with db.connection() as connection:
+        historical_observation = connection.execute(
+            "SELECT id,molecule_id,group_id,metrics,context FROM molecule_observations "
+            "WHERE group_id=? AND json_extract(context,'$.compound_id')='original-1'",
+            (automatic["group_id"],),
+        ).fetchone()
+        historical_observation = tuple(historical_observation)
+
+    first = import_final_results(
+        run, USER, 0, database=db, selected_compound_ids=["original-1", "original-3"],
+    )
+    assert first["explicit_selection"] is True
+    assert first["selected_compound_ids"] == ["original-1", "original-3"]
+    assert first["group_id"].startswith("screening-selected-")
+    selected = db.list_molecules(USER, group_id=first["group_id"])["items"]
+    assert {row["metadata"]["compound_id"] for row in selected} == {"original-1", "original-3"}
+    reused = next(row for row in selected if row["metadata"]["compound_id"] == "original-1")
+    assert reused["id"] == original_id
+    with db.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM molecules").fetchone()[0] == 3
+        assert connection.execute("SELECT count(*) FROM molecule_members WHERE group_id=?",
+                                  (first["group_id"],)).fetchone()[0] == 2
+        assert connection.execute("SELECT count(*) FROM molecule_observations").fetchone()[0] == 3
+        assert tuple(connection.execute(
+            "SELECT id,molecule_id,group_id,metrics,context FROM molecule_observations WHERE id=?",
+            (historical_observation[0],),
+        ).fetchone()) == historical_observation
+
+    second = import_final_results(
+        run, USER, 0, database=db, selected_compound_ids=["original-1", "original-3"],
+    )
+    assert second["group_id"] == first["group_id"]
+    with db.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM molecules").fetchone()[0] == 3
+        assert connection.execute("SELECT count(*) FROM molecule_members WHERE group_id=?",
+                                  (first["group_id"],)).fetchone()[0] == 2
+        assert connection.execute("SELECT count(*) FROM molecule_observations").fetchone()[0] == 3
+    assert path.read_bytes() == original_scores
+    assert pq.ParquetFile(path).metadata.num_rows == 5
+
+
+def test_exact_compound_import_rejects_missing_or_ambiguous_ids_without_writes(bulk, monkeypatch):
+    run, db = bulk
+    from mn_molecular_design_studio import molecular_database_results
+    monkeypatch.setattr(molecular_database_results, "_authorized_run", lambda selected, _user: (selected,))
+    with pytest.raises(ValueError, match="not found"):
+        import_final_results(run, USER, 0, database=db, selected_compound_ids=["not-in-results"])
+    with pytest.raises(ValueError, match="either an exact"):
+        publish_final_selection(run, USER, 1, database=db, selected_compound_ids=["original-1"])
+    with db.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM molecules").fetchone()[0] == 0
+
+
 def test_thousand_row_cap_does_not_read_or_import_the_rest(bulk):
     run, db = bulk
     rows = [dict(library_id="lib", compound_key=i, compound_id=f"ID-{i}",
@@ -114,6 +183,21 @@ def test_docking_policy_persisted_before_worker_dispatch(tmp_path, monkeypatch, 
     assert policy.automatic_collection_allowed(run) is enabled
 
 
+@pytest.mark.parametrize("engine", ["vina", "gnina", "unidock_pro", "autodock_gpu", "rosetta_ligand"])
+def test_omitted_docking_import_choice_defaults_to_results_only(tmp_path, monkeypatch, engine):
+    monkeypatch.setattr(jobs, "runs_root", lambda: tmp_path / "runs")
+    monkeypatch.setattr(workflow_queue, "spawn_worker_for_run", lambda _run: None)
+    run = workflow_queue.enqueue_workflow_call(
+        getattr(ligand_tools, "run_ligand_" + engine),
+        task_group="ligand-docking", tool=engine, job_type="ligand_docking",
+        kwargs={"target_pdb": tmp_path / "target.pdb", "compound_set_file": tmp_path / "compounds.json",
+                "center_x": 0., "center_y": 0., "center_z": 0.},
+        cpu_cores=1, gpu_device="none",
+    )
+    assert policy.policy_for_run(run) == "manual"
+    assert not policy.automatic_collection_allowed(run)
+
+
 def test_direct_docking_respects_import_switch(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, "runs_root", lambda: tmp_path)
     def fake(**kwargs):
@@ -123,6 +207,15 @@ def test_direct_docking_respects_import_switch(tmp_path, monkeypatch):
     assert policy.policy_for_run(run) == "manual"
     from mn_molecular_design_studio.molecular_database_ingest import ingest_run
     assert ingest_run(run, force=True) == 0
+
+
+def test_direct_docking_without_import_choice_defaults_to_results_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs, "runs_root", lambda: tmp_path)
+    def fake(**kwargs):
+        return jobs.create_job("ligand-docking", "ligand_docking", "vina", {}, {}).run_dir
+    monkeypatch.setattr(ligand_tools, "_run_docking", fake)
+    run = ligand_tools.run_ligand_vina(tmp_path / "p.pdb", tmp_path / "c.json", 0., 0., 0.)
+    assert policy.policy_for_run(run) == "manual"
 
 
 def test_local_active_learning_batch_forces_external_only(tmp_path, monkeypatch):

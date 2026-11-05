@@ -1409,9 +1409,9 @@ def render_docking_setup(workflow_id, schema, *, owner_id, compound_sets, projec
                     if is_unidock:
                         parameters.update(cleanup_preparation=cleanup_preparation, retained_pose_count=retained_pose_count)
                 import_to_database = st.checkbox(
-                    "Automatically import compounds and results into Database", value=True,
+                    "Automatically import compounds and results into Database", value=False,
                     key=f"ligand-{tool_key}-import-to-database",
-                    help="Turn off for large screens. Inputs, scores and poses remain in this job's external files; only the job and file locations are registered in Studio.",
+                    help="Off by default for screening. Turn on to import compounds and docking results; the complete run and its files remain available in Results.",
                 )
                 parameters["import_to_database"] = import_to_database
         with st.container(key="vina-example"):

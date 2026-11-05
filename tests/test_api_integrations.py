@@ -260,6 +260,7 @@ def test_capabilities_exclude_node_routes_and_nonadmin_management(api_data):
     client = api_data["client"]
     response = client.get("/api/v1/capabilities", headers=headers(api_data, "student"))
     assert response.status_code == 200
+    assert response.json()["final_database_import_limit"] == 0
     paths = [r["path"] for r in response.json()["operations"]]
     assert "/api/v1/libraries" in paths
     assert not any("/cluster/node/" in p or "/admin/" in p for p in paths)

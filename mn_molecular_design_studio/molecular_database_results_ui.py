@@ -213,7 +213,10 @@ def _render_saved_run_collections(run_path, user, database):
     for group in groups:
         if st.button("Open saved collection · " + group["name"], key="run-saved-collection-" + group["id"]):
             st.session_state["molecular-preselect-group"] = group["id"]
-            st.session_state["molecular-preselect-collection"] = "library"
+            from mn_molecular_design_studio.molecular_database_visibility import is_unreviewed_screening_shortlist
+            st.session_state["molecular-preselect-collection"] = (
+                "all" if is_unreviewed_screening_shortlist(group) else "library"
+            )
             st.session_state["molecular-preselect-molecule"] = group["molecule_ids"][0]
             st.session_state["page"] = "Database"
             st.rerun()
@@ -270,13 +273,16 @@ def render_run_database_actions(run_dir, user: dict, projects: list[dict]) -> No
             log.exception("Could not verify source collection for run %s", run_path)
             st.caption("The source collection could not be verified; Database will open in All indexed.")
             source_group = None
-    collection = _collection_for_group(source_group)
+    from mn_molecular_design_studio.molecular_database_visibility import is_unreviewed_screening_shortlist
+    collection = "all" if is_unreviewed_screening_shortlist(source_group) else _collection_for_group(source_group)
     indexed_records = [record for record in records if not record.get("result_only")]
     st.markdown("#### Molecular Database")
     st.caption(f"{len(records):,} distinct molecular record{'s' if len(records) != 1 else ''} associated with this run.")
     open_col, context_col = st.columns([1.25, 4])
     if not indexed_records:
         context_col.caption("These candidates remain in Results until selected for the curated Database.")
+    elif source_group and is_unreviewed_screening_shortlist(source_group):
+        context_col.caption("Original unreviewed computational shortlist · accessible in All indexed with its saved Results and Evaluations.")
     elif source_group:
         group_members = sum(
             any(isinstance(group, dict) and str(group.get("id")) == source_group["id"] for group in (record.get("groups") or []))
@@ -436,15 +442,52 @@ def _render_external_screening_results(run_path, user):
         st.caption("Preview: first 100 compounds in the final ranking. The complete table retains all scored compounds for later investigation.")
         if selection.get("group_id") and st.button("Open final shortlist in Database", key=key + "-open"):
             st.session_state["molecular-preselect-group"] = selection["group_id"]
-            st.session_state["molecular-preselect-collection"] = "library"
+            from mn_molecular_design_studio.molecular_database_visibility import is_unreviewed_screening_shortlist_id
+            historical = is_unreviewed_screening_shortlist_id(selection["group_id"])
+            st.session_state["molecular-preselect-collection"] = "all" if historical else "library"
             st.session_state["molecular-hide-smoke-test-groups"] = False
             st.session_state["page"] = "Database"
             st.rerun()
+        from mn_molecular_design_studio.molecular_database_visibility import is_unreviewed_screening_shortlist_id
+        if is_unreviewed_screening_shortlist_id(selection.get("group_id")):
+            st.caption("This is an original, unreviewed computational shortlist. Open it in All indexed to inspect its saved memberships and Evaluations.")
         if selection.get("error"):
             st.warning("The optional final Database import failed: " + str(selection["error"]))
-        count = int(st.number_input("Final top-ranked compounds to import (0 = none)", min_value=0,
-                                   max_value=1000, value=1000, step=100, key=key + "-count"))
-        st.caption("Only the completed final ranking is eligible. Repeating an import reuses the same shortlist and preserves annotations.")
+        by_id = {}
+        duplicate_ids = set()
+        for row in result["rows"]:
+            compound_id = str(row.get("compound_id") or "").strip()
+            if not compound_id:
+                continue
+            if compound_id in by_id:
+                duplicate_ids.add(compound_id)
+            else:
+                by_id[compound_id] = row
+        selectable_ids = [value for value in by_id if value not in duplicate_ids]
+        if duplicate_ids:
+            st.caption("Some preview IDs repeat in the screening library and cannot be selected by ID. Use the reviewed top-ranked option below for those rows.")
+        selected_ids = st.multiselect(
+            "Select exact compounds to import",
+            options=selectable_ids,
+            key=key + "-selected-compounds",
+            format_func=lambda value: (
+                f"{value} · {by_id[value].get('compound_name') or by_id[value].get('name') or 'Compound'} · "
+                f"rank {by_id[value].get('_final_rank', selectable_ids.index(value) + 1)}"
+            ),
+            help="Choose specific IDs from the ranked preview. The selection is saved separately from the automatic shortlist.",
+        )
+        st.caption("Only the top 100 ranked rows are shown here. Full scores, poses, and files remain available in Results.")
+        if st.button("Import selected compounds into Database", key=key + "-import-selected", disabled=not selected_ids):
+            try:
+                imported = import_final_results(run_path, user, 0, selected_compound_ids=selected_ids)
+                st.success(f"Selected {imported['imported_count']:,} compounds into the Database. Full results remain in Results.")
+                st.rerun()
+            except (ValueError, OSError, PermissionError) as exc:
+                st.error(str(exc))
+
+        count = int(st.number_input("Or import a reviewed top-ranked shortlist (0 = none)", min_value=0,
+                                   max_value=1000, value=0, step=100, key=key + "-count"))
+        st.caption("A positive count is an explicit choice to curate the top-ranked compounds. Repeating it reuses the same selection and preserves annotations.")
         if st.button("Import final shortlist into Database", key=key + "-import", disabled=count == 0):
             try:
                 imported = import_final_results(run_path, user, count)
