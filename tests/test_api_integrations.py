@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
+import hashlib
 import json
+import threading
 from pathlib import Path
 
 import httpx
@@ -11,6 +14,204 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture
+def queued_vina_batch(api_data, monkeypatch):
+    """Use authenticated API submission and the real worker with tiny Docker outputs."""
+    from mn_molecular_design_studio import ligand_compounds
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs, workflow_queue
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import ligand_tools
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+
+    actor, project = api_data["admin"], api_data["project"]["id"]
+    target, compounds = api_data["root"] / "target.pdb", api_data["root"] / "compounds.json"
+    target.write_text("ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00 20.00           C\nEND\n")
+    ligand_compounds.write_compound_set(
+        compounds, name="Owned library", compounds=[{"compound_id": "ethanol", "smiles": "CCO"}],
+        owner_id=actor["id"], project_id=project, created_at="fixture",
+    )
+    database = MolecularDatabase()
+    intentional = database.import_records(actor, [{
+        "name": "Intentional ethanol", "components": [{"type": "small_molecule", "chain": "L", "smiles": "CCO"}],
+    }], name="Intentional import", project_id=project)
+    launches, scores, pending = [], {}, []
+    monkeypatch.setattr(ligand_tools, "load_manifest", lambda _name: {"image": "fixture:no-container"})
+    monkeypatch.setattr(workflow_queue, "spawn_worker_for_run", lambda run: pending.append(Path(run)))
+
+    def docker(run, _manifest, _command, *, gpu_device):
+        run = Path(run)
+        launches.append(run)
+        params = jobs.read_json(run / "input.json")["params"]
+        staged = ligand_compounds.load_compound_set(run / "artifacts/input/compound_set.json")["compounds"]
+        pose_dir = run / "artifacts/poses"
+        pose_dir.mkdir(exist_ok=True)
+        rows = []
+        for index, compound in enumerate(staged):
+            compound_id = compound["compound_id"]
+            score = -float(params["exhaustiveness"]) - (index + 1) / 4
+            scores[(run.name, compound_id)] = score
+            (pose_dir / f"{compound_id}.pdbqt").write_text(
+                f"REMARK fixture pose {run.name} {compound_id} {score}\nENDMDL\n"
+            )
+            rows.append(f"{compound_id}\tcompleted\t{score}\tartifacts/poses/{compound_id}.pdbqt\t\n")
+        (run / "artifacts/docking_scores.csv").write_text(
+            "compound_id\tstatus\tbest_score_kcal_mol\tpose_path\terror\n" + "".join(rows)
+        )
+        return 0
+
+    monkeypatch.setattr(ligand_tools, "run_docker_job", docker)
+
+    def body(choices, compatible=False):
+        items = []
+        for index, choice in enumerate(choices):
+            item = dict(target_pdb=str(target), compound_set_file=str(compounds),
+                        center_x=0., center_y=0., center_z=0.,
+                        exhaustiveness=8 if compatible else 8 + index)
+            if choice is not None:
+                item["import_to_database"] = choice
+            items.append(item)
+        return {"schema_version": 1, "workflow": "ligand.docking.vina", "project_id": project,
+                "parameters": items, "resources": {"cpu_cores": 1, "gpu_device": "none"}}
+
+    def observations():
+        with database.connection() as connection:
+            return [dict(row) for row in connection.execute(
+                "SELECT o.*,g.owner_id,g.project_id FROM molecule_observations o "
+                "JOIN molecule_groups g ON g.id=o.group_id WHERE namespace='vina' ORDER BY o.id"
+            )]
+
+    return dict(data=api_data, database=database, actor=actor, project=project, body=body,
+                launches=launches, scores=scores, pending=pending, observations=observations,
+                canonical_id=intentional["molecule_ids"][0])
+
+
+@pytest.mark.parametrize("choices", [
+    (None, None), (False, False), (True, True), (True, False), (False, True),
+    (True, None), (None, True),
+])
+@pytest.mark.parametrize("compatible", [False, True])
+def test_vina_batch_worker_before_api_marker_retains_exact_imports(queued_vina_batch, monkeypatch, choices, compatible):
+    """Start the real worker before API marking, then finish and retry its queued call."""
+    from mn_molecular_design_studio.collection_policy import policy_for_run
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs, local_worker, workflow_queue
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import ligand_tools
+    from mn_molecular_design_studio.molecular_database_ingest import record_completed_run
+
+    case = queued_vina_batch
+    entered_docker, release_docker = threading.Event(), threading.Event()
+    worker_thread = None
+    parents, errors, results = [], [], []
+    fixture_docker = ligand_tools.run_docker_job
+
+    def paused_docker(run, manifest, command, *, gpu_device):
+        if not entered_docker.is_set():
+            entered_docker.set()
+            assert release_docker.wait(10), "API did not release the isolated worker"
+        return fixture_docker(run, manifest, command, gpu_device=gpu_device)
+
+    def worker(run):
+        try:
+            results.append(local_worker.run_worker_job(run))
+        except BaseException as exc:
+            errors.append(exc)
+
+    def dispatch(run):
+        nonlocal worker_thread
+        run = Path(run)
+        parents.append(run)
+        assert not (run / "molecular_design_studio.json").exists()
+        metadata = jobs.read_json(run / "metadata.json")
+        assert metadata["studio_owner_id"] == case["actor"]["id"]
+        assert metadata["studio_project_id"] == case["project"]
+        # A fresh thread gives the worker its own ContextVars, as a subprocess
+        # would; submission's parent policy must not constrain true children.
+        worker_thread = threading.Thread(target=worker, args=(run,), daemon=True)
+        worker_thread.start()
+        assert entered_docker.wait(10), "Worker did not enter the Docker substitute"
+
+    monkeypatch.setattr(ligand_tools, "run_docker_job", paused_docker)
+    monkeypatch.setattr(workflow_queue, "spawn_worker_for_run", dispatch)
+    try:
+        response = case["data"]["client"].post("/api/v1/workflows", json=case["body"](choices, compatible))
+        assert response.status_code == 202, response.text
+        parent = parents[0]
+        assert (parent / "molecular_design_studio.json").exists()
+        assert worker_thread.is_alive()  # Marking completes before either child finishes.
+    finally:
+        release_docker.set()
+        if worker_thread is not None:
+            worker_thread.join(10)
+    assert not worker_thread.is_alive()
+    assert not errors, errors
+    assert results == [0]
+    should_coalesce = compatible and choices[0] == choices[1]
+    assert len(case["launches"]) == (1 if should_coalesce else 2)
+    launch_choices = [choices[0]] if should_coalesce else choices
+    assert [policy_for_run(run) for run in case["launches"]] == [
+        "automatic" if choice is True else "manual" for choice in launch_choices
+    ]
+    assert policy_for_run(parent) == ("automatic" if should_coalesce and choices[0] is True else "manual")
+    observations = case["observations"]()
+    assert len(observations) == sum(choice is True for choice in choices)
+    for run in case["launches"]:
+        marker = jobs.read_json(run / "molecular_design_studio.json")
+        assert marker["studio_owner_id"] == case["actor"]["id"]
+        assert marker["project_id"] == case["project"]
+
+    for observation in observations:
+        context = json.loads(observation["context"])
+        compound_id = context["row"]["compound_id"]
+        assert observation["molecule_id"] == case["canonical_id"]
+        assert observation["owner_id"] == case["actor"]["id"]
+        assert observation["project_id"] == case["project"]
+        assert context["run_id"] == observation["run_id"]
+        score = case["scores"][(observation["run_id"], compound_id)]
+        assert json.loads(observation["metrics"])["best_score_kcal_mol"] == score
+        launch = next(run for run in case["launches"] if run.name == observation["run_id"])
+        assert float(context["row"]["best_score_kcal_mol"]) == score
+        assert context["settings"]["exhaustiveness"] == jobs.read_json(launch / "input.json")["params"]["exhaustiveness"]
+        with case["database"].connection() as connection:
+            structure = connection.execute("SELECT * FROM molecule_structures WHERE id=?", (context["representation_id"],)).fetchone()
+            sources = connection.execute(
+                "SELECT source_key FROM molecule_sources WHERE group_id=? AND molecule_id=? "
+                "AND json_extract(provenance,'$.run_id')=? AND json_extract(provenance,'$.compound_id')=?",
+                (observation["group_id"], case["canonical_id"], observation["run_id"], compound_id),
+            ).fetchall()
+        pose_bytes = (launch / context["row"]["pose_path"]).read_bytes()
+        assert Path(structure["path"]).read_bytes() == pose_bytes
+        assert context["pose_digest"] == hashlib.sha256(pose_bytes).hexdigest()
+        assert sources and all(observation["run_id"] in row["source_key"] for row in sources)
+
+    launches_before_retry = list(case["launches"])
+    retained_files = {path: path.read_bytes() for run in case["launches"]
+                      for path in [run / "artifacts/docking_scores.csv", *run.glob("artifacts/poses/*.pdbqt")]}
+    before = copy.deepcopy(observations)
+    record_completed_run(parent)
+    assert case["observations"]() == before
+    assert local_worker.run_worker_job(parent) == 0  # Restore worker_request.json and retry the entire batch.
+    assert case["observations"]() == before
+    # The scalar coalesced adapter reruns deterministically; completed separate
+    # children are resumed without executing Docker again.
+    assert case["launches"] == (launches_before_retry * 2 if should_coalesce else launches_before_retry)
+    assert all(path.read_bytes() == content for path, content in retained_files.items())
+
+
+@pytest.mark.parametrize("key,value", [
+    ("owner_id", "foreign-owner"), ("studio_owner_id", "foreign-owner"),
+    ("project_id", "foreign-project"), ("studio_project_id", "foreign-project"),
+    ("molecular_design_studio", {"studio_owner_id": "foreign-owner"}),
+    ("studio_lineage", {"studio_owner_id": "foreign-owner"}),
+    ("database_collection_policy", "automatic"),
+])
+def test_vina_batch_parameters_cannot_forge_trusted_lineage(queued_vina_batch, key, value):
+    case = queued_vina_batch
+    body = case["body"]((True, False))
+    body["parameters"][0][key] = value
+    response = case["data"]["client"].post("/api/v1/workflows", json=body)
+    assert response.status_code == 422, response.text
+    assert not case["pending"] and not case["launches"]
+    assert not case["observations"]()
 
 
 @pytest.fixture

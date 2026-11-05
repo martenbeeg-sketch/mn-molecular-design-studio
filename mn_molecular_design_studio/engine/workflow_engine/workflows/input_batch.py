@@ -15,6 +15,20 @@ def _authorized_studio_lineage(run_dir: Path) -> dict | None:
     from mn_molecular_design_studio.workspace import STUDIO_SOURCE_ID
 
     marker = read_json(Path(run_dir) / "molecular_design_studio.json")
+    if not marker:
+        # The API persists authenticated submission tags before dispatch, but
+        # writes its Studio marker after dispatch returns. A worker can already
+        # be creating children in that interval. Only these server-owned tags,
+        # never input.json or batch parameters, can supply the missing lineage.
+        metadata = read_json(Path(run_dir) / "metadata.json")
+        project_id = metadata.get("studio_project_id")
+        if not isinstance(project_id, str):
+            return None
+        marker = {
+            "application": STUDIO_SOURCE_ID,
+            "studio_owner_id": metadata.get("studio_owner_id"),
+            "project_id": project_id,
+        }
     owner_id = marker.get("studio_owner_id")
     project_id = marker.get("project_id")
     if (marker.get("application") != STUDIO_SOURCE_ID
@@ -116,7 +130,7 @@ def run_input_batch(workflow_id: str, items: list[dict], cpu_cores: int = 4,
                               "status": "preparing", "hidden": True, "batch_parent_run_id": job.run_id,
                               "batch_parent_run_dir": str(job.run_dir)}
             if studio_lineage:
-                # These values come from the trusted parent marker, never from
+                # These values come from trusted parent identity, never from
                 # user-supplied batch parameters. Completion ingestion requires
                 # this child marker to resolve the authorized Studio owner.
                 write_json(child / "molecular_design_studio.json", studio_lineage)
