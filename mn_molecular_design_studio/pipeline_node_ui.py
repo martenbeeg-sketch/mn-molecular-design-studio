@@ -718,7 +718,7 @@ def render_node_form(node, graph, *, key, render_input, owner_id, include_node_u
                 if not worker_specs:
                     st.info("Select at least one computer with free CPU slots. The organizer must be included.")
                     ready = False
-        elif kind in {"target", "design_source", "generation_source", "backbone_source", "project_design_source"}:
+        elif kind in {"target", "run_source", "design_source", "generation_source", "backbone_source", "project_design_source"}:
             with st.container(border=True):
                 contexts = render_input()
                 ready = node["id"] in contexts

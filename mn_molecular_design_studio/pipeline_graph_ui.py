@@ -295,8 +295,14 @@ def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, grap
                         reference=selected["data"]["params"].get("run_reference"),
                         selected_docking_poses=selected["data"]["params"].get("selected_docking_poses"))
         if choice:
-            selected["data"]["params"]["run_reference"] = choice["reference"]
-            selected["data"]["params"]["selected_docking_poses"] = choice.get("selected_docking_poses")
+            selected["data"]["params"].update(
+                run_reference=choice["reference"],
+                selected_docking_poses=choice.get("selected_docking_poses"),
+            )
+            return {selected["id"]: {
+                "run_reference": choice["reference"],
+                "selected_docking_poses": choice.get("selected_docking_poses"),
+            }}
         return {}
     from mn_molecular_design_studio.target_editor import TargetSource, _hash, _target_widget_keys, render_target_coldspots, render_target_editor, render_target_source
     from mn_molecular_design_studio.design_validation import design_candidates

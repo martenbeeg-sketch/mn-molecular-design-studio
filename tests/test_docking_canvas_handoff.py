@@ -181,6 +181,36 @@ def test_remote_results_selector_uses_authorized_job_artifact_fetch_without_mani
                        ("authorized-job", "artifacts/input/compound_set.json")]
 
 
+def test_run_results_canvas_editor_persists_selected_run_and_poses(monkeypatch):
+    from mn_molecular_design_studio import pipeline_graph_ui, run_inputs_ui
+
+    selected = {"id": "source", "data": {"kind": "run_source", "params": {}}}
+    choice = {
+        "reference": "run:0123456789abcdef01234567~results",
+        "selected_docking_poses": [{"source_job_reference": "node:ligand-docking/run",
+                                    "pose_id": "pose-001"}],
+    }
+    received = {}
+
+    def select(project_id, key, **kwargs):
+        received.update(project_id=project_id, key=key, **kwargs)
+        return choice
+
+    monkeypatch.setattr(run_inputs_ui, "select", select)
+    contexts = pipeline_graph_ui._render_node_input(
+        selected, owner_id="owner", project_id="project", search_jobs=None, prefix="editor",
+    )
+
+    assert received["project_id"] == "project"
+    assert received["allow_docking"] is True
+    assert contexts == {"source": {
+        "run_reference": choice["reference"],
+        "selected_docking_poses": choice["selected_docking_poses"],
+    }}
+    assert selected["data"]["params"]["run_reference"] == choice["reference"]
+    assert selected["data"]["params"]["selected_docking_poses"] == choice["selected_docking_poses"]
+
+
 def test_raw_docking_pose_connections_are_limited_to_ligand_analysis():
     from mn_molecular_design_studio import pipeline_graph
 
