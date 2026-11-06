@@ -291,10 +291,12 @@ def _render_active_target(params, key):
 def _render_node_input(selected, owner_id, project_id, search_jobs, prefix, graph=None):
     if selected["data"]["kind"] == "run_source":
         from mn_molecular_design_studio.run_inputs_ui import select
-        choice = select(project_id, prefix + "-run-output", require_complex=False,
-                        reference=selected["data"]["params"].get("run_reference"))
+        choice = select(project_id, prefix + "-run-output", require_complex=False, allow_docking=True,
+                        reference=selected["data"]["params"].get("run_reference"),
+                        selected_docking_poses=selected["data"]["params"].get("selected_docking_poses"))
         if choice:
             selected["data"]["params"]["run_reference"] = choice["reference"]
+            selected["data"]["params"]["selected_docking_poses"] = choice.get("selected_docking_poses")
         return {}
     from mn_molecular_design_studio.target_editor import TargetSource, _hash, _target_widget_keys, render_target_coldspots, render_target_editor, render_target_source
     from mn_molecular_design_studio.design_validation import design_candidates

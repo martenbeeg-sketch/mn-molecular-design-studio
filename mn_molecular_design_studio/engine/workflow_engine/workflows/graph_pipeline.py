@@ -1498,7 +1498,8 @@ def run_graph_pipeline(graph: dict, pipeline_name: str, owner_id: str, project_i
                         from mn_molecular_design_studio.run_graph import load_source
                         if not current.get("run_source_snapshot"):
                             current["run_source_snapshot"] = load_source(params["run_reference"], owner_id=owner_id,
-                                project_id=project_id, allow_development=bool(read_json(parent / "metadata.json").get("studio_development_mode")))
+                                project_id=project_id, selected_docking_poses=params.get("selected_docking_poses"),
+                                allow_development=bool(read_json(parent / "metadata.json").get("studio_development_mode")))
                             persist()
                         output = copy.deepcopy(current["run_source_snapshot"])
                         complete(node_id, output, fingerprint(kind, output, [])); progressed = True; continue

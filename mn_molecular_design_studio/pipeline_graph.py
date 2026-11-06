@@ -94,7 +94,7 @@ NODE_CATALOG = {
         field("coldspots", "Coldspot override", "", kind="text", help="Leave empty to inherit the connected Target Structure coldspots."),
         field("clear_unselected", "Clear inherited annotations when overrides are empty", False, kind="boolean", help="Enable this to explicitly pass no hotspots or coldspots when the corresponding override is blank.")]),
     "molecule_source": _spec("molecule_source", "Database selection", "Input", "An immutable selection of Database molecules, prepared through Use in pipeline.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Selection snapshot", "", kind="text")]),
-    "run_source": _spec("run_source", "Run results", "Input", "A complete named Run output across its source computers. Downstream tools process every source collection through the existing scheduler.", output="candidates", color="#758f84", fields=[field("run_reference", "Run output", "", kind="text")]),
+    "run_source": _spec("run_source", "Run results", "Input", "Choose a saved Run output or explicitly select completed docking poses for protein–ligand analysis.", output="candidates", color="#758f84", fields=[field("run_reference", "Run output", "", kind="text"), field("selected_docking_poses", "Explicit docking pose selections", None, kind="json", section="basic")]),
     "design_source": _spec("design_source", "Successful project designs", "Input", "Selected filter-passing designs from a successful job in this project.", output="sequence", color="#758f84", fields=[field("source_run_dir", "Source run", "", kind="text")]),
     "generation_source": _spec("generation_source", "Generated project designs", "Input", "Select generated structures and sequences from a completed generator job in this project.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Generator run", "", kind="text")]),
     "project_design_source": _spec("project_design_source", "Existing project designs", "Input", "Select saved candidates from completed project jobs. Choose Complex Results to include historical predictions and protein–ligand complexes for manual analysis.", output="sequence", color="#758f84", formats=("pdb", "cif"), fields=[field("source_run_dir", "Source job", "", kind="text"), field("source_scope", "Source scope", "designs", kind="select", options=["designs", "complex_results"], section="basic")]),
@@ -1544,6 +1544,14 @@ def clean_graph(graph: dict) -> dict:
                 raise ValueError("RFD4 distributed campaigns support one guided or condition-spec protein-binder input.")
         if "selected_candidate_ids" in params and (not isinstance(params["selected_candidate_ids"], list) or not all(isinstance(v, str) for v in params["selected_candidate_ids"])):
             raise ValueError("Selected designs must be a list of candidate IDs.")
+        selected_docking_poses = params.get("selected_docking_poses") if kind == "run_source" else None
+        if selected_docking_poses is not None:
+            if (not isinstance(selected_docking_poses, list) or not selected_docking_poses or len(selected_docking_poses) > 1000
+                    or any(not isinstance(item, dict) or set(item) != {"source_job_reference", "pose_id"}
+                           or not all(isinstance(item.get(key), str) and item[key] for key in ("source_job_reference", "pose_id"))
+                           for item in selected_docking_poses)
+                    or len({(item["source_job_reference"], item["pose_id"]) for item in selected_docking_poses}) != len(selected_docking_poses)):
+                raise ValueError("Explicit docking selections must contain unique source job and pose identities.")
         for f in NODE_CATALOG[kind]["fields"]:
             value = params.setdefault(f["name"], f["default"])
             if f["type"] == "number":
@@ -1557,7 +1565,7 @@ def clean_graph(graph: dict) -> dict:
                 raise ValueError(f"{f['label']} must be true or false.")
             elif f["type"] == "text" and not isinstance(value, str):
                 raise ValueError(f"{f['label']} must be text.")
-            elif f['type']=='json' and not isinstance(value,list):
+            elif f['type']=='json' and not isinstance(value,list) and not (kind == 'run_source' and f['name'] == 'selected_docking_poses' and value is None):
                 raise ValueError(f"{f['label']} must be a list.")
             if f["type"] == "select" and not any(
                 type(value) is type(option) and value == option for option in f["options"]
@@ -2179,6 +2187,10 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
                 from mn_molecular_design_studio.run_graph import compatible
                 if not compatible(kind):
                     raise ValueError("Run results must connect to a tool with a compatible saved-collection input. Connect analysis before cohort ranking or merging.")
+                if nodes[source]["data"]["params"].get("selected_docking_poses") is not None:
+                    from mn_molecular_design_studio.run_graph import compatible_docking_pose_analysis
+                    if not compatible_docking_pose_analysis(kind):
+                        raise ValueError("Explicit docking-pose selections connect only to registered protein–ligand analysis tools such as PLIP.")
             input_port = next(port for port in spec["inputs"] if port.get("id", "in") == edge.get("targetHandle", "in"))
             upstream_type = output_types[source]
             if upstream_type != "candidates" and upstream_type not in input_port.get("accepts", []):

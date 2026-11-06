@@ -46,7 +46,8 @@ def docker_user_args():
 def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4, gpu_device=None,
                 candidate_ids=None, selected_structure_path=None, selected_model_id=None,
                 selected_model_ids=None, binder_chains=None, target_chains=None,
-                ligand_selection=None, ligand_selections=None):
+                ligand_selection=None, ligand_selections=None, source_job_reference=None,
+                source_workstation_id=None, source_workstation=None):
     if tool not in TOOLS:
         raise ValueError("Unknown QC tool.")
     for field in ("ph", "contact_distance", "similarity_threshold", "coverage"):
@@ -59,7 +60,10 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
     profile = TOOLS[tool]
     if candidates_jsonl is None and profile["kind"] == "ligand":
         from mn_molecular_design_studio.engine.workflow_engine.workflows.quality_ligands import docking_candidates
-        candidates = docking_candidates(source_run_dir)
+        candidates = docking_candidates(source_run_dir, candidate_ids,
+            source_job_reference=str(source_job_reference or ""),
+            source_node_id=str(source_workstation_id or ""),
+            source_workstation=str(source_workstation or ""))
         candidates_jsonl = source_run_dir / "artifacts/normalized_candidates/candidates.jsonl"
     else:
         candidates = read_candidates(Path(candidates_jsonl))
@@ -378,14 +382,18 @@ def run_plip(source_run_dir: Path, candidates_jsonl: Path | None = None, cpu_cor
              candidate_ids: list[str] | None = None, selected_structure_path: Path | None = None,
              selected_model_id: str | None = None, ligand_selection: dict | None = None,
              ligand_selections: dict[str, dict] | None = None,
-             binder_chains: list[str] | None = None, target_chains: list[str] | None = None) -> Path:
+             binder_chains: list[str] | None = None, target_chains: list[str] | None = None,
+             source_job_reference: str | None = None, source_workstation_id: str | None = None,
+             source_workstation: str | None = None) -> Path:
     """PLIP interactions on the best docking pose per compound or declared cofolded complexes."""
     if binder_chains or target_chains:
         raise ValueError("PLIP selects one ligand residue and does not accept protein interface chain groups.")
     ligand_parameters = {"ligand_selections": ligand_selections} if ligand_selections is not None else {}
     return run_quality(source_run_dir, candidates_jsonl, tool="plip", settings={}, cpu_cores=cpu_cores,
         candidate_ids=candidate_ids, selected_structure_path=selected_structure_path,
-        selected_model_id=selected_model_id, ligand_selection=ligand_selection, **ligand_parameters)
+        selected_model_id=selected_model_id, ligand_selection=ligand_selection,
+        source_job_reference=source_job_reference, source_workstation_id=source_workstation_id,
+        source_workstation=source_workstation, **ligand_parameters)
 
 
 def run_pandamap(source_run_dir: Path, candidates_jsonl: Path | None = None, cpu_cores: int = 4,

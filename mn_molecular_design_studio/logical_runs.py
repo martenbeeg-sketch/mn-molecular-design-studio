@@ -345,9 +345,11 @@ def input_options(project_id, user, *, token="", require_complex=True, allow_doc
                         if n and (not stages or set(stages).intersection(available_stages)):
                             count += n
                             eligible.append(row)
-                    elif allow_docking and row.get("has_docking_results"):
+                    elif allow_docking and str(row.get("status") or "").lower() in {"completed", "succeeded"} and row.get("has_docking_results"):
                         eligible.append(row)
-                elif row.get("has_candidate_collection") or int((row.get("candidate_summary") or {}).get("candidate_count") or 0) > 0:
+                elif (row.get("has_candidate_collection") or int((row.get("candidate_summary") or {}).get("candidate_count") or 0) > 0
+                      or allow_docking and str(row.get("status") or "").lower() in {"completed", "succeeded"}
+                      and row.get("has_docking_results")):
                     eligible.append(row)
                     count += int((row.get("candidate_summary") or {}).get("candidate_count") or 0)
             if not eligible:

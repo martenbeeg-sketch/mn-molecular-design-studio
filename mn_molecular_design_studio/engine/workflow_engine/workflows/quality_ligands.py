@@ -1,38 +1,319 @@
 """Prepare an explicit ligand pose and receptor for the existing analysis images."""
 import csv
+import hashlib
+import io
 import json
+import math
 from pathlib import Path
+from pathlib import PurePosixPath
 
 
-def docking_candidates(source_run_dir):
-    from mn_molecular_design_studio.ligand_compounds import load_compound_set
-    from mn_molecular_design_studio.molecular_database_ingest import _best_docking_pose_indices, _path
-    source = Path(source_run_dir)
-    table = source / "artifacts/docking_scores.csv"
-    compound_path = source / "artifacts/input/compound_set.json"
-    if not table.is_file() or not compound_path.is_file():
-        raise ValueError("Select docking results with saved poses and the consumed compound set, or normalized cofolding candidates.")
-    compounds = {c["compound_id"]: c for c in load_compound_set(compound_path)["compounds"]}
-    with table.open() as handle:
-        header = handle.readline()
-        handle.seek(0)
-        rows = list(csv.DictReader(handle, delimiter="\t" if "\t" in header else ","))
-    poses = [_path(row.get("pose_path"), source) for row in rows]
-    receptor = next((source / name for name in ("artifacts/input/receptor.pdb", "artifacts/input/target.pdb") if (source / name).is_file()), None)
-    if receptor is None:
-        raise ValueError("This docking result has no saved receptor.")
-    candidates = []
-    for i in sorted(_best_docking_pose_indices(rows, poses)):
-        row, compound = rows[i], compounds.get(rows[i]["compound_id"])
-        if not compound or str(row.get("status", "completed")).lower() not in {"completed", "succeeded", ""}:
+def docking_pose_options(source_run_dir=None, *, source_job_reference="", source_node_id="",
+                         scores_text=None, compound_set_payload=None, artifact_paths=None):
+    """Describe individually selectable poses from a completed docking result.
+
+    The result's score table and consumed compound set are the only sources of
+    pose/chemistry identity.  Remote callers may supply those two small saved
+    artifacts and the source job's artifact manifest; coordinate files are
+    still resolved and hashed by the owning worker at execution time.
+    """
+    from mn_molecular_design_studio.ligand_compounds import (
+        compound_content_sha256, load_compound_set, normalize_compounds,
+    )
+
+    source = Path(source_run_dir).expanduser().resolve(strict=True) if source_run_dir else None
+    if source and (not source_job_reference or not source_node_id):
+        metadata_path = source / "metadata.json"
+        try:
+            source_metadata = json.loads(metadata_path.read_text())
+        except (OSError, ValueError):
+            source_metadata = {}
+        source_job_reference = source_job_reference or str(source_metadata.get("source_job_reference") or
+            f"{source_metadata.get('task_group') or source.parent.name}:{source_metadata.get('run_id') or source.name}")
+        if not source_node_id:
+            from mn_molecular_design_studio.cluster import config
+            source_node_id = config.identity()
+    table = source / "artifacts/docking_scores.csv" if source else None
+    compound_path = source / "artifacts/input/compound_set.json" if source else None
+    if scores_text is None and table and table.is_file():
+        scores_text = table.read_text(encoding="utf-8-sig")
+    if compound_set_payload is None and compound_path and compound_path.is_file():
+        compound_set_payload = load_compound_set(compound_path)
+    if not isinstance(scores_text, str) or not scores_text.strip() or compound_set_payload is None:
+        raise ValueError("Docking pose selection requires the saved docking score table and consumed compound set.")
+    if isinstance(compound_set_payload, (str, bytes)):
+        try:
+            compound_set_payload = json.loads(compound_set_payload)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ValueError("The saved compound set is invalid JSON.") from exc
+    if not isinstance(compound_set_payload, dict) or compound_set_payload.get("record_type") != "compound_set":
+        raise ValueError("The selected docking result does not contain a typed compound set.")
+    compounds = normalize_compounds(compound_set_payload.get("compounds") or [])
+    recorded_digest = str(compound_set_payload.get("content_sha256") or "")
+    if recorded_digest and recorded_digest != compound_content_sha256(compounds):
+        if compound_set_payload.get("schema_version") == 1:
+            legacy = [{key: row[key] for key in ("compound_id", "smiles", "properties") if key in row}
+                      for row in compounds]
+            legacy_digest = hashlib.sha256(json.dumps(legacy, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":")).encode("utf-8")).hexdigest()
+            if recorded_digest != legacy_digest:
+                raise ValueError("The consumed compound set failed its content-integrity check.")
+        else:
+            raise ValueError("The consumed compound set failed its content-integrity check.")
+    compound_by_id = {str(row["compound_id"]): row for row in compounds}
+
+    header = scores_text.splitlines()[0]
+    rows = list(csv.DictReader(io.StringIO(scores_text), delimiter="\t" if "\t" in header else ","))
+    declared = {str(value).replace("\\", "/").lstrip("/") for value in (artifact_paths or []) if value}
+    def is_declared(relative):
+        return not declared or relative in declared or any(value.endswith("/" + relative) for value in declared)
+    receptor_relative = next((name for name in ("artifacts/input/receptor.pdb", "artifacts/input/target.pdb")
+                              if (source and (source / name).is_file()) or is_declared(name)), "")
+    if not receptor_relative:
+        raise ValueError("This docking result has no authorized saved receptor structure.")
+    receptor = _resolve_source_artifact(source, receptor_relative) if source else None
+    if source and (not receptor or not receptor.is_file()):
+        raise ValueError("This docking result's receptor artifact is missing or outside its source job.")
+
+    options = []
+    for index, row in enumerate(rows):
+        compound_id = str(row.get("compound_id") or row.get("compound") or "").strip()
+        pose_text = str(row.get("pose_path") or "").strip()
+        status = str(row.get("status") or "completed").strip().casefold()
+        if not compound_id or not pose_text or status not in {"completed", "succeeded", "success", ""}:
             continue
-        candidates.append({"candidate_id": compound["compound_id"], "source_tool": "docking_selection", "stage": "analysis",
-            "complex_pdb": str(poses[i]), "target_pdb": str(receptor), "binder_chains": [], "target_chains": [],
-            "raw_metadata": {"name": compound.get("compound_name") or compound["compound_id"], "compound_name": compound.get("compound_name") or compound["compound_id"],
-                             "source_compound_id": compound["compound_id"], "ligand_smiles": compound["smiles"]}, "metrics": {}})
-    if not candidates:
-        raise ValueError("No successful docking poses are available for analysis.")
+        relative = _relative_source_artifact(source, pose_text)
+        if not relative:
+            raise ValueError("A docking score row refers to a pose outside its source job.")
+        if not is_declared(relative):
+            raise ValueError("A selected pose is not present in the authorized source artifact manifest.")
+        pose_path = _resolve_source_artifact(source, relative) if source else None
+        if source and (pose_path is None or not pose_path.is_file()):
+            continue
+        compound = compound_by_id.get(compound_id)
+        native_pose_id = str(row.get("pose_id") or "").strip()
+        identity_parts = [source_job_reference, source_node_id, compound_id, native_pose_id,
+                          row.get("pose_rank") or row.get("rank") or "", row.get("replicate") or "",
+                          row.get("attempt_index") or "", relative, index]
+        pose_id = "dockpose-" + hashlib.sha256(json.dumps(identity_parts, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()[:32]
+        label_parts = [compound.get("compound_name", compound_id) if compound else compound_id]
+        rank = str(row.get("pose_rank") or row.get("rank") or "").strip()
+        if rank:
+            label_parts.append("pose " + rank)
+        score = next((f"{key} {float(row[key]):g}" for key in
+                      ("estimated_dg_reu", "best_score_kcal_mol", "score", "total_score_reu", "cnn_score", "cnn_affinity")
+                      if row.get(key) not in (None, "") and _finite_float(row[key]) is not None), "")
+        if score:
+            label_parts.append(score)
+        options.append({"pose_id": pose_id, "candidate_id": pose_id, "compound_id": compound_id,
+                        "compound_name": compound.get("compound_name", compound_id) if compound else compound_id,
+                        "smiles": str(compound.get("smiles") or "") if compound else "",
+                        "pose_path": str(pose_path) if pose_path else relative,
+                        "pose_relative_path": relative, "receptor_path": str(receptor) if receptor else receptor_relative,
+                        "source_job_reference": source_job_reference, "source_node_id": source_node_id,
+                        "score_row": dict(row), "compound_record": dict(compound) if compound else None,
+                        "available": bool(compound and compound.get("smiles")),
+                        "row_index": index,
+                        "unavailable_reason": "The consumed compound set has no chemistry for this compound." if not compound else
+                                              "The compound has no recorded SMILES." if not compound.get("smiles") else "",
+                        "label": " · ".join(label_parts)})
+    return options
+
+
+def docking_candidates(source_run_dir, candidate_ids=None, *, source_job_reference="", source_node_id="",
+                       source_workstation=""):
+    """Adapt selected raw docking poses to the shared normalized-candidate row.
+
+    No protein sequence is invented: ligand chemistry and pose provenance live
+    in typed component metadata, while receptor and pose remain structure paths.
+    The no-selection legacy path retains its historical best-pose-per-compound
+    behavior for standalone PLIP.
+    """
+    from mn_molecular_design_studio.engine.workflow_engine.core.candidates import normalize_candidate
+    from mn_molecular_design_studio.evaluations import file_digest
+    from mn_molecular_design_studio.molecular_database_ingest import _best_docking_pose_indices
+
+    source = Path(source_run_dir).expanduser().resolve(strict=True)
+    options = docking_pose_options(source, source_job_reference=source_job_reference, source_node_id=source_node_id)
+    if candidate_ids is not None:
+        selected_ids = [str(value).strip() for value in candidate_ids if str(value).strip()]
+        if not selected_ids or len(selected_ids) != len(set(selected_ids)):
+            raise ValueError("Select one or more unique docking pose identities.")
+        by_id = {row["pose_id"]: row for row in options if row["available"]}
+        missing = [value for value in selected_ids if value not in by_id]
+        if missing:
+            unavailable = {row["pose_id"]: row.get("unavailable_reason") for row in options}
+            detail = next((unavailable[value] for value in missing if value in unavailable), None)
+            raise ValueError(detail or "One or more selected docking poses are unavailable in the authorized source job.")
+        chosen = [by_id[value] for value in selected_ids]
+    else:
+        from mn_molecular_design_studio.ligand_compounds import load_compound_set
+        compound_path = source / "artifacts/input/compound_set.json"
+        compound_set = load_compound_set(compound_path)
+        with (source / "artifacts/docking_scores.csv").open(encoding="utf-8-sig") as handle:
+            header = handle.readline()
+            handle.seek(0)
+            score_rows = list(csv.DictReader(handle, delimiter="\t" if "\t" in header else ","))
+        pose_paths = [_resolve_source_artifact(source, _relative_source_artifact(source, str(row.get("pose_path") or "")) or "")
+                      for row in score_rows]
+        best = set(_best_docking_pose_indices(score_rows, pose_paths))
+        chosen = [row for row in options if row["available"] and row["row_index"] in best]
+
+    result_path = source / "result.json"
+    if result_path.is_file() and json.loads(result_path.read_text()).get("success") is not True:
+        raise ValueError("Only a successfully completed docking result can be analyzed.")
+    metadata = json.loads((source / "metadata.json").read_text()) if (source / "metadata.json").is_file() else {}
+    input_data = json.loads((source / "input.json").read_text()) if (source / "input.json").is_file() else {}
+    parameters = input_data.get("params") if isinstance(input_data.get("params"), dict) else {}
+    artifact_contract = {}
+    contract_path = source / "artifact_contract.json"
+    if contract_path.is_file():
+        try:
+            artifact_contract = json.loads(contract_path.read_text())
+        except (OSError, ValueError):
+            artifact_contract = {}
+    source_node_id = source_node_id or str(metadata.get("source_node_id") or "")
+    if not source_node_id:
+        from mn_molecular_design_studio.cluster import config
+        source_node_id = config.identity()
+    source_job_reference = source_job_reference or str(metadata.get("source_job_reference") or
+        f"{metadata.get('task_group') or source.parent.name}:{source.name}")
+    receptor = Path(chosen[0]["receptor_path"]).resolve(strict=True)
+    project_id = str(metadata.get("studio_project_id") or metadata.get("project_id") or "")
+    target_chains = parameters.get("receptor_chains") or parameters.get("target_chains") or parameters.get("chain_ids")
+    if isinstance(target_chains, str):
+        target_chains = [value for value in target_chains.replace(",", " ").split() if value]
+    target_chains = [str(value) for value in target_chains] if isinstance(target_chains, list) else []
+    prepared_records = _load_preparation_records(source)
+    candidates = []
+    for option in chosen:
+        pose_path = Path(option["pose_path"]).resolve(strict=True)
+        score_row = option["score_row"]
+        compound_id = option["compound_id"]
+        compound_path = source / "artifacts/input/compound_set.json"
+        compound = option.get("compound_record")
+        if compound is None or not compound.get("smiles"):
+            raise ValueError(f"Docking pose {option['pose_id']} has no recorded ligand chemistry.")
+        score_metadata = {key: value for key, value in score_row.items() if value not in (None, "")}
+        metrics = {key: number for key, value in score_metadata.items() if (number := _finite_float(value)) is not None}
+        pose_digest, receptor_digest = file_digest(pose_path), file_digest(receptor)
+        from mn_molecular_design_studio.cluster import config
+        task_group = str(metadata.get("task_group") or source.parent.name)
+        source_run_id = str(metadata.get("run_id") or source.name)
+        source_prefix = config.artifact_uri(source_node_id, task_group, source_run_id)
+        artifact_references = {"docking_scores": source_prefix + "/artifacts/docking_scores.csv",
+            "compound_set": source_prefix + "/artifacts/input/compound_set.json",
+            "receptor": source_prefix + "/artifacts/input/" + receptor.name,
+            "pose": source_prefix + "/" + option["pose_relative_path"]}
+        preparation = prepared_records.get(compound_id)
+        ligand_properties = dict(compound.get("properties") or {})
+        if preparation:
+            ligand_properties["docking_preparation"] = preparation
+        candidate = normalize_candidate({
+            "candidate_id": option["pose_id"], "source_tool": str(score_row.get("engine") or metadata.get("tool") or "ligand_docking"),
+            "stage": "analysis", "target_pdb": str(receptor), "complex_pdb": str(pose_path),
+            "target_chains": target_chains, "binder_chains": [], "parents": [compound_id],
+            "metrics": metrics,
+            "raw_metadata": {
+                "artifact_kind": "protein_ligand_pose", "artifact_schema": "ligand_docking_result/v1",
+                "source_job_reference": source_job_reference, "source_job_id": str(metadata.get("run_id") or source.name),
+                "source_workstation_id": source_node_id, "source_workstation": source_workstation or str(metadata.get("source_workstation") or ""),
+                "source_project_id": project_id, "source_candidate_id": compound_id,
+                "source_artifact_references": artifact_references,
+                "source_artifact_sha256": {"docking_scores": file_digest(source / "artifacts/docking_scores.csv"),
+                    "compound_set": file_digest(compound_path), "receptor": receptor_digest, "pose": pose_digest},
+                "source_structure_digest": pose_digest, "pose_id": option["pose_id"],
+                "native_pose_id": score_row.get("pose_id") or None, "pose_rank": score_row.get("pose_rank") or score_row.get("rank") or None,
+                "replicate": score_row.get("replicate") or None, "attempt_index": score_row.get("attempt_index") or None,
+                "model_id": score_row.get("receptor_model_id") or score_row.get("model_id") or parameters.get("receptor_model_id") or None,
+                "ligand_chain": score_row.get("ligand_chain") or (compound.get("properties") or {}).get("ligand_chain") or None,
+                "ligand_residue_key": score_row.get("ligand_residue_key") or (compound.get("properties") or {}).get("ligand_residue_key") or None,
+                "ligand_ccd": score_row.get("ligand_ccd") or (compound.get("properties") or {}).get("ligand_ccd") or None,
+                "ligand_atom_mapping": score_row.get("atom_mapping") or (compound.get("properties") or {}).get("atom_mapping") or None,
+                "receptor_identity": {"role": "receptor", "structure_sha256": receptor_digest,
+                    "selected_chains": target_chains or None, "chain_selection_status": "recorded" if target_chains else "not_recorded",
+                    "model_id": score_row.get("receptor_model_id") or score_row.get("model_id") or parameters.get("receptor_model_id") or None},
+                "ligand_identity": {"role": "small_molecule", "compound_id": compound_id,
+                    "name": compound.get("compound_name") or compound_id, "smiles": compound["smiles"],
+                    "properties": ligand_properties, "atom_mapping": score_row.get("atom_mapping") or None,
+                    "stereochemistry": "encoded_in_recorded_smiles" if any(mark in compound["smiles"] for mark in ("@", "/", "\\")) else "not_recorded"},
+                "docking_engine": score_row.get("engine") or metadata.get("engine") or metadata.get("tool") or "not_recorded",
+                "docking_protocol": score_row.get("protocol") or parameters.get("protocol") or metadata.get("workflow") or "not_recorded",
+                "docking_protocol_parameters": parameters,
+                "docking_scores": score_metadata,
+                "docking_score_units": next((entry.get("score_units") for entry in artifact_contract.get("outputs", [])
+                    if isinstance(entry, dict) and entry.get("name") in {"docking_scores", "scores"}), None),
+                "source_artifact_contract": artifact_contract,
+                "source_compound_id": compound_id, "compound_id": compound_id,
+                "compound_name": compound.get("compound_name") or compound_id, "name": compound.get("compound_name") or compound_id,
+                "ligand_smiles": compound["smiles"], "ligand_preparation": preparation,
+                "components": [{"type": "protein", "role": "receptor", "structure_sha256": receptor_digest,
+                                "selected_chains": target_chains or None},
+                               {"type": "small_molecule", "role": "ligand", "compound_id": compound_id,
+                                "smiles": compound["smiles"], "properties": ligand_properties,
+                                "pose_sha256": pose_digest}],
+            },
+        })
+        candidates.append(candidate)
     return candidates
+
+
+def _finite_float(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _relative_source_artifact(source, value):
+    text = str(value or "").strip().replace("\\", "/")
+    if not text or text.startswith(("cluster://", "runs://", "http://", "https://")):
+        return ""
+    path = Path(text).expanduser()
+    if path.is_absolute():
+        if source is None:
+            return ""
+        try:
+            return path.resolve(strict=False).relative_to(source.resolve()).as_posix()
+        except ValueError:
+            return ""
+    relative = PurePosixPath(text.lstrip("/"))
+    if not relative.parts or ".." in relative.parts or "." in relative.parts:
+        return ""
+    if source is not None:
+        try:
+            resolved = (source / Path(*relative.parts)).resolve(strict=False)
+            if not resolved.is_relative_to(source.resolve()):
+                return ""
+        except OSError:
+            return ""
+    return relative.as_posix()
+
+
+def _resolve_source_artifact(source, relative):
+    if source is None:
+        return None
+    safe = _relative_source_artifact(source, relative)
+    if not safe:
+        return None
+    path = (source / Path(*PurePosixPath(safe).parts)).resolve(strict=False)
+    return path if path.is_relative_to(source.resolve()) else None
+
+
+def _load_preparation_records(source):
+    path = source / "artifacts/preparation_summary.json"
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    if isinstance(payload, dict):
+        records = payload.get("compounds") or payload.get("results") or []
+        if isinstance(records, list):
+            return {str(row.get("compound_id")): row for row in records if isinstance(row, dict) and row.get("compound_id")}
+    return {}
 
 
 def prepare(item, candidate, run_dir, *, ligand_selection=None):
