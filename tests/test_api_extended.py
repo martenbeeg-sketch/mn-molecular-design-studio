@@ -7,12 +7,62 @@ import hashlib
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import numpy as np
 import pytest
 
 from test_api_integrations import api_data, headers, import_compounds, screening_run
+
+
+def test_remote_cluster_source_can_authorize_its_unmirrored_project_for_analysis(monkeypatch):
+    from mn_molecular_design_studio import api
+    from mn_molecular_design_studio import api_files
+
+    remote_project = "coordinator-project"
+    user = {"id": "student", "role": "student"}
+    monkeypatch.setattr(api_files, "resolve_references", lambda payload, user: dict(payload))
+    monkeypatch.setattr(api, "validate_project_id", lambda value: (_ for _ in ()).throw(
+        ValueError("Unknown project ID: " + str(value))))
+    looked_up = []
+
+    def authorized_source(reference, selected_user):
+        looked_up.append((reference, selected_user))
+        return {"project_id": remote_project, "cluster_job_id": "remote-job"}
+
+    def authorized_source(reference, selected_user, token):
+        looked_up.append((reference, selected_user, token))
+        return {"project_id": remote_project, "cluster_job_id": "remote-job"}
+
+    monkeypatch.setattr("mn_molecular_design_studio.cluster.service.lookup_job", authorized_source)
+    payload = {
+        "project_id": remote_project, "source_job": "cluster:remote-job",
+        "workflow": "analysis.biotite_interface", "parameters": {},
+    }
+    request, project_id = api._request_payload_and_project(
+        payload, user, allow_authorized_remote_source_project=True,
+        credentials=SimpleNamespace(credentials="session-token"),
+    )
+
+    assert project_id == remote_project
+    assert "project_id" not in request
+    assert looked_up == [("cluster:remote-job", user, "session-token")]
+
+    monkeypatch.setattr("mn_molecular_design_studio.cluster.service.lookup_job", lambda *_a, **_k: {
+        "project_id": "different-project", "cluster_job_id": "remote-job",
+    })
+    with pytest.raises(api.HTTPException) as denied:
+        api._request_payload_and_project(payload, user, allow_authorized_remote_source_project=True,
+                                         credentials=SimpleNamespace(credentials="session-token"))
+    assert denied.value.status_code == 404
+
+    with pytest.raises(api.HTTPException) as no_remote_source:
+        api._request_payload_and_project(
+            {"project_id": remote_project, "workflow": "analysis.biotite_interface", "parameters": {}},
+            user, allow_authorized_remote_source_project=True,
+        )
+    assert no_remote_source.value.status_code == 404
 
 
 def write_structure(path, *, chains=(("A", 4), ("B", 4))):

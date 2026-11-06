@@ -606,6 +606,21 @@ def _analysis_source_reference(job: dict) -> str:
     return f"{job.get('task_group') or ''}/{job.get('run_id') or ''}"
 
 
+def _authorized_remote_source_project(job: dict) -> dict | None:
+    """Resolve a remote source project's name from the coordinator's authorized organization view."""
+    from mn_molecular_design_studio.cluster import ui as cluster_ui
+
+    project_id = str(job.get("project_id") or "")
+    job_id = str(job.get("cluster_job_id") or "")
+    if not project_id or not job_id:
+        return None
+    token = str(st.session_state.get("studio-session-token") or "development-mode")
+    organization = cluster_ui._request("/organization", token)
+    projects = organization.get("projects") if isinstance(organization, dict) else None
+    return next((dict(project) for project in projects or []
+                 if isinstance(project, dict) and str(project.get("id") or "") == project_id), None)
+
+
 def _analysis_structure_reference(job: dict, selected: dict, path: Path) -> str:
     if job.get("cluster_job_id") and selected.get("analysis_structure_uri"):
         return str(selected["analysis_structure_uri"])
@@ -2415,7 +2430,28 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
         if invalid_groups:
             st.info("Choose two nonempty, disjoint protein chain groups to enable the interface analyses.")
         project_prefix = f"complex-analysis-{key}"
-        if project_selector:
+        if job.get("cluster_job_id"):
+            try:
+                source_project_row = _authorized_remote_source_project(job)
+            except (ValueError, RuntimeError, OSError) as exc:
+                source_project_row = None
+                st.info(f"Could not load the authorized source project from the coordinator: {exc}")
+            if source_project_row is None:
+                analysis_project = None
+                st.info("The source project is not present in the coordinator's authorized project list.")
+            else:
+                project_key = f"complex-analysis-{key}-project-id"
+                allowed_project_ids = {"", source_project}
+                if st.session_state.get(project_key) not in allowed_project_ids:
+                    st.session_state[project_key] = ""
+                analysis_project = st.selectbox(
+                    "Analysis project *",
+                    options=["", source_project],
+                    format_func=lambda value: "Select a project" if value == "" else str(source_project_row.get("name") or value),
+                    key=project_key,
+                    help="Only the authorized project that owns this remote Results source can receive its analysis.",
+                ) or None
+        elif project_selector:
             project_key = f"{project_prefix}-project-id"
             if project_key not in st.session_state:
                 st.session_state[project_key] = source_project

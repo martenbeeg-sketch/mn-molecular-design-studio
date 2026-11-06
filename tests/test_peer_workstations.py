@@ -894,3 +894,55 @@ def test_acceptance_reply_releases_next_staging_request_without_catalog_heartbea
             'task_group':'analysis', 'run_id':'accepted-first', 'run_dir':'/runs/analysis/accepted-first',
             'status':'queued', 'tool':'ipsae'}})
         assert store.job(second['cluster_job_id'], user)['status'] == 'dispatching'
+
+
+def test_peer_source_job_lookup_uses_coordinator_authorization(monkeypatch):
+    monkeypatch.setattr(config, "load", lambda: {"mode": "peer"})
+    calls = []
+    expected = {"cluster_job_id": "remote-job", "project_id": "authorized-project"}
+    monkeypatch.setattr(transport, "request", lambda path, *, token: (
+        calls.append((path, token)) or expected
+    ))
+
+    result = service.lookup_job("cluster:remote-job", {"id": "student"}, "session-token")
+
+    assert result == expected
+    assert calls == [("/api/v1/cluster/jobs/remote-job", "session-token")]
+
+
+def test_peer_analysis_from_remote_source_submits_to_coordinator_with_owned_artifact(monkeypatch, tmp_path):
+    node_id = str(uuid.uuid4())
+    project_id = "remote-project"
+    captured = []
+    monkeypatch.setattr(config, "load", lambda: {"mode": "peer", "default_placement": "auto"})
+    monkeypatch.setattr(config, "identity", lambda: str(uuid.uuid4()))
+    monkeypatch.setattr(service, "lookup_job", lambda *_args: {
+        "cluster_job_id": "remote-job", "project_id": project_id,
+        "node_id": node_id, "local_reference": "design/source-run",
+    })
+    monkeypatch.setattr(service, "schema_check", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service.capabilities, "requirements", lambda *_args, **_kwargs: {"cpu_threads": 1})
+    monkeypatch.setattr(service.bundles, "pack", lambda payload, **_kwargs: (payload, None, []))
+    monkeypatch.setattr(service.bundles, "referenced_nodes", lambda *_args: {node_id})
+    monkeypatch.setattr(service, "accept_submission", lambda *_args: pytest.fail(
+        "A peer must forward a remote-source analysis to the coordinator."
+    ))
+    monkeypatch.setattr(transport, "request", lambda path, payload=None, **kwargs: (
+        captured.append((path, payload, kwargs)) or {"job": {"cluster_job_id": "analysis-job"}}
+    ))
+
+    result = service.submit_from_api({
+        "schema_version": 1, "workflow": "analysis.biotite_interface", "project_id": project_id,
+        "source_job": "cluster:remote-job",
+        "parameters": {"selected_structure_path": f"cluster://{node_id}/design/source-run/complex.cif"},
+        "execution": {"placement": "auto", "idempotency_key": "analysis-on-remote-source"},
+    }, {"id": "student", "role": "user"}, request_dir=tmp_path, token="session-token",
+       authorize_path=lambda _path: None)
+
+    assert result["job"]["cluster_job_id"] == "analysis-job"
+    assert captured[0][0] == "/api/v1/cluster/submissions"
+    assert captured[0][1]["project_id"] == project_id
+    assert captured[0][1]["payload"]["source_job"] == f"cluster://{node_id}/design/source-run"
+    assert captured[0][1]["payload"]["parameters"]["selected_structure_path"].startswith(f"cluster://{node_id}/")
+    assert captured[0][1]["placement"] == "auto"
+    assert captured[0][2]["token"] == "session-token"

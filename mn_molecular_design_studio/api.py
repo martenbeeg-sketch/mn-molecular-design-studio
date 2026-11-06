@@ -372,18 +372,46 @@ def _guard_source_job(payload: dict[str, Any], user: dict[str, Any], *, project_
 
 def _request_payload_and_project(
     payload: dict[str, Any], user: dict[str, Any], *, allow_private_database_source: bool = False,
+    allow_authorized_remote_source_project: bool = False,
+    credentials: HTTPAuthorizationCredentials | None = None,
 ) -> tuple[dict[str, Any], str | None]:
     from mn_molecular_design_studio.api_files import resolve_references
     try:
         request_payload = resolve_references(dict(payload), user)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(404, "Input file not found or inaccessible.") from exc
+    requested_project_id = request_payload.pop("project_id", None)
+    remote_source_project = False
     try:
-        project_id = validate_project_id(request_payload.pop("project_id", None))
+        project_id = validate_project_id(requested_project_id)
     except ValueError as exc:
-        if user.get("role") == "admin":
+        source_reference = str(request_payload.get("source_job") or "")
+        if (allow_authorized_remote_source_project and isinstance(requested_project_id, str)
+                and source_reference.startswith("cluster:")):
+            # A Results source on a connected workstation can belong to an
+            # authorized project that is not provisioned in this workstation's
+            # local project catalog. Accept that project ID only after the
+            # cluster job resolver independently authorizes the exact source
+            # job and confirms that it belongs to the requested project.
+            remote_job_id = source_reference.removeprefix("cluster:")
+            if not remote_job_id or "/" in remote_job_id or "\\" in remote_job_id:
+                raise HTTPException(status_code=404, detail="Project not found.") from exc
+            try:
+                from mn_molecular_design_studio.cluster.service import lookup_job
+                token = credentials.credentials if credentials else (
+                    "development-mode" if is_development_mode() else ""
+                )
+                remote_source = lookup_job("cluster:" + remote_job_id, user, token)
+            except Exception as remote_exc:
+                raise HTTPException(status_code=404, detail="Project not found.") from remote_exc
+            if str(remote_source.get("project_id") or "") != requested_project_id:
+                raise HTTPException(status_code=404, detail="Project not found.") from exc
+            project_id = requested_project_id
+            remote_source_project = True
+        elif user.get("role") == "admin":
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        raise HTTPException(status_code=404, detail="Project not found.") from exc
+        else:
+            raise HTTPException(status_code=404, detail="Project not found.") from exc
     has_database_source = isinstance(request_payload.get("database_source"), dict)
     collections = [request_payload.get("interface_clustering_collection"),
                    request_payload.get("foldseek_collection")]
@@ -397,7 +425,7 @@ def _request_payload_and_project(
     )
     if project_id is None and not (allow_private_database_source and (has_database_source or private_database_collection)):
         raise HTTPException(status_code=422, detail="Select a project before submitting a job.")
-    if project_id is not None:
+    if project_id is not None and not remote_source_project:
         try:
             require_project_access(user, project_id)
         except PermissionError as exc:
@@ -578,7 +606,10 @@ def validate_workflow(
     user: dict[str, Any] = Depends(_current_user),
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> dict[str, Any]:
-    request_payload, project_id = _request_payload_and_project(payload, user, allow_private_database_source=True)
+    request_payload, project_id = _request_payload_and_project(
+        payload, user, allow_private_database_source=True, allow_authorized_remote_source_project=True,
+        credentials=credentials,
+    )
     is_database_source = isinstance(request_payload.get("database_source"), dict)
     is_interface_collection = isinstance(request_payload.get("interface_clustering_collection"), dict)
     is_foldseek_collection = isinstance(request_payload.get("foldseek_collection"), dict)
@@ -646,7 +677,8 @@ def submit_workflow(
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> dict[str, Any]:
     request_payload, project_id = _request_payload_and_project(
-        payload, user, allow_private_database_source=True,
+        payload, user, allow_private_database_source=True, allow_authorized_remote_source_project=True,
+        credentials=credentials,
     )
     is_database_source = isinstance(request_payload.get("database_source"), dict)
     is_interface_collection = isinstance(request_payload.get("interface_clustering_collection"), dict)

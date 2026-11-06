@@ -746,6 +746,32 @@ def test_remote_inspector_reauthorizes_legacy_run_and_uses_cached_structure(tmp_
     assert result == (remote, content)
 
 
+def test_remote_analysis_project_comes_from_authorized_coordinator_projects(monkeypatch):
+    from types import SimpleNamespace
+    from mn_molecular_design_studio import complex_analysis_ui
+    from mn_molecular_design_studio.cluster import ui as cluster_ui
+
+    state = {"studio-session-token": "session-token"}
+    requested = []
+    monkeypatch.setattr(complex_analysis_ui, "st", SimpleNamespace(session_state=state))
+    monkeypatch.setattr(cluster_ui, "_request", lambda path, token: (
+        requested.append((path, token)) or {"projects": [
+            {"id": "source-project", "name": "PD-L1 Benchmark"},
+            {"id": "other-project", "name": "Other project"},
+        ]}
+    ))
+
+    project = complex_analysis_ui._authorized_remote_source_project({
+        "cluster_job_id": "remote-job", "project_id": "source-project",
+    })
+
+    assert project == {"id": "source-project", "name": "PD-L1 Benchmark"}
+    assert requested == [("/organization", "session-token")]
+    assert complex_analysis_ui._authorized_remote_source_project({
+        "cluster_job_id": "remote-job", "project_id": "inaccessible-project",
+    }) is None
+
+
 def test_remote_results_inspector_rejects_unsafe_or_external_artifact(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from mn_molecular_design_studio import complex_analysis_ui

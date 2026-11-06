@@ -18,7 +18,11 @@ def user_record(user):
 
 def lookup_job(reference, user, token=""):
     jid = str(reference).removeprefix("cluster:")
-    if config.load()["mode"] in {"coordinator", "peer"}:
+    # A peer may display a synchronized cluster catalog in its UI, but its
+    # local coordinator database is not authoritative for every remote job.
+    # Resolve peer references against the coordinator with the user's token;
+    # this also applies the coordinator's project/job access checks.
+    if config.load()["mode"] == "coordinator":
         return Store().job(jid, user_record(user))
     return transport.request("/api/v1/cluster/jobs/" + jid, token=token)
 
@@ -143,7 +147,13 @@ def submit_from_api(payload, user, *, request_dir, token, authorize_path, kind="
                 "idempotency_key": execution.get("idempotency_key") or str(uuid.uuid4())}
     if organizer_output is not None:
         envelope["organizer_output_directory"] = organizer_output
-    if settings["mode"] in {"coordinator", "peer"}:
+    if settings["mode"] == "coordinator":
+        if bundle_id:
+            with Store().connect() as db:
+                db.execute("CREATE TABLE IF NOT EXISTS blob_grants(digest TEXT,owner_id TEXT,PRIMARY KEY(digest,owner_id))")
+                db.execute("INSERT OR IGNORE INTO blob_grants VALUES (?,?)", (bundle_id, user["id"]))
+        return accept_submission(envelope, user)
+    if settings["mode"] == "peer" and not has_cluster_source:
         if bundle_id:
             with Store().connect() as db:
                 db.execute("CREATE TABLE IF NOT EXISTS blob_grants(digest TEXT,owner_id TEXT,PRIMARY KEY(digest,owner_id))")
