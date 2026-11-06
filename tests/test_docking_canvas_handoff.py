@@ -147,6 +147,50 @@ def test_docking_pose_without_recorded_chemistry_is_not_selectable(tmp_path):
         docking_candidates(source, [options[0]["pose_id"]])
 
 
+def test_missing_or_oversized_pose_is_retained_as_score_but_not_executable(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import quality_ligands
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.quality_ligands import (
+        docking_candidates, docking_pose_options,
+    )
+
+    source = _docking_source(tmp_path)
+    (source / "artifacts/poses/cmp-a-pose-1.pdbqt").unlink()
+    missing = docking_pose_options(source)
+    assert missing[0]["available"] is False
+    assert "Missing source artifact" in missing[0]["unavailable_reason"]
+    assert missing[0]["score_row"]["best_score_kcal_mol"] == "-7.1"
+    with pytest.raises(ValueError, match="Missing source artifact"):
+        docking_candidates(source, [missing[0]["pose_id"]])
+
+    pose = source / "artifacts/poses/cmp-a-pose-2.pdbqt"
+    pose.write_text("REMARK " + "large-pose " * 20 + "\nEND\n")
+    monkeypatch.setattr(quality_ligands, "MAX_DOCKING_ARTIFACT_BYTES", 64)
+    oversized = docking_pose_options(source)
+    assert oversized[1]["available"] is False
+    assert "Oversized source artifact" in oversized[1]["unavailable_reason"]
+
+
+def test_remote_pose_absent_from_complete_manifest_is_not_selectable():
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.quality_ligands import docking_pose_options
+    from mn_molecular_design_studio.ligand_compounds import normalize_compounds
+
+    payload = {"record_type": "compound_set", "compounds": normalize_compounds([
+        {"compound_id": "CMP-A", "compound_name": "Ligand A", "smiles": "C[C@H](O)F"},
+    ])}
+    options = docking_pose_options(
+        scores_text=("compound_id,status,score,pose_path\n"
+                     "CMP-A,completed,-9.1,artifacts/poses/pose-1.pdbqt\n"),
+        compound_set_payload=payload,
+        artifact_paths=[{"relative_path": "ligand-docking/remote-1/artifacts/input/receptor.pdb", "size_bytes": 128}],
+        artifact_manifest_complete=True,
+    )
+
+    assert len(options) == 1
+    assert options[0]["available"] is False
+    assert "Missing source artifact" in options[0]["unavailable_reason"]
+    assert options[0]["score_row"]["score"] == "-9.1"
+
+
 def test_remote_results_selector_uses_authorized_job_artifact_fetch_without_manifest(monkeypatch):
     import streamlit as st
     from mn_molecular_design_studio import run_inputs_ui
@@ -170,7 +214,11 @@ def test_remote_results_selector_uses_authorized_job_artifact_fetch_without_mani
     monkeypatch.setattr("mn_molecular_design_studio.auth.is_development_mode", lambda: False)
     monkeypatch.setattr("mn_molecular_design_studio.cluster.ui._fetch_remote_artifact_text", fetch)
     row = {"node_id": "remote-node", "node_name": "PC004033", "task_group": "ligand-docking",
-           "run_id": "remote-run", "cluster_job_id": "authorized-job", "artifacts": []}
+           "run_id": "remote-run", "cluster_job_id": "authorized-job", "artifact_manifest_complete": True,
+           "artifacts": [
+               {"relative_path": "ligand-docking/remote-run/artifacts/input/receptor.pdb", "size_bytes": 128},
+               {"relative_path": "ligand-docking/remote-run/artifacts/poses/STI-571-1.pdbqt", "size_bytes": 1024},
+           ]}
 
     options = run_inputs_ui._docking_pose_options(row)
 
@@ -238,3 +286,38 @@ def test_raw_docking_pose_connections_are_limited_to_ligand_analysis():
     graph["edges"][1].update(source="biotite")
     with pytest.raises(ValueError, match="protein–ligand analysis"):
         pipeline_graph.validate_graph(graph)
+
+
+def test_remote_artifact_failure_categories_are_distinct():
+    from mn_molecular_design_studio.cluster import ui as cluster_ui
+
+    assert cluster_ui._artifact_failure_detail("The requested source artifact is missing") .startswith("Missing source artifact:")
+    assert cluster_ui._artifact_failure_detail("The requested source artifact exceeds the 512 MB download limit.").startswith("Oversized source artifact:")
+    assert cluster_ui._artifact_failure_detail("Job not found").startswith("Source job unavailable or you are not authorized")
+    assert cluster_ui._artifact_failure_detail("invalid path outside its source job").startswith("Rejected artifact path:")
+    assert cluster_ui._artifact_failure_detail("socket timed out", connection_failure=True).startswith("Retrieval/connection failure:")
+
+
+def test_worker_artifact_errors_distinguish_missing_unsafe_and_oversized(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.cluster import agent as agent_module, bundles
+
+    run = tmp_path / "ligand-docking" / "dock-1"
+    (run / "artifacts").mkdir(parents=True)
+    outside = tmp_path / "outside.pdbqt"
+    outside.write_text("x")
+    monkeypatch.setattr(
+        "mn_molecular_design_studio.engine.workflow_engine.services.local_automation.resolve_job",
+        lambda _reference: {"run_dir": str(run)},
+    )
+    worker = object.__new__(agent_module.Agent)
+
+    with pytest.raises(FileNotFoundError, match="Missing source artifact"):
+        worker.artifact({"payload": {"local_reference": "ligand-docking/dock-1", "path": "artifacts/missing.pdbqt"}})
+    with pytest.raises(ValueError, match="outside its source job"):
+        worker.artifact({"payload": {"local_reference": "ligand-docking/dock-1", "path": "../../outside.pdbqt"}})
+
+    pose = run / "artifacts/pose.pdbqt"
+    pose.write_text("too large")
+    monkeypatch.setattr(bundles, "MAX_BYTES", 1)
+    with pytest.raises(ValueError, match="exceeds the 512 MB download limit"):
+        worker.artifact({"payload": {"local_reference": "ligand-docking/dock-1", "path": "artifacts/pose.pdbqt"}})

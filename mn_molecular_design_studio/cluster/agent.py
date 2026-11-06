@@ -230,6 +230,8 @@ class Agent:
         self._published = {}
         self._artifact_signatures = {}
         self._artifact_manifests = {}
+        self._artifact_manifest_counts = {}
+        self._artifact_manifest_complete = {}
         self._reference_hash_cache = {}
         self._known_references = set()
         self._reference_probes = []
@@ -359,11 +361,15 @@ class Agent:
                     manifest = job_catalog.job_artifacts(row["task_group"], row["run_id"])
                     if output_policy == "accepted_candidates_only":
                         manifest = _accepted_candidate_artifacts(run, row, manifest)
+                    self._artifact_manifest_counts[reference] = len(manifest)
+                    self._artifact_manifest_complete[reference] = len(manifest) <= 1000
                     self._artifact_manifests[reference] = manifest[:1000]
                     self._artifact_signatures[reference] = artifact_signature
                 progress = job_progress.bindcraft2_progress(run)
                 item = dict(row, cluster_job_id=jid, metrics=metrics, progress=progress,
                             artifacts=self._artifact_manifests.get(reference, []),
+                            artifact_count=self._artifact_manifest_counts.get(reference, 0),
+                            artifact_manifest_complete=self._artifact_manifest_complete.get(reference, False),
                             location=str(run), last_reported_at=time.time(), _signature=list(signature))
                 if compact_candidates is not None:
                     item["candidate_summary"] = compact_candidates
@@ -923,8 +929,12 @@ class Agent:
         if not isinstance(relative, str) or Path(relative).is_absolute():
             raise ValueError("Select a run-relative artifact path.")
         path = (run / relative).resolve()
-        if not path.is_relative_to(run) or not path.is_file() or path.stat().st_size > bundles.MAX_BYTES:
-            raise ValueError("This artifact is unavailable or exceeds the 512 MB download limit.")
+        if not path.is_relative_to(run):
+            raise ValueError("The requested artifact path is outside its source job.")
+        if not path.is_file():
+            raise FileNotFoundError("Missing source artifact: the requested file is absent from its source job.")
+        if path.stat().st_size > bundles.MAX_BYTES:
+            raise ValueError("The requested source artifact exceeds the 512 MB download limit.")
         response = transport.node_request("/blobs", binary=path.read_bytes(), method="POST", timeout=90)
         if response["blob_id"] != bundles.digest_file(path):
             raise ValueError("The downloaded artifact failed its integrity check.")

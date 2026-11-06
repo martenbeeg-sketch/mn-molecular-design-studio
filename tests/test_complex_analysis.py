@@ -603,7 +603,34 @@ def test_open_results_inspector_resolves_authorized_child_artifact_and_keeps_par
     candidate = {
         "candidate_id": "boltz-candidate-1", "model_index": 0,
         "complex_pdb": "runs:///refolding-validation/prediction-1/artifacts/model.pdb",
+        "raw_metadata": {
+            "pose_id": "dockpose-rutin-1",
+            "source_job_reference": "peer-node:ligand-docking/dock-source-1",
+            "source_artifact_sha256": {"pose": "p" * 64, "receptor": "r" * 64},
+            "receptor_identity": {"structure_sha256": "r" * 64},
+            "ligand_identity": {"name": "Rutin", "compound_id": "Rutin", "smiles": "C[C@H](O)F"},
+            "source_candidate": {
+                "candidate_id": "dockpose-rutin-1",
+                "complex_pdb": "runs:///ligand-docking/dock-source-1/artifacts/poses/rutin.pdbqt",
+                "target_pdb": "runs:///ligand-docking/dock-source-1/artifacts/input/receptor.pdb",
+                "raw_metadata": {"source_artifact_references": {
+                    "pose": "runs:///ligand-docking/dock-source-1/artifacts/poses/rutin.pdbqt",
+                    "receptor": "runs:///ligand-docking/dock-source-1/artifacts/input/receptor.pdb",
+                }},
+            },
+        },
     }
+
+    linked = complex_analysis_ui.linked_result_structure(parent, candidate, user=USER)
+    assert linked["producing_job"] == "refolding-validation/prediction-1"
+    assert linked["candidate_id"] == "boltz-candidate-1"
+    assert linked["source_pose_id"] == "dockpose-rutin-1"
+    assert linked["source_pose_reference"].endswith("artifacts/poses/rutin.pdbqt")
+    assert linked["receptor_reference"].endswith("artifacts/input/receptor.pdb")
+    assert linked["ligand_name"] == "Rutin"
+    assert linked["receptor_sha256"] == "r" * 64
+    assert linked["pose_sha256"] == "p" * 64
+    assert linked["structure_sha256"] == hashlib.sha256(structure.read_bytes()).hexdigest()
 
     complex_analysis_ui.open_result_complex(
         parent, structure, candidate, user=USER)

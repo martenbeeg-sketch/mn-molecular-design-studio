@@ -93,6 +93,82 @@ def _registered_cross_run_structure(user: dict, structure_path: Path, *, source_
     return task_group, run_id, f"runs:///{relative_to_root.as_posix()}"
 
 
+def linked_result_structure(run_dir: Path | str, candidate: dict, *, user: dict) -> dict | None:
+    """Resolve one candidate's cross-run structure through its authorized Results provenance.
+
+    This intentionally reuses the Results candidate resolver and the same source-job
+    authorization/manifest checks as ``open_result_complex``. It only describes
+    child-run structures; artifacts physically stored in the parent are listed by
+    the ordinary Results artifact table.
+    """
+    from mn_molecular_design_studio import cofolding_results
+    from mn_molecular_design_studio.runtime import runs_root as configured_runs_root
+
+    parent = Path(run_dir).expanduser().resolve(strict=True)
+    root = Path(configured_runs_root()).expanduser().resolve(strict=True)
+    structure = cofolding_results.structure_for(parent, candidate)
+    if structure is None:
+        return None
+    try:
+        structure = structure.expanduser().resolve(strict=True)
+        structure.relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise ValueError("The candidate structure is outside Studio's managed Results storage.") from exc
+    try:
+        structure.relative_to(parent)
+    except ValueError:
+        pass
+    else:
+        return None
+
+    task_group, run_id, artifact_reference = _registered_cross_run_structure(
+        user, structure, source_run_dir=parent, runs_root=root,
+    )
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    source_candidate = raw.get("source_candidate") if isinstance(raw.get("source_candidate"), dict) else {}
+    source_raw = source_candidate.get("raw_metadata") if isinstance(source_candidate.get("raw_metadata"), dict) else {}
+    component_rows = raw.get("components") if isinstance(raw.get("components"), list) else []
+    source_components = source_raw.get("components") if isinstance(source_raw.get("components"), list) else []
+    receptor = next((item for item in component_rows if isinstance(item, dict) and item.get("role") == "receptor"), {})
+    ligand = next((item for item in component_rows if isinstance(item, dict) and item.get("role") == "ligand"), {})
+    if not receptor:
+        receptor = next((item for item in source_components if isinstance(item, dict) and item.get("role") == "receptor"), {})
+    if not ligand:
+        ligand = next((item for item in source_components if isinstance(item, dict) and item.get("role") == "ligand"), {})
+    receptor_identity = raw.get("receptor_identity") if isinstance(raw.get("receptor_identity"), dict) else {}
+    ligand_identity = raw.get("ligand_identity") if isinstance(raw.get("ligand_identity"), dict) else {}
+    hashes = raw.get("source_artifact_sha256") if isinstance(raw.get("source_artifact_sha256"), dict) else {}
+    source_hashes = source_raw.get("source_artifact_sha256") if isinstance(source_raw.get("source_artifact_sha256"), dict) else {}
+    return {
+        "path": structure,
+        "candidate": candidate,
+        "candidate_id": str(candidate.get("candidate_id") or ""),
+        "artifact_reference": artifact_reference,
+        "producing_job": f"{task_group}/{run_id}",
+        "artifact_task_group": task_group,
+        "artifact_run_id": run_id,
+        "structure_sha256": hashlib.sha256(structure.read_bytes()).hexdigest(),
+        "source_pose_id": str(raw.get("pose_id") or source_candidate.get("candidate_id") or ""),
+        "source_job_reference": str(raw.get("source_job_reference") or source_raw.get("source_job_reference") or ""),
+        "source_pose_reference": str(
+            (source_raw.get("source_artifact_references") or {}).get("pose")
+            or source_candidate.get("complex_pdb") or ""
+        ),
+        "receptor_reference": str(
+            (source_raw.get("source_artifact_references") or {}).get("receptor")
+            or source_candidate.get("target_pdb") or ""
+        ),
+        "receptor_sha256": str(receptor_identity.get("structure_sha256") or receptor.get("structure_sha256")
+                                or hashes.get("receptor") or source_hashes.get("receptor") or ""),
+        "pose_sha256": str(hashes.get("pose") or ligand.get("pose_sha256") or source_hashes.get("pose") or ""),
+        "ligand_name": str(ligand_identity.get("name") or ligand_identity.get("compound_id")
+                           or ligand.get("compound_id") or raw.get("compound_name") or ""),
+        "ligand_id": str(ligand_identity.get("compound_id") or ligand.get("compound_id")
+                          or raw.get("compound_id") or ""),
+        "ligand_smiles": str(ligand_identity.get("smiles") or ligand.get("smiles") or ""),
+    }
+
+
 def open_result_complex(run_dir: Path | str, structure_path: Path | str, candidate: dict | None = None,
                         *, user: dict) -> None:
     """Navigate to an authorized Results structure, including a linked child-run artifact."""

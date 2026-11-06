@@ -7,9 +7,12 @@ import math
 from pathlib import Path
 from pathlib import PurePosixPath
 
+MAX_DOCKING_ARTIFACT_BYTES = 512 * 1024 * 1024
+
 
 def docking_pose_options(source_run_dir=None, *, source_job_reference="", source_node_id="",
-                         scores_text=None, compound_set_payload=None, artifact_paths=None):
+                         scores_text=None, compound_set_payload=None, artifact_paths=None,
+                         artifact_manifest_complete=None):
     """Describe individually selectable poses from a completed docking result.
 
     The result's score table and consumed compound set are the only sources of
@@ -64,38 +67,83 @@ def docking_pose_options(source_run_dir=None, *, source_job_reference="", source
 
     header = scores_text.splitlines()[0]
     rows = list(csv.DictReader(io.StringIO(scores_text), delimiter="\t" if "\t" in header else ","))
-    declared = {str(value).replace("\\", "/").lstrip("/") for value in (artifact_paths or []) if value}
-    def is_declared(relative):
-        return not declared or relative in declared or any(value.endswith("/" + relative) for value in declared)
+    artifact_entries = {}
+    for value in artifact_paths or []:
+        item = value if isinstance(value, dict) else {"relative_path": value}
+        raw_path = item.get("relative_path") or item.get("path") or ""
+        normalized_path = str(raw_path).replace("\\", "/").lstrip("/")
+        if normalized_path:
+            artifact_entries[normalized_path] = item
+
+    def artifact_entry(relative):
+        if relative in artifact_entries:
+            return artifact_entries[relative]
+        return next((item for value, item in artifact_entries.items() if value.endswith("/" + relative)), None)
+
+    def remote_artifact_error(relative, *, entry=None):
+        if entry is not None:
+            size = entry.get("size_bytes")
+            try:
+                if size is not None and int(size) > MAX_DOCKING_ARTIFACT_BYTES:
+                    return "Oversized source artifact: exceeds the 512 MB transfer limit."
+            except (TypeError, ValueError):
+                pass
+            return ""
+        if artifact_manifest_complete is True:
+            return "Missing source artifact: this pose is not present in the authorized Results artifact manifest."
+        return "Pose availability is unverified because it is not listed in the source artifact manifest."
+
     receptor_relative = next((name for name in ("artifacts/input/receptor.pdb", "artifacts/input/target.pdb")
-                              if (source and (source / name).is_file()) or is_declared(name)), "")
+                              if (source and (source / name).is_file()) or artifact_entry(name)), "")
     if not receptor_relative:
-        raise ValueError("This docking result has no authorized saved receptor structure.")
+        if source:
+            raise ValueError("Missing source artifact: this docking result has no saved receptor structure.")
+        raise ValueError("The authorized source artifact manifest does not include a receptor structure.")
     receptor = _resolve_source_artifact(source, receptor_relative) if source else None
     if source and (not receptor or not receptor.is_file()):
-        raise ValueError("This docking result's receptor artifact is missing or outside its source job.")
+        raise ValueError("Missing source artifact: the docking result's receptor is missing from its source job.")
+    receptor_entry = artifact_entry(receptor_relative) if not source else None
+    if not source and receptor_entry is None:
+        raise ValueError(remote_artifact_error(receptor_relative))
+    if not source and remote_artifact_error(receptor_relative, entry=receptor_entry):
+        raise ValueError(remote_artifact_error(receptor_relative, entry=receptor_entry))
+    if source and receptor.stat().st_size > MAX_DOCKING_ARTIFACT_BYTES:
+        raise ValueError("Oversized source artifact: the receptor exceeds the 512 MB transfer limit.")
 
     options = []
     for index, row in enumerate(rows):
         compound_id = str(row.get("compound_id") or row.get("compound") or "").strip()
         pose_text = str(row.get("pose_path") or "").strip()
         status = str(row.get("status") or "completed").strip().casefold()
-        if not compound_id or not pose_text or status not in {"completed", "succeeded", "success", ""}:
+        if not compound_id or status not in {"completed", "succeeded", "success", ""}:
             continue
-        relative = _relative_source_artifact(source, pose_text)
-        if not relative:
+        relative = _relative_source_artifact(source, pose_text) if pose_text else ""
+        if pose_text and not relative:
             raise ValueError("A docking score row refers to a pose outside its source job.")
-        if not is_declared(relative):
-            raise ValueError("A selected pose is not present in the authorized source artifact manifest.")
-        pose_path = _resolve_source_artifact(source, relative) if source else None
-        if source and (pose_path is None or not pose_path.is_file()):
-            continue
+        pose_entry = artifact_entry(relative) if relative and not source else None
+        pose_path = _resolve_source_artifact(source, relative) if source and relative else None
+        artifact_error = ""
+        if not relative:
+            artifact_error = "Missing source artifact: the score record has no saved pose path."
+        elif source and (pose_path is None or not pose_path.is_file()):
+            artifact_error = "Missing source artifact: the docking pose is absent from its source job."
+        elif source and pose_path.stat().st_size > MAX_DOCKING_ARTIFACT_BYTES:
+            artifact_error = "Oversized source artifact: the pose exceeds the 512 MB transfer limit."
+        elif not source and pose_entry is None:
+            artifact_error = remote_artifact_error(relative)
+        elif not source:
+            artifact_error = remote_artifact_error(relative, entry=pose_entry)
         compound = compound_by_id.get(compound_id)
         native_pose_id = str(row.get("pose_id") or "").strip()
-        identity_parts = [source_job_reference, source_node_id, compound_id, native_pose_id,
-                          row.get("pose_rank") or row.get("rank") or "", row.get("replicate") or "",
-                          row.get("attempt_index") or "", relative, index]
-        pose_id = "dockpose-" + hashlib.sha256(json.dumps(identity_parts, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()[:32]
+        if relative:
+            identity_parts = [source_job_reference, source_node_id, compound_id, native_pose_id,
+                              row.get("pose_rank") or row.get("rank") or "", row.get("replicate") or "",
+                              row.get("attempt_index") or "", relative, index]
+            pose_id = "dockpose-" + hashlib.sha256(json.dumps(identity_parts, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()[:32]
+        else:
+            # Keep score-only rows visible in Results without inventing an
+            # executable pose identity or treating a score as coordinates.
+            pose_id = ""
         label_parts = [compound.get("compound_name", compound_id) if compound else compound_id]
         rank = str(row.get("pose_rank") or row.get("rank") or "").strip()
         if rank:
@@ -112,10 +160,12 @@ def docking_pose_options(source_run_dir=None, *, source_job_reference="", source
                         "pose_relative_path": relative, "receptor_path": str(receptor) if receptor else receptor_relative,
                         "source_job_reference": source_job_reference, "source_node_id": source_node_id,
                         "score_row": dict(row), "compound_record": dict(compound) if compound else None,
-                        "available": bool(compound and compound.get("smiles")),
+                        "available": bool(compound and compound.get("smiles") and relative and not artifact_error),
                         "row_index": index,
-                        "unavailable_reason": "The consumed compound set has no chemistry for this compound." if not compound else
-                                              "The compound has no recorded SMILES." if not compound.get("smiles") else "",
+                        "unavailable_reason": artifact_error or
+                                              "The consumed compound set has no chemistry for this compound." if not compound else
+                                              artifact_error or "The compound has no recorded SMILES." if not compound.get("smiles") else
+                                              artifact_error,
                         "label": " · ".join(label_parts)})
     return options
 

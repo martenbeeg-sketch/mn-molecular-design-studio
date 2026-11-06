@@ -178,6 +178,23 @@ def _progress_summary(progress):
 _RESULTS_TERMINAL_STATUSES = {"completed", "succeeded", "failed", "cancelled", "canceled"}
 
 
+def _artifact_failure_detail(error, *, connection_failure=False):
+    """Give artifact failures distinct, actionable labels without exposing ACL state."""
+    message = str(error or "The artifact request failed.").strip()
+    lowered = message.casefold()
+    if connection_failure:
+        return f"Retrieval/connection failure: {message}"
+    if "512 mb" in lowered or "exceeds the" in lowered and "transfer limit" in lowered:
+        return f"Oversized source artifact: {message}"
+    if "missing" in lowered or "no such file" in lowered or "file not found" in lowered:
+        return f"Missing source artifact: {message}"
+    if "outside its source job" in lowered or "run-relative" in lowered or "invalid" in lowered and "path" in lowered:
+        return f"Rejected artifact path: {message}"
+    if any(term in lowered for term in ("not found", "not authorized", "unauthorized", "permission", "forbidden", "access denied")):
+        return "Source job unavailable or you are not authorized to retrieve this artifact."
+    return f"Artifact retrieval failure: {message}"
+
+
 def _results_job_reference(row):
     return str(row.get("cluster_job_id") or (str(row.get("task_group") or "") + "/" + str(row.get("run_id") or "")))
 
@@ -1449,13 +1466,13 @@ def _fetch_remote_artifact_bytes(jid, path, token, state_key, label="saved struc
             command_id = operation["command_id"]
             st.session_state[state_key] = command_id
         except (ValueError, transport.ClusterUnavailable) as exc:
-            st.warning(f"Could not request the saved structure: {exc}")
+            st.warning(_artifact_failure_detail(exc, connection_failure=isinstance(exc, transport.ClusterUnavailable)))
             return None
     try:
         status = _request("/commands/" + command_id, token)
         if status["status"] == "failed":
             error = status.get("error") or f"The workstation could not serve this {label}."
-            st.warning(f"{error} Requested path: {relative}")
+            st.warning(f"{_artifact_failure_detail(error)} Requested path: {relative}")
             return None
         if status["status"] != "completed":
             st.info(f"Loading the {label} from the owning workstation…")
@@ -1467,7 +1484,7 @@ def _fetch_remote_artifact_bytes(jid, path, token, state_key, label="saved struc
             )
         return st.session_state[content_key]
     except (ValueError, transport.ClusterUnavailable) as exc:
-        st.info(str(exc))
+        st.warning(_artifact_failure_detail(exc, connection_failure=isinstance(exc, transport.ClusterUnavailable)))
         return None
 
 

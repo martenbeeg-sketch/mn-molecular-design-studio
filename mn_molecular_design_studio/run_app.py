@@ -8170,6 +8170,18 @@ def _render_job_details() -> None:
         ["Results", "Files", "Job settings", "Logs", "Citations"]
     )
     artifact_paths = _job_artifact_paths(details)
+    candidates_path = run_dir / "artifacts/normalized_candidates/candidates.jsonl"
+    if candidates_path.is_file():
+        # Results candidates may live in the normalized artifact manifest even
+        # when result.json contains only aggregate pipeline status. Load them
+        # before building the structure picker so linked analysis structures
+        # can use their saved runs:/// provenance.
+        try:
+            saved_candidates = read_candidates(candidates_path)
+        except (OSError, ValueError):
+            saved_candidates = []
+        if saved_candidates:
+            result_candidates = saved_candidates
     if is_complex_preparation and str(job.get("status") or "").casefold() in {"completed", "succeeded"}:
         prepared_target = next(
             (path for item, path in artifact_paths
@@ -8307,6 +8319,23 @@ def _render_job_details() -> None:
                 if path.suffix.casefold() in {".pdb", ".ent", ".cif", ".mmcif"}
             ]
         )
+        linked_structure_artifacts = []
+        seen_structure_paths = {path.resolve() for _item, path in structure_artifacts}
+        if result_candidates:
+            from mn_molecular_design_studio.complex_analysis_ui import linked_result_structure
+            for candidate in result_candidates[:10000]:
+                try:
+                    linked = linked_result_structure(run_dir, candidate, user=CURRENT_USER)
+                except (OSError, PermissionError, ValueError):
+                    continue
+                if linked is None or linked["path"].resolve() in seen_structure_paths:
+                    continue
+                seen_structure_paths.add(linked["path"].resolve())
+                linked_structure_artifacts.append(({
+                    "relative_path": f"Linked analysis · {linked['producing_job']} · {linked['candidate_id']}",
+                    "linked_result": linked,
+                }, linked["path"]))
+        structure_artifacts.extend(linked_structure_artifacts)
         structure_artifacts.sort(
             key=lambda pair: (
                 0 if "3_ranked" in str(pair[0].get("relative_path", "")).casefold() else 1,
@@ -8347,9 +8376,7 @@ def _render_job_details() -> None:
 
         from mn_molecular_design_studio.result_presentation import render_workflow_results_summary
         render_workflow_results_summary(run_dir)
-        candidates_path = run_dir / "artifacts/normalized_candidates/candidates.jsonl"
         if candidates_path.is_file():
-            result_candidates = read_candidates(candidates_path)
             if result_candidates and st.button("Review acceptance & Complex Analysis", key=f"job-complex-board-{run_id}", icon=":material/biotech:"):
                 from mn_molecular_design_studio.complex_analysis_results_ui import open_results_board
                 open_results_board(run_dir)
@@ -8624,6 +8651,15 @@ def _render_job_details() -> None:
                 key=f"job-structure-{run_id}-{design_scope.casefold().replace(' ', '-')}",
             )
             preview_kind, _structure_item, structure_path, topology_path = preview_options[structure_index]
+            linked_result = _structure_item.get("linked_result") if isinstance(_structure_item, dict) else None
+            if linked_result:
+                st.caption(
+                    f"Linked PLIP structure · produced by {linked_result['producing_job']} · "
+                    f"source pose {linked_result['source_pose_id'] or 'not recorded'} · "
+                    f"ligand {linked_result['ligand_name'] or linked_result['ligand_id'] or 'not recorded'}"
+                )
+                with st.expander("Structure and source provenance"):
+                    st.json({key: value for key, value in linked_result.items() if key not in {"path", "candidate"}})
             if preview_kind == "structure" and st.button(
                 "Open in Complex Analysis",
                 icon=":material/biotech:",
@@ -8631,8 +8667,12 @@ def _render_job_details() -> None:
             ):
                 from mn_molecular_design_studio.complex_analysis_ui import open_result_complex
                 try:
-                    open_result_complex(run_dir, structure_path, user=CURRENT_USER)
-                except ValueError as exc:
+                    open_result_complex(
+                        run_dir, structure_path,
+                        linked_result.get("candidate") if linked_result else None,
+                        user=CURRENT_USER,
+                    )
+                except (PermissionError, ValueError, OSError) as exc:
                     st.warning(str(exc))
             try:
                 if preview_kind == "trajectory":

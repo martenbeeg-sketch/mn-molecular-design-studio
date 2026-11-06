@@ -34,8 +34,7 @@ def _docking_pose_options(row):
     # Indexed Results rows do not carry a complete artifact listing. The score
     # rows supply candidate pose paths, which are validated as safe relative
     # paths here and resolved inside the authorized source job during execution.
-    artifacts = [str(item.get("relative_path") or item.get("path") or "")
-                 for item in row.get("artifacts", []) if isinstance(item, dict)]
+    artifacts = [item for item in row.get("artifacts", []) if isinstance(item, dict)]
     from mn_molecular_design_studio.cluster.ui import _fetch_remote_artifact_text
     from mn_molecular_design_studio.auth import development_user, is_development_mode
     user = st.session_state.get("_molecular_database_user")
@@ -56,7 +55,8 @@ def _docking_pose_options(row):
         return []
     from mn_molecular_design_studio.engine.workflow_engine.workflows.quality_ligands import docking_pose_options
     return docking_pose_options(source_job_reference=source_ref, source_node_id=str(row.get("node_id") or ""),
-        scores_text=scores, compound_set_payload=compound_set, artifact_paths=artifacts)
+        scores_text=scores, compound_set_payload=compound_set, artifact_paths=artifacts,
+        artifact_manifest_complete=row.get("artifact_manifest_complete"))
 
 
 def select(project_id, key, *, require_complex=True, stages=None, reference=None, allow_docking=False,
@@ -82,25 +82,41 @@ def select(project_id, key, *, require_complex=True, stages=None, reference=None
     if not docking_rows:
         return selected
     pose_choices = {}
-    unavailable_count = 0
+    unavailable_scores = []
+    source_errors = []
     for row in docking_rows:
         source_ref = __import__("mn_molecular_design_studio.logical_runs", fromlist=["reference"]).reference(row)
         try:
             poses = _docking_pose_options(row)
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            source_errors.append(f"{row.get('node_name') or row.get('run_id')}: {exc}")
             poses = []
         for pose in poses:
             if not pose.get("available"):
-                unavailable_count += 1
+                unavailable_scores.append({
+                    "Source": str(row.get("node_name") or row.get("run_id") or "Docking run"),
+                    "Compound": str(pose.get("compound_name") or pose.get("compound_id") or ""),
+                    "Pose ID": str(pose.get("pose_id") or "not assigned"),
+                    "Score": str(pose.get("label") or ""),
+                    "Recorded pose path": str(pose.get("pose_relative_path") or "not recorded"),
+                    "Status": str(pose.get("unavailable_reason") or "Pose artifact unavailable"),
+                })
                 continue
             token = source_ref + "\n" + str(pose["pose_id"])
             pose_choices[token] = {"source_job_reference": source_ref, "pose_id": str(pose["pose_id"]),
                                    "label": str(row.get("node_name") or "Source workstation") + " · " +
                                            str(row.get("job_code") or row.get("run_id") or "Docking") + " · " + pose["label"]}
-    if unavailable_count:
-        st.caption(f"{unavailable_count} pose(s) are unavailable because their saved ligand chemistry is incomplete.")
+    if source_errors:
+        for error in source_errors[:10]:
+            st.warning(f"Could not verify docking artifacts: {error}")
+    if unavailable_scores:
+        with st.expander(f"Docking score records without an executable pose ({len(unavailable_scores):,})"):
+            st.caption("These source score records remain in Results, but are not offered to analysis because their pose artifact or required chemistry is unavailable.")
+            st.dataframe(unavailable_scores[:100], hide_index=True, use_container_width=True)
+            if len(unavailable_scores) > 100:
+                st.caption("Showing the first 100 unavailable records; the full score table remains in the source Run's Files tab.")
     if not pose_choices:
-        st.info("No complete docking poses are selectable. A usable pose needs a saved receptor, pose coordinates and recorded ligand SMILES.")
+        st.info("No verified docking poses are selectable. A pose is offered only when its authorized receptor, pose coordinates and recorded ligand chemistry are available.")
         return {**selected, "selected_docking_poses": None}
     labels = {value: entry["label"] for value, entry in pose_choices.items()}
     saved = {(str(item.get("source_job_reference")), str(item.get("pose_id")))
