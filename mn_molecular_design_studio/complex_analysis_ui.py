@@ -6,8 +6,10 @@ import hashlib
 import html
 import io
 import json
+import os
 import re
-from pathlib import Path
+import tempfile
+from pathlib import Path, PurePosixPath
 import streamlit as st
 
 
@@ -151,7 +153,159 @@ def open_result_complex(run_dir: Path | str, structure_path: Path | str, candida
     st.session_state["complex-analysis-source-kind"] = "Results"
     st.session_state["complex-analysis-workspace-view"] = "inspector"
     st.session_state["page"] = "Complex Analysis"
-    st.rerun()
+    # This opener can be called from Results' periodic fragment. Force a full
+    # app rerun so the top-level page router switches away from Job details.
+    st.rerun(scope="app")
+
+
+def _remote_cache_root(user: dict) -> Path:
+    from mn_molecular_design_studio.cluster.config import home as cluster_home
+
+    cache_root = Path(cluster_home()).expanduser() / "complex-analysis-artifacts"
+    owner = hashlib.sha256(str(user.get("id") or "").encode()).hexdigest()[:24]
+    cache_root = (cache_root / owner).resolve()
+    cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        cache_root.chmod(0o700)
+    except OSError:
+        pass
+    return cache_root
+
+
+def _stage_remote_result_file(content: bytes, suffix: str, *, user: dict) -> Path:
+    """Cache one authorized peer artifact under an opaque, content-addressed name."""
+    cache_root = _remote_cache_root(user)
+    suffix = suffix if suffix in STRUCTURE_SUFFIXES else ".pdb"
+    digest = hashlib.sha256(content).hexdigest()
+    path = cache_root / f"{digest}{suffix}"
+    path.resolve().relative_to(cache_root)
+    if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == digest:
+        return path
+    with tempfile.NamedTemporaryFile(prefix=".stage-", dir=cache_root, delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+    try:
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+        path.unlink(missing_ok=True)
+        raise ValueError("The retrieved remote structure failed its content-integrity check.")
+    return path
+
+
+def _remote_candidate_manifest(candidate: dict, structure: Path, *, user: dict) -> Path:
+    """Create the minimal local picker manifest needed by existing Inspector controls."""
+    row = dict(candidate)
+    row["complex_pdb"] = str(structure)
+    row.setdefault("raw_metadata", {})
+    encoded = (json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    root = (_remote_cache_root(user) / "sources" / digest).resolve()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    (root / "artifacts" / "normalized_candidates").mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = root / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+    if not path.is_file() or path.read_bytes() != encoded:
+        path.write_bytes(encoded)
+        path.chmod(0o600)
+    return path
+
+
+def open_remote_result_complex(job: dict, candidate: dict, artifact_path: str, *, user: dict,
+                               structure_content: bytes, source_run_dir: str,
+                               structure_field: str, structure_sha256: str = "") -> None:
+    """Open one authorized peer-owned result artifact in the existing Inspector."""
+    from mn_molecular_design_studio.cluster import ui as cluster_ui
+
+    job = job if isinstance(job, dict) else {}
+    candidate = candidate if isinstance(candidate, dict) else {}
+    job_id = str(job.get("cluster_job_id") or "")
+    node_id = str(job.get("node_id") or "")
+    relative = cluster_ui._safe_run_artifact_path(artifact_path)
+    if not job_id or not node_id or not relative:
+        raise ValueError("The remote Results job or selected artifact reference is invalid.")
+    if structure_field not in {"complex_pdb", "binder_pdb"}:
+        raise ValueError("The selected candidate does not identify a supported structure field.")
+    candidate_structure = candidate.get(structure_field)
+    if not isinstance(candidate_structure, str) or not candidate_structure.strip():
+        raise ValueError("The selected candidate does not identify this structure artifact.")
+    from pathlib import PurePosixPath
+    candidate_path = PurePosixPath(candidate_structure.strip())
+    run_path = PurePosixPath(str(source_run_dir or ""))
+    if candidate_path.is_absolute():
+        try:
+            candidate_path = candidate_path.relative_to(run_path)
+        except ValueError as exc:
+            raise ValueError("The candidate structure is outside its remote source job.") from exc
+    if (candidate_path.is_absolute() or ".." in candidate_path.parts
+            or cluster_ui._safe_run_artifact_path(candidate_path.as_posix()) != relative):
+        raise ValueError("The selected structure does not match this candidate's registered artifact.")
+    token = str(st.session_state.get("studio-session-token") or "development-mode")
+    authorized_job = cluster_ui._request("/jobs/" + job_id, token)
+    if (str(authorized_job.get("node_id") or "") != node_id
+            or str(authorized_job.get("local_reference") or "") != str(job.get("local_reference") or "")):
+        raise PermissionError("The remote Results job changed or is no longer accessible.")
+    local_reference = str(authorized_job.get("local_reference") or "")
+    reference = PurePosixPath(local_reference)
+    run_parts = run_path.parts
+    if (reference.is_absolute() or len(reference.parts) != 2 or ".." in reference.parts
+            or tuple(run_parts[-2:]) != reference.parts):
+        raise ValueError("The selected candidate run does not match its authorized remote job.")
+    # The selected bytes were retrieved through this job's artifact action. The
+    # source agent resolves local_reference and verifies the file stays inside
+    # that run; coordinator manifests can be incomplete for historical runs.
+    if not str(candidate.get("candidate_id") or ""):
+        raise ValueError("The remote structure has no candidate identity.")
+    if not isinstance(structure_content, bytes) or not structure_content:
+        raise ValueError("The selected remote structure has not been retrieved.")
+    digest = hashlib.sha256(structure_content).hexdigest()
+    if structure_sha256 and digest != str(structure_sha256):
+        raise ValueError("The selected remote structure failed its content-integrity check.")
+    if relative.casefold().endswith(".gz"):
+        raise ValueError("Compressed remote structures are not yet supported in the Scientific Inspector.")
+    suffix = _structure_suffix(Path(relative))
+    if suffix not in STRUCTURE_SUFFIXES:
+        raise ValueError("The selected remote artifact is not a supported structure format.")
+    artifact_cache_key = "complex-analysis-remote-artifact-" + hashlib.sha256(
+        f"{job_id}:{relative}".encode()
+    ).hexdigest()[:20]
+    st.session_state[artifact_cache_key] = structure_content
+    staged_structure = _stage_remote_result_file(structure_content, suffix, user=user)
+    candidate_file = _remote_candidate_manifest(candidate, staged_structure, user=user)
+    source_run_dir = candidate_file.parents[2]
+    artifact_relative = PurePosixPath(relative)
+    if (reference.is_absolute() or len(reference.parts) < 2 or ".." in reference.parts
+            or artifact_relative.is_absolute() or ".." in artifact_relative.parts):
+        raise ValueError("The remote Results reference is invalid.")
+    cluster_uri = f"cluster://{node_id}/" + (reference / artifact_relative).as_posix()
+    st.session_state["complex-analysis-open"] = {
+        "kind": "remote_results",
+        "cluster_job_id": job_id,
+        "node_id": node_id,
+        "local_reference": str(authorized_job.get("local_reference") or ""),
+        "task_group": str(authorized_job.get("task_group") or ""),
+        "run_id": str(authorized_job.get("run_id") or ""),
+        "project_id": str(authorized_job.get("project_id") or ""),
+        "campaign_name": str(authorized_job.get("campaign_name") or authorized_job.get("tool") or "Remote Results"),
+        "candidate_id": str(candidate.get("candidate_id") or ""),
+        "model_index": str(candidate.get("model_index") or (candidate.get("raw_metadata") or {}).get("model_index") or ""),
+        "candidate": candidate,
+        "artifact_path": relative,
+        "structure_sha256": digest,
+        "staged_structure": str(staged_structure),
+        "candidate_file": str(candidate_file),
+        "staged_run_dir": str(source_run_dir),
+        "analysis_structure_uri": cluster_uri,
+    }
+    st.session_state["complex-analysis-source-kind"] = "Results"
+    st.session_state["complex-analysis-workspace-view"] = "inspector"
+    st.session_state["page"] = "Complex Analysis"
+    # This button is rendered inside the Results fragment; route through the
+    # top-level app so the remote candidate opens in the Inspector page.
+    st.rerun(scope="app")
 
 
 def component_inventory(content: bytes, filename: str, stored_components: list[dict] | None = None) -> list[dict]:
@@ -442,6 +596,146 @@ def _results_review_reference(user: dict, job: dict, selected: dict) -> tuple[st
     producer_run_dir = (root / producer_group / producer_run_id).resolve(strict=True)
     relative_path = structure_path.relative_to(producer_run_dir).as_posix()
     return f"{producer_group}/{producer_run_id}", relative_path
+
+
+def _analysis_source_reference(job: dict) -> str:
+    """Use the Studio scheduler's authorized peer-job form when applicable."""
+    cluster_job_id = str(job.get("cluster_job_id") or "")
+    if cluster_job_id and job.get("node_id") and job.get("local_reference"):
+        return "cluster:" + cluster_job_id
+    return f"{job.get('task_group') or ''}/{job.get('run_id') or ''}"
+
+
+def _analysis_structure_reference(job: dict, selected: dict, path: Path) -> str:
+    if job.get("cluster_job_id") and selected.get("analysis_structure_uri"):
+        return str(selected["analysis_structure_uri"])
+    return str(path)
+
+
+def _authorized_remote_structure_bytes(user: dict, opened: dict) -> tuple[dict, bytes] | None:
+    """Reauthorize a peer job and fetch only its selected registered artifact."""
+    from mn_molecular_design_studio.cluster import ui as cluster_ui
+
+    job_id = str(opened.get("cluster_job_id") or "")
+    if not job_id:
+        raise ValueError("The remote Results job reference is missing.")
+    token = str(st.session_state.get("studio-session-token") or "development-mode")
+    remote_job = cluster_ui._request("/jobs/" + job_id, token)
+    expected = {
+        "node_id": str(opened.get("node_id") or ""),
+        "local_reference": str(opened.get("local_reference") or ""),
+        "project_id": str(opened.get("project_id") or ""),
+    }
+    if any(str(remote_job.get(key) or "") != value for key, value in expected.items()):
+        raise PermissionError("The remote Results job changed or is no longer accessible.")
+    relative = cluster_ui._safe_run_artifact_path(str(opened.get("artifact_path") or ""))
+    if not relative:
+        raise ValueError("The selected structure is not a valid run-relative artifact of this remote job.")
+    reference = PurePosixPath(str(remote_job.get("local_reference") or ""))
+    expected_uri = f"cluster://{expected['node_id']}/" + (reference / PurePosixPath(relative)).as_posix()
+    if (reference.is_absolute() or len(reference.parts) != 2 or ".." in reference.parts
+            or str(opened.get("analysis_structure_uri") or "") != expected_uri):
+        raise ValueError("The selected structure reference does not match its authorized source job.")
+    key = "complex-analysis-remote-artifact-" + hashlib.sha256(f"{job_id}:{relative}".encode()).hexdigest()[:20]
+    content = st.session_state.get(key)
+    if not isinstance(content, bytes):
+        command_id = st.session_state.get(key + "-command")
+        if not command_id:
+            operation = cluster_ui._request(
+                "/jobs/" + job_id + "/actions", token,
+                {"action": "artifact", "parameters": {"path": relative}}, method="POST",
+            )
+            command_id = str(operation.get("command_id") or "")
+            if not command_id:
+                raise ValueError("The source workstation did not accept the artifact request.")
+            st.session_state[key + "-command"] = command_id
+        status = cluster_ui._request("/commands/" + command_id, token)
+        if status.get("status") == "failed":
+            raise ValueError(str(status.get("error") or "The source workstation could not serve this structure."))
+        if status.get("status") != "completed":
+            st.info("Waiting for the source workstation to return this structure. Use Refresh to check again.")
+            return None
+        metadata = status.get("response") if isinstance(status.get("response"), dict) else {}
+        size = int(metadata.get("size_bytes") or 0)
+        if size > VIEWER_MAX_BYTES:
+            raise ValueError("The selected remote structure exceeds the 50 MB Scientific Inspector viewing limit.")
+        content = cluster_ui._request("/commands/" + command_id + "/file", token, raw=True, timeout=60)
+        if not isinstance(content, bytes):
+            raise ValueError("The source workstation returned an invalid structure payload.")
+        st.session_state[key] = content
+    if len(content) > VIEWER_MAX_BYTES:
+        raise ValueError("The selected remote structure exceeds the 50 MB Scientific Inspector viewing limit.")
+    expected_digest = str(opened.get("structure_sha256") or "")
+    digest = hashlib.sha256(content).hexdigest()
+    if expected_digest and digest != expected_digest:
+        raise ValueError("The remote structure changed since it was selected. Reopen the current Results artifact.")
+    return remote_job, content
+
+
+def _render_remote_results_source(user: dict, opened: dict, *, workflow_schema=None,
+                                  project_selector=None, submit=None) -> None:
+    """Render one peer-owned candidate in the existing structure Inspector."""
+    fetched = _authorized_remote_structure_bytes(user, opened)
+    if fetched is None:
+        if st.button("Refresh remote structure", key="complex-analysis-remote-refresh"):
+            st.rerun()
+        return
+    remote_job, content = fetched
+    candidate = opened.get("candidate") if isinstance(opened.get("candidate"), dict) else {}
+    if str(candidate.get("candidate_id") or "") != str(opened.get("candidate_id") or ""):
+        raise ValueError("The selected structure no longer matches its source candidate.")
+    relative = str(opened.get("artifact_path") or "")
+    digest = hashlib.sha256(content).hexdigest()
+    path = Path(str(opened.get("staged_structure") or ""))
+    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+        path = _stage_remote_result_file(content, _structure_suffix(Path(relative)), user=user)
+    candidate_file = Path(str(opened.get("candidate_file") or ""))
+    if not candidate_file.is_file():
+        candidate_file = _remote_candidate_manifest(candidate, path, user=user)
+    staged_run_dir = candidate_file.parents[2]
+    local_reference = str(remote_job.get("local_reference") or "")
+    from pathlib import PurePosixPath
+    uri = "cluster://" + str(remote_job.get("node_id")) + "/" + (
+        PurePosixPath(local_reference) / PurePosixPath(relative)
+    ).as_posix()
+    if uri != str(opened.get("analysis_structure_uri") or ""):
+        raise ValueError("The peer artifact reference changed; reopen this candidate from Results.")
+
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    components = component_inventory(content, path.name, raw.get("components"))
+    node_name = str(remote_job.get("node_name") or "source workstation")
+    st.caption(f"Source Results: {node_name} · {remote_job.get('task_group')}/{remote_job.get('run_id')} · {relative}")
+    st.caption(f"Candidate/model: {candidate.get('candidate_id')} · {opened.get('model_index') or 'model not specified'}")
+    st.caption(f"SHA-256: {digest}")
+    _show_components(components)
+    key = "complex-analysis-remote-viewer-" + hashlib.sha256(f"{opened.get('cluster_job_id')}:{relative}".encode()).hexdigest()[:14]
+    _show_structure(path, raw, components, key=key,
+                    highlighted_selections=_active_biotite_highlights(key))
+    with st.expander("Remote Results provenance", expanded=False):
+        st.json({
+            "source_workstation": node_name,
+            "node_id": remote_job.get("node_id"),
+            "cluster_job_id": opened.get("cluster_job_id"),
+            "task_group": remote_job.get("task_group"), "run_id": remote_job.get("run_id"),
+            "project_id": remote_job.get("project_id"),
+            "campaign_name": remote_job.get("campaign_name"),
+            "candidate_id": candidate.get("candidate_id"), "model_id": opened.get("model_index"),
+            "artifact_uri": uri, "structure_sha256": digest,
+            "candidate_source_metadata": candidate.get("raw_metadata") or {},
+        })
+    job = dict(remote_job, run_dir=str(staged_run_dir))
+    selected = {
+        "path": path, "relative_path": relative, "candidate": candidate,
+        "candidate_id": str(candidate.get("candidate_id") or ""),
+        "artifact_task_group": str(remote_job.get("task_group") or ""),
+        "artifact_run_id": str(remote_job.get("run_id") or ""),
+        "artifact_path": str(remote_job.get("local_reference") or "") + "/" + relative,
+        "analysis_structure_uri": uri,
+    }
+    _render_biotite_workspace(user, job, selected, components,
+                              workflow_schema=workflow_schema,
+                              project_selector=project_selector, submit=submit,
+                              viewer_key=key)
 
 
 def _read_json(path: Path) -> dict:
@@ -1863,7 +2157,7 @@ def _render_contextual_workflow(user: dict, *, workflow_id: str, schema: dict | 
             parameters = {
                 **scientific_parameters,
                 "candidate_ids": [candidate_id],
-                "selected_structure_path": str(structure_path),
+                "selected_structure_path": _analysis_structure_reference(job, selected, structure_path),
                 "selected_model_id": model_id,
             }
             if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}:
@@ -1873,12 +2167,13 @@ def _render_contextual_workflow(user: dict, *, workflow_id: str, schema: dict | 
             else:
                 parameters["binder_chains"] = list(binder_chains)
                 parameters["target_chains"] = list(target_chains)
-            source_job = f"{task_group}/{run_id}"
-            st.session_state["complex-analysis-active"] = {
-                "kind": "results", "task_group": task_group, "run_id": run_id,
-                "candidate_id": candidate_id, "model_index": model_id,
-                "relative_path": selected["relative_path"],
-            }
+            source_job = _analysis_source_reference(job)
+            if not job.get("cluster_job_id"):
+                st.session_state["complex-analysis-active"] = {
+                    "kind": "results", "task_group": task_group, "run_id": run_id,
+                    "candidate_id": candidate_id, "model_index": model_id,
+                    "relative_path": selected["relative_path"],
+                }
             before = st.session_state.get("last_submitted_job")
             try:
                 submit(schema, workflow_id, {**parameters, "source_job": source_job},
@@ -2159,19 +2454,21 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
             button_label = "Retry analysis" if existing else "Run analysis"
             disabled = bool(invalid_groups or not analysis_project or analysis_project != source_project or submit is None or biotite_schema is None)
             if st.button(button_label, type="primary", disabled=disabled, key=f"complex-analysis-run-biotite-{key}"):
-                st.session_state["complex-analysis-active"] = {
-                    "kind": "results", "task_group": task_group, "run_id": run_id,
-                    "candidate_id": candidate_id, "model_index": model_id,
-                    "relative_path": selected["relative_path"],
-                }
+                if not job.get("cluster_job_id"):
+                    st.session_state["complex-analysis-active"] = {
+                        "kind": "results", "task_group": task_group, "run_id": run_id,
+                        "candidate_id": candidate_id, "model_index": model_id,
+                        "relative_path": selected["relative_path"],
+                    }
                 workflow_parameters = {
-                    "candidate_ids": [candidate_id], "selected_structure_path": str(path),
+                    "candidate_ids": [candidate_id],
+                    "selected_structure_path": _analysis_structure_reference(job, selected, path),
                     "selected_model_id": model_id, "binder_chains": list(binder_chains),
                     "target_chains": list(target_chains), "contact_distance": contact_distance,
                 }
                 before = st.session_state.get("last_submitted_job")
                 try:
-                    submit(biotite_schema, biotite_id, {**workflow_parameters, "source_job": f"{task_group}/{run_id}"},
+                    submit(biotite_schema, biotite_id, {**workflow_parameters, "source_job": _analysis_source_reference(job)},
                            str(analysis_project), {}, "Biotite Interface")
                 except (OSError, RuntimeError, TypeError, ValueError) as exc:
                     st.error(f"Could not start Biotite Interface: {exc}")
@@ -3796,6 +4093,10 @@ def _render_complex_analysis_inspector(user: dict, *, workflow_schema=None, proj
         if source == "Database":
             _render_database_source(user, active if active.get("kind") == "database" else {},
                                     workflow_schema=workflow_schema, submit=submit)
+        elif active.get("kind") == "remote_results":
+            _render_remote_results_source(user, active,
+                                          workflow_schema=workflow_schema,
+                                          project_selector=project_selector, submit=submit)
         else:
             _render_results_source(user, active if active.get("kind") == "results" else {},
                                    workflow_schema=workflow_schema,

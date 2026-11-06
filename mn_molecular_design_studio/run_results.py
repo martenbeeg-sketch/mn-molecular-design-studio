@@ -47,14 +47,19 @@ def collect(run, output, user, *, token=""):
                 else:
                     if source.get("availability") != "online":
                         raise ValueError("Source workstation is offline; its saved results are still part of this Run.")
-                    if config.load()["mode"] in {"coordinator", "peer"}:
+                    # Only a coordinator owns the authoritative metadata store.
+                    # A peer may display the shared catalog, but its local Store
+                    # is not the coordinator's catalog; resolve remote source
+                    # jobs and their inspect action through the configured API.
+                    local_coordinator = config.load()["mode"] == "coordinator"
+                    if local_coordinator:
                         operation = Store().action(ref.removeprefix("cluster:"), "inspect", {}, service.user_record(user))
                     else:
                         operation = transport.request("/api/v1/cluster/jobs/" + ref.removeprefix("cluster:") + "/actions",
                             {"action": "inspect"}, method="POST", token=token)
                     config.atomic_json(cache, operation)
                     operation_id = operation["command_id"]
-                operation = (Store().command(operation_id, service.user_record(user)) if config.load()["mode"] in {"coordinator", "peer"}
+                operation = (Store().command(operation_id, service.user_record(user)) if config.load()["mode"] == "coordinator"
                              else transport.request("/api/v1/cluster/commands/" + operation_id, token=token))
                 if operation["status"] == "failed":
                     raise ValueError(operation.get("error") or "Could not read the saved source results.")

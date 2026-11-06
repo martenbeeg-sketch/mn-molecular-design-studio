@@ -215,11 +215,14 @@ def test_biotite_contact_residues_keep_saved_auth_chain_numbering(tmp_path):
 def test_completed_results_evaluation_reopens_with_same_structure_viewer_context(tmp_path, monkeypatch):
     from mn_molecular_design_studio import complex_analysis_ui as workspace
 
-    run_dir = tmp_path / "source-run"
+    runs_root = tmp_path / "runs"
+    run_dir = runs_root / "refolding-validation" / "source-1"
     (run_dir / "artifacts" / "normalized_candidates").mkdir(parents=True)
     (run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl").write_text("{}\n")
-    path = tmp_path / "complex.pdb"
+    path = run_dir / "artifacts" / "models" / "complex.pdb"
+    path.parent.mkdir(parents=True)
     path.write_bytes(_complex_pdb("protein"))
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(runs_root))
     job = {"task_group": "refolding-validation", "run_id": "source-1", "run_dir": str(run_dir),
            "project_id": "project-1", "status": "completed", "tool": "boltz2"}
     candidate = {"candidate_id": "candidate-1", "model_index": "model-3",
@@ -595,7 +598,7 @@ def test_open_results_inspector_resolves_authorized_child_artifact_and_keeps_par
         {"relative_path": "refolding-validation/prediction-1/artifacts/model.pdb"}
     ] if (group, run) == ("refolding-validation", "prediction-1") else [])
     monkeypatch.setattr(auth, "can_access_job", lambda user, record: bool(record) and record["owner_id"] == user["id"])
-    fake_st = SimpleNamespace(session_state={}, rerun=lambda: None)
+    fake_st = SimpleNamespace(session_state={}, rerun=lambda **_kwargs: None)
     monkeypatch.setattr(complex_analysis_ui, "st", fake_st)
     candidate = {
         "candidate_id": "boltz-candidate-1", "model_index": 0,
@@ -629,10 +632,151 @@ def test_open_results_inspector_rejects_unrelated_external_structure(tmp_path, m
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(runs))
     monkeypatch.setattr(job_catalog, "get_job_access_record", lambda *_: {"owner_id": USER["id"]})
     monkeypatch.setattr(auth, "can_access_job", lambda *_: True)
-    monkeypatch.setattr(complex_analysis_ui, "st", SimpleNamespace(session_state={}, rerun=lambda: None))
+    monkeypatch.setattr(complex_analysis_ui, "st", SimpleNamespace(session_state={}, rerun=lambda **_kwargs: None))
 
     with pytest.raises(ValueError, match="managed Results storage"):
         complex_analysis_ui.open_result_complex(parent, external, user=USER)
+
+
+def test_remote_results_inspector_stages_one_authorized_artifact_and_keeps_peer_provenance(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from mn_molecular_design_studio import complex_analysis_ui
+    from mn_molecular_design_studio.cluster import ui as cluster_ui
+
+    node_id = "5bd75310-0d57-4484-b795-4e0e3ed6b01d"
+    remote = {
+        "cluster_job_id": "remote-job-1", "node_id": node_id,
+        "local_reference": "design/remote-run-1", "task_group": "design",
+        "run_id": "remote-run-1", "project_id": "project-1",
+        "campaign_name": "Remote RFD4 source",
+        "artifacts": [{"relative_path": "artifacts/design.pdb"}],
+    }
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
+    monkeypatch.setattr(cluster_ui, "_request", lambda path, token: remote if path == "/jobs/remote-job-1" else {})
+    state = {"studio-session-token": "session-token"}
+    monkeypatch.setattr(complex_analysis_ui, "st", SimpleNamespace(session_state=state, rerun=lambda **_kwargs: None))
+    content = _complex_pdb("protein")
+    candidate = {
+        "candidate_id": "remote-candidate-1", "model_index": 2,
+        "complex_pdb": "artifacts/design.pdb", "binder_sequence": "G",
+        "raw_metadata": {"target_id": "PD-L1", "source_run": "campaign/source-campaign"},
+    }
+
+    complex_analysis_ui.open_remote_result_complex(
+        remote, candidate, "artifacts/design.pdb", user=USER,
+        structure_content=content, source_run_dir="/data/results/design/remote-run-1",
+        structure_field="complex_pdb", structure_sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+    opened = state["complex-analysis-open"]
+    assert opened["kind"] == "remote_results"
+    assert opened["candidate_id"] == "remote-candidate-1"
+    assert opened["model_index"] == "2"
+    assert opened["analysis_structure_uri"] == (
+        f"cluster://{node_id}/design/remote-run-1/artifacts/design.pdb")
+    assert opened["structure_sha256"] == hashlib.sha256(content).hexdigest()
+    assert Path(opened["staged_structure"]).read_bytes() == content
+    assert Path(opened["candidate_file"]).is_file()
+    assert complex_analysis_ui._analysis_source_reference(remote) == "cluster:remote-job-1"
+    assert complex_analysis_ui._analysis_structure_reference(
+        remote, {"analysis_structure_uri": opened["analysis_structure_uri"]}, Path("local-copy.pdb")) == opened["analysis_structure_uri"]
+
+
+def test_remote_results_inspector_accepts_legacy_job_without_artifact_manifest(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from mn_molecular_design_studio import complex_analysis_ui
+    from mn_molecular_design_studio.cluster import ui as cluster_ui
+
+    node_id = "5bd75310-0d57-4484-b795-4e0e3ed6b01d"
+    source_run_dir = "/data/results/mn-molecular-design-studio/workdir/runs/design/legacy-run-1"
+    remote = {
+        "cluster_job_id": "legacy-job-1", "node_id": node_id,
+        "local_reference": "design/legacy-run-1", "task_group": "design",
+        "run_id": "legacy-run-1", "project_id": "project-1",
+        "artifacts": [{"relative_path": "artifacts/other-file.json"}],
+    }
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
+    monkeypatch.setattr(cluster_ui, "_request", lambda path, token: remote if path == "/jobs/legacy-job-1" else {})
+    state = {"studio-session-token": "session-token"}
+    monkeypatch.setattr(complex_analysis_ui, "st", SimpleNamespace(session_state=state, rerun=lambda **_kwargs: None))
+    content = _complex_pdb("protein")
+    candidate = {
+        "candidate_id": "legacy-candidate-1", "model_index": 1,
+        "complex_pdb": source_run_dir + "/artifacts/models/model-1.pdb",
+    }
+
+    complex_analysis_ui.open_remote_result_complex(
+        remote, candidate, "artifacts/models/model-1.pdb", user=USER,
+        structure_content=content, source_run_dir=source_run_dir,
+        structure_field="complex_pdb", structure_sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+    assert state["complex-analysis-open"]["candidate_id"] == "legacy-candidate-1"
+    assert state["complex-analysis-open"]["analysis_structure_uri"].endswith(
+        "/design/legacy-run-1/artifacts/models/model-1.pdb")
+
+
+def test_remote_inspector_reauthorizes_legacy_run_and_uses_cached_structure(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from mn_molecular_design_studio import complex_analysis_ui
+    from mn_molecular_design_studio.cluster import ui as cluster_ui
+
+    node_id = "5bd75310-0d57-4484-b795-4e0e3ed6b01d"
+    remote = {
+        "cluster_job_id": "legacy-job-1", "node_id": node_id,
+        "local_reference": "design/legacy-run-1", "project_id": "project-1",
+    }
+    relative = "artifacts/models/model-1.pdb"
+    content = _complex_pdb("protein")
+    opened = {
+        "cluster_job_id": "legacy-job-1", "node_id": node_id,
+        "local_reference": "design/legacy-run-1", "project_id": "project-1",
+        "artifact_path": relative, "structure_sha256": hashlib.sha256(content).hexdigest(),
+        "analysis_structure_uri": f"cluster://{node_id}/design/legacy-run-1/{relative}",
+    }
+    cache_key = "complex-analysis-remote-artifact-" + hashlib.sha256(
+        f"legacy-job-1:{relative}".encode()
+    ).hexdigest()[:20]
+    state = {"studio-session-token": "session-token", cache_key: content}
+    monkeypatch.setattr(cluster_ui, "_request", lambda path, token: remote if path == "/jobs/legacy-job-1" else {})
+    monkeypatch.setattr(complex_analysis_ui, "st", SimpleNamespace(session_state=state))
+
+    result = complex_analysis_ui._authorized_remote_structure_bytes(USER, opened)
+
+    assert result == (remote, content)
+
+
+def test_remote_results_inspector_rejects_unsafe_or_external_artifact(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from mn_molecular_design_studio import complex_analysis_ui
+    from mn_molecular_design_studio.cluster import ui as cluster_ui
+
+    remote = {
+        "cluster_job_id": "remote-job-1", "node_id": "5bd75310-0d57-4484-b795-4e0e3ed6b01d",
+        "local_reference": "design/remote-run-1", "task_group": "design",
+        "run_id": "remote-run-1", "project_id": "project-1",
+        "artifacts": [{"relative_path": "artifacts/registered.pdb"}],
+    }
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
+    monkeypatch.setattr(cluster_ui, "_request", lambda *_args, **_kwargs: remote)
+    state = {}
+    monkeypatch.setattr(complex_analysis_ui, "st", SimpleNamespace(session_state=state, rerun=lambda **_kwargs: None))
+    candidate = {"candidate_id": "remote-candidate-1", "complex_pdb": "outside.pdb"}
+
+    with pytest.raises(ValueError, match="invalid|registered"):
+        complex_analysis_ui.open_remote_result_complex(
+            remote, candidate, "../../outside.pdb", user=USER,
+            structure_content=_complex_pdb("protein"), source_run_dir="/data/results/design/remote-run-1",
+            structure_field="complex_pdb",
+        )
+    with pytest.raises(ValueError, match="outside its remote source job"):
+        complex_analysis_ui.open_remote_result_complex(
+            remote, {**candidate, "complex_pdb": "/unrelated/external.pdb"},
+            "artifacts/not-listed.pdb", user=USER,
+            structure_content=_complex_pdb("protein"), source_run_dir="/data/results/design/remote-run-1",
+            structure_field="complex_pdb",
+        )
+    assert "complex-analysis-open" not in state
 
 
 def test_open_results_inspector_rejects_unauthorized_child_artifact(tmp_path, monkeypatch):
@@ -657,7 +801,7 @@ def test_open_results_inspector_rejects_unauthorized_child_artifact(tmp_path, mo
         {"relative_path": "refolding-validation/prediction-1/artifacts/model.pdb"}
     ])
     monkeypatch.setattr(auth, "can_access_job", lambda user, record: bool(record) and record["owner_id"] == user["id"])
-    fake_st = SimpleNamespace(session_state={}, rerun=lambda: None)
+    fake_st = SimpleNamespace(session_state={}, rerun=lambda **_kwargs: None)
     monkeypatch.setattr(complex_analysis_ui, "st", fake_st)
     candidate = {"candidate_id": "boltz-candidate-1",
                  "complex_pdb": "runs:///refolding-validation/prediction-1/artifacts/model.pdb"}

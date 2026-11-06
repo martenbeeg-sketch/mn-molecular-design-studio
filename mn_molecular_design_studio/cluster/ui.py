@@ -2829,6 +2829,21 @@ def render_job(reference, user, token, submit):
                                         file_name=name,
                                         key=f"cluster-candidate-download-{command_id}",
                                     )
+                                    if st.button(
+                                        "Open selected structure in Scientific Inspector",
+                                        key=f"cluster-candidate-inspector-{jid}-{selected}-{structure_field}",
+                                    ):
+                                        from mn_molecular_design_studio.complex_analysis_ui import open_remote_result_complex
+                                        try:
+                                            open_remote_result_complex(
+                                                row, candidate, relative_path, user=user,
+                                                structure_content=content,
+                                                source_run_dir=str((data.get("job") or {}).get("run_dir") or ""),
+                                                structure_field=structure_field,
+                                                structure_sha256=hashlib.sha256(content).hexdigest(),
+                                            )
+                                        except (PermissionError, ValueError, OSError, transport.ClusterUnavailable) as exc:
+                                            st.error(f"Could not open this remote structure in Scientific Inspector: {exc}")
                         except (ValueError, transport.ClusterUnavailable) as exc:
                             st.info(str(exc))
                 if parameter_rows:
