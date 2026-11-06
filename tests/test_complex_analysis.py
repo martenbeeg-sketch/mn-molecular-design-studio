@@ -553,8 +553,10 @@ def test_results_board_resolves_connected_prediction_structure_from_child_run(tm
     }) + "\n")
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(runs))
     monkeypatch.setattr(auth, "can_access_job", lambda *_: True)
-    monkeypatch.setattr(job_catalog, "get_job_access_record", lambda *_: {})
-    monkeypatch.setattr(job_catalog, "job_artifacts", lambda *_: [])
+    monkeypatch.setattr(job_catalog, "get_job_access_record", lambda group, run: {"task_group": group, "run_id": run})
+    monkeypatch.setattr(job_catalog, "job_artifacts", lambda group, run: [
+        {"relative_path": "refolding-validation/prediction-1/model.pdb"}
+    ] if (group, run) == ("refolding-validation", "prediction-1") else [])
 
     rows = complex_analysis_ui._job_structure_options(USER, {
         "task_group": "campaign", "run_id": "campaign-1", "run_dir": str(campaign),
@@ -564,6 +566,104 @@ def test_results_board_resolves_connected_prediction_structure_from_child_run(tm
     assert rows[0]["path"] == prediction
     assert rows[0]["relative_path"] == "runs:///refolding-validation/prediction-1/model.pdb"
     assert rows[0]["candidate_id"] == "boltz-candidate-1"
+    assert (rows[0]["artifact_task_group"], rows[0]["artifact_run_id"]) == (
+        "refolding-validation", "prediction-1")
+    assert complex_analysis_ui._results_review_reference(USER, {
+        "task_group": "campaign", "run_id": "campaign-1", "run_dir": str(campaign),
+    }, rows[0]) == ("refolding-validation/prediction-1", "model.pdb")
+
+
+def test_open_results_inspector_resolves_authorized_child_artifact_and_keeps_parent_link(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from mn_molecular_design_studio import complex_analysis_ui
+    from mn_molecular_design_studio import auth, job_catalog
+
+    runs = tmp_path / "runs"
+    parent = runs / "campaign" / "campaign-1"
+    child = runs / "refolding-validation" / "prediction-1"
+    structure = child / "artifacts" / "model.pdb"
+    parent.mkdir(parents=True)
+    structure.parent.mkdir(parents=True)
+    structure.write_bytes(_complex_pdb("protein"))
+    records = {
+        ("campaign", "campaign-1"): {"owner_id": USER["id"], "project_id": "project-1"},
+        ("refolding-validation", "prediction-1"): {"owner_id": USER["id"], "project_id": "project-1"},
+    }
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(runs))
+    monkeypatch.setattr(job_catalog, "get_job_access_record", lambda group, run: records.get((group, run)))
+    monkeypatch.setattr(job_catalog, "job_artifacts", lambda group, run: [
+        {"relative_path": "refolding-validation/prediction-1/artifacts/model.pdb"}
+    ] if (group, run) == ("refolding-validation", "prediction-1") else [])
+    monkeypatch.setattr(auth, "can_access_job", lambda user, record: bool(record) and record["owner_id"] == user["id"])
+    fake_st = SimpleNamespace(session_state={}, rerun=lambda: None)
+    monkeypatch.setattr(complex_analysis_ui, "st", fake_st)
+    candidate = {
+        "candidate_id": "boltz-candidate-1", "model_index": 0,
+        "complex_pdb": "runs:///refolding-validation/prediction-1/artifacts/model.pdb",
+    }
+
+    complex_analysis_ui.open_result_complex(
+        parent, structure, candidate, user=USER)
+
+    opened = fake_st.session_state["complex-analysis-open"]
+    assert opened["task_group"] == "campaign"
+    assert opened["run_id"] == "campaign-1"
+    assert opened["artifact_task_group"] == "refolding-validation"
+    assert opened["artifact_run_id"] == "prediction-1"
+    assert opened["relative_path"] == "runs:///refolding-validation/prediction-1/artifacts/model.pdb"
+    assert opened["candidate_id"] == "boltz-candidate-1"
+    assert opened["model_index"] == "0"
+    assert opened["structure_sha256"] == hashlib.sha256(structure.read_bytes()).hexdigest()
+
+
+def test_open_results_inspector_rejects_unrelated_external_structure(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from mn_molecular_design_studio import complex_analysis_ui
+    from mn_molecular_design_studio import auth, job_catalog
+
+    runs = tmp_path / "runs"
+    parent = runs / "campaign" / "campaign-1"
+    parent.mkdir(parents=True)
+    external = tmp_path / "outside.pdb"
+    external.write_bytes(_complex_pdb("protein"))
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(runs))
+    monkeypatch.setattr(job_catalog, "get_job_access_record", lambda *_: {"owner_id": USER["id"]})
+    monkeypatch.setattr(auth, "can_access_job", lambda *_: True)
+    monkeypatch.setattr(complex_analysis_ui, "st", SimpleNamespace(session_state={}, rerun=lambda: None))
+
+    with pytest.raises(ValueError, match="managed Results storage"):
+        complex_analysis_ui.open_result_complex(parent, external, user=USER)
+
+
+def test_open_results_inspector_rejects_unauthorized_child_artifact(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from mn_molecular_design_studio import complex_analysis_ui
+    from mn_molecular_design_studio import auth, job_catalog
+
+    runs = tmp_path / "runs"
+    parent = runs / "campaign" / "campaign-1"
+    child = runs / "refolding-validation" / "prediction-1"
+    structure = child / "artifacts" / "model.pdb"
+    parent.mkdir(parents=True)
+    structure.parent.mkdir(parents=True)
+    structure.write_bytes(_complex_pdb("protein"))
+    records = {
+        ("campaign", "campaign-1"): {"owner_id": USER["id"]},
+        ("refolding-validation", "prediction-1"): {"owner_id": OTHER_USER["id"]},
+    }
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(runs))
+    monkeypatch.setattr(job_catalog, "get_job_access_record", lambda group, run: records.get((group, run)))
+    monkeypatch.setattr(job_catalog, "job_artifacts", lambda *_: [
+        {"relative_path": "refolding-validation/prediction-1/artifacts/model.pdb"}
+    ])
+    monkeypatch.setattr(auth, "can_access_job", lambda user, record: bool(record) and record["owner_id"] == user["id"])
+    fake_st = SimpleNamespace(session_state={}, rerun=lambda: None)
+    monkeypatch.setattr(complex_analysis_ui, "st", fake_st)
+    candidate = {"candidate_id": "boltz-candidate-1",
+                 "complex_pdb": "runs:///refolding-validation/prediction-1/artifacts/model.pdb"}
+
+    with pytest.raises(PermissionError, match="structure-producing Results job"):
+        complex_analysis_ui.open_result_complex(parent, structure, candidate, user=USER)
 
 
 def test_results_board_links_matching_completed_analysis_measurement(tmp_path, monkeypatch):

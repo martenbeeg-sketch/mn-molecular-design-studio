@@ -390,7 +390,7 @@ def render_results_board(user, *, workflow_schema=None, submit=None):
         inspect_id = st.selectbox('Candidate to inspect', chosen, key='results-board-inspect')
         if st.button('Open in Scientific Inspector', key='results-board-inspect-open'):
             item = by_id[inspect_id]
-            workspace.open_result_complex(job['run_dir'], item['path'], item['candidate'])
+            workspace.open_result_complex(job['run_dir'], item['path'], item['candidate'], user=user)
     with second:
         ppi = all(by_id[identifier]['candidate'].get('binder_chains') and by_id[identifier]['candidate'].get('binder_sequence') for identifier in chosen)
         analysis = st.selectbox('Connected analysis tool', ['biotite_interface', 'interface_clustering', 'ipsae', 'rosetta_metrics'] if ppi else ['plip', 'pandamap', 'posebusters'],

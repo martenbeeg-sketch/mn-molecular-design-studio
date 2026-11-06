@@ -1400,7 +1400,8 @@ def _render_job_detail(user: dict, job: dict, *, workflow_schema=None, project_s
     selected_item = next((item for item, ref in zip(structures, selected_option_refs) if ref == selected_path_ref), None)
     actions = st.columns([1, 1, 2])
     if selected_item and actions[0].button("Open detailed Inspector", type="secondary", key="complex-analysis-detail-open-inspector"):
-        open_result_complex(Path(str(selected_item["source_job"]["run_dir"])), Path(selected_item["path"]), selected_item.get("candidate"))
+        open_result_complex(Path(str(selected_item["source_job"]["run_dir"])), Path(selected_item["path"]),
+                            selected_item.get("candidate"), user=user)
     if actions[1].button("Back to run list", key="complex-analysis-detail-back"):
         st.session_state.pop("complex-analysis-selected-run", None)
         st.rerun()

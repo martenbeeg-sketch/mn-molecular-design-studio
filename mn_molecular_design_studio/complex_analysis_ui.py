@@ -50,26 +50,103 @@ def open_database_complex(molecule_id: str, *, evaluation_id: str = "", structur
     st.rerun()
 
 
-def open_result_complex(run_dir: Path | str, structure_path: Path | str, candidate: dict | None = None) -> None:
-    """Navigate to a saved Results structure using job and artifact identity."""
-    run_dir = Path(run_dir).expanduser().resolve()
-    structure_path = Path(structure_path).expanduser().resolve()
+def _registered_cross_run_structure(user: dict, structure_path: Path, *, source_run_dir: Path,
+                                    runs_root: Path) -> tuple[str, str, str]:
+    """Authorize and identify a structure artifact in a linked Results job."""
+    from mn_molecular_design_studio.auth import can_access_job
+    from mn_molecular_design_studio.job_catalog import get_job_access_record, job_artifacts
+
     try:
-        relative_path = structure_path.relative_to(run_dir).as_posix()
+        relative_to_root = structure_path.relative_to(runs_root)
     except ValueError as exc:
-        raise ValueError("The selected structure is outside its source job.") from exc
+        raise ValueError("The selected structure is outside Studio's managed Results storage.") from exc
+    try:
+        relative_to_source = structure_path.relative_to(source_run_dir)
+    except ValueError:
+        relative_to_source = None
+    if relative_to_source is not None:
+        return source_run_dir.parent.name, source_run_dir.name, relative_to_source.as_posix()
+    if len(relative_to_root.parts) < 3:
+        raise ValueError("The selected structure is not inside a registered Results artifact.")
+    task_group, run_id = relative_to_root.parts[:2]
+    access = get_job_access_record(task_group, run_id)
+    if not access or not can_access_job(user, access):
+        raise PermissionError("The structure-producing Results job is unavailable or you do not have access to it.")
+    registered = False
+    for artifact in job_artifacts(task_group, run_id):
+        artifact_relative = Path(str(artifact.get("relative_path") or ""))
+        if artifact_relative.is_absolute() or ".." in artifact_relative.parts:
+            continue
+        try:
+            artifact_path = (runs_root / artifact_relative).resolve(strict=True)
+            artifact_path.relative_to(runs_root)
+            artifact_path.relative_to(runs_root / task_group / run_id)
+        except (OSError, ValueError):
+            continue
+        if artifact_path == structure_path:
+            registered = True
+            break
+    if not registered:
+        raise ValueError("The selected structure is not a registered artifact of its producing job.")
+    return task_group, run_id, f"runs:///{relative_to_root.as_posix()}"
+
+
+def open_result_complex(run_dir: Path | str, structure_path: Path | str, candidate: dict | None = None,
+                        *, user: dict) -> None:
+    """Navigate to an authorized Results structure, including a linked child-run artifact."""
+    from mn_molecular_design_studio.auth import can_access_job
+    from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+    from mn_molecular_design_studio.job_catalog import get_job_access_record
+    from mn_molecular_design_studio.runtime import runs_root
+
+    root = Path(runs_root()).expanduser().resolve()
+    run_dir = Path(run_dir).expanduser().resolve(strict=True)
+    try:
+        parent_relative = run_dir.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("The source Results job is outside Studio's managed Results storage.") from exc
+    if len(parent_relative.parts) < 2:
+        raise ValueError("The source Results job reference is invalid.")
+    source_task_group, source_run_id = parent_relative.parts[:2]
+    source_access = get_job_access_record(source_task_group, source_run_id)
+    if not source_access or not can_access_job(user, source_access):
+        raise PermissionError("The source Results job is unavailable or you do not have access to it.")
+    resolved_structure = resolve_stored_path(str(structure_path), run_dir=run_dir, must_exist=True)
+    if resolved_structure is None:
+        raise ValueError("The selected structure artifact is unavailable.")
+    try:
+        resolved_structure = resolved_structure.expanduser().resolve(strict=True)
+        resolved_structure.relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise ValueError("The selected structure is outside Studio's managed Results storage.") from exc
+    task_group, run_id, relative_path = _registered_cross_run_structure(
+        user, resolved_structure, source_run_dir=run_dir, runs_root=root)
     candidate = candidate if isinstance(candidate, dict) else {}
     raw_metadata = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
-    task_group, run_id = run_dir.parent.name, run_dir.name
-    st.session_state["complex-analysis-results-job"] = f"{task_group}/{run_id}"
+    if candidate:
+        from mn_molecular_design_studio import cofolding_results
+        candidate_structure = cofolding_results.structure_for(run_dir, candidate)
+        if candidate_structure is None or candidate_structure.resolve(strict=True) != resolved_structure:
+            raise ValueError("The selected structure does not match this Results candidate.")
+    model_id = candidate.get("model_id")
+    if model_id in (None, ""):
+        model_id = candidate.get("model_index")
+    if model_id in (None, ""):
+        model_id = raw_metadata.get("model_id")
+    if model_id in (None, ""):
+        model_id = raw_metadata.get("model_index")
+    st.session_state["complex-analysis-results-job"] = f"{source_task_group}/{source_run_id}"
     st.session_state["complex-analysis-results-structure"] = relative_path
     st.session_state["complex-analysis-open"] = {
         "kind": "results",
-        "task_group": task_group,
-        "run_id": run_id,
+        "task_group": source_task_group,
+        "run_id": source_run_id,
+        "artifact_task_group": task_group,
+        "artifact_run_id": run_id,
         "candidate_id": str(candidate.get("candidate_id") or ""),
-        "model_index": str(candidate.get("model_index") or raw_metadata.get("model_index") or ""),
+        "model_index": str(model_id if model_id is not None else ""),
         "relative_path": relative_path,
+        "structure_sha256": hashlib.sha256(resolved_structure.read_bytes()).hexdigest(),
     }
     st.session_state["complex-analysis-source-kind"] = "Results"
     st.session_state["complex-analysis-workspace-view"] = "inspector"
@@ -313,16 +390,17 @@ def _job_structure_options(user: dict, job: dict) -> list[dict]:
                 "path": path,
                 "relative_path": path.relative_to(run_dir).as_posix(),
                 "artifact_path": relative,
+                "artifact_task_group": task_group,
+                "artifact_run_id": run_id,
                 "candidate": candidate,
                 "candidate_id": str(candidate.get("candidate_id") or ""),
                 "label": str(artifact.get("label") or path.name),
             })
         except (OSError, ValueError):
             continue
-    # A normalized candidate can refer to a saved structure which has not yet
-    # been added to the artifact catalog. Connected canvas outputs may live in
-    # a child run, so accept those references only while they remain inside
-    # Studio's managed runs root.
+    # A normalized candidate can refer to a saved structure which is absent
+    # from the source job's artifact catalog. For connected outputs in another
+    # run, require the producing job ACL and its exact registered artifact.
     known = {str(item["path"]) for item in rows}
     for candidate in candidates:
         structure = cofolding_results.structure_for(run_dir, candidate)
@@ -330,19 +408,19 @@ def _job_structure_options(user: dict, job: dict) -> list[dict]:
             continue
         try:
             resolved = structure.resolve(strict=True)
-            relative_to_root = resolved.relative_to(root)
-        except (OSError, ValueError):
+            producer_task_group, producer_run_id, relative_path = _registered_cross_run_structure(
+                user, resolved, source_run_dir=run_dir, runs_root=root)
+        except (OSError, ValueError, PermissionError):
             continue
         if str(resolved) in known or _structure_suffix(resolved) not in STRUCTURE_SUFFIXES:
             continue
-        try:
-            relative_path = resolved.relative_to(run_dir).as_posix()
-        except ValueError:
-            relative_path = f"runs:///{relative_to_root.as_posix()}"
+        relative_to_root = resolved.relative_to(root)
         rows.append({
             "path": resolved,
             "relative_path": relative_path,
             "artifact_path": relative_to_root.as_posix(),
+            "artifact_task_group": producer_task_group,
+            "artifact_run_id": producer_run_id,
             "candidate": candidate,
             "candidate_id": str(candidate.get("candidate_id") or ""),
             "label": resolved.name,
@@ -350,6 +428,20 @@ def _job_structure_options(user: dict, job: dict) -> list[dict]:
         known.add(str(resolved))
     rows.sort(key=lambda item: (item["relative_path"].casefold(), item["candidate_id"].casefold()))
     return rows
+
+
+def _results_review_reference(user: dict, job: dict, selected: dict) -> tuple[str, str]:
+    """Address a Results review to the authorized job that owns the structure."""
+    from mn_molecular_design_studio.runtime import runs_root
+
+    root = Path(runs_root()).expanduser().resolve()
+    source_run_dir = Path(str(job.get("run_dir") or "")).expanduser().resolve(strict=True)
+    structure_path = Path(str(selected.get("path") or "")).expanduser().resolve(strict=True)
+    producer_group, producer_run_id, _ = _registered_cross_run_structure(
+        user, structure_path, source_run_dir=source_run_dir, runs_root=root)
+    producer_run_dir = (root / producer_group / producer_run_id).resolve(strict=True)
+    relative_path = structure_path.relative_to(producer_run_dir).as_posix()
+    return f"{producer_group}/{producer_run_id}", relative_path
 
 
 def _read_json(path: Path) -> dict:
@@ -3615,12 +3707,23 @@ def _render_results_source(user: dict, opened: dict, *, workflow_schema=None, pr
     selected = next(item for item in options if item["relative_path"] == structure_path)
     candidate = selected.get("candidate") or {}
     candidate_metadata = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    model_identity = candidate.get("model_id")
+    if model_identity in (None, ""):
+        model_identity = candidate.get("model_index")
+    if model_identity in (None, ""):
+        model_identity = candidate_metadata.get("model_index")
+    if model_identity in (None, "") and str(opened.get("candidate_id") or "") == str(candidate.get("candidate_id") or ""):
+        model_identity = opened.get("model_index")
+    if model_identity in (None, ""):
+        model_match = re.search(r"_model_(\d+)(?:\.|$)", Path(selected["path"]).name)
+        if model_match:
+            model_identity = model_match.group(1)
     st.caption(
         f"Results: {job.get('task_group')}/{job.get('run_id')} · "
         f"{job.get('display_tool') or job.get('tool') or 'Unknown tool'} · {selected['relative_path']}"
     )
     if candidate.get("candidate_id"):
-        st.caption(f"Candidate/model: {candidate.get('candidate_id')} · {candidate.get('model_index') or candidate_metadata.get('model_index') or 'model not specified'}")
+        st.caption(f"Candidate/model: {candidate.get('candidate_id')} · {model_identity if model_identity not in (None, '') else 'model not specified'}")
     try:
         content = selected["path"].read_bytes()
         components = component_inventory(content, selected["path"].name, candidate_metadata.get("components"))
@@ -3654,7 +3757,9 @@ def _render_results_source(user: dict, opened: dict, *, workflow_schema=None, pr
             "project_id": job.get("project_id"),
             "completed_at": job.get("completed_at"),
             "candidate_id": candidate.get("candidate_id"),
-            "model_index": candidate.get("model_index") or candidate_metadata.get("model_index"),
+            "model_index": model_identity,
+            "artifact_task_group": selected.get("artifact_task_group"),
+            "artifact_run_id": selected.get("artifact_run_id"),
             "artifact_path": selected.get("artifact_path"),
             "job_relative_path": selected["relative_path"],
         })
@@ -3663,9 +3768,10 @@ def _render_results_source(user: dict, opened: dict, *, workflow_schema=None, pr
                               workflow_schema=workflow_schema,
                               project_selector=project_selector, submit=submit,
                               viewer_key=viewer_key)
+    review_subject, review_path = _results_review_reference(user, job, selected)
     _show_human_review(
-        MolecularDatabase(), user, source_kind="results", subject_id=selected_ref,
-        structure_ref=selected["relative_path"],
+        MolecularDatabase(), user, source_kind="results", subject_id=review_subject,
+        structure_ref=review_path,
     )
 
 

@@ -7372,7 +7372,7 @@ def _render_cofolding_prediction_results(
         ):
             from mn_molecular_design_studio.complex_analysis_ui import open_result_complex
             try:
-                open_result_complex(run_dir, structure_path, candidate)
+                open_result_complex(run_dir, structure_path, candidate, user=CURRENT_USER)
             except ValueError as exc:
                 st.warning(str(exc))
         pae_path = _cofolding_candidate_pae_path(run_dir, candidate, structure_path)
@@ -8631,7 +8631,7 @@ def _render_job_details() -> None:
             ):
                 from mn_molecular_design_studio.complex_analysis_ui import open_result_complex
                 try:
-                    open_result_complex(run_dir, structure_path)
+                    open_result_complex(run_dir, structure_path, user=CURRENT_USER)
                 except ValueError as exc:
                     st.warning(str(exc))
             try:
