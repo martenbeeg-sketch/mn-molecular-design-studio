@@ -54,6 +54,28 @@ def _measurement_label(candidate):
     return labels.get(status, status.replace('_', ' ').capitalize())
 
 
+def _candidate_measurement_label(candidate, linked_entries=(), *, digest='', model_id=''):
+    """Include an exact linked Results analysis when presenting candidate evidence."""
+    candidate_id = str(candidate.get('candidate_id') or '')
+    source_id = _source_candidate_id(candidate)
+    raw = candidate.get('raw_metadata') if isinstance(candidate.get('raw_metadata'), dict) else {}
+    model = str(_first_present(candidate.get('model_id'), candidate.get('model_index'),
+                               raw.get('model_id'), raw.get('model_index')))
+    for entry in linked_entries:
+        if not entry.get('metrics'):
+            continue
+        if str(entry.get('source_candidate_id') or '') not in {candidate_id, source_id}:
+            continue
+        if digest and str(entry.get('source_structure_digest') or '') != str(digest):
+            continue
+        if model_id and str(entry.get('source_model_id') or '') != str(model_id):
+            continue
+        if model and str(entry.get('source_model_id') or '') != model:
+            continue
+        return 'Measured by a connected tool'
+    return _measurement_label(candidate)
+
+
 def board_entries(candidate, *, label, run_id, digest, policy=None, manual_selection=None):
     """Read saved Results measurements without inventing Database Evaluation IDs."""
     from mn_molecular_design_studio.native_filter_metrics import native_filter_evidence
@@ -163,8 +185,16 @@ def _linked_measurements(user, job, selected):
             saved_digest = entry.get('structure_sha256') or raw.get('structure_digest')
             if saved_digest != source['digest']:
                 continue
-            source_run = Path(entry.get('source_run_dir') or '').name if entry else metadata.get('upstream_run_id')
-            if source_run != job['run_id']:
+            if entry:
+                source_run = Path(entry.get('source_run_dir') or '').name or str(entry.get('source_run') or '')
+                if source_run != job['run_id']:
+                    continue
+            elif str(original.get('candidate_id') or '') != str(source['candidate'].get('candidate_id') or ''):
+                # Some registered analysis tools preserve their exact source
+                # candidate but only expose the intermediate handoff as the
+                # analysis job's upstream_run_id. The embedded source ID,
+                # structure digest, chains and model below identify the exact
+                # Results candidate in that case.
                 continue
             if list(candidate.get('target_chains') or []) != list(source['candidate'].get('target_chains') or []):
                 continue
@@ -178,7 +208,7 @@ def _linked_measurements(user, job, selected):
                                           source_raw.get('model_id'), source_raw.get('model_index'))
             if str(analysis_model) != str(source_model):
                 continue
-                result.extend(board_entries(candidate, label=source['label'], run_id=analysis['run_id'], digest=saved_digest))
+            result.extend(board_entries(candidate, label=source['label'], run_id=analysis['run_id'], digest=saved_digest))
     return result
 
 
@@ -262,10 +292,19 @@ def render_results_board(user, *, workflow_schema=None, submit=None):
     except ValueError as exc:
         st.warning(f'Cannot apply this exploratory policy: {exc}')
         return
+    source_items = []
+    for identifier in subset:
+        item = by_id[identifier]
+        digest = hashlib.sha256(item['path'].read_bytes()).hexdigest()
+        candidate = next(row for row in evaluated if row['candidate_id'] == identifier)
+        source_items.append({**item, 'candidate': candidate, 'digest': digest,
+                             'label': f"{identifier} · {candidate.get('source_tool')}"})
+    linked = _linked_measurements(user, job, source_items)
     st.caption(f"Exploratory policy: {summary['accepted']} pass · {summary['rejected']} rejected · {summary['unresolved']} unresolved · {summary['not_evaluated']} not evaluated")
     st.dataframe([{'Studio candidate': row['candidate_id'],
         'Source candidate': _source_candidate_id(row),
-        'Independent measurement': _measurement_label(row),
+        'Independent measurement': _candidate_measurement_label(
+            row, linked, digest=next(item['digest'] for item in source_items if item['candidate']['candidate_id'] == row['candidate_id'])),
         'Native acceptance': native_filter_evidence(row)['status'],
         'Exploratory acceptance': row['raw_metadata']['validation_acceptance']['status'],
         'Reasons': '; '.join(row['raw_metadata']['validation_acceptance']['reasons']),
@@ -289,18 +328,16 @@ def render_results_board(user, *, workflow_schema=None, submit=None):
     if not chosen:
         st.info('Configure required measurements to obtain passing candidates, or explicitly select candidates in Manual selection mode.')
         return
-    selected = []
+    selected = [item for item in source_items if item['candidate']['candidate_id'] in chosen]
     samples = []
-    for identifier in chosen:
-        item = by_id[identifier]
-        digest = hashlib.sha256(item['path'].read_bytes()).hexdigest()
-        candidate = next(row for row in evaluated if row['candidate_id'] == identifier)
-        label = f"{identifier} · {candidate.get('source_tool')}"
-        selected.append({**item, 'digest': digest, 'label': label})
+    for item in selected:
+        identifier = item['candidate']['candidate_id']
+        candidate = item['candidate']
+        digest = item['digest']
+        label = item['label']
         samples.append({'evaluation_entries': board_entries(candidate, label=label, run_id=job['run_id'], digest=digest,
                                                            policy=candidate['raw_metadata']['validation_acceptance'],
                                                            manual_selection=(mode_label == 'Manual selection' and identifier in manual))})
-    linked = _linked_measurements(user, job, selected)
     if linked:
         samples.append({'evaluation_entries': linked})
     _render_evaluation_board(samples)

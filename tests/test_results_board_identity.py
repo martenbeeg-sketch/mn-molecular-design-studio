@@ -1,6 +1,7 @@
 """Results board identity fields preserve explicit model zero and route choice."""
 from mn_molecular_design_studio.complex_analysis_results_ui import (
     _first_present,
+    _candidate_measurement_label,
     _measurement_label,
     _source_candidate_id,
     board_entries,
@@ -26,6 +27,17 @@ def test_results_board_displays_native_identity_and_explains_missing_independent
     assert entry["source_candidate_id"] == "bindcraft2_00003"
     assert entry["status"] == "not_measured"
     assert entry["measurement_label"] == "No independent measurement recorded"
+
+
+def test_candidate_decision_row_recognizes_exact_linked_biotite_measurement():
+    row = {"candidate_id": "candidate-1", "model_index": 0, "metrics": {}, "raw_metadata": {
+        "candidate_set": {"native_candidate_id": "native-1"}}}
+    linked = [{"source_candidate_id": "native-1", "source_structure_digest": "sha256:abc",
+               "source_model_id": "0", "method": "biotite_interface",
+               "metrics": {"interface_residue_count_4a": 12}}]
+
+    assert _candidate_measurement_label(row, linked, digest="sha256:abc") == "Measured by a connected tool"
+    assert _candidate_measurement_label(row, linked, digest="sha256:other") == "No independent measurement recorded"
 
 
 def test_biotite_receipt_joins_candidate_set_output_to_native_results_identity():

@@ -15,18 +15,29 @@ from typing import Any
 
 import numpy as np
 
+from mn_molecular_design_studio.engine.workflow_engine.core import portable_paths
+from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+
 
 def local_artifact(run_dir: Path, value: object) -> Path | None:
     if not value:
         return None
-    path = Path(str(value))
-    if str(path).startswith('/work/'):
-        path = Path(str(path)[6:])
-    if not path.is_absolute():
-        path = run_dir / path
+    raw = str(value)
+    path = (Path(run_dir) / raw[6:]) if raw.startswith('/work/') else resolve_stored_path(
+        raw, run_dir=run_dir, must_exist=True)
+    if path is None:
+        return None
     try:
         path = path.resolve(strict=True)
-        path.relative_to(run_dir.resolve())
+        try:
+            path.relative_to(Path(run_dir).resolve())
+        except ValueError:
+            # A prediction produced by a connected canvas node belongs to a
+            # different saved run. Older candidate manifests may retain its
+            # absolute path, while newer ones use runs:///; accept either only
+            # when the resolved artifact is still inside Studio's managed runs
+            # root. Arbitrary paths outside that root remain unavailable.
+            path.relative_to(portable_paths.runs_root().resolve())
     except (OSError, ValueError):
         return None
     return path if path.is_file() else None

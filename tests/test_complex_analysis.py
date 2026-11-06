@@ -529,6 +529,129 @@ def test_completed_results_structures_follow_existing_job_permissions(tmp_path, 
         )
 
 
+def test_results_board_resolves_connected_prediction_structure_from_child_run(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import complex_analysis_ui
+    from mn_molecular_design_studio import auth
+    from mn_molecular_design_studio import job_catalog
+
+    runs = tmp_path / "runs"
+    campaign = runs / "campaign" / "campaign-1"
+    prediction = runs / "refolding-validation" / "prediction-1" / "model.pdb"
+    candidates = campaign / "artifacts/normalized_candidates/candidates.jsonl"
+    candidates.parent.mkdir(parents=True)
+    prediction.parent.mkdir(parents=True)
+    prediction.write_bytes(_complex_pdb("protein"))
+    candidates.write_text(json.dumps({
+        "candidate_id": "boltz-candidate-1",
+        "stage": "complex_refolding",
+        "source_tool": "boltz2",
+        "complex_pdb": "runs:///refolding-validation/prediction-1/model.pdb",
+        "target_chains": ["A"],
+        "binder_chains": ["B"],
+        "binder_sequence": "G",
+        "metrics": {"iptm": 0.8},
+    }) + "\n")
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(runs))
+    monkeypatch.setattr(auth, "can_access_job", lambda *_: True)
+    monkeypatch.setattr(job_catalog, "get_job_access_record", lambda *_: {})
+    monkeypatch.setattr(job_catalog, "job_artifacts", lambda *_: [])
+
+    rows = complex_analysis_ui._job_structure_options(USER, {
+        "task_group": "campaign", "run_id": "campaign-1", "run_dir": str(campaign),
+    })
+
+    assert len(rows) == 1
+    assert rows[0]["path"] == prediction
+    assert rows[0]["relative_path"] == "runs:///refolding-validation/prediction-1/model.pdb"
+    assert rows[0]["candidate_id"] == "boltz-candidate-1"
+
+
+def test_results_board_links_matching_completed_analysis_measurement(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import complex_analysis_results_ui, complex_analysis_ui
+
+    source_run = tmp_path / "runs" / "campaign" / "campaign-1"
+    analysis_run = tmp_path / "runs" / "analysis" / "analysis-1"
+    source_run.mkdir(parents=True)
+    candidate_path = analysis_run / "artifacts/normalized_candidates/candidates.jsonl"
+    candidate_path.parent.mkdir(parents=True)
+    structure_digest = "a" * 64
+    source_candidate = {
+        "candidate_id": "prediction-1",
+        "model_id": "boltz-model-0",
+        "target_chains": ["A"],
+        "binder_chains": ["B"],
+        "metrics": {"iptm": 0.8},
+        "raw_metadata": {"candidate_set": {"native_candidate_id": "native-design-1"}},
+    }
+    analysis_candidate = {
+        "candidate_id": "analysis-measurement-1",
+        "source_tool": "biotite_interface",
+        "stage": "analysis.interface",
+        "target_chains": ["A"],
+        "binder_chains": ["B"],
+        "metrics": {"interface_residue_count_4a": 12},
+        "raw_metadata": {"complex_analysis_entry": {
+            "native_candidate_id": "native-design-1",
+            "source_run_dir": str(source_run),
+            "source_run": "campaign-1",
+            "structure_sha256": structure_digest,
+            "model_id": "boltz-model-0",
+        }},
+    }
+    candidate_path.write_text(json.dumps(analysis_candidate) + "\n")
+    (analysis_run / "metadata.json").write_text(json.dumps({"upstream_run_id": "campaign-1"}))
+    monkeypatch.setattr(complex_analysis_ui, "_accessible_result_jobs", lambda _user: [{
+        "task_group": "analysis", "run_id": "analysis-1", "run_dir": str(analysis_run),
+    }])
+
+    rows = complex_analysis_results_ui._linked_measurements(USER, {"run_id": "campaign-1"}, [{
+        "candidate": source_candidate, "digest": structure_digest, "label": "Model 0",
+    }])
+
+    assert len(rows) == 1
+    assert rows[0]["run_id"] == "analysis-1"
+    assert rows[0]["metrics"]["interface_residue_count_4a"] == 12
+    assert rows[0]["source_candidate_id"] == "native-design-1"
+
+
+def test_results_board_links_analysis_with_embedded_source_candidate(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import complex_analysis_results_ui, complex_analysis_ui
+
+    source_run = tmp_path / "runs" / "campaign" / "campaign-1"
+    analysis_run = tmp_path / "runs" / "analysis" / "analysis-1"
+    source_run.mkdir(parents=True)
+    candidate_path = analysis_run / "artifacts/normalized_candidates/candidates.jsonl"
+    candidate_path.parent.mkdir(parents=True)
+    structure_digest = "b" * 64
+    source_candidate = {
+        "candidate_id": "prediction-2", "target_chains": ["A"], "binder_chains": ["B"],
+        "raw_metadata": {"candidate_set": {"native_candidate_id": "native-design-2"}},
+    }
+    analysis_candidate = {
+        "candidate_id": "prediction-2_biotite_interface",
+        "source_tool": "biotite_interface", "stage": "analysis",
+        "target_chains": ["A"], "binder_chains": ["B"],
+        "metrics": {"qc_interface_contact_pairs": 370},
+        "raw_metadata": {
+            "source_candidate": source_candidate,
+            "structure_digest": structure_digest,
+        },
+    }
+    candidate_path.write_text(json.dumps(analysis_candidate) + "\n")
+    (analysis_run / "metadata.json").write_text(json.dumps({"upstream_run_id": "biotite_interface-node-handoff"}))
+    monkeypatch.setattr(complex_analysis_ui, "_accessible_result_jobs", lambda _user: [{
+        "task_group": "analysis", "run_id": "analysis-1", "run_dir": str(analysis_run),
+    }])
+
+    rows = complex_analysis_results_ui._linked_measurements(USER, {"run_id": "campaign-1"}, [{
+        "candidate": source_candidate, "digest": structure_digest, "label": "Model 0",
+    }])
+
+    assert len(rows) == 1
+    assert rows[0]["metrics"]["qc_interface_contact_pairs"] == 370
+    assert rows[0]["source_candidate_id"] == "prediction-2"
+
+
 def test_database_review_annotations_persist_separately_and_follow_record_access(tmp_path, monkeypatch):
     database = _isolated_database(tmp_path, monkeypatch)
     imported_record = molecule_imports.parse_structure(_complex_pdb("dna"), "reviewed-complex.pdb")[0]

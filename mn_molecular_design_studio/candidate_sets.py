@@ -314,6 +314,30 @@ def chaperone_handoff(parent, node_id, source):
     if not originals:
         return source
 
+    target = copy.deepcopy(source.get("target") or {})
+    target_info = target.get("identity")
+    if not target_info and target.get("target_pdb") and target.get("target_chains"):
+        target_info = target_identity(target)
+        target["identity"] = target_info
+
+    def candidate_set_records(records):
+        prepared = []
+        for item in records:
+            row = copy.deepcopy(item)
+            info = metadata(row)
+            if not info and target_info:
+                # Raw generator outputs enter the shared scientific identity
+                # model at their first typed tool handoff. Keep the native ID
+                # in candidate_set.native_candidate_id while assigning the
+                # stable Studio candidate/variant identity once.
+                row = source_record(row, source, node_id, target_info)
+            elif info and target_info and info.get("target_id") != target_info.get("target_id"):
+                raise ValueError("Chaperone handoff candidate belongs to a different target identity.")
+            prepared.append(row)
+        return prepared
+
+    originals = candidate_set_records(originals)
+
     def roundtrip(records):
         returned_rows = chaperone_adapter.roundtrip_candidates(records)
         if len(returned_rows) != len(records):
@@ -336,7 +360,7 @@ def chaperone_handoff(parent, node_id, source):
         parent,
         node_id + "_chaperone_handoff",
         restored,
-        source.get("target") or {},
+        target,
         details={"data_handler": "chaperone", "handoff_node": node_id},
     )
     result["source_provenance"] = copy.deepcopy(source.get("source_provenance") or {})
@@ -344,7 +368,7 @@ def chaperone_handoff(parent, node_id, source):
     if source.get("analysis_run"):
         result["analysis_run"] = copy.deepcopy(source["analysis_run"])
     if source.get("review_candidates_jsonl"):
-        review_originals = list(iter_candidates(source, review=True))
+        review_originals = candidate_set_records(list(iter_candidates(source, review=True)))
         review_rows = roundtrip(review_originals)
         review_path = Path(result["run_dir"]) / "artifacts/normalized_candidates/review_candidates.jsonl"
         review_path.write_text("".join(json.dumps(json_safe(normalize_candidate(row)), sort_keys=True, allow_nan=False) + "\n"
@@ -820,9 +844,15 @@ def attach_stage(parent, node_id, output, source, *, category, scientific_key, s
     if output.get("candidate_set_manifest") and not output.get("collection_stage_pending"):
         return _inherit_handoff_receipts(parent, node_id, output, source)
     with index() as db:
-        db.execute("CREATE TABLE parents (id TEXT PRIMARY KEY, payload TEXT)")
+        db.execute("CREATE TABLE parents (alias TEXT NOT NULL, candidate_id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(alias, candidate_id))")
         for row in iter_candidates(source):
-            db.execute("INSERT INTO parents VALUES (?,?)", (row["candidate_id"], json.dumps(row)))
+            info = metadata(row)
+            raw = row.get("raw_metadata") or {}
+            aliases = [row["candidate_id"], info.get("native_candidate_id"),
+                       (raw.get("source_candidate") or {}).get("candidate_id")]
+            payload = json.dumps(row)
+            for alias in dict.fromkeys(value for value in aliases if value):
+                db.execute("INSERT OR IGNORE INTO parents VALUES (?,?,?)", (alias, row["candidate_id"], payload))
         def transformed():
             if category == "Sequence design":
                 yield from iter_candidates(source)
@@ -831,8 +861,11 @@ def attach_stage(parent, node_id, output, source, *, category, scientific_key, s
                 direct = row.get("raw_metadata", {}).get("source_candidate", {})
                 if direct.get("candidate_id"):
                     ids.append(direct["candidate_id"])
-                matches = {key: json.loads(found[0]) for key in ids
-                           if (found := db.execute("SELECT payload FROM parents WHERE id=?", (key,)).fetchone())}
+                matches = {}
+                for key in dict.fromkeys(ids):
+                    for candidate_id, payload in db.execute(
+                            "SELECT candidate_id, payload FROM parents WHERE alias=?", (key,)):
+                        matches[candidate_id] = json.loads(payload)
                 if len(matches) != 1:
                     raise ValueError("Collection stage lost or ambiguously mapped its input candidate.")
                 original = next(iter(matches.values()))

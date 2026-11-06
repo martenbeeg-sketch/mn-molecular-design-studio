@@ -126,6 +126,22 @@ def test_model_sidecars_are_exact_and_job_paths_cannot_escape(tmp_path):
     assert results.local_artifact(tmp_path, '/work/job_sample_1.cif') == model
 
 
+def test_connected_prediction_structure_resolves_from_managed_source_run(tmp_path, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import portable_paths
+
+    runs = tmp_path / 'runs'
+    campaign = runs / 'campaign' / 'campaign-1'
+    prediction = runs / 'refolding-validation' / 'prediction-1' / 'artifacts' / 'model.pdb'
+    campaign.mkdir(parents=True)
+    prediction.parent.mkdir(parents=True)
+    prediction.write_text('ATOM\n')
+    monkeypatch.setattr(portable_paths, 'runs_root', lambda: runs)
+
+    assert results.local_artifact(campaign, 'runs:///refolding-validation/prediction-1/artifacts/model.pdb') == prediction
+    assert results.local_artifact(campaign, str(prediction)) == prediction
+    assert results.local_artifact(campaign, str(tmp_path / 'outside.pdb')) is None
+
+
 def test_msa_preview_is_one_per_chain_and_prefers_staged_reference_copy(tmp_path):
     staged = tmp_path / 'artifacts/raw/af3_jax_cofolding/msas/chain_A.a3m'
     generated = tmp_path / 'artifacts/raw/af3_jax_cofolding/output/uniref.a3m'

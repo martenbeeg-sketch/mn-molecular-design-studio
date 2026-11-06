@@ -8360,7 +8360,35 @@ def _render_job_details() -> None:
                     st.dataframe(candidate_state_rows(result_candidates[:10000]), hide_index=True, use_container_width=True)
                     from mn_molecular_design_studio.output_vocabulary import evidence_rows
                     if st.checkbox("Show measurements with their source stages", key=f"job-evidence-{run_id}"):
-                        st.dataframe(evidence_rows(result_candidates[:1000]), hide_index=True, use_container_width=True)
+                        evidence = evidence_rows(result_candidates[:1000])
+                        for row in evidence:
+                            value = row.get("value")
+                            row["value"] = (
+                                json.dumps(value, sort_keys=True, default=str)
+                                if isinstance(value, (dict, list)) else "" if value is None else str(value)
+                            )
+                            if isinstance(row.get("effective_settings"), (dict, list)):
+                                row["effective_settings"] = json.dumps(row["effective_settings"], sort_keys=True, default=str)
+                        st.dataframe(
+                            evidence,
+                            hide_index=True,
+                            use_container_width=True,
+                            column_order=[
+                                "field", "value", "unit", "stage", "source_tool", "measurement_status",
+                                "candidate_id", "measurement_candidate_id", "role", "same_sequence", "error",
+                                "parents", "selector", "conditioning_mode", "direction", "effective_settings",
+                            ],
+                            column_config={
+                                "field": st.column_config.TextColumn("Measurement", width="medium"),
+                                "value": st.column_config.TextColumn("Value", width="small"),
+                                "unit": st.column_config.TextColumn("Unit", width="small"),
+                                "stage": st.column_config.TextColumn("Stage", width="small"),
+                                "source_tool": st.column_config.TextColumn("Method", width="small"),
+                                "measurement_status": st.column_config.TextColumn("Status", width="small"),
+                                "candidate_id": st.column_config.TextColumn("Candidate ID", width="medium"),
+                                "measurement_candidate_id": st.column_config.TextColumn("Measurement candidate", width="medium"),
+                            },
+                        )
 
         csv_artifacts = (
             []

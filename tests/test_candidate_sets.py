@@ -194,6 +194,59 @@ def test_graph_prediction_edge_uses_configured_chaperone_handler(collection_harn
                ]
 
 
+def test_first_chaperone_tool_handoff_seeds_identity_and_resolves_native_parent(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import chaperone_adapter
+
+    target_path = structure(tmp_path / "target.pdb")
+    source_run = tmp_path / "native-source"
+    source_run.mkdir()
+    native = dict(candidate_id="native-design-7", stage="generation.backbone_sequence",
+        source_tool="rfd4_proteina", binder_sequence="GGG", complex_pdb=target_path,
+        target_pdb=target_path, binder_chains=["B"], target_chains=["A"], parents=[],
+        metrics={"native_score": 0.7}, raw_metadata={"native_fixture": "kept"})
+    source_path = source_run / "artifacts/normalized_candidates/candidates.jsonl"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(json.dumps(native) + "\n")
+    source = {"run_dir": str(source_run), "candidates_jsonl": str(source_path),
+        "target": {"target_pdb": target_path, "target_chains": ["A"]}, "source_run_id": "native-run-7"}
+
+    monkeypatch.setattr(chaperone_adapter, "worker_configuration", lambda: {"python": "/worker/python"})
+    def roundtrip(rows):
+        returned = copy.deepcopy(rows)
+        for row in returned:
+            row.setdefault("raw_metadata", {})["chaperone_interop"] = {
+                "adapter": "chaperone", "design_id": row["candidate_id"]}
+        return returned
+    monkeypatch.setattr(chaperone_adapter, "roundtrip_candidates", roundtrip)
+
+    handoff = cs.chaperone_handoff(tmp_path, "prediction-input", source)
+    upstream = next(cs.iter_candidates(handoff))
+    upstream_info = cs.metadata(upstream)
+    assert upstream_info["native_candidate_id"] == "native-design-7"
+    assert upstream_info["source_run"] == "native-run-7"
+    assert upstream_info["target_id"] == handoff["target"]["identity"]["target_id"]
+    assert upstream["raw_metadata"]["chaperone_interop"]["adapter"] == "chaperone"
+    assert upstream["raw_metadata"]["chaperone_interop"]["handoff_node"] == "prediction-input"
+
+    predicted = dict(candidate_id="prediction-model-0", parents=["native-design-7"],
+        stage="complex_refolding", source_tool="optimized_prediction_boltz2", binder_sequence="GGG",
+        complex_pdb=target_path, target_pdb=target_path, binder_chains=["B"], target_chains=["A"],
+        metrics={"iptm": 0.82}, raw_metadata={"source_candidate": {"candidate_id": "native-design-7"},
+            "prediction_protocol": {"engine": "boltz2", "seed": 19}})
+    output = gp._local_source(tmp_path, "prediction-output", [predicted], handoff["target"])
+    attached = cs.attach_stage(tmp_path, "boltz2-node", output, handoff,
+        category="Structure prediction", scientific_key="prediction-fixture", settings={"seed": 19})
+    result = next(cs.iter_candidates(attached))
+    result_info = cs.metadata(result)
+    assert result_info["variant_id"] == upstream_info["variant_id"]
+    assert result_info["native_candidate_id"] == "native-design-7"
+    assert result_info["record_kind"] == "prediction"
+    assert result_info["prediction_id"] and result_info["predictor_node"] == "boltz2-node"
+    assert result["complex_pdb"] == target_path
+    assert result["metrics"]["iptm"] == 0.82
+    assert result["raw_metadata"]["chaperone_handoffs"][0]["handoff_node"] == "prediction-input"
+
+
 def test_different_generator_sizes_native_rejection_duplicates_and_export(collection_harness):
     h = collection_harness
     graph = h.graph(10, 3, rejected=[0])

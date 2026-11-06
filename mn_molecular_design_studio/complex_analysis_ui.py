@@ -320,8 +320,9 @@ def _job_structure_options(user: dict, job: dict) -> list[dict]:
         except (OSError, ValueError):
             continue
     # A normalized candidate can refer to a saved structure which has not yet
-    # been added to the artifact catalog. Keep it usable if it remains inside
-    # the authorized job directory.
+    # been added to the artifact catalog. Connected canvas outputs may live in
+    # a child run, so accept those references only while they remain inside
+    # Studio's managed runs root.
     known = {str(item["path"]) for item in rows}
     for candidate in candidates:
         structure = cofolding_results.structure_for(run_dir, candidate)
@@ -329,16 +330,19 @@ def _job_structure_options(user: dict, job: dict) -> list[dict]:
             continue
         try:
             resolved = structure.resolve(strict=True)
-            resolved.relative_to(run_dir)
-            resolved.relative_to(root)
+            relative_to_root = resolved.relative_to(root)
         except (OSError, ValueError):
             continue
         if str(resolved) in known or _structure_suffix(resolved) not in STRUCTURE_SUFFIXES:
             continue
+        try:
+            relative_path = resolved.relative_to(run_dir).as_posix()
+        except ValueError:
+            relative_path = f"runs:///{relative_to_root.as_posix()}"
         rows.append({
             "path": resolved,
-            "relative_path": resolved.relative_to(run_dir).as_posix(),
-            "artifact_path": resolved.relative_to(root).as_posix(),
+            "relative_path": relative_path,
+            "artifact_path": relative_to_root.as_posix(),
             "candidate": candidate,
             "candidate_id": str(candidate.get("candidate_id") or ""),
             "label": resolved.name,
