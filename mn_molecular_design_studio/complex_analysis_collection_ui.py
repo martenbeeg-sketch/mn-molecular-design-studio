@@ -235,7 +235,14 @@ def _protein_ligand_rows(samples: list[dict]) -> list[dict]:
 
 
 def _render_evaluation_board(samples: list[dict]) -> list[dict]:
-    entries = [row for sample in samples for row in sample.get("evaluation_entries", [])]
+    entries = []
+    seen = set()
+    for sample in samples:
+        for row in sample.get("evaluation_entries", []):
+            identity = row.get('evaluation_id') or (row.get('run_id'), row.get('candidate_id'), row.get('structure_digest'), row.get('method'))
+            if identity not in seen:
+                entries.append(row)
+                seen.add(identity)
     st.markdown("#### Evaluation Board")
     st.caption("Scientific findings and model confidence remain separate from human review. This board filters only saved Evaluations and their recorded provenance; it does not create a combined quality score.")
     if not entries:
@@ -274,6 +281,12 @@ def _render_evaluation_board(samples: list[dict]) -> list[dict]:
         "Structure": row["structure_label"], "Kind": row["category"], "Method": row["method"],
         "Source engine": row["source_engine"], "Status": row["status"], "Created": row["created_at"],
         "Evaluation ID": row["evaluation_id"], "Run ID": row["run_id"] or "Not recorded",
+        "Source job": row.get('source_job') or 'Not recorded',
+        "Source workstation": row.get('source_workstation') or 'Not recorded',
+        "Source candidate": row.get('source_candidate_id') or 'Not recorded',
+        "Source model": row.get('source_model_id') or 'Not recorded',
+        "Chains": json.dumps({'binder': row.get('binder_chains'), 'target': row.get('target_chains')})
+                  if 'binder_chains' in row else 'Not recorded',
         "Candidate / pose ID": row["candidate_id"] or "Not recorded",
         "Structure digest": row["structure_digest"] or "Not recorded",
         **({"Native acceptance": row['native_acceptance'],

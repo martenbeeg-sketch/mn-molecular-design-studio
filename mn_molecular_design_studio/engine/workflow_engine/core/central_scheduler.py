@@ -157,6 +157,8 @@ def _service_dir() -> Path:
 
 
 def ensure_scheduler_worker_service() -> None:
+    if scheduler_mode() != "central":
+        return
     # Settings may have changed since this API process started. Refresh the
     # environment before launching a worker so it inherits the current paths.
     from mn_molecular_design_studio.workspace import ensure_studio_workspace

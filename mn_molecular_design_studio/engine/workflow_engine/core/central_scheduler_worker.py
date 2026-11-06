@@ -22,6 +22,7 @@ from mn_molecular_design_studio.engine.workflow_engine.core.central_scheduler im
     SERVICE_DIR_NAME,
     WORKFLOW_ID,
     scheduler_client_module,
+    scheduler_mode,
 )
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json, utc_now, write_json
 from mn_molecular_design_studio.engine.workflow_engine.runtime import app_home, runs_root
@@ -470,6 +471,8 @@ def configured_worker_count() -> int:
 
 
 def run_service() -> int:
+    if scheduler_mode() != "central":
+        return 0
     results_root = _refresh_workspace_paths()
     service_dir = _service_dir()
     service_dir.mkdir(parents=True, exist_ok=True)

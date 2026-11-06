@@ -1,0 +1,135 @@
+{
+  "analysis": {
+    "candidate": {
+      "binder_chains": [
+        "B"
+      ],
+      "binder_sequence": "SSILTMAIEKIHELAEQDHIEKIYVVVDNETLYEELLSKKVALTEQTEKPIFISMGSRDMAEKIAADLPDNTAVLFVSADSVEVIK",
+      "candidate_id": "rfd4_000050_protein_binder_rep9_biotite_interface",
+      "complex_pdb": "artifacts/input/item_000000/complex_pdb.cif",
+      "metrics": {
+        "qc_interface_contact_distance": 5.0,
+        "qc_interface_contact_pairs": 430,
+        "qc_interface_hbond_status": "unavailable: explicit hydrogens required",
+        "qc_interface_residue_pairs": 63,
+        "qc_interface_salt_bridges": 1
+      },
+      "raw_metadata": {
+        "analysis_parameters": {
+          "contact_distance": 5.0,
+          "protocol_revision": "2d863843c142f6adabb901db9b1ea43f5d07bb3671c69b30a24a732f0e083e67",
+          "workers": 4
+        },
+        "complex_analysis_selection": {
+          "model_id": "bdbc6172e1d7ea156434791d0c1d515ddc1bd364ea94cab090aa9a71e6928438.cif",
+          "structure_digest": "bdbc6172e1d7ea156434791d0c1d515ddc1bd364ea94cab090aa9a71e6928438",
+          "structure_path": "runs:///design/20261102-081701-97f7d42e/artifacts/rfd4_proteina/output/inference_samples/protein_binder_rep9/protein_binder_rep9_generated.cif"
+        },
+        "measurement_status": {
+          "error": "",
+          "fields": {
+            "qc_interface_contact_pairs": "valid"
+          },
+          "status": "measured"
+        },
+        "source_candidate": {
+          "binder_chains": [
+            "B"
+          ],
+          "candidate_id": "rfd4_000050_protein_binder_rep9",
+          "complex_pdb": "runs:///design/20261102-081701-97f7d42e/artifacts/rfd4_proteina/output/inference_samples/protein_binder_rep9/protein_binder_rep9_generated.cif",
+          "source_tool": "rfd4_proteina",
+          "target_chains": [
+            "A"
+          ]
+        },
+        "structure_digest": "bdbc6172e1d7ea156434791d0c1d515ddc1bd364ea94cab090aa9a71e6928438"
+      },
+      "source_tool": "biotite_interface",
+      "stage": "analysis",
+      "target_chains": [
+        "A"
+      ]
+    },
+    "catalog": {
+      "availability": "online",
+      "cluster_job_id": "analysis-job",
+      "created_at": "2026-11-06T17:06:51+00:00",
+      "database_collection_policy": "automatic",
+      "has_candidate_collection": true,
+      "local_reference": "analysis/20261106-180651-cee86ec8",
+      "node_id": "16b4dcfd-3b9f-4d59-80a4-95363125fcee",
+      "node_name": "PC004033",
+      "owner_id": "test-user",
+      "project_id": "test-project",
+      "run_id": "20261106-180651-cee86ec8",
+      "status": "completed",
+      "task_group": "analysis",
+      "tool": "biotite_interface",
+      "updated_at": "2026-11-06T17:06:54+00:00",
+      "upstream_run_id": "20261102-081701-97f7d42e",
+      "upstream_task_group": "design"
+    },
+    "job": {
+      "run_dir": "/data/RESULTS/mn-molecular-design-studio/workdir/runs/analysis/20261106-180651-cee86ec8"
+    },
+    "metadata": {
+      "created_at": "2026-11-06T17:06:51+00:00",
+      "database_collection_policy": "automatic",
+      "run_id": "20261106-180651-cee86ec8",
+      "task_group": "analysis",
+      "tool": "biotite_interface",
+      "updated_at": "2026-11-06T17:06:54+00:00",
+      "upstream_run_id": "20261102-081701-97f7d42e",
+      "upstream_task_group": "design"
+    }
+  },
+  "digest": "bdbc6172e1d7ea156434791d0c1d515ddc1bd364ea94cab090aa9a71e6928438",
+  "source": {
+    "candidate": {
+      "binder_chains": [
+        "B"
+      ],
+      "binder_sequence": "SSILTMAIEKIHELAEQDHIEKIYVVVDNETLYEELLSKKVALTEQTEKPIFISMGSRDMAEKIAADLPDNTAVLFVSADSVEVIK",
+      "candidate_id": "rfd4_000050_protein_binder_rep9",
+      "complex_pdb": "artifacts/rfd4_proteina/output/inference_samples/protein_binder_rep9/protein_binder_rep9_generated.cif",
+      "metrics": {},
+      "raw_metadata": {
+        "source_candidate": {}
+      },
+      "source_tool": "rfd4_proteina",
+      "stage": "generation.backbone_sequence",
+      "target_chains": [
+        "A"
+      ]
+    },
+    "catalog": {
+      "availability": "online",
+      "cluster_job_id": "source-job",
+      "created_at": "2026-11-02T07:17:01+00:00",
+      "database_collection_policy": "manual",
+      "has_candidate_collection": true,
+      "local_reference": "design/20261102-081701-97f7d42e",
+      "node_id": "16b4dcfd-3b9f-4d59-80a4-95363125fcee",
+      "node_name": "PC004033",
+      "owner_id": "test-user",
+      "project_id": "test-project",
+      "run_id": "20261102-081701-97f7d42e",
+      "status": "completed",
+      "task_group": "design",
+      "tool": "rfd4_proteina",
+      "updated_at": "2026-11-02T07:25:22+00:00"
+    },
+    "job": {
+      "run_dir": "/data/RESULTS/mn-molecular-design-studio/workdir/runs/design/20261102-081701-97f7d42e"
+    },
+    "metadata": {
+      "created_at": "2026-11-02T07:17:01+00:00",
+      "database_collection_policy": "manual",
+      "run_id": "20261102-081701-97f7d42e",
+      "task_group": "design",
+      "tool": "rfd4_proteina",
+      "updated_at": "2026-11-02T07:25:22+00:00"
+    }
+  }
+}

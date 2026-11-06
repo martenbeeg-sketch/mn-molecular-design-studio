@@ -22,6 +22,8 @@ def test_peer_results_collect_inspects_remote_source_through_coordinator_api(tmp
 
     def request(path, payload=None, **kwargs):
         calls.append((path, payload, kwargs))
+        if path == "/api/v1/cluster/jobs/remote-source-17":
+            return {"node_id": "remote-node", "local_reference": "design/source-17"}
         if path == "/api/v1/cluster/jobs/remote-source-17/actions":
             assert payload == {"action": "inspect"}
             return {"command_id": "inspect-command-17"}
@@ -44,6 +46,7 @@ def test_peer_results_collect_inspects_remote_source_through_coordinator_api(tmp
     result = run_results.collect(run, output, {"id": "user-17"}, token="session-token")
 
     assert [call[0] for call in calls] == [
+        "/api/v1/cluster/jobs/remote-source-17",
         "/api/v1/cluster/jobs/remote-source-17/actions",
         "/api/v1/cluster/commands/inspect-command-17",
     ]
@@ -57,4 +60,3 @@ def test_peer_results_collect_inspects_remote_source_through_coordinator_api(tmp
     assert row["metrics"] == {"iptm": 0.81}
     assert row["source_job"] == "cluster:remote-source-17"
     assert row["source_node_id"] == "remote-node"
-

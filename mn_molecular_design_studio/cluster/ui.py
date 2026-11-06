@@ -1432,7 +1432,7 @@ def _bindcraft2_monomer_path(refolded_csv, candidate):
     )
 
 
-def _fetch_remote_artifact_text(jid, path, token, state_key, label="saved structure"):
+def _fetch_remote_artifact_bytes(jid, path, token, state_key, label="saved structure"):
     relative = _safe_run_artifact_path(path)
     if not relative:
         st.warning("The saved structure path is invalid.")
@@ -1465,10 +1465,15 @@ def _fetch_remote_artifact_text(jid, path, token, state_key, label="saved struct
             st.session_state[content_key] = _request(
                 "/commands/" + command_id + "/file", token, raw=True, timeout=60
             )
-        return st.session_state[content_key].decode("utf-8", errors="replace")
+        return st.session_state[content_key]
     except (ValueError, transport.ClusterUnavailable) as exc:
         st.info(str(exc))
         return None
+
+
+def _fetch_remote_artifact_text(jid, path, token, state_key, label="saved structure"):
+    content = _fetch_remote_artifact_bytes(jid, path, token, state_key, label)
+    return content.decode("utf-8", errors="replace") if content is not None else None
 
 
 def _render_remote_docking_preview(jid, row, data, token):

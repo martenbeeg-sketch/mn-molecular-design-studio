@@ -13,10 +13,12 @@ from pathlib import Path
 import streamlit as st
 
 
-def open_results_board(run_dir, candidate_ids=None):
-    run = Path(run_dir)
+def open_results_board(run_dir=None, candidate_ids=None, *, job=None):
+    from mn_molecular_design_studio.logical_runs import source_reference
+    run = Path(run_dir or '.')
     st.session_state['results-analysis-source'] = {
-        'reference': f'{run.parent.name}/{run.name}', 'candidate_ids': candidate_ids or []}
+        'reference': source_reference(job) if job else f'{run.parent.name}/{run.name}', 'candidate_ids': candidate_ids or []}
+    st.session_state.pop('results-board-run', None)
     st.session_state['complex-analysis-workspace-view'] = 'results_board'
     st.session_state['page'] = 'Complex Analysis'
     st.rerun()
@@ -76,9 +78,10 @@ def _candidate_measurement_label(candidate, linked_entries=(), *, digest='', mod
     return _measurement_label(candidate)
 
 
-def board_entries(candidate, *, label, run_id, digest, policy=None, manual_selection=None):
-    """Read saved Results measurements without inventing Database Evaluation IDs."""
+def board_entries(candidate, *, label, run_id, digest, policy=None, manual_selection=None, job=None):
+    """Project saved Results; Database association is optional and stays separate."""
     from mn_molecular_design_studio.native_filter_metrics import native_filter_evidence
+    from mn_molecular_design_studio.evaluations import results_evaluation_descriptor
     raw = candidate.get('raw_metadata') or {}
     route = raw.get('complex_analysis_entry') or {}
     native = native_filter_evidence(candidate)
@@ -90,14 +93,16 @@ def board_entries(candidate, *, label, run_id, digest, policy=None, manual_selec
     measurement_status = str(measurement.get('status') or 'not_measured')
     source_model_id = _first_present(route.get('model_id'), candidate.get('model_id'), candidate.get('model_index'),
                                      raw.get('model_id'), raw.get('model_index'))
+    descriptor = results_evaluation_descriptor(candidate, job or {'run_id': run_id}, structure_digest=digest)
+    context['evaluation'] = descriptor
     entry = {
         'molecule_id': '', 'structure_id': '', 'structure_label': label,
-        'evaluation_id': raw.get('evaluation_id', ''), 'observation_id': raw.get('observation_id', ''),
+        'evaluation_id': descriptor['id'], 'observation_id': descriptor['observation_id'],
         'method': candidate.get('source_tool') or 'Saved Results', 'category': 'Saved Results measurements',
         'source_engine': candidate.get('source_tool') or 'Unknown', 'run_id': run_id,
         'candidate_id': candidate['candidate_id'], 'structure_digest': digest,
         'parameters': raw.get('analysis_parameters') or {}, 'provenance': context,
-        'metrics': candidate.get('metrics') or {}, 'created_at': '',
+        'metrics': candidate.get('metrics') or {}, 'created_at': descriptor['created_at'],
         'status': measurement_status,
         'measurement_label': _measurement_label(candidate),
         'native_acceptance': native.get('status', 'unavailable'),
@@ -107,7 +112,9 @@ def board_entries(candidate, *, label, run_id, digest, policy=None, manual_selec
         'source_candidate_id': str(source_candidate_id),
         'source_model_id': str(source_model_id),
         'source_structure_digest': str(route.get('structure_sha256') or digest),
-        'source_run_id': str(route.get('source_run') or run_id),
+        'source_run_id': descriptor['source_run_id'], 'source_job': descriptor['source_job'],
+        'source_workstation': descriptor['source_workstation'], 'result_reference': descriptor['result_reference'],
+        'binder_chains': descriptor['binder_chains'], 'target_chains': descriptor['target_chains'],
     }
     return [entry]
 
@@ -141,7 +148,7 @@ def canvas_graph(job, candidate_ids, policy, *, entry_mode='accepted_only', manu
     return graph
 
 
-def _linked_measurements(user, job, selected):
+def _linked_measurements(user, job, selected, *, jobs=None, load=None):
     """Join exact source candidate, model, digest and role-qualified receipts."""
     from mn_molecular_design_studio import complex_analysis_ui as workspace
     from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
@@ -155,23 +162,51 @@ def _linked_measurements(user, job, selected):
         for value in (candidate.get('candidate_id'), candidate_set.get('native_candidate_id'),
                       route.get('native_candidate_id'), route.get('candidate_id')):
             if value:
-                aliases.setdefault(str(value), []).append(item)
+                matches = aliases.setdefault(str(value), [])
+                if not any(match is item for match in matches):
+                    matches.append(item)
     samples = {identifier: matches[0] for identifier, matches in aliases.items() if len(matches) == 1}
     result = []
-    for analysis in workspace._accessible_result_jobs(user):
+    for analysis in workspace._accessible_result_jobs(user) if jobs is None else jobs:
         if analysis.get('task_group') != 'analysis':
             continue
-        run = Path(analysis['run_dir'])
-        path = run / 'artifacts/normalized_candidates/candidates.jsonl'
-        if not path.is_file():
-            continue
-        metadata = read_json(run / 'metadata.json')
+        if analysis.get('node_id') and job.get('node_id'):
+            direct = (analysis.get('upstream_run_id') == job['run_id']
+                      and analysis.get('upstream_task_group') == job.get('task_group')
+                      and (analysis.get('upstream_node_id') or analysis['node_id']) == job['node_id'])
+            same_run = bool(job.get('logical_run_id') and analysis.get('logical_run_id') == job['logical_run_id'])
+            if not direct and not same_run:
+                continue
+        if load is not None:
+            collection = load(analysis)
+            candidates = collection['candidates']
+            from mn_molecular_design_studio.logical_runs import source_reference
+            metadata = (collection.get('source_details', {}).get(source_reference(analysis)) or {}).get('metadata', {})
+        else:
+            run = Path(analysis['run_dir'])
+            path = run / 'artifacts/normalized_candidates/candidates.jsonl'
+            if not path.is_file():
+                continue
+            metadata = read_json(run / 'metadata.json')
+            candidates = read_candidates(path)
         # Candidate-aware graph analyses carry an exact source receipt. Direct
         # contextual analyses carry the original candidate in source_candidate.
-        for candidate in read_candidates(path):
+        for candidate in candidates:
             raw = candidate.get('raw_metadata') or {}
             entry = raw.get('complex_analysis_entry') or {}
             original = raw.get('source_candidate') or {}
+            if analysis.get('node_id') and job.get('node_id'):
+                source_node = entry.get('source_node_id') or original.get('source_node_id') or analysis.get('upstream_node_id') or analysis['node_id']
+                if source_node != job['node_id']:
+                    continue
+                if not entry and not direct:
+                    # A grouped graph output may originate in an intermediate
+                    # handoff. Require its recorded original managed run rather
+                    # than joining identical candidate names across branches.
+                    original_path = str(original.get('complex_pdb') or '')
+                    expected = f"runs:///{job.get('task_group')}/{job['run_id']}/"
+                    if not original_path.startswith(expected):
+                        continue
             source_id = entry.get('native_candidate_id') or original.get('candidate_id')
             source = samples.get(str(source_id or ''))
             if source is None:
@@ -208,8 +243,61 @@ def _linked_measurements(user, job, selected):
                                           source_raw.get('model_id'), source_raw.get('model_index'))
             if str(analysis_model) != str(source_model):
                 continue
-            result.extend(board_entries(candidate, label=source['label'], run_id=analysis['run_id'], digest=saved_digest))
-    return result
+            result.extend(board_entries(candidate, label=source['label'], run_id=analysis['run_id'], digest=saved_digest,
+                                        job={**metadata, **analysis}))
+    return list({entry['evaluation_id']: entry for entry in result}.values())
+
+
+def _remote_board_options(job, collection):
+    """Keep source-relative artifact references until a selected structure is read."""
+    from mn_molecular_design_studio.cluster.ui import _candidate_structure_path, _safe_run_artifact_path
+    from mn_molecular_design_studio.complex_analysis_ui import STRUCTURE_SUFFIXES, _structure_suffix
+    from mn_molecular_design_studio.logical_runs import source_reference
+    details = collection.get('source_details', {}).get(source_reference(job)) or {}
+    source_dir = str((details.get('job') or {}).get('run_dir') or job.get('run_dir') or '')
+    options = []
+    for candidate in collection['candidates']:
+        structure = _candidate_structure_path(candidate, {'job': {'run_dir': source_dir}})
+        if structure:
+            relative, field = structure
+            if not _safe_run_artifact_path(relative) or _structure_suffix(Path(relative)) not in STRUCTURE_SUFFIXES:
+                continue
+            options.append({'candidate_id': candidate['candidate_id'], 'candidate': candidate,
+                            'relative_path': relative, 'structure_field': field,
+                            'source_run_dir': source_dir, 'label': candidate['candidate_id']})
+    return options
+
+
+def saved_results_measurements(user, job, selected, *, token=''):
+    """Shared peer Evaluation lookup for the Board and contextual Inspector."""
+    from mn_molecular_design_studio import run_results
+    from mn_molecular_design_studio.complex_analysis_dashboard import _run_catalog
+    jobs = run_results.completed_sources(user, token=token, runs=_run_catalog(user))
+    receipts = []
+    def load(source):
+        receipt = run_results.read_source(source, user, token=token)
+        receipts.append(receipt)
+        return receipt
+    entries = _linked_measurements(user, job, selected, jobs=jobs, load=load)
+    return {'entries': entries, 'pending': any(row['pending_sources'] for row in receipts),
+            'errors': [error for row in receipts for error in row['source_errors']]}
+
+
+def _materialize_board_structure(user, job, item, *, token):
+    from mn_molecular_design_studio import complex_analysis_ui as workspace
+    from mn_molecular_design_studio.cluster.ui import _fetch_remote_artifact_bytes
+    if item.get('path'):
+        return item
+    content = _fetch_remote_artifact_bytes(str(job['cluster_job_id']), item['relative_path'], token,
+        'results-board-artifact-' + hashlib.sha256(f"{job['node_id']}:{job['run_id']}:{item['relative_path']}".encode()).hexdigest(),
+        label='selected Results structure')
+    if content is None:
+        return None
+    expected = (item['candidate'].get('raw_metadata') or {}).get('structure_digest')
+    if expected and expected != hashlib.sha256(content).hexdigest():
+        raise ValueError('The selected structure does not match its saved content digest.')
+    path = workspace._stage_remote_result_file(content, Path(item['relative_path']).suffix, user=user)
+    return {**item, 'path': path}
 
 
 def render_results_board(user, *, workflow_schema=None, submit=None):
@@ -218,37 +306,61 @@ def render_results_board(user, *, workflow_schema=None, submit=None):
     from mn_molecular_design_studio.native_filter_metrics import native_filter_evidence
     from mn_molecular_design_studio.complex_analysis_collection_ui import _render_evaluation_board
     from mn_molecular_design_studio.output_vocabulary import candidate_output, PREFIX
+    from mn_molecular_design_studio import run_results, logical_runs
+    from mn_molecular_design_studio.cluster import transport
+    from mn_molecular_design_studio.complex_analysis_dashboard import _run_catalog
 
     st.title('Results → Complex Analysis')
     st.caption('Native acceptance, exploratory policy and manual selection remain separate. This workspace reads Results; it does not promote molecules into Database.')
     context = st.session_state.get('results-analysis-source') or {}
-    jobs = workspace._accessible_result_jobs(user)
-    by_ref = {f"{job['task_group']}/{job['run_id']}": job for job in jobs}
+    token = str(st.session_state.get('studio-session-token') or 'development-mode')
+    refresh = st.button('Refresh saved Results', key='results-board-refresh')
+    try:
+        jobs = run_results.completed_sources(user, token=token, runs=_run_catalog(user, refresh=refresh))
+    except (OSError, ValueError, transport.ClusterUnavailable) as exc:
+        st.warning(f'Could not read the authorized Results catalog: {exc}')
+        return
+    by_ref = {logical_runs.source_reference(job): job for job in jobs}
     if not by_ref:
         st.info('No accessible completed Results are available.')
         return
     reference = st.selectbox('Source Results campaign', list(by_ref),
         index=list(by_ref).index(context['reference']) if context.get('reference') in by_ref else 0,
-        format_func=lambda ref: f"{by_ref[ref].get('campaign_name') or by_ref[ref].get('tool')} · {ref}", key='results-board-run')
+        format_func=lambda ref: f"{by_ref[ref].get('campaign_name') or by_ref[ref].get('tool')} · "
+                               f"{by_ref[ref].get('node_name') or 'This workstation'} · {by_ref[ref]['task_group']}/{by_ref[ref]['run_id']}", key='results-board-run')
     job = by_ref[reference]
     board_states = st.session_state.setdefault('results-board-state', {})
     saved_state = board_states.get(reference, {})
-    options = [item for item in workspace._job_structure_options(user, job) if item.get('candidate_id')]
+    remote = reference.startswith('cluster:')
+    collections = {}
+    def load(source):
+        ref = logical_runs.source_reference(source)
+        if ref not in collections:
+            collection = run_results.read_source(source, user, token=token)
+            collections[ref] = collection
+            for error in collection['source_errors']:
+                st.warning(f"Saved measurements unavailable for {source['run_id']}: {error['error']}")
+            if collection['pending_sources']:
+                st.info(f"Loading saved measurements for {source['run_id']}. Use Refresh saved Results to check their availability.")
+        return collections[ref]
+    collection = load(job) if remote else None
+    options = (_remote_board_options(job, collection) if remote else
+               [item for item in workspace._job_structure_options(user, job) if item.get('candidate_id')])
     by_id = {item['candidate_id']: item for item in options}
     if not by_id:
-        st.info('This Results job has no local saved candidate structures. Open it on its source workstation to inspect remote files.')
+        st.info('No candidate structures are currently available for this Results source. Pending or unavailable data are not zero-valued measurements.')
         return
     wanted = [identifier for identifier in context.get('candidate_ids', []) if identifier in by_id] if context.get('reference') == reference else []
     subset_key = 'results-board-subset-'+job['run_id']
     if subset_key not in st.session_state:
         st.session_state[subset_key] = [item for item in saved_state.get('subset', wanted or list(by_id)[:8]) if item in by_id]
-    candidate_file = Path(job['run_dir']) / 'artifacts/normalized_candidates/candidates.jsonl'
     try:
         from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
-        saved_candidate_count = len(read_candidates(candidate_file))
+        saved_candidate_count = (len(collection['candidates']) if remote else
+                                 len(read_candidates(Path(job['run_dir']) / 'artifacts/normalized_candidates/candidates.jsonl')))
     except (OSError, ValueError, TypeError):
         saved_candidate_count = len(options)
-    st.caption(f"{len(options)} candidate structures are locally available for this Results source (of {saved_candidate_count} saved candidates).")
+    st.caption(f"{len(options)} candidate structure references are available for this Results source (of {saved_candidate_count} saved candidates). Selected remote artifacts are retrieved individually.")
     subset = st.multiselect('Candidates to review', list(by_id), key=subset_key)
     if not subset:
         st.info('Select source candidates to inspect or compare.')
@@ -294,12 +406,19 @@ def render_results_board(user, *, workflow_schema=None, submit=None):
         return
     source_items = []
     for identifier in subset:
-        item = by_id[identifier]
+        try:
+            item = _materialize_board_structure(user, job, by_id[identifier], token=token)
+        except (ValueError, OSError) as exc:
+            st.warning(f'Could not open this exact saved structure: {exc}')
+            return
+        if item is None:
+            st.info('The selected structure is loading. Use Refresh saved Results when it is ready.')
+            return
         digest = hashlib.sha256(item['path'].read_bytes()).hexdigest()
         candidate = next(row for row in evaluated if row['candidate_id'] == identifier)
         source_items.append({**item, 'candidate': candidate, 'digest': digest,
                              'label': f"{identifier} · {candidate.get('source_tool')}"})
-    linked = _linked_measurements(user, job, source_items)
+    linked = _linked_measurements(user, job, source_items, jobs=jobs, load=load)
     st.caption(f"Exploratory policy: {summary['accepted']} pass · {summary['rejected']} rejected · {summary['unresolved']} unresolved · {summary['not_evaluated']} not evaluated")
     st.dataframe([{'Studio candidate': row['candidate_id'],
         'Source candidate': _source_candidate_id(row),
@@ -327,8 +446,9 @@ def render_results_board(user, *, workflow_schema=None, submit=None):
     st.caption(f'{len(chosen)} candidate(s) enter this analysis route. Manual selection does not change acceptance.')
     if not chosen:
         st.info('Configure required measurements to obtain passing candidates, or explicitly select candidates in Manual selection mode.')
-        return
-    selected = [item for item in source_items if item['candidate']['candidate_id'] in chosen]
+    # Routing decisions govern new analysis submissions, not visibility of
+    # already saved measurements (including unresolved/rejected candidates).
+    selected = source_items
     samples = []
     for item in selected:
         identifier = item['candidate']['candidate_id']
@@ -337,7 +457,7 @@ def render_results_board(user, *, workflow_schema=None, submit=None):
         label = item['label']
         samples.append({'evaluation_entries': board_entries(candidate, label=label, run_id=job['run_id'], digest=digest,
                                                            policy=candidate['raw_metadata']['validation_acceptance'],
-                                                           manual_selection=(mode_label == 'Manual selection' and identifier in manual))})
+                                                           manual_selection=(mode_label == 'Manual selection' and identifier in manual), job=job)})
     if linked:
         samples.append({'evaluation_entries': linked})
     _render_evaluation_board(samples)
@@ -374,7 +494,7 @@ def render_results_board(user, *, workflow_schema=None, submit=None):
                     'binder_chains_sequence': [row['sequence'] for row in binder_numbering], 'complex_type': 'protein-protein',
                     'context': candidate.get('raw_metadata') or {}, 'viewer_key': 'results-board-compare-'+candidate['candidate_id'],
                     'evaluation_entries': [
-                        *board_entries(candidate, label=item['label'], run_id=job['run_id'], digest=item['digest']),
+                        *board_entries(candidate, label=item['label'], run_id=job['run_id'], digest=item['digest'], job=job),
                         *[entry for entry in linked
                           if entry.get('source_candidate_id') == candidate['candidate_id']
                           and entry.get('source_structure_digest') == item['digest']
@@ -387,15 +507,35 @@ def render_results_board(user, *, workflow_schema=None, submit=None):
                 render_comparison(user, workflow_schema=workflow_schema, submit=submit, selected_sources=compared)
     first, second = st.columns(2)
     with first:
-        inspect_id = st.selectbox('Candidate to inspect', chosen, key='results-board-inspect')
+        inspect_id = st.selectbox('Candidate to inspect', subset, key='results-board-inspect')
         if st.button('Open in Scientific Inspector', key='results-board-inspect-open'):
-            item = by_id[inspect_id]
-            workspace.open_result_complex(job['run_dir'], item['path'], item['candidate'], user=user)
+            item = next(item for item in source_items if item['candidate_id'] == inspect_id)
+            if remote:
+                workspace.open_remote_result_complex(job, by_id[inspect_id]['candidate'], item['relative_path'], user=user,
+                    structure_content=item['path'].read_bytes(), source_run_dir=item['source_run_dir'],
+                    structure_field=item['structure_field'], structure_sha256=item['digest'])
+            else:
+                workspace.open_result_complex(job['run_dir'], item['path'], item['candidate'], user=user)
+        origin = next((row for row in jobs if job.get('upstream_run_id')
+                       and row.get('run_id') == job.get('upstream_run_id')
+                       and row.get('task_group') == job.get('upstream_task_group')
+                       and row.get('node_id') == (job.get('upstream_node_id') or job.get('node_id'))), job)
+        if st.button('Open original source Results' if origin is not job else 'Open source Results', key='results-board-source-results'):
+            from mn_molecular_design_studio.cluster.ui import _navigate_to_job_details
+            source_reference = logical_runs.source_reference(origin)
+            if source_reference.startswith('cluster:'):
+                jid = str(origin['cluster_job_id'])
+                st.session_state.pop('cluster-candidate-' + jid, None)
+                st.session_state['cluster-candidate-default-' + jid] = (
+                    _source_candidate_id(by_id[inspect_id]['candidate']) if origin is not job else inspect_id)
+            _navigate_to_job_details(source_reference, final_results=True)
     with second:
         ppi = all(by_id[identifier]['candidate'].get('binder_chains') and by_id[identifier]['candidate'].get('binder_sequence') for identifier in chosen)
         analysis = st.selectbox('Connected analysis tool', ['biotite_interface', 'interface_clustering', 'ipsae', 'rosetta_metrics'] if ppi else ['plip', 'pandamap', 'posebusters'],
             format_func=lambda key: __import__('mn_molecular_design_studio.pipeline_graph', fromlist=['NODE_CATALOG']).NODE_CATALOG[key]['label'], key='results-board-tool')
-        if st.button('Continue on canvas', key='results-board-canvas'):
+        if remote:
+            st.caption('Open the Scientific Inspector to launch an analysis on the source workstation using its saved artifact.')
+        if st.button('Continue on canvas', key='results-board-canvas', disabled=remote or not chosen):
             graph = canvas_graph(job, subset, policy, entry_mode='accepted_only' if mode_label == 'Accepted only' else 'manual_selection', manual_ids=manual, analysis=analysis)
             project = job.get('project_id')
             prefix = f'visual-pipeline-{project}'

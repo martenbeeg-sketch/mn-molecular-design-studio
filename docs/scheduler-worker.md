@@ -5,6 +5,36 @@ Studio starts its own worker bridge when a job is submitted; the bridge claims
 only Studio jobs. Do not restart or edit the shared scheduler to fix a Studio
 worker-path problem.
 
+## Isolated development previews
+
+Use the existing local worker mode for a preview that must never register with
+or claim work from the shared scheduler:
+
+```bash
+export MN_MOLECULAR_DESIGN_STUDIO_HOME=/absolute/path/to/isolated-preview
+export MN_MOLECULAR_DESIGN_STUDIO_APP_HOME="$MN_MOLECULAR_DESIGN_STUDIO_HOME"
+export MN_MOLECULAR_DESIGN_STUDIO_SCHEDULER_MODE=local
+export MDS_CLUSTER_HOME="$MN_MOLECULAR_DESIGN_STUDIO_HOME/cluster"
+export MN_COMPUTE_SCHEDULER_STATE_DIR="$MN_MOLECULAR_DESIGN_STUDIO_HOME/scheduler-local"
+```
+
+Set the preview's saved `results_directory` to its own Results directory. Its
+cluster configuration must use `mode: disabled`, `accept_jobs: false`,
+`share_molecular_database: false`, and an empty peer list. This configuration
+belongs only to the preview; retain the enrolled production configuration.
+
+Both central bridge startup paths refuse to start in local mode, including a
+direct `central_scheduler_worker --service` invocation. Local execution still
+uses the existing local worker; this setting is not a separate scheduler.
+Persist these variables in the preview's own launcher so a restart retains
+isolation. Do not run costly fixture verification on production GPUs.
+
+Before changing a running preview, verify its exact PID/home, no active local
+jobs, no bridge claims and no scientific child workers. Stop only that preview
+API gracefully, then start it with the isolated configuration. Keep its Results
+and original configuration backup. Production Studio services and the shared
+MN Compute Scheduler do not need restarting.
+
 ## Which path setting controls a job?
 
 Use **Settings → Results directory** in Molecular Design Studio. The saved

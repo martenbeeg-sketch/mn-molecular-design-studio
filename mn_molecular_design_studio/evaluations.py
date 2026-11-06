@@ -10,10 +10,13 @@ import json
 import math
 from pathlib import Path
 from functools import lru_cache
+from urllib.parse import urlsplit
 
 from mn_molecular_design_studio.output_vocabulary import PREFIX, VERSION, normalize_metrics, normalize_parameters
 
 PROJECTION_VERSION = "evaluation.v6:" + VERSION
+_RUNTIME_FIELDS = {"source_run_dir", "candidates_jsonl", "job_name", "campaign_name", "cpu_cores", "cpu_threads",
+                   "nprocs", "workers", "gpu_device", "backend", "output_dir"}
 
 
 def _projectable_metrics(metrics, namespace):
@@ -86,8 +89,7 @@ def evaluation_descriptor(observation):
     representation = (structure_digest or context.get("_replica_representation") or context.get("representation_id")
                       or pose_id or row.get("pose_path") or candidate.get("complex_pdb") or candidate.get("binder_pdb") or "")
     settings = context.get("settings") or raw.get("analysis_parameters") or {}
-    runtime_fields = {"source_run_dir", "candidates_jsonl", "job_name", "campaign_name", "cpu_cores", "cpu_threads", "nprocs", "workers", "gpu_device", "backend", "output_dir"}
-    scientific_settings = {k: v for k, v in settings.items() if k not in runtime_fields}
+    scientific_settings = {k: v for k, v in settings.items() if k not in _RUNTIME_FIELDS}
     parameter_projection = normalize_parameters(scientific_settings, candidate.get("source_tool") or observation.get("namespace"))
     parameters_digest = identifier("params-", scientific_settings)
     instance = identifier("instance-", [context.get("node_id"), context.get("task_group"), run, candidate_id,
@@ -118,6 +120,60 @@ def evaluation_descriptor(observation):
             "preferred": bool(context.get("is_representative") if context.get("is_representative") is not None
                                else context.get("representation_id")) and context.get("status", "completed") == "completed",
             "context_complete": bool(target and representation), "created_at": observation.get("created_at", "")}
+
+
+def results_evaluation_descriptor(candidate, job, *, structure_digest=""):
+    """Project a persisted Results record using the existing Evaluation schema.
+
+    This read-only descriptor does not insert a molecular identity, observation,
+    or curated representation. Its origin-qualified identity survives federation
+    and repeated reads; a Database-associated Evaluation keeps its existing ID.
+    """
+    raw = candidate.get("raw_metadata") or {}
+    receipt = raw.get("complex_analysis_entry") or {}
+    original = raw.get("source_candidate") or {}
+    source_id = receipt.get("native_candidate_id") or receipt.get("candidate_id") or original.get("candidate_id") or candidate["candidate_id"]
+    model = next((v for v in (receipt.get("model_id"), candidate.get("model_id"), candidate.get("model_index"),
+                             raw.get("model_id"), raw.get("model_index")) if v is not None and str(v) != ""), "")
+    digest = str(receipt.get("structure_sha256") or raw.get("structure_digest") or structure_digest)
+    settings = raw.get("analysis_parameters") or {}
+    node = str(job.get("node_id") or candidate.get("source_node_id") or "")
+    workstation = str(job.get("node_name") or job.get("workstation") or node)
+    recorded = urlsplit(str(original.get('complex_pdb') or ''))
+    parts = recorded.path.strip('/').split('/')
+    managed = recorded.scheme in {'runs', 'cluster'} and len(parts) >= 3 and not any(p in {'', '.', '..'} for p in parts)
+    source_run = str(receipt.get("source_run") or (parts[1] if managed else '') or job.get("upstream_run_id") or job.get("run_id") or "")
+    source_group = str((parts[0] if managed else '') or job.get('upstream_task_group') or job.get('task_group') or '')
+    source_node = str(receipt.get('source_node_id') or (recorded.netloc if recorded.scheme == 'cluster' else '')
+                      or job.get('upstream_node_id') or node)
+    context = {"candidate": candidate, "candidate_id": candidate["candidate_id"], "model_id": str(model),
+               "workstation": node or workstation, "node_id": node, "task_group": job.get("task_group"),
+               "run_id": job.get("run_id"), "source_structure_digest": digest, "structure_digest": digest,
+               "target_id": raw.get('target_molecule_id') or raw.get('target_id') or candidate.get('target_id') or '',
+               "target_structure_digest": raw.get('target_structure_digest') or '',
+               "settings": settings, "status": (raw.get("measurement_status") or {}).get("status", "not_measured")}
+    # Unknown model stays unknown; legacy selection.model_id may only be a
+    # materialized filename, which is not a recorded scientific model identity.
+    projected_candidate = {**candidate, "raw_metadata": {**raw, "complex_analysis_selection": {
+        **(raw.get("complex_analysis_selection") or {}), "model_id": str(model)}}}
+    context["candidate"] = projected_candidate
+    record_id = identifier("results-record-", [node or workstation, job.get("task_group"), job.get("run_id"),
+        candidate["candidate_id"], candidate.get("source_tool"), str(model), digest,
+        sorted(candidate.get("binder_chains") or []), sorted(candidate.get("target_chains") or []),
+        (raw.get("complex_analysis_selection") or {}).get("ligand_selection") or {},
+        {key: value for key, value in settings.items() if key not in _RUNTIME_FIELDS}])
+    descriptor = evaluation_descriptor({"id": record_id, "run_id": job.get("run_id"), "context": context,
+                                       "created_at": job.get("completed_at") or job.get("updated_at") or ""})
+    descriptor.update(id=raw.get("evaluation_id") or identifier("results-evaluation-", record_id),
+                      observation_id=raw.get("observation_id") or "", scope="results", results_record_id=record_id,
+                      source_candidate_id=str(source_id), source_run_id=source_run,
+                      source_workstation=workstation if source_node == node else source_node,
+                      analysis_workstation=workstation,
+                      analysis_job=f"{node}:{job.get('task_group')}/{job.get('run_id')}",
+                      source_job=f"{source_node}:{source_group}/{source_run}",
+                      source_artifact=original.get("complex_pdb") or receipt.get("source_structure") or candidate.get("complex_pdb"),
+                      result_reference=candidate.get("source_job") or f"{job.get('task_group')}/{job.get('run_id')}")
+    return descriptor
 
 
 def install_schema(connection):

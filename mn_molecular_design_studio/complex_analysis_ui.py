@@ -738,6 +738,9 @@ def _render_remote_results_source(user: dict, opened: dict, *, workflow_schema=N
             "artifact_uri": uri, "structure_sha256": digest,
             "candidate_source_metadata": candidate.get("raw_metadata") or {},
         })
+    if st.button("Results Evaluation Board", key="complex-analysis-remote-results-board"):
+        from mn_molecular_design_studio.complex_analysis_results_ui import open_results_board
+        open_results_board(candidate_ids=[candidate['candidate_id']], job=remote_job)
     job = dict(remote_job, run_dir=str(staged_run_dir))
     selected = {
         "path": path, "relative_path": relative, "candidate": candidate,
@@ -2388,7 +2391,9 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
     candidate_binder = [value for value in candidate_binder if value in protein_chains]
     candidate_target = [value for value in candidate_target if value in protein_chains and value not in candidate_binder]
     key = hashlib.sha256(f"{task_group}/{run_id}:{selected['relative_path']}".encode()).hexdigest()[:14]
-    model_id = str(candidate.get("model_index") or candidate_metadata.get("model_index") or path.name)
+    model_id = str(next((value for value in (candidate.get('model_id'), candidate.get('model_index'),
+        candidate_metadata.get('model_id'), candidate_metadata.get('model_index'))
+        if value is not None and str(value) != ''), ''))
 
     if ppi_applicable:
         biotite_id = "analysis.biotite_interface"
@@ -2411,7 +2416,7 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
         elif not source_project:
             biotite_unavailable = "The source Results job has no project assignment for a new workflow."
         st.markdown("##### Interface chain groups")
-        st.caption(f"Exact model/artifact: {candidate_id or path.name} · {model_id}")
+        st.caption(f"Exact model/artifact: {candidate_id or path.name} · {model_id or 'model not specified'} · {path.name}")
         first, second = st.columns(2)
         a_key, b_key = f"complex-analysis-interface-a-{key}", f"complex-analysis-interface-b-{key}"
         if a_key not in st.session_state:
@@ -2464,9 +2469,24 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
 
         digest = _structure_digest(path)
         contact_distance = round(float(contact_distance), 3)
+        remote_measurements = {'entries': [], 'pending': False, 'errors': []}
+        if job.get('cluster_job_id') and not invalid_groups and digest:
+            from mn_molecular_design_studio.complex_analysis_results_ui import saved_results_measurements
+            from mn_molecular_design_studio.cluster.transport import ClusterUnavailable
+            try:
+                saved = saved_results_measurements(user, job, [{
+                    'candidate': {**candidate, 'binder_chains': binder_chains, 'target_chains': target_chains},
+                    'digest': digest, 'label': candidate_id}],
+                    token=str(st.session_state.get('studio-session-token') or 'development-mode'))
+                remote_measurements = {**saved, 'entries': [row for row in saved['entries']
+                    if row['method'] == 'biotite_interface'
+                    and row['parameters'].get('contact_distance') == contact_distance
+                    and row['status'] in {'measured', 'recorded', 'valid', 'completed', 'succeeded'}]}
+            except (OSError, ValueError, ClusterUnavailable) as exc:
+                remote_measurements['errors'] = [{'error': str(exc)}]
         existing = _matching_biotite_jobs(user, source_task_group=task_group, source_run_id=run_id,
             candidate_id=candidate_id, structure_digest=digest, binder_chains=binder_chains,
-            target_chains=target_chains, contact_distance=contact_distance, model_id=model_id) if not invalid_groups and digest else []
+            target_chains=target_chains, contact_distance=contact_distance, model_id=model_id) if not job.get('cluster_job_id') and not invalid_groups and digest else []
         current = next((item for item in existing if item["status"] in {"completed", "succeeded"}), None)
         if current is None:
             current = next((item for item in existing if item["status"] not in {"failed", "cancelled", "canceled"}), None)
@@ -2482,13 +2502,26 @@ def _render_biotite_workspace(user: dict, job: dict, selected: dict, components:
                 structure_path=path, structure_context=candidate_metadata,
                 structure_components=components,
                 viewer_key=viewer_key)
+        elif remote_measurements['entries']:
+            st.success('Saved Biotite Interface measurements are available for this exact source structure and chain selection.')
+            st.dataframe([{'Evaluation ID': row['evaluation_id'], 'Source workstation': row['source_workstation'],
+                           'Contact distance (Å)': row['parameters']['contact_distance'],
+                           **row['metrics']} for row in remote_measurements['entries']], hide_index=True, width='stretch')
+            st.caption('Open Results Evaluation Board for the saved measurements and full source provenance.')
+        elif remote_measurements['pending'] or remote_measurements['errors']:
+            st.info('Saved remote measurements are loading or unavailable. Refresh before submitting an additional analysis.')
+            for error in remote_measurements['errors']:
+                st.warning(error['error'])
+            if st.button('Refresh saved measurements', key=f'complex-analysis-remote-measurements-{key}'):
+                st.rerun()
         elif not biotite_unavailable:
             st.caption("No matching Biotite Interface evaluation is saved for this exact structure, model, chain mapping, and contact distance.")
         if biotite_unavailable:
             st.warning(f"Biotite Interface unavailable: {biotite_unavailable}")
-        elif not (current and current["status"] in {"completed", "succeeded"}):
+        elif not (current and current["status"] in {"completed", "succeeded"}) and not remote_measurements['entries']:
             button_label = "Retry analysis" if existing else "Run analysis"
-            disabled = bool(invalid_groups or not analysis_project or analysis_project != source_project or submit is None or biotite_schema is None)
+            disabled = bool(invalid_groups or not analysis_project or analysis_project != source_project or submit is None or biotite_schema is None
+                            or remote_measurements['pending'] or remote_measurements['errors'])
             if st.button(button_label, type="primary", disabled=disabled, key=f"complex-analysis-run-biotite-{key}"):
                 if not job.get("cluster_job_id"):
                     st.session_state["complex-analysis-active"] = {

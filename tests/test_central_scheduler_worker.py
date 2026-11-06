@@ -17,6 +17,18 @@ def test_scheduler_bridge_worker_count_can_be_configured_and_is_bounded(monkeypa
     assert central_scheduler_worker.configured_worker_count() == 1
 
 
+def test_local_preview_cannot_start_or_register_a_central_bridge(monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import central_scheduler
+    monkeypatch.setenv('MN_MOLECULAR_DESIGN_STUDIO_SCHEDULER_MODE', 'local')
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Local preview must not launch or register a central worker')
+    monkeypatch.setattr(central_scheduler.subprocess, 'Popen', forbidden)
+    monkeypatch.setattr(central_scheduler_worker, '_refresh_workspace_paths', forbidden)
+    monkeypatch.setattr(central_scheduler_worker, '_client', forbidden)
+    central_scheduler.ensure_scheduler_worker_service()
+    assert central_scheduler_worker.run_service() == 0
+
+
 def test_queued_python_and_workspace_override_a_stale_demo_bridge(tmp_path, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.core.workflow_queue import _submission_environment
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_HOME", str(tmp_path / "real"))

@@ -26,7 +26,7 @@ def collect(run, output, user, *, token=""):
     from mn_molecular_design_studio.cluster import config, service, transport
     from mn_molecular_design_studio.cluster.store import Store
     from mn_molecular_design_studio.workspace import _studio_home
-    candidates, pending, errors, excluded = [], [], [], []
+    candidates, pending, errors, excluded, source_details = [], [], [], [], {}
     if output.get("dispatch_error_count"):
         errors.append({"source_job": output["reference"], "error": f"{output['dispatch_error_count']} source collection(s) have not been submitted; retry their dispatch before exporting a complete output."})
     for source in output["sources"]:
@@ -39,6 +39,13 @@ def collect(run, output, user, *, token=""):
             continue
         try:
             if ref.startswith("cluster:"):
+                # An inspect receipt is a cache, not an access grant. Recheck
+                # the source job even when its command was created by this user.
+                authorized = service.lookup_job(ref, user, token=token)
+                if (str(authorized.get("node_id") or "") != str(source.get("node_id") or "")
+                        or str(authorized.get("local_reference") or "") != str(
+                            source.get("local_reference") or f"{source['task_group']}/{source['run_id']}")):
+                    raise PermissionError("The saved Results source identity changed.")
                 key = hashlib.sha256(f"{user['id']}:{ref}:{source.get('updated_at')}".encode()).hexdigest()
                 cache = _studio_home() / "run_result_receipts" / (key + ".json")
                 cache.parent.mkdir(parents=True, exist_ok=True)
@@ -67,10 +74,15 @@ def collect(run, output, user, *, token=""):
                     pending.append({"source_job": ref, "command_id": operation_id})
                     continue
                 rows = operation["response"].get("results", {}).get("candidates", [])
+                details = operation["response"]
             else:
                 root = Path(source["run_dir"])
                 stat = (root / "artifacts/normalized_candidates/candidates.jsonl").stat()
                 rows = _local_rows(str(root), stat.st_mtime_ns, stat.st_size)
+                details = {"job": source, "metadata": json.loads((root / "metadata.json").read_text())
+                           if (root / "metadata.json").is_file() else {}}
+            source_details[ref] = {"job": details.get("job") or source,
+                                   "metadata": details.get("metadata") or {}}
             ids = [row.get("candidate_id") for row in rows]
             if not all(ids) or len(ids) != len(set(ids)):
                 raise ValueError("Source collection contains missing or duplicate candidate identities.")
@@ -85,9 +97,30 @@ def collect(run, output, user, *, token=""):
                 row["source_node_id"] = source.get("node_id")
                 from mn_molecular_design_studio.candidate_sets import json_safe
                 candidates.append(json_safe(row))
-        except (OSError, ValueError, LookupError) as exc:
+        except (OSError, ValueError, LookupError, transport.ClusterUnavailable) as exc:
             errors.append({"source_job": ref, "error": str(exc)})
     return {"run_id": run["id"], "output": output["reference"], "candidates": candidates,
             "candidate_count": len(candidates), "complete": not pending and not errors and not any(
                 item.get("status") not in logical_runs.TERMINAL for item in excluded),
-            "pending_sources": pending, "source_errors": errors, "excluded_sources": excluded}
+            "pending_sources": pending, "source_errors": errors, "excluded_sources": excluded,
+            "source_details": source_details}
+
+
+def read_source(source, user, *, token=""):
+    """Read one saved collection through the same authorized Results transport."""
+    reference = logical_runs.source_reference(source)
+    return collect({"id": reference}, {"id": "results", "reference": reference,
+                                      "sources": [source]}, user, token=token)
+
+
+def completed_sources(user, *, token="", runs=None):
+    """Flatten the existing federated catalog without losing producer identity."""
+    sources = {}
+    for run in logical_runs.catalog(user, token=token) if runs is None else runs:
+        for source in run["jobs"]:
+            if (str(source.get("status") or "").casefold() not in logical_runs.SUCCESS
+                    or source.get("success") is False or source.get("hidden")
+                    or source.get("has_candidate_collection") is False):
+                continue
+            sources[logical_runs.reference(source)] = {**source, 'logical_run_id': run['id']}
+    return sorted(sources.values(), key=lambda row: str(row.get("updated_at") or row.get("created_at") or ""), reverse=True)
