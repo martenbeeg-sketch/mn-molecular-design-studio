@@ -7,6 +7,7 @@ launching UniDock, GPUs, or remote workers.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -99,9 +100,19 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
     model_steps = []
     completed = []
     final_import_limits = []
+    cleaned_worker_runs = []
 
-    def fake_dock_round(*, campaign, round_number, rows, **_kwargs):
+    def fake_dock_round(*, campaign, round_number, rows, **kwargs):
         docking_rounds.append(round_number)
+        assert kwargs["docking"]["batch_retained_pose_count"] == 0
+        worker_run = campaign / f"worker-{round_number}"
+        for artifact in ("poses", "ligands", "prepared"):
+            artifact_dir = worker_run / "artifacts" / artifact
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            (artifact_dir / "fixture.dat").write_text(f"round-{round_number}")
+        staging = kwargs["work_directory"] / "worker-00" / "batch-0001"
+        staging.mkdir(parents=True, exist_ok=True)
+        (staging / "staged-input.json").write_text(f"round-{round_number}")
         if scenario == "stable":
             round_scores = {
                 1: [-9.0, -8.0, -6.0, -5.0],
@@ -123,7 +134,7 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
                 "worker_node_id": "local-worker",
                 "worker_node_name": "Local fixture worker",
                 "worker_host": "",
-                "worker_run_dir": str(campaign / f"worker-{round_number}"),
+                "worker_run_dir": str(worker_run),
                 "worker_job_code": f"W{round_number:04d}",
                 "worker_cpu_cores": 2,
                 "worker_gpu_device": "0",
@@ -184,7 +195,18 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
     monkeypatch.setattr(controller, "_read_selection_table", read_selection)
     monkeypatch.setattr(controller, "_write_selection_table", write_selection)
     monkeypatch.setattr(controller, "_collect_best_poses", collect_poses)
-    monkeypatch.setattr(controller, "_cleanup_docking_artifacts", lambda *_args, **_kwargs: None)
+
+    def cleanup_worker_runs(worker_runs, **_kwargs):
+        for item in worker_runs:
+            for run_dir in item.get("run_dirs") or [item.get("run_dir")]:
+                if not run_dir:
+                    continue
+                run_path = Path(run_dir)
+                cleaned_worker_runs.append(run_path.name)
+                for artifact in ("poses", "ligands", "prepared"):
+                    shutil.rmtree(run_path / "artifacts" / artifact, ignore_errors=True)
+
+    monkeypatch.setattr(controller, "_cleanup_docking_artifacts", cleanup_worker_runs)
     def write_scores(path, rows):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.Table.from_pylist([
@@ -218,6 +240,18 @@ def test_campaign_persists_stop_reason_and_does_not_queue_another_round(
     assert result == campaign
     assert docking_rounds == list(range(1, expected_docking_rounds + 1))
     assert model_steps == list(range(1, expected_model_steps + 1))
+    assert cleaned_worker_runs == [f"worker-{round_number}" for round_number in range(1, expected_docking_rounds)]
+    final_worker = campaign / f"worker-{expected_docking_rounds}" / "artifacts"
+    assert (final_worker / "poses" / "fixture.dat").is_file()
+    assert (final_worker / "ligands" / "fixture.dat").is_file()
+    assert (final_worker / "prepared" / "fixture.dat").is_file()
+    rounds_dir = campaign / "artifacts" / "active_learning" / "rounds"
+    final_round = rounds_dir / f"round-{expected_docking_rounds:04d}"
+    assert (final_round / "worker-00" / "batch-0001" / "staged-input.json").is_file()
+    assert (rounds_dir / f"round-{expected_docking_rounds:04d}-selection.parquet").is_file()
+    for round_number in range(1, expected_docking_rounds):
+        assert not (rounds_dir / f"round-{round_number:04d}" / "worker-00").exists()
+        assert not (rounds_dir / f"round-{round_number:04d}-selection.parquet").exists()
     state = json.loads((campaign / "artifacts/active_learning/state.json").read_text())
     history = json.loads((campaign / "artifacts/active_learning/round_history.json").read_text())
     graph_state = json.loads((campaign / "graph_execution.json").read_text())

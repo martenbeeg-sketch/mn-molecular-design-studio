@@ -852,7 +852,11 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                 phase(nodes["active_docking"]["id"], f"Docking round {round_number} · {len(selection_rows):,} compounds",
                       round_number=round_number, compound_count=len(selection_rows), worker_nodes=worker_states)
 
-            docking["batch_retained_pose_count"] = max(1, int(params["active_accumulate"].get("retained_pose_count") or 0))
+            # Keep every scored batch pose until the campaign knows whether this
+            # is the terminal round. Earlier rounds are pruned only after their
+            # successor completes; the final round remains fully inspectable.
+            # Zero means no per-batch pose cap in the docking adapter.
+            docking["batch_retained_pose_count"] = 0
             all_results, failed_results = _dock_round(
                 campaign=campaign, round_number=round_number, rows=selection_rows, workers=workers,
                 docking=docking, target=target, owner_id=owner_id, project_id=project_id,
@@ -865,6 +869,7 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
             if not all_results:
                 raise RuntimeError(f"Round {round_number} produced no usable docking scores from {len(selection_rows):,} attempts.")
             worker_summary = _summarize_round_workers(all_results, failed_results)
+            previous_round_workers = list((state.get("rounds") or [])[-1].get("workers") or []) if state.get("rounds") else []
             phase(nodes["active_docking"]["id"], f"Docking round {round_number} complete",
                   status="completed", round_number=round_number, compound_count=len(selection_rows),
                   scored_count=len(all_results), failed_count=len(failed_results),
@@ -908,8 +913,6 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
             _save_score_table(data_root / "docking_scores.parquet", [
                 {**row, "score": row["best_score"], "score_field": score_field, "score_units": score_units}
                 for row in ranked])
-            if docking.get("cleanup_after_round", True):
-                _cleanup_docking_artifacts(worker_summary, ssh_user=ssh_user)
             phase(nodes["active_accumulate"]["id"], f"Accumulated and ranked {len(ranked):,} unique compounds",
                   status="completed", round_number=round_number, unique_compound_count=len(ranked), score_units=score_units)
             phase(nodes["active_decision"]["id"], "Comparing cumulative top-ranked scores",
@@ -929,6 +932,10 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                 phase(nodes["active_decision"]["id"], f"Stopping: {reason.replace('_', ' ')}",
                       status="completed", round_number=round_number, stop_reason=reason,
                       same_top_order=same_order, maximum_score_change=max_delta)
+                # Only prune a round after a later round has completed. This
+                # keeps the terminal round's complete worker workdirs available.
+                if docking.get("cleanup_after_round", True) and previous_round_workers:
+                    _cleanup_docking_artifacts(previous_round_workers, ssh_user=ssh_user)
                 break
 
             binder_percent = settings.percentile(round_number)
@@ -948,6 +955,8 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
             if remaining <= 0:
                 state["stop_reason"] = "screening_library_exhausted"
                 checkpoint()
+                if docking.get("cleanup_after_round", True) and previous_round_workers:
+                    _cleanup_docking_artifacts(previous_round_workers, ssh_user=ssh_user)
                 break
             predicted_count = selection_counts["predicted"]
             random_count = selection_counts["random"]
@@ -977,11 +986,15 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
             if not selected_rows:
                 state["stop_reason"] = "screening_library_exhausted"
                 checkpoint()
+                if docking.get("cleanup_after_round", True) and previous_round_workers:
+                    _cleanup_docking_artifacts(previous_round_workers, ssh_user=ssh_user)
                 break
             next_selection_parent = rounds_dir / f"round-{next_round:04d}-selection.parquet"
             shutil.copy2(next_selection, next_selection_parent)
             state["pending_round"] = {"number": next_round, "selection_path": str(next_selection_parent),
                                        "selection_kind": "predicted_plus_random", "model_run_dir": str(model_run)}
+            if docking.get("cleanup_after_round", True) and previous_round_workers:
+                _cleanup_docking_artifacts(previous_round_workers, ssh_user=ssh_user)
             checkpoint()
             phase(nodes["active_select"]["id"], f"Selected {len(selected_rows):,} compounds for round {next_round}",
                   status="completed", round_number=next_round, predicted_count=predicted_count,
@@ -1005,12 +1018,18 @@ def run_active_learning_pipeline(graph: dict, pipeline_name: str, owner_id: str,
                     for row in score_db.execute("SELECT * FROM failed_compounds ORDER BY library_id,compound_key")]
         failed_path = data_root / "failed_compounds.parquet"
         _save_failed_compound_table(failed_path, failures)
-        _cleanup_docking_artifacts(state.get("docking_runs") or [], ssh_user=ssh_user)
-        for selection in rounds_dir.glob("round-*-selection.parquet"):
-            selection.unlink(missing_ok=True)
-        for round_folder in rounds_dir.glob("round-[0-9][0-9][0-9][0-9]"):
-            for worker_folder in round_folder.glob("worker-*"):
-                shutil.rmtree(worker_folder, ignore_errors=True)
+        final_round_number = int(state["rounds"][-1]["round"]) if state.get("rounds") else 0
+        if docking.get("cleanup_after_round", True):
+            final_selection = rounds_dir / f"round-{final_round_number:04d}-selection.parquet"
+            for selection in rounds_dir.glob("round-*-selection.parquet"):
+                if selection != final_selection:
+                    selection.unlink(missing_ok=True)
+            final_round_folder = rounds_dir / f"round-{final_round_number:04d}"
+            for round_folder in rounds_dir.glob("round-[0-9][0-9][0-9][0-9]"):
+                if round_folder == final_round_folder:
+                    continue
+                for worker_folder in round_folder.glob("worker-*"):
+                    shutil.rmtree(worker_folder, ignore_errors=True)
         history_path = data_root / "round_history.json"
         write_json(history_path, {"schema_version": "studio.active-learning-round-history.v1",
                                   "stop_reason": state.get("stop_reason", "completed"), "rounds": state["rounds"],
