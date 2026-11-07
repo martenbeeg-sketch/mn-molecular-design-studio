@@ -123,6 +123,9 @@ def _load_selected_structures(database, user: dict, records: list[dict], selecte
 
 
 def _contact_snapshot(sample: dict) -> dict:
+    saved = sample.get("contact_snapshot")
+    if isinstance(saved, dict):
+        return saved
     evaluations = [item for item in sample.get("inspector_data", {}).get("evaluations", [])
                    if "biotite_interface" in str(item.get("evaluator") or "").casefold()]
     for item in evaluations:
@@ -171,6 +174,7 @@ def _style_contact_heatmap(frame, columns: list[str]):
                 "·": "background-color: #edf0f4; color: #64748b; text-align: center",
                 "?": "background-color: #fff3cd; color: #7c5b00; text-align: center",
                 "!": "background-color: #f8d7da; color: #842029; text-align: center",
+                "×": "background-color: #f5c2c7; color: #842029; text-align: center",
                 "–": "background-color: #e2e3e5; color: #555; text-align: center"}.get(value, "")
 
     styled = frame.style
@@ -365,6 +369,26 @@ def _render_evaluation_board(samples: list[dict]) -> list[dict]:
 def _open_in_inspector(sample: dict, selector: str = "", evaluation_id: str = "") -> None:
     from mn_molecular_design_studio import complex_analysis_ui as workspace
 
+    if sample.get("source_kind") == "Results":
+        job = sample["job"]
+        if sample.get("remote"):
+            workspace.open_remote_result_complex(
+                job, sample["candidate"], sample["relative_path"], user=sample["user"],
+                structure_content=Path(sample["path"]).read_bytes(),
+                source_run_dir=str(sample.get("source_run_dir") or job.get("run_dir") or ""),
+                structure_field=str(sample.get("structure_field") or "complex_pdb"),
+                structure_sha256=str(sample.get("digest") or ""),
+            )
+        else:
+            if selector:
+                viewer_key = (f"complex-analysis-results-viewer-{job.get('task_group')}/{job.get('run_id')}"
+                              f"-{sample['relative_path']}")
+                st.session_state[f"{viewer_key}-inspector-highlights"] = [selector]
+            workspace.open_result_complex(
+                job["run_dir"], sample["path"], sample["candidate"], user=sample["user"],
+            )
+        return
+
     prepare_inspector_navigation_state(
         st.session_state, molecule_id=sample["molecule_id"], structure_id=sample["structure_id"],
         evaluation_id=evaluation_id, selector=selector,
@@ -379,14 +403,14 @@ def _render_protein_protein_map(samples: list[dict]) -> None:
 
     st.markdown("#### Protein–protein contact map")
     if len(samples) < 2:
-        st.info("Select at least two protein–protein Database structures to build a collection map.")
+        st.info("Select at least two compatible protein–protein structures from Results or the Database to build a collection map.")
         return
-    sample_ids = [sample["structure_id"] for sample in samples]
-    sample_labels = {sample["structure_id"]: sample["label"] for sample in samples}
+    sample_ids = [str(sample.get("identity") or sample["structure_id"]) for sample in samples]
+    sample_labels = {str(sample.get("identity") or sample["structure_id"]): sample["label"] for sample in samples}
     anchor_id = st.selectbox("Residue correspondence anchor", sample_ids,
                              format_func=lambda value: sample_labels.get(value, value),
                              key="collection-map-anchor")
-    anchor = next(sample for sample in samples if sample["structure_id"] == anchor_id)
+    anchor = next(sample for sample in samples if str(sample.get("identity") or sample["structure_id"]) == anchor_id)
     chain_ids = [str(track.get("chain_id") or "") for track in anchor.get("tracks", [])]
     if not chain_ids:
         st.warning("The selected anchor has no single-model protein sequence track. It remains in the Evaluation Board but cannot define a residue map.")
@@ -408,7 +432,8 @@ def _render_protein_protein_map(samples: list[dict]) -> None:
                 reports[str(track.get("chain_id") or "")] = report
                 if report["compatible"]:
                     compatible.append(track)
-            if sample["structure_id"] == anchor_id:
+            sample_identity = str(sample.get("identity") or sample["structure_id"])
+            if sample_identity == anchor_id:
                 selected_chain = anchor_chain
             elif len(compatible) == 1:
                 selected_chain = str(compatible[0]["chain_id"])
@@ -423,7 +448,7 @@ def _render_protein_protein_map(samples: list[dict]) -> None:
                 selected_chain = ""
             report = reports.get(selected_chain) if selected_chain else None
             track = next((row for row in tracks if str(row.get("chain_id") or "") == selected_chain), None)
-            if sample["structure_id"] == anchor_id:
+            if sample_identity == anchor_id:
                 report = {"status": "exact", "compatible": True,
                           "mapping": list(range(len(reference_sequence))), "reason": "Anchor component."}
                 track = reference_track
@@ -437,6 +462,7 @@ def _render_protein_protein_map(samples: list[dict]) -> None:
             if report and report.get("compatible") and track:
                 member = dict(sample)
                 member.update({"tracked_chain": selected_chain, "tracked_track": track,
+                               "identity": sample_identity,
                                "candidate_to_reference": report["mapping"], "correspondence": report})
                 member["contact"] = _contact_snapshot(sample)
                 tracked.append(member)
@@ -450,7 +476,11 @@ def _render_protein_protein_map(samples: list[dict]) -> None:
 
     profiles = sorted({_contact_profile_label(member["contact"].get("contact_distance"))
                        for member in tracked if member["contact"]["status"] == "saved"})
-    profile_options = ["All compatible saved maps", *profiles]
+    mixed_profiles = len(profiles) > 1
+    profile_options = (["Choose one contact-distance setting", *profiles] if mixed_profiles
+                       else ["All compatible saved maps", *profiles])
+    if st.session_state.get("collection-map-contact-profile") not in profile_options:
+        st.session_state["collection-map-contact-profile"] = profile_options[0]
     profile = st.selectbox("Saved Biotite map settings", profile_options,
                            key="collection-map-contact-profile")
     map_members = []
@@ -458,7 +488,10 @@ def _render_protein_protein_map(samples: list[dict]) -> None:
         contact = member["contact"]
         distance = contact.get("contact_distance")
         label = _contact_profile_label(distance)
-        if profile != "All compatible saved maps" and contact["status"] == "saved" and label != profile:
+        if profile == "Choose one contact-distance setting" and contact["status"] == "saved":
+            status = "different parameters"
+            rows = None
+        elif profile not in {"All compatible saved maps", "Choose one contact-distance setting"} and contact["status"] == "saved" and label != profile:
             status = "different parameters"
             rows = None
         else:
@@ -471,8 +504,8 @@ def _render_protein_protein_map(samples: list[dict]) -> None:
                                 candidate_to_reference=member["candidate_to_reference"],
                             ) if isinstance(rows, list) else None)})
     saved_profiles = {row["contact_profile"] for row in map_members if row["contact_status"] == "saved"}
-    if profile == "All compatible saved maps" and len(saved_profiles) > 1:
-        st.warning("Saved contact maps use more than one recorded contact-distance setting. The table shows each saved map, but the pooled frequency denominator mixes those settings; choose a single setting above for a comparable frequency map.")
+    if mixed_profiles and profile == "Choose one contact-distance setting":
+        st.warning("These saved maps use different contact-distance settings. Select one setting to show a comparable residue-frequency map; the mixed cohort remains visible in the Evaluation Board.")
     footprints = aggregate_contact_footprints(map_members, reference_track)
     evaluable_count = next((row["evaluable_count"] for row in footprints), 0) if footprints else 0
     st.caption(f"Contact frequency is transcribed from saved Biotite Interface artifacts on the selected component. Denominator: {evaluable_count} saved map(s) with these settings. A saved empty map is zero contacts; missing or inaccessible Evaluations are shown separately.")
@@ -528,6 +561,8 @@ def _render_protein_protein_map(samples: list[dict]) -> None:
                 row[column] = "?"
             elif member["contact_status"] == "artifact unavailable":
                 row[column] = "!"
+            elif member["contact_status"] == "failed evaluation":
+                row[column] = "×"
             elif member["contact_status"] == "different parameters":
                 row[column] = "–"
             else:
@@ -539,16 +574,16 @@ def _render_protein_protein_map(samples: list[dict]) -> None:
     grid = st.dataframe(styled, hide_index=True, use_container_width=True, height=420,
                         on_select="rerun", selection_mode="single-cell",
                         key="complex-analysis-collection-footprint-heatmap")
-    st.caption("Legend: ● saved contact · · saved map with no contact · ? no matching saved Evaluation · ! Evaluation artifact unavailable · – saved map uses another selected setting.")
+    st.caption("Legend: ● saved contact · · saved map with no contact · ? no matching saved Evaluation · × Evaluation failed · ! Evaluation artifact unavailable · – saved map uses another selected setting.")
     selection_state = getattr(grid, "selection", {}) or {}
     cells = selection_state.get("cells", []) if hasattr(selection_state, "get") else []
-    visible_ids = [member["structure_id"] for member in visible_members]
+    visible_ids = [str(member.get("identity") or member["structure_id"]) for member in visible_members]
     selected_cell = heatmap_selection(cells, visible_ids, residue_columns)
 
     st.markdown("##### Open a selected complex in the Scientific Inspector")
     mapped_members = [member for member in tracked if member["correspondence"].get("compatible")]
-    mapped_ids = [member["structure_id"] for member in mapped_members]
-    mapped_by_id = {member["structure_id"]: member for member in mapped_members}
+    mapped_ids = [str(member.get("identity") or member["structure_id"]) for member in mapped_members]
+    mapped_by_id = {str(member.get("identity") or member["structure_id"]): member for member in mapped_members}
     default_id = selected_cell["member_id"] if selected_cell else anchor_id
     if default_id not in mapped_ids:
         default_id = mapped_ids[0] if mapped_ids else ""
@@ -578,41 +613,27 @@ def _render_protein_protein_map(samples: list[dict]) -> None:
                      disabled=bool(residue_index is not None and not selector)):
             _open_in_inspector(selected_member, selector or "", evaluation_id)
 
-def render_collection_workspace(user: dict) -> None:
-    """Render a scalable, ACL-scoped collection browser over saved Database data."""
+def _database_collection_samples(user: dict) -> list[dict]:
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
 
-    if st.radio('Collection source', ['Database', 'Results'], horizontal=True, key='collection-source') == 'Results':
-        from mn_molecular_design_studio.complex_analysis_results_ui import render_results_board
-        render_results_board(user)
-        return
-
-    st.subheader("Collection Map & Evaluation Board")
-    st.caption("Explore saved Database structures as a collection. Component correspondence is explicit and sequence-based; unsupported structures stay separate with a reason.")
     database = MolecularDatabase()
     query = st.text_input("Search Database structures", key="complex-analysis-collection-query",
                           placeholder="Name, sequence, or molecule identifier")
     catalog_key = _widget_key("complex-analysis-collection-catalog-", str(user.get("id") or ""))
     refresh_catalog = st.button("Refresh Database structures", key=_widget_key("complex-analysis-collection-refresh-", str(user.get("id"))))
-    catalog = authorized_structure_catalog(
-        database, user, session_state=st.session_state, cache_key=catalog_key,
-        query=query, limit=100, refresh=refresh_catalog,
-    )
-    load_next = st.button(
-        "Load next Database structure page",
+    catalog = authorized_structure_catalog(database, user, session_state=st.session_state,
+        cache_key=catalog_key, query=query, limit=100, refresh=refresh_catalog)
+    load_next = st.button("Load next Database structure page",
         key=_widget_key("complex-analysis-collection-next-", f"{user.get('id')}:{query}"),
-        disabled=catalog.get("next_offset") is None,
-    )
+        disabled=catalog.get("next_offset") is None)
     if load_next:
-        catalog = authorized_structure_catalog(
-            database, user, session_state=st.session_state, cache_key=catalog_key,
-            query=query, limit=100, advance=True,
-        )
+        catalog = authorized_structure_catalog(database, user, session_state=st.session_state,
+            cache_key=catalog_key, query=query, limit=100, advance=True)
     records = list(catalog.get("records") or [])
     if not records:
         st.info("No accessible Database structures match this search.")
-        return
-    st.caption(f"Showing {len(records):,} authorized structure-bearing record choices"
+        return []
+    st.caption(f"Showing {len(records):,} authorized Database structure records"
                + ("; more pages are available." if catalog.get("next_offset") is not None else "."))
     record_by_id = {str(row["id"]): row for row in records}
     record_ids = list(record_by_id)
@@ -620,77 +641,509 @@ def render_collection_workspace(user: dict) -> None:
     selection_key = f"complex-analysis-collection-records-{selection_suffix}"
     if selection_key in st.session_state:
         st.session_state[selection_key] = [value for value in st.session_state[selection_key] if value in record_ids]
-    selected_records = st.multiselect(
-        "Database records", record_ids,
+    selected_records = st.multiselect("Database records", record_ids,
         format_func=lambda value: f"{record_by_id[value].get('name') or 'Complex'} · {str(value)[-8:]} · {len(record_by_id[value].get('representations') or record_by_id[value].get('structures') or [])} structures",
-        key=selection_key,
-    )
+        key=selection_key)
     if not selected_records:
-        st.info("Select one or more accessible Database records, then choose their saved structures and models.")
-        return
-    structure_records = [record_by_id[value] for value in selected_records if value in record_by_id]
+        st.info("Select Database records, then choose the saved structures and models to add to this cohort.")
+        return []
     structure_lookup = {}
-    for record in structure_records:
+    for record_id in selected_records:
+        record = record_by_id.get(record_id) or {}
         for structure in record.get("representations") or record.get("structures") or []:
             structure_id = str(structure.get("id") or "")
             if structure_id:
                 structure_lookup[structure_id] = (record, structure)
     structure_ids = list(structure_lookup)
-    selected_structures = st.multiselect(
-        "Saved structures, models, and poses", structure_ids,
+    selected_structures = st.multiselect("Database structures, models, and poses", structure_ids,
         format_func=lambda value: _structure_label(*structure_lookup[value]),
-        key="complex-analysis-collection-structures",
-    )
+        key="complex-analysis-collection-structures")
     if not selected_structures:
-        st.info("Choose saved representations to populate the map and Evaluation Board. There is no 2–5 structure limit.")
-        return
-    if len(selected_structures) > 1000:
-        st.warning("The interactive map displays large collections in pages; select at most 1,000 structures per workspace view.")
-        selected_structures = selected_structures[:1000]
-    with st.spinner("Loading authorized Database representations and their saved Evaluations…"):
-        detailed = database.list_molecules(
-            user, molecule_ids=list(dict.fromkeys(str(record_id) for record_id in selected_records)),
-            collection="all", limit=1000,
-        )["items"]
-        samples = _load_selected_structures(database, user, detailed, selected_structures)
+        st.info("Choose Database structures to add them to the comparison cohort.")
+        return []
+    detailed = database.list_molecules(user, molecule_ids=list(dict.fromkeys(selected_records)),
+                                       collection="all", limit=1000)["items"]
+    samples = _load_selected_structures(database, user, detailed, selected_structures)
+    for sample in samples:
+        sample.update({"source_kind": "Database", "identity": "database:" + sample["molecule_id"] + ":" + sample["structure_id"],
+                       "user": user, "source_reference": "database:" + sample["molecule_id"]})
+    return samples
+
+
+def _results_source_jobs(user: dict) -> list[dict]:
+    from mn_molecular_design_studio.complex_analysis_dashboard import _run_catalog
+    from mn_molecular_design_studio.run_results import completed_sources
+
+    token = str(st.session_state.get("studio-session-token") or "development-mode")
+    return completed_sources(user, token=token, runs=_run_catalog(user))
+
+
+def _results_structure_choices(user: dict, jobs: list[dict]) -> list[dict]:
+    from mn_molecular_design_studio import complex_analysis_ui as workspace, logical_runs, run_results
+    from mn_molecular_design_studio.complex_analysis_results_ui import _remote_board_options
+
+    token = str(st.session_state.get("studio-session-token") or "development-mode")
+    choices = []
+    for job in jobs:
+        reference = logical_runs.source_reference(job)
+        remote = reference.startswith("cluster:")
+        if remote:
+            collection = run_results.read_source(job, user, token=token)
+            if collection.get("source_errors"):
+                st.warning(f"Could not read authorized Results metadata for {job.get('run_id')}: {collection['source_errors'][0]['error']}")
+                continue
+            options = _remote_board_options(job, collection)
+        else:
+            options = [item for item in workspace._job_structure_options(user, job) if item.get("candidate_id")]
+        for option in options:
+            candidate = option.get("candidate") if isinstance(option.get("candidate"), dict) else {}
+            candidate_id = str(candidate.get("candidate_id") or option.get("candidate_id") or "")
+            if not candidate_id:
+                continue
+            relative = str(option.get("relative_path") or "")
+            raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+            model_value = next((value for value in (candidate.get("model_id"), candidate.get("model_index"),
+                raw.get("model_id"), raw.get("model_index")) if value is not None and str(value).strip() != ""), None)
+            model = str(model_value) if model_value is not None else "model unspecified"
+            identity = "results:" + hashlib.sha256(f"{reference}\0{relative}\0{candidate_id}\0{model}".encode()).hexdigest()[:24]
+            source_tool = str(job.get("display_tool") or job.get("tool") or job.get("job_type") or "Results")
+            choices.append({"identity": identity, "reference": reference, "job": job, "option": option,
+                            "candidate": candidate, "candidate_id": candidate_id, "model_id": model,
+                            "relative_path": relative, "remote": remote,
+                            "label": f"{source_tool} · {job.get('node_name') or 'This workstation'} · {job.get('run_id')} · {candidate_id} · model {model}"})
+    return choices
+
+
+def _materialize_results_sample(user: dict, choice: dict) -> dict | None:
+    from mn_molecular_design_studio import complex_analysis_ui as workspace
+    from mn_molecular_design_studio.complex_analysis_results_ui import _materialize_board_structure, board_entries
+    from mn_molecular_design_studio.complex_analysis_inspector import protein_sequence_tracks
+    from mn_molecular_design_studio.logical_runs import source_reference
+
+    job, option, candidate = choice["job"], choice["option"], choice["candidate"]
+    token = str(st.session_state.get("studio-session-token") or "development-mode")
+    item = _materialize_board_structure(user, job, option, token=token) if choice["remote"] else option
+    if item is None:
+        return None
+    path = Path(item["path"]).resolve(strict=True)
+    content = path.read_bytes()
+    digest = hashlib.sha256(content).hexdigest()
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    components = workspace.component_inventory(content, path.name, raw.get("components"))
+    chain_ids = sorted({str(row.get("source_chain") or row.get("chain") or "") for row in components
+                        if row.get("type") == "protein" and (row.get("source_chain") or row.get("chain"))})
+    try:
+        tracks = protein_sequence_tracks(path, chain_ids)
+    except (ImportError, OSError, TypeError, ValueError):
+        tracks = []
+    reference = source_reference(job)
+    model_id = str(choice["model_id"] if choice["model_id"] != "model unspecified" else "")
+    source_tool = str(candidate.get("source_tool") or job.get("display_tool") or job.get("tool") or "Unknown")
+    label = choice["label"]
+    sample = {
+        "source_kind": "Results", "kind": component_kind(components),
+        "identity": choice["identity"], "structure_id": choice["identity"],
+        "label": label, "path": path, "components": components, "tracks": tracks,
+        "context": raw, "candidate": candidate, "candidate_id": choice["candidate_id"],
+        "model_id": model_id, "digest": digest, "structure_digest": digest,
+        "job": job, "user": user, "source_reference": reference,
+        "source_job": f"{job.get('task_group')}/{job.get('run_id')}",
+        "source_workstation": str(job.get("node_name") or "This workstation"),
+        "remote": bool(choice["remote"]), "relative_path": choice["relative_path"],
+        "source_run_dir": str(option.get("source_run_dir") or job.get("run_dir") or ""),
+        "structure_field": str(option.get("structure_field") or "complex_pdb"),
+        "project_id": str(job.get("project_id") or ""),
+        "evaluation_entries": board_entries(candidate, label=label, run_id=str(job.get("run_id") or ""),
+                                             digest=digest, job=job),
+        "generator_engine": str(raw.get("generator_engine") or raw.get("design_engine")
+            or ((raw.get("source_candidate") or {}).get("source_tool") if isinstance(raw.get("source_candidate"), dict) else "")
+            or ((raw.get("candidate_set") or {}).get("generator") if isinstance(raw.get("candidate_set"), dict) else "")
+            or (job.get("display_tool") or job.get("tool") or "Unknown")),
+        "prediction_engine": str(raw.get("prediction_engine") or (source_tool if str(candidate.get("stage") or "").casefold() in {"prediction", "refolding", "structure_prediction"} else "")),
+    }
+    return sample
+
+
+def _attach_results_measurements(user: dict, samples: list[dict], jobs: list[dict]) -> None:
     if not samples:
-        st.warning("The selected structures are unavailable or no longer accessible to this account.")
         return
-    st.caption(f"Loaded {len(samples)} authorized structure representation(s) from {len({item['molecule_id'] for item in samples})} Database record(s).")
-    filtered = _render_evaluation_board(samples)
-    st.markdown("#### Molecular component groups")
-    kinds = {sample["kind"] for sample in samples}
-    st.dataframe([{"Structure": sample["label"], "Molecular type": sample["kind"],
-                   "Protein components": ", ".join(f"{row['chain_id']} ({len(row['sequence'])} aa)" for row in sample["tracks"]) or "None",
-                   "Saved Evaluation methods": ", ".join(sorted({str(row.get('method')) for row in sample["evaluation_entries"]})) or "None",
-                   "Structure ID": sample["structure_id"], "SHA256": sample["digest"]}
-                  for sample in samples], hide_index=True, use_container_width=True)
-    st.caption("Database identities, structure IDs, exact structure digests, Evaluation IDs, source run IDs, recorded settings, and raw metric fields stay attached to the rows above.")
+    from mn_molecular_design_studio import logical_runs, run_results
+    from mn_molecular_design_studio.complex_analysis_results_ui import _linked_measurements
 
+    token = str(st.session_state.get("studio-session-token") or "development-mode")
+    grouped = {}
+    for sample in samples:
+        grouped.setdefault(sample["source_reference"], []).append(sample)
+    by_reference = {logical_runs.source_reference(job): job for job in jobs}
+    for reference, selected in grouped.items():
+        job = by_reference.get(reference)
+        if not job:
+            continue
+        def load(source):
+            return run_results.read_source(source, user, token=token)
+        try:
+            linked = _linked_measurements(user, job, [
+                {"candidate": sample["candidate"], "digest": sample["digest"], "label": sample["label"]}
+                for sample in selected
+            ], jobs=jobs, load=load)
+        except (OSError, PermissionError, ValueError, TypeError):
+            linked = []
+        for sample in selected:
+            candidate_id = sample["candidate_id"]
+            model = sample["model_id"]
+            sample["evaluation_entries"].extend(row for row in linked
+                if str(row.get("source_candidate_id") or "") in {candidate_id, str((sample["candidate"].get("raw_metadata") or {}).get("native_candidate_id") or "")}
+                and str(row.get("source_structure_digest") or "") == sample["digest"]
+                and (not row.get("source_model_id") or str(row.get("source_model_id")) == model))
+            sample["contact_snapshot"] = _results_contact_snapshot(user, sample, jobs)
+
+
+def _results_contact_snapshot(user: dict, sample: dict, jobs: list[dict]) -> dict:
+    """Read a saved Biotite contact artifact for this exact Results model."""
+    from mn_molecular_design_studio import complex_analysis_ui as workspace, logical_runs, run_results
+
+    job = sample["job"]
+    chains_b = list(sample.get("candidate", {}).get("binder_chains") or [])
+    chains_t = list(sample.get("candidate", {}).get("target_chains") or [])
+    if not chains_b or not chains_t or set(chains_b) & set(chains_t):
+        return {"status": "missing evaluation", "rows": None, "evaluation": {},
+                "settings": {}, "selection": {}, "contact_distance": None}
+    if not sample.get("remote"):
+        try:
+            matches = workspace._matching_biotite_jobs(
+                user, source_task_group=str(job.get("task_group") or ""),
+                source_run_id=str(job.get("run_id") or ""), candidate_id=sample["candidate_id"],
+                structure_digest=sample["digest"], binder_chains=chains_b, target_chains=chains_t,
+                contact_distance=5.0, model_id=str(sample.get("model_id") or ""))
+        except (OSError, PermissionError, ValueError, TypeError):
+            matches = []
+        for evaluation in matches:
+            if str(evaluation.get("status") or "").casefold() not in {"completed", "succeeded"}:
+                continue
+            item = evaluation.get("selected_item") or {}
+            contacts = workspace._read_json(Path(evaluation["run_dir"]) / "artifacts" / "analysis" / str(item.get("id") or "") / "contacts.json")
+            if contacts.get("schema") == "studio.contacts.v1" and isinstance(contacts.get("residue_pairs"), list):
+                return {"status": "saved", "rows": contacts["residue_pairs"],
+                        "evaluation": {"id": workspace._analysis_evaluation_id(Path(evaluation["run_dir"]), user, sample["candidate_id"]),
+                                       "run_id": evaluation.get("run_id"), "method": "biotite_interface"},
+                        "settings": {"contact_distance": contacts.get("distance_angstrom")},
+                        "selection": {"binder_chains": contacts.get("binder_chains"), "target_chains": contacts.get("target_chains")},
+                        "contact_distance": contacts.get("distance_angstrom")}
+        has_measurement = any("biotite_interface" in str(row.get("method") or row.get("evaluator") or "").casefold()
+                              for row in sample.get("evaluation_entries", []))
+        failed = any(str(item.get("status") or "").casefold() in {"failed", "error", "cancelled", "canceled"}
+                     for item in matches)
+        recorded_failure = any("biotite_interface" in str(row.get("method") or row.get("evaluator") or "").casefold()
+                              and str(row.get("status") or "").casefold() in {"failed", "error", "cancelled", "canceled"}
+                              for row in sample.get("evaluation_entries", []))
+        status = ("failed evaluation" if failed or recorded_failure else
+                  "artifact unavailable" if has_measurement or matches else "missing evaluation")
+        return {"status": status, "rows": None, "evaluation": {}, "settings": {},
+                "selection": {}, "contact_distance": None}
+
+    # Remote artifacts use the same Results authorization and per-file artifact endpoint.
+    # The small batch manifest identifies the exact generated item; only then is contacts.json requested.
+    matching_jobs = []
+    source_node = str(job.get("node_id") or "")
+    for analysis in jobs:
+        if str(analysis.get("task_group") or "") != "analysis":
+            continue
+        if "biotite" not in str(analysis.get("tool") or analysis.get("display_tool") or "").casefold():
+            continue
+        if (str(analysis.get("node_id") or "") != source_node
+                or str(analysis.get("upstream_task_group") or "") != str(job.get("task_group") or "")
+                or str(analysis.get("upstream_run_id") or "") != str(job.get("run_id") or "")):
+            continue
+        matching_jobs.append(analysis)
+    token = str(st.session_state.get("studio-session-token") or "development-mode")
+    for analysis in matching_jobs:
+        try:
+            collection = run_results.read_source(analysis, user, token=token)
+            if collection.get("source_errors") or not collection.get("candidates"):
+                continue
+            outputs = {str(row.get("candidate_id") or ""): row for row in collection["candidates"]}
+            from mn_molecular_design_studio.cluster import ui as cluster_ui
+            manifest_bytes = cluster_ui._fetch_remote_artifact_bytes(
+                str(analysis.get("cluster_job_id") or ""), "artifacts/analysis/batch_manifest.json", token,
+                "cohort-biotite-manifest-" + hashlib.sha256(str(analysis.get("cluster_job_id")).encode()).hexdigest()[:16],
+                label="saved Biotite batch manifest")
+            if not manifest_bytes:
+                continue
+            manifest = json.loads(manifest_bytes)
+            settings = manifest.get("settings") if isinstance(manifest.get("settings"), dict) else {}
+            if float(settings.get("contact_distance", 5.0)) != 5.0:
+                continue
+            selected_item = None
+            output_candidate = None
+            matched_receipt = {}
+            for item in manifest.get("items") or []:
+                matched, receipt = workspace._biotite_item_matches_source(
+                    item, outputs, candidate_id=sample["candidate_id"], structure_digest=sample["digest"],
+                    binder_chains=chains_b, target_chains=chains_t, source_run_id=str(job.get("run_id") or ""))
+                if not matched:
+                    continue
+                output_candidate = outputs.get(str(item.get("candidate_id") or ""), {})
+                saved_model = str(item.get("model_id") or receipt.get("model_id")
+                                  or (manifest.get("selection") or {}).get("model_id") or "")
+                if saved_model != str(sample.get("model_id") or ""):
+                    continue
+                selected_item, matched_receipt = item, receipt
+                break
+            if selected_item is None:
+                continue
+            contact_path = f"artifacts/analysis/{selected_item.get('id')}/contacts.json"
+            contact_bytes = cluster_ui._fetch_remote_artifact_bytes(
+                str(analysis.get("cluster_job_id") or ""), contact_path, token,
+                "cohort-biotite-contacts-" + hashlib.sha256(f"{analysis.get('cluster_job_id')}:{contact_path}".encode()).hexdigest()[:16],
+                label="saved Biotite contact artifact")
+            if not contact_bytes:
+                continue
+            contacts = json.loads(contact_bytes)
+            if (contacts.get("schema") != "studio.contacts.v1"
+                    or sorted(map(str, contacts.get("binder_chains") or [])) != sorted(map(str, chains_b))
+                    or sorted(map(str, contacts.get("target_chains") or [])) != sorted(map(str, chains_t))):
+                continue
+            from mn_molecular_design_studio.evaluations import results_evaluation_descriptor
+            descriptor = results_evaluation_descriptor(output_candidate or {}, analysis, structure_digest=sample["digest"])
+            return {"status": "saved", "rows": contacts.get("residue_pairs") or [],
+                    "evaluation": descriptor, "settings": {"contact_distance": contacts.get("distance_angstrom")},
+                    "selection": {"binder_chains": chains_b, "target_chains": chains_t,
+                                  "model_id": sample.get("model_id"), "source_receipt": matched_receipt},
+                    "contact_distance": contacts.get("distance_angstrom")}
+        except (OSError, PermissionError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            continue
+    has_measurement = any("biotite_interface" in str(row.get("method") or row.get("evaluator") or "").casefold()
+                          for row in sample.get("evaluation_entries", []))
+    failed = any(str(item.get("status") or "").casefold() in {"failed", "error", "cancelled", "canceled"}
+                 for item in matching_jobs)
+    recorded_failure = any("biotite_interface" in str(row.get("method") or row.get("evaluator") or "").casefold()
+                          and str(row.get("status") or "").casefold() in {"failed", "error", "cancelled", "canceled"}
+                          for row in sample.get("evaluation_entries", []))
+    status = ("failed evaluation" if failed or recorded_failure else
+              "artifact unavailable" if has_measurement or matching_jobs else "missing evaluation")
+    return {"status": status, "rows": None, "evaluation": {}, "settings": {},
+            "selection": {}, "contact_distance": None}
+
+
+def _cohort_inventory_row(sample: dict) -> dict:
+    candidate = sample.get("candidate") if isinstance(sample.get("candidate"), dict) else {}
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else sample.get("context", {})
+    from mn_molecular_design_studio.native_filter_metrics import native_filter_evidence
+
+    native = native_filter_evidence(candidate) if candidate else {"status": "not recorded"}
+    studio = raw.get("validation_acceptance") if isinstance(raw.get("validation_acceptance"), dict) else {}
+    review = raw.get("human_review") if isinstance(raw.get("human_review"), dict) else {}
+    return {
+        "Candidate / molecule": str(candidate.get("candidate_id") or sample.get("molecule_id") or sample.get("structure_id") or "Unknown"),
+        "Original candidate": str((raw.get("source_candidate") or {}).get("candidate_id") or raw.get("native_candidate_id") or candidate.get("candidate_id") or "Not recorded"),
+        "Generator": sample.get("generator_engine") or candidate.get("source_tool") or sample.get("source_kind"),
+        "Prediction engine": sample.get("prediction_engine") or "Not recorded",
+        "Target": raw.get("target_identity") or raw.get("target_id") or sample.get("target_identity") or _recorded_target_sequence_identity(sample) or "Not recorded",
+        "Binder sequence": candidate.get("binder_sequence") or "Not recorded",
+        "Model / pose": sample.get("model_id") or "Not recorded",
+        "Molecular type": sample.get("kind") or "Not classified",
+        "Native acceptance": native.get("status") or "not recorded",
+        "Studio filter": studio.get("status") or "not evaluated",
+        "Manual selection": bool(review.get("selected", False)),
+        "Evaluation coverage": ", ".join(sorted({str(row.get("method") or row.get("evaluator") or "Unknown") for row in sample.get("evaluation_entries", [])})) or "No saved Evaluation",
+        "Source job": sample.get("source_job") or sample.get("record", {}).get("source_job") or "Database",
+        "Workstation": sample.get("source_workstation") or "Database",
+        "Structure SHA-256": sample.get("digest") or "Not recorded",
+        "Stored measurements": json.dumps(candidate.get("metrics") or {}, sort_keys=True, default=str),
+        "Row identity": sample.get("identity") or sample.get("structure_id"),
+    }
+
+
+def _recorded_target_sequence_identity(sample: dict) -> str:
+    """Name an exact saved target construct only when its target-chain roles are recorded."""
+    candidate = sample.get("candidate") if isinstance(sample.get("candidate"), dict) else {}
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    context = sample.get("context") if isinstance(sample.get("context"), dict) else {}
+    target_chains = candidate.get("target_chains") or raw.get("target_chains") or context.get("target_chains")
+    if not isinstance(target_chains, (list, tuple)) or not target_chains:
+        return ""
+    by_chain = {str(track.get("chain_id") or ""): str(track.get("sequence") or "")
+                for track in sample.get("tracks", []) if isinstance(track, dict)}
+    sequences = [by_chain.get(str(chain), "") for chain in target_chains]
+    if not sequences or any(not sequence for sequence in sequences):
+        return ""
+    joined = "|".join(sequences)
+    digest = hashlib.sha256(joined.encode()).hexdigest()[:12]
+    chain_count = len(sequences)
+    return f"Target sequence · {sum(map(len, sequences))} aa · {chain_count} chain(s) · {digest}"
+
+
+def _comparison_sample(user: dict, sample: dict) -> dict:
+    from mn_molecular_design_studio.complex_analysis_comparison import protein_chain_numbering, target_structure_fingerprint
+
+    candidate = sample.get("candidate") if isinstance(sample.get("candidate"), dict) else {}
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    context = sample.get("context") if isinstance(sample.get("context"), dict) else {}
+    target = [str(value) for value in (candidate.get("target_chains") or raw.get("target_chains")
+             or context.get("target_chains") or context.get("receptor_chains") or [])]
+    binder = [str(value) for value in (candidate.get("binder_chains") or raw.get("binder_chains")
+             or context.get("binder_chains") or [])]
+    target_numbering = protein_chain_numbering(sample["path"], target) if target else []
+    binder_numbering = protein_chain_numbering(sample["path"], binder) if binder else []
+    is_results = sample.get("source_kind") == "Results"
+    record, structure = sample.get("record") or {}, sample.get("structure") or {}
+    comparison = {
+        "kind": "results" if is_results else "database", "identity": sample["identity"],
+        "label": sample["label"], "path": sample["path"], "context": context,
+        "candidate": candidate, "job": sample.get("job") or {},
+        "record": record, "structure": structure,
+        "candidate_id": str(sample.get("candidate_id") or ""), "project_id": str(sample.get("project_id") or ""),
+        "source_ref": str(sample.get("source_reference") or ""), "relative_path": str(sample.get("relative_path") or ""),
+        "components": sample.get("components") or [], "component_metadata": sample.get("components") or [],
+        "model_id": str(sample.get("model_id") or ""), "structure_digest": str(sample.get("digest") or ""),
+        "target_chains": target, "binder_chains": binder,
+        "target_numbering": target_numbering, "binder_numbering": binder_numbering,
+        "target_chains_sequence": [row["sequence"] for row in target_numbering],
+        "binder_chains_sequence": [row["sequence"] for row in binder_numbering],
+        "target_structure_fingerprint": target_structure_fingerprint(sample["path"], target) if target else "",
+        "complex_type": "protein-protein" if sample.get("kind") == "protein-protein" else "protein-ligand" if sample.get("kind") == "protein-ligand" else sample.get("kind"),
+        "format": sample["path"].suffix.casefold(), "viewer_key": "complex-analysis-cohort-" + hashlib.sha256(sample["identity"].encode()).hexdigest()[:14],
+        "evaluation_entries": sample.get("evaluation_entries") or [],
+        "saved_biotite_contacts": ({"contacts": sample["contact_snapshot"].get("rows") or [],
+            "evaluation": sample["contact_snapshot"].get("evaluation") or {}}
+            if sample.get("contact_snapshot", {}).get("status") == "saved" else None),
+    }
+    return comparison
+
+
+def render_collection_workspace(user: dict, run_rows: list[dict] | None = None) -> None:
+    """Render the mixed Results/Database design explorer inside Complex Analysis."""
+    st.subheader("Unified Design Explorer · Evaluation Board")
+    st.caption("Select authorized saved structures from Results and/or the curated Database. Each row remains tied to its source candidate, model, workstation and measurements; no universal score or Database promotion is applied.")
+    sources = st.multiselect("Include sources", ["Results", "Database"], default=["Database"],
+                             key="complex-analysis-cohort-source-types")
+    samples = []
+    jobs = []
+    if "Database" in sources:
+        samples.extend(_database_collection_samples(user))
+    if "Results" in sources:
+        try:
+            jobs = _results_source_jobs(user)
+        except (OSError, RuntimeError, ValueError, PermissionError) as exc:
+            st.warning(f"Could not load the authorized Results catalog: {exc}")
+            jobs = []
+        if not jobs:
+            st.info("No authorized completed Results collections are available.")
+        else:
+            from mn_molecular_design_studio.logical_runs import source_reference
+            by_ref = {source_reference(job): job for job in jobs}
+            references = list(by_ref)
+            run_key = "complex-analysis-cohort-result-jobs"
+            if run_key in st.session_state:
+                st.session_state[run_key] = [value for value in st.session_state[run_key] if value in references]
+            selected_refs = st.multiselect("Results jobs (select one or more campaigns, engines or workstations)", references,
+                format_func=lambda value: f"{by_ref[value].get('display_tool') or by_ref[value].get('tool') or 'Result'} · {by_ref[value].get('node_name') or 'This workstation'} · {by_ref[value].get('task_group')}/{by_ref[value].get('run_id')}",
+                key=run_key)
+            selected_jobs = [by_ref[value] for value in selected_refs]
+            choices = _results_structure_choices(user, selected_jobs) if selected_jobs else []
+            if selected_jobs and not choices:
+                st.info("The selected Results jobs have no accessible candidate-associated structure models.")
+            elif choices:
+                choice_by_id = {row["identity"]: row for row in choices}
+                result_key = "complex-analysis-cohort-result-structures"
+                if result_key in st.session_state:
+                    st.session_state[result_key] = [value for value in st.session_state[result_key] if value in choice_by_id]
+                selected_ids = st.multiselect("Candidate structures / prediction models", list(choice_by_id),
+                    format_func=lambda value: choice_by_id[value]["label"], key=result_key)
+                for identity in selected_ids:
+                    try:
+                        sample = _materialize_results_sample(user, choice_by_id[identity])
+                    except (OSError, PermissionError, ValueError, TypeError) as exc:
+                        st.warning(f"Could not open this authorized Results structure: {exc}")
+                        continue
+                    if sample is not None:
+                        samples.append(sample)
+                _attach_results_measurements(user, [item for item in samples if item.get("source_kind") == "Results"], jobs)
+    if not samples:
+        st.info("Choose saved Database structures and/or Results candidate models to populate the Design Explorer.")
+        return
+
+    st.caption(f"Loaded {len(samples)} selected structure/model row(s). Results structures are retrieved only after selection; original Results remain unmodified.")
+    import pandas as pd
+    inventory = [_cohort_inventory_row(sample) for sample in samples]
+    frame = pd.DataFrame(inventory)
+    search = st.text_input("Search candidates, targets, sequences, jobs, or workstations", key="complex-analysis-cohort-search").casefold().strip()
+    engine_options = sorted({str(row["Generator"]) for row in inventory if row.get("Generator")})
+    engine_filter = st.multiselect("Generator filter", engine_options, default=engine_options,
+                                   key="complex-analysis-cohort-generator-filter")
+    prediction_options = sorted({str(row["Prediction engine"]) for row in inventory if row.get("Prediction engine") and row["Prediction engine"] != "Not recorded"})
+    prediction_filter = st.multiselect("Prediction engine filter", prediction_options, default=prediction_options,
+                                       key="complex-analysis-cohort-prediction-filter")
+    visible = [row for row in inventory if row.get("Generator") in engine_filter
+        and (row.get("Prediction engine") == "Not recorded" or row.get("Prediction engine") in prediction_filter)
+        and (not search or search in json.dumps(row, sort_keys=True, default=str).casefold())]
+    if not visible:
+        st.info("No candidate structures match the current filters.")
+        return
+    visible_ids = [str(row["Row identity"]) for row in visible]
+    sample_by_id = {str(sample.get("identity") or sample.get("structure_id")): sample for sample in samples}
+    st.dataframe(pd.DataFrame([{key: value for key, value in row.items() if key != "Row identity"} for row in visible]),
+                 hide_index=True, use_container_width=True)
+    st.caption("Per-engine measurements retain their stored method, model and original units. Missing, not evaluated, and measured-zero values are not combined.")
+    select_key = "complex-analysis-cohort-selected"
+    if select_key in st.session_state:
+        st.session_state[select_key] = [value for value in st.session_state[select_key] if value in visible_ids]
+    selected_ids = st.multiselect("Select candidate/model rows for residue map, comparison, or Inspector", visible_ids,
+        format_func=lambda value: sample_by_id[value]["label"], key=select_key)
+    selected_samples = [sample_by_id[value] for value in selected_ids if value in sample_by_id]
+    if not selected_samples:
+        return
+    filtered_evaluations = _render_evaluation_board(selected_samples)
+    kinds = {sample.get("kind") for sample in selected_samples}
     if "protein-ligand" in kinds or "protein-protein-and-ligand" in kinds:
-        ligand_samples = [sample for sample in samples if sample["kind"] in {"protein-ligand", "protein-protein-and-ligand"}]
-        if ligand_samples:
-            st.markdown("#### Protein–ligand pose groups")
-            st.caption("Protein–ligand grouping preserves the recorded isomeric ligand identity, receptor sequence, pose residue and structure identity. No protein–protein contact-frequency metric is applied here.")
-            import pandas as pd
-            st.dataframe(pd.DataFrame(_protein_ligand_rows(ligand_samples)), hide_index=True, use_container_width=True)
-
-    ppi_samples = [sample for sample in samples if sample["kind"] == "protein-protein"]
+        ligand_samples = [sample for sample in selected_samples if sample.get("kind") in {"protein-ligand", "protein-protein-and-ligand"}]
+        st.markdown("#### Protein–ligand pose group")
+        st.caption("Ligand chemistry, receptor and pose remain distinct from protein–protein contacts; no PPI contact frequency is applied.")
+        st.dataframe(pd.DataFrame(_protein_ligand_rows(ligand_samples)), hide_index=True, use_container_width=True)
+    ppi_samples = [sample for sample in selected_samples if sample.get("kind") == "protein-protein"]
     if ppi_samples:
         _render_protein_protein_map(ppi_samples)
-    other = [sample for sample in samples if sample["kind"] not in {"protein-protein", "protein-ligand"}]
+    other = [sample for sample in selected_samples if sample.get("kind") not in {"protein-protein", "protein-ligand"}]
     if other:
-        st.markdown("#### Kept in separate groups")
-        st.dataframe([{"Structure": sample["label"], "Reason": (
-            "Protein–protein with ligand or mixed components; map a saved evaluator to a specific component pair before using PPI-only contact summaries."
-            if sample["kind"] == "protein-protein-and-ligand" else
-            "This structure does not meet the protein–protein or protein–ligand collection criteria for the current map views."),
-            "Molecular type": sample["kind"]} for sample in other], hide_index=True, use_container_width=True)
+        st.markdown("#### Structures kept outside current contact maps")
+        st.dataframe([{"Structure": sample["label"], "Molecular type": sample.get("kind"),
+                       "Reason": "Current residue contact map applies only to protein–protein complexes; this representation remains visible in the candidate board and Inspector."}
+                      for sample in other], hide_index=True, use_container_width=True)
 
-    if filtered:
-        selected_eval_id = str(st.session_state.get("collection-eval-detail") or "")
-        chosen = next((row for row in filtered if row["evaluation_id"] == selected_eval_id), None)
-        if chosen:
-            sample = next((item for item in samples if item["structure_id"] == chosen["structure_id"]), None)
-            if sample and st.button("Open Evaluation structure in Scientific Inspector", key="collection-board-open-inspector"):
-                _open_in_inspector(sample, "", chosen["evaluation_id"])
+    inspect_id = st.selectbox("Candidate/model to open in Scientific Inspector", selected_ids,
+        format_func=lambda value: sample_by_id[value]["label"], key="complex-analysis-cohort-inspector")
+    evaluation_id = st.selectbox("Evaluation context (optional)", [""] + [str(row.get("evaluation_id") or "") for row in filtered_evaluations if row.get("evaluation_id")],
+        format_func=lambda value: "No specific Evaluation" if not value else next((f"{row.get('method')} · {row.get('structure_label')}" for row in filtered_evaluations if str(row.get("evaluation_id") or "") == value), value),
+        key="complex-analysis-cohort-inspector-evaluation")
+    if st.button("Open selected model in Scientific Inspector", key="complex-analysis-cohort-open-inspector"):
+        sample = sample_by_id[inspect_id]
+        if sample.get("source_kind") == "Results":
+            job = sample["job"]
+            if sample.get("remote"):
+                from mn_molecular_design_studio import complex_analysis_ui as workspace
+                workspace.open_remote_result_complex(job, sample["candidate"], sample["relative_path"], user=user,
+                    structure_content=Path(sample["path"]).read_bytes(), source_run_dir=sample["source_run_dir"],
+                    structure_field=sample["structure_field"], structure_sha256=sample["digest"])
+            else:
+                from mn_molecular_design_studio import complex_analysis_ui as workspace
+                workspace.open_result_complex(job["run_dir"], sample["path"], sample["candidate"], user=user)
+        else:
+            _open_in_inspector(sample, "", evaluation_id)
+
+    compare_ids = st.multiselect("Choose 2–5 structures for detailed comparison", selected_ids,
+        default=selected_ids[:2] if len(selected_ids) >= 2 else [], max_selections=5,
+        format_func=lambda value: sample_by_id[value]["label"], key="complex-analysis-cohort-compare")
+    if len(compare_ids) >= 2:
+        with st.expander("Detailed structural comparison", expanded=False):
+            compare_sources = [_comparison_sample(user, sample_by_id[value]) for value in compare_ids]
+            missing_roles = [sample["label"] for sample in compare_sources
+                if (sample.get("complex_type") == "protein-protein"
+                    and (not sample.get("target_chains") or not sample.get("binder_chains")
+                         or set(sample.get("target_chains") or []) & set(sample.get("binder_chains") or [])))
+                or (sample.get("complex_type") == "protein-ligand" and not sample.get("target_chains"))]
+            if missing_roles:
+                st.info("Comparison needs recorded target/binder or receptor chain assignments. Roles are missing for: "
+                        + ", ".join(missing_roles) + ". The structures remain available in the board and Inspector.")
+            else:
+                from mn_molecular_design_studio.complex_analysis_comparison_ui import render_comparison
+                render_comparison(user, selected_sources=compare_sources)

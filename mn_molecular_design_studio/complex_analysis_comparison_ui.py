@@ -355,6 +355,13 @@ def _render_saved_evaluations(sources: list[dict]) -> None:
 def _saved_biotite_contacts(user: dict, source: dict) -> dict | None:
     from mn_molecular_design_studio import complex_analysis_ui as workspace
 
+    # The unified cohort may have already resolved a source-qualified saved contact
+    # artifact (including an authorized remote Results artifact). Reuse that exact
+    # receipt instead of repeating discovery or fetching it again.
+    saved = source.get("saved_biotite_contacts")
+    if isinstance(saved, dict) and isinstance(saved.get("contacts"), list):
+        return saved
+
     if source["kind"] == "results":
         job = source.get("job") or {}
         matches = workspace._matching_biotite_jobs(

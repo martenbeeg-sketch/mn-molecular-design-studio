@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -102,6 +103,7 @@ def test_saved_zero_contact_map_is_distinct_from_missing_or_unavailable_evaluati
         {"identity": "zero", "contact_rows": [], "contact_status": "saved"},
         {"identity": "missing", "contact_rows": None, "contact_status": "missing evaluation"},
         {"identity": "unavailable", "contact_rows": None, "contact_status": "artifact unavailable"},
+        {"identity": "failed", "contact_rows": None, "contact_status": "failed evaluation"},
     ], reference)
     residue = result[0]
     assert residue["contact_count"] == 0
@@ -109,7 +111,9 @@ def test_saved_zero_contact_map_is_distinct_from_missing_or_unavailable_evaluati
     assert residue["frequency"] == 0
     assert residue["member_status"] == {
         "zero": "no contact", "missing": "missing evaluation", "unavailable": "artifact unavailable",
+        "failed": "failed evaluation",
     }
+    assert residue["failed_count"] == 1
 
 
 def test_contact_heatmap_styling_works_with_current_pandas_styler_api():
@@ -117,9 +121,10 @@ def test_contact_heatmap_styling_works_with_current_pandas_styler_api():
 
     from mn_molecular_design_studio.complex_analysis_collection_ui import _style_contact_heatmap
 
-    rendered = _style_contact_heatmap(pd.DataFrame({"A10": ["●", "?", "·"]}), ["A10"]).to_html()
+    rendered = _style_contact_heatmap(pd.DataFrame({"A10": ["●", "?", "·", "×"]}), ["A10"]).to_html()
     assert "#7252a3" in rendered
     assert "#fff3cd" in rendered
+    assert "#f5c2c7" in rendered
 
 
 def test_collection_pagination_scales_beyond_comparison_slots():
@@ -169,6 +174,94 @@ def test_evaluation_projection_retains_method_metrics_and_source_provenance():
     assert rows[0]["source_engine"] == "Biotite 1.0"
     assert rows[1]["category"] == "Prediction confidence"
     assert filter_evaluation_rows(rows, method="biotite_interface", metric="contact_count", minimum=10) == [rows[0]]
+
+
+def test_results_cohort_choices_keep_same_native_candidate_separate_by_job_and_model(monkeypatch):
+    from mn_molecular_design_studio import complex_analysis_ui, complex_analysis_results_ui, run_results
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _results_structure_choices
+
+    local = {"task_group": "design", "run_id": "rfd4-run", "tool": "rfd4", "run_dir": "/runs/design/rfd4-run",
+             "project_id": "project-1"}
+    remote = {"task_group": "design", "run_id": "bindcraft-run", "tool": "bindcraft2",
+              "node_id": "peer-4033", "cluster_job_id": "peerjob-4033", "local_reference": "design/bindcraft-run",
+              "project_id": "project-1", "run_dir": ""}
+    candidate = {"candidate_id": "design_0", "binder_sequence": "AAAA", "target_chains": ["A"],
+                 "binder_chains": ["B"], "raw_metadata": {}}
+    monkeypatch.setattr(complex_analysis_ui, "_job_structure_options", lambda _user, _job: [
+        {"candidate": {**candidate, "model_index": 0}, "candidate_id": "design_0",
+         "relative_path": "models/model0.cif", "path": Path("/tmp/local0.cif"), "label": "model0"},
+    ])
+    monkeypatch.setattr(run_results, "read_source", lambda _job, _user, **_kwargs: {"candidates": [candidate]})
+    monkeypatch.setattr(complex_analysis_results_ui, "_remote_board_options", lambda _job, _collection: [
+        {"candidate": {**candidate, "model_index": 0}, "candidate_id": "design_0",
+         "relative_path": "artifacts/models/model0.cif", "structure_field": "complex_pdb", "label": "model0"},
+        {"candidate": {**candidate, "model_index": 1}, "candidate_id": "design_0",
+         "relative_path": "artifacts/models/model1.cif", "structure_field": "complex_pdb", "label": "model1"},
+    ])
+
+    rows = _results_structure_choices(USER, [local, remote])
+
+    assert len(rows) == 3
+    assert len({row["identity"] for row in rows}) == 3
+    assert {row["reference"] for row in rows} == {"design/rfd4-run", "cluster:peerjob-4033"}
+    assert {row["model_id"] for row in rows} == {"0", "1"}
+    assert all(row["candidate_id"] == "design_0" for row in rows)
+    assert sum(row["remote"] for row in rows) == 2
+
+
+def test_unified_candidate_row_keeps_generator_prediction_and_acceptance_distinct():
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _cohort_inventory_row
+
+    sample = {"identity": "results:source-model", "source_kind": "Results", "kind": "protein-protein",
+        "candidate_id": "studio-candidate", "model_id": "model-2", "source_job": "design/run-1",
+        "source_workstation": "PC004033", "digest": "sha256:pose", "generator_engine": "rfd4",
+        "prediction_engine": "boltz-2", "evaluation_entries": [{"method": "biotite_interface"}],
+        "tracks": [{"chain_id": "A", "sequence": "AG"}],
+        "candidate": {"candidate_id": "studio-candidate", "source_tool": "boltz-2", "stage": "prediction",
+            "target_chains": ["A"], "binder_chains": ["B"], "binder_sequence": "AAAA", "metrics": {"plddt": 88.0}, "raw_metadata": {
+                "source_candidate": {"candidate_id": "native-design-7", "source_tool": "rfd4",
+                                     "metrics": {"native_pass_filters": True}},
+                "validation_acceptance": {"status": "unresolved"},
+                "human_review": {"selected": True},
+            }}}
+    row = _cohort_inventory_row(sample)
+
+    assert row["Candidate / molecule"] == "studio-candidate"
+    assert row["Original candidate"] == "native-design-7"
+    assert row["Generator"] == "rfd4" and row["Prediction engine"] == "boltz-2"
+    assert row["Native acceptance"] == "passed"
+    assert row["Studio filter"] == "unresolved" and row["Manual selection"] is True
+    assert row["Source job"] == "design/run-1" and row["Workstation"] == "PC004033"
+    assert row["Structure SHA-256"] == "sha256:pose"
+    assert row["Target"] == f"Target sequence · 2 aa · 1 chain(s) · {hashlib.sha256(b'AG').hexdigest()[:12]}"
+
+
+def test_results_inspector_opener_uses_existing_authorized_local_route_and_residue_highlight(monkeypatch):
+    from mn_molecular_design_studio import complex_analysis_ui
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _open_in_inspector
+
+    captured = {}
+    monkeypatch.setattr(complex_analysis_ui, "open_result_complex",
+                        lambda run_dir, path, candidate, *, user: captured.update(
+                            run_dir=run_dir, path=path, candidate=candidate, user=user))
+    sample = {"source_kind": "Results", "remote": False, "user": USER,
+        "job": {"task_group": "design", "run_id": "run-1", "run_dir": "/runs/design/run-1"},
+        "path": Path("/runs/design/run-1/model.cif"), "relative_path": "model.cif",
+        "candidate": {"candidate_id": "candidate-4"}}
+
+    _open_in_inspector(sample, "A:10^_", "evaluation-2")
+
+    assert captured["candidate"]["candidate_id"] == "candidate-4"
+    assert captured["run_dir"] == "/runs/design/run-1"
+    st_key = "complex-analysis-results-viewer-design/run-1-model.cif-inspector-highlights"
+    assert __import__("streamlit").session_state[st_key] == ["A:10^_"]
+
+
+def test_cohort_contact_snapshot_keeps_saved_empty_contacts_separate_from_missing():
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _contact_snapshot
+
+    assert _contact_snapshot({"contact_snapshot": {"status": "saved", "rows": [], "contact_distance": 5.0}})["rows"] == []
+    assert _contact_snapshot({"contact_snapshot": {"status": "missing evaluation", "rows": None}})["rows"] is None
 
 
 def test_saved_interface_clustering_and_foldseek_remain_distinct():
@@ -342,3 +435,51 @@ def test_ligand_pose_label_preserves_chain_qualified_and_residue_only_selectors(
     assert _ligand_pose_label({"pose_chain": "L", "pose_residue": "L:1"}) == "L:1"
     assert _ligand_pose_label({"pose_chain": "L", "pose_residue": "1"}) == "L:1"
     assert _ligand_pose_label({"pose_chain": "", "pose_residue": "1"}) == "1"
+
+
+def test_results_materialization_uses_shared_component_classifier_and_keeps_source_identity(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import complex_analysis_results_ui
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _materialize_results_sample
+
+    structure = tmp_path / "rfd4-model.pdb"
+    structure.write_bytes(_ppi())
+    monkeypatch.setattr(complex_analysis_results_ui, "board_entries", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(complex_analysis_results_ui, "_materialize_board_structure",
+                        lambda *_args, **_kwargs: {"path": structure})
+    candidate = {"candidate_id": "native-rfd4-17", "source_tool": "RFD4", "stage": "design",
+                 "binder_chains": ["B"], "target_chains": ["A"],
+                 "raw_metadata": {"generator_engine": "RFD4"}}
+    job = {"task_group": "design", "run_id": "run-17", "tool": "rfd4", "node_name": "PC004033",
+           "project_id": "project-1", "run_dir": str(tmp_path)}
+    choice = {"remote": False, "job": job, "option": {"path": structure, "relative_path": "structures/model.pdb",
+             "source_run_dir": str(tmp_path), "candidate": candidate}, "candidate": candidate,
+             "candidate_id": "native-rfd4-17", "model_id": "0", "identity": "results:row-17",
+             "relative_path": "structures/model.pdb", "label": "RFD4 · PC004033 · run-17 · native-rfd4-17"}
+
+    sample = _materialize_results_sample(USER, choice)
+
+    assert sample["kind"] == "protein-protein"
+    assert sample["candidate_id"] == "native-rfd4-17"
+    assert sample["generator_engine"] == "RFD4"
+    assert sample["source_job"] == "design/run-17"
+    assert sample["source_workstation"] == "PC004033"
+    assert sample["model_id"] == "0"
+    assert sample["digest"] == hashlib.sha256(_ppi()).hexdigest()
+
+
+def test_comparison_projection_does_not_invent_missing_chain_roles(tmp_path):
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _comparison_sample
+
+    structure = tmp_path / "unknown-roles.pdb"
+    structure.write_bytes(_ppi())
+    source = {"kind": "protein-protein", "identity": "results:unknown", "label": "Unknown roles",
+              "path": structure, "candidate": {}, "context": {}, "job": {}, "components": [],
+              "candidate_id": "candidate-1", "project_id": "project-1", "source_reference": "design/run-1",
+              "relative_path": "complex.pdb", "model_id": "model-1", "digest": hashlib.sha256(_ppi()).hexdigest()}
+
+    projected = _comparison_sample(USER, source)
+
+    assert projected["target_chains"] == []
+    assert projected["binder_chains"] == []
+    assert projected["target_numbering"] == []
+    assert projected["binder_numbering"] == []

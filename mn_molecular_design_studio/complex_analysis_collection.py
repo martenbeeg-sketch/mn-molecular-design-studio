@@ -153,6 +153,7 @@ def aggregate_contact_footprints(
             "evaluable_count": evaluable,
             "missing_count": sum(status == "missing evaluation" for status in member_status.values()),
             "unavailable_count": sum(status == "artifact unavailable" for status in member_status.values()),
+            "failed_count": sum(status == "failed evaluation" for status in member_status.values()),
             "frequency": count / evaluable if evaluable else None,
             "member_status": {
                 identity: ("contact" if index in member_positions[identity] else
