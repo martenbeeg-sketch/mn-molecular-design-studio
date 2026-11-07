@@ -669,11 +669,18 @@ def _database_analysis_subject(database, user, owner, project, source):
             path.read_bytes(), path.name, represented_context,
         )
         _apply_representation_identity_annotations(representation_components, record.get("components") or [])
-        target_id = context.get("design_target_molecule_id") if (
-            source.get("target_chains") and
-            set(source["target_chains"]) == set(context.get("target_chains") or [])
-        ) else None
         origin = group.get("origin") if isinstance(group.get("origin"), dict) else {}
+        if source.get("target_chains"):
+            target_id = context.get("design_target_molecule_id") if (
+                set(source["target_chains"]) == set(context.get("target_chains") or [])
+            ) else None
+        else:
+            # Sequence-only assessments do not select interface target chains,
+            # but the source design may still carry an exact recorded target.
+            # Preserve that explicit source relationship without treating it as
+            # an analysis chain or inferring one from coordinate order.
+            target_id = (context.get("design_target_molecule_id")
+                         or origin.get("design_target_molecule_id"))
         if origin.get("_replica_node"):
             source_owner_node = str(origin.get("_replica_node") or "")
             source_owner_group_id = str(origin.get("_replica_group") or group_id)

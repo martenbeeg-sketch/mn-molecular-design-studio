@@ -364,6 +364,40 @@ def test_sequence_analysis_resolves_exact_sequence_identity_without_coordinates(
     assert observation["context"]["representation_id"] == ""
 
 
+def test_database_sequence_assessment_preserves_recorded_design_target_without_target_chain_selection(database):
+    from mn_molecular_design_studio.molecular_database_ingest import _database_analysis_subject
+
+    target = database.import_records(A, molecule_imports.parse_sequences("EFG"),
+                                     name="Recorded target", project_id="project-1")
+    target_id = target["molecule_ids"][0]
+    content = _pdb_efg_acd_complex().encode()
+    components = molecule_imports.parse_structure(content, "complex.pdb")[0]["components"]
+    imported = database.import_records(
+        A, [{"name": "Accepted binder complex", "components": components,
+             "files": [{"name": "complex.pdb", "content": content}]}],
+        name="Accepted binder", project_id="project-1",
+        origin={"type": "user", "design_target_molecule_id": target_id},
+    )
+    molecule_id, group_id = imported["molecule_ids"][0], imported["group_id"]
+    representation = database.list_molecules(
+        A, molecule_ids=[molecule_id], collection="all", limit=1,
+    )["items"][0]["representations"][0]
+    path = database.structure_file(A, representation["id"], materialize=True)
+    digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+    subject = _database_analysis_subject(database, A, A["id"], "project-1", {
+        "schema": "studio.complex_analysis_database_source.v1",
+        "molecule_id": molecule_id, "group_id": group_id,
+        "structure_id": representation["id"], "structure_digest": digest,
+        "target_chains": [],
+    })
+
+    assert subject is not None
+    assert subject["target_molecule_id"] == target_id
+    assert subject["structure_id"] == representation["id"]
+    assert subject["structure_digest"] == digest
+
+
 def test_accepted_binder_waits_for_structure_then_imports_it_on_next_sync(database):
     run = _make_run(database, "design", "accepted-rfd4-late-structure", tool="rfd4_proteina",
         workflow="design_generation", candidates=[{
