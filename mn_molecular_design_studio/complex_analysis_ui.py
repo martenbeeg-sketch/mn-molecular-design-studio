@@ -4272,6 +4272,11 @@ def _render_complex_analysis_inspector(user: dict, *, workflow_schema=None, proj
 def render_complex_analysis_workspace(user: dict, *, workflow_schema=None, project_selector=None, submit=None) -> None:
     """Render the run-first dashboard, preserving deep links to the Inspector."""
     if st.session_state.get('complex-analysis-workspace-view') == 'results_board':
+        if st.button('← Complex Analysis Dashboard', key='complex-analysis-results-board-dashboard'):
+            st.session_state['complex-analysis-workspace-view'] = 'dashboard'
+            st.session_state.pop('complex-analysis-open', None)
+            st.session_state.pop('complex-analysis-source-kind', None)
+            st.rerun()
         from mn_molecular_design_studio.complex_analysis_results_ui import render_results_board
         render_results_board(user, workflow_schema=workflow_schema, submit=submit)
         return

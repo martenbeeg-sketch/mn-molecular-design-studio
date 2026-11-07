@@ -1093,7 +1093,77 @@ def render_comparison(user: dict, *, workflow_schema=None, project_selector=None
                                          show_controls=True, show_structure_tools=False, force_reload=True)
         else:
             st.caption("These structures do not establish a common coordinate frame. Fit identical target residues explicitly below, or supply a reviewed external transform.")
-        if len(sources) == 2 and st.checkbox("Fit identical target C-alpha residues and show overlay", key="complex-analysis-fit-targets"):
+        if protein_protein and len(sources) >= 2:
+            st.markdown("#### Target-based multi-design overlay")
+            st.caption("Each complex is independently aligned on its validated target C-alpha correspondence. Binder coordinates do not contribute to the fit. Transforms are temporary visualization data and are not saved as Evaluations.")
+            if any(len(sample.get("target_chains") or []) != 1 for sample in sources):
+                st.info("The selected cohort includes a multi-chain target. Current automatic target fitting requires one explicitly selected target chain; structures remain available in the side-by-side viewers.")
+            elif any(len(str(chain)) != 1 for sample in sources
+                     for chain in [*(sample.get("target_chains") or []), *(sample.get("binder_chains") or [])]):
+                st.info("Per-chain colors in the existing Mol* overlay require single-character author chain IDs. Use the individual viewers or Inspector for this cohort.")
+            else:
+                labels = [f"{chr(ord('A') + index)} · {sample['label']} · model {sample.get('model_id') or 'unspecified'}"
+                          for index, sample in enumerate(sources)]
+                reference_index = st.selectbox("Target reference frame", list(range(len(sources))),
+                    format_func=lambda index: labels[index], key="complex-analysis-target-fit-reference")
+                binder_visible = st.multiselect("Binders visible in overlay", list(range(len(sources))),
+                    default=list(range(len(sources))), format_func=lambda index: labels[index],
+                    key="complex-analysis-target-fit-visible-binders")
+                highlight_contacts = st.checkbox("Highlight saved target-contact residues where available", value=True,
+                    key="complex-analysis-target-fit-highlight-contacts",
+                    help="Only exact saved Biotite contact maps for these structure/model/chain identities are highlighted. Missing evaluations are not recalculated.")
+                if st.checkbox("Align targets and show shared Mol* view", key="complex-analysis-fit-targets-multi"):
+                    try:
+                        from mn_molecular_design_studio.complex_analysis_comparison import fit_target_cohort
+                        fit = fit_target_cohort(sources, reference_index=reference_index)
+                        fit_rows = {int(row["index"]): row for row in fit["rows"]}
+                        st.dataframe([{
+                            "Design / model": labels[index],
+                            "Target chain": ", ".join(row["target_chains"]),
+                            "Alignment": "Reference frame" if index == reference_index else row["method"],
+                            "Mapped target residues": row["mapped_residues"],
+                            "Target Cα RMSD (Å)": row["target_ca_rmsd_angstrom"],
+                            "Structure SHA-256": row["structure_digest"],
+                        } for index, row in fit_rows.items()], hide_index=True, use_container_width=True)
+                        st.caption(f"{fit['method']}. {fit['limitations']}")
+                        from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer import (
+                            ChainVisualization, StructureVisualization, molstar_custom_component,
+                        )
+                        palette = ["0x377eb8", "0xe41a1c", "0x4daf4a", "0x984ea3", "0xff7f00"]
+                        visualizations = []
+                        for index, sample in enumerate(sources):
+                            chains = [ChainVisualization(chain_id=str(chain), color="uniform",
+                                color_params={"value": "0xb8c0cc"}, label=f"Target · {chain}",
+                                representation_type="cartoon") for chain in sample["target_chains"]]
+                            if index in binder_visible:
+                                chains.extend(ChainVisualization(chain_id=str(chain), color="uniform",
+                                    color_params={"value": palette[index % len(palette)]},
+                                    label=f"Binder {chr(ord('A') + index)} · {sample.get('candidate_id') or sample['label']} · model {sample.get('model_id') or 'unspecified'}",
+                                    representation_type="cartoon+ball-and-stick")
+                                    for chain in sample["binder_chains"])
+                            highlights = []
+                            if highlight_contacts:
+                                saved = sample.get("saved_biotite_contacts") or {}
+                                from mn_molecular_design_studio.complex_analysis_inspector import (
+                                    author_residue_selector, parse_author_residue_selector,
+                                )
+                                for pair in saved.get("contacts") or []:
+                                    parsed = parse_author_residue_selector(str(pair.get("target_residue") or "")) if isinstance(pair, dict) else None
+                                    if parsed and parsed.get("chain_id") in set(sample["target_chains"]):
+                                        selector = author_residue_selector(parsed["chain_id"], parsed["number"], parsed.get("insertion_code") or "")
+                                        if selector:
+                                            highlights.append(selector)
+                            visualizations.append(StructureVisualization(
+                                pdb=workspace._viewer_text(sample["path"], sample.get("context") or {}),
+                                representation_type=None, chains=chains,
+                                highlighted_selections=sorted(set(highlights)),
+                                transform_matrix=(None if index == reference_index else fit_rows[index]["matrix_4x4"]),
+                            ))
+                        molstar_custom_component(visualizations, key="complex-analysis-target-fit-overlay-multi",
+                            height=680, show_controls=True, show_structure_tools=False, force_reload=True)
+                    except (OSError, ValueError, KeyError, ImportError) as exc:
+                        st.info(f"Target-based shared view unavailable: {exc}")
+        elif len(sources) == 2 and st.checkbox("Fit identical target C-alpha residues and show overlay", key="complex-analysis-fit-targets"):
             from mn_molecular_design_studio.complex_analysis_comparison import fit_matching_targets
             try:
                 fit = fit_matching_targets(sources[0], sources[1])

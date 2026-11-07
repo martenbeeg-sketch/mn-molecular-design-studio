@@ -6,6 +6,7 @@ from streamlit.testing.v1 import AppTest
 
 from mn_molecular_design_studio.complex_analysis_comparison import (
     compatibility_report,
+    fit_target_cohort,
     protein_chain_numbering,
     saved_target_contact_rows,
     target_structure_fingerprint,
@@ -157,6 +158,54 @@ def test_contact_presence_table_only_transcribes_saved_target_residues():
         {"Target residue": "A:10", "Structure A": True, "Structure B": False},
         {"Target residue": "A:11", "Structure A": True, "Structure B": True},
     ]
+
+
+def test_fit_target_cohort_aligns_each_complex_on_target_and_preserves_model_identity(tmp_path):
+    residues = ["ALA", "GLY", "SER", "THR"]
+    coordinates = [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (0.0, 3.0, 0.0), (0.0, 0.0, 4.0)]
+    def atom(serial, residue, chain, number, xyz):
+        x, y, z = xyz
+        return (f"ATOM  {serial:5d}  CA  {residue:>3s} {chain}{number:4d}    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}{1.0:6.2f}{20.0:6.2f}           C")
+    paths = [tmp_path / f"complex-{index}.pdb" for index in range(3)]
+    sources = []
+    from mn_molecular_design_studio.complex_analysis_comparison import protein_chain_numbering
+    import hashlib
+    for index, path in enumerate(paths):
+        lines = []
+        serial = 1
+        for number, (residue, (x, y, z)) in enumerate(zip(residues, coordinates), start=1):
+            # Apply different rigid rotations/translations to whole complexes.
+            if index == 0:
+                moved = (x, y, z)
+            elif index == 1:
+                moved = (-y + 10.0, x + 2.0, z - 4.0)
+            else:
+                moved = (x + 7.0, -z + 5.0, y - 1.0)
+            lines.append(atom(serial, residue, "A", number, moved)); serial += 1
+        for number, residue in enumerate(("VAL", "LEU"), start=1):
+            lines.append(atom(serial, residue, "B", number, (20.0 + number, 1.0, 2.0))); serial += 1
+        path.write_text("\n".join([*lines, "END", ""]))
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        numbering = protein_chain_numbering(path, ["A"])
+        sources.append({
+            "identity": f"results:{index}", "candidate_id": f"design-{index}", "model_id": f"model-{index}",
+            "path": path, "structure_digest": digest, "complex_type": "protein-protein",
+            "target_chains": ["A"], "binder_chains": ["B"],
+            "target_chains_sequence": [numbering[0]["sequence"]], "binder_chains_sequence": ["VL"],
+            "target_numbering": numbering, "target_identity": "same-target",
+        })
+
+    report = fit_target_cohort(sources, reference_index=1)
+
+    assert report["reference_identity"] == "results:1"
+    assert [row["model_id"] for row in report["rows"]] == ["model-0", "model-1", "model-2"]
+    assert all(row["mapped_residues"] == 4 for row in report["rows"])
+    assert all(row["structure_digest"] == source["structure_digest"]
+               for row, source in zip(report["rows"], sources))
+    assert report["rows"][1]["target_ca_rmsd_angstrom"] == 0.0
+    assert report["rows"][0]["target_ca_rmsd_angstrom"] < 0.01
+    assert report["rows"][2]["target_ca_rmsd_angstrom"] < 0.01
 
 
 def test_comparison_view_supports_multiple_molstar_viewers_and_saved_evaluation_rows(tmp_path, monkeypatch):

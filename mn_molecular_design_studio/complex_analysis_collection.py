@@ -81,6 +81,117 @@ def component_kind(components: list[dict[str, Any]]) -> str:
     return "other"
 
 
+def acceptance_decisions(candidate: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return only explicit, provenance-bearing decisions attached to a candidate.
+
+    The decision stays attached to this candidate/model. Native acceptance may
+    be inherited from an explicitly preserved source candidate, but is labeled
+    as a generator-stage decision and never promoted to final acceptance.
+    """
+    from mn_molecular_design_studio.native_filter_metrics import native_filter_evidence
+
+    if not isinstance(candidate, dict):
+        return []
+    raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    model_id = candidate.get("model_id") or candidate.get("model_index") or raw.get("model_id") or raw.get("model_index")
+    candidate_id = str(candidate.get("candidate_id") or "")
+    records: list[dict[str, Any]] = []
+
+    def append(stage_id: str, label: str, decision: Any, *, provenance: Any = None, source: str = "") -> None:
+        if not isinstance(decision, dict):
+            return
+        status = str(decision.get("status") or decision.get("acceptance_status") or "").strip().casefold()
+        status_map = {
+            "accepted": "passed", "pass": "passed", "passed": "passed",
+            "rejected": "rejected", "fail": "rejected", "failed": "rejected",
+            "pending": "pending", "unresolved": "pending", "not_evaluated": "pending",
+            "not evaluated": "pending", "unknown": "pending", "unavailable": "pending",
+            "missing_evidence": "pending", "invalid_metadata": "pending",
+        }
+        cohort_status = status_map.get(status)
+        if cohort_status is None:
+            return
+        records.append({
+            "stage_id": stage_id, "stage": label, "status": status,
+            "cohort_status": cohort_status, "candidate_id": candidate_id,
+            "model_id": str(model_id or ""), "policy": decision.get("policy") or {},
+            "provenance": provenance if isinstance(provenance, dict) else {},
+            "source": source,
+        })
+
+    validation = raw.get("validation_acceptance")
+    validation_provenance = raw.get("validation_acceptance_provenance")
+    if isinstance(validation, dict):
+        append("final", "Final computational acceptance", validation,
+               provenance=validation_provenance, source="Studio Validation & Acceptance")
+    else:
+        campaign = raw.get("distributed_campaign") if isinstance(raw.get("distributed_campaign"), dict) else {}
+        if str(campaign.get("acceptance_level") or "").casefold() == "validated":
+            append("final", "Final computational acceptance",
+                   {"status": campaign.get("validated_acceptance")},
+                   provenance=campaign, source="Recorded campaign validation")
+
+    candidate_set = raw.get("candidate_set") if isinstance(raw.get("candidate_set"), dict) else {}
+    shared = candidate_set.get("shared_filter")
+    if isinstance(shared, dict):
+        append("shared_filter", "Studio shared scientific filter", shared,
+               provenance={"node_id": candidate_set.get("node_id"), "target_id": candidate_set.get("target_id")},
+               source="CandidateSet shared filter")
+
+    # Some sequence-design adapters record a separate explicit sequence gate.
+    # Only these named decision fields are recognized; scores are never treated
+    # as acceptance decisions.
+    sequence_decision = raw.get("sequence_design_acceptance") or raw.get("sequence_acceptance")
+    if isinstance(sequence_decision, dict):
+        append("sequence", "Sequence-design acceptance", sequence_decision,
+               provenance=raw.get("sequence_design_acceptance_provenance"),
+               source="Recorded sequence-design decision")
+
+    native = native_filter_evidence(candidate)
+    if native.get("source"):
+        source_candidate = raw.get("source_candidate") if isinstance(raw.get("source_candidate"), dict) else {}
+        native_scope = str(source_candidate.get("candidate_id") or candidate_id)
+        native_status = {"passed": "passed", "failed": "rejected"}.get(str(native.get("status") or "").casefold(), "pending")
+        records.append({
+            "stage_id": "native", "stage": "Native generator acceptance",
+            "status": str(native.get("status") or "unavailable"), "cohort_status": native_status,
+            "candidate_id": native_scope, "model_id": "", "policy": {},
+            "provenance": {"reason": native.get("reason") or ""},
+            "source": str(native.get("source") or "Native engine"),
+        })
+    return records
+
+
+def filter_acceptance_cohort(samples: list[dict[str, Any]], view: str,
+                             stage_id: str = "") -> list[dict[str, Any]]:
+    """Apply a deliberate acceptance-stage view without mutating source records."""
+    if view == "All designs":
+        return list(samples)
+    if view == "Final accepted designs":
+        return [sample for sample in samples if any(
+            row["stage_id"] == "final" and row["cohort_status"] == "passed"
+            for row in acceptance_decisions(sample.get("candidate") or {}))]
+    if view == "No recorded decision":
+        return [sample for sample in samples if not acceptance_decisions(sample.get("candidate") or {})]
+    desired = {"Passed at selected stage": "passed", "Rejected at selected stage": "rejected",
+               "Pending / unresolved at selected stage": "pending"}.get(view)
+    if desired is None or not stage_id:
+        return []
+    return [sample for sample in samples if any(
+        row["stage_id"] == stage_id and row["cohort_status"] == desired
+        for row in acceptance_decisions(sample.get("candidate") or {}))]
+
+
+def acceptance_stage_options(samples: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """List recorded decision stages in stable presentation order."""
+    order = ("final", "sequence", "shared_filter", "native")
+    labels: dict[str, str] = {}
+    for sample in samples:
+        for row in acceptance_decisions(sample.get("candidate") or {}):
+            labels.setdefault(str(row["stage_id"]), str(row["stage"]))
+    return [(stage_id, labels[stage_id]) for stage_id in order if stage_id in labels]
+
+
 def author_residue_index(track: dict[str, Any], reference: str, chain_id: str) -> int | None:
     """Resolve an evaluator author residue reference to one sequence index."""
     from mn_molecular_design_studio.complex_analysis_inspector import parse_author_residue_selector

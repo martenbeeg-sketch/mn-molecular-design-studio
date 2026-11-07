@@ -929,10 +929,26 @@ def _cohort_inventory_row(sample: dict) -> dict:
     candidate = sample.get("candidate") if isinstance(sample.get("candidate"), dict) else {}
     raw = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else sample.get("context", {})
     from mn_molecular_design_studio.native_filter_metrics import native_filter_evidence
+    from mn_molecular_design_studio.complex_analysis_collection import acceptance_decisions
 
     native = native_filter_evidence(candidate) if candidate else {"status": "not recorded"}
     studio = raw.get("validation_acceptance") if isinstance(raw.get("validation_acceptance"), dict) else {}
     review = raw.get("human_review") if isinstance(raw.get("human_review"), dict) else {}
+    decisions = acceptance_decisions(candidate)
+    final = next((row for row in decisions if row.get("stage_id") == "final"), None)
+    stage_text = []
+    for decision in decisions:
+        policy = decision.get("policy") if isinstance(decision.get("policy"), dict) else {}
+        policy_name = policy.get("schema") or policy.get("version") or decision.get("source") or "Policy not recorded"
+        rules = policy.get("mandatory_filters") or policy.get("rules") or []
+        thresholds = "; ".join(
+            f"{rule.get('field')} {rule.get('operator')} {rule.get('value')}"
+            for rule in rules if isinstance(rule, dict) and rule.get("field")
+        )
+        scope = f"model {decision['model_id']}" if decision.get("model_id") else f"candidate {decision.get('candidate_id') or 'not recorded'}"
+        stage_text.append(f"{decision['stage']}: {decision['status']} · {scope} · {policy_name}"
+                          + (f" · {thresholds}" if thresholds else ""))
+    experimental = raw.get("experimental_validation") if isinstance(raw.get("experimental_validation"), dict) else {}
     return {
         "Candidate / molecule": str(candidate.get("candidate_id") or sample.get("molecule_id") or sample.get("structure_id") or "Unknown"),
         "Original candidate": str((raw.get("source_candidate") or {}).get("candidate_id") or raw.get("native_candidate_id") or candidate.get("candidate_id") or "Not recorded"),
@@ -944,7 +960,11 @@ def _cohort_inventory_row(sample: dict) -> dict:
         "Molecular type": sample.get("kind") or "Not classified",
         "Native acceptance": native.get("status") or "not recorded",
         "Studio filter": studio.get("status") or "not evaluated",
+        "Final computational acceptance": final.get("status") if final else "Not recorded",
+        "Recorded acceptance evidence": " | ".join(stage_text) or "No explicit decision recorded",
+        "Human review": review.get("status") or ("selected" if review.get("selected") else "Not recorded"),
         "Manual selection": bool(review.get("selected", False)),
+        "Experimental validation": experimental.get("status") or "Not recorded",
         "Evaluation coverage": ", ".join(sorted({str(row.get("method") or row.get("evaluator") or "Unknown") for row in sample.get("evaluation_entries", [])})) or "No saved Evaluation",
         "Source job": sample.get("source_job") or sample.get("record", {}).get("source_job") or "Database",
         "Workstation": sample.get("source_workstation") or "Database",
@@ -1014,7 +1034,7 @@ def _comparison_sample(user: dict, sample: dict) -> dict:
 def render_collection_workspace(user: dict, run_rows: list[dict] | None = None) -> None:
     """Render the mixed Results/Database design explorer inside Complex Analysis."""
     st.subheader("Unified Design Explorer · Evaluation Board")
-    st.caption("Select authorized saved structures from Results and/or the curated Database. Each row remains tied to its source candidate, model, workstation and measurements; no universal score or Database promotion is applied.")
+    st.caption("Select authorized saved structures from Results and/or the curated Database. By default only explicitly accepted final computational decisions enter the cohort. Native passes, earlier-stage passes, human review and experimental validation remain distinct; no universal score or Database promotion is applied.")
     sources = st.multiselect("Include sources", ["Results", "Database"], default=["Database"],
                              key="complex-analysis-cohort-source-types")
     samples = []
@@ -1063,7 +1083,43 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None) 
         st.info("Choose saved Database structures and/or Results candidate models to populate the Design Explorer.")
         return
 
+    from mn_molecular_design_studio.complex_analysis_collection import (
+        acceptance_decisions, acceptance_stage_options, filter_acceptance_cohort,
+    )
     st.caption(f"Loaded {len(samples)} selected structure/model row(s). Results structures are retrieved only after selection; original Results remain unmodified.")
+    stages = acceptance_stage_options(samples)
+    final_rows = [row for sample in samples for row in acceptance_decisions(sample.get("candidate") or {})
+                  if row.get("stage_id") == "final"]
+    cohort_mode = st.selectbox(
+        "Acceptance cohort",
+        ["Final accepted designs", "Passed at selected stage", "Rejected at selected stage",
+         "Pending / unresolved at selected stage", "No recorded decision", "All designs"],
+        key="complex-analysis-cohort-acceptance-mode",
+        help="The default includes only an explicit final computational pass attached to this candidate/model. Select a stage to inspect its own decisions; a native generator pass is never treated as final acceptance.",
+    )
+    stage_id = ""
+    if cohort_mode in {"Passed at selected stage", "Rejected at selected stage", "Pending / unresolved at selected stage"}:
+        if stages:
+            stage_ids = [item[0] for item in stages]
+            stage_key = "complex-analysis-cohort-acceptance-stage"
+            if st.session_state.get(stage_key) not in stage_ids:
+                st.session_state[stage_key] = stage_ids[0]
+            stage_id = st.selectbox("Recorded acceptance stage", stage_ids,
+                format_func=lambda value: next(label for key, label in stages if key == value), key=stage_key)
+            selected_stage = next(label for key, label in stages if key == stage_id)
+            st.caption(f"Stage decisions retain their recorded source and policy per candidate. Selected stage: {selected_stage}.")
+        else:
+            st.info("No recorded acceptance stages are available for these structures. Choose All designs or No recorded decision to inspect them without treating them as passed.")
+    cohort_samples = filter_acceptance_cohort(samples, cohort_mode, stage_id)
+    if cohort_mode == "Final accepted designs" and not cohort_samples:
+        if final_rows:
+            st.info("No selected candidate/model has a recorded final computational pass. Rejected, unresolved and other stages remain separate; choose a stage explicitly to inspect another cohort.")
+        else:
+            st.info("No explicit final computational decisions are recorded for these structures. Choose a recorded stage to view its passed cohort, or deliberately select All designs or No recorded decision.")
+    st.caption(f"Acceptance cohort: {len(cohort_samples)} of {len(samples)} selected structure/model row(s). Human review and experimental validation do not change computational acceptance.")
+    if not cohort_samples:
+        return
+    samples = cohort_samples
     import pandas as pd
     inventory = [_cohort_inventory_row(sample) for sample in samples]
     frame = pd.DataFrame(inventory)

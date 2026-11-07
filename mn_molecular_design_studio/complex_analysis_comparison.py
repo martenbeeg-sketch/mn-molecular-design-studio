@@ -498,6 +498,58 @@ def fit_matching_targets(reference: dict, moving: dict) -> dict[str, Any]:
             "interpretation": "Rigid target C-alpha superposition of saved models; not native-state accuracy or experimental binding evidence."}
 
 
+def fit_target_cohort(sources: list[dict], reference_index: int = 0) -> dict[str, Any]:
+    """Fit two to five compatible complexes into one selected target frame.
+
+    Each moving complex is independently superposed using only the validated
+    target C-alpha correspondence. Binder coordinates never contribute to the
+    transform. The returned transforms are transient display data, not saved
+    Evaluations.
+    """
+    if not 2 <= len(sources) <= 5:
+        raise ValueError("Target-based comparison requires two to five structures.")
+    if not isinstance(reference_index, int) or not 0 <= reference_index < len(sources):
+        raise ValueError("Choose a valid target reference structure.")
+    reference = sources[reference_index]
+    from mn_molecular_design_studio.engine.workflow_engine.app.components.molstar_viewer.dataclasses import (
+        validate_rigid_transform_matrix,
+    )
+
+    identity_matrix = validate_rigid_transform_matrix(
+        [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+    )
+    rows = []
+    for index, source in enumerate(sources):
+        if index == reference_index:
+            target_chains = list(source.get("target_chains") or [])
+            if len(target_chains) != 1:
+                raise ValueError("Target fitting currently requires one explicitly selected target chain per structure.")
+            residues, _ = _protein_residue_inventory(source["path"], target_chains)
+            fit = {"matrix_4x4": identity_matrix, "mapped_residues": len(residues),
+                   "target_ca_rmsd_angstrom": 0.0, "method": "Reference target frame"}
+        else:
+            fit = fit_matching_targets(reference, source)
+        rows.append({
+            "index": index, "identity": str(source.get("identity") or ""),
+            "candidate_id": str(source.get("candidate_id") or ""),
+            "model_id": str(source.get("model_id") or ""),
+            "structure_digest": str(source.get("structure_digest") or ""),
+            "target_chains": list(source.get("target_chains") or []),
+            "matrix_4x4": fit["matrix_4x4"],
+            "mapped_residues": int(fit.get("mapped_residues") or 0),
+            "target_ca_rmsd_angstrom": float(fit.get("target_ca_rmsd_angstrom") or 0.0),
+            "method": str(fit.get("method") or ""),
+        })
+    return {
+        "schema": "studio.target-fit-cohort.v1",
+        "reference_index": reference_index,
+        "reference_identity": str(reference.get("identity") or ""),
+        "method": "Independent rigid target C-alpha fit to selected reference",
+        "rows": rows,
+        "limitations": "Requires exact target sequence and author numbering, one target chain, one model, and C-alpha atoms for every mapped target residue. RMSD describes target fit only; it is not binding accuracy.",
+    }
+
+
 def saved_target_contact_rows(contact_sets: dict[str, list[dict]]) -> list[dict[str, Any]]:
     """Make a residue-by-structure presence table from saved contact artifacts.
 

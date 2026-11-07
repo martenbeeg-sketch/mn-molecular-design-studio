@@ -139,6 +139,28 @@ with patch.object(logical_runs, "catalog", return_value=[{run!r}]), patch.object
     assert not app.session_state["complex-analysis-detail-visible"]
 
 
+def test_results_board_exposes_navigation_back_to_dashboard():
+    script = '''import streamlit as st
+from unittest.mock import patch
+from mn_molecular_design_studio import complex_analysis_dashboard, complex_analysis_results_ui
+from mn_molecular_design_studio.complex_analysis_ui import render_complex_analysis_workspace
+if "complex-analysis-workspace-view" not in st.session_state:
+    st.session_state["complex-analysis-workspace-view"] = "results_board"
+def dashboard(user, **kwargs):
+    st.session_state["test-dashboard-opened"] = True
+with patch.object(complex_analysis_results_ui, "render_results_board"), \\
+     patch.object(complex_analysis_dashboard, "render_complex_analysis_dashboard", side_effect=dashboard):
+    render_complex_analysis_workspace({"id": "user-1"})
+'''
+    app = AppTest.from_string(script, default_timeout=10).run()
+    assert not app.exception
+    assert app.button[0].label == "← Complex Analysis Dashboard"
+    app.button[0].click().run()
+    assert not app.exception
+    assert app.session_state["complex-analysis-workspace-view"] == "dashboard"
+    assert app.session_state["test-dashboard-opened"] is True
+
+
 def test_landing_does_not_count_completed_jobs_as_verified_coverage():
     row = {"logical_run_id": "run-a", "logical_run_name": "Run A", "structure_count": 65,
            "analysis_job_count": 6, "analysis_job_statuses": ["completed"] * 6,

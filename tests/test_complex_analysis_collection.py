@@ -7,11 +7,14 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from mn_molecular_design_studio.complex_analysis_collection import (
+    acceptance_decisions,
+    acceptance_stage_options,
     aggregate_contact_footprints,
     assignment_rows,
     collection_page,
     evaluation_table_rows,
     filter_evaluation_rows,
+    filter_acceptance_cohort,
     heatmap_selection,
     prepare_inspector_navigation_state,
     sequence_correspondence,
@@ -21,6 +24,31 @@ from mn_molecular_design_studio.molecular_database import MolecularDatabase
 
 USER = {"id": "a" * 32, "role": "user", "_cluster_project_ids": []}
 OTHER_USER = {"id": "b" * 32, "role": "user", "_cluster_project_ids": []}
+
+
+def test_acceptance_cohort_keeps_final_stage_model_scope_and_native_pass_separate():
+    final_model = {"candidate_id": "design-1-model-2", "model_index": 2, "metrics": {"native_pass_filters": True},
+        "raw_metadata": {"validation_acceptance": {"status": "accepted", "policy": {"schema": "policy.v2", "mandatory_filters": [{"field": "iptm", "operator": ">=", "value": 0.7}]}},
+                         "validation_acceptance_provenance": {"method": "Boltz-2 validation"}}}
+    rejected_model = {"candidate_id": "design-1-model-3", "model_index": 3, "metrics": {"native_pass_filters": True},
+        "raw_metadata": {"validation_acceptance": {"status": "rejected", "policy": {"schema": "policy.v2"}}}}
+    native_only = {"candidate_id": "design-2", "metrics": {"native_pass_filters": True}}
+    unfiltered = {"candidate_id": "design-3", "raw_metadata": {"human_review": {"selected": True}}}
+    samples = [{"candidate": candidate, "identity": candidate["candidate_id"]}
+               for candidate in (final_model, rejected_model, native_only, unfiltered)]
+
+    assert filter_acceptance_cohort(samples, "Final accepted designs") == [samples[0]]
+    assert filter_acceptance_cohort(samples, "Passed at selected stage", "native") == samples[:3]
+    assert filter_acceptance_cohort(samples, "Rejected at selected stage", "final") == [samples[1]]
+    assert filter_acceptance_cohort(samples, "No recorded decision") == [samples[3]]
+    assert filter_acceptance_cohort(samples, "All designs") == samples
+    assert acceptance_stage_options(samples) == [("final", "Final computational acceptance"),
+                                                   ("native", "Native generator acceptance")]
+    final = next(row for row in acceptance_decisions(final_model) if row["stage_id"] == "final")
+    assert final["model_id"] == "2"
+    assert final["policy"]["schema"] == "policy.v2"
+    assert final["provenance"]["method"] == "Boltz-2 validation"
+    assert not any(row["stage_id"] == "final" for row in acceptance_decisions(native_only))
 
 
 def _atom(serial: int, chain: str, number: int, x: float, *, residue: str = "ALA", insertion: str = " ") -> str:
