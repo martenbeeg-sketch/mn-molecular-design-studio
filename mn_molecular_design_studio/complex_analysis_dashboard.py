@@ -1544,7 +1544,7 @@ def _render_secondary(user: dict, mode: str, *, workflow_schema=None, project_se
                       run_rows: list[dict] | None = None) -> None:
     if mode == "collections":
         from mn_molecular_design_studio.complex_analysis_collection_ui import render_collection_workspace
-        render_collection_workspace(user, run_rows=run_rows)
+        render_collection_workspace(user, run_rows=run_rows, workflow_schema=workflow_schema, submit=submit)
     elif mode == "compare":
         st.markdown("#### Compare saved structures across runs")
         st.caption("The existing comparison view resolves structures by their Molecular Database identity and target/molecule provenance.")

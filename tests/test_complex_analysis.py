@@ -969,6 +969,13 @@ def test_database_review_annotations_persist_separately_and_follow_record_access
     assert saved["note"] == reloaded["note"]
     assert reloaded["updated_at"]
     assert database.list_molecules(USER, molecule_ids=[record["id"]])["items"][0]["observations"] == before_observations
+    shortlisted = database.save_complex_review(
+        USER, source_kind="database", subject_id=record["id"], structure_ref=structure_id,
+        status="Shortlisted for experimental testing", note="Advance after construct review.",
+    )
+    assert shortlisted["status"] == "Shortlisted for experimental testing"
+    assert database.get_complex_review(USER, source_kind="database", subject_id=record["id"],
+                                       structure_ref=structure_id)["note"] == "Advance after construct review."
     with pytest.raises(PermissionError):
         database.get_complex_review(
             OTHER_USER, source_kind="database", subject_id=record["id"], structure_ref=structure_id,
@@ -1364,6 +1371,113 @@ def test_database_analysis_source_is_exact_and_does_not_create_a_prediction_job(
     with pytest.raises(PermissionError):
         authorize_database_structure(OTHER_USER, selection, project_id=None, database=database,
                                      workflow_id="analysis.biotite_interface")
+
+
+def test_database_sequence_assessment_uses_exact_selected_chain_and_protein_sol_limit(tmp_path, monkeypatch):
+    database = _isolated_database(tmp_path, monkeypatch)
+    imported_record = molecule_imports.parse_structure(_complex_pdb("protein"), "imported-ppi.pdb")[0]
+    imported = database.import_records(USER, [imported_record], name="Database PPI sequence check")
+    record = database.list_molecules(USER, molecule_ids=imported["molecule_ids"])["items"][0]
+    structure = record["representations"][0]
+    selection = {"molecule_id": record["id"], "structure_id": structure["id"],
+                 "group_id": imported["group_id"], "model_id": structure["id"],
+                 "binder_chains": ["B"], "target_chains": []}
+    from mn_molecular_design_studio.complex_analysis_sources import (
+        apply_database_analysis_source, authorize_database_structure, build_database_analysis_source,
+    )
+
+    authorized = authorize_database_structure(USER, selection, project_id=None, database=database,
+        workflow_id="analysis.sequence_qc")
+    bundle = build_database_analysis_source(USER, selection, workflow_id="analysis.sequence_qc",
+        project_id=None, database=database)
+    candidate = json.loads(Path(bundle["candidates_jsonl"]).read_text().splitlines()[0])
+    assert candidate["binder_sequence"] == next(
+        item["sequence"] for item in authorized["parsed_components"] if item.get("chain") == "B")
+    assert candidate["binder_chains"] == ["B"]
+    adapted = apply_database_analysis_source({
+        "schema_version": 1, "workflow": "analysis.sequence_qc", "database_source": selection,
+        "parameters": {"ph": 7.4},
+    }, USER, None)
+    assert adapted["parameters"]["selected_structure_path"] == bundle["selected_structure_path"]
+    assert adapted["parameters"]["binder_chains"] == ["B"]
+    from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import (
+        validate_workflow_request, workflow_schema,
+    )
+    adapted["schema_version"] = workflow_schema("analysis.sequence_qc")["schema_version"]
+    request_path = tmp_path / "database-sequence-qc-request.json"
+    request_path.write_text(json.dumps({key: adapted[key] for key in ("schema_version", "workflow", "parameters")}))
+    validated = validate_workflow_request(request_path)
+    assert validated["valid"] is True, validated
+    with pytest.raises(ValueError, match="at least 21 residues"):
+        authorize_database_structure(USER, selection, project_id=None, database=database,
+            workflow_id="analysis.proteinsol")
+
+
+def test_database_sequence_qc_run_persists_evaluation_on_exact_saved_design(tmp_path, monkeypatch):
+    database = _isolated_database(tmp_path, monkeypatch)
+    sequence = "ACDEFGHIKLMNPQRSTVWYACDEFGHIKL"
+    imported_record = molecule_imports.parse_structure(
+        _two_protein_chain_pdb("M" * len(sequence), sequence).encode(), "accepted-design.pdb",
+    )[0]
+    imported = database.import_records(USER, [imported_record], name="Accepted design assessment fixture")
+    record = database.list_molecules(USER, molecule_ids=imported["molecule_ids"], collection="all")["items"][0]
+    structure = record["representations"][0]
+    selection = {"molecule_id": record["id"], "structure_id": structure["id"],
+        "group_id": imported["group_id"], "model_id": structure["id"],
+        "binder_chains": ["B"], "target_chains": []}
+    from mn_molecular_design_studio.complex_analysis_sources import (
+        apply_database_analysis_source, build_database_analysis_source,
+    )
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import quality
+    from mn_molecular_design_studio.evaluations import evaluation_descriptor, file_digest
+    from mn_molecular_design_studio.molecular_database_ingest import ingest_run
+    from mn_molecular_design_studio.workspace import mark_studio_job
+    from types import SimpleNamespace
+
+    adapter = build_database_analysis_source(USER, selection, workflow_id="analysis.sequence_qc",
+        project_id=None, database=database)
+    request = apply_database_analysis_source({"schema_version": 1, "workflow": "analysis.sequence_qc",
+        "database_source": selection, "parameters": {"ph": 7.4}}, USER, None)
+    source_candidate = json.loads(Path(adapter["candidates_jsonl"]).read_text().splitlines()[0])
+    assert source_candidate["raw_metadata"]["database_source"]["structure_id"] == structure["id"]
+    monkeypatch.setattr(quality, "docker_user_args", lambda: [])
+    monkeypatch.setattr(quality, "apply_docker_cpu_limits_to_steps", lambda _run, steps: steps)
+
+    def deterministic_container(command, **_kwargs):
+        if command[:3] == ["docker", "image", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout="sha256:test-qc-image\n")
+        mount = next(value for value in command if value.endswith(":/work"))
+        run_dir = Path(mount[:-len(":/work")])
+        manifest = json.loads((run_dir / "artifacts/analysis/batch_manifest.json").read_text())
+        (run_dir / "artifacts/analysis/batch_status.json").write_text(json.dumps({"items": [{
+            "id": manifest["items"][0]["id"], "status": "completed",
+            "metrics": {"qc_sequence_length": len(sequence), "qc_sequence_pi": 6.5,
+                        "qc_sequence_gravy": -0.2, "qc_sequence_ph": 7.4},
+        }]}))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(quality.subprocess, "run", deterministic_container)
+    run_dir = quality.run_sequence_qc(
+        Path(adapter["source_run_dir"]), Path(adapter["candidates_jsonl"]), ph=7.4,
+        candidate_ids=[adapter["candidate_id"]],
+        selected_structure_path=Path(adapter["selected_structure_path"]),
+        selected_model_id=adapter["selected_model_id"], binder_chains=["B"], target_chains=[],
+    )
+    original_digest = file_digest(database.structure_file(USER, structure["id"]))
+    mark_studio_job({"run_dir": str(run_dir)}, project_id=None, owner_id=USER["id"], allow_private_source=True)
+    assert ingest_run(run_dir, database=database, force=True) == 1
+    reopened = database.list_molecules(USER, molecule_ids=[record["id"]], collection="all")["items"][0]
+    observation = next(row for row in reopened["observations"] if row.get("namespace") == "sequence_qc")
+    descriptor = evaluation_descriptor(observation)
+    assert descriptor["evaluator"] == "sequence_qc"
+    assert descriptor["representation_id"] == structure["id"]
+    assert observation["context"]["source_structure_digest"] == original_digest
+    assert observation["context"]["candidate"]["binder_chains"] == ["B"]
+    assert observation["metrics"]["qc_sequence_length"] == len(sequence)
+    evaluation_id = descriptor["id"]
+    assert ingest_run(run_dir, database=database, force=True) == 1
+    again = database.list_molecules(USER, molecule_ids=[record["id"]], collection="all")["items"][0]
+    assert len([row for row in again["observations"] if evaluation_descriptor(row)["id"] == evaluation_id]) == 1
 
 
 def test_database_ligand_adapter_keeps_exact_ligand_identity_and_drops_interface_groups(tmp_path, monkeypatch):

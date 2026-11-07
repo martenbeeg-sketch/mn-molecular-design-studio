@@ -2289,6 +2289,7 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
 
     tool = {"analysis.biotite_interface": "biotite_interface", "analysis.ipsae": "ipsae",
             "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
+            "analysis.sequence_qc": "sequence_qc", "analysis.proteinsol": "proteinsol",
             "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters",
             "analysis.reference_placement": "reference_placement",
             "analysis.reference_environment": "reference_environment",
@@ -2340,7 +2341,8 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
             selected_item = item
             if selection.get("ligand_selection") != (ligand_selection or {}):
                 continue
-        elif workflow_id in {"analysis.biotite_interface", "analysis.pep_patch"}:
+        elif workflow_id in {"analysis.biotite_interface", "analysis.pep_patch",
+                             "analysis.sequence_qc", "analysis.proteinsol"}:
             manifest = _read_json(run_dir / "artifacts" / "analysis" / "batch_manifest.json")
             selection = manifest.get("selection") if isinstance(manifest.get("selection"), dict) else {}
             item = next((candidate for candidate in manifest.get("items", [])
@@ -2356,8 +2358,14 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
                 saved_parameters = {"contact_distance": float(settings.get("contact_distance", 5.0))}
                 item_binder = sorted(map(str, item.get("binder_chains") or []))
                 item_target = sorted(map(str, item.get("target_chains") or []))
-            else:
+            elif workflow_id == "analysis.pep_patch":
                 saved_parameters = {"ph": float(settings.get("ph", 7.4))}
+                item_binder, item_target = saved_binder, []
+            elif workflow_id == "analysis.sequence_qc":
+                saved_parameters = {"ph": float(settings.get("ph", 7.4))}
+                item_binder, item_target = saved_binder, []
+            else:
+                saved_parameters = {}
                 item_binder, item_target = saved_binder, []
             selected_item = item
         else:
@@ -2871,7 +2879,8 @@ def _show_human_review(database, user: dict, *, source_kind: str, subject_id: st
         st.session_state[note_key] = review["note"]
     st.markdown("#### Human review")
     st.caption("Your review is saved persistently under your account, separately from calculated evaluations.")
-    st.selectbox("Review status", ["Unreviewed", "Needs review", "Reviewed", "Not applicable"], key=status_key)
+    st.selectbox("Review status", ["Unreviewed", "Needs review", "Reviewed",
+                                   "Shortlisted for experimental testing", "Not applicable"], key=status_key)
     st.text_area("Review notes", key=note_key, max_chars=10_000,
                  placeholder="Record observations or questions for a human reviewer.")
     if st.button("Save review", key=f"complex-analysis-review-save-{token}"):

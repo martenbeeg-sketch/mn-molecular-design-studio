@@ -51,6 +51,113 @@ def test_acceptance_cohort_keeps_final_stage_model_scope_and_native_pass_separat
     assert not any(row["stage_id"] == "final" for row in acceptance_decisions(native_only))
 
 
+def test_database_representation_adapter_restores_only_recorded_acceptance_evidence():
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _database_candidate_view
+
+    structure = {"id": "structure-1", "context": {
+        "candidate_id": "native-design-7", "native_candidate_id": "native-design-7",
+        "model_index": "prediction-2", "source_tool": "RFD4",
+        "binder_chains": ["B"], "target_chains": ["A"],
+        "acceptance_decision": {"status": "accepted", "evidence": {
+            "validation_acceptance": {"status": "accepted", "policy": {"schema": "policy.v3"}},
+            "native_filter_metrics": {"native_pass_filters": True},
+        }},
+    }}
+    tracks = [{"chain_id": "A", "sequence": "TARGET"}, {"chain_id": "B", "sequence": "BINDER"}]
+    candidate = _database_candidate_view({"id": "mol-1", "sources": []}, structure, [], tracks)
+    decisions = acceptance_decisions(candidate)
+    assert candidate["candidate_id"] == "native-design-7"
+    assert candidate["native_candidate_id"] == "native-design-7"
+    assert candidate["model_id"] == "prediction-2"
+    assert candidate["binder_sequence"] == "BINDER"
+    assert [(item["stage_id"], item["cohort_status"]) for item in decisions] == [
+        ("final", "passed"), ("native", "passed")]
+    assert decisions[0]["policy"]["schema"] == "policy.v3"
+
+    native_only = _database_candidate_view({"id": "mol-2", "sources": []},
+        {"id": "structure-2", "context": {"candidate_id": "native-only",
+         "acceptance_decision": {"status": "accepted", "evidence": {
+             "native_filter_metrics": {"native_pass_filters": True}}}}}, [], tracks)
+    assert [item["stage_id"] for item in acceptance_decisions(native_only)] == ["native"]
+
+
+def test_batch_assessment_coverage_requires_same_model_structure_chains_and_settings():
+    from mn_molecular_design_studio.complex_analysis_batch import (
+        assessment_applicability, evaluation_coverage,
+    )
+
+    sample = {"kind": "protein-protein", "structure_id": "structure-1", "model_id": "model-2",
+        "digest": "sha256:source", "components": [
+            {"type": "protein", "source_chain": "B", "sequence": "ACDEFGHIKLMNPQRSTVWY"},
+            {"type": "protein", "source_chain": "A", "sequence": "TARGET"},
+        ], "associated": []}
+    assert assessment_applicability(sample, "analysis.biotite_interface", ["B"], ["A"]) == (True, "")
+    observation = {"namespace": "biotite_interface", "context": {
+        "source_structure_id": "structure-1", "source_structure_digest": "sha256:source",
+        "status": "completed", "settings": {"contact_distance": 5.0},
+        "candidate": {"model_index": "model-2", "binder_chains": ["B"], "target_chains": ["A"],
+                      "raw_metadata": {"complex_analysis_selection": {"model_id": "model-2"}}},
+    }}
+    descriptor = {"id": "evaluation-1", "evaluator": "biotite_interface", "representation_id": "structure-1"}
+    sample["associated"] = [(observation, descriptor)]
+    assert evaluation_coverage(sample, "analysis.biotite_interface", parameters={"contact_distance": 5.0},
+                               binder_chains=["B"], target_chains=["A"])[0] == "Already evaluated · compatible settings"
+    assert evaluation_coverage(sample, "analysis.biotite_interface", parameters={"contact_distance": 4.0},
+                               binder_chains=["B"], target_chains=["A"])[0] == "Existing Evaluation · different settings"
+    assert assessment_applicability(sample, "analysis.biotite_interface", ["A", "B"], []) == (
+        False, "Explicit, non-overlapping binder and target chain groups are required.")
+
+
+def test_batch_assessment_ui_submits_explicit_missing_database_evaluations(monkeypatch):
+    from mn_molecular_design_studio import complex_analysis_ui
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+
+    class FakeDatabase:
+        def group(self, group_id, user):
+            assert group_id == "group-1"
+            return {"project_id": "project-1", "origin": {"workstation": "pc-test"}}
+
+    monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", FakeDatabase)
+    monkeypatch.setattr(complex_analysis_ui, "_matching_database_analysis_jobs", lambda *args, **kwargs: [])
+    script = '''
+import streamlit as st
+from pathlib import Path
+from mn_molecular_design_studio.complex_analysis_collection_ui import _render_batch_assessment
+sample = {
+    "source_kind": "Database", "identity": "database:mol-1:structure-1",
+    "molecule_id": "mol-1", "structure_id": "structure-1", "model_id": "model-2",
+    "digest": "digest-1", "kind": "protein-protein", "path": Path("/authorized/structure.cif"),
+    "label": "RFD4 · model-2", "context": {"binder_chains": ["B"], "target_chains": ["A"]},
+    "structure": {"id": "structure-1", "group_id": "group-1"},
+    "candidate": {"binder_chains": ["B"], "target_chains": ["A"]},
+    "components": [
+        {"type": "protein", "source_chain": "A", "sequence": "M" * 30, "role": "target"},
+        {"type": "protein", "source_chain": "B", "sequence": "ACDEFGHIKLMNPQRSTVWYACDEFGHIKL", "role": "binder"},
+    ], "associated": [],
+}
+def schema(workflow):
+    return {"workflow": workflow, "parameters": []}
+def submit(schema_value, workflow, parameters, project_id, settings, label):
+    st.session_state.setdefault("batch_submissions", []).append({
+        "workflow": workflow, "parameters": parameters, "project_id": project_id,
+    })
+_render_batch_assessment({"id": "user-1"}, [sample], workflow_schema=schema, submit=submit)
+'''
+    app = AppTest.from_string(script).run()
+    assert not app.exception
+    app.button(key="complex-analysis-submit-batch-assessment").click().run()
+    submitted = list(app.session_state["batch_submissions"])
+    assert {item["workflow"] for item in submitted} == {
+        "analysis.sequence_qc", "analysis.proteinsol", "analysis.biotite_interface", "analysis.pep_patch",
+    }
+    assert all(item["project_id"] == "project-1" for item in submitted)
+    qc = next(item for item in submitted if item["workflow"] == "analysis.sequence_qc")
+    assert qc["parameters"]["database_source"] == {
+        "molecule_id": "mol-1", "structure_id": "structure-1", "group_id": "group-1",
+        "model_id": "model-2", "binder_chains": ["B"], "target_chains": [],
+    }
+
+
 def _atom(serial: int, chain: str, number: int, x: float, *, residue: str = "ALA", insertion: str = " ") -> str:
     return (
         f"ATOM  {serial:5d}  CA  {residue:>3s} {chain}{number:4d}{insertion:1s}   "

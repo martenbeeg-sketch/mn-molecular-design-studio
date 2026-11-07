@@ -1500,7 +1500,7 @@ class MolecularDatabase:
         evaluation_id = str(evaluation_id or "")
         status = str(status or "").strip()
         note = str(note or "")
-        if status not in {"Unreviewed", "Needs review", "Reviewed", "Not applicable"}:
+        if status not in {"Unreviewed", "Needs review", "Reviewed", "Shortlisted for experimental testing", "Not applicable"}:
             raise ValueError("Choose a supported review status.")
         if len(note) > 10_000:
             raise ValueError("Review notes are limited to 10,000 characters.")

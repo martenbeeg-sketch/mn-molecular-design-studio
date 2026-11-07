@@ -33,6 +33,8 @@ _WORKFLOWS = {
     "analysis.tag_fusion_suitability",
     "analysis.tag_fusion_context",
     "analysis.sequence_liability",
+    "analysis.sequence_qc",
+    "analysis.proteinsol",
 }
 _STRUCTURE_SUFFIXES = {".pdb", ".ent", ".cif", ".mmcif"}
 _SELECTION_FIELDS = {
@@ -417,6 +419,14 @@ def authorize_database_structure(
                 raise ValueError("Choose a protein chain with an explicit, validated reference association to place this complex in its reference frame.")
         elif source_component_chain:
             raise ValueError("Reference associations are accepted only by the separately registered Tag and Fusion Context evaluation.")
+    elif workflow_id in {"analysis.sequence_qc", "analysis.proteinsol"}:
+        if len(binder_chains) != 1 or target_chains:
+            raise ValueError("Sequence assessments require exactly one selected protein chain and no target-chain selection.")
+        selected_sequence = _database_chain_sequence({"parsed_components": components}, binder_chains)
+        if not selected_sequence:
+            raise ValueError("The selected Database structure does not provide a parsed sequence for the requested chain.")
+        if workflow_id == "analysis.proteinsol" and len(selected_sequence) < 21:
+            raise ValueError("Protein-Sol requires a selected sequence of at least 21 residues.")
     elif workflow_id == "analysis.sequence_liability":
         if not binder_chains:
             raise ValueError("Select at least one protein chain to assess. Interface partner chains are optional.")
@@ -620,6 +630,17 @@ def build_database_analysis_source(
         selection_context["source_component_chain"] = source["source_component_chain"]
     elif workflow_id in {"analysis.tag_fusion_context", "analysis.reference_environment"}:
         selection_context["source_component_chain"] = str(source["source_component_chain"])
+    source_components = [dict(item) for item in source.get("parsed_components") or [] if isinstance(item, dict)]
+    binder_role_chains = set(source.get("binder_chains") or [])
+    target_role_chains = set(source.get("target_chains") or [])
+    for component in source_components:
+        if str(component.get("type") or "").casefold() != "protein":
+            continue
+        chain = str(component.get("chain") or component.get("auth_asym_id") or "")
+        if chain in binder_role_chains:
+            component["role"] = "binder"
+        elif chain in target_role_chains:
+            component["role"] = "target"
     source_manifest = {
         "schema": "studio.complex_analysis_database_source.v1",
         **identity,
@@ -629,6 +650,7 @@ def build_database_analysis_source(
         "structure_label": source["structure_label"],
         "structure_format": source["structure_format"],
         "ligand_selection": source.get("ligand_selection") or {},
+        "database_identity_components": source.get("record_components") or [],
     }
     if workflow_id == "analysis.sequence_liability":
         source_manifest["reused_evidence"] = _stage_sequence_liability_evidence(
@@ -663,7 +685,12 @@ def build_database_analysis_source(
     }, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     raw_metadata = {
         "analysis_subject": "complex_structure",
-        "components": source["record_components"],
+        # Validate downstream calculation coordinates against every component
+        # physically present in this selected representation. Keep the
+        # canonical molecule's identity components separately in the source
+        # manifest; the Database identity itself is never replaced by this
+        # calculation-input inventory.
+        "components": source_components,
         "database_source": source_manifest,
         "complex_analysis_selection": selection_context,
         "model_index": source["model_id"],
@@ -683,6 +710,7 @@ def build_database_analysis_source(
         "source_tool": "molecular_database",
         "tool": "molecular_database",
         "complex_pdb": str(staged_structure),
+        "binder_sequence": _database_chain_sequence(source, source["binder_chains"]),
         "binder_chains": source["binder_chains"],
         "target_chains": source["target_chains"],
         "model_index": source["model_id"],
@@ -701,6 +729,16 @@ def build_database_analysis_source(
         "selected_structure_path": str(staged_structure),
         "selected_model_id": source["model_id"],
     }
+
+
+def _database_chain_sequence(source: dict, chains: list[str]) -> str:
+    """Return exact parsed sequence for the selected protein chains, if complete."""
+    by_chain = {str(item.get("source_chain") or item.get("chain") or ""): str(item.get("sequence") or "")
+                for item in source.get("parsed_components") or []
+                if isinstance(item, dict) and str(item.get("type") or "").casefold() == "protein"}
+    if not chains or any(not by_chain.get(str(chain)) for chain in chains):
+        return ""
+    return ":".join(by_chain[str(chain)] for chain in chains)
 
 
 def _stage_sequence_liability_evidence(user: dict, source: dict, bundle_dir: Path) -> list[dict[str, Any]]:

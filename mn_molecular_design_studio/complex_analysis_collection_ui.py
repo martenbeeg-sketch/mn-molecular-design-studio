@@ -95,6 +95,7 @@ def _load_selected_structures(database, user: dict, records: list[dict], selecte
 
         context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
         model_id = str(context.get("model_id") or context.get("model_index") or context.get("model") or structure_id)
+        candidate = _database_candidate_view(record, structure, components, tracks)
         samples.append({
             "identity": str(structure_id),
             "molecule_id": str(record["id"]),
@@ -104,6 +105,7 @@ def _load_selected_structures(database, user: dict, records: list[dict], selecte
             "label": _structure_label(record, structure),
             "path": Path(path),
             "components": components,
+            "candidate": candidate,
             "kind": component_kind(components),
             "context": context,
             "model_id": model_id,
@@ -120,6 +122,65 @@ def _load_selected_structures(database, user: dict, records: list[dict], selecte
             ]),
         })
     return samples
+
+
+def _database_candidate_view(record: dict, structure: dict, components: list[dict], tracks: list[dict]) -> dict:
+    """Expose saved Database provenance to cohort filters without inventing decisions.
+
+    Database representations store their source acceptance evidence in the
+    structure provenance (and the matching molecule source row). This transient
+    CandidateSet-shaped view lets the existing acceptance UI read that evidence;
+    it is never written back to the Database.
+    """
+    context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
+    candidate_id = str(context.get("candidate_id") or context.get("native_candidate_id") or "")
+    source = next((item for item in record.get("sources") or []
+                   if candidate_id and str(item.get("candidate_id") or "") == candidate_id), {})
+    provenance = source if isinstance(source, dict) else {}
+    decision = context.get("acceptance_decision") if isinstance(context.get("acceptance_decision"), dict) else {}
+    if not decision:
+        decision = provenance.get("acceptance_decision") if isinstance(provenance.get("acceptance_decision"), dict) else {}
+    evidence = decision.get("evidence") if isinstance(decision.get("evidence"), dict) else {}
+    raw = {}
+    validation = evidence.get("validation_acceptance")
+    if isinstance(validation, dict):
+        raw["validation_acceptance"] = validation
+        validation_provenance = context.get("validation_acceptance_provenance") or provenance.get("validation_acceptance_provenance")
+        if isinstance(validation_provenance, dict):
+            raw["validation_acceptance_provenance"] = validation_provenance
+    campaign = evidence.get("distributed_campaign")
+    if isinstance(campaign, dict):
+        raw["distributed_campaign"] = campaign
+    parent_candidate = context.get("source_candidate") or provenance.get("source_candidate")
+    if isinstance(parent_candidate, dict):
+        raw["source_candidate"] = parent_candidate
+    metrics = evidence.get("native_filter_metrics")
+    metrics = {str(key): value for key, value in metrics.items()
+               if key in {"native_pass_filters", "pass_filters", "passes_filters", "passed_filters"}} if isinstance(metrics, dict) else {}
+    binder_chains = [str(value) for value in context.get("binder_chains") or provenance.get("binder_chains") or []]
+    by_chain = {str(row.get("chain_id") or ""): str(row.get("sequence") or "")
+                for row in tracks if isinstance(row, dict)}
+    binder_sequences = [by_chain.get(chain, "") for chain in binder_chains]
+    binder_sequence = ":".join(value for value in binder_sequences if value) if binder_sequences else ""
+    # Some older representations store explicit roles in components rather
+    # than the top-level provenance. Use only those annotations.
+    if not binder_sequence:
+        role_components = [item for item in components if item.get("type") == "protein"
+                           and str(item.get("role") or "").casefold() == "binder"]
+        if role_components:
+            binder_sequence = ":".join(str(item.get("sequence") or "") for item in role_components)
+    return {
+        "candidate_id": candidate_id or str(record.get("id") or structure.get("id") or ""),
+        "native_candidate_id": str(context.get("native_candidate_id") or provenance.get("native_candidate_id") or candidate_id),
+        "model_id": str(context.get("model_id") or context.get("model_index") or ""),
+        "model_index": str(context.get("model_index") or ""),
+        "source_tool": str(context.get("source_tool") or context.get("tool") or provenance.get("source_tool") or ""),
+        "binder_sequence": binder_sequence,
+        "binder_chains": binder_chains,
+        "target_chains": [str(value) for value in context.get("target_chains") or provenance.get("target_chains") or []],
+        "metrics": metrics,
+        "raw_metadata": raw,
+    }
 
 
 def _contact_snapshot(sample: dict) -> dict:
@@ -364,6 +425,262 @@ def _render_evaluation_board(samples: list[dict]) -> list[dict]:
                  "status": selected["status"], "metrics": selected["metrics"],
                  "parameters": selected["parameters"], "source_context": selected["provenance"]})
     return filtered
+
+
+def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema=None, submit=None) -> None:
+    """Explicitly queue registered analyses against selected Database structures."""
+    database_samples = [sample for sample in samples if sample.get("source_kind") == "Database"]
+    if not database_samples:
+        return
+    from mn_molecular_design_studio.complex_analysis_batch import (
+        ASSESSMENT_METHODS, CORE_PROFILE, COMPREHENSIVE_PROFILE,
+        assessment_applicability, evaluation_coverage, recorded_chain_roles,
+    )
+    from mn_molecular_design_studio.complex_analysis_sources import _database_chain_sequence
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+
+    database = MolecularDatabase()
+    st.markdown("#### Analyze selected designs")
+    st.caption("This action runs existing registered Studio evaluators only when you submit. Each result is attached to the exact selected Database design and structure through the normal Evaluation ingestion path.")
+    profile_name = st.selectbox("Assessment profile", ["Core binder assessment", "Comprehensive binder assessment", "Custom"],
+                                key="complex-analysis-batch-profile")
+    profile_methods = list(CORE_PROFILE if profile_name == "Core binder assessment" else
+                           COMPREHENSIVE_PROFILE if profile_name == "Comprehensive binder assessment" else ())
+    default_methods = [method for method in profile_methods if method in ASSESSMENT_METHODS]
+    profile_state_key, method_state_key = "complex-analysis-batch-last-profile", "complex-analysis-batch-methods"
+    if st.session_state.get(profile_state_key) != profile_name:
+        st.session_state[method_state_key] = default_methods
+        st.session_state[profile_state_key] = profile_name
+    methods = st.multiselect("Registered methods", list(ASSESSMENT_METHODS), default=default_methods,
+        format_func=lambda value: ASSESSMENT_METHODS[value]["label"], key=method_state_key,
+        help="Interface Clustering and Foldseek remain cohort-level methods in Detailed structural comparison. They do not produce one independent per-design evaluation.")
+    st.caption("Biotite and Rosetta interface geometry, ipSAE, PEP-Patch, sequence composition, Protein-Sol, liabilities and tag/fusion suitability keep their own method definitions and units. No universal score is calculated.")
+    with st.expander("Experimental shortlist", expanded=False):
+        st.caption("This is a persistent human-review annotation on each selected Database structure. It is separate from computational acceptance and does not change the curated collection or any Evaluation.")
+        note = st.text_area("Shortlist note", key="complex-analysis-batch-shortlist-note", max_chars=10_000,
+                            placeholder="Optional experimental rationale or follow-up note")
+        if st.button("Shortlist selected designs for experiments", key="complex-analysis-batch-shortlist"):
+            saved_count = 0
+            for sample in database_samples:
+                try:
+                    database.save_complex_review(
+                        user, source_kind="database", subject_id=str(sample.get("molecule_id") or ""),
+                        structure_ref=str(sample.get("structure_id") or ""), evaluation_id="",
+                        status="Shortlisted for experimental testing", note=note,
+                    )
+                    sample["review_annotation"] = {"status": "Shortlisted for experimental testing", "note": note}
+                    saved_count += 1
+                except (OSError, PermissionError, ValueError, TypeError) as exc:
+                    st.error(f"Could not shortlist {sample.get('label')}: {exc}")
+            if saved_count:
+                st.success(f"Saved {saved_count} experimental shortlist annotation(s).")
+    first, second = st.columns(2)
+    contact_distance = float(first.number_input("Biotite contact distance (Å)", min_value=0.1, max_value=20.0,
+        value=5.0, step=0.1, key="complex-analysis-batch-biotite-distance"))
+    ph = float(second.number_input("Sequence / PEP-Patch pH", min_value=0.0, max_value=14.0,
+        value=7.4, step=0.1, key="complex-analysis-batch-ph"))
+    liability_format_options = {"": "Choose construct format…", "linear_protein": "Linear protein chain(s)",
+                                "cyclic_construct": "Cyclic construct (no free termini)",
+                                "multichain_construct": "Multichain construct (chain-by-chain screen)"}
+    liability_format = st.selectbox("Sequence-liability construct format", list(liability_format_options),
+        format_func=lambda value: liability_format_options[value], key="complex-analysis-batch-liability-format",
+        disabled="analysis.sequence_liability" not in methods)
+    liability_plddt = st.checkbox("The selected structure stores pLDDT in Cα B-factors (verified from its source)",
+        value=False, key="complex-analysis-batch-liability-plddt", disabled="analysis.sequence_liability" not in methods)
+    tag_plddt = st.checkbox("The selected structure stores pLDDT in Cα B-factors (verified from its source)",
+        value=False, key="complex-analysis-batch-tag-plddt", disabled="analysis.tag_fusion_suitability" not in methods)
+    tag_columns = st.columns(2)
+    tag_format = tag_columns[0].selectbox("Tag/fusion component format",
+        ["", "single_chain_linear_protein", "cyclic_peptide", "multichain_construct"],
+        format_func=lambda value: {"": "Choose format…", "single_chain_linear_protein": "Single-chain linear protein",
+                                   "cyclic_peptide": "Cyclic peptide", "multichain_construct": "Multichain construct"}[value],
+        key="complex-analysis-batch-tag-format", disabled="analysis.tag_fusion_suitability" not in methods)
+    tag_termini_confirmed = tag_columns[1].checkbox(
+        "Complete intended termini are present (verified)", value=False,
+        key="complex-analysis-batch-tag-termini", disabled="analysis.tag_fusion_suitability" not in methods)
+    tag_cutoff = float(st.number_input("Tag/fusion interface contact cutoff (Å)", min_value=1.0, max_value=10.0,
+        value=4.5, step=0.25, key="complex-analysis-batch-tag-cutoff",
+        disabled="analysis.tag_fusion_suitability" not in methods))
+    ipsae_defaults = {"pae_cutoff": 10.0, "dist_cutoff": 10.0, "ipdae_contact_cutoff": 8.0,
+                     "structure_contact_cutoff": 4.0, "hotspot_contact_cutoff": 5.0}
+    ipsae_parameters = {}
+    if "analysis.ipsae" in methods:
+        with st.expander("ipSAE and structure-analysis cutoffs", expanded=False):
+            fields = st.columns(3)
+            for index, (name, default) in enumerate(ipsae_defaults.items()):
+                ipsae_parameters[name] = round(float(fields[index % len(fields)].number_input(
+                    name.replace("_", " ").title() + " (Å)", min_value=0.1, max_value=50.0,
+                    value=default, step=0.5, key="complex-analysis-batch-ipsae-" + name)), 3)
+    st.caption("Cohort-level Interface Clustering and Foldseek remain available under Detailed structural comparison below. They produce saved per-structure assignments, not an independent scalar per design.")
+    include_mismatched = st.checkbox("Allow a new Evaluation when an earlier one used different settings", value=False,
+        key="complex-analysis-batch-include-mismatched")
+    retry_failed = st.checkbox("Retry previously failed requested analyses", value=False,
+        key="complex-analysis-batch-retry-failed")
+
+    method_schemas: dict[str, dict | None] = {}
+    schema_errors: dict[str, str] = {}
+    for method in methods:
+        try:
+            method_schemas[method] = workflow_schema(method) if workflow_schema else None
+            if not method_schemas[method]:
+                schema_errors[method] = "The registered workflow schema is unavailable."
+        except Exception as exc:
+            method_schemas[method] = None
+            schema_errors[method] = f"The registered workflow schema could not be loaded: {exc}"
+
+    role_map: dict[str, tuple[list[str], list[str]]] = {}
+    for sample in database_samples:
+        component_chains = sorted({str(item.get("source_chain") or item.get("chain") or "")
+                                   for item in sample.get("components") or []
+                                   if isinstance(item, dict) and str(item.get("type") or "").casefold() == "protein"})
+        recorded_binder, recorded_target = recorded_chain_roles(sample)
+        token = hashlib.sha256(str(sample.get("identity") or "").encode()).hexdigest()[:12]
+        with st.expander(f"Chain assignment · {sample.get('label') or sample.get('structure_id')}",
+                         expanded=not bool(recorded_binder)):
+            st.caption(f"Model {sample.get('model_id') or 'not recorded'} · structure SHA-256 {sample.get('digest') or 'unavailable'}")
+            binder_key, target_key = f"batch-assess-binder-{token}", f"batch-assess-target-{token}"
+            if binder_key not in st.session_state:
+                st.session_state[binder_key] = recorded_binder
+            if target_key not in st.session_state:
+                st.session_state[target_key] = recorded_target
+            binder = st.multiselect("Protein component(s) to assess", component_chains,
+                key=binder_key, help="For sequence methods, choose exactly one chain. For interface methods, these are the designed/binder chains.")
+            target_options = [chain for chain in component_chains if chain not in binder]
+            st.session_state[target_key] = [chain for chain in st.session_state.get(target_key, []) if chain in target_options]
+            target = st.multiselect("Interface partner / target chains", target_options, key=target_key)
+            role_map[str(sample.get("identity") or sample.get("structure_id"))] = (list(binder), list(target))
+            if not recorded_binder and not binder:
+                st.info("No saved binder role was found. Select the component explicitly; chain order is not used to guess it.")
+
+    try:
+        from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+    except ImportError:
+        read_candidates = None
+
+    rows, submission_plan = [], []
+    for sample in database_samples:
+        identity = str(sample.get("identity") or sample.get("structure_id"))
+        binder, target = role_map.get(identity, ([], []))
+        group_id = str((sample.get("structure") or {}).get("group_id") or "")
+        molecule_id = str(sample.get("molecule_id") or "")
+        structure_id = str(sample.get("structure_id") or "")
+        model_id = str(sample.get("model_id") or "")
+        digest = str(sample.get("digest") or "")
+        try:
+            group = database.group(group_id, user)
+            project_id = str(group.get("project_id") or "")
+            group_origin = group.get("origin") or {}
+        except (PermissionError, OSError, ValueError, KeyError) as exc:
+            project_id, group_origin = "", {}
+            role_error = f"Source group is inaccessible: {exc}"
+        else:
+            role_error = ""
+        source = {"molecule_id": molecule_id, "structure_id": structure_id, "group_id": group_id,
+                  "model_id": model_id, "structure_digest": digest, "binder_chains": binder,
+                  "target_chains": target, "structure_context": sample.get("context") or {},
+                  "group_origin": group_origin}
+        for method in methods:
+            method_target = [] if method in {"analysis.sequence_qc", "analysis.proteinsol", "analysis.pep_patch"} else target
+            parameters: dict[str, Any] = {}
+            if method == "analysis.biotite_interface":
+                parameters = {"contact_distance": round(contact_distance, 3)}
+            elif method == "analysis.pep_patch":
+                parameters = {"ph": round(ph, 3)}
+            elif method == "analysis.sequence_qc":
+                parameters = {"ph": round(ph, 3)}
+            elif method == "analysis.sequence_liability":
+                parameters = {"component_format": liability_format,
+                              "b_factor_interpretation": "plddt_0_100" if liability_plddt else "uninterpreted"}
+            elif method == "analysis.tag_fusion_suitability":
+                parameters = {"interface_contact_cutoff": tag_cutoff, "termini_confirmed": tag_termini_confirmed,
+                              "component_format": tag_format,
+                              "b_factor_interpretation": "plddt_0_100" if tag_plddt else "uninterpreted"}
+            elif method in {"analysis.rosetta", "analysis.ipsae"}:
+                parameters = {str(item.get("name")): item.get("default")
+                              for item in (method_schemas.get(method) or {}).get("parameters", [])
+                              if isinstance(item, dict) and item.get("name") and item.get("default") is not None}
+                if method == "analysis.ipsae":
+                    parameters.update(ipsae_parameters)
+            elif method == "analysis.proteinsol":
+                parameters = {}
+            compatible, reason = assessment_applicability(sample, method, binder, target)
+            if method == "analysis.sequence_liability" and not liability_format:
+                compatible, reason = False, "Choose the construct format before submitting sequence-liability screening."
+            if method == "analysis.tag_fusion_suitability" and not tag_format:
+                compatible, reason = False, "Choose the component format before submitting tag/fusion assessment."
+            if role_error:
+                compatible, reason = False, role_error
+            if not schema_errors.get(method) and not method_schemas.get(method):
+                compatible, reason = False, schema_errors.get(method, "Schema unavailable")
+            elif schema_errors.get(method):
+                compatible, reason = False, schema_errors[method]
+            status, detail = (evaluation_coverage(sample, method, parameters=parameters,
+                         binder_chains=binder, target_chains=method_target) if compatible else ("Unsupported input", reason))
+            if compatible and status in {"Missing evaluation", "Existing Evaluation · different settings", "Previously failed"}:
+                from mn_molecular_design_studio import complex_analysis_ui as workspace
+                candidate_id = "database-" + hashlib.sha256((molecule_id + ":" + structure_id).encode()).hexdigest()[:24]
+                try:
+                    matching_jobs = workspace._matching_database_analysis_jobs(
+                        user, workflow_id=method, source=source, candidate_id=candidate_id,
+                        model_id=model_id, binder_chains=binder, target_chains=method_target,
+                        parameters=parameters,
+                    )
+                except (OSError, PermissionError, RuntimeError, TypeError, ValueError):
+                    matching_jobs = []
+                if matching_jobs:
+                    existing_job = matching_jobs[0]
+                    job_status = str(existing_job.get("status") or "").casefold()
+                    if job_status in {"completed", "succeeded"}:
+                        status, detail = "Completed job · Evaluation ingestion pending", str(existing_job.get("run_id") or "Completed job")
+                    elif job_status in {"queued", "pending", "submitted", "scheduled", "starting", "preparing", "running", "staging", "waiting"}:
+                        status, detail = "Queued / running", str(existing_job.get("run_id") or job_status)
+                    elif job_status in {"failed", "cancelled", "canceled"}:
+                        status, detail = "Previously failed", str(existing_job.get("error") or existing_job.get("run_id") or "Previous job failed")
+            rows.append({"Design / structure": sample.get("label") or structure_id,
+                         "Method": ASSESSMENT_METHODS[method]["label"], "Status": status,
+                         "Reason / Evaluation": detail})
+            queue = compatible and status == "Missing evaluation"
+            queue = queue or (compatible and status == "Existing Evaluation · different settings" and include_mismatched)
+            queue = queue or (compatible and status == "Previously failed" and retry_failed)
+            if queue and project_id is not None:
+                candidate_id = "database-" + hashlib.sha256((molecule_id + ":" + structure_id).encode()).hexdigest()[:24]
+                source_selection = {"molecule_id": molecule_id, "structure_id": structure_id,
+                    "group_id": group_id, "model_id": model_id, "binder_chains": binder,
+                    "target_chains": method_target}
+                parameters.update({"candidate_ids": [candidate_id], "selected_structure_path": str(sample.get("path") or ""),
+                                   "selected_model_id": model_id, "binder_chains": binder,
+                                   "target_chains": method_target, "database_source": source_selection})
+                submission_plan.append({"method": method, "sample": sample, "parameters": parameters,
+                                        "project_id": project_id, "source": source})
+
+    if not rows:
+        st.info("Select at least one registered assessment method to inspect coverage.")
+        return
+    import pandas as pd
+    st.markdown("##### Analysis coverage")
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    if submission_plan:
+        st.caption(f"Ready to submit {len(submission_plan)} explicit design × method job(s). Current Database-source adapter submits one exact model at a time; no missing Evaluations are launched automatically.")
+    else:
+        st.caption("No missing requested Evaluations are ready to submit. Compatible saved work is reused; different settings and previous failures require the explicit controls above.")
+    if len(submission_plan) > 50:
+        st.warning("This selection would queue more than 50 jobs. Narrow the selected designs or methods before submission.")
+    if st.button("Analyze selected designs", type="primary", key="complex-analysis-submit-batch-assessment",
+                 disabled=submit is None or not submission_plan or len(submission_plan) > 50):
+        submitted, errors = 0, []
+        for item in submission_plan:
+            method = item["method"]
+            try:
+                schema = method_schemas[method]
+                submit(schema, method, item["parameters"], item["project_id"], {},
+                       ASSESSMENT_METHODS[method]["label"])
+                submitted += 1
+            except (OSError, RuntimeError, TypeError, ValueError, PermissionError) as exc:
+                errors.append(f"{ASSESSMENT_METHODS[method]['label']} · {item['sample'].get('label')}: {exc}")
+        if submitted:
+            st.success(f"Submitted {submitted} analysis job(s). Evaluations will appear here after the normal Results ingestion completes.")
+        for error in errors:
+            st.error(error)
 
 
 def _open_in_inspector(sample: dict, selector: str = "", evaluation_id: str = "") -> None:
@@ -667,6 +984,13 @@ def _database_collection_samples(user: dict) -> list[dict]:
     for sample in samples:
         sample.update({"source_kind": "Database", "identity": "database:" + sample["molecule_id"] + ":" + sample["structure_id"],
                        "user": user, "source_reference": "database:" + sample["molecule_id"]})
+        try:
+            sample["review_annotation"] = database.get_complex_review(
+                user, source_kind="database", subject_id=sample["molecule_id"],
+                structure_ref=sample["structure_id"], evaluation_id="",
+            )
+        except (OSError, PermissionError, ValueError, TypeError):
+            sample["review_annotation"] = {"status": "Unreviewed", "note": ""}
     return samples
 
 
@@ -962,7 +1286,8 @@ def _cohort_inventory_row(sample: dict) -> dict:
         "Studio filter": studio.get("status") or "not evaluated",
         "Final computational acceptance": final.get("status") if final else "Not recorded",
         "Recorded acceptance evidence": " | ".join(stage_text) or "No explicit decision recorded",
-        "Human review": review.get("status") or ("selected" if review.get("selected") else "Not recorded"),
+        "Human review": sample.get("review_annotation", {}).get("status")
+                        or review.get("status") or ("selected" if review.get("selected") else "Not recorded"),
         "Manual selection": bool(review.get("selected", False)),
         "Experimental validation": experimental.get("status") or "Not recorded",
         "Evaluation coverage": ", ".join(sorted({str(row.get("method") or row.get("evaluator") or "Unknown") for row in sample.get("evaluation_entries", [])})) or "No saved Evaluation",
@@ -1031,7 +1356,8 @@ def _comparison_sample(user: dict, sample: dict) -> dict:
     return comparison
 
 
-def render_collection_workspace(user: dict, run_rows: list[dict] | None = None) -> None:
+def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, *,
+                                workflow_schema=None, submit=None) -> None:
     """Render the mixed Results/Database design explorer inside Complex Analysis."""
     st.subheader("Unified Design Explorer · Evaluation Board")
     st.caption("Select authorized saved structures from Results and/or the curated Database. By default only explicitly accepted final computational decisions enter the cohort. Native passes, earlier-stage passes, human review and experimental validation remain distinct; no universal score or Database promotion is applied.")
@@ -1149,6 +1475,7 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None) 
     selected_samples = [sample_by_id[value] for value in selected_ids if value in sample_by_id]
     if not selected_samples:
         return
+    _render_batch_assessment(user, selected_samples, workflow_schema=workflow_schema, submit=submit)
     filtered_evaluations = _render_evaluation_board(selected_samples)
     kinds = {sample.get("kind") for sample in selected_samples}
     if "protein-ligand" in kinds or "protein-protein-and-ligand" in kinds:

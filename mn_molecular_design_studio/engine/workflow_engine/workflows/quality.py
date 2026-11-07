@@ -314,15 +314,30 @@ def run_quality(source_run_dir, candidates_jsonl, *, tool, settings, cpu_cores=4
 
 
 def run_sequence_qc(source_run_dir: Path, candidates_jsonl: Path, ph: float = 7.4, cpu_cores: int = 4,
-                    candidate_ids: list[str] | None = None) -> Path:
+                    candidate_ids: list[str] | None = None,
+                    selected_structure_path: Path | None = None,
+                    selected_model_id: str | None = None,
+                    binder_chains: list[str] | None = None,
+                    target_chains: list[str] | None = None) -> Path:
     """Sequence composition, charge at the declared pH, pI, entropy, GRAVY and aromaticity."""
     return run_quality(source_run_dir, candidates_jsonl, tool="sequence_qc", settings={"ph": ph},
-                       cpu_cores=cpu_cores, candidate_ids=candidate_ids)
+                       cpu_cores=cpu_cores, candidate_ids=candidate_ids,
+                       selected_structure_path=selected_structure_path,
+                       selected_model_id=selected_model_id,
+                       binder_chains=binder_chains, target_chains=target_chains)
 
 
-def run_proteinsol(source_run_dir: Path, candidates_jsonl: Path, cpu_cores: int = 4) -> Path:
+def run_proteinsol(source_run_dir: Path, candidates_jsonl: Path, cpu_cores: int = 4,
+                   candidate_ids: list[str] | None = None,
+                   selected_structure_path: Path | None = None,
+                   selected_model_id: str | None = None,
+                   binder_chains: list[str] | None = None,
+                   target_chains: list[str] | None = None) -> Path:
     """Protein-Sol sequence solubility prediction; minimum sequence length 21."""
-    return run_quality(source_run_dir, candidates_jsonl, tool="proteinsol", settings={}, cpu_cores=cpu_cores)
+    return run_quality(source_run_dir, candidates_jsonl, tool="proteinsol", settings={}, cpu_cores=cpu_cores,
+                       candidate_ids=candidate_ids, selected_structure_path=selected_structure_path,
+                       selected_model_id=selected_model_id, binder_chains=binder_chains,
+                       target_chains=target_chains)
 
 
 def run_biotite_interface(source_run_dir: Path, candidates_jsonl: Path, contact_distance: float = 5.0,
