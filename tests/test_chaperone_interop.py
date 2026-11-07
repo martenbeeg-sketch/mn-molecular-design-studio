@@ -132,14 +132,34 @@ def test_chaperone_handler_is_used_at_generic_prediction_tool_handoff(tmp_path, 
         row["binder_sequence"] = actual_binder_sequence
     target = {"target_pdb": target_path, "target_chains": ["A"]}
     source = candidate_sets.write_collection(tmp_path, "prediction-source", original, target)
+    source["source_run_id"] = "rfd4-source-run"
+    source["source_provenance"] = {"source_job": "design/remote-rfd4-7", "workstation": "PC004033"}
 
     handed_off = candidate_sets.chaperone_handoff(tmp_path, "boltz2", source)
     records = list(candidate_sets.iter_candidates(handed_off))
-    assert [row["candidate_id"] for row in records] == [row["candidate_id"] for row in original]
+    # Raw engine IDs and Studio CandidateSet IDs are separate namespaces. The
+    # first typed handoff assigns a stable Studio identity while retaining the
+    # engine's ID and parentage as explicit native provenance.
+    assert all(row["candidate_id"].startswith("cs_") for row in records)
+    assert len({row["candidate_id"] for row in records}) == len(original)
+    info = [candidate_sets.metadata(row) for row in records]
+    assert [item["native_candidate_id"] for item in info] == [row["candidate_id"] for row in original]
+    assert [item["native_parents"] for item in info] == [row["parents"] for row in original]
     assert [row["parents"] for row in records] == [row["parents"] for row in original]
+    assert all(row["candidate_id"] == "cs_" + item["variant_id"]
+               for row, item in zip(records, info))
+    assert all(item["source_node"] == "boltz2" and item["source_run"] == "rfd4-source-run"
+               for item in info)
+    assert handed_off["source_provenance"] == source["source_provenance"]
+    assert [item["artifacts"]["complex_pdb"]["sha256"] for item in info] == [
+        hashlib.sha256(Path(row["complex_pdb"]).read_bytes()).hexdigest() for row in original
+    ]
     assert [row["binder_sequence"] for row in records] == [row["binder_sequence"] for row in original]
     assert [row["complex_pdb"] for row in records] == [row["complex_pdb"] for row in original]
     assert [row["metrics"] for row in records] == [row["metrics"] for row in original]
+    assert [row["raw_metadata"]["prediction_id"] for row in records] == [
+        row["raw_metadata"]["prediction_id"] for row in original
+    ]
     assert all(row["raw_metadata"]["chaperone_interop"]["artifact_kind"] == "structure" for row in records)
     assert all(row["raw_metadata"]["chaperone_interop"]["model_id"] == row["raw_metadata"]["model_index"]
                for row in records)
@@ -149,5 +169,7 @@ def test_chaperone_handler_is_used_at_generic_prediction_tool_handoff(tmp_path, 
         "target_use_msa": False,
     }, handed_off, "Chaperone handoff fixture")
     tasks = request["parameters"]["tasks"]
-    assert [task["source_candidate_id"] for task in tasks] == [row["candidate_id"] for row in original]
-    assert all(task["binder_sequence"] == row["binder_sequence"] for task, row in zip(tasks, original))
+    assert [task["source_candidate_id"] for task in tasks] == [row["candidate_id"] for row in records]
+    assert all(task["source_candidate_id"] == row["candidate_id"]
+               for task, row in zip(tasks, records))
+    assert all(task["binder_sequence"] == row["binder_sequence"] for task, row in zip(tasks, records))
