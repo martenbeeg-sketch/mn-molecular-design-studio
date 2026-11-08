@@ -1191,4 +1191,6 @@ def render_comparison(user: dict, *, workflow_schema=None, project_selector=None
     _render_saved_evaluations(sources)
     _render_supplied_alignment_overlay(sources)
     st.markdown("#### Human review")
-    st.caption("Scientific records above are read-only. Human review remains separate and is saved through the existing per-structure review controls on each source page.")
+    st.caption("Human review is separate from computational acceptance and scientific Evaluations. Saved annotations do not change the source candidate or Database record.")
+    from mn_molecular_design_studio.complex_analysis_shortlist_export import render_shortlist_review_export
+    render_shortlist_review_export(user, sources)

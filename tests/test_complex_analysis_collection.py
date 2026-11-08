@@ -81,6 +81,69 @@ def test_database_representation_adapter_restores_only_recorded_acceptance_evide
     assert [item["stage_id"] for item in acceptance_decisions(native_only)] == ["native"]
 
 
+def test_database_candidate_reads_validation_decision_from_exact_linked_evaluation():
+    import json
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _database_candidate_view
+
+    structure = {"id": "structure-exact", "context": {"candidate_id": "design-accepted"}}
+    decision = {"status": "accepted", "policy": {"schema": "studio.validation-acceptance.v1",
+        "mandatory_filters": [{"field": "iptm", "operator": ">=", "value": 0.7}]}}
+    observation = {"namespace": "validation_acceptance", "run_id": "acceptance-run",
+        "metrics": {"accepted": True}, "context": json.dumps({"representation_id": "structure-exact",
+        "candidate": {"candidate_id": "design-accepted", "source_tool": "bindcraft2", "raw_metadata": {
+            "validation_acceptance": decision,
+            "validation_acceptance_provenance": {"filter_evaluation_host": "PC004033"}}}})}
+    descriptor = {"id": "evaluation-1", "evaluator": "validation_acceptance",
+        "representation_id": "structure-exact"}
+    native_observation = {"namespace": "bindcraft2", "metrics": {"native_pass_filters": True},
+        "context": {"representation_id": "structure-exact", "binder_chains": ["B"],
+                    "target_chains": ["A"], "candidate": {"candidate_id": "design-accepted"}}}
+    native_descriptor = {"id": "evaluation-native", "evaluator": "bindcraft2",
+        "representation_id": "structure-exact"}
+    candidate = _database_candidate_view({"id": "molecule-1", "sources": []}, structure, [], [],
+                                        [(observation, descriptor), (native_observation, native_descriptor)])
+    final = [row for row in acceptance_decisions(candidate) if row["stage_id"] == "final"]
+    assert len(final) == 1
+    assert final[0]["cohort_status"] == "passed"
+    assert final[0]["policy"]["schema"] == "studio.validation-acceptance.v1"
+    assert final[0]["provenance"]["filter_evaluation_host"] == "PC004033"
+    assert candidate["binder_chains"] == ["B"]
+    assert candidate["target_chains"] == ["A"]
+    assert candidate["source_tool"] == "bindcraft2"
+    assert [row["cohort_status"] for row in acceptance_decisions(candidate)
+            if row["stage_id"] == "native"] == ["passed"]
+
+    unrelated = {**descriptor, "representation_id": "another-structure"}
+    unlinked = _database_candidate_view({"id": "molecule-1", "sources": []}, structure, [], [],
+                                        [(observation, unrelated), (native_observation,
+                                         {**native_descriptor, "representation_id": "another-structure"})])
+    assert acceptance_decisions(unlinked) == []
+
+    score_only = {"namespace": "validation_acceptance", "metrics": {"accepted": True},
+                  "context": {"representation_id": "structure-exact"}}
+    unrecorded = _database_candidate_view({"id": "molecule-1", "sources": []}, structure, [], [],
+        [(score_only, descriptor)])
+    assert not any(row["stage_id"] == "final" for row in acceptance_decisions(unrecorded))
+
+
+def test_database_generator_identity_survives_linked_validation_tool_name():
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _database_candidate_view
+
+    structure = {"id": "rfd4-structure", "context": {
+        "candidate_id": "rfd4_candidate", "task_group": "design", "tool": "rfd4_proteina",
+    }}
+    linked_validation = {"namespace": "validation_acceptance", "context": {
+        "candidate": {"candidate_id": "rfd4_candidate", "source_tool": "validation_acceptance"},
+    }}
+    descriptor = {"id": "validation-evaluation", "evaluator": "validation_acceptance",
+        "representation_id": "rfd4-structure"}
+
+    candidate = _database_candidate_view(
+        {"id": "molecule-rfd4", "sources": []}, structure, [], [], [(linked_validation, descriptor)])
+
+    assert candidate["source_tool"] == "rfd4_proteina"
+
+
 def test_batch_assessment_coverage_requires_same_model_structure_chains_and_settings():
     from mn_molecular_design_studio.complex_analysis_batch import (
         assessment_applicability, evaluation_coverage,
@@ -525,11 +588,12 @@ def test_streamlit_collection_picker_exposes_more_than_five_accessible_records(m
         default_timeout=10,
     ).run()
     assert not app.exception
-    record_key = "complex-analysis-collection-records-" + hashlib.sha256(b"").hexdigest()[:10]
+    record_key = "complex-analysis-collection-selected-records-" + hashlib.sha256(USER["id"].encode()).hexdigest()[:12]
     assert len(app.multiselect(key=record_key).options) == 8
     app.multiselect(key=record_key).set_value([f"record-{i}" for i in range(8)]).run()
     assert not app.exception
-    assert len(app.multiselect(key="complex-analysis-collection-structures").options) == 8
+    structure_key = "complex-analysis-collection-selected-structures-" + hashlib.sha256(USER["id"].encode()).hexdigest()[:12]
+    assert len(app.multiselect(key=structure_key).options) == 8
 
 
 def test_streamlit_collection_picker_loads_next_acl_filtered_page(monkeypatch):
@@ -556,12 +620,13 @@ def test_streamlit_collection_picker_loads_next_acl_filtered_page(monkeypatch):
         default_timeout=10,
     ).run()
     assert not app.exception
-    assert len(app.multiselect(key="complex-analysis-collection-records-" + hashlib.sha256(b"").hexdigest()[:10]).options) == 2
+    record_key = "complex-analysis-collection-selected-records-" + hashlib.sha256(USER["id"].encode()).hexdigest()[:12]
+    assert len(app.multiselect(key=record_key).options) == 2
 
     next(button for button in app.button if button.label == "Load next Database structure page").click().run()
 
     assert not app.exception
-    assert len(app.multiselect(key="complex-analysis-collection-records-" + hashlib.sha256(b"").hexdigest()[:10]).options) == 3
+    assert len(app.multiselect(key=record_key).options) == 3
 
 
 def test_ligand_pose_label_preserves_chain_qualified_and_residue_only_selectors():

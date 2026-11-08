@@ -976,6 +976,11 @@ def test_database_review_annotations_persist_separately_and_follow_record_access
     assert shortlisted["status"] == "Shortlisted for experimental testing"
     assert database.get_complex_review(USER, source_kind="database", subject_id=record["id"],
                                        structure_ref=structure_id)["note"] == "Advance after construct review."
+    not_shortlisted = database.save_complex_review(
+        USER, source_kind="database", subject_id=record["id"], structure_ref=structure_id,
+        status="Not shortlisted for experimental testing", note="Keep for diagnostic comparison only.",
+    )
+    assert not_shortlisted["status"] == "Not shortlisted for experimental testing"
     with pytest.raises(PermissionError):
         database.get_complex_review(
             OTHER_USER, source_kind="database", subject_id=record["id"], structure_ref=structure_id,

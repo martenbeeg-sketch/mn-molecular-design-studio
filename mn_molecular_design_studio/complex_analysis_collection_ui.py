@@ -39,6 +39,18 @@ def _accessible_records(database, user: dict, query: str) -> list[dict]:
     return list(page.get("items", []))
 
 
+def _merge_database_record_options(page_records: list[dict], cached_records: dict[str, dict],
+                                   selected_ids: list[str]) -> dict[str, dict]:
+    """Keep selected lightweight records available while a user pages or searches."""
+    selected = {str(value) for value in selected_ids}
+    merged = {str(row.get("id") or ""): row for row in page_records if row.get("id")}
+    for record_id in selected:
+        cached = cached_records.get(record_id)
+        if cached is not None:
+            merged.setdefault(record_id, cached)
+    return merged
+
+
 def _load_selected_structures(database, user: dict, records: list[dict], selected_ids: list[str]) -> list[dict]:
     """Build selected entries from authorized Database records and structures."""
     from mn_molecular_design_studio import complex_analysis_ui as workspace
@@ -54,10 +66,19 @@ def _load_selected_structures(database, user: dict, records: list[dict], selecte
                              for item in record.get("representations") or record.get("structures") or [])), None)
         if owner is None:
             continue
-        # `records` came from the ACL-filtered Database listing for this user.
-        # Avoid a second Database-wide index rebuild per selected representation;
-        # structure_file below independently rechecks access to the exact file.
-        record = owner
+        # Structure discovery intentionally uses a lightweight ACL-filtered
+        # catalog. Hydrate only the explicitly selected molecule so its saved
+        # Evaluations, source lineage and review annotations are available to
+        # the board and Inspector without rebuilding the whole Database index.
+        try:
+            hydrated = database.list_molecules(
+                user, collection="all", molecule_ids=[str(owner.get("id") or "")], limit=1,
+            ).get("items", [])
+        except (OSError, PermissionError, ValueError, TypeError):
+            continue
+        if not hydrated:
+            continue
+        record = hydrated[0]
         structures = list(record.get("representations") or record.get("structures") or [])
         structure = next((row for row in structures if str(row.get("id") or "") == str(structure_id)), None)
         if structure is None:
@@ -95,7 +116,7 @@ def _load_selected_structures(database, user: dict, records: list[dict], selecte
 
         context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
         model_id = str(context.get("model_id") or context.get("model_index") or context.get("model") or structure_id)
-        candidate = _database_candidate_view(record, structure, components, tracks)
+        candidate = _database_candidate_view(record, structure, components, tracks, associated)
         samples.append({
             "identity": str(structure_id),
             "molecule_id": str(record["id"]),
@@ -124,7 +145,8 @@ def _load_selected_structures(database, user: dict, records: list[dict], selecte
     return samples
 
 
-def _database_candidate_view(record: dict, structure: dict, components: list[dict], tracks: list[dict]) -> dict:
+def _database_candidate_view(record: dict, structure: dict, components: list[dict], tracks: list[dict],
+                            associated: list[tuple[dict, dict]] | None = None) -> dict:
     """Expose saved Database provenance to cohort filters without inventing decisions.
 
     Database representations store their source acceptance evidence in the
@@ -137,6 +159,12 @@ def _database_candidate_view(record: dict, structure: dict, components: list[dic
     source = next((item for item in record.get("sources") or []
                    if candidate_id and str(item.get("candidate_id") or "") == candidate_id), {})
     provenance = source if isinstance(source, dict) else {}
+    source_tool = str(context.get("source_tool") or provenance.get("source_tool") or "")
+    # When the selected structure was produced by a generator job, its own
+    # recorded tool is the generator. A later validation Evaluation may carry
+    # the validator's name in its candidate metadata and must not replace it.
+    if not source_tool and str(context.get("task_group") or "").casefold() != "analysis":
+        source_tool = str(context.get("tool") or "")
     decision = context.get("acceptance_decision") if isinstance(context.get("acceptance_decision"), dict) else {}
     if not decision:
         decision = provenance.get("acceptance_decision") if isinstance(provenance.get("acceptance_decision"), dict) else {}
@@ -158,6 +186,69 @@ def _database_candidate_view(record: dict, structure: dict, components: list[dic
     metrics = {str(key): value for key, value in metrics.items()
                if key in {"native_pass_filters", "pass_filters", "passes_filters", "passed_filters"}} if isinstance(metrics, dict) else {}
     binder_chains = [str(value) for value in context.get("binder_chains") or provenance.get("binder_chains") or []]
+    target_chains = [str(value) for value in context.get("target_chains") or provenance.get("target_chains") or []]
+    # Registered validation decisions are sometimes stored as linked Database
+    # Evaluations rather than copied into the representation context. Reuse
+    # only a decision attached to this exact representation and candidate; a
+    # generic accepted metric or an Evaluation for another model is not enough.
+    selected_representation = str(structure.get("id") or context.get("representation_id") or "")
+    for observation, descriptor in associated or []:
+        descriptor = descriptor if isinstance(descriptor, dict) else {}
+        observed_representation = str(descriptor.get("representation_id") or "")
+        if selected_representation and observed_representation and observed_representation != selected_representation:
+            continue
+        observation_context = (observation or {}).get("context")
+        if isinstance(observation_context, str):
+            try:
+                observation_context = json.loads(observation_context)
+            except (TypeError, ValueError):
+                observation_context = {}
+        observation_context = observation_context if isinstance(observation_context, dict) else {}
+        observed_candidate = observation_context.get("candidate")
+        observed_candidate = observed_candidate if isinstance(observed_candidate, dict) else {}
+        observed_candidate_id = str(observed_candidate.get("candidate_id") or "")
+        if candidate_id and observed_candidate_id and observed_candidate_id != candidate_id:
+            continue
+        if candidate_id and observed_candidate_id == candidate_id and not source_tool:
+            # Database structures can be stored by a downstream validation
+            # run. Recover the original generator from the exact linked
+            # candidate record rather than treating that evaluator as the
+            # generator in cohort filters and presentation.
+            source_tool = str(observed_candidate.get("source_tool") or observed_candidate.get("generator") or "")
+        if not binder_chains:
+            binder_chains = [str(value) for value in observation_context.get("binder_chains")
+                             or observed_candidate.get("binder_chains") or []]
+        if not target_chains:
+            target_chains = [str(value) for value in observation_context.get("target_chains")
+                             or observed_candidate.get("target_chains") or []]
+        observation_metrics = (observation or {}).get("metrics")
+        if isinstance(observation_metrics, str):
+            try:
+                observation_metrics = json.loads(observation_metrics)
+            except (TypeError, ValueError):
+                observation_metrics = {}
+        if isinstance(observation_metrics, dict):
+            for key in ("native_pass_filters", "pass_filters", "passes_filters", "passed_filters",
+                        "ppi.pass", "ppi.all_metrics_present"):
+                if key in observation_metrics:
+                    metrics.setdefault(key, observation_metrics[key])
+        if str(descriptor.get("evaluator") or descriptor.get("namespace") or
+               (observation or {}).get("namespace") or "").casefold() != "validation_acceptance":
+            continue
+        observed_raw = observed_candidate.get("raw_metadata")
+        observed_raw = observed_raw if isinstance(observed_raw, dict) else {}
+        observed_decision = observed_raw.get("validation_acceptance")
+        if not isinstance(observed_decision, dict):
+            continue
+        if not raw.get("validation_acceptance"):
+            raw["validation_acceptance"] = observed_decision
+        if not raw.get("validation_acceptance_provenance"):
+            saved_provenance = observed_raw.get("validation_acceptance_provenance")
+            raw["validation_acceptance_provenance"] = saved_provenance if isinstance(saved_provenance, dict) else {
+                "evaluation_id": str(descriptor.get("id") or ""),
+                "run_id": str((observation or {}).get("run_id") or ""),
+                "source": str(descriptor.get("evaluator") or "validation_acceptance"),
+            }
     by_chain = {str(row.get("chain_id") or ""): str(row.get("sequence") or "")
                 for row in tracks if isinstance(row, dict)}
     binder_sequences = [by_chain.get(chain, "") for chain in binder_chains]
@@ -174,10 +265,12 @@ def _database_candidate_view(record: dict, structure: dict, components: list[dic
         "native_candidate_id": str(context.get("native_candidate_id") or provenance.get("native_candidate_id") or candidate_id),
         "model_id": str(context.get("model_id") or context.get("model_index") or ""),
         "model_index": str(context.get("model_index") or ""),
-        "source_tool": str(context.get("source_tool") or context.get("tool") or provenance.get("source_tool") or ""),
+        "source_tool": source_tool or (
+            str(context.get("tool") or "") if str(context.get("task_group") or "").casefold() != "analysis" else ""
+        ),
         "binder_sequence": binder_sequence,
         "binder_chains": binder_chains,
-        "target_chains": [str(value) for value in context.get("target_chains") or provenance.get("target_chains") or []],
+        "target_chains": target_chains,
         "metrics": metrics,
         "raw_metadata": raw,
     }
@@ -455,25 +548,6 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
         format_func=lambda value: ASSESSMENT_METHODS[value]["label"], key=method_state_key,
         help="Interface Clustering and Foldseek remain cohort-level methods in Detailed structural comparison. They do not produce one independent per-design evaluation.")
     st.caption("Biotite and Rosetta interface geometry, ipSAE, PEP-Patch, sequence composition, Protein-Sol, liabilities and tag/fusion suitability keep their own method definitions and units. No universal score is calculated.")
-    with st.expander("Experimental shortlist", expanded=False):
-        st.caption("This is a persistent human-review annotation on each selected Database structure. It is separate from computational acceptance and does not change the curated collection or any Evaluation.")
-        note = st.text_area("Shortlist note", key="complex-analysis-batch-shortlist-note", max_chars=10_000,
-                            placeholder="Optional experimental rationale or follow-up note")
-        if st.button("Shortlist selected designs for experiments", key="complex-analysis-batch-shortlist"):
-            saved_count = 0
-            for sample in database_samples:
-                try:
-                    database.save_complex_review(
-                        user, source_kind="database", subject_id=str(sample.get("molecule_id") or ""),
-                        structure_ref=str(sample.get("structure_id") or ""), evaluation_id="",
-                        status="Shortlisted for experimental testing", note=note,
-                    )
-                    sample["review_annotation"] = {"status": "Shortlisted for experimental testing", "note": note}
-                    saved_count += 1
-                except (OSError, PermissionError, ValueError, TypeError) as exc:
-                    st.error(f"Could not shortlist {sample.get('label')}: {exc}")
-            if saved_count:
-                st.success(f"Saved {saved_count} experimental shortlist annotation(s).")
     first, second = st.columns(2)
     contact_distance = float(first.number_input("Biotite contact distance (Å)", min_value=0.1, max_value=20.0,
         value=5.0, step=0.1, key="complex-analysis-batch-biotite-distance"))
@@ -947,20 +1021,30 @@ def _database_collection_samples(user: dict) -> list[dict]:
         catalog = authorized_structure_catalog(database, user, session_state=st.session_state,
             cache_key=catalog_key, query=query, limit=100, advance=True)
     records = list(catalog.get("records") or [])
+    records_key = _widget_key("complex-analysis-collection-selected-records-", str(user.get("id") or ""))
+    cache_key = _widget_key("complex-analysis-collection-selected-record-cache-", str(user.get("id") or ""))
+    structure_key = _widget_key("complex-analysis-collection-selected-structures-", str(user.get("id") or ""))
+    cached_records = st.session_state.get(cache_key, {})
+    cached_records = dict(cached_records) if isinstance(cached_records, dict) else {}
+    selected_before = [str(value) for value in st.session_state.get(records_key, [])]
+    # Retain only selected prior-page rows, then refresh the visible page. The
+    # later full-record and structure lookups recheck ACLs before any artifact
+    # is read, so this cache only keeps picker labels and references available.
+    cached_records = {key: cached_records[key] for key in selected_before if key in cached_records}
+    for row in records:
+        if row.get("id"):
+            cached_records[str(row["id"])] = row
+    st.session_state[cache_key] = cached_records
+    record_by_id = _merge_database_record_options(records, cached_records, selected_before)
     if not records:
-        st.info("No accessible Database structures match this search.")
-        return []
+        st.info("No accessible Database structures match this search. Previously selected records remain available until removed.")
+        if not record_by_id:
+            return []
     st.caption(f"Showing {len(records):,} authorized Database structure records"
                + ("; more pages are available." if catalog.get("next_offset") is not None else "."))
-    record_by_id = {str(row["id"]): row for row in records}
-    record_ids = list(record_by_id)
-    selection_suffix = hashlib.sha256(query.encode()).hexdigest()[:10]
-    selection_key = f"complex-analysis-collection-records-{selection_suffix}"
-    if selection_key in st.session_state:
-        st.session_state[selection_key] = [value for value in st.session_state[selection_key] if value in record_ids]
-    selected_records = st.multiselect("Database records", record_ids,
+    selected_records = st.multiselect("Database records", list(record_by_id),
         format_func=lambda value: f"{record_by_id[value].get('name') or 'Complex'} · {str(value)[-8:]} · {len(record_by_id[value].get('representations') or record_by_id[value].get('structures') or [])} structures",
-        key=selection_key)
+        key=records_key)
     if not selected_records:
         st.info("Select Database records, then choose the saved structures and models to add to this cohort.")
         return []
@@ -972,9 +1056,11 @@ def _database_collection_samples(user: dict) -> list[dict]:
             if structure_id:
                 structure_lookup[structure_id] = (record, structure)
     structure_ids = list(structure_lookup)
+    if structure_key in st.session_state:
+        st.session_state[structure_key] = [value for value in st.session_state[structure_key] if value in structure_lookup]
     selected_structures = st.multiselect("Database structures, models, and poses", structure_ids,
         format_func=lambda value: _structure_label(*structure_lookup[value]),
-        key="complex-analysis-collection-structures")
+        key=structure_key)
     if not selected_structures:
         st.info("Choose Database structures to add them to the comparison cohort.")
         return []
@@ -1477,6 +1563,8 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
         return
     _render_batch_assessment(user, selected_samples, workflow_schema=workflow_schema, submit=submit)
     filtered_evaluations = _render_evaluation_board(selected_samples)
+    from mn_molecular_design_studio.complex_analysis_shortlist_export import render_shortlist_review_export
+    render_shortlist_review_export(user, selected_samples)
     kinds = {sample.get("kind") for sample in selected_samples}
     if "protein-ligand" in kinds or "protein-protein-and-ligand" in kinds:
         ligand_samples = [sample for sample in selected_samples if sample.get("kind") in {"protein-ligand", "protein-protein-and-ligand"}]

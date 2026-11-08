@@ -3008,10 +3008,15 @@ def _show_human_review(database, user: dict, *, source_kind: str, subject_id: st
     st.markdown("#### Human review")
     st.caption("Your review is saved persistently under your account, separately from calculated evaluations.")
     st.selectbox("Review status", ["Unreviewed", "Needs review", "Reviewed",
-                                   "Shortlisted for experimental testing", "Not applicable"], key=status_key)
+                                   "Shortlisted for experimental testing",
+                                   "Not shortlisted for experimental testing", "Not applicable"], key=status_key)
     st.text_area("Review notes", key=note_key, max_chars=10_000,
                  placeholder="Record observations or questions for a human reviewer.")
     if st.button("Save review", key=f"complex-analysis-review-save-{token}"):
+        if st.session_state[status_key] in {"Shortlisted for experimental testing",
+                                            "Not shortlisted for experimental testing"} and not str(st.session_state[note_key]).strip():
+            st.error("Enter a short rationale for this shortlist decision.")
+            return
         saved = database.save_complex_review(
             user, source_kind=source_kind, subject_id=subject_id,
             structure_ref=structure_ref, evaluation_id=evaluation_id,

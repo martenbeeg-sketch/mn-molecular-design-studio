@@ -5,7 +5,9 @@ from pathlib import Path
 import pytest
 
 
-def _write_simple_complex(path: Path, *, two_models: bool = False) -> None:
+def _write_simple_complex(path: Path, *, two_models: bool = False, include_hydrogens: bool = True,
+                          binder_offset: float = 0.0, insertion_codes: dict | None = None,
+                          preceding_binder_backbone: bool = False, add_ligand: bool = False) -> None:
     rows = [
         ("N", "SER", "A", 1, -2.0, 0.0, 0.0, "N"),
         ("CA", "SER", "A", 1, -1.0, 0.0, 0.0, "C"),
@@ -26,14 +28,33 @@ def _write_simple_complex(path: Path, *, two_models: bool = False) -> None:
     lines = []
     models = (1, 2) if two_models else (1,)
     serial = 1
+    insertion_codes = insertion_codes or {}
     for model_number in models:
         if two_models:
             lines.append(f"MODEL     {model_number:4d}\n")
-        for name, resname, chain, number, x, y, z, element in rows:
+        model_rows = list(rows)
+        if preceding_binder_backbone:
+            model_rows.extend([
+                ("C", "GLY", "B", 0, 3.5, 0.0, 0.0, "C"),
+                ("O", "GLY", "B", 0, 4.5, 0.0, 0.0, "O"),
+            ])
+        model_rows = sorted(model_rows, key=lambda row: (row[2], row[3]))
+        for name, resname, chain, number, x, y, z, element in model_rows:
+            if element == "H" and not include_hydrogens:
+                continue
+            if preceding_binder_backbone and chain == "B" and number == 1 and name == "N":
+                x = 2.0
+            if chain == "B":
+                x += binder_offset
+            insertion_code = (str(insertion_codes.get((chain, number), ""))[:1] or " ")
             lines.append(
-                f"ATOM  {serial:5d} {name:>4s} {resname:>3s} {chain}{number:4d}    "
+                f"ATOM  {serial:5d} {name:>4s} {resname:>3s} {chain}{number:4d}{insertion_code:1s}   "
                 f"{x:8.3f}{y:8.3f}{z:8.3f}{1.00:6.2f}{80.00:6.2f}          {element:>2s}\n"
             )
+            serial += 1
+        if add_ligand:
+            lines.append(f"HETATM{serial:5d} {'C1':>4s} LIG C{1:4d}    "
+                         f"{10.0:8.3f}{10.0:8.3f}{10.0:8.3f}{1.00:6.2f}{20.00:6.2f}          {'C':>2s}\n")
             serial += 1
         if two_models:
             lines.append("ENDMDL\n")
@@ -72,7 +93,7 @@ def test_interface_chemistry_records_surface_hbonds_and_author_residue_evidence(
     assert result["source"]["structure_digest"] == digest
     assert result["method_version"] == "studio.ppi-interface-chemistry.v1"
     assert "not energies" in result["methodological_assumptions"][3]
-    assert "not BinderScope's Interface_Hydrophobicity" in result["methodological_assumptions"][1]
+    assert "distinct from BinderScope's Interface_Hydrophobicity" in result["methodological_assumptions"][1]
 
 
 def test_interface_chemistry_rejects_digest_mismatch_and_multi_model_input(tmp_path):
@@ -88,6 +109,53 @@ def test_interface_chemistry_rejects_digest_mismatch_and_multi_model_input(tmp_p
     with pytest.raises(ValueError, match="single-model"):
         assess_protein_interface(structure, binder_chains=["B"], target_chains=["A"], source_identity={
             "structure_digest": structure_digest(structure), "model_id": "model-stage",
+        })
+
+
+def test_interface_chemistry_zero_contacts_are_not_reported_as_zero_buried_fraction(tmp_path):
+    from mn_molecular_design_studio.complex_analysis_inspector import structure_digest
+    from mn_molecular_design_studio.complex_analysis_interface_chemistry import assess_protein_interface
+
+    structure = tmp_path / "separated.pdb"
+    _write_simple_complex(structure, binder_offset=100.0)
+    result = assess_protein_interface(structure, binder_chains=["B"], target_chains=["A"], source_identity={
+        "structure_digest": structure_digest(structure), "model_id": "separated-model",
+    })
+    assert result["metrics"]["contacting_residue_pair_count"] == 0
+    assert result["metrics"]["target_interface_residue_count"] == 0
+    assert result["metrics"]["buried_unpaired_polar_atom_count"] == 0
+    assert result["metrics"]["hydrophobic_cs_buried_fraction"] is None
+    assert result["contacts"] == []
+
+
+def test_interface_chemistry_labels_missing_hydrogen_evidence_and_preserves_insertion_codes(tmp_path):
+    from mn_molecular_design_studio.complex_analysis_inspector import structure_digest
+    from mn_molecular_design_studio.complex_analysis_interface_chemistry import assess_protein_interface
+
+    structure = tmp_path / "no-hydrogen-insertion.pdb"
+    _write_simple_complex(structure, include_hydrogens=False, preceding_binder_backbone=True,
+                          insertion_codes={("B", 1): "A"})
+    result = assess_protein_interface(structure, binder_chains=["B"], target_chains=["A"], source_identity={
+        "structure_digest": structure_digest(structure), "model_id": "insertion-model",
+    })
+    basis = result["metrics"]["interfacial_hydrogen_bond_evidence_basis_counts"]
+    assert basis["explicit"] == 0
+    assert basis["computed_backbone_amide"] > 0
+    assert basis["heavy_atom_angle_proxy"] > 0
+    assert any(row["chain_id"] == "B" and row["author_number"] == 1
+               and row["insertion_code"] == "A" and row["selector"]
+               for row in result["residue_annotations"])
+
+
+def test_interface_chemistry_rejects_ligand_only_selected_partner(tmp_path):
+    from mn_molecular_design_studio.complex_analysis_inspector import structure_digest
+    from mn_molecular_design_studio.complex_analysis_interface_chemistry import assess_protein_interface
+
+    structure = tmp_path / "protein-ligand.pdb"
+    _write_simple_complex(structure, add_ligand=True)
+    with pytest.raises(ValueError, match="no supported amino-acid residues"):
+        assess_protein_interface(structure, binder_chains=["B"], target_chains=["C"], source_identity={
+            "structure_digest": structure_digest(structure), "model_id": "ligand-model",
         })
 
 
