@@ -1564,7 +1564,7 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
     _render_batch_assessment(user, selected_samples, workflow_schema=workflow_schema, submit=submit)
     filtered_evaluations = _render_evaluation_board(selected_samples)
     from mn_molecular_design_studio.complex_analysis_shortlist_export import render_shortlist_review_export
-    render_shortlist_review_export(user, selected_samples)
+    render_shortlist_review_export(user, selected_samples, key_prefix="explorer-shortlist")
     kinds = {sample.get("kind") for sample in selected_samples}
     if "protein-ligand" in kinds or "protein-protein-and-ligand" in kinds:
         ligand_samples = [sample for sample in selected_samples if sample.get("kind") in {"protein-ligand", "protein-protein-and-ligand"}]

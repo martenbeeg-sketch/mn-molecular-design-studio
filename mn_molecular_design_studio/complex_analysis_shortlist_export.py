@@ -374,7 +374,7 @@ def _database_identity(sample: dict) -> tuple[str, str] | None:
     return (molecule_id, structure_id) if molecule_id and structure_id else None
 
 
-def render_shortlist_review_export(user: dict, samples: list[dict]) -> None:
+def render_shortlist_review_export(user: dict, samples: list[dict], *, key_prefix: str = "shortlist") -> None:
     """Add per-design persistent review decisions and two export formats to comparison."""
     import streamlit as st
 
@@ -401,7 +401,11 @@ def render_shortlist_review_export(user: dict, samples: list[dict]) -> None:
             except (OSError, PermissionError, ValueError, TypeError):
                 current = sample.get("review_annotation") or {"status": "Unreviewed", "note": ""}
             token = __import__("hashlib").sha256(f"{molecule_id}:{structure_id}".encode()).hexdigest()[:12]
-            status_key, note_key = f"shortlist-decision-{token}", f"shortlist-rationale-{token}"
+            # The same cohort can be rendered in the Explorer and its nested
+            # comparison view during one Streamlit run. Namespace widget keys
+            # by view while hydrating both from the same persisted annotation.
+            status_key = f"{key_prefix}-decision-{token}"
+            note_key = f"{key_prefix}-rationale-{token}"
             if status_key not in st.session_state:
                 st.session_state[status_key] = current.get("status") or "Unreviewed"
             if note_key not in st.session_state:
@@ -410,13 +414,13 @@ def render_shortlist_review_export(user: dict, samples: list[dict]) -> None:
                 st.selectbox("Experimental review decision", REVIEW_STATUSES, key=status_key)
                 st.text_area("Rationale or exclusion reason", key=note_key, max_chars=10_000,
                              placeholder="Record the evidence and practical reason for advancing or excluding this design.")
-    if st.button("Save selected-design review decisions", key="complex-analysis-shortlist-save-review",
+    if st.button("Save selected-design review decisions", key=f"{key_prefix}-save-review",
                   disabled=not bool(database_samples)):
         decisions = []
         for sample, (molecule_id, structure_id) in database_samples:
             token = __import__("hashlib").sha256(f"{molecule_id}:{structure_id}".encode()).hexdigest()[:12]
-            status = str(st.session_state.get(f"shortlist-decision-{token}") or "Unreviewed")
-            note = str(st.session_state.get(f"shortlist-rationale-{token}") or "")
+            status = str(st.session_state.get(f"{key_prefix}-decision-{token}") or "Unreviewed")
+            note = str(st.session_state.get(f"{key_prefix}-rationale-{token}") or "")
             decisions.append((sample, molecule_id, structure_id, status, note))
         errors = [f"{sample.get('label') or molecule_id}: enter a rationale for this decision."
                   for sample, molecule_id, _structure_id, status, note in decisions
@@ -443,10 +447,10 @@ def render_shortlist_review_export(user: dict, samples: list[dict]) -> None:
     csv_shortlisted = manifest_csv(manifest, shortlisted_only=True)
     left, middle, right = st.columns(3)
     left.download_button("Download review manifest (JSON)", manifest_json(manifest),
-                         "studio-design-review.json", "application/json", key="complex-analysis-shortlist-json")
+                         "studio-design-review.json", "application/json", key=f"{key_prefix}-json")
     middle.download_button("Download review table (CSV)", csv_all,
-                           "studio-design-review.csv", "text/csv", key="complex-analysis-shortlist-csv")
+                           "studio-design-review.csv", "text/csv", key=f"{key_prefix}-csv")
     right.download_button("Download shortlisted designs (CSV)", csv_shortlisted,
-                           "studio-experimental-shortlist.csv", "text/csv", key="complex-analysis-shortlisted-csv",
+                           "studio-experimental-shortlist.csv", "text/csv", key=f"{key_prefix}-shortlisted-csv",
                            disabled=manifest["shortlisted_count"] == 0)
     st.caption(f"Exported {manifest['record_count']} selected source/model row(s); {manifest['shortlisted_count']} currently have a persisted experimental-shortlist decision.")

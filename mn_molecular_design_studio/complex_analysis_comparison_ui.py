@@ -1193,4 +1193,4 @@ def render_comparison(user: dict, *, workflow_schema=None, project_selector=None
     st.markdown("#### Human review")
     st.caption("Human review is separate from computational acceptance and scientific Evaluations. Saved annotations do not change the source candidate or Database record.")
     from mn_molecular_design_studio.complex_analysis_shortlist_export import render_shortlist_review_export
-    render_shortlist_review_export(user, sources)
+    render_shortlist_review_export(user, sources, key_prefix="comparison-shortlist")

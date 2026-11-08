@@ -157,3 +157,65 @@ def test_manifest_rejects_duplicate_source_model_structure_identity():
     sample = _sample()
     with pytest.raises(ValueError, match="duplicate source/model/structure"):
         build_shortlist_manifest([sample, sample])
+
+
+def test_shortlist_panels_can_render_twice_for_same_cohort_in_distinct_views():
+    from streamlit.testing.v1 import AppTest
+
+    app = AppTest.from_string(
+        """
+from mn_molecular_design_studio.complex_analysis_shortlist_export import render_shortlist_review_export
+sample = {
+    'source_kind': 'Results', 'candidate_id': 'c-1', 'candidate': {'candidate_id': 'c-1', 'raw_metadata': {}},
+    'structure_id': 'structure-1', 'model_id': 'model-1', 'digest': 'a' * 64,
+    'source_reference': 'runs:///source', 'source_job': 'design/run-1', 'source_workstation': 'PC004033',
+}
+render_shortlist_review_export({'id': 'test-user'}, [sample], key_prefix='explorer-shortlist')
+render_shortlist_review_export({'id': 'test-user'}, [sample], key_prefix='comparison-shortlist')
+""",
+        default_timeout=10,
+    ).run()
+    assert not app.exception
+
+
+def test_namespaced_shortlist_save_uses_the_rendered_panel_values():
+    from streamlit.testing.v1 import AppTest
+    import hashlib
+
+    token = hashlib.sha256(b"mol-1:structure-1").hexdigest()[:12]
+    app = AppTest.from_string(
+        f"""
+import streamlit as st
+import mn_molecular_design_studio.molecular_database as db_module
+from mn_molecular_design_studio.complex_analysis_shortlist_export import render_shortlist_review_export
+
+class FakeDatabase:
+    def group(self, group_id, user):
+        return {{"project_id": "staging"}}
+    def get_complex_review(self, user, **kwargs):
+        return {{"status": "Unreviewed", "note": ""}}
+    def save_complex_review(self, user, **kwargs):
+        st.session_state.setdefault("saved_reviews", []).append(kwargs)
+        return {{"status": kwargs["status"], "note": kwargs["note"]}}
+
+db_module.MolecularDatabase = FakeDatabase
+sample = {{
+    "source_kind": "Database", "candidate_id": "c-1", "molecule_id": "mol-1",
+    "structure_id": "structure-1", "digest": "a" * 64,
+    "record": {{"id": "mol-1"}}, "structure": {{"id": "structure-1", "group_id": "group-1"}},
+    "candidate": {{"candidate_id": "c-1", "raw_metadata": {{}}}},
+}}
+st.session_state["explorer-shortlist-decision-{token}"] = "Shortlisted for experimental testing"
+st.session_state["explorer-shortlist-rationale-{token}"] = "Advance for pilot review."
+render_shortlist_review_export({{"id": "test-user"}}, [sample], key_prefix="explorer-shortlist")
+render_shortlist_review_export({{"id": "test-user"}}, [sample], key_prefix="comparison-shortlist")
+""",
+        default_timeout=10,
+    ).run()
+    assert not app.exception
+    app.button(key="explorer-shortlist-save-review").click().run()
+    assert not app.exception
+    saved = app.session_state["saved_reviews"]
+    assert len(saved) == 1
+    assert saved[0]["status"] == "Shortlisted for experimental testing"
+    assert saved[0]["note"] == "Advance for pilot review."
