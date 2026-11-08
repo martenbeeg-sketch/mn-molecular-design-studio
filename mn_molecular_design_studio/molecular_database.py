@@ -117,6 +117,14 @@ def _local_capture_revision_triggers(connection):
             "update": f"({local_json('NEW.record_json')} OR {local_json('OLD.record_json')})",
             "delete": local_json("OLD.record_json"),
         }
+        # Human review annotations are replicated with the same peer stream as
+        # molecular records.  They are not scientific Evaluations, but changes
+        # must invalidate the peer-capture cache just like other local edits.
+        triggers["complex_review_annotations"] = {
+            "insert": "1",
+            "update": "1",
+            "delete": "1",
+        }
         for table, conditions in triggers.items():
             for action, condition in conditions.items():
                 event = action.upper()

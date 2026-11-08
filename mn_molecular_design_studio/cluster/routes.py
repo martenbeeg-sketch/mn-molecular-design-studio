@@ -333,13 +333,24 @@ def install(app, current_user, admin_user):
         if not isinstance(probes, list) or len(probes) > 10000 or any(not isinstance(p,str) for p in probes):
             raise HTTPException(422, "Invalid reference inventory request.")
         config.atomic_json(config.home() / ("peer-probes-" + actor["id"] + ".json"), {"references":probes})
-        return {"node_id":config.identity(), "snapshot":snapshot, "epoch":replica.epoch, "reference_probes":store.reference_probes()}
+        return {
+            "node_id": config.identity(), "snapshot": snapshot, "epoch": replica.epoch,
+            "reference_probes": store.reference_probes(),
+            "replication_features": ["complex-review-annotation.v1"],
+        }
 
     @router.get("/node/peer/records")
-    def peer_records(response: Response, since: int = Query(0, ge=0), limit: int = Query(500, ge=1, le=500), include_molecular: bool = Query(True), actor=Depends(node), replica=Depends(peer_replica)):
+    def peer_records(
+        response: Response, since: int = Query(0, ge=0), limit: int = Query(500, ge=1, le=500),
+        include_molecular: bool = Query(True), include_review_annotations: bool = Query(False),
+        actor=Depends(node), replica=Depends(peer_replica),
+    ):
         response.headers["Cache-Control"] = "no-store"
         sharing_enabled = config.load().get("share_molecular_database", True)
-        return call(replica.export, since, limit, include_molecular=include_molecular and sharing_enabled)
+        return call(
+            replica.export, since, limit, include_molecular=include_molecular and sharing_enabled,
+            include_review_annotations=include_review_annotations and sharing_enabled,
+        )
 
     @router.post("/node/peer/records")
     def receive_records(payload: dict = Body(...), actor=Depends(node), replica=Depends(peer_replica)):
@@ -348,7 +359,9 @@ def install(app, current_user, admin_user):
             records = [
                 record for record in records
                 if not isinstance(record, dict)
-                or record.get("kind") not in {"molecule_group", "molecule_entry", "external_library"}
+                or record.get("kind") not in {
+                    "molecule_group", "molecule_entry", "external_library", "complex_review_annotation",
+                }
             ]
         return {"accepted":call(replica.receive, records)}
 

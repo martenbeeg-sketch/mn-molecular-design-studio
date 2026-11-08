@@ -459,6 +459,8 @@ def test_disabled_molecular_sharing_filters_peer_routes_both_directions(peers):
         replica=Replica()
         with replica.db() as db:
             replica._write(db,'molecule_group:private','molecule_group',{'private':True})
+            replica._write(db,'complex_review_annotation:private-review','complex_review_annotation',
+                           {'status':'Shortlisted for experimental testing'})
             replica._write(db,'project:shared','project',{'name':'shared'})
         headers={'Authorization':'Bearer '+nodes[0]['token']}
         with TestClient(api.app) as client:
@@ -467,12 +469,17 @@ def test_disabled_molecular_sharing_filters_peer_routes_both_directions(peers):
             assert [row['kind'] for row in exported.json()['records']]==['project']
             received=client.post(
                 '/api/v1/cluster/node/peer/records',headers=headers,
-                json={'records':[{'key':'molecule_group:remote','kind':'molecule_group',
-                                  'author':nodes[0]['id'],'counter':1,'value':{'remote':True}}]},
+                json={'records':[
+                    {'key':'molecule_group:remote','kind':'molecule_group',
+                     'author':nodes[0]['id'],'counter':1,'value':{'remote':True}},
+                    {'key':'complex_review_annotation:remote-review','kind':'complex_review_annotation',
+                     'author':nodes[0]['id'],'counter':2,'value':{'status':'Shortlisted for experimental testing'}},
+                ]},
             )
             assert received.status_code==200 and received.json()['accepted']==0
         with replica.db() as db:
             assert db.execute("SELECT 1 FROM records WHERE key='molecule_group:remote'").fetchone() is None
+            assert db.execute("SELECT 1 FROM records WHERE key='complex_review_annotation:remote-review'").fetchone() is None
 
 
 def test_peer_heartbeat_publishes_changed_jobs_without_waiting_for_replica_cursor(peers):
@@ -525,7 +532,6 @@ def test_molecular_database_peer_capture_skips_unchanged_database(monkeypatch, t
 
     assert capture(replica, database=database, node_id=node_id) is True
     assert capture(replica, database=database, node_id=node_id) is False
-
     # Receiving peer-owned library data changes the SQLite files, but must not
     # invalidate the local-source snapshot or trigger a full library rescan.
     add_group('remote-one', {'_replica_node': str(uuid.uuid4()), '_replica_group': 'remote-one'})
@@ -539,6 +545,167 @@ def test_molecular_database_peer_capture_skips_unchanged_database(monkeypatch, t
     assert capture(replica, database=database, node_id=node_id) is True
     assert capture(replica, database=database, node_id=node_id) is False
 
+
+def test_shortlist_reviews_replicate_by_stable_structure_identity_and_converge(peers):
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    from mn_molecular_design_studio.molecular_database_peer import capture
+
+    nodes, on = peers
+    user, project = account(on)
+    with on(0):
+        capture_identity()
+        source = MolecularDatabase()
+        imported = source.import_records(
+            user,
+            [{"name": "review candidate", "components": [
+                {"type": "protein", "chain": "A", "sequence": "ACDEFG"},
+            ]}],
+            name="Shortlist sync staging", project_id=project["id"], import_method="user_uploads",
+        )
+        molecule_id = imported["molecule_ids"][0]
+        source.attach_structure(
+            imported["group_id"], molecule_id,
+            {"name": "model.cif", "content": b"data_sync_fixture\\n#\\n", "label": "candidate model"},
+            context={"candidate_id": "native-42", "model_id": "boltz2-model-0", "target_chains": ["A"]},
+        )
+        source_structure = source.list_molecules(user, molecule_ids=[molecule_id])["items"][0]["representations"][0]["id"]
+        source.add_observation(
+            imported["group_id"], molecule_id, "studio.test-evaluator.v1", "saved-evaluation-1",
+            {"interface_fixture_score": 0.75},
+            context={"representation_id": source_structure, "candidate_id": "native-42", "method_version": "1"},
+        )
+        capture(Replica(), database=source, node_id=nodes[0]["id"])
+    transfer(on, 0, 1)
+
+    with on(0):
+        source = MolecularDatabase()
+        source_record = source.list_molecules(user, molecule_ids=[molecule_id])["items"][0]
+        assert source_record["representations"][0]["id"] == source_structure
+        source.save_complex_review(
+            user, source_kind="database", subject_id=molecule_id, structure_ref=source_structure,
+            status="Shortlisted for experimental testing", note="A: pass recorded; retain for the pilot.",
+        )
+        capture(Replica(), database=source, node_id=nodes[0]["id"])
+    transfer(on, 0, 1)
+
+    with on(1):
+        replica = MolecularDatabase()
+        record = replica.list_molecules(user, molecule_ids=[molecule_id])["items"][0]
+        replica_structure = record["representations"][0]["id"]
+        assert replica_structure != source_structure
+        assert replica.get_complex_review(
+            user, source_kind="database", subject_id=molecule_id, structure_ref=replica_structure,
+        )["note"] == "A: pass recorded; retain for the pilot."
+        replica.save_complex_review(
+            user, source_kind="database", subject_id=molecule_id, structure_ref=replica_structure,
+            status="Shortlisted for experimental testing", note="B: rationale revised after construct review.",
+        )
+        capture(Replica(), database=replica, node_id=nodes[1]["id"])
+    transfer(on, 1, 0)
+    transfer(on, 1, 0)  # Replayed delivery must be idempotent.
+    with on(0):
+        source = MolecularDatabase()
+        saved = source.get_complex_review(
+            user, source_kind="database", subject_id=molecule_id, structure_ref=source_structure,
+        )
+        assert saved["note"] == "B: rationale revised after construct review."
+        source.save_complex_review(
+            user, source_kind="database", subject_id=molecule_id, structure_ref=source_structure,
+            status="Unreviewed", note="",
+        )
+        capture(Replica(), database=source, node_id=nodes[0]["id"])
+    transfer(on, 0, 1)
+    with on(1):
+        replica = MolecularDatabase()
+        saved = replica.get_complex_review(
+            user, source_kind="database", subject_id=molecule_id, structure_ref=replica_structure,
+        )
+        assert saved["status"] == "Unreviewed" and saved["note"] == ""
+        source_observations = source.list_molecules(user, molecule_ids=[molecule_id])["items"][0]["observations"]
+        replica_observations = replica.list_molecules(user, molecule_ids=[molecule_id])["items"][0]["observations"]
+        assert len(source_observations) == len(replica_observations) == 1
+        assert source_observations[0]["namespace"] == replica_observations[0]["namespace"]
+        assert source_observations[0]["metrics"] == replica_observations[0]["metrics"]
+        assert source_observations[0]["run_id"] == replica_observations[0]["run_id"] == "saved-evaluation-1"
+        with replica.connection() as connection:
+            assert connection.execute(
+                "SELECT count(*) FROM complex_review_annotations WHERE subject_id=? AND user_id=?",
+                (molecule_id, user["id"]),
+            ).fetchone()[0] == 1
+        stored_observation = replica.list_molecules(user, molecule_ids=[molecule_id])["items"][0]["observations"]
+        assert len(stored_observation) == 1 and stored_observation[0]["metrics"] == {"interface_fixture_score": 0.75}
+
+    # Two offline edits from the same synchronized version retain the existing
+    # deterministic Lamport winner and leave an inspectable peer conflict.
+    with on(0):
+        source = MolecularDatabase()
+        source.save_complex_review(
+            user, source_kind="database", subject_id=molecule_id, structure_ref=source_structure,
+            status="Reviewed", note="Concurrent rationale from A.",
+        )
+        capture(Replica(), database=source, node_id=nodes[0]["id"])
+    with on(1):
+        replica = MolecularDatabase()
+        replica.save_complex_review(
+            user, source_kind="database", subject_id=molecule_id, structure_ref=replica_structure,
+            status="Not shortlisted for experimental testing", note="Concurrent rationale from B.",
+        )
+        capture(Replica(), database=replica, node_id=nodes[1]["id"])
+    transfer(on, 0, 1)
+    transfer(on, 1, 0)
+    with on(0):
+        source = MolecularDatabase()
+        a_value = source.get_complex_review(
+            user, source_kind="database", subject_id=molecule_id, structure_ref=source_structure,
+        )
+        with Replica().db() as connection:
+            conflict = connection.execute(
+                "SELECT error FROM conflicts WHERE key LIKE 'complex_review_annotation:%'",
+            ).fetchone()
+        assert conflict and "Concurrent shortlist edits" in conflict["error"]
+    with on(1):
+        replica = MolecularDatabase()
+        b_value = replica.get_complex_review(
+            user, source_kind="database", subject_id=molecule_id, structure_ref=replica_structure,
+        )
+        assert (a_value["status"], a_value["note"]) == (b_value["status"], b_value["note"])
+        with Replica().db() as connection:
+            conflict = connection.execute(
+                "SELECT error FROM conflicts WHERE key LIKE 'complex_review_annotation:%'",
+            ).fetchone()
+        assert conflict and "Concurrent shortlist edits" in conflict["error"]
+
+
+def test_old_peer_export_skips_new_review_record_without_advancing_shared_cursor(peers):
+    nodes, on = peers
+    with on(0):
+        replica = Replica()
+        with replica.db() as connection:
+            replica._write(
+                connection, "complex_review_annotation:stable-review-key", "complex_review_annotation",
+                {"status": "Shortlisted for experimental testing"}, author=config.identity(),
+            )
+        legacy_page = replica.export(0, limit=10, include_review_annotations=False)
+        assert not any(item["kind"] == "complex_review_annotation" for item in legacy_page["records"])
+        assert legacy_page["cursor"] > 0
+        upgraded_page = replica.export(0, limit=10, include_review_annotations=True)
+        assert any(item["kind"] == "complex_review_annotation" for item in upgraded_page["records"])
+
+        # A pre-feature client did not send an include flag, so the endpoint
+        # defaults to a safe payload; a peer that negotiated the capability can
+        # explicitly request the new record kind.
+        from mn_molecular_design_studio import api
+        headers = {"Authorization": "Bearer " + nodes[1]["token"]}
+        with TestClient(api.app) as client:
+            legacy_page = client.get("/api/v1/cluster/node/peer/records?include_molecular=true", headers=headers)
+            assert legacy_page.status_code == 200
+            assert not any(row["kind"] == "complex_review_annotation" for row in legacy_page.json()["records"])
+            capable_page = client.get(
+                "/api/v1/cluster/node/peer/records?include_molecular=true&include_review_annotations=true",
+                headers=headers,
+            )
+            assert capable_page.status_code == 200
+            assert any(row["kind"] == "complex_review_annotation" for row in capable_page.json()["records"])
 
 def test_peer_account_reads_do_not_wait_for_metadata_replication(peers,monkeypatch):
     _,on=peers

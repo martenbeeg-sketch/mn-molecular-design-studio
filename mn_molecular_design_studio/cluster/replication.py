@@ -26,6 +26,29 @@ IDENTITY_KINDS = {"user", "membership", "project"}
 USER_FIELDS = ("id", "username", "display_name", "role", "password_hash", "must_change_password", "disabled", "created_at", "updated_at")
 
 
+def _merge_concurrent_review_values(previous_record, incoming_record):
+    """Keep the Lamport winner current while carrying both human edits forward."""
+    previous_value = previous_record.get("value") if isinstance(previous_record, dict) else {}
+    incoming_value = incoming_record.get("value") if isinstance(incoming_record, dict) else {}
+    previous_value = previous_value if isinstance(previous_value, dict) else {}
+    incoming_value = incoming_value if isinstance(incoming_value, dict) else {}
+    winner = (incoming_record if (incoming_record["counter"], incoming_record["author"])
+              > (previous_record["counter"], previous_record["author"]) else previous_record)
+    branches = []
+    for record, value in ((previous_record, previous_value), (incoming_record, incoming_value)):
+        branches.extend(item for item in value.get("_conflicts", []) if isinstance(item, dict))
+        branch = {
+            "author": str(record.get("author") or ""), "counter": int(record.get("counter") or 0),
+            "status": str(value.get("status") or ""), "note": str(value.get("note") or ""),
+            "updated_at": str(value.get("updated_at") or ""),
+        }
+        branches.append(branch)
+    unique = {json.dumps(item, sort_keys=True, ensure_ascii=False): item for item in branches}
+    merged = dict(winner.get("value") or {})
+    merged["_conflicts"] = [unique[key] for key in sorted(unique)]
+    return merged
+
+
 @contextmanager
 def locked():
     with _mutex:
@@ -173,18 +196,31 @@ class Replica:
             )
             return changed
 
-    def export(self, since=0, limit=500, *, include_molecular=True):
+    def export(self, since=0, limit=500, *, include_molecular=True, include_review_annotations=True):
         if type(since) is not int or since < 0 or type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("Invalid synchronization cursor.")
         if type(include_molecular) is not bool:
             raise ValueError("Invalid Molecular Database sharing setting.")
-        molecular_kinds = ("molecule_group", "molecule_entry", "external_library")
+        if type(include_review_annotations) is not bool:
+            raise ValueError("Invalid human review sharing setting.")
+        molecular_kinds = ("molecule_group", "molecule_entry", "external_library", "complex_review_annotation")
         with self.db() as db:
-            if include_molecular:
+            if include_molecular and include_review_annotations:
                 rows = db.execute("SELECT * FROM records WHERE seq>? ORDER BY seq LIMIT ?", (since, limit)).fetchall()
+                cursor = rows[-1]["seq"] if rows else since
+            elif include_molecular:
+                rows = db.execute(
+                    "SELECT * FROM records WHERE seq>? AND kind!='complex_review_annotation' ORDER BY seq LIMIT ?",
+                    (since, limit),
+                ).fetchall()
+                if len(rows) < limit:
+                    last_seq = db.execute("SELECT coalesce(max(seq),?) FROM records", (since,)).fetchone()[0]
+                    cursor = max(since, int(last_seq))
+                else:
+                    cursor = rows[-1]["seq"]
             else:
                 rows = db.execute(
-                    "SELECT * FROM records WHERE seq>? AND kind NOT IN (?,?,?) ORDER BY seq LIMIT ?",
+                    "SELECT * FROM records WHERE seq>? AND kind NOT IN (?,?,?,?) ORDER BY seq LIMIT ?",
                     (since, *molecular_kinds, limit),
                 ).fetchall()
                 # When the filtered page is short, advance across the trailing
@@ -211,7 +247,7 @@ class Replica:
         return {
             'epoch': self.epoch,
             'records': records,
-            'cursor': cursor if not include_molecular else rows[-1]['seq'] if rows else since,
+            'cursor': cursor,
             'more': len(rows) == limit,
         }
 
@@ -226,7 +262,7 @@ class Replica:
         # during peer catch-up. Reuse one connection for the page, while
         # apply_record still commits or rolls back each row independently.
         has_molecular_entries = any(
-            isinstance(record, dict) and record.get('kind') in {'molecule_group', 'molecule_entry'}
+            isinstance(record, dict) and record.get('kind') in {'molecule_group', 'molecule_entry', 'complex_review_annotation'}
             for record in records
         )
         if has_molecular_entries:
@@ -239,7 +275,7 @@ class Replica:
                 if not isinstance(record, dict) or set(record) != {'key','kind','author','counter','value'}:
                     raise ValueError("Invalid peer metadata record.")
                 key, kind, author, counter, value = (record[k] for k in ('key','kind','author','counter','value'))
-                if author not in known or kind not in IDENTITY_KINDS | {'job', 'molecule_group', 'molecule_entry', 'external_library'} or not isinstance(key, str) or not key.startswith(kind + ':') or len(key) > 300 or type(counter) is not int or not 0 < counter < 2**62:
+                if author not in known or kind not in IDENTITY_KINDS | {'job', 'molecule_group', 'molecule_entry', 'external_library', 'complex_review_annotation'} or not isinstance(key, str) or not key.startswith(kind + ':') or len(key) > 300 or type(counter) is not int or not 0 < counter < 2**62:
                     raise ValueError("Invalid metadata authority or version.")
                 if len(encoded(record)) > 2 * 1024 * 1024:
                     raise ValueError("Metadata record exceeds 2 MB.")
@@ -263,6 +299,55 @@ class Replica:
                         promote_candidate = (
                             previous and incoming_local_reference and not previous['local_reference']
                         )
+                        old = json.loads(previous['value']) if previous and kind == 'complex_review_annotation' else None
+                        incoming_base = value.get('_base_revision') if kind == 'complex_review_annotation' and isinstance(value, dict) else None
+                        old_base = old.get('_base_revision') if isinstance(old, dict) else None
+                        already_in_review_history = bool(
+                            isinstance(value, dict) and isinstance(old, dict)
+                            and any(
+                                item.get("author") == previous["author"]
+                                and item.get("counter") == previous["counter"]
+                                for item in value.get("_conflicts", []) if isinstance(item, dict)
+                            )
+                        )
+                        concurrent_review = bool(
+                            previous and kind == 'complex_review_annotation' and isinstance(value, dict)
+                            and old_base and incoming_base == old_base
+                            and not already_in_review_history
+                            and {k: v for k, v in value.items() if k != '_base_revision'}
+                            != {k: v for k, v in old.items() if k != '_base_revision'}
+                        )
+                        review_has_conflicts = bool(
+                            kind == 'complex_review_annotation' and isinstance(value, dict)
+                            and value.get('_conflicts')
+                        )
+                        if concurrent_review:
+                            previous_record = {
+                                "key": key, "kind": kind, "author": previous["author"],
+                                "counter": previous["counter"], "value": old,
+                            }
+                            merged = _merge_concurrent_review_values(previous_record, record)
+                            try:
+                                if (counter, author) > (previous['counter'], previous['author']):
+                                    token = _importing.set(True)
+                                    try:
+                                        self._apply(kind, key, merged, author, molecule_connection=molecule_connection)
+                                    finally:
+                                        _importing.reset(token)
+                                # Publish the merged decision plus both review
+                                # branches as a new Lamport version, so the
+                                # conflict is visible on every synchronized peer.
+                                self._write(db, key, kind, merged, author=config.identity())
+                            except (ValueError, PermissionError, sqlite3.IntegrityError) as exc:
+                                db.execute("INSERT OR REPLACE INTO conflicts VALUES (?,?,?)", (key, encoded(record), str(exc)))
+                                continue
+                            losing_record = record if (counter, author) <= (previous['counter'], previous['author']) else previous_record
+                            db.execute(
+                                "INSERT OR REPLACE INTO conflicts VALUES (?,?,?)",
+                                (key, encoded(losing_record), "Concurrent shortlist edits; deterministic Lamport ordering retained both versions for review."),
+                            )
+                            accepted += 1
+                            continue
                         if (previous and not promote_candidate
                                 and (counter, author) <= (previous['counter'], previous['author'])):
                             # A failed import may have left a conflict behind
@@ -270,9 +355,12 @@ class Replica:
                             # arrived. Once that newer revision is present, the
                             # stale snapshot is no longer actionable and must
                             # not remain visible or be retried indefinitely.
-                            db.execute("DELETE FROM conflicts WHERE key=?", (key,))
+                            existing_conflict = db.execute("SELECT error FROM conflicts WHERE key=?", (key,)).fetchone()
+                            if not existing_conflict or "Concurrent shortlist edits" not in existing_conflict['error']:
+                                db.execute("DELETE FROM conflicts WHERE key=?", (key,))
                             continue
-                        old = json.loads(previous['value']) if previous else None
+                        if previous and kind != 'complex_review_annotation':
+                            old = json.loads(previous['value'])
                         if kind == 'job' and value is not None:
                             # A completed purge receipt on this workstation must
                             # win over a stale job record replayed by a peer.
@@ -300,8 +388,15 @@ class Replica:
                         except (ValueError, PermissionError, sqlite3.IntegrityError) as exc:
                             db.execute("INSERT OR REPLACE INTO conflicts VALUES (?,?,?)", (key, encoded(record), str(exc)))
                             continue
-                        self._write(db, key, kind, value, author=author, counter=counter)
-                        db.execute("DELETE FROM conflicts WHERE key=?", (key,))
+                        if kind == 'complex_review_annotation' and review_has_conflicts:
+                            self._write(db, key, kind, value, author=author, counter=counter)
+                            db.execute(
+                                "INSERT OR REPLACE INTO conflicts VALUES (?,?,?)",
+                                (key, encoded(record), "Concurrent shortlist edits; deterministic Lamport ordering retained both versions for review."),
+                            )
+                        else:
+                            self._write(db, key, kind, value, author=author, counter=counter)
+                            db.execute("DELETE FROM conflicts WHERE key=?", (key,))
                         accepted += 1
         return accepted
 
@@ -313,7 +408,7 @@ class Replica:
 
     def _apply(self, kind, key, value, author, *, molecule_connection=None):
         identifier = key.split(':', 1)[1]
-        if kind in {'molecule_group', 'molecule_entry', 'external_library'}:
+        if kind in {'molecule_group', 'molecule_entry', 'external_library', 'complex_review_annotation'}:
             from mn_molecular_design_studio.molecular_database_peer import apply_record
             apply_record(kind, key, value, author, connection=molecule_connection)
             return
@@ -467,11 +562,18 @@ def sync_peer(peer, snapshot, jobs=None):
     # Keep the full-sharing cursor parked while sharing is disabled. The
     # filtered cursor skips old library metadata without losing the ability to
     # resume full replication if an administrator enables it later.
-    cursor_name = "push" if share_molecular_database else "push_without_molecular"
-    pull_cursor_name = "pull" if share_molecular_database else "pull_without_molecular"
+    supports_review_annotations = "complex-review-annotation.v1" in response.get("replication_features", [])
+    if share_molecular_database and not supports_review_annotations:
+        cursor_name, pull_cursor_name = "push_without_review_annotations", "pull_without_review_annotations"
+    else:
+        cursor_name = "push" if share_molecular_database else "push_without_molecular"
+        pull_cursor_name = "pull" if share_molecular_database else "pull_without_molecular"
     if not share_molecular_database:
         state.setdefault(cursor_name, state.get("push", 0))
         state.setdefault(pull_cursor_name, state.get("pull", 0))
+    elif not supports_review_annotations:
+        state.setdefault(cursor_name, 0)
+        state.setdefault(pull_cursor_name, 0)
     # Independent durable cursors let a machine catch up after any length of outage.
     # A 500-row first-contact page can contain enough new job records to keep
     # the receiver in SQLite/index-trigger work past the HTTP timeout. Small
@@ -481,6 +583,7 @@ def sync_peer(peer, snapshot, jobs=None):
         page = replica.export(
             state[cursor_name], limit=replication_page_size,
             include_molecular=share_molecular_database,
+            include_review_annotations=supports_review_annotations,
         )
         if page['records']:
             transport.node_request('/peer/records', {'records':page['records']}, method='POST', base_url=peer['url'], timeout=15)
@@ -492,6 +595,7 @@ def sync_peer(peer, snapshot, jobs=None):
         page = transport.node_request(
             '/peer/records?since='+str(state[pull_cursor_name])
             + ("&include_molecular=true" if share_molecular_database else "&include_molecular=false")
+            + ("&include_review_annotations=true" if supports_review_annotations else "")
             + f"&limit={replication_page_size}",
             base_url=peer['url'], timeout=15,
         )

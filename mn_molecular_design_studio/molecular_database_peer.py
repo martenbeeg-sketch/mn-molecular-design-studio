@@ -14,7 +14,7 @@ from fastapi import Request
 from mn_molecular_design_studio.molecular_database import IMPORT_METHODS, MolecularDatabase, _id, _json
 from mn_molecular_design_studio import molecule_imports
 
-KINDS = {"molecule_group", "molecule_entry", "external_library"}
+KINDS = {"molecule_group", "molecule_entry", "external_library", "complex_review_annotation"}
 _DIGESTS = {}
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -28,6 +28,82 @@ def _object_json(value, label):
     if not isinstance(decoded, dict):
         raise ValueError(f"Invalid {label} metadata.")
     return decoded
+
+
+def _review_structure_identity(connection, annotation, node_id):
+    """Return a workstation-independent reference for the reviewed structure."""
+    if annotation["source_kind"] == "database":
+        row = connection.execute(
+            "SELECT id,path,context FROM molecule_structures WHERE id=? AND molecule_id=?",
+            (annotation["structure_ref"], annotation["subject_id"]),
+        ).fetchone()
+        if not row:
+            raise ValueError("The reviewed Database structure is no longer present.")
+        context = _object_json(row["context"], "reviewed structure context")
+        source_node = str(context.get("_replica_node") or node_id)
+        source_structure = str(context.get("_replica_structure") or row["id"])
+        digest = str(context.get("sha256") or context.get("portable_sha256")
+                     or context.get("content_sha256") or _digest(row["path"]) or "")
+        model = context.get("model_id") or context.get("model") or context.get("model_index")
+        return {
+            "structure_identity": f"database:{source_node}:{source_structure}",
+            "structure_digest": digest,
+            "model_identity": str(model or ""),
+            "structure_context": {
+                key: context.get(key) for key in (
+                    "candidate_id", "source_candidate_id", "model_id", "model",
+                    "model_index", "target_chains", "binder_chains", "component_roles",
+                ) if context.get(key) is not None
+            },
+        }
+    # Results structures use job/run identity plus a safe relative artifact
+    # path, not a local filesystem path or SQLite identifier.
+    task_group, separator, run_id = str(annotation["subject_id"]).partition("/")
+    relative = Path(str(annotation["structure_ref"]))
+    if not separator or not task_group or not run_id or relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("Invalid Results review identity.")
+    digest = ""
+    try:
+        from mn_molecular_design_studio.job_catalog import get_job_access_record
+        from mn_molecular_design_studio.runtime import runs_root
+        job = get_job_access_record(task_group, run_id)
+        if job:
+            selected = (Path(runs_root()).expanduser().resolve() / str(job.get("run_relative_path") or f"{task_group}/{run_id}") / relative).resolve()
+            if selected.is_file():
+                digest = _digest(str(selected))
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return {
+        "structure_identity": f"results:{annotation['subject_id']}:{relative.as_posix()}",
+        "structure_digest": digest,
+        "model_identity": "",
+        "structure_context": {},
+    }
+
+
+def _review_record_key(annotation):
+    identity = [
+        annotation["source_kind"], annotation["subject_id"],
+        annotation["structure_identity"], annotation.get("evaluation_id", ""),
+        annotation["user_id"],
+    ]
+    return "complex_review_annotation:" + hashlib.sha256(_json(identity).encode()).hexdigest()
+
+
+def _review_snapshot(database, row, node_id, connection=None):
+    annotation = dict(row)
+    if connection is None:
+        with database.connection() as opened:
+            structure = _review_structure_identity(opened, annotation, node_id)
+    else:
+        structure = _review_structure_identity(connection, annotation, node_id)
+    return {
+        **{key: annotation[key] for key in (
+            "source_kind", "subject_id", "evaluation_id", "user_id", "status",
+            "note", "created_at", "updated_at",
+        )},
+        **structure,
+    }
 
 
 def _canonical_components(value, label):
@@ -146,6 +222,123 @@ def _remove_entry_relations(connection, group_id, molecule_id, author=None, *, r
                 connection.execute(f"DELETE FROM {table} WHERE rowid=?", (row["rowid"],))
     if remove_member:
         connection.execute("DELETE FROM molecule_members WHERE group_id=? AND molecule_id=?", (group_id, molecule_id))
+
+
+def _review_user(user_id):
+    from mn_molecular_design_studio import auth
+    user = next((item for item in auth.list_users()
+                 if str(item.get("id") or "") == str(user_id) and not item.get("disabled")), None)
+    if not user and auth.is_development_mode() and str(user_id) == str(auth.development_user()["id"]):
+        user = auth.development_user()
+    if not user:
+        raise PermissionError("The shortlist reviewer is unknown or disabled on this workstation.")
+    return user
+
+
+def _local_review_structure(connection, annotation, node_id):
+    for row in connection.execute(
+        "SELECT id,path,context FROM molecule_structures WHERE molecule_id=?",
+        (annotation["subject_id"],),
+    ):
+        context = _object_json(row["context"], "reviewed structure context")
+        owner = str(context.get("_replica_node") or node_id)
+        source_id = str(context.get("_replica_structure") or row["id"])
+        if f"database:{owner}:{source_id}" != annotation["structure_identity"]:
+            continue
+        digest = str(context.get("sha256") or context.get("portable_sha256")
+                     or context.get("content_sha256") or _digest(row["path"]) or "")
+        if annotation.get("structure_digest") and digest != annotation["structure_digest"]:
+            raise ValueError("The synchronized review refers to a different structure digest.")
+        return str(row["id"])
+    return None
+
+
+def _apply_review_annotation(database, key, value, author, shared_connection=None):
+    """Apply one replicated human decision after resolving local ACL-bound refs."""
+    from mn_molecular_design_studio.cluster import config
+    if value is None:
+        # A null replication value is an explicit clear tombstone. Resolve its
+        # stable key against current rows; never interpret a missing source as
+        # permission to delete a different user's annotation.
+        node_id = config.identity()
+        with _record_transaction(database, shared_connection) as connection:
+            rows = connection.execute(
+                "SELECT source_kind,subject_id,structure_ref,evaluation_id,user_id,status,note,created_at,updated_at "
+                "FROM complex_review_annotations"
+            ).fetchall()
+            for row in rows:
+                try:
+                    snapshot = _review_snapshot(database, row, node_id, connection)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if _review_record_key(snapshot) == key:
+                    connection.execute(
+                        "DELETE FROM complex_review_annotations WHERE source_kind=? AND subject_id=? "
+                        "AND structure_ref=? AND evaluation_id=? AND user_id=?",
+                        (row["source_kind"], row["subject_id"], row["structure_ref"],
+                         row["evaluation_id"], row["user_id"]),
+                    )
+        return
+    required = {
+        "source_kind", "subject_id", "structure_identity", "structure_digest", "model_identity",
+        "structure_context", "evaluation_id", "user_id", "status", "note", "created_at", "updated_at",
+    }
+    if not isinstance(value, dict) or not required.issubset(value):
+        raise ValueError("Incomplete synchronized shortlist annotation.")
+    if (value.get("source_kind") not in {"database", "results"}
+            or not isinstance(value.get("subject_id"), str) or not value["subject_id"]
+            or not isinstance(value.get("structure_identity"), str) or not value["structure_identity"]
+            or not isinstance(value.get("structure_digest"), str)
+            or not isinstance(value.get("model_identity"), str)
+            or not isinstance(value.get("structure_context"), dict)
+            or not isinstance(value.get("evaluation_id"), str)
+            or not isinstance(value.get("user_id"), str) or not value["user_id"]
+            or value.get("status") not in {
+                "Unreviewed", "Needs review", "Reviewed", "Shortlisted for experimental testing",
+                "Not shortlisted for experimental testing", "Not applicable",
+            }
+            or not isinstance(value.get("note"), str) or len(value["note"]) > 10_000
+            or not isinstance(value.get("created_at"), str) or not isinstance(value.get("updated_at"), str)):
+        raise ValueError("Invalid synchronized shortlist annotation.")
+    if _review_record_key(value) != key:
+        raise PermissionError("The synchronized shortlist key does not match its scientific identity.")
+    reviewer = _review_user(value["user_id"])
+    node_id = config.identity()
+    local_structure_ref = ""
+    if value["source_kind"] == "database":
+        with _record_transaction(database, shared_connection) as connection:
+            local_structure_ref = _local_review_structure(connection, value, node_id) or ""
+        if not local_structure_ref:
+            raise ValueError("The reviewed structure has not synchronized to this workstation.")
+        database._validate_complex_review_subject(
+            reviewer, "database", value["subject_id"], local_structure_ref, value["evaluation_id"],
+        )
+    else:
+        task_group, separator, run_id = value["subject_id"].partition("/")
+        artifact_ref = str(value["structure_identity"]).removeprefix(f"results:{value['subject_id']}:")
+        relative = Path(artifact_ref)
+        if not separator or not task_group or not run_id or not artifact_ref or relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("Invalid synchronized Results structure reference.")
+        from mn_molecular_design_studio.auth import can_access_job
+        from mn_molecular_design_studio.job_catalog import get_job_access_record
+        job = get_job_access_record(task_group, run_id)
+        if not job or not can_access_job(reviewer, job):
+            raise PermissionError("The Results source is not authorized for this reviewer.")
+        local_structure_ref = relative.as_posix()
+    row_id = _id("review-", _json([
+        value["source_kind"], value["subject_id"], local_structure_ref,
+        value["evaluation_id"], value["user_id"],
+    ]))
+    with _record_transaction(database, shared_connection) as connection:
+        connection.execute(
+            "INSERT INTO complex_review_annotations "
+            "(id,source_kind,subject_id,structure_ref,evaluation_id,user_id,status,note,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_kind,subject_id,structure_ref,evaluation_id,user_id) "
+            "DO UPDATE SET status=excluded.status,note=excluded.note,updated_at=excluded.updated_at",
+            (row_id, value["source_kind"], value["subject_id"], local_structure_ref,
+             value["evaluation_id"], value["user_id"], value["status"], value["note"],
+             value["created_at"], value["updated_at"]),
+        )
 
 
 def _validate_entry(value, author, original_group, molecule_id):
@@ -325,11 +518,29 @@ def capture(replica, *, database=None, node_id=None):
                 sources = [dict(row) for row in connection.execute("SELECT * FROM molecule_sources WHERE group_id=? AND molecule_id=?", (group["id"], member["molecule_id"]))]
                 value = {"node_id": node_id, "group_id": group["id"], "molecule": dict(molecule), "member": dict(member), "structures": structures, "observations": observations, "sources": sources}
                 values[f"molecule_entry:{node_id}:{group['id']}:{member['molecule_id']}"] = ("molecule_entry", value)
+        for row in connection.execute(
+            "SELECT source_kind,subject_id,structure_ref,evaluation_id,user_id,status,note,created_at,updated_at "
+            "FROM complex_review_annotations"
+        ):
+            snapshot = _review_snapshot(database, row, node_id, connection)
+            values[_review_record_key(snapshot)] = ("complex_review_annotation", snapshot)
     with replica.db() as connection:
         for key, (kind, value) in values.items():
-            previous = connection.execute("SELECT value FROM records WHERE key=?", (key,)).fetchone()
-            if not previous or json.loads(previous["value"]) != value:
-                replica._write(connection, key, kind, value, author=node_id)
+            previous = connection.execute("SELECT value,author,counter FROM records WHERE key=?", (key,)).fetchone()
+            previous_value = json.loads(previous["value"]) if previous else None
+            if kind == "complex_review_annotation" and previous_value is not None:
+                if previous_value.get("_conflicts"):
+                    value = {**value, "_conflicts": previous_value["_conflicts"]}
+                previous_content = {k: v for k, v in previous_value.items() if k != "_base_revision"}
+                if previous_content == value:
+                    continue
+                value = {
+                    **value,
+                    "_base_revision": {"author": previous["author"], "counter": previous["counter"]},
+                }
+            elif previous_value == value:
+                continue
+            replica._write(connection, key, kind, value, author=node_id)
 
         # Stream the prior source snapshot in bounded pages. A stale replica may
         # have hundreds of thousands of rows, so holding its full JSON payloads
@@ -337,7 +548,7 @@ def capture(replica, *, database=None, node_id=None):
         last_key = ""
         while True:
             previous_rows = connection.execute(
-                "SELECT key,kind FROM records WHERE kind IN ('molecule_group','molecule_entry','external_library') "
+                "SELECT key,kind FROM records WHERE kind IN ('molecule_group','molecule_entry','external_library','complex_review_annotation') "
                 "AND author=? AND key>? AND value!='null' ORDER BY key LIMIT 500",
                 (node_id, last_key),
             ).fetchall()
@@ -438,6 +649,14 @@ def apply_record(kind, key, value, author, *, database=None, connection=None):
     database = database or MolecularDatabase()
     if not isinstance(kind, str) or kind not in KINDS or not isinstance(author, str) or not author:
         raise ValueError("Invalid molecular peer record authority.")
+    if kind == "complex_review_annotation":
+        # Reviews are mutable from any trusted peer. Their key is stable across
+        # workstations and the shared Replica applies the established Lamport
+        # ordering and reports concurrent edits as synchronization conflicts.
+        if not isinstance(key, str) or not key.startswith(kind + ":") or len(key) > 300:
+            raise ValueError("Invalid shortlist annotation key.")
+        _apply_review_annotation(database, key, value, author, connection)
+        return
     prefix = kind + ":" + author + ":"
     if not isinstance(key, str) or not key.startswith(prefix):
         raise PermissionError("Only the source workstation may publish a molecular record.")
