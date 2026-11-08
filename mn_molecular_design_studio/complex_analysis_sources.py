@@ -35,6 +35,7 @@ _WORKFLOWS = {
     "analysis.sequence_liability",
     "analysis.sequence_qc",
     "analysis.proteinsol",
+    "analysis.binder_interface_chemistry",
 }
 _STRUCTURE_SUFFIXES = {".pdb", ".ent", ".cif", ".mmcif"}
 _SELECTION_FIELDS = {

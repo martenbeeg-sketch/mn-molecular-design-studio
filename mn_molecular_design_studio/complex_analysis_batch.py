@@ -17,6 +17,12 @@ ASSESSMENT_METHODS = {
         "label": "Biotite Interface", "evaluators": {"biotite_interface"},
         "scope": "protein–protein complex with explicit binder and target chains", "kind": "ppi",
     },
+    "analysis.binder_interface_chemistry": {
+        "label": "BinderScope-style Interface Surface & Chemistry",
+        "evaluators": {"binder_interface_chemistry_v1"},
+        "scope": "single-model protein–protein complex with explicit binder and target chains",
+        "kind": "ppi",
+    },
     "analysis.rosetta": {
         "label": "Rosetta Interface Analysis", "evaluators": {"rosetta_metrics", "rosetta"},
         "scope": "one explicit binder chain and one target chain", "kind": "single_ppi",
@@ -44,7 +50,7 @@ CORE_PROFILE = (
     "analysis.pep_patch", "analysis.sequence_liability",
 )
 COMPREHENSIVE_PROFILE = CORE_PROFILE + (
-    "analysis.rosetta", "analysis.ipsae", "analysis.tag_fusion_suitability",
+    "analysis.binder_interface_chemistry", "analysis.rosetta", "analysis.ipsae", "analysis.tag_fusion_suitability",
 )
 
 

@@ -1414,6 +1414,116 @@ def run_sequence_liability_contract(
     )
 
 
+def run_binder_interface_chemistry_contract(
+    source_run_dir: Path,
+    candidates_jsonl: Path,
+    candidate_ids: list[str] | None = None,
+    selected_structure_path: Path | None = None,
+    selected_model_id: str | None = None,
+    binder_chains: list[str] | None = None,
+    target_chains: list[str] | None = None,
+) -> Path:
+    """Assess exact Database PPI surface and polar geometry; preserve the source model."""
+    from mn_molecular_design_studio.complex_analysis_interface_chemistry import (
+        METHOD, METHOD_VERSION, assess_protein_interface,
+    )
+    from mn_molecular_design_studio.evaluations import file_digest
+
+    source_run_dir = Path(source_run_dir).expanduser().resolve(strict=True)
+    candidates_jsonl = Path(candidates_jsonl).expanduser().resolve(strict=True)
+    candidates = _analysis_source_candidates(source_run_dir, candidates_jsonl)
+    selected = _select_complex_analysis_candidates(
+        source_run_dir, candidates, candidate_ids=candidate_ids,
+        selected_structure_path=selected_structure_path, selected_model_id=selected_model_id,
+        binder_chains=binder_chains, target_chains=target_chains,
+    )
+    if len(selected) != 1:
+        raise ValueError("BinderScope-style Interface Surface & Chemistry requires one selected Database structure.")
+    metadata = read_json(source_run_dir / "metadata.json")
+    manifest = read_json(source_run_dir / "complex_analysis_source.json")
+    if str(metadata.get("source_kind") or "") != "database" or manifest.get("schema") != "studio.complex_analysis_database_source.v1":
+        raise ValueError("Interface Surface & Chemistry is available only for an authorized Database structure.")
+    selected_path = Path(str(selected[0].get("complex_pdb") or "")).resolve(strict=True)
+    try:
+        selected_path.relative_to(source_run_dir)
+    except ValueError as exc:
+        raise ValueError("The selected structure must remain inside the authorized Database source bundle.") from exc
+    if file_digest(selected_path) != str(manifest.get("structure_digest") or ""):
+        raise ValueError("The selected source structure changed after Database authorization.")
+    if str(selected_model_id or "") != str(manifest.get("model_id") or ""):
+        raise ValueError("The selected model does not match the authorized Database representation.")
+    binder = list(dict.fromkeys(str(value).strip() for value in (binder_chains or []) if str(value).strip()))
+    target = list(dict.fromkeys(str(value).strip() for value in (target_chains or []) if str(value).strip()))
+    if binder != list(manifest.get("binder_chains") or []) or target != list(manifest.get("target_chains") or []):
+        raise ValueError("Selected interface chains do not match the authorized Database source selection.")
+    if set(binder) & set(target) or not binder or not target:
+        raise ValueError("Explicit, nonempty and disjoint binder and target chain groups are required.")
+
+    identity = {key: str(manifest.get(key) or "") for key in (
+        "molecule_id", "structure_id", "group_id", "structure_digest", "model_id", "evaluation_id", "candidate_id",
+    )}
+    if any(not identity[key] for key in ("molecule_id", "structure_id", "group_id", "structure_digest", "model_id")):
+        raise ValueError("The Database source is missing exact molecular or structure identity provenance.")
+    identity.update({"binder_chains": binder, "target_chains": target,
+                     "source_candidate_id": str(selected[0].get("candidate_id") or "")})
+    result = assess_protein_interface(
+        selected_path, binder_chains=binder, target_chains=target, source_identity=identity,
+    )
+    params = {"method": METHOD, "method_version": METHOD_VERSION,
+              "structure_digest": identity["structure_digest"], "model_id": identity["model_id"],
+              "binder_chains": binder, "target_chains": target, **result["parameters"]}
+    job = _analysis_job(
+        source_run_dir, candidates_jsonl, tool="binder_interface_chemistry_v1", params=params,
+        note="Measure explicit protein–protein interface surface, polar geometry and residue annotations; no binding-affinity or energetic score is calculated.",
+        mode="saved-database-binder-interface-chemistry",
+    )
+    # There are no user-editable cutoffs in v1. The versioned evaluator id
+    # distinguishes these fixed settings for exact Evaluation reuse.
+    _write_complex_analysis_selection(
+        job, source_run_dir, selected[0], workflow="analysis.binder_interface_chemistry", parameters={},
+    )
+    result_path = job.run_dir / "artifacts" / "analysis" / "binder_interface_chemistry.json"
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(result_path, result)
+    measurements = result["metrics"]
+    metric_map = {
+        "binder_interface_chemistry_total_delta_sasa_angstrom2": "interface_total_delta_sasa_angstrom2",
+        "binder_interface_chemistry_half_delta_sasa_angstrom2": "interface_buried_surface_area_half_delta_sasa_angstrom2",
+        "binder_interface_chemistry_binder_delta_sasa_angstrom2": "binder_delta_sasa_angstrom2",
+        "binder_interface_chemistry_target_delta_sasa_angstrom2": "target_delta_sasa_angstrom2",
+        "binder_interface_chemistry_hydrophobic_cs_buried_area_angstrom2": "hydrophobic_cs_buried_area_angstrom2",
+        "binder_interface_chemistry_hydrophobic_cs_buried_fraction": "hydrophobic_cs_buried_fraction",
+        "binder_interface_chemistry_buried_unpaired_polar_atom_count": "buried_unpaired_polar_atom_count",
+        "binder_interface_chemistry_interfacial_hydrogen_bond_count": "interfacial_hydrogen_bond_count",
+        "binder_interface_chemistry_contacting_heavy_atom_pair_count": "contacting_heavy_atom_pair_count",
+        "binder_interface_chemistry_contacting_residue_pair_count": "contacting_residue_pair_count",
+        "binder_interface_chemistry_binder_interface_residue_count": "binder_interface_residue_count",
+        "binder_interface_chemistry_target_interface_residue_count": "target_interface_residue_count",
+    }
+    metric_names = list(metric_map)
+    candidate = copy.deepcopy(selected[0])
+    candidate_metrics = dict(candidate.get("metrics") or {})
+    candidate_metrics.update({name: measurements[field] for name, field in metric_map.items()})
+    candidate_metrics["analysis_status"] = "measured"
+    candidate["metrics"] = candidate_metrics
+    raw = candidate.setdefault("raw_metadata", {})
+    raw["binder_interface_chemistry"] = result
+    raw["analysis_parameters"] = params
+    raw["measurement_provenance"] = {
+        **dict(raw.get("measurement_provenance") or {}),
+        "binder_interface_chemistry": {"method": METHOD, "method_version": METHOD_VERSION,
+            "parameters": params, "source": identity,
+            "result_artifact": str(result_path.relative_to(job.run_dir)),
+            "scientific_status": "measured"},
+    }
+    return _finish_metric_analysis(
+        job, [candidate], tool="binder_interface_chemistry_v1",
+        table_name="binder_interface_chemistry_metrics.csv", metric_names=metric_names,
+        required_metrics=["binder_interface_chemistry_total_delta_sasa_angstrom2"],
+        error_key="binder_interface_chemistry_error",
+    )
+
+
 def _safe_float(value: Any) -> float | None:
     return finite_number(value)
 

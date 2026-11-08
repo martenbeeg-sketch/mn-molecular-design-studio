@@ -1221,7 +1221,7 @@ def _saved_evaluation_artifacts(user: dict, observation: dict, structure: dict,
         return []
     item_dir = analysis_dir / item_id if item_id else analysis_dir
     results = []
-    for name in ("tag_fusion_suitability.json", "sequence_liability.json", "contacts.json", "interactions.csv",
+    for name in ("tag_fusion_suitability.json", "sequence_liability.json", "binder_interface_chemistry.json", "contacts.json", "interactions.csv",
                  "full_checks.csv", "report.json", "patch_metrics.json"):
         path = item_dir / name
         if not path.is_file():
@@ -1249,6 +1249,11 @@ def _saved_evaluation_artifacts(user: dict, observation: dict, structure: dict,
                                 "rows": payload.get("findings", []) if isinstance(payload, dict) else [],
                                 "payload": payload})
                 continue
+            elif name == "binder_interface_chemistry.json":
+                results.append({"name": name, "path": path,
+                                "rows": payload.get("residue_annotations", []) if isinstance(payload, dict) else [],
+                                "payload": payload})
+                continue
             else:
                 rows = [payload] if payload else []
         else:
@@ -1270,6 +1275,17 @@ def _saved_evaluation_artifacts(user: dict, observation: dict, structure: dict,
         if isinstance(payload, dict):
             results.append({"name": "sequence_liability.json", "path": liability_path,
                             "rows": payload.get("findings", []), "payload": payload})
+    interface_chemistry_path = analysis_dir / "binder_interface_chemistry.json"
+    if interface_chemistry_path.is_file():
+        already_loaded = any(
+            item.get("name") == "binder_interface_chemistry.json"
+            and Path(str(item.get("path") or "")).resolve() == interface_chemistry_path.resolve()
+            for item in results
+        )
+        payload = _read_json(interface_chemistry_path) if not already_loaded else None
+        if isinstance(payload, dict):
+            results.append({"name": "binder_interface_chemistry.json", "path": interface_chemistry_path,
+                            "rows": payload.get("residue_annotations", []), "payload": payload})
     return results
 
 
@@ -1473,9 +1489,47 @@ def _database_inspector_data(user: dict, record: dict, structure: dict, path: Pa
                         "residue_refs": [residue_ref], "selectors": [selector] if selector else [],
                         "raw": finding,
                     })
+        interface_chemistry_artifact = next((artifact for artifact in artifacts
+            if artifact.get("name") == "binder_interface_chemistry.json"
+            and isinstance(artifact.get("payload"), dict)), None)
+        interface_chemistry = (interface_chemistry_artifact.get("payload") if interface_chemistry_artifact
+                               else raw.get("binder_interface_chemistry"))
+        if evaluator == "binder_interface_chemistry_v1" and isinstance(interface_chemistry, dict):
+            source = interface_chemistry.get("source") if isinstance(interface_chemistry.get("source"), dict) else {}
+            roles = interface_chemistry.get("selected_chains") if isinstance(interface_chemistry.get("selected_chains"), dict) else {}
+            binder = [str(value) for value in roles.get("binder") or []]
+            target = [str(value) for value in roles.get("target") or []]
+            expected_model = str((structure.get("context") or {}).get("model_id")
+                                 or (structure.get("context") or {}).get("model_index")
+                                 or structure.get("model_index") or structure.get("id") or "")
+            if (str(source.get("molecule_id") or "") == str(record.get("id") or "")
+                    and str(source.get("structure_id") or "") == str(structure.get("id") or "")
+                    and str(source.get("structure_digest") or "") == current_digest
+                    and str(source.get("model_id") or "") == expected_model
+                    and binder and target and not (set(binder) & set(target)
+                    or (set(binder) | set(target)) - set(protein_chains))):
+                item["binder_interface_chemistry_result"] = interface_chemistry
+                for residue in interface_chemistry.get("residue_annotations") or []:
+                    if not isinstance(residue, dict):
+                        continue
+                    if not (residue.get("heavy_atom_contact_count") or residue.get("buried_unpaired_polar_atoms")
+                            or residue.get("hydrogen_bond_evidence_count")):
+                        continue
+                    chain_id = str(residue.get("chain_id") or "")
+                    selector = resolve_author_residue_selector(
+                        tracks, chain_id, residue.get("author_number"), str(residue.get("insertion_code") or ""),
+                    )
+                    residue_ref = f"{chain_id}:{residue.get('residue_name')}{residue.get('author_residue')}"
+                    evidence_rows.append({
+                        "id": f"binder_interface_chemistry:{residue_ref}:{descriptor.get('id')}",
+                        "evaluator": evaluator, "artifact": "binder_interface_chemistry.json",
+                        "label": f"Interface · {residue_ref} · {residue.get('side')}",
+                        "residue_refs": [residue_ref], "selectors": [selector] if selector else [],
+                        "raw": residue,
+                    })
         evaluations.append(item)
         for artifact in artifacts:
-            if artifact["name"] in {"tag_fusion_suitability.json", "sequence_liability.json", "reference_environment.json", "report.json", "patch_metrics.json"}:
+            if artifact["name"] in {"tag_fusion_suitability.json", "sequence_liability.json", "binder_interface_chemistry.json", "reference_environment.json", "report.json", "patch_metrics.json"}:
                 # These are summary measurements shown in their evaluator panel,
                 # not residue-level findings to attach to a Mol* selection.
                 continue
@@ -1821,12 +1875,72 @@ def _render_inspector_tracks(data: dict, viewer_key: str) -> None:
                 )
 
 
+def _render_inspector_interface_chemistry(items: list[dict], viewer_key: str) -> None:
+    """Show versioned interface chemistry values and exact author-numbered residue evidence."""
+    import pandas as pd
+
+    results = [(item, item.get("binder_interface_chemistry_result")) for item in items
+               if isinstance(item.get("binder_interface_chemistry_result"), dict)]
+    if not results:
+        st.info("No exact-structure BinderScope-style interface chemistry Evaluation is available.")
+        return
+    for item, result in results:
+        st.markdown(f"**{result.get('method')}** · Evaluation `{item['evaluation'].get('id')}`")
+        st.caption(f"Method {result.get('method_version')} · source molecule {result.get('source', {}).get('molecule_id')} · structure {result.get('source', {}).get('structure_id')} · model {result.get('source', {}).get('model_id')} · SHA-256 {str(result.get('source', {}).get('structure_digest') or '')[:16]}")
+        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        st.dataframe([{
+            "Two-side interface dSASA (Å²)": metrics.get("interface_total_delta_sasa_angstrom2"),
+            "Half ΔSASA BSA (Å²)": metrics.get("interface_buried_surface_area_half_delta_sasa_angstrom2"),
+            "C/S buried area (Å²)": metrics.get("hydrophobic_cs_buried_area_angstrom2"),
+            "C/S share of ΔSASA": metrics.get("hydrophobic_cs_buried_fraction"),
+            "Buried unpaired polar atoms": metrics.get("buried_unpaired_polar_atom_count"),
+            "Interfacial H-bond geometry": metrics.get("interfacial_hydrogen_bond_count"),
+            "Residue-pair contacts": metrics.get("contacting_residue_pair_count"),
+        }], hide_index=True, use_container_width=True)
+        residue_rows = [row for row in result.get("residue_annotations") or [] if isinstance(row, dict)]
+        if residue_rows:
+            st.markdown("##### Per-residue burial and contact evidence")
+            st.dataframe([{
+                "Side": row.get("side"), "Chain": row.get("chain_id"), "Residue": f"{row.get('residue_name')}{row.get('author_residue')}",
+                "Sequence AA": row.get("amino_acid"), "ΔSASA (Å²)": row.get("buried_sasa_angstrom2"),
+                "Complex SASA (Å²)": row.get("complex_sasa_angstrom2"), "Heavy-atom contacts": row.get("heavy_atom_contact_count"),
+                "Partner residues": ", ".join(row.get("partner_residues") or []),
+                "Buried unpaired polar atoms": len(row.get("buried_unpaired_polar_atoms") or []),
+                "H-bond evidence": row.get("hydrogen_bond_evidence_count"),
+            } for row in residue_rows], hide_index=True, use_container_width=True)
+            highlight_rows = [row for row in residue_rows if row.get("selector") and
+                              (row.get("heavy_atom_contact_count") or row.get("buried_unpaired_polar_atoms")
+                               or row.get("hydrogen_bond_evidence_count"))]
+            if highlight_rows:
+                key = f"{viewer_key}-interface-chemistry-residue"
+                labels = {f"{row['chain_id']}:{row['residue_name']}{row['author_residue']} · {row['side']}": row["selector"]
+                          for row in highlight_rows}
+                selected = st.selectbox("Interface residue to highlight in Mol*", list(labels), key=key)
+                st.button("Highlight interface residue", key=f"{viewer_key}-interface-chemistry-highlight",
+                          on_click=_select_inspector_evidence,
+                          args=(f"{viewer_key}-inspector-highlights", [labels[selected]]))
+        hbond_rows = [row for row in result.get("hydrogen_bonds") or [] if isinstance(row, dict)]
+        if hbond_rows:
+            st.markdown("##### Interfacial hydrogen-bond geometry")
+            st.dataframe([{
+                "Donor": f"{row.get('donor', {}).get('chain_id')}:{row.get('donor', {}).get('residue_name')}{row.get('donor', {}).get('author_number')} {row.get('donor', {}).get('atom')}",
+                "Acceptor": f"{row.get('acceptor', {}).get('chain_id')}:{row.get('acceptor', {}).get('residue_name')}{row.get('acceptor', {}).get('author_number')} {row.get('acceptor', {}).get('atom')}",
+                "D–A (Å)": row.get("donor_acceptor_distance_angstrom"),
+                "H–A (Å)": row.get("hydrogen_acceptor_distance_angstrom"),
+                "D–H–A (°)": row.get("donor_hydrogen_acceptor_angle_degrees"),
+                "Evidence basis": row.get("evidence_basis"),
+            } for row in hbond_rows], hide_index=True, use_container_width=True)
+        with st.expander("Method parameters, evidence basis and limitations"):
+            st.json({"parameters": result.get("parameters"), "hydrogen_bond_basis_counts": metrics.get("interfacial_hydrogen_bond_evidence_basis_counts"),
+                     "assumptions": result.get("methodological_assumptions"), "attribution": result.get("attribution")})
+
+
 def _render_database_inspector(user: dict, data: dict, viewer_key: str, *, record: dict,
                                structure: dict, components: list[dict], model_id: str,
                                reference_view_context: dict | None = None) -> None:
     items = data["evaluations"]
     evaluators = {item["evaluator"] for item in items}
-    interface_evaluators = {"biotite_interface", "rosetta_metrics", "ipsae", "plip", "pandamap"}
+    interface_evaluators = {"biotite_interface", "rosetta_metrics", "ipsae", "plip", "pandamap", "binder_interface_chemistry_v1"}
     surface_evaluators = {"pep_patch", "posebusters"}
     tag_fusion_evaluators = {"tag_fusion_suitability", "tag_fusion_context"}
     liability_evaluators = {"sequence_liability"}
@@ -1834,6 +1948,8 @@ def _render_database_inspector(user: dict, data: dict, viewer_key: str, *, recor
     panel_specs = []
     if evaluators & interface_evaluators:
         panel_specs.append(("Interface", "interface"))
+    if any(isinstance(item.get("binder_interface_chemistry_result"), dict) for item in items):
+        panel_specs.append(("Interface chemistry", "interface_chemistry"))
     if data["confidence"]:
         panel_specs.append(("Confidence", "confidence"))
     if evaluators & surface_evaluators or ligand_present:
@@ -1857,6 +1973,8 @@ def _render_database_inspector(user: dict, data: dict, viewer_key: str, *, recor
         with tab:
             if kind == "interface":
                 _render_inspector_measurements(items, evaluators=interface_evaluators)
+            elif kind == "interface_chemistry":
+                _render_inspector_interface_chemistry(items, viewer_key)
             elif kind == "confidence":
                 for item in data["confidence"]:
                     st.markdown(f"**{item['evaluator']}** · `{item['evaluation'].get('id')}`")
@@ -2031,7 +2149,8 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
              "analysis.reference_environment": "Reference-frame steric and environmental context",
              "analysis.tag_fusion_suitability": "Tag and Fusion Suitability",
              "analysis.tag_fusion_context": "Reference-context Tag and Fusion Suitability",
-             "analysis.sequence_liability": "Sequence and Developability Liabilities"}.get(workflow_id, workflow_id)
+             "analysis.sequence_liability": "Sequence and Developability Liabilities",
+             "analysis.binder_interface_chemistry": "BinderScope-style Interface Surface & Chemistry"}.get(workflow_id, workflow_id)
     ligand_workflow = workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
     if workflow_id in {"analysis.plip", "analysis.pandamap"}:
         st.caption("Interaction analysis · reports contacts and interaction classes for the selected ligand pose and receptor.")
@@ -2063,7 +2182,8 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
                       "analysis.reference_environment": "reference_environment_metrics.csv",
                       "analysis.tag_fusion_suitability": "tag_fusion_suitability_metrics.csv",
                       "analysis.tag_fusion_context": "tag_fusion_suitability_metrics.csv",
-                      "analysis.sequence_liability": "sequence_liability_metrics.csv"}[workflow_id]
+                      "analysis.sequence_liability": "sequence_liability_metrics.csv",
+                      "analysis.binder_interface_chemistry": "binder_interface_chemistry_metrics.csv"}[workflow_id]
         metrics_path = run_dir / "artifacts" / "analysis" / table_name
         if status in {"completed", "succeeded"} and metrics_path.is_file():
             try:
@@ -2137,12 +2257,19 @@ def _render_contextual_results(user: dict, evaluation: dict, *, workflow_id: str
                 st.markdown(f"**Assessment status:** `{result.get('assessment_status', 'unknown')}` · **Method:** `{result.get('method', 'unavailable')}`")
                 with st.expander("Residue-linked findings, measurements and limitations", expanded=True):
                     st.json(result)
+        if workflow_id == "analysis.binder_interface_chemistry" and status in {"completed", "succeeded"}:
+            result = _read_json(run_dir / "artifacts" / "analysis" / "binder_interface_chemistry.json")
+            if result:
+                st.dataframe([result.get("metrics", {})], hide_index=True, use_container_width=True)
+                with st.expander("Residue annotations, hydrogen-bond geometry, settings and assumptions", expanded=True):
+                    st.json(result)
     evaluator = {"analysis.ipsae": "ipsae", "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
                  "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters",
                  "analysis.reference_environment": "reference_environment",
                  "analysis.tag_fusion_suitability": "tag_fusion_suitability",
                  "analysis.tag_fusion_context": "tag_fusion_context",
-                 "analysis.sequence_liability": "sequence_liability"}.get(workflow_id, workflow_id)
+                 "analysis.sequence_liability": "sequence_liability",
+                 "analysis.binder_interface_chemistry": "binder_interface_chemistry_v1"}.get(workflow_id, workflow_id)
     evaluation_id = _analysis_evaluation_id(run_dir, user, source_candidate_id, evaluator=evaluator)
     if evaluation_id:
         st.success(f"Saved Evaluation · {evaluation_id}")
@@ -2295,7 +2422,8 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
             "analysis.reference_environment": "reference_environment",
             "analysis.tag_fusion_suitability": "tag_fusion_suitability",
             "analysis.tag_fusion_context": "tag_fusion_context",
-            "analysis.sequence_liability": "sequence_liability"}.get(workflow_id)
+            "analysis.sequence_liability": "sequence_liability",
+            "analysis.binder_interface_chemistry": "binder_interface_chemistry_v1"}.get(workflow_id)
     if not tool:
         return []
     rows = search_jobs(tools=[tool], task_group="analysis", limit=1000, sort_by="active_desc",
@@ -3398,7 +3526,7 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
     for workflow_id in ("analysis.biotite_interface", "analysis.rosetta", "analysis.ipsae", "analysis.pep_patch",
                         "analysis.plip", "analysis.pandamap", "analysis.posebusters",
                         "analysis.reference_environment", "analysis.tag_fusion_suitability", "analysis.tag_fusion_context",
-                        "analysis.sequence_liability"):
+                        "analysis.sequence_liability", "analysis.binder_interface_chemistry"):
         try:
             schemas[workflow_id] = workflow_schema(workflow_id) if workflow_schema else None
             if not schemas[workflow_id]:
@@ -3433,6 +3561,8 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
                                       structure_path=path, structure_context=context, structure_components=components,
                                       viewer_key=f"complex-analysis-db-viewer-{structure['id']}")
         show_ppi("analysis.biotite_interface", interface_params, schema_errors.get("analysis.biotite_interface", ""))
+        st.caption("This fixed-method profile uses 960-point Shrake–Rupley surface sampling and documented geometric polar cutoffs; its method and assumptions are saved with the Evaluation.")
+        show_ppi("analysis.binder_interface_chemistry", {}, schema_errors.get("analysis.binder_interface_chemistry", ""))
         show_ppi("analysis.rosetta", {}, schema_errors.get("analysis.rosetta", "") or (
             "The registered Rosetta workflow currently accepts exactly one chain in each group."
             if len(binder_chains) != 1 or len(target_chains) != 1 else ""))
@@ -3807,7 +3937,8 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
              "analysis.reference_environment": "Reference-frame steric and environmental context",
              "analysis.tag_fusion_suitability": "Tag and Fusion Suitability",
              "analysis.tag_fusion_context": "Reference-context Tag and Fusion Suitability",
-             "analysis.sequence_liability": "Sequence and Developability Liabilities"}.get(workflow_id, workflow_id)
+             "analysis.sequence_liability": "Sequence and Developability Liabilities",
+             "analysis.binder_interface_chemistry": "BinderScope-style Interface Surface & Chemistry"}.get(workflow_id, workflow_id)
     st.markdown(f"##### {title}")
     if not schema:
         st.info(unavailable or "The registered workflow schema is unavailable.")
