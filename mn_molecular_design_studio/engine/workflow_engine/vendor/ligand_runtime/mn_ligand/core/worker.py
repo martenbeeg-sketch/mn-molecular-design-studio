@@ -1042,6 +1042,27 @@ def execute_job(
             }
         )
         _write_json(job.run_dir / "result.json", result)
+    from mn_molecular_design_studio.engine.workflow_engine.core.artifact_collection import validate_run_artifacts
+
+    artifact_validation = validate_run_artifacts(job.run_dir, result)
+    metadata["artifact_validation"] = artifact_validation
+    metadata["artifact_collection_complete"] = artifact_validation["status"] == "complete"
+    if artifact_validation["status"] != "complete":
+        missing = artifact_validation["required_missing"]
+        detail = "; ".join(item["reason"] for item in missing[:5])
+        result.update(
+            {
+                "success": False,
+                "artifact_validation": artifact_validation,
+                "error": "Required scientific output is not accessible in persistent Results: " + detail,
+            }
+        )
+        metadata["artifact_collection_error"] = result["error"]
+        _write_json(job.run_dir / "result.json", result)
+    else:
+        result.setdefault("artifact_validation", artifact_validation)
+        _write_json(job.run_dir / "result.json", result)
+    _write_json(metadata_path, metadata)
     native_success = result.get("success") if result else None
     if cancelled:
         status = "cancelled"

@@ -24,6 +24,9 @@ from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths impor
     resolve_stored_path,
     store_managed_paths,
 )
+from mn_molecular_design_studio.engine.workflow_engine.core.artifact_collection import (
+    materialize_candidate_paths,
+)
 
 
 CANDIDATE_SCHEMA_VERSION = "molecular-design-studio.candidate.v1"
@@ -810,6 +813,11 @@ def _with_hotspot_ca_contact_metrics(run_dir: Path, candidate: dict[str, Any]) -
 
 
 def write_candidates(run_dir: Path, source_tool: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Container paths such as /work/artifacts/... are valid inputs/outputs
+    # inside the running tool. Translate and persist them only when collecting
+    # the scientific candidates into Results; keep the original path in
+    # raw_metadata for exact execution provenance.
+    candidates = [materialize_candidate_paths(run_dir, candidate) for candidate in candidates]
     normalized = [
         normalize_candidate(
             _with_binder_secondary_structure_metrics(

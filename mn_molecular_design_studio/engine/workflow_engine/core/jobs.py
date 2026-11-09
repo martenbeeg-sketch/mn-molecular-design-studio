@@ -603,7 +603,7 @@ def mark_internal_job(
     write_json(run_dir / "metadata.json", metadata)
 
 
-def update_status(run_dir: Path, status: str, **extra: object) -> None:
+def update_status(run_dir: Path, status: str, *, artifact_validation: dict | None = None, **extra: object) -> None:
     metadata = read_json(run_dir / "metadata.json")
     if status == "running":
         input_payload = read_json(run_dir / "input.json")
@@ -613,6 +613,20 @@ def update_status(run_dir: Path, status: str, **extra: object) -> None:
         if queue_resource and str(metadata.get("scheduler_backend") or "") != "mn-compute-scheduler":
             _acquire_resource_lock(run_dir, queue_resource)
             metadata = read_json(run_dir / "metadata.json")
+    if status == "completed" or artifact_validation is not None:
+        if artifact_validation is None:
+            from mn_molecular_design_studio.engine.workflow_engine.core.artifact_collection import validate_run_artifacts
+            artifact_validation = validate_run_artifacts(run_dir, read_json(run_dir / "result.json"))
+        metadata["artifact_validation"] = artifact_validation
+        metadata["artifact_collection_complete"] = artifact_validation.get("status") == "complete"
+        if status == "completed" and artifact_validation.get("status") != "complete":
+            status = "failed"
+            missing = artifact_validation.get("required_missing") or []
+            detail = "; ".join(str(item.get("reason") or "Required artifact missing") for item in missing[:5])
+            metadata["artifact_collection_error"] = "Required scientific output is not accessible in persistent Results: " + detail
+            result = read_json(run_dir / "result.json")
+            result.update({"success": False, "artifact_validation": artifact_validation, "error": metadata["artifact_collection_error"]})
+            write_json(run_dir / "result.json", result)
     metadata.update(extra)
     metadata["status"] = status
     if status == "running":
@@ -637,6 +651,7 @@ def finish_job(run_dir: Path, success: bool, result: dict) -> None:
             "worker_exception_type",
             "cancel_reason",
             "pause_reason",
+            "artifact_collection_error",
         ):
             metadata.pop(key, None)
     normalized = {
@@ -650,6 +665,21 @@ def finish_job(run_dir: Path, success: bool, result: dict) -> None:
     }
     for key, value in result.items():
         normalized.setdefault(key, value)
+    from mn_molecular_design_studio.engine.workflow_engine.core.artifact_collection import validate_run_artifacts
+
+    artifact_validation = validate_run_artifacts(run_dir, normalized)
+    normalized["artifact_validation"] = artifact_validation
+    metadata["artifact_validation"] = artifact_validation
+    metadata["artifact_collection_complete"] = artifact_validation["status"] == "complete"
+    if success and artifact_validation["status"] != "complete":
+        missing = artifact_validation["required_missing"]
+        detail = "; ".join(item["reason"] for item in missing[:5])
+        if len(missing) > 5:
+            detail += f"; and {len(missing) - 5} additional required artifact(s)"
+        success = False
+        normalized["success"] = False
+        normalized["error"] = "Required scientific output is not accessible in persistent Results: " + detail
+        metadata["artifact_collection_error"] = normalized["error"]
     warning = derive_job_warning(metadata, input_payload, normalized)
     if warning:
         metadata["warning"] = warning
@@ -659,7 +689,7 @@ def finish_job(run_dir: Path, success: bool, result: dict) -> None:
     # errors and warnings remain in metadata after a recovered job succeeds.
     write_json(run_dir / "metadata.json", metadata)
     write_json(run_dir / "result.json", normalized)
-    update_status(run_dir, "completed" if success else "failed")
+    update_status(run_dir, "completed" if success else "failed", artifact_validation=artifact_validation)
     _release_resource_lock(run_dir)
     from mn_molecular_design_studio.molecular_database_ingest import record_completed_run
     record_completed_run(run_dir)

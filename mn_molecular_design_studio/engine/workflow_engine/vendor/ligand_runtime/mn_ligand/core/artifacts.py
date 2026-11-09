@@ -51,6 +51,7 @@ class ArtifactRef:
     size_bytes: int | None = None
     sha256: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    required: bool = True
 
     def __post_init__(self) -> None:
         relative_path = _relative_artifact_path(self.path)
@@ -72,6 +73,7 @@ class ArtifactRef:
         role: str = "",
         label: str = "",
         metadata: dict[str, Any] | None = None,
+        required: bool = True,
         checksum: bool = True,
     ) -> ArtifactRef:
         resolved_run_dir = run_dir.resolve()
@@ -93,6 +95,7 @@ class ArtifactRef:
             size_bytes=resolved_path.stat().st_size,
             sha256=_sha256(resolved_path) if checksum else "",
             metadata=dict(metadata or {}),
+            required=bool(required),
         )
 
     @classmethod
@@ -108,6 +111,7 @@ class ArtifactRef:
             size_bytes=payload.get("size_bytes"),
             sha256=str(payload.get("sha256") or ""),
             metadata=dict(payload.get("metadata") or {}),
+            required=bool(payload.get("required", True)),
         )
 
     def resolve(self, run_dir: Path, *, must_exist: bool = False) -> Path | None:
@@ -138,6 +142,8 @@ class ArtifactRef:
         ):
             if value not in ("", None, {}):
                 payload[key] = value
+        if not self.required:
+            payload["required"] = False
         return payload
 
 
