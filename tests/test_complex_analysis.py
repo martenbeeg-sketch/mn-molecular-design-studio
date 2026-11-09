@@ -212,48 +212,60 @@ def test_biotite_contact_residues_keep_saved_auth_chain_numbering(tmp_path):
     assert combined == ["A:10", "A:8", "A:9", "B:42"]
 
 
-def test_completed_results_evaluation_reopens_with_same_structure_viewer_context(tmp_path, monkeypatch):
-    from mn_molecular_design_studio import complex_analysis_ui as workspace
+def test_completed_results_inspector_opens_registered_cross_run_structure_without_catalog_scan(tmp_path, monkeypatch):
+    from mn_molecular_design_studio import auth, complex_analysis_ui as workspace, job_catalog, runtime
 
     runs_root = tmp_path / "runs"
-    run_dir = runs_root / "refolding-validation" / "source-1"
-    (run_dir / "artifacts" / "normalized_candidates").mkdir(parents=True)
-    (run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl").write_text("{}\n")
-    path = run_dir / "artifacts" / "models" / "complex.pdb"
-    path.parent.mkdir(parents=True)
-    path.write_bytes(_complex_pdb("protein"))
+    source = runs_root / "campaign" / "campaign-1"
+    artifact = runs_root / "refolding-validation" / "prediction-1"
+    structure = artifact / "artifacts" / "models" / "model.pdb"
+    structure.parent.mkdir(parents=True)
+    structure.write_bytes(_complex_pdb("protein"))
+    candidate = {
+        "candidate_id": "candidate-1", "model_index": "model-3",
+        "complex_pdb": "runs:///refolding-validation/prediction-1/artifacts/models/model.pdb",
+        "binder_chains": ["B"], "target_chains": ["A"], "raw_metadata": {},
+    }
+    candidate_file = source / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+    candidate_file.parent.mkdir(parents=True)
+    candidate_file.write_text(json.dumps(candidate) + "\\n")
+    (source / "metadata.json").write_text(json.dumps({"tool": "boltz2", "project_id": "project-1"}))
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(runs_root))
-    job = {"task_group": "refolding-validation", "run_id": "source-1", "run_dir": str(run_dir),
-           "project_id": "project-1", "status": "completed", "tool": "boltz2"}
-    candidate = {"candidate_id": "candidate-1", "model_index": "model-3",
-                 "binder_chains": ["B"], "target_chains": ["A"], "raw_metadata": {}}
-    selected = {"path": path, "relative_path": "models/complex.pdb", "artifact_path": str(path),
-                "candidate_id": "candidate-1", "label": "complex model", "candidate": candidate}
-    current = {"status": "completed", "run_dir": run_dir, "manifest": {}, "metadata": {},
-               "selected_item": {"candidate_id": "candidate-1"}, "run_id": "analysis-1"}
-    captured = {}
-
-    monkeypatch.setattr(workspace, "_accessible_result_jobs", lambda user: [job])
-    monkeypatch.setattr(workspace, "_job_structure_options", lambda user, row: [selected])
-    monkeypatch.setattr(workspace, "_show_structure", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runtime, "runs_root", lambda: runs_root)
+    access = {
+        ("campaign", "campaign-1"): {"owner_id": USER["id"], "project_id": "project-1", "run_relative_path": "campaign/campaign-1"},
+        ("refolding-validation", "prediction-1"): {"owner_id": USER["id"], "project_id": "project-1", "run_relative_path": "refolding-validation/prediction-1"},
+    }
+    monkeypatch.setattr(job_catalog, "get_job_access_record", lambda *key: access.get(tuple(key)))
+    monkeypatch.setattr(job_catalog, "job_artifacts", lambda *key: [{"relative_path": "artifacts/models/model.pdb"}])
+    monkeypatch.setattr(auth, "can_access_job", lambda user, record: user["id"] == record["owner_id"])
+    shown = []
+    monkeypatch.setattr(workspace, "_show_structure", lambda path, context, components, **kwargs: shown.append((path, context, kwargs)))
     monkeypatch.setattr(workspace, "_show_component_groups", lambda *args, **kwargs: None)
-    monkeypatch.setattr(workspace, "_show_human_review", lambda *args, **kwargs: None)
-    monkeypatch.setattr(workspace, "_matching_biotite_jobs", lambda *args, **kwargs: [current])
-    monkeypatch.setattr(workspace, "_analysis_evaluation_id", lambda *args, **kwargs: "evaluation-saved")
-    monkeypatch.setattr(workspace, "_render_biotite_results", lambda *args, **kwargs: captured.update(kwargs))
 
-    script = '''\
-from mn_molecular_design_studio.complex_analysis_ui import _render_results_source
-_render_results_source({"id": "user-1"}, {},
-    workflow_schema=lambda workflow_id: {"parameters": [{"name": "contact_distance", "default": 5.0}]},
-    project_selector=lambda *args, **kwargs: "project-1", submit=None)
+    script = f'''\\
+import streamlit as st
+from mn_molecular_design_studio.complex_analysis_ui import render_complex_analysis_workspace
+st.session_state["complex-analysis-open"] = {{
+    "kind": "results", "task_group": "campaign", "run_id": "campaign-1",
+    "artifact_task_group": "refolding-validation", "artifact_run_id": "prediction-1",
+    "candidate_id": "candidate-1", "candidate": {candidate!r},
+    "model_index": "model-3", "relative_path": "runs:///refolding-validation/prediction-1/artifacts/models/model.pdb",
+    "structure_sha256": {hashlib.sha256(structure.read_bytes()).hexdigest()!r},
+}}
+render_complex_analysis_workspace({USER!r})
 '''
+    monkeypatch.setattr(workspace, "_accessible_result_jobs", lambda *_: (_ for _ in ()).throw(AssertionError("catalog scan")))
     app = AppTest.from_string(script, default_timeout=10).run()
 
     assert not app.exception
-    assert captured["viewer_key"] == "complex-analysis-results-viewer-refolding-validation/source-1-models/complex.pdb"
-    assert captured["structure_path"] == path
-
+    assert shown and shown[0][0] == structure
+    assert shown[0][1] == {}
+    captions = [element.value for element in app.caption]
+    assert any("campaign/campaign-1" in value for value in captions)
+    assert any("refolding-validation/prediction-1" in value for value in captions)
+    assert any("candidate-1 · model-3" in value for value in captions)
+    assert any(hashlib.sha256(structure.read_bytes()).hexdigest() in value for value in captions)
 
 def test_database_workspace_selects_exact_model_evaluation_and_shows_imported_structure(tmp_path, monkeypatch):
     database = _isolated_database(tmp_path, monkeypatch)
@@ -309,118 +321,30 @@ render_complex_analysis_workspace({USER!r})
     assert any("Group 1: dna chain D" in item.value for item in app.caption)
 
 
-def test_results_workspace_displays_generic_predicted_complex_and_saved_confidence(tmp_path, monkeypatch):
+def test_complex_analysis_default_page_is_database_only_and_does_not_discover_results(tmp_path, monkeypatch):
     database = _isolated_database(tmp_path, monkeypatch)
-    structure_path = tmp_path / "predicted-complex.pdb"
-    structure_path.write_bytes(_complex_pdb("small_molecule"))
-    candidate = {
-        "candidate_id": "prediction-1",
-        "model_index": 1,
-        "stage": "complex_refolding",
-        "source_tool": "boltz2",
-        "metrics": {"iptm": 0.76},
-        "raw_metadata": {"confidence_outputs": {"ptm": 0.81, "plddt": 88.4}},
-    }
-    job = {"task_group": "boltz2", "run_id": "predicted-1", "status": "completed", "tool": "boltz2"}
-    option = {
-        "path": structure_path,
-        "relative_path": "predicted-complex.pdb",
-        "candidate": candidate,
-        "candidate_id": candidate["candidate_id"],
-        "label": structure_path.name,
-    }
-    shown = []
-
     from mn_molecular_design_studio import complex_analysis_ui, molecular_database
 
+    def forbidden_results_discovery(*_args, **_kwargs):
+        raise AssertionError("normal Complex Analysis page must not discover Results jobs")
+
+    monkeypatch.setattr(complex_analysis_ui, "_accessible_result_jobs", forbidden_results_discovery)
     monkeypatch.setattr(molecular_database, "MolecularDatabase", lambda: database)
-    monkeypatch.setattr(complex_analysis_ui, "_accessible_result_jobs", lambda user: [job])
-    monkeypatch.setattr(complex_analysis_ui, "_job_structure_options", lambda user, selected_job: [option])
-    monkeypatch.setattr(complex_analysis_ui, "_show_structure", lambda path, context, components, **kwargs: shown.append(path))
-    script = f'''\
+    script = f'''\\
 import streamlit as st
-from mn_molecular_design_studio.complex_analysis_ui import render_complex_analysis_workspace
+from mn_molecular_design_studio.complex_analysis_ui import initialize_workspace_view, render_complex_analysis_workspace
 st.session_state["complex-analysis-source-kind"] = "Results"
+initialize_workspace_view(st.session_state)
 render_complex_analysis_workspace({USER!r})
 '''
     app = AppTest.from_string(script, default_timeout=10).run()
 
     assert not app.exception
-    assert shown == [structure_path]
-    assert any("0.76" in json.dumps(item.value) and "0.81" in json.dumps(item.value) for item in app.json)
-
-
-def test_results_workspace_submits_exact_biotite_model_and_component_groups(tmp_path, monkeypatch):
-    database = _isolated_database(tmp_path, monkeypatch)
-    from mn_molecular_design_studio import complex_analysis_ui, molecular_database
-
-    source_run = tmp_path / "workspace" / "runs" / "prediction" / "source-job"
-    source_run.mkdir(parents=True)
-    structure_path = source_run / "model-2.pdb"
-    structure_path.write_bytes(_complex_pdb("protein"))
-    candidate = {
-        "candidate_id": "generic-complex-42", "model_index": 2,
-        "stage": "complex_refolding", "source_tool": "generic-predictor",
-        "complex_pdb": "model-2.pdb", "binder_chains": ["B"], "target_chains": ["A"],
-        "metrics": {"confidence": 0.71}, "raw_metadata": {"model_index": 2},
-    }
-    candidate_file = source_run / "artifacts" / "normalized_candidates" / "candidates.jsonl"
-    candidate_file.parent.mkdir(parents=True)
-    candidate_file.write_text(json.dumps(candidate) + "\n")
-    (source_run / "metadata.json").write_text(json.dumps({"tool": "generic-predictor", "status": "completed"}))
-    (source_run / "input.json").write_text(json.dumps({"tool": "generic-predictor", "params": {}}))
-    (source_run / "result.json").write_text(json.dumps({"success": True, "metrics": {}}))
-    (source_run / "molecular_design_studio.json").write_text(json.dumps({"studio_owner_id": USER["id"], "project_id": "test-project"}))
-    job = {"task_group": "prediction", "run_id": "source-job", "status": "completed",
-           "tool": "generic-predictor", "run_dir": str(source_run), "project_id": "test-project"}
-    option = {"path": structure_path, "relative_path": "model-2.pdb", "candidate": candidate,
-              "candidate_id": candidate["candidate_id"], "label": "Model 2"}
-
-    monkeypatch.setattr(molecular_database, "MolecularDatabase", lambda: database)
-    monkeypatch.setattr(complex_analysis_ui, "_accessible_result_jobs", lambda user: [job])
-    monkeypatch.setattr(complex_analysis_ui, "_job_structure_options", lambda user, selected_job: [option])
-    monkeypatch.setattr(complex_analysis_ui, "_show_structure", lambda *args, **kwargs: None)
-    monkeypatch.setattr(complex_analysis_ui, "_show_human_review", lambda *args, **kwargs: None)
-    monkeypatch.setattr(complex_analysis_ui, "_matching_biotite_jobs", lambda *args, **kwargs: [])
-    submitted = []
-
-    def submit(schema, workflow, parameters, project, settings, title):
-        submitted.append((schema, workflow, dict(parameters), project, settings, title))
-        import streamlit as st
-        st.session_state["last_submitted_job"] = {"run_id": "analysis-1"}
-
-    key = hashlib.sha256(b"prediction/source-job:model-2.pdb").hexdigest()[:14]
-    script = f'''\
-import streamlit as st
-from mn_molecular_design_studio.complex_analysis_ui import render_complex_analysis_workspace
-st.session_state["complex-analysis-source-kind"] = "Results"
-render_complex_analysis_workspace(
-    {USER!r},
-    workflow_schema=lambda workflow_id: {{"workflow": workflow_id, "schema_version": 1, "parameters": [{{"name": "contact_distance", "default": 5.0}}]}},
-    project_selector=lambda prefix, **kwargs: "test-project",
-    submit={submit!r},
-)
-'''
-    # AppTest executes the submitted callback in its own script namespace.
-    script = script.replace(f"submit={submit!r}", "submit=submit")
-    script = script.replace("render_complex_analysis_workspace(\n", "def submit(schema, workflow, parameters, project, settings, title):\n    st.session_state['submitted_parameters'] = parameters\n    st.session_state['submitted_workflow'] = workflow\n    st.session_state['last_submitted_job'] = {'run_id': 'analysis-1'}\nrender_complex_analysis_workspace(\n")
-    app = AppTest.from_string(script, default_timeout=10).run()
-
-    assert not app.exception
-    run_button = app.button(key=f"complex-analysis-run-biotite-{key}")
-    assert run_button is not None and not run_button.disabled
-    run_button.click().run()
-    assert not app.exception
-    assert app.session_state["submitted_workflow"] == "analysis.biotite_interface"
-    parameters = app.session_state["submitted_parameters"]
-    assert parameters == {
-        "candidate_ids": ["generic-complex-42"],
-        "selected_structure_path": str(structure_path.resolve()),
-        "selected_model_id": "2",
-        "binder_chains": ["B"], "target_chains": ["A"], "contact_distance": 5.0,
-        "source_job": "prediction/source-job",
-    }
-
+    assert any("Design Explorer" in element.value for element in app.subheader)
+    assert any("Select Database designs" in element.value for element in app.markdown)
+    assert not any(element.label == "Completed Results job" for element in app.selectbox)
+    assert app.session_state["complex-analysis-workspace-view"] == "database"
+    assert "complex-analysis-source-kind" not in app.session_state
 
 def test_biotite_matching_reuses_only_accessible_exact_analysis_jobs(monkeypatch, tmp_path):
     from mn_molecular_design_studio import complex_analysis_ui
@@ -991,178 +915,6 @@ def test_database_review_annotations_persist_separately_and_follow_record_access
             status="Predicted binder", note="Not a supported review status.",
         )
 
-
-@pytest.mark.parametrize(
-    ("workflow_id", "button_suffix"),
-    [
-        ("analysis.rosetta", "analysis-rosetta"),
-        ("analysis.ipsae", "analysis-ipsae"),
-        ("analysis.pep_patch", "analysis-pep_patch"),
-    ],
-)
-def test_contextual_workflows_submit_selected_pose_through_existing_launcher(
-    tmp_path, monkeypatch, workflow_id, button_suffix,
-):
-    database = _isolated_database(tmp_path, monkeypatch)
-    from mn_molecular_design_studio import complex_analysis_ui, molecular_database
-
-    source_run = tmp_path / "workspace" / "runs" / "prediction" / "source-job"
-    source_run.mkdir(parents=True)
-    structure_path = source_run / "model-2.pdb"
-    structure_path.write_bytes(_complex_pdb("protein"))
-    candidate = {
-        "candidate_id": "generic-complex-42", "model_index": 2,
-        "stage": "complex_refolding", "source_tool": "generic-predictor",
-        "complex_pdb": "model-2.pdb", "binder_chains": ["B"], "target_chains": ["A"],
-        "raw_metadata": {"model_index": 2},
-    }
-    candidate_file = source_run / "artifacts" / "normalized_candidates" / "candidates.jsonl"
-    candidate_file.parent.mkdir(parents=True)
-    candidate_file.write_text(json.dumps(candidate) + "\n")
-    (source_run / "metadata.json").write_text(json.dumps({"tool": "generic-predictor", "status": "completed"}))
-    (source_run / "input.json").write_text(json.dumps({"tool": "generic-predictor", "params": {}}))
-    (source_run / "result.json").write_text(json.dumps({"success": True, "metrics": {}}))
-    (source_run / "molecular_design_studio.json").write_text(json.dumps({"studio_owner_id": USER["id"], "project_id": "test-project"}))
-    job = {"task_group": "prediction", "run_id": "source-job", "status": "completed",
-           "tool": "generic-predictor", "run_dir": str(source_run), "project_id": "test-project"}
-    option = {"path": structure_path, "relative_path": "model-2.pdb", "candidate": candidate,
-              "candidate_id": candidate["candidate_id"], "label": "Model 2"}
-
-    monkeypatch.setattr(molecular_database, "MolecularDatabase", lambda: database)
-    monkeypatch.setattr(complex_analysis_ui, "_accessible_result_jobs", lambda user: [job])
-    monkeypatch.setattr(complex_analysis_ui, "_job_structure_options", lambda user, selected_job: [option])
-    monkeypatch.setattr(complex_analysis_ui, "_show_structure", lambda *args, **kwargs: None)
-    monkeypatch.setattr(complex_analysis_ui, "_show_human_review", lambda *args, **kwargs: None)
-    monkeypatch.setattr(complex_analysis_ui, "_matching_biotite_jobs", lambda *args, **kwargs: [])
-    monkeypatch.setattr(complex_analysis_ui, "_matching_contextual_jobs", lambda *args, **kwargs: [])
-
-    key = hashlib.sha256(b"prediction/source-job:model-2.pdb").hexdigest()[:14]
-    script = f'''\
-import streamlit as st
-from mn_molecular_design_studio.complex_analysis_ui import render_complex_analysis_workspace
-def schema_provider(workflow_id):
-    names = {{
-        "analysis.biotite_interface": [{{"name":"contact_distance", "default":5.0}}],
-        "analysis.rosetta": [{{"name":"nprocs", "default":4}}],
-        "analysis.ipsae": [{{"name":"pae_cutoff", "default":10.0}}, {{"name":"dist_cutoff", "default":10.0}},
-            {{"name":"ipdae_contact_cutoff", "default":8.0}}, {{"name":"structure_contact_cutoff", "default":4.0}},
-            {{"name":"hotspot_contact_cutoff", "default":5.0}}],
-        "analysis.pep_patch": [{{"name":"ph", "default":7.4}}],
-    }}
-    return {{"workflow":workflow_id,"schema_version":1,"parameters":names[workflow_id]}}
-def submit(schema, workflow, parameters, project, settings, title):
-    st.session_state["submitted_workflow"] = workflow
-    st.session_state["submitted_parameters"] = parameters
-    st.session_state["submitted_project"] = project
-    st.session_state["last_submitted_job"] = {{"run_id":"analysis-1"}}
-st.session_state["complex-analysis-source-kind"] = "Results"
-render_complex_analysis_workspace(
-    {USER!r}, workflow_schema=schema_provider,
-    project_selector=lambda prefix, **kwargs: "test-project", submit=submit,
-)
-'''
-    app = AppTest.from_string(script, default_timeout=15).run()
-    assert not app.exception
-    button = app.button(key=f"complex-analysis-run-{button_suffix}-{key}")
-    assert button is not None and not button.disabled
-    button.click().run()
-
-    assert not app.exception
-    assert app.session_state["submitted_workflow"] == workflow_id
-    assert app.session_state["submitted_project"] == "test-project"
-    parameters = app.session_state["submitted_parameters"]
-    assert parameters["candidate_ids"] == [candidate["candidate_id"]]
-    assert parameters["selected_structure_path"] == str(structure_path.resolve())
-    assert parameters["selected_model_id"] == "2"
-    assert parameters["source_job"] == "prediction/source-job"
-    if workflow_id == "analysis.pep_patch":
-        assert parameters["binder_chains"] == ["B"]
-        assert parameters["ph"] == 7.4
-        assert "target_chains" not in parameters
-    else:
-        assert parameters["binder_chains"] == ["B"]
-        assert parameters["target_chains"] == ["A"]
-
-
-@pytest.mark.parametrize("workflow_id", ["analysis.plip", "analysis.pandamap", "analysis.posebusters"])
-def test_contextual_ligand_workflows_submit_exact_residue_without_interface_groups(
-    tmp_path, monkeypatch, workflow_id,
-):
-    database = _isolated_database(tmp_path, monkeypatch)
-    from mn_molecular_design_studio import complex_analysis_ui, molecular_database
-    source_run = tmp_path / "workspace" / "runs" / "prediction" / "ligand-source"
-    source_run.mkdir(parents=True)
-    structure_path = source_run / "model-2.pdb"
-    structure_path.write_bytes(_complex_pdb("small_molecule"))
-    smiles = "CCO"
-    ligand_component = {"id": "ligand-residue", "type": "small_molecule", "chain": "L_1",
-                        "source_chain": "L", "residue_key": "L:1", "ccd": "LIG", "label": "Ethanol"}
-    candidate = {
-        "candidate_id": "saved-ligand-42", "model_index": 2, "complex_pdb": "model-2.pdb",
-        "raw_metadata": {"components": [{**ligand_component, "smiles": smiles}],
-                         "ligand_smiles": smiles},
-    }
-    candidate_file = source_run / "artifacts" / "normalized_candidates" / "candidates.jsonl"
-    candidate_file.parent.mkdir(parents=True)
-    candidate_file.write_text(json.dumps(candidate) + "\n")
-    (source_run / "metadata.json").write_text(json.dumps({"tool": "ligand-predictor", "status": "completed"}))
-    (source_run / "input.json").write_text(json.dumps({"tool": "ligand-predictor", "params": {}}))
-    (source_run / "result.json").write_text(json.dumps({"success": True, "metrics": {}}))
-    (source_run / "molecular_design_studio.json").write_text(json.dumps({
-        "studio_owner_id": USER["id"], "project_id": "test-project",
-    }))
-    job = {"task_group": "prediction", "run_id": "ligand-source", "status": "completed",
-           "tool": "ligand-predictor", "run_dir": str(source_run), "project_id": "test-project"}
-    option = {"path": structure_path, "relative_path": "model-2.pdb", "candidate": candidate,
-              "candidate_id": candidate["candidate_id"], "label": "Model 2"}
-    components = [
-        {"id": "protein-A", "type": "protein", "source_chain": "A", "chain": "A", "label": "Protein A", "residue_key": "A:1"},
-        ligand_component,
-    ]
-    monkeypatch.setattr(molecular_database, "MolecularDatabase", lambda: database)
-    monkeypatch.setattr(complex_analysis_ui, "_accessible_result_jobs", lambda user: [job])
-    monkeypatch.setattr(complex_analysis_ui, "_job_structure_options", lambda user, selected_job: [option])
-    monkeypatch.setattr(complex_analysis_ui, "component_inventory", lambda *args, **kwargs: components)
-    monkeypatch.setattr(complex_analysis_ui, "_show_structure", lambda *args, **kwargs: None)
-    monkeypatch.setattr(complex_analysis_ui, "_show_human_review", lambda *args, **kwargs: None)
-    monkeypatch.setattr(complex_analysis_ui, "_matching_biotite_jobs", lambda *args, **kwargs: [])
-    monkeypatch.setattr(complex_analysis_ui, "_matching_contextual_jobs", lambda *args, **kwargs: [])
-    key = hashlib.sha256(b"prediction/ligand-source:model-2.pdb").hexdigest()[:14]
-    script = f'''\
-import streamlit as st
-from mn_molecular_design_studio.complex_analysis_ui import render_complex_analysis_workspace
-def schema_provider(workflow):
-    return {{"workflow": workflow, "schema_version": 1, "parameters": []}}
-def submit(schema, workflow, parameters, project, settings, title):
-    st.session_state["submitted_workflow"] = workflow
-    st.session_state["submitted_parameters"] = parameters
-    st.session_state["submitted_project"] = project
-    st.session_state["last_submitted_job"] = {{"run_id":"analysis-ligand-1"}}
-st.session_state["complex-analysis-source-kind"] = "Results"
-render_complex_analysis_workspace(
-    {USER!r}, workflow_schema=schema_provider,
-    project_selector=lambda prefix, **kwargs: "test-project", submit=submit,
-)
-'''
-    app = AppTest.from_string(script, default_timeout=15).run()
-    assert not app.exception
-    button_key = f"complex-analysis-run-{workflow_id.replace('.', '-')}-{key}"
-    button = app.button(key=button_key)
-    assert button is not None and not button.disabled
-    button.click().run()
-
-    assert not app.exception
-    parameters = app.session_state["submitted_parameters"]
-    assert app.session_state["submitted_workflow"] == workflow_id
-    assert app.session_state["submitted_project"] == "test-project"
-    assert parameters["candidate_ids"] == [candidate["candidate_id"]]
-    assert parameters["selected_structure_path"] == str(structure_path.resolve())
-    assert parameters["selected_model_id"] == "2"
-    assert parameters["source_job"] == "prediction/ligand-source"
-    assert parameters["ligand_selection"] == {
-        "chain": "L", "residue_key": "L:1", "ccd": "LIG", "smiles": smiles,
-    }
-    assert "binder_chains" not in parameters and "target_chains" not in parameters
 
 
 def test_contextual_matching_reuses_only_exact_accessible_evaluations(tmp_path, monkeypatch):

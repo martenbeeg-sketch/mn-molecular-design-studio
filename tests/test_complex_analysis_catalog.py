@@ -9,7 +9,8 @@ class FakeDatabase:
         self.visible = {row["id"] for row in self.rows}
         self.calls = []
 
-    def list_structure_records(self, user, *, collection, query, limit, offset=0, molecule_ids=None):
+    def list_structure_records(self, user, *, collection, query, limit, offset=0, molecule_ids=None,
+                               project_id="", group_id=""):
         self.calls.append({"user": user["id"], "query": query, "limit": limit,
                            "offset": offset, "molecule_ids": molecule_ids})
         rows = [row for row in self.rows if query.casefold() in row["name"].casefold()]

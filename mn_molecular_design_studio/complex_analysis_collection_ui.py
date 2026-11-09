@@ -27,6 +27,49 @@ def _widget_key(prefix: str, value: str) -> str:
     return prefix + hashlib.sha256(str(value).encode()).hexdigest()[:12]
 
 
+def _remember_widget_value(widget_key: str, state_key: str) -> None:
+    """Keep workflow choices when Streamlit removes widgets from other steps."""
+    st.session_state[state_key] = st.session_state.get(widget_key)
+
+
+def _stateful_selectbox(label: str, options: list[str], *, key: str, state_key: str,
+                        default: str, **kwargs):
+    """Render a step-local selectbox backed by state that survives step changes."""
+    if st.session_state.get(state_key) not in options:
+        st.session_state[state_key] = default if default in options else options[0]
+    st.session_state[key] = st.session_state[state_key]
+    value = st.selectbox(label, options, key=key, on_change=_remember_widget_value,
+                         args=(key, state_key), **kwargs)
+    st.session_state[state_key] = value
+    return value
+
+
+def _stateful_text_input(label: str, *, key: str, state_key: str, **kwargs) -> str:
+    """Render a step-local text input backed by state that survives step changes."""
+    if state_key not in st.session_state:
+        st.session_state[state_key] = ""
+    st.session_state[key] = str(st.session_state[state_key] or "")
+    value = st.text_input(label, key=key, on_change=_remember_widget_value,
+                          args=(key, state_key), **kwargs)
+    st.session_state[state_key] = value
+    return value
+
+
+def _stateful_multiselect(label: str, options: list[str], *, key: str, state_key: str,
+                          default: list[str] | None = None, **kwargs) -> list[str]:
+    """Render a step-local multiselect backed by state that survives step changes."""
+    allowed = set(options)
+    if state_key not in st.session_state:
+        st.session_state[state_key] = [value for value in (default or []) if value in allowed]
+    else:
+        st.session_state[state_key] = [value for value in st.session_state[state_key] if value in allowed]
+    st.session_state[key] = list(st.session_state[state_key])
+    value = st.multiselect(label, options, key=key, on_change=_remember_widget_value,
+                           args=(key, state_key), **kwargs)
+    st.session_state[state_key] = list(value)
+    return list(value)
+
+
 def _structure_label(record: dict, structure: dict) -> str:
     from mn_molecular_design_studio.complex_analysis_ui import _representation_label
 
@@ -59,6 +102,22 @@ def _load_selected_structures(database, user: dict, records: list[dict], selecte
     )
 
     record_by_id = {str(row.get("id") or ""): row for row in records}
+    selected = set(str(value) for value in selected_ids)
+    owner_ids = [molecule_id for molecule_id, record in record_by_id.items()
+                 if any(str(item.get("id") or "") in selected
+                        for item in record.get("representations") or record.get("structures") or [])]
+    if not owner_ids:
+        return []
+    # Hydrate full scientific records in one bounded query; the light catalog
+    # above is sufficient for discovery, and avoids one full-record query per
+    # selected model.
+    try:
+        hydrated_rows = database.list_molecules(
+            user, collection="all", molecule_ids=owner_ids, limit=min(1000, len(owner_ids)),
+        ).get("items", [])
+    except (OSError, PermissionError, ValueError, TypeError):
+        return []
+    record_by_id = {str(row.get("id") or ""): row for row in hydrated_rows if isinstance(row, dict)}
     samples = []
     for structure_id in selected_ids:
         owner = next((record for record in record_by_id.values()
@@ -66,19 +125,10 @@ def _load_selected_structures(database, user: dict, records: list[dict], selecte
                              for item in record.get("representations") or record.get("structures") or [])), None)
         if owner is None:
             continue
-        # Structure discovery intentionally uses a lightweight ACL-filtered
-        # catalog. Hydrate only the explicitly selected molecule so its saved
-        # Evaluations, source lineage and review annotations are available to
-        # the board and Inspector without rebuilding the whole Database index.
-        try:
-            hydrated = database.list_molecules(
-                user, collection="all", molecule_ids=[str(owner.get("id") or "")], limit=1,
-            ).get("items", [])
-        except (OSError, PermissionError, ValueError, TypeError):
+        # ACLs are rechecked by the canonical full-record query above.
+        record = record_by_id.get(str(owner.get("id") or ""))
+        if record is None:
             continue
-        if not hydrated:
-            continue
-        record = hydrated[0]
         structures = list(record.get("representations") or record.get("structures") or [])
         structure = next((row for row in structures if str(row.get("id") or "") == str(structure_id)), None)
         if structure is None:
@@ -1005,68 +1055,154 @@ def _render_protein_protein_map(samples: list[dict]) -> None:
             _open_in_inspector(selected_member, selector or "", evaluation_id)
 
 def _database_collection_samples(user: dict) -> list[dict]:
+    """Select from a paged light Database catalog; hydrate only on explicit load."""
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
 
     database = MolecularDatabase()
-    query = st.text_input("Search Database structures", key="complex-analysis-collection-query",
-                          placeholder="Name, sequence, or molecule identifier")
-    catalog_key = _widget_key("complex-analysis-collection-catalog-", str(user.get("id") or ""))
-    refresh_catalog = st.button("Refresh Database structures", key=_widget_key("complex-analysis-collection-refresh-", str(user.get("id"))))
+    user_id = str(user.get("id") or "")
+    groups_fn = getattr(database, "groups", None)
+    try:
+        groups = groups_fn(user, collection="all") if callable(groups_fn) else []
+    except (PermissionError, OSError, ValueError, TypeError):
+        groups = []
+    projects = sorted({str(row.get("project_id") or "") for row in groups if row.get("project_id")})
+    project_key = _widget_key("complex-analysis-database-project-", user_id)
+    project_options = ["", *projects]
+    project_id = st.selectbox("Project", project_options, key=project_key,
+                              format_func=lambda value: value or "All accessible projects")
+    collection_key = _widget_key("complex-analysis-database-collection-", user_id)
+    collection_choice = st.selectbox("Database collection", ["All indexed", "Curated library"],
+                                     key=collection_key)
+    collection = "library" if collection_choice == "Curated library" else "all"
+    available_groups = [row for row in groups
+                        if (not project_id or str(row.get("project_id") or "") == project_id)
+                        and (collection == "all" or str(row.get("collection_kind") or "")
+                             in {"curated", "generated", "reference"})]
+    group_options = ["", *[str(row["id"]) for row in available_groups if row.get("id")]]
+    group_by_id = {str(row["id"]): row for row in available_groups if row.get("id")}
+    group_key = _widget_key("complex-analysis-database-group-", user_id)
+    if st.session_state.get(group_key) not in group_options:
+        st.session_state[group_key] = ""
+    group_id = st.selectbox("Collection or group", group_options, key=group_key,
+        format_func=lambda value: ("Any accessible group" if not value else
+            f"{group_by_id[value].get('name') or 'Group'} · {group_by_id[value].get('molecule_count', 0):,} designs"))
+
+    query = st.text_input("Search Database designs", key="complex-analysis-collection-query",
+                          placeholder="Name, sequence, candidate ID, target, or engine")
+    refresh_catalog = st.button("Refresh Database index", key=_widget_key("complex-analysis-collection-refresh-", user_id))
+    if refresh_catalog:
+        st.session_state.pop("complex-analysis-workflow-samples", None)
+        st.session_state.pop("complex-analysis-workflow-selection", None)
+    catalog_key = _widget_key("complex-analysis-collection-catalog-", user_id)
     catalog = authorized_structure_catalog(database, user, session_state=st.session_state,
-        cache_key=catalog_key, query=query, limit=100, refresh=refresh_catalog)
-    load_next = st.button("Load next Database structure page",
-        key=_widget_key("complex-analysis-collection-next-", f"{user.get('id')}:{query}"),
+        cache_key=catalog_key, query=query, project_id=project_id, collection=collection,
+        group_id=group_id, limit=100, refresh=refresh_catalog)
+    load_next = st.button("Load next Database page",
+        key=_widget_key("complex-analysis-collection-next-", f"{user_id}:{project_id}:{collection}:{group_id}:{query}"),
         disabled=catalog.get("next_offset") is None)
     if load_next:
         catalog = authorized_structure_catalog(database, user, session_state=st.session_state,
-            cache_key=catalog_key, query=query, limit=100, advance=True)
+            cache_key=catalog_key, query=query, project_id=project_id, collection=collection,
+            group_id=group_id, limit=100, advance=True)
+
     records = list(catalog.get("records") or [])
-    records_key = _widget_key("complex-analysis-collection-selected-records-", str(user.get("id") or ""))
-    cache_key = _widget_key("complex-analysis-collection-selected-record-cache-", str(user.get("id") or ""))
-    structure_key = _widget_key("complex-analysis-collection-selected-structures-", str(user.get("id") or ""))
-    cached_records = st.session_state.get(cache_key, {})
+    # Metadata facets are drawn from the current lightweight page only. Search
+    # and filters are applied by the Database query/page controls, never by a
+    # Results catalog scan or structure parsing.
+    def context_rows(record):
+        return [row.get("context") or {} for row in record.get("representations") or record.get("structures") or []]
+    generator_options = sorted({str(context.get("generator") or context.get("source_tool") or "")
+        for record in records for context in context_rows(record)
+        if context.get("generator") or context.get("source_tool")}, key=str.casefold)
+    predictor_options = sorted({str(context.get("prediction_engine") or "")
+        for record in records for context in context_rows(record) if context.get("prediction_engine")}, key=str.casefold)
+    target_options = sorted({str(context.get("target_identity") or context.get("target_id") or context.get("target_molecule_id") or "")
+        for record in records for context in context_rows(record)
+        if context.get("target_identity") or context.get("target_id") or context.get("target_molecule_id")}, key=str.casefold)
+    acceptance_options = sorted({str(context.get("acceptance_status") or "")
+        for record in records for context in context_rows(record) if context.get("acceptance_status")}, key=str.casefold)
+    facet_cols = st.columns(4)
+    generator_filter = facet_cols[0].selectbox("Generator", ["All", *generator_options],
+        key=_widget_key("complex-analysis-database-generator-", f"{user_id}:{project_id}:{group_id}:{query}"))
+    predictor_filter = facet_cols[1].selectbox("Prediction engine", ["All", *predictor_options],
+        key=_widget_key("complex-analysis-database-predictor-", f"{user_id}:{project_id}:{group_id}:{query}"))
+    target_filter = facet_cols[2].selectbox("Target", ["All", *target_options],
+        key=_widget_key("complex-analysis-database-target-", f"{user_id}:{project_id}:{group_id}:{query}"))
+    acceptance_filter = facet_cols[3].selectbox("Recorded acceptance", ["All", *acceptance_options],
+        key=_widget_key("complex-analysis-database-acceptance-", f"{user_id}:{project_id}:{group_id}:{query}"))
+    def matches_facet(context):
+        return ((generator_filter == "All" or str(context.get("generator") or context.get("source_tool") or "") == generator_filter)
+            and (predictor_filter == "All" or str(context.get("prediction_engine") or "") == predictor_filter)
+            and (target_filter == "All" or str(context.get("target_identity") or context.get("target_id") or context.get("target_molecule_id") or "") == target_filter)
+            and (acceptance_filter == "All" or str(context.get("acceptance_status") or "") == acceptance_filter))
+    records = [record for record in records if any(matches_facet(context) for context in context_rows(record))]
+
+    records_key = _widget_key("complex-analysis-collection-selected-records-", user_id)
+    record_cache_key = _widget_key("complex-analysis-collection-selected-record-cache-", user_id)
+    structure_key = _widget_key("complex-analysis-collection-selected-structures-", user_id)
+    cached_records = st.session_state.get(record_cache_key, {})
     cached_records = dict(cached_records) if isinstance(cached_records, dict) else {}
     selected_before = [str(value) for value in st.session_state.get(records_key, [])]
-    # Retain only selected prior-page rows, then refresh the visible page. The
-    # later full-record and structure lookups recheck ACLs before any artifact
-    # is read, so this cache only keeps picker labels and references available.
     cached_records = {key: cached_records[key] for key in selected_before if key in cached_records}
     for row in records:
         if row.get("id"):
             cached_records[str(row["id"])] = row
-    st.session_state[cache_key] = cached_records
+    st.session_state[record_cache_key] = cached_records
     record_by_id = _merge_database_record_options(records, cached_records, selected_before)
     if not records:
-        st.info("No accessible Database structures match this search. Previously selected records remain available until removed.")
-        if not record_by_id:
-            return []
-    st.caption(f"Showing {len(records):,} authorized Database structure records"
-               + ("; more pages are available." if catalog.get("next_offset") is not None else "."))
-    selected_records = st.multiselect("Database records", list(record_by_id),
+        st.info("No Database structures match this search and filter. Use search or load another page.")
+    else:
+        st.caption(f"Showing {len(records):,} lightweight, authorized Database design record(s)"
+                   + ("; more pages are available." if catalog.get("next_offset") is not None else "."))
+    selected_records = st.multiselect("Database designs", list(record_by_id),
         format_func=lambda value: f"{record_by_id[value].get('name') or 'Complex'} · {str(value)[-8:]} · {len(record_by_id[value].get('representations') or record_by_id[value].get('structures') or [])} structures",
         key=records_key)
     if not selected_records:
-        st.info("Select Database records, then choose the saved structures and models to add to this cohort.")
+        st.info("Select Database designs, then choose exact saved structures/models below.")
         return []
     structure_lookup = {}
     for record_id in selected_records:
         record = record_by_id.get(record_id) or {}
         for structure in record.get("representations") or record.get("structures") or []:
+            if not matches_facet(structure.get("context") or {}):
+                continue
             structure_id = str(structure.get("id") or "")
             if structure_id:
                 structure_lookup[structure_id] = (record, structure)
     structure_ids = list(structure_lookup)
     if structure_key in st.session_state:
         st.session_state[structure_key] = [value for value in st.session_state[structure_key] if value in structure_lookup]
-    selected_structures = st.multiselect("Database structures, models, and poses", structure_ids,
-        format_func=lambda value: _structure_label(*structure_lookup[value]),
-        key=structure_key)
+    selected_structures = st.multiselect("Structures, models, and poses", structure_ids,
+        format_func=lambda value: _structure_label(*structure_lookup[value]), key=structure_key)
     if not selected_structures:
-        st.info("Choose Database structures to add them to the comparison cohort.")
+        st.info("Select the exact Database structure/model rows to assess or compare.")
         return []
-    detailed = database.list_molecules(user, molecule_ids=list(dict.fromkeys(selected_records)),
-                                       collection="all", limit=1000)["items"]
-    samples = _load_selected_structures(database, user, detailed, selected_structures)
+    if not st.button("Load selected designs", type="primary", key="complex-analysis-load-selection"):
+        st.caption("Structures, Evaluations, and residue artifacts load only after you choose this action.")
+        return []
+
+    selected_record_rows = [record_by_id[value] for value in selected_records if value in record_by_id]
+    # Recheck membership and ACL immediately before hydration; widget/session
+    # values are never treated as an authorization grant.
+    try:
+        authorized_page = database.list_structure_records(
+            user, project_id=project_id, collection=collection, group_id=group_id,
+            query=query, molecule_ids=selected_records, limit=min(5000, max(1, len(selected_records))),
+        )
+    except (PermissionError, OSError, ValueError, TypeError) as exc:
+        st.error(f"Could not revalidate the selected Database designs: {exc}")
+        return []
+    authorized_by_id = {str(row.get("id") or ""): row for row in authorized_page.get("items", [])}
+    authorized_structure_ids = {str(item.get("id") or "") for row in authorized_by_id.values()
+                                for item in row.get("representations") or row.get("structures") or []}
+    valid_structures = [value for value in selected_structures if value in authorized_structure_ids]
+    if len(valid_structures) != len(selected_structures):
+        st.error("One or more selected structures are no longer accessible in this Database scope. Refresh the index and select again.")
+        return []
+    samples = _load_selected_structures(database, user, list(authorized_by_id.values()), valid_structures)
+    if not samples:
+        st.error("No selected structure could be hydrated from the authorized Molecular Database.")
+        return []
     for sample in samples:
         sample.update({"source_kind": "Database", "identity": "database:" + sample["molecule_id"] + ":" + sample["structure_id"],
                        "user": user, "source_reference": "database:" + sample["molecule_id"]})
@@ -1077,8 +1213,23 @@ def _database_collection_samples(user: dict) -> list[dict]:
             )
         except (OSError, PermissionError, ValueError, TypeError):
             sample["review_annotation"] = {"status": "Unreviewed", "note": ""}
+    cache_key = _widget_key("complex-analysis-hydrated-", user_id + ":" + ":".join(valid_structures))
+    sample_cache = st.session_state.get("complex-analysis-hydrated-sample-cache", {})
+    sample_cache = dict(sample_cache) if isinstance(sample_cache, dict) else {}
+    sample_cache[cache_key] = samples
+    # Keep the session cache bounded to a few actively reviewed cohorts.
+    while len(sample_cache) > 3:
+        sample_cache.pop(next(iter(sample_cache)))
+    st.session_state["complex-analysis-hydrated-sample-cache"] = sample_cache
+    st.session_state["complex-analysis-workflow-samples"] = samples
+    st.session_state["complex-analysis-workflow-selection"] = {
+        "user_id": user_id, "structure_ids": valid_structures, "molecule_ids": list(authorized_by_id),
+        "project_id": project_id, "collection": collection, "group_id": group_id,
+        "cache_key": cache_key,
+    }
+    st.session_state["complex-analysis-flow-step"] = "analyze"
+    st.rerun()
     return samples
-
 
 def _results_source_jobs(user: dict) -> list[dict]:
     from mn_molecular_design_studio.complex_analysis_dashboard import _run_catalog
@@ -1442,179 +1593,243 @@ def _comparison_sample(user: dict, sample: dict) -> dict:
     return comparison
 
 
+def _load_workspace_samples(user: dict) -> list[dict]:
+    """Return the explicitly selected Database cohort after a fresh ACL check."""
+    selection = st.session_state.get("complex-analysis-workflow-selection")
+    samples = st.session_state.get("complex-analysis-workflow-samples")
+    if not isinstance(selection, dict) or not isinstance(samples, list):
+        return []
+    if str(selection.get("user_id") or "") != str(user.get("id") or ""):
+        st.session_state.pop("complex-analysis-workflow-selection", None)
+        st.session_state.pop("complex-analysis-workflow-samples", None)
+        return []
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    database = MolecularDatabase()
+    try:
+        page = database.list_structure_records(
+            user, project_id=str(selection.get("project_id") or ""),
+            collection=str(selection.get("collection") or "all"),
+            group_id=str(selection.get("group_id") or ""),
+            molecule_ids=list(selection.get("molecule_ids") or []),
+            limit=min(5000, max(1, len(selection.get("molecule_ids") or []))),
+        )
+    except (OSError, PermissionError, ValueError, TypeError) as exc:
+        st.error(f"Could not revalidate this Database cohort: {exc}")
+        return []
+    accessible = {(str(row.get("id") or ""), str(structure.get("id") or ""))
+                  for row in page.get("items", [])
+                  for structure in row.get("representations") or row.get("structures") or []}
+    expected = {(str(sample.get("molecule_id") or ""), str(sample.get("structure_id") or ""))
+                for sample in samples}
+    if not expected or not expected.issubset(accessible):
+        st.warning("Database access changed for one or more selected structures. Return to Select and rebuild the cohort.")
+        st.session_state.pop("complex-analysis-workflow-selection", None)
+        st.session_state.pop("complex-analysis-workflow-samples", None)
+        return []
+    return samples
+
+
+def _workflow_steps() -> str:
+    labels = [("select", "1 · Select"), ("analyze", "2 · Analyze"),
+              ("compare", "3 · Compare"), ("shortlist", "4 · Shortlist")]
+    current = str(st.session_state.get("complex-analysis-flow-step") or "select")
+    if current not in {key for key, _ in labels}:
+        current = "select"
+        st.session_state["complex-analysis-flow-step"] = current
+    columns = st.columns(4)
+    for column, (key, label) in zip(columns, labels):
+        if column.button(label, key=f"complex-analysis-step-{key}",
+                         type="primary" if key == current else "secondary"):
+            st.session_state["complex-analysis-flow-step"] = key
+            st.rerun()
+    return current
+
+
 def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, *,
                                 workflow_schema=None, submit=None) -> None:
-    """Render the mixed Results/Database design explorer inside Complex Analysis."""
-    st.subheader("Unified Design Explorer · Evaluation Board")
-    st.caption("Select authorized saved structures from Results and/or the curated Database. By default only explicitly accepted final computational decisions enter the cohort. Native passes, earlier-stage passes, human review and experimental validation remain distinct; no universal score or Database promotion is applied.")
-    sources = st.multiselect("Include sources", ["Results", "Database"], default=["Database"],
-                             key="complex-analysis-cohort-source-types")
-    samples = []
-    jobs = []
-    if "Database" in sources:
-        samples.extend(_database_collection_samples(user))
-    if "Results" in sources:
-        try:
-            jobs = _results_source_jobs(user)
-        except (OSError, RuntimeError, ValueError, PermissionError) as exc:
-            st.warning(f"Could not load the authorized Results catalog: {exc}")
-            jobs = []
-        if not jobs:
-            st.info("No authorized completed Results collections are available.")
-        else:
-            from mn_molecular_design_studio.logical_runs import source_reference
-            by_ref = {source_reference(job): job for job in jobs}
-            references = list(by_ref)
-            run_key = "complex-analysis-cohort-result-jobs"
-            if run_key in st.session_state:
-                st.session_state[run_key] = [value for value in st.session_state[run_key] if value in references]
-            selected_refs = st.multiselect("Results jobs (select one or more campaigns, engines or workstations)", references,
-                format_func=lambda value: f"{by_ref[value].get('display_tool') or by_ref[value].get('tool') or 'Result'} · {by_ref[value].get('node_name') or 'This workstation'} · {by_ref[value].get('task_group')}/{by_ref[value].get('run_id')}",
-                key=run_key)
-            selected_jobs = [by_ref[value] for value in selected_refs]
-            choices = _results_structure_choices(user, selected_jobs) if selected_jobs else []
-            if selected_jobs and not choices:
-                st.info("The selected Results jobs have no accessible candidate-associated structure models.")
-            elif choices:
-                choice_by_id = {row["identity"]: row for row in choices}
-                result_key = "complex-analysis-cohort-result-structures"
-                if result_key in st.session_state:
-                    st.session_state[result_key] = [value for value in st.session_state[result_key] if value in choice_by_id]
-                selected_ids = st.multiselect("Candidate structures / prediction models", list(choice_by_id),
-                    format_func=lambda value: choice_by_id[value]["label"], key=result_key)
-                for identity in selected_ids:
-                    try:
-                        sample = _materialize_results_sample(user, choice_by_id[identity])
-                    except (OSError, PermissionError, ValueError, TypeError) as exc:
-                        st.warning(f"Could not open this authorized Results structure: {exc}")
-                        continue
-                    if sample is not None:
-                        samples.append(sample)
-                _attach_results_measurements(user, [item for item in samples if item.get("source_kind") == "Results"], jobs)
-    if not samples:
-        st.info("Choose saved Database structures and/or Results candidate models to populate the Design Explorer.")
+    """Render one Database-only Select → Analyze → Compare → Shortlist flow."""
+    st.subheader("Design Explorer")
+    st.caption("Complex Analysis uses structures already saved in the Molecular Database. Results remain in My runs; import only the candidates and models you explicitly choose.")
+    step = _workflow_steps()
+    if step == "select":
+        st.markdown("### Select Database designs")
+        st.caption("Search and page through lightweight, authorized Database metadata. Full records and coordinates are loaded only after you select exact structure/model rows and click Load selected designs.")
+        _database_collection_samples(user)
         return
+
+    samples = _load_workspace_samples(user)
+    if not samples:
+        st.info("Select and load Database structures first.")
+        if st.button("Go to Select", key="complex-analysis-empty-go-select"):
+            st.session_state["complex-analysis-flow-step"] = "select"
+            st.rerun()
+        return
+    st.caption(f"Loaded cohort: {len(samples)} explicitly selected Database structure/model row(s). Reopen Select to change it.")
+    if st.button("Refresh selected Database records and Evaluations", key="complex-analysis-refresh-selected"):
+        st.session_state.pop("complex-analysis-workflow-selection", None)
+        st.session_state.pop("complex-analysis-workflow-samples", None)
+        st.session_state["complex-analysis-flow-step"] = "select"
+        st.rerun()
 
     from mn_molecular_design_studio.complex_analysis_collection import (
         acceptance_decisions, acceptance_stage_options, filter_acceptance_cohort,
     )
-    st.caption(f"Loaded {len(samples)} selected structure/model row(s). Results structures are retrieved only after selection; original Results remain unmodified.")
     stages = acceptance_stage_options(samples)
     final_rows = [row for sample in samples for row in acceptance_decisions(sample.get("candidate") or {})
                   if row.get("stage_id") == "final"]
-    cohort_mode = st.selectbox(
-        "Acceptance cohort",
-        ["Final accepted designs", "Passed at selected stage", "Rejected at selected stage",
-         "Pending / unresolved at selected stage", "No recorded decision", "All designs"],
-        key="complex-analysis-cohort-acceptance-mode",
-        help="The default includes only an explicit final computational pass attached to this candidate/model. Select a stage to inspect its own decisions; a native generator pass is never treated as final acceptance.",
-    )
-    stage_id = ""
-    if cohort_mode in {"Passed at selected stage", "Rejected at selected stage", "Pending / unresolved at selected stage"}:
-        if stages:
-            stage_ids = [item[0] for item in stages]
-            stage_key = "complex-analysis-cohort-acceptance-stage"
-            if st.session_state.get(stage_key) not in stage_ids:
-                st.session_state[stage_key] = stage_ids[0]
-            stage_id = st.selectbox("Recorded acceptance stage", stage_ids,
-                format_func=lambda value: next(label for key, label in stages if key == value), key=stage_key)
-            selected_stage = next(label for key, label in stages if key == stage_id)
-            st.caption(f"Stage decisions retain their recorded source and policy per candidate. Selected stage: {selected_stage}.")
-        else:
-            st.info("No recorded acceptance stages are available for these structures. Choose All designs or No recorded decision to inspect them without treating them as passed.")
+    cohort_key = "complex-analysis-cohort-acceptance-mode-widget"
+    cohort_state_key = "complex-analysis-cohort-acceptance-mode-value"
+    cohort_options = ["Final accepted designs", "Passed at selected stage", "Rejected at selected stage",
+                      "Pending / unresolved at selected stage", "No recorded decision", "All designs"]
+    if step == "analyze":
+        st.markdown("### Analyze selected designs")
+        cohort_mode = _stateful_selectbox(
+            "Acceptance cohort", cohort_options, key=cohort_key, state_key=cohort_state_key,
+            default="Final accepted designs",
+            help="Final passes are the default. Earlier-stage passes require an explicit stage selection; native generator acceptance is not treated as final acceptance.",
+        )
+        stage_id = ""
+        if cohort_mode in {"Passed at selected stage", "Rejected at selected stage", "Pending / unresolved at selected stage"}:
+            if stages:
+                stage_ids = [item[0] for item in stages]
+                stage_key = "complex-analysis-cohort-acceptance-stage-widget"
+                stage_state_key = "complex-analysis-cohort-acceptance-stage-value"
+                stage_id = _stateful_selectbox("Recorded acceptance stage", stage_ids,
+                    format_func=lambda value: next(label for key, label in stages if key == value),
+                    key=stage_key, state_key=stage_state_key, default=stage_ids[0])
+                selected_stage = next(label for key, label in stages if key == stage_id)
+                st.caption(f"Using recorded decisions and policy from: {selected_stage}.")
+            else:
+                st.info("No recorded acceptance stages exist for this selection. Choose All designs or No recorded decision to inspect without treating candidates as passed.")
+        if cohort_mode == "Final accepted designs" and not final_rows:
+            st.info("No final computational decisions are recorded for this cohort. Choose a recorded stage explicitly, or deliberately select All designs.")
+    else:
+        cohort_mode = str(st.session_state.get(cohort_state_key) or "Final accepted designs")
+        stage_id = str(st.session_state.get("complex-analysis-cohort-acceptance-stage-value") or "")
+        st.caption(f"Acceptance view: {cohort_mode}" + (f" · {stage_id}" if stage_id else ""))
+
     cohort_samples = filter_acceptance_cohort(samples, cohort_mode, stage_id)
-    if cohort_mode == "Final accepted designs" and not cohort_samples:
-        if final_rows:
-            st.info("No selected candidate/model has a recorded final computational pass. Rejected, unresolved and other stages remain separate; choose a stage explicitly to inspect another cohort.")
-        else:
-            st.info("No explicit final computational decisions are recorded for these structures. Choose a recorded stage to view its passed cohort, or deliberately select All designs or No recorded decision.")
-    st.caption(f"Acceptance cohort: {len(cohort_samples)} of {len(samples)} selected structure/model row(s). Human review and experimental validation do not change computational acceptance.")
+    st.caption(f"Acceptance cohort: {len(cohort_samples)} of {len(samples)} selected structure/model row(s). Acceptance remains attached to its recorded candidate, model, stage and policy.")
     if not cohort_samples:
+        if step != "analyze":
+            st.info("The current acceptance view contains no structures. Return to Analyze to select a recorded stage or All designs.")
         return
-    samples = cohort_samples
-    import pandas as pd
-    inventory = [_cohort_inventory_row(sample) for sample in samples]
-    frame = pd.DataFrame(inventory)
-    search = st.text_input("Search candidates, targets, sequences, jobs, or workstations", key="complex-analysis-cohort-search").casefold().strip()
-    engine_options = sorted({str(row["Generator"]) for row in inventory if row.get("Generator")})
-    engine_filter = st.multiselect("Generator filter", engine_options, default=engine_options,
-                                   key="complex-analysis-cohort-generator-filter")
-    prediction_options = sorted({str(row["Prediction engine"]) for row in inventory if row.get("Prediction engine") and row["Prediction engine"] != "Not recorded"})
-    prediction_filter = st.multiselect("Prediction engine filter", prediction_options, default=prediction_options,
-                                       key="complex-analysis-cohort-prediction-filter")
+    inventory = [_cohort_inventory_row(sample) for sample in cohort_samples]
+    frame_rows = {str(row["Row identity"]): row for row in inventory}
+    sample_by_id = {str(sample.get("identity") or sample.get("structure_id")): sample for sample in cohort_samples}
+
+    search_key = "complex-analysis-cohort-search-widget"
+    search_state_key = "complex-analysis-cohort-search-value"
+    gen_key = "complex-analysis-cohort-generator-filter-widget"
+    gen_state_key = "complex-analysis-cohort-generator-filter-value"
+    pred_key = "complex-analysis-cohort-prediction-filter-widget"
+    pred_state_key = "complex-analysis-cohort-prediction-filter-value"
+    if step == "analyze":
+        search = _stateful_text_input("Filter selected designs", key=search_key, state_key=search_state_key,
+            placeholder="Candidate, target, generator, prediction engine, measurement")
+        generator_options = sorted({str(row["Generator"]) for row in inventory if row.get("Generator")}, key=str.casefold)
+        engine_options = sorted({str(row["Prediction engine"]) for row in inventory
+                                  if row.get("Prediction engine") and row["Prediction engine"] != "Not recorded"}, key=str.casefold)
+        engine_filter = _stateful_multiselect("Generator", generator_options, key=gen_key,
+            state_key=gen_state_key, default=generator_options)
+        prediction_filter = _stateful_multiselect("Prediction engine", engine_options, key=pred_key,
+            state_key=pred_state_key, default=engine_options)
+    else:
+        search = str(st.session_state.get(search_state_key) or "")
+        generator_options = sorted({str(row["Generator"]) for row in inventory if row.get("Generator")}, key=str.casefold)
+        engine_options = sorted({str(row["Prediction engine"]) for row in inventory
+                                  if row.get("Prediction engine") and row["Prediction engine"] != "Not recorded"}, key=str.casefold)
+        engine_filter = [value for value in st.session_state.get(gen_state_key, generator_options) if value in generator_options]
+        prediction_filter = [value for value in st.session_state.get(pred_state_key, engine_options) if value in engine_options]
+
     visible = [row for row in inventory if row.get("Generator") in engine_filter
         and (row.get("Prediction engine") == "Not recorded" or row.get("Prediction engine") in prediction_filter)
-        and (not search or search in json.dumps(row, sort_keys=True, default=str).casefold())]
-    if not visible:
-        st.info("No candidate structures match the current filters.")
-        return
+        and (not search or search.casefold().strip() in json.dumps(row, sort_keys=True, default=str).casefold())]
+    if step == "analyze":
+        if visible:
+            st.dataframe([{key: value for key, value in row.items() if key != "Row identity"} for row in visible],
+                         hide_index=True, use_container_width=True)
+        else:
+            st.info("No selected structures match these search and engine filters.")
     visible_ids = [str(row["Row identity"]) for row in visible]
-    sample_by_id = {str(sample.get("identity") or sample.get("structure_id")): sample for sample in samples}
-    st.dataframe(pd.DataFrame([{key: value for key, value in row.items() if key != "Row identity"} for row in visible]),
-                 hide_index=True, use_container_width=True)
-    st.caption("Per-engine measurements retain their stored method, model and original units. Missing, not evaluated, and measured-zero values are not combined.")
-    select_key = "complex-analysis-cohort-selected"
-    if select_key in st.session_state:
-        st.session_state[select_key] = [value for value in st.session_state[select_key] if value in visible_ids]
-    selected_ids = st.multiselect("Select candidate/model rows for residue map, comparison, or Inspector", visible_ids,
-        format_func=lambda value: sample_by_id[value]["label"], key=select_key)
+    select_key = "complex-analysis-cohort-selected-widget"
+    select_state_key = "complex-analysis-cohort-selected-value"
+    if select_state_key not in st.session_state:
+        st.session_state[select_state_key] = visible_ids
+    st.session_state[select_state_key] = [value for value in st.session_state[select_state_key] if value in visible_ids]
+    if step == "analyze":
+        selected_ids = _stateful_multiselect("Design/model rows to assess and compare", visible_ids,
+            format_func=lambda value: sample_by_id[value]["label"], key=select_key,
+            state_key=select_state_key, default=visible_ids)
+    else:
+        selected_ids = [value for value in st.session_state.get(select_state_key, []) if value in visible_ids]
+        st.caption(f"Selected for downstream review: {len(selected_ids)} row(s). Change the selection in Analyze.")
     selected_samples = [sample_by_id[value] for value in selected_ids if value in sample_by_id]
     if not selected_samples:
+        if step == "analyze":
+            st.info("Select one or more rows to view analysis coverage.")
         return
-    _render_batch_assessment(user, selected_samples, workflow_schema=workflow_schema, submit=submit)
-    filtered_evaluations = _render_evaluation_board(selected_samples)
-    from mn_molecular_design_studio.complex_analysis_shortlist_export import render_shortlist_review_export
-    render_shortlist_review_export(user, selected_samples, key_prefix="explorer-shortlist")
-    kinds = {sample.get("kind") for sample in selected_samples}
-    if "protein-ligand" in kinds or "protein-protein-and-ligand" in kinds:
+
+    if step == "analyze":
+        st.caption("Stored measurements retain their method, model and units. Missing, failed and measured-zero states remain distinct.")
+        _render_batch_assessment(user, selected_samples, workflow_schema=workflow_schema, submit=submit)
+        _render_evaluation_board(selected_samples)
+        st.markdown("#### Open one selected model")
+        inspect_id = st.selectbox("Scientific Inspector", selected_ids,
+            format_func=lambda value: sample_by_id[value]["label"], key="complex-analysis-cohort-inspector")
+        evaluation_options = [str(row.get("evaluation_id") or "") for sample in selected_samples
+                              for row in sample.get("evaluation_entries", []) if row.get("evaluation_id")]
+        evaluation_id = st.selectbox("Evaluation context", [""] + list(dict.fromkeys(evaluation_options)),
+            key="complex-analysis-cohort-inspector-evaluation")
+        if st.button("Open selected model in Scientific Inspector", key="complex-analysis-cohort-open-inspector"):
+            _open_in_inspector(sample_by_id[inspect_id], "", evaluation_id)
+
+    elif step == "compare":
+        import pandas as pd
+        st.markdown("### Compare scientific evidence")
+        st.caption("Contact maps use saved compatible Evaluations only; missing analyses are shown as unavailable, not zero.")
         ligand_samples = [sample for sample in selected_samples if sample.get("kind") in {"protein-ligand", "protein-protein-and-ligand"}]
-        st.markdown("#### Protein–ligand pose group")
-        st.caption("Ligand chemistry, receptor and pose remain distinct from protein–protein contacts; no PPI contact frequency is applied.")
-        st.dataframe(pd.DataFrame(_protein_ligand_rows(ligand_samples)), hide_index=True, use_container_width=True)
-    ppi_samples = [sample for sample in selected_samples if sample.get("kind") == "protein-protein"]
-    if ppi_samples:
-        _render_protein_protein_map(ppi_samples)
-    other = [sample for sample in selected_samples if sample.get("kind") not in {"protein-protein", "protein-ligand"}]
-    if other:
-        st.markdown("#### Structures kept outside current contact maps")
-        st.dataframe([{"Structure": sample["label"], "Molecular type": sample.get("kind"),
-                       "Reason": "Current residue contact map applies only to protein–protein complexes; this representation remains visible in the candidate board and Inspector."}
-                      for sample in other], hide_index=True, use_container_width=True)
+        if ligand_samples:
+            st.markdown("#### Protein–ligand pose group")
+            st.caption("Ligand chemistry, receptor and pose remain distinct from protein–protein contact rules.")
+            st.dataframe(pd.DataFrame(_protein_ligand_rows(ligand_samples)), hide_index=True, use_container_width=True)
+        ppi_samples = [sample for sample in selected_samples if sample.get("kind") == "protein-protein"]
+        if ppi_samples:
+            _render_protein_protein_map(ppi_samples)
+        other = [sample for sample in selected_samples if sample.get("kind") not in {"protein-protein", "protein-ligand", "protein-protein-and-ligand"}]
+        if other:
+            st.markdown("#### Other saved molecular systems")
+            st.dataframe([{"Structure": sample["label"], "Type": sample.get("kind"),
+                           "Reason": "No protein–protein contact map is applied to this system."} for sample in other],
+                         hide_index=True, use_container_width=True)
+        compare_key = "complex-analysis-cohort-compare-widget"
+        compare_state_key = "complex-analysis-cohort-compare-value"
+        defaults = [value for value in st.session_state.get(compare_state_key, []) if value in selected_ids]
+        compare_ids = _stateful_multiselect("Select 2–5 structures for Mol* comparison", selected_ids,
+            default=defaults or selected_ids[:2], max_selections=5,
+            format_func=lambda value: sample_by_id[value]["label"], key=compare_key,
+            state_key=compare_state_key)
+        if len(compare_ids) >= 2:
+            with st.expander("Structural alignment and overlay", expanded=True):
+                compare_sources = [_comparison_sample(user, sample_by_id[value]) for value in compare_ids]
+                missing_roles = [sample["label"] for sample in compare_sources
+                    if (sample.get("complex_type") == "protein-protein"
+                        and (not sample.get("target_chains") or not sample.get("binder_chains")
+                             or set(sample.get("target_chains") or []) & set(sample.get("binder_chains") or [])))
+                    or (sample.get("complex_type") == "protein-ligand" and not sample.get("target_chains"))]
+                if missing_roles:
+                    st.info("Comparison needs recorded target/binder or receptor chain assignments. Missing roles: " + ", ".join(missing_roles))
+                else:
+                    from mn_molecular_design_studio.complex_analysis_comparison_ui import render_comparison
+                    render_comparison(user, selected_sources=compare_sources)
+        st.markdown("#### Open one selected design")
+        inspect_id = st.selectbox("Candidate/model", selected_ids,
+            format_func=lambda value: sample_by_id[value]["label"], key="complex-analysis-compare-inspector")
+        if st.button("Open in Scientific Inspector", key="complex-analysis-compare-open-inspector"):
+            _open_in_inspector(sample_by_id[inspect_id])
 
-    inspect_id = st.selectbox("Candidate/model to open in Scientific Inspector", selected_ids,
-        format_func=lambda value: sample_by_id[value]["label"], key="complex-analysis-cohort-inspector")
-    evaluation_id = st.selectbox("Evaluation context (optional)", [""] + [str(row.get("evaluation_id") or "") for row in filtered_evaluations if row.get("evaluation_id")],
-        format_func=lambda value: "No specific Evaluation" if not value else next((f"{row.get('method')} · {row.get('structure_label')}" for row in filtered_evaluations if str(row.get("evaluation_id") or "") == value), value),
-        key="complex-analysis-cohort-inspector-evaluation")
-    if st.button("Open selected model in Scientific Inspector", key="complex-analysis-cohort-open-inspector"):
-        sample = sample_by_id[inspect_id]
-        if sample.get("source_kind") == "Results":
-            job = sample["job"]
-            if sample.get("remote"):
-                from mn_molecular_design_studio import complex_analysis_ui as workspace
-                workspace.open_remote_result_complex(job, sample["candidate"], sample["relative_path"], user=user,
-                    structure_content=Path(sample["path"]).read_bytes(), source_run_dir=sample["source_run_dir"],
-                    structure_field=sample["structure_field"], structure_sha256=sample["digest"])
-            else:
-                from mn_molecular_design_studio import complex_analysis_ui as workspace
-                workspace.open_result_complex(job["run_dir"], sample["path"], sample["candidate"], user=user)
-        else:
-            _open_in_inspector(sample, "", evaluation_id)
-
-    compare_ids = st.multiselect("Choose 2–5 structures for detailed comparison", selected_ids,
-        default=selected_ids[:2] if len(selected_ids) >= 2 else [], max_selections=5,
-        format_func=lambda value: sample_by_id[value]["label"], key="complex-analysis-cohort-compare")
-    if len(compare_ids) >= 2:
-        with st.expander("Detailed structural comparison", expanded=False):
-            compare_sources = [_comparison_sample(user, sample_by_id[value]) for value in compare_ids]
-            missing_roles = [sample["label"] for sample in compare_sources
-                if (sample.get("complex_type") == "protein-protein"
-                    and (not sample.get("target_chains") or not sample.get("binder_chains")
-                         or set(sample.get("target_chains") or []) & set(sample.get("binder_chains") or [])))
-                or (sample.get("complex_type") == "protein-ligand" and not sample.get("target_chains"))]
-            if missing_roles:
-                st.info("Comparison needs recorded target/binder or receptor chain assignments. Roles are missing for: "
-                        + ", ".join(missing_roles) + ". The structures remain available in the board and Inspector.")
-            else:
-                from mn_molecular_design_studio.complex_analysis_comparison_ui import render_comparison
-                render_comparison(user, selected_sources=compare_sources)
+    elif step == "shortlist":
+        st.markdown("### Record an experimental shortlist")
+        st.caption("Human rationale and shortlist status are persisted separately from computational acceptance.")
+        from mn_molecular_design_studio.complex_analysis_shortlist_export import render_shortlist_review_export
+        render_shortlist_review_export(user, selected_samples, key_prefix="explorer-shortlist")

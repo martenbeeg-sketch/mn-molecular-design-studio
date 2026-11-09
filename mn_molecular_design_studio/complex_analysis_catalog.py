@@ -11,6 +11,9 @@ def authorized_structure_catalog(
     session_state: MutableMapping[str, Any],
     cache_key: str,
     query: str = "",
+    project_id: str = "",
+    collection: str = "all",
+    group_id: str = "",
     limit: int = 100,
     advance: bool = False,
     refresh: bool = False,
@@ -34,11 +37,16 @@ def authorized_structure_catalog(
     if not user_id:
         raise PermissionError("A signed-in user is required to list Database structures.")
     search = str(query or "")
+    project = str(project_id or "")
+    collection_name = str(collection or "all")
+    group = str(group_id or "")
+    filters = {"project_id": project, "collection": collection_name, "group_id": group}
     cached = session_state.get(cache_key)
     reusable = (
         not refresh and isinstance(cached, dict)
         and str(cached.get("user_id") or "") == user_id
         and str(cached.get("query") or "") == search
+        and cached.get("filters") == filters
         and int(cached.get("page_size") or 0) == page_size
         and bool(cached.get("eligibility_filter")) == bool(eligible)
     )
@@ -49,7 +57,7 @@ def authorized_structure_catalog(
         next_offset: int | None = offset
         while len(found) < wanted and next_offset is not None:
             page = database.list_structure_records(
-                user, collection="all", query=search,
+                user, collection=collection_name, project_id=project, group_id=group, query=search,
                 limit=min(page_size, wanted - len(found)), offset=next_offset,
             )
             page_rows = [row for row in page.get("items", []) if isinstance(row, dict)]
@@ -66,6 +74,7 @@ def authorized_structure_catalog(
             ids = list(dict.fromkeys(str(row.get("id") or "") for row in rows if row.get("id")))
             cached = {
                 "user_id": user_id, "query": search, "page_size": page_size,
+                "filters": filters,
                 "ids": ids, "authorized_ids": ids, "next_offset": next_offset,
                 "eligibility_filter": True,
             }
@@ -80,7 +89,8 @@ def authorized_structure_catalog(
             for start in range(0, len(ids), 5000):
                 chunk = ids[start:start + 5000]
                 page = database.list_structure_records(
-                    user, collection="all", query=search, molecule_ids=chunk,
+                    user, collection=collection_name, project_id=project, group_id=group,
+                    query=search, molecule_ids=chunk,
                     limit=max(1, len(chunk)), offset=0,
                 )
                 authorized_rows.extend(row for row in page.get("items", [])
@@ -113,11 +123,13 @@ def authorized_structure_catalog(
 
     if not reusable:
         page = database.list_structure_records(
-            user, collection="all", query=search, limit=page_size, offset=0,
+            user, collection=collection_name, project_id=project, group_id=group,
+            query=search, limit=page_size, offset=0,
         )
         ids = list(dict.fromkeys(str(row.get("id") or "") for row in page.get("items", []) if row.get("id")))
         cached = {
             "user_id": user_id, "query": search, "page_size": page_size,
+            "filters": filters,
             "ids": ids, "authorized_ids": ids, "next_offset": page.get("next_offset"),
             "eligibility_filter": False,
         }
@@ -136,13 +148,14 @@ def authorized_structure_catalog(
             # ID count (including revoked entries) plus one page, so revocation
             # does not silently shorten the newly requested page.
             page = database.list_structure_records(
-                user, collection="all", query=search,
+                user, collection=collection_name, project_id=project, group_id=group, query=search,
                 limit=min(5000, len(ids) + page_size), offset=0,
             )
             ids = [str(row.get("id") or "") for row in page.get("items", []) if row.get("id")]
         else:
             page = database.list_structure_records(
-                user, collection="all", query=search, limit=page_size, offset=int(next_offset),
+                user, collection=collection_name, project_id=project, group_id=group,
+                query=search, limit=page_size, offset=int(next_offset),
             )
             new_ids = [str(row.get("id") or "") for row in page.get("items", []) if row.get("id")]
             ids = list(dict.fromkeys([*ids, *new_ids]))
@@ -156,7 +169,8 @@ def authorized_structure_catalog(
     for start in range(0, len(ids), 5000):
         chunk = ids[start:start + 5000]
         page = database.list_structure_records(
-            user, collection="all", query=search, molecule_ids=chunk,
+            user, collection=collection_name, project_id=project, group_id=group,
+            query=search, molecule_ids=chunk,
             limit=max(1, len(chunk)), offset=0,
         )
         rows_by_id.update({str(row.get("id") or ""): row for row in page.get("items", []) if row.get("id")})

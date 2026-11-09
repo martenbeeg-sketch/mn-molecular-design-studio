@@ -623,10 +623,70 @@ def test_streamlit_collection_picker_loads_next_acl_filtered_page(monkeypatch):
     record_key = "complex-analysis-collection-selected-records-" + hashlib.sha256(USER["id"].encode()).hexdigest()[:12]
     assert len(app.multiselect(key=record_key).options) == 2
 
-    next(button for button in app.button if button.label == "Load next Database structure page").click().run()
+    next(button for button in app.button if button.label == "Load next Database page").click().run()
 
     assert not app.exception
     assert len(app.multiselect(key=record_key).options) == 3
+
+
+def test_explorer_preserves_acceptance_and_multi_engine_selection_across_steps(monkeypatch):
+    from mn_molecular_design_studio import complex_analysis_collection_ui as explorer
+
+    samples = [
+        {"identity": "database:rfd4:structure-rfd4", "molecule_id": "rfd4", "structure_id": "structure-rfd4",
+         "model_id": "rfd4-model", "digest": "a" * 64, "label": "RFD4 design", "kind": "other",
+         "generator_engine": "RFD4", "prediction_engine": "", "target_identity": "target-x",
+         "candidate": {"candidate_id": "rfd4-candidate", "source_tool": "RFD4",
+                       "raw_metadata": {"validation_acceptance": {"status": "accepted", "policy": {"version": "policy-v1"}}}},
+         "evaluation_entries": [], "review_annotation": {}, "components": [], "context": {}},
+        {"identity": "database:bindcraft:structure-bindcraft", "molecule_id": "bindcraft", "structure_id": "structure-bindcraft",
+         "model_id": "bindcraft-model", "digest": "b" * 64, "label": "BindCraft2 design", "kind": "other",
+         "generator_engine": "BindCraft2", "prediction_engine": "", "target_identity": "target-x",
+         "candidate": {"candidate_id": "bindcraft-candidate", "source_tool": "BindCraft2",
+                       "metrics": {"native_pass_filters": True}},
+         "evaluation_entries": [], "review_annotation": {}, "components": [], "context": {}},
+    ]
+    monkeypatch.setattr(explorer, "_load_workspace_samples", lambda _user: samples)
+    monkeypatch.setattr(explorer, "_render_batch_assessment", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(explorer, "_render_evaluation_board", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(explorer, "_comparison_sample",
+                        lambda _user, sample: {"complex_type": "other", "label": sample["label"]})
+
+    script = (
+        "import streamlit as st\n"
+        "import mn_molecular_design_studio.complex_analysis_collection_ui as ui\n"
+        "import mn_molecular_design_studio.complex_analysis_comparison_ui as comparison\n"
+        "comparison.render_comparison = lambda *args, **kwargs: st.caption('comparison stub')\n"
+        "st.session_state.setdefault('complex-analysis-flow-step', 'analyze')\n"
+        f"ui.render_collection_workspace({USER!r})\n"
+    )
+    app = AppTest.from_string(script, default_timeout=10).run()
+    assert not app.exception
+
+    app = app.selectbox(key="complex-analysis-cohort-acceptance-mode-widget").set_value("All designs").run()
+    app = app.multiselect(key="complex-analysis-cohort-generator-filter-widget").set_value(["RFD4", "BindCraft2"]).run()
+    app = app.multiselect(key="complex-analysis-cohort-selected-widget").set_value(
+        ["database:rfd4:structure-rfd4", "database:bindcraft:structure-bindcraft"]
+    ).run()
+    assert not app.exception
+
+    app.session_state["complex-analysis-flow-step"] = "compare"
+    app = app.run()
+    assert not app.exception
+    assert app.session_state["complex-analysis-flow-step"] == "compare"
+    assert app.session_state["complex-analysis-cohort-acceptance-mode-value"] == "All designs"
+    assert app.session_state["complex-analysis-cohort-selected-value"] == [
+        "database:rfd4:structure-rfd4", "database:bindcraft:structure-bindcraft",
+    ]
+
+    app.session_state["complex-analysis-flow-step"] = "analyze"
+    app = app.run()
+    assert not app.exception
+    assert app.selectbox(key="complex-analysis-cohort-acceptance-mode-widget").value == "All designs"
+    assert set(app.multiselect(key="complex-analysis-cohort-generator-filter-widget").value) == {"RFD4", "BindCraft2"}
+    assert set(app.multiselect(key="complex-analysis-cohort-selected-widget").value) == {
+        "database:rfd4:structure-rfd4", "database:bindcraft:structure-bindcraft",
+    }
 
 
 def test_ligand_pose_label_preserves_chain_qualified_and_residue_only_selectors():

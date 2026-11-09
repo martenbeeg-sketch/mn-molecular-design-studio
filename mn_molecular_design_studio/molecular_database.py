@@ -807,7 +807,7 @@ class MolecularDatabase:
         return [row["id"] for row in groups]
 
     def list_structure_records(self, user, *, project_id="", scope="organization", methods=None, collection="all",
-                               query="", molecule_type="", limit=1000, offset=0, molecule_ids=None,
+                               group_id="", query="", molecule_type="", limit=1000, offset=0, molecule_ids=None,
                                hide_smoke_test=False):
         """Return lightweight, ACL-filtered molecule rows with accessible structures.
 
@@ -819,7 +819,7 @@ class MolecularDatabase:
             raise ValueError("Invalid structure-discovery page size or offset.")
         if collection not in {"all", "library"}:
             raise ValueError("Collection must be 'all' or 'library'.")
-        visible_ids = self._visible_ids(user, project_id=project_id, scope=scope, methods=methods,
+        visible_ids = self._visible_ids(user, group_id=group_id, project_id=project_id, scope=scope, methods=methods,
                                         collection=collection, hide_smoke_test=hide_smoke_test)
         # As in list_molecules, collection selection limits which identities are
         # discovered, while structures can come from any group the user may read.
@@ -840,9 +840,20 @@ class MolecularDatabase:
             clause += (
                 " AND (m.components LIKE ? OR EXISTS (SELECT 1 FROM molecule_members search_mm "
                 "WHERE search_mm.molecule_id=m.id AND search_mm.group_id IN (SELECT value FROM json_each(?)) "
-                "AND (search_mm.name LIKE ? OR search_mm.metadata LIKE ?)))"
+                "AND (search_mm.name LIKE ? OR search_mm.metadata LIKE ?)) OR EXISTS "
+                "(SELECT 1 FROM molecule_structures search_s WHERE search_s.molecule_id=m.id "
+                "AND search_s.group_id IN (SELECT value FROM json_each(?)) AND ("
+                "json_extract(search_s.context,'$.candidate_id') LIKE ? OR "
+                "json_extract(search_s.context,'$.native_candidate_id') LIKE ? OR "
+                "json_extract(search_s.context,'$.source_tool') LIKE ? OR "
+                "json_extract(search_s.context,'$.generator') LIKE ? OR "
+                "json_extract(search_s.context,'$.prediction_engine') LIKE ? OR "
+                "json_extract(search_s.context,'$.target_identity') LIKE ? OR "
+                "json_extract(search_s.context,'$.target_id') LIKE ? OR "
+                "json_extract(search_s.context,'$.target_molecule_id') LIKE ?)))"
             )
-            parameters.extend([needle, visible_json, needle, needle])
+            parameters.extend([needle, visible_json, needle, needle, accessible_json,
+                               *([needle] * 8)])
         if molecule_type:
             clause += " AND m.type=?"
             parameters.append(molecule_type)
@@ -877,6 +888,15 @@ class MolecularDatabase:
                     "json_object('model_index',json_extract(context,'$.model_index'),"
                     "'model',json_extract(context,'$.model'),'sample',json_extract(context,'$.sample'),"
                     "'candidate_id',json_extract(context,'$.candidate_id'),"
+                    "'native_candidate_id',json_extract(context,'$.native_candidate_id'),"
+                    "'source_tool',json_extract(context,'$.source_tool'),"
+                    "'generator',json_extract(context,'$.generator'),"
+                    "'prediction_engine',json_extract(context,'$.prediction_engine'),"
+                    "'model_id',json_extract(context,'$.model_id'),"
+                    "'target_id',json_extract(context,'$.target_id'),"
+                    "'target_identity',json_extract(context,'$.target_identity'),"
+                    "'target_molecule_id',json_extract(context,'$.target_molecule_id'),"
+                    "'acceptance_status',json_extract(context,'$.acceptance_decision.status'),"
                     "'database_structure_policy',json_extract(context,'$.database_structure_policy')) AS context "
                     "FROM molecule_structures WHERE molecule_id IN (SELECT value FROM json_each(?)) "
                     "AND group_id IN (SELECT value FROM json_each(?)) ORDER BY created_at DESC",

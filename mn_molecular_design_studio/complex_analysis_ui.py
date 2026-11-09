@@ -18,14 +18,16 @@ VIEWER_MAX_BYTES = 50 * 1024 * 1024
 
 
 def initialize_workspace_view(session_state) -> None:
-    """Set the run-first default without replacing explicit deep links."""
-    if session_state.get("complex-analysis-dashboard-version") == "run-first-v1":
+    """Set the Database-only analysis workspace without replacing Inspector links."""
+    if session_state.get("complex-analysis-open") or session_state.get("complex-analysis-active"):
+        session_state["complex-analysis-workspace-view"] = "inspector"
         return
-    view = session_state.get("complex-analysis-workspace-view")
-    if not session_state.get("complex-analysis-open") and view not in {"results_board", "inspector"}:
-        session_state["complex-analysis-workspace-view"] = "dashboard"
-        session_state.pop("complex-analysis-source-kind", None)
-    session_state["complex-analysis-dashboard-version"] = "run-first-v1"
+    # Old sessions may retain the former run-first dashboard or Results board.
+    # They are presentation state only and must not make the Results catalog a
+    # dependency of ordinary Complex Analysis page loads.
+    session_state["complex-analysis-workspace-view"] = "database"
+    session_state.pop("complex-analysis-source-kind", None)
+    session_state["complex-analysis-dashboard-version"] = "database-only-v1"
 
 
 def _structure_suffix(path: Path) -> str:
@@ -222,6 +224,7 @@ def open_result_complex(run_dir: Path | str, structure_path: Path | str, candida
         "artifact_task_group": task_group,
         "artifact_run_id": run_id,
         "candidate_id": str(candidate.get("candidate_id") or ""),
+        "candidate": candidate,
         "model_index": str(model_id if model_id is not None else ""),
         "relative_path": relative_path,
         "structure_sha256": hashlib.sha256(resolved_structure.read_bytes()).hexdigest(),
@@ -814,22 +817,7 @@ def _render_remote_results_source(user: dict, opened: dict, *, workflow_schema=N
             "artifact_uri": uri, "structure_sha256": digest,
             "candidate_source_metadata": candidate.get("raw_metadata") or {},
         })
-    if st.button("Results Evaluation Board", key="complex-analysis-remote-results-board"):
-        from mn_molecular_design_studio.complex_analysis_results_ui import open_results_board
-        open_results_board(candidate_ids=[candidate['candidate_id']], job=remote_job)
-    job = dict(remote_job, run_dir=str(staged_run_dir))
-    selected = {
-        "path": path, "relative_path": relative, "candidate": candidate,
-        "candidate_id": str(candidate.get("candidate_id") or ""),
-        "artifact_task_group": str(remote_job.get("task_group") or ""),
-        "artifact_run_id": str(remote_job.get("run_id") or ""),
-        "artifact_path": str(remote_job.get("local_reference") or "") + "/" + relative,
-        "analysis_structure_uri": uri,
-    }
-    _render_biotite_workspace(user, job, selected, components,
-                              workflow_schema=workflow_schema,
-                              project_selector=project_selector, submit=submit,
-                              viewer_key=key)
+    st.caption("Read-only Results inspection. To analyze or shortlist this design, explicitly save the selected candidate/model to the Molecular Database from its Results page.")
 
 
 def _read_json(path: Path) -> dict:
@@ -4253,191 +4241,176 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
 
 
 def _render_results_source(user: dict, opened: dict, *, workflow_schema=None, project_selector=None, submit=None) -> None:
-    jobs = _accessible_result_jobs(user)
-    if not jobs:
-        st.info("No accessible completed Results jobs are available.")
-        return
-    opened_ref = f"{opened.get('task_group') or ''}/{opened.get('run_id') or ''}".strip("/")
-    refs = [f"{row.get('task_group')}/{row.get('run_id')}" for row in jobs]
-    labels = {
-        f"{row.get('task_group')}/{row.get('run_id')}":
-            f"{row.get('campaign_name') or row.get('display_tool') or row.get('tool') or 'Result'} · {row.get('job_code') or row.get('run_id')} · {row.get('status')}"
-        for row in jobs
-    }
-    if opened_ref not in refs:
-        opened_ref = refs[0]
-    job_widget_key = "complex-analysis-results-job"
-    if st.session_state.get(job_widget_key) not in refs:
-        st.session_state[job_widget_key] = opened_ref
-    selected_ref = st.selectbox("Completed Results job", refs, index=refs.index(opened_ref), format_func=lambda value: labels[value], key=job_widget_key)
-    job = next(row for row in jobs if f"{row.get('task_group')}/{row.get('run_id')}" == selected_ref)
-    options = _job_structure_options(user, job)
-    if not options:
-        st.info("This completed job has no accessible PDB/mmCIF or other supported structure artifact.")
-        return
-    relative_paths = [item["relative_path"] for item in options]
-    requested_path = str(opened.get("relative_path") or st.session_state.get("complex-analysis-results-structure") or "")
-    if requested_path not in relative_paths:
-        requested_path = relative_paths[0]
-    structure_widget_key = "complex-analysis-results-structure"
-    if st.session_state.get(structure_widget_key) not in relative_paths:
-        st.session_state[structure_widget_key] = requested_path
-    structure_path = st.selectbox(
-        "Structure / model / pose", relative_paths,
-        index=relative_paths.index(requested_path),
-        format_func=lambda value: next(
-            (f"{item['candidate_id']} · {item['label']}" if item.get("candidate_id") else item["label"])
-            for item in options if item["relative_path"] == value
-        ),
-        key=structure_widget_key,
-    )
-    selected = next(item for item in options if item["relative_path"] == structure_path)
-    candidate = selected.get("candidate") or {}
-    candidate_metadata = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
-    model_identity = candidate.get("model_id")
-    if model_identity in (None, ""):
-        model_identity = candidate.get("model_index")
-    if model_identity in (None, ""):
-        model_identity = candidate_metadata.get("model_index")
-    if model_identity in (None, "") and str(opened.get("candidate_id") or "") == str(candidate.get("candidate_id") or ""):
-        model_identity = opened.get("model_index")
-    if model_identity in (None, ""):
-        model_match = re.search(r"_model_(\d+)(?:\.|$)", Path(selected["path"]).name)
-        if model_match:
-            model_identity = model_match.group(1)
-    st.caption(
-        f"Results: {job.get('task_group')}/{job.get('run_id')} · "
-        f"{job.get('display_tool') or job.get('tool') or 'Unknown tool'} · {selected['relative_path']}"
-    )
-    if candidate.get("candidate_id"):
-        st.caption(f"Candidate/model: {candidate.get('candidate_id')} · {model_identity if model_identity not in (None, '') else 'model not specified'}")
-    try:
-        content = selected["path"].read_bytes()
-        components = component_inventory(content, selected["path"].name, candidate_metadata.get("components"))
-    except (OSError, ValueError) as exc:
-        st.error(f"Could not read the selected structure: {exc}")
-        return
-    _show_components(components)
-    viewer_key = f"complex-analysis-results-viewer-{selected_ref}-{structure_path}"
-    _show_structure(selected["path"], candidate_metadata, components, key=viewer_key,
-                    highlighted_selections=_active_biotite_highlights(viewer_key))
-    _show_component_groups(components, f"{selected_ref}-{structure_path}")
-    if candidate:
-        st.markdown("#### Existing model evaluation metadata")
-        st.json({
-            "candidate_id": candidate.get("candidate_id"),
-            "stage": candidate.get("stage"),
-            "source_tool": candidate.get("source_tool") or job.get("tool"),
-            "stored_metrics": candidate.get("metrics") or {},
-            "model_confidence_outputs": candidate_metadata.get("confidence_outputs") or {},
-            "source_metadata": {key: value for key, value in candidate_metadata.items()
-                                if key not in {"components", "confidence_outputs"}},
-        })
+    """Render one explicitly opened, authorized Results artifact without catalog discovery."""
+    from pathlib import PurePosixPath
+    from mn_molecular_design_studio.auth import can_access_job
+    from mn_molecular_design_studio.job_catalog import get_job_access_record, job_artifacts
+    from mn_molecular_design_studio.runtime import runs_root
+
+    source_ref = (str(opened.get("task_group") or ""), str(opened.get("run_id") or ""))
+    artifact_ref = (str(opened.get("artifact_task_group") or opened.get("task_group") or ""),
+                    str(opened.get("artifact_run_id") or opened.get("run_id") or ""))
+    reference = str(opened.get("relative_path") or "")
+    relative = PurePosixPath(reference)
+    # Cross-run navigation persists a portable runs:/// reference so that the
+    # parent campaign and the child structure-producing job remain distinct.
+    # Resolve that reference only after both jobs have passed authorization.
+    if reference.startswith("runs:///"):
+        portable_parts = PurePosixPath(reference.removeprefix("runs:///"))
+        if (portable_parts.is_absolute() or len(portable_parts.parts) < 3
+                or ".." in portable_parts.parts or tuple(portable_parts.parts[:2]) != artifact_ref):
+            raise ValueError("The portable Results Inspector link does not match its producing job.")
+        artifact_relative = PurePosixPath(*portable_parts.parts[2:])
     else:
-        st.info("No candidate evaluation metadata is associated with this structure artifact.")
+        artifact_relative = relative
+    if (not all(source_ref) or not all(artifact_ref) or artifact_relative.is_absolute()
+            or not artifact_relative.parts or ".." in artifact_relative.parts):
+        raise ValueError("The Results Inspector link is incomplete or invalid.")
+
+    source_access = get_job_access_record(*source_ref)
+    artifact_access = get_job_access_record(*artifact_ref)
+    if (not source_access or not artifact_access or not can_access_job(user, source_access)
+            or not can_access_job(user, artifact_access)):
+        raise PermissionError("The source job or structure-producing job is unavailable or not authorized.")
+
+    root = Path(runs_root()).expanduser().resolve()
+    source_run_dir = (root / str(source_access.get("run_relative_path") or "")).resolve(strict=True)
+    artifact_run_dir = (root / str(artifact_access.get("run_relative_path") or "")).resolve(strict=True)
+    source_run_dir.relative_to(root)
+    artifact_run_dir.relative_to(root)
+    structure_path = (artifact_run_dir / Path(*artifact_relative.parts)).resolve(strict=True)
+    structure_path.relative_to(artifact_run_dir)
+    structure_path.relative_to(root)
+
+    # Revalidate the artifact against the producing job's registered manifest.
+    registered = False
+    for artifact in job_artifacts(*artifact_ref):
+        registered_relative = PurePosixPath(str(artifact.get("relative_path") or ""))
+        if registered_relative.is_absolute() or ".." in registered_relative.parts:
+            continue
+        try:
+            registered_path = (artifact_run_dir / Path(*registered_relative.parts)).resolve(strict=True)
+            registered_path.relative_to(artifact_run_dir)
+        except (OSError, ValueError):
+            continue
+        if registered_relative == artifact_relative and registered_path == structure_path:
+            registered = True
+            break
+    if not registered:
+        raise PermissionError("The selected structure is not a registered artifact of its authorized Results job.")
+
+    candidate = opened.get("candidate") if isinstance(opened.get("candidate"), dict) else {}
+    candidate_id = str(opened.get("candidate_id") or "")
+    if not candidate and candidate_id:
+        from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
+        candidate_path = source_run_dir / "artifacts" / "normalized_candidates" / "candidates.jsonl"
+        if candidate_path.is_file():
+            candidate = next((row for row in read_candidates(candidate_path)
+                              if str(row.get("candidate_id") or "") == candidate_id), {})
+    if candidate_id and str(candidate.get("candidate_id") or "") != candidate_id:
+        raise ValueError("The Results Inspector candidate no longer matches its saved source reference.")
+    if candidate:
+        from mn_molecular_design_studio import cofolding_results
+        expected = cofolding_results.structure_for(source_run_dir, candidate)
+        if expected is None or expected.resolve(strict=True) != structure_path:
+            raise ValueError("The selected structure does not match the explicitly selected Results candidate.")
+
+    digest = _structure_digest(structure_path)
+    if not digest or (opened.get("structure_sha256") and digest != str(opened["structure_sha256"])):
+        raise ValueError("The selected Results structure changed or failed its saved digest check.")
+    metadata = _read_json(source_run_dir / "metadata.json")
+    candidate_metadata = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
+    model_identity = (candidate.get("model_id") or candidate.get("model_index")
+                      or candidate_metadata.get("model_id") or candidate_metadata.get("model_index")
+                      or opened.get("model_index") or "model not specified")
+
+    st.caption(f"Results: {source_ref[0]}/{source_ref[1]} · {metadata.get('tool') or metadata.get('display_tool') or 'Unknown tool'} · {reference}")
+    if artifact_ref != source_ref:
+        st.caption(f"Structure produced by linked job {artifact_ref[0]}/{artifact_ref[1]}.")
+    st.caption(f"Candidate/model: {candidate_id or 'not recorded'} · {model_identity}")
+    st.caption(f"SHA-256: {digest}")
+    content = structure_path.read_bytes()
+    components = component_inventory(content, structure_path.name, candidate_metadata.get("components"))
+    _show_components(components)
+    viewer_key = "complex-analysis-targeted-results-" + hashlib.sha256(
+        f"{source_ref}:{artifact_ref}:{relative.as_posix()}:{digest}".encode()).hexdigest()[:16]
+    _show_structure(structure_path, candidate_metadata, components, key=viewer_key,
+                    highlighted_selections=_active_biotite_highlights(viewer_key))
+    _show_component_groups(components, viewer_key)
+    if candidate:
+        st.markdown("#### Saved candidate evidence")
+        st.json({
+            "candidate_id": candidate_id,
+            "stage": candidate.get("stage"),
+            "source_tool": candidate.get("source_tool") or metadata.get("tool"),
+            "stored_metrics": candidate.get("metrics") or {},
+            "confidence_outputs": candidate_metadata.get("confidence_outputs") or {},
+        })
     with st.expander("Results provenance", expanded=False):
         st.json({
-            "task_group": job.get("task_group"),
-            "run_id": job.get("run_id"),
-            "job_code": job.get("job_code"),
-            "tool": job.get("display_tool") or job.get("tool"),
-            "project_id": job.get("project_id"),
-            "completed_at": job.get("completed_at"),
-            "candidate_id": candidate.get("candidate_id"),
-            "model_index": model_identity,
-            "artifact_task_group": selected.get("artifact_task_group"),
-            "artifact_run_id": selected.get("artifact_run_id"),
-            "artifact_path": selected.get("artifact_path"),
-            "job_relative_path": selected["relative_path"],
+            "source_job": f"{source_ref[0]}/{source_ref[1]}",
+            "source_project_id": source_access.get("project_id"),
+            "source_owner_id": source_access.get("owner_id"),
+            "structure_job": f"{artifact_ref[0]}/{artifact_ref[1]}",
+            "candidate_id": candidate_id,
+            "model_id": model_identity,
+            "artifact_path": reference,
+            "structure_sha256": digest,
+            "candidate_source_metadata": candidate_metadata,
         })
-    from mn_molecular_design_studio.molecular_database import MolecularDatabase
-    _render_biotite_workspace(user, job, selected, components,
-                              workflow_schema=workflow_schema,
-                              project_selector=project_selector, submit=submit,
-                              viewer_key=viewer_key)
-    review_subject, review_path = _results_review_reference(user, job, selected)
-    _show_human_review(
-        MolecularDatabase(), user, source_kind="results", subject_id=review_subject,
-        structure_ref=review_path,
-    )
+    st.caption("Read-only Results inspection. To analyze or shortlist this design, explicitly save the selected candidate/model to the Molecular Database from its Results page.")
 
 
 def _render_complex_analysis_inspector(user: dict, *, workflow_schema=None, project_selector=None, submit=None) -> None:
-    """Render the detailed Database/Results structure and provenance workspace."""
+    """Render one explicitly selected Database structure or Results artifact."""
     opened = st.session_state.pop("complex-analysis-open", None)
     if opened:
         st.session_state["complex-analysis-active"] = opened
     active = st.session_state.get("complex-analysis-active") or {}
-    if active.get("kind") and "complex-analysis-source-kind" not in st.session_state:
-        st.session_state["complex-analysis-source-kind"] = "Database" if active["kind"] == "database" else "Results"
     st.title("Complex Analysis")
-    if st.button("← Run-first dashboard", key="complex-analysis-return-dashboard"):
-        st.session_state["complex-analysis-workspace-view"] = "dashboard"
+    if st.button("← Select Database designs", key="complex-analysis-return-database"):
+        st.session_state["complex-analysis-workspace-view"] = "database"
         st.session_state.pop("complex-analysis-source-kind", None)
         st.session_state.pop("complex-analysis-active", None)
         st.session_state.pop("complex-analysis-detail-visible", None)
         st.rerun()
-    st.caption("Inspect saved molecular structures, component identities, model metadata, and source provenance.")
-    source = st.radio("Source", ["Database", "Results"], horizontal=True, key="complex-analysis-source-kind")
+    kind = str(active.get("kind") or "")
+    st.caption("Inspect the exact saved structure and its scientific provenance.")
     try:
-        if source == "Database":
-            _render_database_source(user, active if active.get("kind") == "database" else {},
+        if kind == "database":
+            _render_database_source(user, active,
                                     workflow_schema=workflow_schema, submit=submit)
-        elif active.get("kind") == "remote_results":
+        elif kind == "remote_results":
             _render_remote_results_source(user, active,
                                           workflow_schema=workflow_schema,
                                           project_selector=project_selector, submit=submit)
-        else:
+        elif kind == "results":
             _render_results_source(user, active if active.get("kind") == "results" else {},
                                    workflow_schema=workflow_schema,
                                    project_selector=project_selector, submit=submit)
+        else:
+            st.info("Open an individual structure from Results, or select a saved Database structure to inspect it here.")
     except PermissionError:
         st.warning("This record or job is unavailable or you do not have access to it.")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         st.error(f"Could not load this structure source: {html.escape(str(exc))}")
-    collection_panel = st.expander(
-        "Collection Map & Evaluation Board", expanded=False,
-        key="complex-analysis-collection-expander", on_change="rerun",
-    )
-    if collection_panel.open:
-        with collection_panel:
-            from mn_molecular_design_studio.complex_analysis_collection_ui import render_collection_workspace
-            render_collection_workspace(user)
-    comparison_panel = st.expander(
-        "Compare saved complexes", expanded=False,
-        key="complex-analysis-comparison-expander", on_change="rerun",
-    )
-    if comparison_panel.open:
-        with comparison_panel:
-            from mn_molecular_design_studio.complex_analysis_comparison_ui import render_comparison
-            render_comparison(user, workflow_schema=workflow_schema,
-                              project_selector=project_selector, submit=submit)
 
 
 def render_complex_analysis_workspace(user: dict, *, workflow_schema=None, project_selector=None, submit=None) -> None:
-    """Render the run-first dashboard, preserving deep links to the Inspector."""
-    if st.session_state.get('complex-analysis-workspace-view') == 'results_board':
-        if st.button('← Complex Analysis Dashboard', key='complex-analysis-results-board-dashboard'):
-            st.session_state['complex-analysis-workspace-view'] = 'dashboard'
-            st.session_state.pop('complex-analysis-open', None)
-            st.session_state.pop('complex-analysis-source-kind', None)
-            st.rerun()
-        from mn_molecular_design_studio.complex_analysis_results_ui import render_results_board
-        render_results_board(user, workflow_schema=workflow_schema, submit=submit)
-        return
+    """Render the Database-first Select → Analyze → Compare → Shortlist workspace.
+
+    Results catalog discovery belongs to the Results workspace. Complex Analysis
+    only enters a Results path for an explicitly opened artifact deep link.
+    """
     opened = bool(st.session_state.get("complex-analysis-open"))
+    active = st.session_state.get("complex-analysis-active")
     view = str(st.session_state.get("complex-analysis-workspace-view") or "")
-    # Existing code paths and tests that set the explicit Database/Results
-    # source continue to open the advanced inspector. New app sessions are
-    # initialized to the run-first dashboard by run_app.py.
-    legacy_source = "complex-analysis-source-kind" in st.session_state
-    if opened or view == "inspector" or (legacy_source and view != "dashboard"):
+    if opened or (view == "inspector" and isinstance(active, dict)):
         _render_complex_analysis_inspector(user, workflow_schema=workflow_schema,
                                            project_selector=project_selector, submit=submit)
         return
-    from mn_molecular_design_studio.complex_analysis_dashboard import render_complex_analysis_dashboard
-    if st.button('Results Evaluation Board', key='complex-analysis-results-board'):
-        st.session_state['complex-analysis-workspace-view'] = 'results_board'
-        st.rerun()
-    render_complex_analysis_dashboard(user, workflow_schema=workflow_schema,
-                                      project_selector=project_selector, submit=submit)
+    st.session_state["complex-analysis-workspace-view"] = "database"
+    st.title("Complex Analysis")
+    st.caption("Select saved Database designs, review or run assessments, compare structures, then record an experimental shortlist.")
+    from mn_molecular_design_studio.complex_analysis_collection_ui import render_collection_workspace
+    render_collection_workspace(user, workflow_schema=workflow_schema, submit=submit)
