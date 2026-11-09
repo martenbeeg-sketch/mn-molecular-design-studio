@@ -1435,6 +1435,99 @@ def test_save_run_selection_is_exact_repeatable_and_copies_run_context(database)
     assert [row[0] for row in members] == [chosen["molecule_id"]]
 
 
+def test_results_passing_collection_preserves_engine_model_and_is_idempotent(database):
+    from mn_molecular_design_studio.molecular_database_results import list_run_molecules, save_run_selection
+
+    candidates = [
+        {"candidate_id": "binder-pass", "source_tool": "boltz2",
+         "stage": "complex_refolding", "complex_pdb": "pass.pdb", "binder_sequence": "ACD",
+         "binder_chains": ["B"], "target_chains": ["A"],
+         "parents": ["rfd4-parent-9"], "metrics": {"ipTM": 0.81},
+         "raw_metadata": {"model_id": "boltz-model-3", "generator_engine": "RFD4",
+                          "prediction_engine": "Boltz-2", "target_identity": "PD-L1 construct X",
+                          "validation_acceptance": {"status": "accepted", "policy": {"version": "accept-v3"}}}},
+        {"candidate_id": "binder-reject", "source_tool": "boltz2",
+         "stage": "complex_refolding", "complex_pdb": "reject.pdb", "binder_sequence": "ACD",
+         "binder_chains": ["B"], "target_chains": ["A"],
+         "raw_metadata": {"model_id": "boltz-model-4", "prediction_engine": "Boltz-2", "target_identity": "PD-L1 construct X",
+                          "validation_acceptance": {"status": "rejected", "policy": {"version": "accept-v3"}}}},
+    ]
+    run = _make_run(database, "refolding-validation", "passing-collection", candidates=candidates)
+    (run / "pass.pdb").write_text(_pdb_efg_acd_complex())
+    (run / "reject.pdb").write_text(_pdb_efg_acd_complex())
+
+    rows = list_run_molecules(run, A, database=database)
+    passing = next(row for row in rows if row.get("candidate_id") == "binder-pass")
+    collection_metadata = {
+        "acceptance_stage": "Final computational acceptance", "acceptance_stage_id": "final",
+        "acceptance_policies": [{"version": "accept-v3"}],
+        "target_identity": "PD-L1 construct X", "generator": "RFD4", "source_workstation": "pc004033",
+        "accepted_candidate_models": [{"candidate_id": "binder-pass", "model_id": "boltz-model-3"}],
+    }
+    candidate_models = [{
+        "candidate_id": "binder-pass", "model_id": "boltz-model-3",
+        "decision": {"stage_id": "final", "cohort_status": "passed", "policy": {"version": "accept-v3"}},
+    }]
+    first = save_run_selection(run, A, [passing["id"]], database=database, name="Passing designs",
+                               candidate_models=candidate_models, collection_metadata=collection_metadata)
+    repeated = save_run_selection(run, A, [passing["id"]], database=database, name="Passing designs",
+                                  candidate_models=candidate_models, collection_metadata=collection_metadata)
+
+    assert repeated["group_id"] == first["group_id"]
+    assert first["molecule_ids"] == [passing["molecule_id"]]
+    assert database.list_molecules(A, group_id=first["group_id"])["total"] == 1
+    with database.connection() as connection:
+        member_structures = connection.execute(
+            "SELECT id,path,context FROM molecule_structures WHERE group_id=?", (first["group_id"],)
+        ).fetchall()
+        sources = connection.execute(
+            "SELECT provenance FROM molecule_sources WHERE group_id=? AND json_extract(provenance,'$.saved_selection')=1",
+            (first["group_id"],),
+        ).fetchall()
+    assert len(member_structures) == 1
+    structure_context = json.loads(member_structures[0]["context"])
+    assert structure_context["candidate_id"] == "binder-pass"
+    assert structure_context["candidate_model_id"] == "boltz-model-3"
+    assert structure_context["model_id"] == "0"  # Actual coordinate-model selector remains distinct.
+    assert structure_context["generator_engine"] == "RFD4"
+    assert structure_context["prediction_engine"] == "Boltz-2"
+    assert structure_context["target_identity"] == "PD-L1 construct X"
+    assert structure_context["parent_ids"] == ["rfd4-parent-9"]
+    assert structure_context["portable"] is True
+    assert len(sources) == 1
+    source = json.loads(sources[0]["provenance"])
+    assert source["acceptance_stage"] == "Final computational acceptance"
+    assert source["acceptance_decision"]["policy"]["version"] == "accept-v3"
+    assert source["target_identity"] == "PD-L1 construct X"
+    assert source["generator_engine"] == "RFD4"
+    assert source["prediction_engine"] == "Boltz-2"
+
+
+def test_results_acceptance_inventory_keeps_final_native_and_unknown_stages_separate(database):
+    from mn_molecular_design_studio.molecular_database_results import run_acceptance_inventory
+
+    run = _make_run(database, "design", "acceptance-inventory", tool="rfd4",
+                    candidates=[
+        {"candidate_id": "final-pass", "metrics": {"native_pass_filters": False},
+         "raw_metadata": {"model_id": "m1", "validation_acceptance": {"status": "accepted", "policy": {"version": "final-v2"}}}},
+        {"candidate_id": "final-rejected", "metrics": {"native_pass_filters": True},
+         "raw_metadata": {"model_id": "m2", "validation_acceptance": {"status": "rejected", "policy": {"version": "final-v2"}}}},
+        {"candidate_id": "unknown", "metrics": {"confidence": 0.99}, "raw_metadata": {"model_id": "m3"}},
+    ])
+
+    inventory = run_acceptance_inventory(run, A)
+    by_stage = {row["stage_id"]: row for row in inventory["stages"]}
+    assert inventory["candidate_count"] == 3
+    assert by_stage["final"]["passed_model_count"] == 1
+    assert by_stage["final"]["failed_model_count"] == 1
+    assert by_stage["final"]["unrecorded_model_count"] == 1
+    assert by_stage["final"]["passed"][0]["model_id"] == "m1"
+    assert by_stage["native"]["passed_model_count"] == 1
+    assert by_stage["native"]["failed_model_count"] == 1
+    assert by_stage["native"]["passed"][0]["candidate_id"] == "final-rejected"
+    assert by_stage["native"]["failed"][0]["candidate_id"] == "final-pass"
+
+
 def test_run_result_acl_destination_schema_and_project_are_enforced(database):
     from mn_molecular_design_studio.molecular_database_results import list_run_molecules, save_run_selection
 

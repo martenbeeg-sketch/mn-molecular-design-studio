@@ -663,6 +663,7 @@ def test_explorer_preserves_acceptance_and_multi_engine_selection_across_steps(m
     app = AppTest.from_string(script, default_timeout=10).run()
     assert not app.exception
 
+
     app = app.selectbox(key="complex-analysis-cohort-acceptance-mode-widget").set_value("All designs").run()
     app = app.multiselect(key="complex-analysis-cohort-generator-filter-widget").set_value(["RFD4", "BindCraft2"]).run()
     app = app.multiselect(key="complex-analysis-cohort-selected-widget").set_value(
@@ -687,6 +688,16 @@ def test_explorer_preserves_acceptance_and_multi_engine_selection_across_steps(m
     assert set(app.multiselect(key="complex-analysis-cohort-selected-widget").value) == {
         "database:rfd4:structure-rfd4", "database:bindcraft:structure-bindcraft",
     }
+
+
+def test_collection_model_limit_is_scoped_to_selected_collection_set():
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _collection_model_selection_key
+
+    one_collection = _collection_model_selection_key(USER["id"], ["collection-a"])
+    two_collections = _collection_model_selection_key(USER["id"], ["collection-a", "collection-b"])
+    same_set_different_order = _collection_model_selection_key(USER["id"], ["collection-b", "collection-a"])
+    assert one_collection != two_collections
+    assert two_collections == same_set_different_order
 
 
 def test_ligand_pose_label_preserves_chain_qualified_and_residue_only_selectors():

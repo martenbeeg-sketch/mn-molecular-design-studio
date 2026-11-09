@@ -27,6 +27,12 @@ def _widget_key(prefix: str, value: str) -> str:
     return prefix + hashlib.sha256(str(value).encode()).hexdigest()[:12]
 
 
+def _collection_model_selection_key(user_id: str, group_ids: list[str]) -> str:
+    """Scope manual model limits to the exact authorized collection cohort."""
+    return _widget_key("complex-analysis-collection-model-selection-",
+                       str(user_id) + ":" + ":".join(sorted(str(value) for value in group_ids)))
+
+
 def _remember_widget_value(widget_key: str, state_key: str) -> None:
     """Keep workflow choices when Streamlit removes widgets from other steps."""
     st.session_state[state_key] = st.session_state.get(widget_key)
@@ -165,7 +171,8 @@ def _load_selected_structures(database, user: dict, records: list[dict], selecte
             inspector_data = {"evaluations": [], "evidence": [], "tracks": tracks, "structure_digest": ""}
 
         context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
-        model_id = str(context.get("model_id") or context.get("model_index") or context.get("model") or structure_id)
+        model_id = str(context.get("candidate_model_id") or context.get("source_model_id")
+                       or context.get("model_id") or context.get("model_index") or context.get("model") or structure_id)
         candidate = _database_candidate_view(record, structure, components, tracks, associated)
         samples.append({
             "identity": str(structure_id),
@@ -177,6 +184,8 @@ def _load_selected_structures(database, user: dict, records: list[dict], selecte
             "path": Path(path),
             "components": components,
             "candidate": candidate,
+            "collected_acceptance": ((candidate.get("raw_metadata") or {}).get("collected_acceptance")
+                                      if isinstance(candidate.get("raw_metadata"), dict) else None),
             "kind": component_kind(components),
             "context": context,
             "model_id": model_id,
@@ -235,6 +244,36 @@ def _database_candidate_view(record: dict, structure: dict, components: list[dic
     metrics = evidence.get("native_filter_metrics")
     metrics = {str(key): value for key, value in metrics.items()
                if key in {"native_pass_filters", "pass_filters", "passes_filters", "passed_filters"}} if isinstance(metrics, dict) else {}
+    collected_decision = decision if decision.get("stage_id") and decision.get("cohort_status") else {}
+    if collected_decision:
+        raw["collected_acceptance"] = {
+            "stage_id": str(collected_decision.get("stage_id") or ""),
+            "stage": str(collected_decision.get("stage") or ""),
+            "cohort_status": str(collected_decision.get("cohort_status") or ""),
+            "policy": collected_decision.get("policy") or {},
+            "provenance": collected_decision.get("provenance") or {},
+            "source": str(collected_decision.get("source") or ""),
+        }
+        stage_id = str(collected_decision.get("stage_id") or "")
+        if stage_id == "final":
+            raw["validation_acceptance"] = {
+                "status": str(collected_decision.get("status") or "accepted"),
+                "policy": collected_decision.get("policy") or {},
+            }
+            raw["validation_acceptance_provenance"] = collected_decision.get("provenance") or {}
+        elif stage_id == "sequence":
+            raw["sequence_design_acceptance"] = {
+                "status": str(collected_decision.get("status") or "accepted"),
+                "policy": collected_decision.get("policy") or {},
+            }
+            raw["sequence_design_acceptance_provenance"] = collected_decision.get("provenance") or {}
+        elif stage_id == "shared_filter":
+            raw["candidate_set"] = {"shared_filter": {
+                "status": str(collected_decision.get("status") or "accepted"),
+                "policy": collected_decision.get("policy") or {},
+            }}
+        elif stage_id == "native":
+            metrics["native_pass_filters"] = collected_decision.get("cohort_status") == "passed"
     binder_chains = [str(value) for value in context.get("binder_chains") or provenance.get("binder_chains") or []]
     target_chains = [str(value) for value in context.get("target_chains") or provenance.get("target_chains") or []]
     # Registered validation decisions are sometimes stored as linked Database
@@ -313,7 +352,8 @@ def _database_candidate_view(record: dict, structure: dict, components: list[dic
     return {
         "candidate_id": candidate_id or str(record.get("id") or structure.get("id") or ""),
         "native_candidate_id": str(context.get("native_candidate_id") or provenance.get("native_candidate_id") or candidate_id),
-        "model_id": str(context.get("model_id") or context.get("model_index") or ""),
+        "model_id": str(context.get("candidate_model_id") or context.get("source_model_id")
+                         or context.get("model_id") or context.get("model_index") or ""),
         "model_index": str(context.get("model_index") or ""),
         "source_tool": source_tool or (
             str(context.get("tool") or "") if str(context.get("task_group") or "").casefold() != "analysis" else ""
@@ -1054,7 +1094,7 @@ def _render_protein_protein_map(samples: list[dict]) -> None:
                      disabled=bool(residue_index is not None and not selector)):
             _open_in_inspector(selected_member, selector or "", evaluation_id)
 
-def _database_collection_samples(user: dict) -> list[dict]:
+def _database_individual_samples(user: dict) -> list[dict]:
     """Select from a paged light Database catalog; hydrate only on explicit load."""
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
 
@@ -1230,6 +1270,240 @@ def _database_collection_samples(user: dict) -> list[dict]:
     st.session_state["complex-analysis-flow-step"] = "analyze"
     st.rerun()
     return samples
+
+def _design_collection_label(group: dict) -> dict[str, str]:
+    origin = group.get("origin") if isinstance(group.get("origin"), dict) else {}
+    source_run = origin.get("source_run") if isinstance(origin.get("source_run"), dict) else {}
+    run_id = str(source_run.get("run_id") or origin.get("run_id") or "Not recorded")
+    task_group = str(source_run.get("task_group") or origin.get("task_group") or "")
+    run_label = f"{task_group}/{run_id}" if task_group else run_id
+    target = origin.get("target_identity") or origin.get("target_id") or "Not recorded"
+    if isinstance(target, list):
+        target = ", ".join(str(value) for value in target if value) or "Not recorded"
+    generator = origin.get("generator") or origin.get("tool") or origin.get("generators") or "Not recorded"
+    if isinstance(generator, list):
+        generator = ", ".join(str(value) for value in generator if value) or "Not recorded"
+    return {"collection": str(group.get("name") or group.get("id") or "Collection"),
+            "target": str(target), "run": run_label, "generator": str(generator),
+            "date": str(group.get("updated_at") or group.get("created_at") or "Not recorded")}
+
+
+def _load_collection_structures(database, user: dict, records: list[dict], group_ids: list[str],
+                               selected_structure_ids: list[str] | None = None) -> list[dict]:
+    """Revalidate and hydrate only the explicitly opened collection structures."""
+    chosen = set(str(value) for value in selected_structure_ids) if selected_structure_ids is not None else None
+    structures = [structure for record in records
+                  for structure in record.get("representations") or record.get("structures") or []
+                  if str(structure.get("group_id") or "") in set(group_ids)
+                  and (chosen is None or str(structure.get("id") or "") in chosen)]
+    structure_ids = list(dict.fromkeys(str(row.get("id") or "") for row in structures if row.get("id")))
+    owner_ids = {str(record.get("id") or "") for record in records
+                 if any(str(item.get("id") or "") in set(structure_ids)
+                        for item in record.get("representations") or record.get("structures") or [])}
+    molecule_ids = list(dict.fromkeys(str(row.get("id") or "") for row in records
+                                      if str(row.get("id") or "") in owner_ids))
+    if not structure_ids or not molecule_ids:
+        st.info("The selected collection has no accessible structural models. Open Database to check its saved members.")
+        return []
+    if len(structure_ids) > 5000 or len(molecule_ids) > 5000:
+        st.warning("This selection exceeds the 5,000-row bounded hydration limit. Select fewer collections or use advanced individual selection.")
+        return []
+    try:
+        page = database.list_structure_records(
+            user, collection="all", group_ids=group_ids, restrict_structure_groups=True,
+            molecule_ids=molecule_ids, limit=max(1, len(molecule_ids)),
+        )
+    except (OSError, PermissionError, ValueError, TypeError) as exc:
+        st.error(f"Could not revalidate the selected collections: {exc}")
+        return []
+    authorized = {str(row.get("id") or ""): row for row in page.get("items", [])}
+    accessible_structure_ids = {str(item.get("id") or "")
+                                for row in authorized.values()
+                                for item in row.get("representations") or row.get("structures") or []
+                                if str(item.get("group_id") or "") in set(group_ids)}
+    valid_ids = [value for value in structure_ids if value in accessible_structure_ids]
+    if len(valid_ids) != len(structure_ids):
+        st.error("Some structures are no longer members of the selected collections or are not accessible. Refresh the collection list.")
+        return []
+    samples = _load_selected_structures(database, user, list(authorized.values()), valid_ids)
+    if not samples:
+        st.error("The selected structures could not be loaded from the authorized Database collections.")
+        return []
+    for sample in samples:
+        sample.update({"source_kind": "Database", "identity": "database:" + sample["molecule_id"] + ":" + sample["structure_id"],
+                       "user": user, "source_reference": "database:" + sample["molecule_id"]})
+        try:
+            sample["review_annotation"] = database.get_complex_review(
+                user, source_kind="database", subject_id=sample["molecule_id"],
+                structure_ref=sample["structure_id"], evaluation_id="",
+            )
+        except (OSError, PermissionError, ValueError, TypeError):
+            sample["review_annotation"] = {"status": "Unreviewed", "note": ""}
+    cache_key = _widget_key("complex-analysis-hydrated-", str(user.get("id") or "") + ":" + ":".join(valid_ids))
+    sample_cache = dict(st.session_state.get("complex-analysis-hydrated-sample-cache") or {})
+    sample_cache[cache_key] = samples
+    while len(sample_cache) > 3:
+        sample_cache.pop(next(iter(sample_cache)))
+    st.session_state["complex-analysis-hydrated-sample-cache"] = sample_cache
+    st.session_state["complex-analysis-workflow-samples"] = samples
+    st.session_state["complex-analysis-workflow-selection"] = {
+        "user_id": str(user.get("id") or ""), "structure_ids": valid_ids,
+        "molecule_ids": list(authorized), "collection_ids": list(group_ids),
+        "collection": "all", "group_id": "", "project_id": "", "cache_key": cache_key,
+        "collection_passing_cohort": True,
+    }
+    st.session_state["complex-analysis-cohort-acceptance-mode-value"] = "Collected passing designs"
+    st.session_state["complex-analysis-cohort-acceptance-mode-widget"] = "Collected passing designs"
+    st.session_state["complex-analysis-flow-step"] = "analyze"
+    st.rerun()
+    return samples
+
+
+def _database_collection_samples(user: dict) -> list[dict]:
+    """Start from saved design collections; keep individual-record browsing secondary."""
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+
+    database = MolecularDatabase()
+    user_id = str(user.get("id") or "")
+    if st.session_state.get("complex-analysis-individual-mode"):
+        if st.button("← Back to design collections", key="complex-analysis-back-to-collections"):
+            st.session_state["complex-analysis-individual-mode"] = False
+            st.session_state["complex-analysis-collections-open"] = False
+            st.rerun()
+        return _database_individual_samples(user)
+    if not callable(getattr(database, "groups", None)) or not callable(getattr(database, "collection_statistics", None)):
+        # Keep the existing lightweight individual browser compatible with
+        # minimal Database adapters used by deployments and tests that have
+        # not exposed collection summaries.
+        return _database_individual_samples(user)
+    try:
+        groups = database.groups(user, collection="library")
+        statistics = database.collection_statistics(user, [str(group.get("id") or "") for group in groups
+                                                            if group.get("id")])
+    except (PermissionError, OSError, ValueError, TypeError):
+        groups, statistics = [], {}
+    collections = []
+    for group in groups:
+        group_id = str(group.get("id") or "")
+        stats = statistics.get(group_id) or {}
+        if int(stats.get("structure_count") or 0) <= 0 or int(stats.get("molecule_count") or 0) <= 0:
+            continue
+        collections.append({**group, "summary": _design_collection_label(group), "stats": stats})
+    collections.sort(key=lambda row: (str(row.get("updated_at") or ""), str(row.get("name") or "").casefold()), reverse=True)
+    st.markdown("### Select a saved design collection")
+    st.caption("Start with the passing cohort you collected from Results. Complex Analysis reads collection membership and structure metadata here; coordinates and full Evaluations load only when you open the cohort.")
+    if collections:
+        table = []
+        for group in collections[:100]:
+            summary = group["summary"]
+            stats = group["stats"]
+            evaluated = stats.get("evaluated_design_count")
+            coverage = (f"{evaluated:,} / {stats['molecule_count']:,} designs with saved Evaluations"
+                        if evaluated is not None else "Evaluation coverage not indexed")
+            table.append({"Collection": summary["collection"], "Target": summary["target"],
+                          "Run/campaign": summary["run"], "Generator": summary["generator"],
+                          "Collected designs": stats["molecule_count"], "Structures/models": stats["structure_count"],
+                          "Assessment coverage": coverage, "Updated": summary["date"]})
+        st.dataframe(table, hide_index=True, use_container_width=True)
+    else:
+        st.info("No saved Database collection with structures is available yet. In Results, collect designs that passed a recorded filter, then open that collection here.")
+
+    picker_key = "complex-analysis-design-collection-picker"
+    selected_state = "complex-analysis-selected-collections"
+    ids = [str(group["id"]) for group in collections]
+    if st.session_state.get("complex-analysis-collections-open") and selected_state in st.session_state:
+        st.session_state[picker_key] = [value for value in st.session_state.get(selected_state, []) if value in ids]
+    elif picker_key not in st.session_state and st.session_state.get("molecular-preselect-group") in ids:
+        st.session_state[picker_key] = [str(st.session_state["molecular-preselect-group"])]
+    labels = {str(group["id"]): f"{group['summary']['collection']} · {group['summary']['target']} · {group['summary']['run']}"
+              for group in collections}
+    selected = st.multiselect("Design collection(s)", ids, key=picker_key,
+        on_change=_remember_widget_value, args=(picker_key, selected_state),
+        format_func=lambda value: labels.get(value, value))
+    st.session_state[selected_state] = list(selected)
+    group_by_id = {str(group["id"]): group for group in collections}
+    if selected:
+        selected_groups = [group_by_id[value] for value in selected if value in group_by_id]
+        targets = {json.dumps(group["summary"]["target"], sort_keys=True) for group in selected_groups}
+        st.caption(f"Selected {len(selected_groups):,} collection(s), {sum(int(group['stats']['molecule_count']) for group in selected_groups):,} design member(s). Target correspondence will be validated before shared structural comparison.")
+        if st.button("Open selected collection(s)", type="primary", key="complex-analysis-open-collections"):
+            st.session_state[selected_state] = list(selected)
+            st.session_state["complex-analysis-collections-open"] = True
+            st.session_state["complex-analysis-individual-mode"] = False
+            st.rerun()
+    else:
+        if st.button("Browse individual Database designs (advanced)", key="complex-analysis-open-individual-browser"):
+            st.session_state["complex-analysis-individual-mode"] = True
+            st.session_state["complex-analysis-collections-open"] = False
+            st.rerun()
+        return []
+
+    if not st.session_state.get("complex-analysis-collections-open"):
+        return []
+    selected = [value for value in st.session_state.get(selected_state, []) if value in group_by_id]
+    if not selected:
+        st.session_state["complex-analysis-collections-open"] = False
+        return []
+    if st.button("Change collection selection", key="complex-analysis-change-collections"):
+        st.session_state["complex-analysis-collections-open"] = False
+        st.session_state.pop("complex-analysis-workflow-samples", None)
+        st.rerun()
+    if st.button("Browse individual Database designs (advanced)", key="complex-analysis-collection-individual-mode"):
+        st.session_state["complex-analysis-individual-mode"] = True
+        st.session_state["complex-analysis-collections-open"] = False
+        st.rerun()
+
+    group_ids = selected
+    cache_key = _widget_key("complex-analysis-selected-collection-catalog-", user_id + ":" + ":".join(group_ids))
+    try:
+        catalog = authorized_structure_catalog(
+            database, user, session_state=st.session_state, cache_key=cache_key,
+            collection="all", group_ids=group_ids, limit=5000,
+        )
+        records = list(catalog.get("records") or [])
+        next_offset = catalog.get("next_offset")
+        while next_offset is not None and len(records) < 25000:
+            page = database.list_structure_records(
+                user, collection="all", group_ids=group_ids, restrict_structure_groups=True,
+                limit=5000, offset=int(next_offset),
+            )
+            records.extend(page.get("items") or [])
+            next_offset = page.get("next_offset")
+        if next_offset is not None:
+            st.warning("This collection set exceeds the 25,000-record one-open limit. Select fewer collections before loading coordinates.")
+            return []
+    except (OSError, PermissionError, ValueError, TypeError) as exc:
+        st.error(f"Could not list the selected collection members: {exc}")
+        return []
+    structures = [row for record in records for row in record.get("representations") or record.get("structures") or []
+                  if str(row.get("group_id") or "") in set(group_ids)]
+    structure_ids = list(dict.fromkeys(str(row.get("id") or "") for row in structures if row.get("id")))
+    if not structure_ids:
+        st.info("No structural models are available in the selected collection(s).")
+        return []
+    st.caption(f"Collection cohort: {len({str(row.get('id') or '') for row in records}):,} designs · {len(structure_ids):,} saved structure/model rows. No coordinates have been loaded yet.")
+    selected_structure_ids = structure_ids
+    # Keep explicit model limits when the same collection set is revisited, but
+    # never carry a previous cohort's (possibly single-model) selection into a
+    # newly selected set of collections. New cohorts default to all members.
+    model_selection_key = _collection_model_selection_key(user_id, group_ids)
+    with st.expander("Advanced: choose individual design/model rows", expanded=False):
+        selected_structure_ids = st.multiselect(
+            "Models to open", structure_ids, default=structure_ids,
+            format_func=lambda value: next((f"{record.get('name') or 'Design'} · {row.get('label') or row.get('format') or 'structure'} · {str(value)[-8:]}"
+                                            for record in records for row in record.get("representations") or record.get("structures") or []
+                                            if str(row.get("id") or "") == value), value),
+            key=model_selection_key,
+        )
+    if not selected_structure_ids:
+        st.info("Select at least one model in the advanced selection to continue.")
+        return []
+    if st.button("Load collection for analysis", type="primary", key="complex-analysis-load-collection"):
+        return _load_collection_structures(database, user, records, group_ids,
+                                           selected_structure_ids=selected_structure_ids)
+    st.caption("The default opens every structure/model in the selected collection(s). Use the advanced control only to limit the cohort.")
+    return []
+
 
 def _results_source_jobs(user: dict) -> list[dict]:
     from mn_molecular_design_studio.complex_analysis_dashboard import _run_catalog
@@ -1679,13 +1953,17 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
                   if row.get("stage_id") == "final"]
     cohort_key = "complex-analysis-cohort-acceptance-mode-widget"
     cohort_state_key = "complex-analysis-cohort-acceptance-mode-value"
-    cohort_options = ["Final accepted designs", "Passed at selected stage", "Rejected at selected stage",
+    cohort_options = ["Collected passing designs", "Final accepted designs", "Passed at selected stage", "Rejected at selected stage",
                       "Pending / unresolved at selected stage", "No recorded decision", "All designs"]
+    cohort_default = ("Collected passing designs" if samples and all(
+        isinstance(sample.get("collected_acceptance"), dict)
+        and sample["collected_acceptance"].get("cohort_status") == "passed" for sample in samples
+    ) else "Final accepted designs")
     if step == "analyze":
         st.markdown("### Analyze selected designs")
         cohort_mode = _stateful_selectbox(
             "Acceptance cohort", cohort_options, key=cohort_key, state_key=cohort_state_key,
-            default="Final accepted designs",
+            default=cohort_default,
             help="Final passes are the default. Earlier-stage passes require an explicit stage selection; native generator acceptance is not treated as final acceptance.",
         )
         stage_id = ""
@@ -1703,6 +1981,11 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
                 st.info("No recorded acceptance stages exist for this selection. Choose All designs or No recorded decision to inspect without treating candidates as passed.")
         if cohort_mode == "Final accepted designs" and not final_rows:
             st.info("No final computational decisions are recorded for this cohort. Choose a recorded stage explicitly, or deliberately select All designs.")
+        if cohort_mode == "Collected passing designs":
+            collection_stages = sorted({str((sample.get("collected_acceptance") or {}).get("stage") or "")
+                                        for sample in samples if sample.get("collected_acceptance")})
+            labels = ", ".join(value for value in collection_stages if value) or "the saved source stage"
+            st.caption(f"Using the explicitly collected passing cohort from {labels}. This does not convert those decisions into final acceptance.")
     else:
         cohort_mode = str(st.session_state.get(cohort_state_key) or "Final accepted designs")
         stage_id = str(st.session_state.get("complex-analysis-cohort-acceptance-stage-value") or "")

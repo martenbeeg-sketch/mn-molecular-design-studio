@@ -167,6 +167,10 @@ def filter_acceptance_cohort(samples: list[dict[str, Any]], view: str,
     """Apply a deliberate acceptance-stage view without mutating source records."""
     if view == "All designs":
         return list(samples)
+    if view == "Collected passing designs":
+        return [sample for sample in samples
+                if isinstance(sample.get("collected_acceptance"), dict)
+                and sample["collected_acceptance"].get("cohort_status") == "passed"]
     if view == "Final accepted designs":
         return [sample for sample in samples if any(
             row["stage_id"] == "final" and row["cohort_status"] == "passed"

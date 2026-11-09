@@ -8377,9 +8377,6 @@ def _render_job_details() -> None:
         from mn_molecular_design_studio.result_presentation import render_workflow_results_summary
         render_workflow_results_summary(run_dir)
         if candidates_path.is_file():
-            if result_candidates and st.button("Review acceptance & Complex Analysis", key=f"job-complex-board-{run_id}", icon=":material/biotech:"):
-                from mn_molecular_design_studio.complex_analysis_results_ui import open_results_board
-                open_results_board(run_dir)
             if any((row.get("raw_metadata") or {}).get(key) for row in result_candidates for key in ("measurement_status", "selection", "source_candidate", "candidate_set")):
                 from mn_molecular_design_studio.result_presentation import candidate_state_rows
                 with st.expander("Candidate measurement and selection outcomes", expanded=True):

@@ -95,3 +95,23 @@ def test_selected_database_structure_hydrates_its_saved_evaluations_and_provenan
     assert len(native) == 1
     assert native[0]["cohort_status"] == "passed"
     assert native[0]["source"] == "native_pass_filters"
+
+
+def test_collected_acceptance_stays_attached_to_prediction_model_not_coordinate_model():
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _database_candidate_view
+
+    structure = {"id": "structure-1", "context": {
+        "candidate_id": "candidate-1", "model_id": "0",
+        "candidate_model_id": "boltz-model-3", "source_model_id": "boltz-model-3",
+        "acceptance_decision": {"stage_id": "final", "stage": "Final computational acceptance",
+                                "status": "accepted", "cohort_status": "passed",
+                                "policy": {"version": "accept-v3"}},
+    }}
+    candidate = _database_candidate_view({"id": "mol-1", "sources": []}, structure, [], [])
+
+    assert candidate["model_id"] == "boltz-model-3"
+    final = [row for row in acceptance_decisions(candidate) if row["stage_id"] == "final"]
+    assert len(final) == 1
+    assert final[0]["candidate_id"] == "candidate-1"
+    assert final[0]["model_id"] == "boltz-model-3"
+    assert final[0]["cohort_status"] == "passed"

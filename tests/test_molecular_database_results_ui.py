@@ -26,6 +26,17 @@ def test_database_table_exposes_compound_id_name_and_smiles():
     assert row["values"]["L"] == "CCN"
 
 
+def test_passing_collection_target_label_uses_selected_results_provenance():
+    from mn_molecular_design_studio.molecular_database_results_ui import _collection_target_labels
+
+    passing = [{"candidate_id": "bindcraft2_00001", "target_identity": ""}]
+    records = [{"id": "result-1", "metadata": {
+        "target_identity": "Target sequence (chain A · 115 aa)",
+        "target_sequences_by_chain": {"A": "A" * 115},
+    }}]
+    assert _collection_target_labels(passing, records, ["result-1"]) == ["Target sequence (chain A · 115 aa)"]
+
+
 def _isolate_workspace(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_HOME", str(workspace))
@@ -239,9 +250,62 @@ render_run_database_actions(Path({str(tmp_path / 'runs/design/original')!r}), {U
     assert not app.exception
     app.button(key='run-saved-collection-accepted-run').click().run()
     assert not app.exception
-    assert app.session_state['molecular-preselect-group'] == 'accepted-run'
-    assert app.session_state['molecular-preselect-molecule'] == 'binder-1'
-    assert app.session_state['page'] == 'Database'
+    assert app.session_state['complex-analysis-selected-collections'] == ['accepted-run']
+    assert app.session_state['complex-analysis-collections-open'] is True
+    assert app.session_state['page'] == 'Complex Analysis'
+
+
+def test_results_collection_requires_explicit_native_stage_and_opens_collection(tmp_path, monkeypatch):
+    _isolate_workspace(tmp_path, monkeypatch)
+    from mn_molecular_design_studio import molecular_database_results, molecular_database_results_ui
+
+    run_dir = (tmp_path / "runs" / "design" / "native-only").resolve()
+    run_key = hashlib.sha1(str(run_dir).encode()).hexdigest()[:12]
+    inventory = {
+        "candidate_count": 2, "model_count": 2, "run_id": "native-only", "project_id": "",
+        "source_tool": "BindCraft2",
+        "stages": [{"stage_id": "native", "label": "Native generator acceptance",
+                    "passed": [{"candidate_id": "pass-id", "model_id": "model-1",
+                                "source_tool": "bindcraft2", "generator_engine": "BindCraft2",
+                                "target_identity": "PD-L1",
+                                "decision": {"stage_id": "native", "cohort_status": "passed",
+                                             "policy": {"native": "bindcraft"}}}],
+                    "failed": [{"candidate_id": "fail-id", "model_id": "model-2"}],
+                    "pending": [], "unrecorded": [], "passed_design_count": 1,
+                    "failed_model_count": 1, "pending_model_count": 0, "unrecorded_model_count": 0}],
+    }
+    records = [{"id": "result-pass", "result_only": True, "candidate_id": "pass-id", "model_id": "model-1"},
+               {"id": "result-fail", "result_only": True, "candidate_id": "fail-id", "model_id": "model-2"}]
+    saved = []
+    monkeypatch.setattr(molecular_database_results, "run_acceptance_inventory", lambda *_args: inventory)
+    monkeypatch.setattr(molecular_database_results, "save_run_selection",
+                        lambda _run, _user, ids, **kwargs: saved.append((list(ids), kwargs))
+                        or {"group_id": "design-collection-test", "saved_count": 1})
+    monkeypatch.setattr(molecular_database_results_ui, "MolecularDatabase", lambda: object())
+    app = AppTest.from_string(f'''\
+from pathlib import Path
+from mn_molecular_design_studio.molecular_database_results_ui import _render_run_passing_collection
+_render_run_passing_collection(Path({str(run_dir)!r}), {USER!r}, object(), {records!r}, {run_key!r})
+''').run()
+    assert not app.exception
+    assert app.selectbox(key=f"run-collect-acceptance-stage-{run_key}").value == ""
+    assert any("Native generator acceptance: 1 passing design(s)" in item.value for item in app.caption)
+    assert any("No final decision is recorded for this run" in item.value for item in app.info)
+    assert not saved
+
+    app.selectbox(key=f"run-collect-acceptance-stage-{run_key}").set_value("native").run()
+    assert not app.exception
+    app.button(key=f"run-collect-passing-{run_key}-native").click().run()
+    assert not app.exception
+    assert saved[0][0] == ["result-pass"]
+    assert saved[0][1]["candidate_models"][0]["candidate_id"] == "pass-id"
+    assert saved[0][1]["collection_metadata"]["acceptance_stage_id"] == "native"
+    assert saved[0][1]["collection_metadata"]["generator"] == "BindCraft2"
+
+    app.button(key=f"run-collect-open-{run_key}").click().run()
+    assert not app.exception
+    assert app.session_state["complex-analysis-selected-collections"] == ["design-collection-test"]
+    assert app.session_state["page"] == "Complex Analysis"
 
 
 def test_external_screening_results_wait_for_exact_user_selection(tmp_path, monkeypatch):

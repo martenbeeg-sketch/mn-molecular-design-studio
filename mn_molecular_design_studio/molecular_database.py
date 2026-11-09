@@ -807,7 +807,8 @@ class MolecularDatabase:
         return [row["id"] for row in groups]
 
     def list_structure_records(self, user, *, project_id="", scope="organization", methods=None, collection="all",
-                               group_id="", query="", molecule_type="", limit=1000, offset=0, molecule_ids=None,
+                               group_id="", group_ids=None, restrict_structure_groups=False, query="",
+                               molecule_type="", limit=1000, offset=0, molecule_ids=None,
                                hide_smoke_test=False):
         """Return lightweight, ACL-filtered molecule rows with accessible structures.
 
@@ -821,10 +822,20 @@ class MolecularDatabase:
             raise ValueError("Collection must be 'all' or 'library'.")
         visible_ids = self._visible_ids(user, group_id=group_id, project_id=project_id, scope=scope, methods=methods,
                                         collection=collection, hide_smoke_test=hide_smoke_test)
+        selected_group_ids = None
+        if group_ids is not None:
+            requested_groups = list(dict.fromkeys(str(value) for value in group_ids if str(value)))
+            visible_set = set(visible_ids)
+            if set(requested_groups) - visible_set:
+                raise PermissionError("One or more selected Database collections are not accessible.")
+            selected_group_ids = requested_groups
+            visible_ids = [value for value in visible_ids if value in set(requested_groups)]
         # As in list_molecules, collection selection limits which identities are
         # discovered, while structures can come from any group the user may read.
         accessible_ids = self._visible_ids(user, project_id=project_id, collection="all",
                                            hide_smoke_test=hide_smoke_test)
+        if restrict_structure_groups and selected_group_ids is not None:
+            accessible_ids = [value for value in selected_group_ids if value in set(accessible_ids)]
         if not visible_ids or not accessible_ids:
             return {"items": [], "next_offset": None}
         visible_json, accessible_json = _json(visible_ids), _json(accessible_ids)
@@ -918,6 +929,33 @@ class MolecularDatabase:
             record["representations"] = list(record["structures"])
         next_offset = int(offset) + len(rows) if has_more else None
         return {"items": list(result.values()), "next_offset": next_offset}
+
+    def collection_statistics(self, user, group_ids: list[str] | None = None) -> dict[str, dict[str, int | None]]:
+        """Return lightweight member, structure, and saved-Evaluation counts for visible groups."""
+        visible_ids = {str(row["id"]) for row in self.groups(user, collection="all")}
+        requested = list(dict.fromkeys(str(value) for value in (group_ids or visible_ids) if str(value)))
+        if set(requested) - visible_ids:
+            raise PermissionError("One or more selected Database collections are not accessible.")
+        if not requested:
+            return {}
+        with self.connection() as connection:
+            has_evaluations = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='molecule_evaluations'"
+            ).fetchone() is not None
+            rows = connection.execute(
+                "SELECT g.id,"
+                "(SELECT COUNT(DISTINCT mm.molecule_id) FROM molecule_members mm WHERE mm.group_id=g.id) AS molecule_count,"
+                "(SELECT COUNT(DISTINCT s.id) FROM molecule_structures s WHERE s.group_id=g.id) AS structure_count,"
+                + ("(SELECT COUNT(DISTINCT e.molecule_id) FROM molecule_evaluations e WHERE e.group_id=g.id) AS evaluation_count "
+                   if has_evaluations else "NULL AS evaluation_count ")
+                + "FROM molecule_groups g WHERE g.id IN (SELECT value FROM json_each(?))",
+                (_json(requested),),
+            ).fetchall()
+        return {str(row["id"]): {"molecule_count": int(row["molecule_count"] or 0),
+                                 "structure_count": int(row["structure_count"] or 0),
+                                 "evaluated_design_count": (int(row["evaluation_count"] or 0)
+                                                            if row["evaluation_count"] is not None else None)}
+                for row in rows}
 
     def metric_fields(self, user, *, group_id="", project_id="", scope="organization", methods=None, collection="all",
                       hide_smoke_test=False):

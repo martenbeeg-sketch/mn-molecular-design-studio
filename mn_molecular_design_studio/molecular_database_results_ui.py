@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from pathlib import Path
 
@@ -167,43 +168,6 @@ def _project_picker(projects: list[dict], run_key: str, default_project: str = "
     )
 
 
-def _render_accepted_design_promotion(run_path: Path, user: dict) -> bool:
-    """Offer an explicit accepted-only import for manually collected validation runs."""
-    from mn_molecular_design_studio.collection_policy import policy_for_run
-    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
-
-    try:
-        if policy_for_run(run_path) != "manual":
-            return False
-        metadata = read_json(run_path / "metadata.json")
-        result = read_json(run_path / "result.json")
-        summary = (result.get("metrics") or {}).get("validation_acceptance") or {}
-        accepted_count = int(summary.get("accepted") or 0)
-        if result.get("success") is not True or accepted_count <= 0:
-            return False
-        from mn_molecular_design_studio.cluster import config as cluster_config
-        from mn_molecular_design_studio.accepted_design_import import (
-            build_accepted_design_bundle, promote_accepted_design_bundle,
-        )
-        project_id = str((read_json(run_path / "molecular_design_studio.json") or {}).get("project_id") or "")
-        job_reference = f"{run_path.parent.name}/{run_path.name}"
-        st.info(
-            f"Validation explicitly accepted {accepted_count:,} design(s). They remain out of the shared "
-            "Database until you save the accepted results."
-        )
-        if st.button("Save accepted designs to Database", type="primary", key="local-accepted-save-" + run_path.name):
-            bundle, _manifest = build_accepted_design_bundle(
-                run_path, node_id=cluster_config.identity(), validation_job=job_reference,
-            )
-            imported = promote_accepted_design_bundle(bundle, user=user, project_id=project_id)
-            duplicate = " (already saved)" if imported.get("already_imported") else ""
-            st.success(f"Saved {imported['candidate_count']:,} accepted design(s) to the Database{duplicate}.")
-        return True
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        st.warning(f"Accepted-design Database controls are unavailable: {exc}")
-        return True
-
-
 def _render_saved_run_collections(run_path, user, database):
     from mn_molecular_design_studio.molecular_database_results import list_saved_run_collections
     try:
@@ -211,14 +175,215 @@ def _render_saved_run_collections(run_path, user, database):
     except (FileNotFoundError, PermissionError):
         return
     for group in groups:
-        if st.button("Open saved collection · " + group["name"], key="run-saved-collection-" + group["id"]):
-            st.session_state["molecular-preselect-group"] = group["id"]
-            from mn_molecular_design_studio.molecular_database_visibility import is_unreviewed_screening_shortlist
-            st.session_state["molecular-preselect-collection"] = (
-                "all" if is_unreviewed_screening_shortlist(group) else "library"
+        if st.button("Open collection in Complex Analysis · " + group["name"], key="run-saved-collection-" + group["id"]):
+            st.session_state["complex-analysis-selected-collections"] = [group["id"]]
+            st.session_state["complex-analysis-collections-open"] = True
+            st.session_state["complex-analysis-individual-mode"] = False
+            st.session_state["complex-analysis-flow-step"] = "select"
+            st.session_state["page"] = "Complex Analysis"
+            st.rerun()
+
+
+def _candidate_ids_on_record(record: dict) -> set[tuple[str, str]]:
+    if record.get("result_only"):
+        candidate_id = str(record.get("candidate_id") or "")
+        model_id = str(record.get("model_id") or "")
+        if candidate_id:
+            return {(candidate_id, model_id)}
+    result = set()
+    structures = record.get("structures") or record.get("representations") or []
+    for structure in structures:
+        context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
+        candidate = context.get("candidate") if isinstance(context.get("candidate"), dict) else {}
+        candidate_id = str(context.get("candidate_id") or context.get("native_candidate_id")
+                           or candidate.get("candidate_id") or "")
+        model_id = str(context.get("model_id") or context.get("model_index") or context.get("validated_model_id")
+                       or candidate.get("model_id") or candidate.get("model_index") or "")
+        if candidate_id:
+            result.add((candidate_id, model_id))
+    return result
+
+
+def _accepted_records(records: list[dict], candidates: list[dict]) -> tuple[list[str], list[dict]]:
+    """Map explicit passing candidate/model decisions to exact run records."""
+    selected = []
+    unresolved = []
+    for candidate in candidates:
+        candidate_id = str(candidate.get("candidate_id") or "")
+        model_id = str(candidate.get("model_id") or "")
+        matches = []
+        for record in records:
+            pairs = _candidate_ids_on_record(record)
+            if (candidate_id, model_id) in pairs or (not model_id and any(item[0] == candidate_id for item in pairs)):
+                matches.append(str(record.get("id") or ""))
+        matches = [value for value in matches if value]
+        if matches:
+            selected.extend(matches)
+        else:
+            unresolved.append(candidate)
+    return list(dict.fromkeys(selected)), unresolved
+
+
+def _collection_target_labels(passing: list[dict], records: list[dict], record_ids: list[str]) -> list[str]:
+    """Use explicit target provenance from the pass decision or its selected Results record."""
+    labels = [str(row.get("target_identity") or "").strip() for row in passing
+              if str(row.get("target_identity") or "").strip()
+              and str(row.get("target_identity")) != "Not recorded"]
+    by_id = {str(record.get("id") or ""): record for record in records if isinstance(record, dict)}
+    for record_id in record_ids:
+        record = by_id.get(str(record_id)) or {}
+        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+        target = str(metadata.get("target_identity") or "").strip()
+        if target and target != "Not recorded":
+            labels.append(target)
+            continue
+        sequences = metadata.get("target_sequences_by_chain")
+        if isinstance(sequences, dict) and sequences:
+            labels.extend(
+                f"Target sequence (chain {chain} · {len(str(sequence))} aa)"
+                for chain, sequence in sorted(sequences.items()) if str(sequence).strip()
             )
-            st.session_state["molecular-preselect-molecule"] = group["molecule_ids"][0]
-            st.session_state["page"] = "Database"
+    return list(dict.fromkeys(labels))
+
+
+def _render_run_passing_collection(run_path: Path, user: dict, database, records: list[dict], run_key: str) -> None:
+    """Offer one explicit run-level import of candidates passing a recorded stage."""
+    from mn_molecular_design_studio.molecular_database_results import run_acceptance_inventory, save_run_selection
+
+    try:
+        inventory = run_acceptance_inventory(run_path, user)
+    except (FileNotFoundError, PermissionError, OSError, ValueError, TypeError) as exc:
+        st.caption(f"Acceptance-based collection is unavailable for this Results run: {exc}")
+        return
+    if not inventory.get("candidate_count"):
+        return
+
+    st.markdown("#### Collect passing designs into Molecular Database")
+    st.caption(f"Run contains {inventory['candidate_count']:,} generated candidate(s) across {inventory['model_count']:,} candidate/model row(s). Passing collection uses only decisions explicitly saved on this run.")
+    stages = list(inventory.get("stages") or [])
+    if not stages:
+        st.info("This run has no recorded acceptance stage. No designs will be treated as passing. Use the advanced custom Results selection only if you deliberately want to collect unfiltered designs.")
+        return
+
+    stage_by_id = {str(row["stage_id"]): row for row in stages}
+    final_present = "final" in stage_by_id
+    placeholder = "Choose a recorded stage explicitly"
+    stage_ids = (["final"] if final_present else []) + [str(row["stage_id"]) for row in stages if row["stage_id"] != "final"]
+    options = [*stage_ids] if final_present else ["", *stage_ids]
+    stage_key = f"run-collect-acceptance-stage-{run_key}"
+    if st.session_state.get(stage_key) not in options:
+        st.session_state[stage_key] = "final" if final_present else ""
+    stage_id = st.selectbox(
+        "Acceptance stage to collect",
+        options,
+        key=stage_key,
+        format_func=lambda value: placeholder if not value else stage_by_id[value]["label"],
+        help="A native engine pass remains a native-stage decision. It is not relabeled as final computational acceptance.",
+    )
+    if not stage_id:
+        available = []
+        for row in stages:
+            available.append(
+                f"{row['label']}: {int(row.get('passed_design_count') or 0):,} passing design(s) "
+                f"({len(row.get('passed') or []):,} model rows), "
+                f"{int(row.get('failed_model_count') or 0):,} failed, "
+                f"{int(row.get('pending_model_count') or 0):,} unresolved, "
+                f"{int(row.get('unrecorded_model_count') or 0):,} without a decision"
+            )
+        st.caption("Available recorded stage totals — " + "; ".join(available) + ".")
+        st.info("No final decision is recorded for this run. Choose the exact earlier stage you want to use; native acceptance is not final computational acceptance.")
+        return
+    stage = stage_by_id[stage_id]
+    passing = list(stage.get("passed") or [])
+    passed_designs = int(stage.get("passed_design_count") or 0)
+    st.caption(
+        f"Stage: {stage['label']} · {passed_designs:,} passing design(s) across {len(passing):,} passing model row(s) · "
+        f"{int(stage.get('failed_model_count') or 0):,} failed · {int(stage.get('pending_model_count') or 0):,} unresolved · "
+        f"{int(stage.get('unrecorded_model_count') or 0):,} without a decision at this stage."
+    )
+    if not passing:
+        return
+    record_ids, unresolved = _accepted_records(records, passing)
+    if unresolved:
+        st.warning(f"{len(unresolved):,} passing candidate/model row(s) do not have a matching accessible Results structure in this run. They will not be silently substituted or collected.")
+    if not record_ids:
+        st.info("No passing model has a transferable run record and structure.")
+        return
+
+    try:
+        from mn_molecular_design_studio.cluster import config as cluster_config
+        cluster_settings = cluster_config.load()
+        source_workstation = cluster_config.display_name(cluster_settings.get("name")) or "This workstation"
+        source_node_id = str(cluster_config.identity())
+    except (OSError, RuntimeError, ValueError):
+        source_workstation, source_node_id = "This workstation", ""
+    targets = sorted(_collection_target_labels(passing, records, record_ids))
+    generators = sorted({str(row.get("generator_engine") or "") for row in passing
+                         if row.get("generator_engine")})
+    source_tools = sorted({str(row.get("source_tool") or "") for row in passing if row.get("source_tool")})
+    decision_rows = [dict(item.get("decision") or {}) for item in passing]
+    policies = list({json.dumps(row.get("policy") or {}, sort_keys=True): row.get("policy") or {}
+                     for row in decision_rows}.values())
+    collection_metadata = {
+        "acceptance_stage": stage["label"],
+        "acceptance_stage_id": stage_id,
+        "acceptance_policies": policies,
+        "accepted_candidate_models": [
+            {"candidate_id": row["candidate_id"], "model_id": row.get("model_id") or "",
+             "decision": row.get("decision") or {}, "source_tool": row.get("source_tool") or ""}
+            for row in passing
+        ],
+        "target_identities": targets,
+        "target_identity": targets[0] if len(targets) == 1 else (targets if targets else "Not recorded"),
+        "generators": generators,
+        "generator": generators[0] if len(generators) == 1 else (generators if generators else "Not recorded"),
+        "source_tools": source_tools,
+        "source_workstation": source_workstation,
+        "source_node_id": source_node_id,
+        "generated_candidate_count": int(inventory["candidate_count"]),
+        "collected_design_count": passed_designs,
+        "collected_model_count": len(passing),
+    }
+    for accepted, inventory_row in zip(collection_metadata["accepted_candidate_models"], passing):
+        accepted["target_identity"] = inventory_row.get("target_identity") or ""
+        accepted["target_sequences_by_chain"] = inventory_row.get("target_sequences_by_chain") or {}
+    target_sequence_maps = {
+        json.dumps(row.get("target_sequences_by_chain") or {}, sort_keys=True)
+        for row in passing
+    }
+    if len(target_sequence_maps) == 1:
+        collection_metadata["target_sequences_by_chain"] = json.loads(next(iter(target_sequence_maps)))
+    target_label = targets[0] if len(targets) == 1 else "mixed targets" if targets else "target not recorded"
+    generator_label = ", ".join(generators) if generators else "Design run"
+    group_name = f"{generator_label} · {target_label} · {inventory['run_id']} · {stage['label']}"[:250]
+    button_key = f"run-collect-passing-{run_key}-{stage_id}"
+    if st.button("Collect passing designs into Molecular Database", type="primary",
+                 key=button_key, disabled=bool(unresolved)):
+        try:
+            result = save_run_selection(
+                run_path, user, record_ids, database=database, name=group_name,
+                project_id=inventory.get("project_id") or None,
+                candidate_models=passing, collection_metadata=collection_metadata,
+            )
+            group_id = str(result.get("group_id") or "")
+            st.session_state[f"run-collect-result-{run_key}"] = {
+                "group_id": group_id, "count": int(result.get("saved_count") or 0), "name": group_name,
+                "design_count": passed_designs, "model_count": len(passing),
+            }
+        except (PermissionError, ValueError, OSError, FileNotFoundError) as exc:
+            st.error(f"Could not collect the passing run designs: {exc}")
+        except Exception:
+            log.exception("Could not collect passing designs from run %s", run_path)
+            st.error("Could not collect the passing run designs into the Molecular Database.")
+    completed = st.session_state.get(f"run-collect-result-{run_key}")
+    if isinstance(completed, dict) and completed.get("group_id"):
+        st.success(f"Saved {completed['design_count']:,} passing design(s) and {completed['model_count']:,} model row(s) in {completed['name']} ({completed['count']:,} unique Database identity/identities). Repeating this collection reuses the same collection and scientific identities.")
+        if st.button("Open collection in Complex Analysis", key=f"run-collect-open-{run_key}"):
+            st.session_state["complex-analysis-selected-collections"] = [completed["group_id"]]
+            st.session_state["complex-analysis-collections-open"] = True
+            st.session_state["complex-analysis-individual-mode"] = False
+            st.session_state["complex-analysis-flow-step"] = "select"
+            st.session_state["page"] = "Complex Analysis"
             st.rerun()
 
 
@@ -241,7 +406,6 @@ def render_run_database_actions(run_dir, user: dict, projects: list[dict]) -> No
         st.caption("Molecular Database actions could not load for this run. Refresh the result page to try again.")
         return
 
-    _render_accepted_design_promotion(run_path, user)
     _render_saved_run_collections(run_path, user, database)
 
     if not isinstance(records, list):
@@ -251,10 +415,11 @@ def render_run_database_actions(run_dir, user: dict, projects: list[dict]) -> No
         if isinstance(record, dict) and record.get("id"):
             distinct.setdefault(str(record["id"]), record)
     records = list(distinct.values())
+    run_key = hashlib.sha1(str(run_path).encode()).hexdigest()[:12]
+    _render_run_passing_collection(run_path, user, database, records, run_key)
     if not records:
         return
 
-    run_key = hashlib.sha1(str(run_path).encode()).hexdigest()[:12]
     record_by_id = {str(record["id"]): record for record in records}
     ids = list(record_by_id)
     selection_key = f"run-database-selection-{run_key}"
@@ -322,7 +487,7 @@ def render_run_database_actions(run_dir, user: dict, projects: list[dict]) -> No
 
     save_message = None
     selected_ids = [value for value in st.session_state.get(selection_key, []) if value in record_by_id]
-    with st.expander("Save selected to Database", expanded=False):
+    with st.expander("Advanced: collect a custom Results subset", expanded=False):
         st.caption(
             "Choose distinct molecular records. Structures, poses, scores, and their source run remain linked; "
             "poses are not separate molecules."

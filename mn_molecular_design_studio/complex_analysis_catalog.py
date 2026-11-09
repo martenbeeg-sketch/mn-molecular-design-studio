@@ -14,6 +14,7 @@ def authorized_structure_catalog(
     project_id: str = "",
     collection: str = "all",
     group_id: str = "",
+    group_ids: list[str] | None = None,
     limit: int = 100,
     advance: bool = False,
     refresh: bool = False,
@@ -40,7 +41,11 @@ def authorized_structure_catalog(
     project = str(project_id or "")
     collection_name = str(collection or "all")
     group = str(group_id or "")
-    filters = {"project_id": project, "collection": collection_name, "group_id": group}
+    selected_groups = list(dict.fromkeys(str(value) for value in (group_ids or []) if str(value))) if group_ids is not None else None
+    filters = {"project_id": project, "collection": collection_name, "group_id": group,
+               "group_ids": selected_groups}
+    group_kwargs = ({"group_ids": selected_groups, "restrict_structure_groups": True}
+                    if selected_groups is not None else {"group_id": group})
     cached = session_state.get(cache_key)
     reusable = (
         not refresh and isinstance(cached, dict)
@@ -57,7 +62,7 @@ def authorized_structure_catalog(
         next_offset: int | None = offset
         while len(found) < wanted and next_offset is not None:
             page = database.list_structure_records(
-                user, collection=collection_name, project_id=project, group_id=group, query=search,
+                user, collection=collection_name, project_id=project, **group_kwargs, query=search,
                 limit=min(page_size, wanted - len(found)), offset=next_offset,
             )
             page_rows = [row for row in page.get("items", []) if isinstance(row, dict)]
@@ -89,7 +94,7 @@ def authorized_structure_catalog(
             for start in range(0, len(ids), 5000):
                 chunk = ids[start:start + 5000]
                 page = database.list_structure_records(
-                    user, collection=collection_name, project_id=project, group_id=group,
+                    user, collection=collection_name, project_id=project, **group_kwargs,
                     query=search, molecule_ids=chunk,
                     limit=max(1, len(chunk)), offset=0,
                 )
@@ -123,7 +128,7 @@ def authorized_structure_catalog(
 
     if not reusable:
         page = database.list_structure_records(
-            user, collection=collection_name, project_id=project, group_id=group,
+            user, collection=collection_name, project_id=project, **group_kwargs,
             query=search, limit=page_size, offset=0,
         )
         ids = list(dict.fromkeys(str(row.get("id") or "") for row in page.get("items", []) if row.get("id")))
@@ -148,13 +153,13 @@ def authorized_structure_catalog(
             # ID count (including revoked entries) plus one page, so revocation
             # does not silently shorten the newly requested page.
             page = database.list_structure_records(
-                user, collection=collection_name, project_id=project, group_id=group, query=search,
+                user, collection=collection_name, project_id=project, **group_kwargs, query=search,
                 limit=min(5000, len(ids) + page_size), offset=0,
             )
             ids = [str(row.get("id") or "") for row in page.get("items", []) if row.get("id")]
         else:
             page = database.list_structure_records(
-                user, collection=collection_name, project_id=project, group_id=group,
+                user, collection=collection_name, project_id=project, **group_kwargs,
                 query=search, limit=page_size, offset=int(next_offset),
             )
             new_ids = [str(row.get("id") or "") for row in page.get("items", []) if row.get("id")]
@@ -169,7 +174,7 @@ def authorized_structure_catalog(
     for start in range(0, len(ids), 5000):
         chunk = ids[start:start + 5000]
         page = database.list_structure_records(
-            user, collection=collection_name, project_id=project, group_id=group,
+            user, collection=collection_name, project_id=project, **group_kwargs,
             query=search, molecule_ids=chunk,
             limit=max(1, len(chunk)), offset=0,
         )

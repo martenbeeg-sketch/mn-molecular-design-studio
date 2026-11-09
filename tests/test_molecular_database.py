@@ -134,6 +134,32 @@ def test_structure_catalog_does_not_mark_generic_target_files_as_an_explicit_cha
     assert record["source_target_provenance"] is False
 
 
+def test_structure_catalog_can_be_restricted_to_selected_collection_members(database):
+    first = database.import_records(A, imports.parse_sequences(">same binder\nACDE"), name="RFD4 run")
+    molecule_id = first["molecule_ids"][0]
+    first_structure = database.attach_structure(
+        first["group_id"], molecule_id, {"name": "rfd4.cif", "content": b"data_rfd4\n"},
+        context={"candidate_id": "rfd4-candidate", "model_id": "model-1"},
+    )
+    second = database.create_group(A, "BindCraft2 run", import_method="user_uploads",
+                                   origin={"type": "results_design_collection", "collection_kind": "curated"})
+    database.add_to_group(A, second, [molecule_id])
+    second_structure = database.attach_structure(
+        second, molecule_id, {"name": "bindcraft.cif", "content": b"data_bindcraft\n"},
+        context={"candidate_id": "bindcraft-candidate", "model_id": "model-2"},
+    )
+
+    selected = database.list_structure_records(
+        A, collection="all", group_ids=[first["group_id"]], restrict_structure_groups=True,
+    )
+    assert [row["id"] for row in selected["items"]] == [molecule_id]
+    assert {item["id"] for item in selected["items"][0]["representations"]} == {first_structure}
+
+    # Ordinary Database discovery continues to expose both source models.
+    all_models = database.list_structure_records(A, collection="all", group_ids=[first["group_id"]])
+    assert {item["id"] for item in all_models["items"][0]["representations"]} == {first_structure, second_structure}
+
+
 def test_concurrent_legacy_writes_preserve_other_owners_and_additions(tmp_path):
     path = tmp_path / "groups.json"
     path.write_text(json.dumps([{"id": "bob", "name": "Bob", "owner_id": B["id"], "members": []}]))
