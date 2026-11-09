@@ -942,14 +942,38 @@ class MolecularDatabase:
             has_evaluations = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='molecule_evaluations'"
             ).fetchone() is not None
+            requested_json = _json(requested)
+            # Aggregate each fact table once for this authorized collection
+            # page. Correlated COUNT subqueries made SQLite rescan the large
+            # structure table once per group, which stalled the production
+            # Complex Analysis page as collections accumulated.
+            counts = [
+                "member_counts AS ("
+                "SELECT group_id, COUNT(DISTINCT molecule_id) AS molecule_count "
+                "FROM molecule_members WHERE group_id IN (SELECT value FROM json_each(?)) GROUP BY group_id)",
+                "structure_counts AS ("
+                "SELECT group_id, COUNT(DISTINCT id) AS structure_count "
+                "FROM molecule_structures WHERE group_id IN (SELECT value FROM json_each(?)) GROUP BY group_id)",
+            ]
+            if has_evaluations:
+                counts.append(
+                    "evaluation_counts AS ("
+                    "SELECT group_id, COUNT(DISTINCT molecule_id) AS evaluation_count "
+                    "FROM molecule_evaluations WHERE group_id IN (SELECT value FROM json_each(?)) GROUP BY group_id)"
+                )
+            evaluation_select = (
+                "COALESCE(ec.evaluation_count,0) AS evaluation_count " if has_evaluations else "NULL AS evaluation_count "
+            )
+            evaluation_join = "LEFT JOIN evaluation_counts ec ON ec.group_id=g.id " if has_evaluations else ""
             rows = connection.execute(
-                "SELECT g.id,"
-                "(SELECT COUNT(DISTINCT mm.molecule_id) FROM molecule_members mm WHERE mm.group_id=g.id) AS molecule_count,"
-                "(SELECT COUNT(DISTINCT s.id) FROM molecule_structures s WHERE s.group_id=g.id) AS structure_count,"
-                + ("(SELECT COUNT(DISTINCT e.molecule_id) FROM molecule_evaluations e WHERE e.group_id=g.id) AS evaluation_count "
-                   if has_evaluations else "NULL AS evaluation_count ")
-                + "FROM molecule_groups g WHERE g.id IN (SELECT value FROM json_each(?))",
-                (_json(requested),),
+                "WITH " + ", ".join(counts) + " "
+                "SELECT g.id, COALESCE(mc.molecule_count,0) AS molecule_count, "
+                "COALESCE(sc.structure_count,0) AS structure_count, " + evaluation_select
+                + "FROM molecule_groups g "
+                "LEFT JOIN member_counts mc ON mc.group_id=g.id "
+                "LEFT JOIN structure_counts sc ON sc.group_id=g.id " + evaluation_join
+                + "WHERE g.id IN (SELECT value FROM json_each(?))",
+                tuple(requested_json for _ in counts) + (requested_json,),
             ).fetchall()
         return {str(row["id"]): {"molecule_count": int(row["molecule_count"] or 0),
                                  "structure_count": int(row["structure_count"] or 0),

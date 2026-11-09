@@ -36,6 +36,30 @@ def test_reimport_and_group_membership_preserve_identity_structures_and_scores(d
     assert database.list_molecules(A, group_id=second["group_id"], metric_filters=[{"field": "vina.energy", "operator": "<", "value": -7}])["total"] == 1
 
 
+def test_collection_statistics_aggregate_selected_group_counts_and_enforce_access(database):
+    imported = database.import_records(A, imports.parse_sequences(">binder\nACDEFG"), name="Design cohort")
+    molecule_id = imported["molecule_ids"][0]
+    group_id = imported["group_id"]
+    database.attach_structure(
+        group_id, molecule_id, {"name": "model.cif", "content": b"data_model\n"},
+        context={"model_id": "model-1"},
+    )
+    database.add_observation(group_id, molecule_id, "biotite-interface-v1", "analysis-1", {"contacts": 12})
+    from mn_molecular_design_studio.evaluations import install_schema, rebuild_missing
+
+    with database.connection() as connection:
+        install_schema(connection)
+        rebuild_missing(connection)
+
+    assert database.collection_statistics(A, [group_id]) == {
+        group_id: {"molecule_count": 1, "structure_count": 1, "evaluated_design_count": 1}
+    }
+
+    private = database.import_records(B, imports.parse_sequences(">private\nGGGGGG"), name="Private cohort")
+    with pytest.raises(PermissionError, match="not accessible"):
+        database.collection_statistics(A, [private["group_id"]])
+
+
 def test_selected_compound_snapshot_contains_exact_members_and_is_immutable(database):
     result = database.import_records(A, imports.parse_smiles("CCO selected\nCC excluded"), name="Original")
     snapshot = database.compound_snapshot(A, [result["molecule_ids"][0]], project_id="project-1")
