@@ -142,10 +142,11 @@ class Replica:
 
     def capture_jobs(self):
         own = config.identity()
+        from mn_molecular_design_studio.molecular_database import MolecularDatabase
         with Store().connect() as db:
             rows = db.execute(
                 "SELECT j.id,j.local_ref,j.created_at,s.origin_node,"
-                "json_remove(j.payload,'$.request_summary','$.artifacts') AS payload "
+                "json_remove(j.payload,'$.request_summary','$.artifacts','$.scientific_lineage') AS payload "
                 "FROM jobs j LEFT JOIN submissions s ON s.job_id=j.id "
                 "WHERE (j.node_id=? AND j.local_ref IS NOT NULL) "
                 "OR (s.origin_node=? AND j.local_ref IS NULL)",
@@ -163,7 +164,7 @@ class Replica:
             if not row['local_ref']:
                 value['submission_origin'] = own
             current['job:' + row['id']] = value
-        with self.db() as db:
+        with self.db() as db, MolecularDatabase().connection() as lineage_db:
             previous = db.execute(
                 "SELECT key FROM records WHERE kind='job' AND author=? AND value!='null'",
                 (own,),
@@ -172,6 +173,13 @@ class Replica:
                 if record['key'] not in current:
                     self._write(db, record['key'], 'job', None)
             for key, value in current.items():
+                value = dict(value)  # Do not accumulate full snapshots in current.
+                if value.get('local_reference'):
+                    snapshot_row = lineage_db.execute("SELECT snapshot FROM scientific_jobs WHERE ref=? AND node_id=?",
+                        ('cluster://' + own + '/' + value['local_reference'], own)).fetchone()
+                    if snapshot_row:
+                        snapshot = json.loads(snapshot_row['snapshot'])
+                        value['scientific_lineage'] = dict(snapshot, job=dict(snapshot['job'], cluster_job_id=value['cluster_job_id']))
                 previous = db.execute("SELECT value FROM records WHERE key=?", (key,)).fetchone()
                 if not previous or json.loads(previous[0]) != value:
                     self._write(db, key, 'job', value)
@@ -415,12 +423,18 @@ class Replica:
         if kind == 'job':
             if value is None:
                 with Store().connect() as db:
-                    previous = db.execute("SELECT node_id,payload FROM jobs WHERE id=?", (identifier,)).fetchone()
+                    previous = db.execute("SELECT node_id,payload,local_ref FROM jobs WHERE id=?", (identifier,)).fetchone()
                     if previous:
                         payload = json.loads(previous['payload'])
                         if previous['node_id'] != author and payload.get('submission_origin') != author:
                             raise PermissionError("Only the job's owning workstation may remove its superseded identity.")
                         db.execute("DELETE FROM jobs WHERE id=?", (identifier,))
+                        from mn_molecular_design_studio.molecular_database import MolecularDatabase
+                        from mn_molecular_design_studio.scientific_lineage import rebuild_campaigns
+                        with MolecularDatabase().connection() as lineage_db:
+                            lineage_db.execute("DELETE FROM scientific_jobs WHERE ref=? AND node_id=?",
+                                               ('cluster://' + author + '/' + str(previous['local_ref'] or ''), author))
+                            rebuild_campaigns(lineage_db)
                 return
             if not isinstance(value, dict) or value.get('cluster_job_id') != identifier:
                 raise ValueError("Invalid job identity.")
@@ -438,6 +452,9 @@ class Replica:
             # original store's empty ownership fields and admin-only visibility.
             owner_id = str(value.get('owner_id') or '')
             project_id = str(value.get('project_id') or '')
+            if value.get('scientific_lineage') is not None:
+                from mn_molecular_design_studio.scientific_lineage import validate_snapshot
+                validate_snapshot(value['scientific_lineage'], author, value)
             with Store().connect() as db:
                 previous = db.execute("SELECT * FROM jobs WHERE id=?", (identifier,)).fetchone()
                 if previous and (previous['owner_id'] != owner_id or previous['project_id'] != project_id or accepted and previous['node_id'] not in {None, author}):
@@ -456,8 +473,12 @@ class Replica:
                     "VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
                     "node_id=excluded.node_id,local_ref=excluded.local_ref,payload=excluded.payload",
                     (identifier, value.get('node_id'), local_ref, owner_id, project_id,
-                     encoded(value), value.get('created_at','')),
+                    encoded(value), value.get('created_at','')),
                 )
+            if value.get('scientific_lineage') is not None:
+                from mn_molecular_design_studio.molecular_database import MolecularDatabase
+                from mn_molecular_design_studio.scientific_lineage import put_snapshot
+                put_snapshot(MolecularDatabase(), value['scientific_lineage'], author=author, envelope=value)
             return
         from mn_molecular_design_studio import auth, workspace
         if kind == 'project':

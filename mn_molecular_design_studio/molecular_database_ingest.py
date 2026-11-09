@@ -2498,7 +2498,7 @@ def workspace_sync_running(user, *, database):
         return (str(database.path), str(user["id"])) in _SYNC_WORKERS
 
 
-def record_completed_run(run_dir):
+def _record_completed_run(run_dir):
     """Indexing cannot change the scientific job's completion status."""
     try:
         from mn_molecular_design_studio.workspace import is_studio_job
@@ -2533,3 +2533,21 @@ def record_completed_run(run_dir):
                 time.sleep(0.25 * (2 ** attempt))
     except Exception:
         log.exception("Molecular Database could not index completed run %s; refresh will retry", run_dir)
+
+
+def record_completed_run(run_dir):
+    """Capture lineage independently of admission to the reusable library."""
+    try:
+        _record_completed_run(run_dir)
+    finally:
+        try:
+            from mn_molecular_design_studio.workspace import is_studio_job
+            from mn_molecular_design_studio.scientific_lineage_ingest import capture_completed_run
+            path = Path(run_dir)
+            status = str(_read(path / "metadata.json").get("status") or "")
+            if is_studio_job(path) and status in {"completed", "failed", "cancelled", "stopped"}:
+                capture_completed_run(path)
+        except Exception:
+            # A projection failure is visible in logs; it must not reclassify
+            # a scientific calculation or silently admit its candidates.
+            log.exception("Scientific lineage capture failed for %s; controlled backfill can retry", run_dir)

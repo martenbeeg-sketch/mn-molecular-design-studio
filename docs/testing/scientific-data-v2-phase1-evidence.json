@@ -1,0 +1,249 @@
+{
+  "schema": "studio.scientific-lineage.v1",
+  "validated_at": "2026-11-09",
+  "source_mode": "read-only production metadata; writes only isolated staging",
+  "scope": "Explicit bounded metadata/record staging subset; not a production migration or remote filesystem audit",
+  "staging_path": "/tmp/mds-scientific-v2-u51u83xz",
+  "historical_cases": [
+    {
+      "job_ref": "campaign/20261029-094447-d4f389fb",
+      "owner_node": "50e484e4-0ad5-47c9-a8c4-b46d4000a59b",
+      "output_occurrences": 2,
+      "retained_refs": 1,
+      "evaluation_ids": [
+        "evaluation-7a3bc3b55327dccbc1651776de6bec56"
+      ],
+      "warnings": [
+        "Explicit bounded staging subset; this is not a complete production backfill."
+      ]
+    },
+    {
+      "job_ref": "design/20261029-094457-fb2fd80a",
+      "owner_node": "50e484e4-0ad5-47c9-a8c4-b46d4000a59b",
+      "output_occurrences": 5,
+      "retained_refs": 5,
+      "evaluation_ids": [
+        "evaluation-48f0c8c08bb9d552c03c1cf88b6a39d6"
+      ],
+      "warnings": [
+        "Explicit bounded staging subset; this is not a complete production backfill.",
+        "Retained representation structure-056b00f2fe4977041c96ae764e8efe3c preserved; exact output/model association unresolved.",
+        "Retained representation structure-b63e811fed1a7179122447ac4dc2a4a7 preserved; exact output/model association unresolved.",
+        "Retained representation structure-e34100baeb6818767206a258bfd18958 preserved; exact output/model association unresolved.",
+        "Recorded target contexts differ; construct/receptor correspondence unresolved."
+      ]
+    },
+    {
+      "job_ref": "design/20261029-094502-6ad69fc5",
+      "owner_node": "16b4dcfd-3b9f-4d59-80a4-95363125fcee",
+      "output_occurrences": 3,
+      "retained_refs": 2,
+      "evaluation_ids": [
+        "evaluation-415ffbb1cbdce09b6c92dafba745f4b0"
+      ],
+      "warnings": [
+        "Original source filesystem not reached in this validation; using saved replicated metadata.",
+        "Explicit bounded staging subset; this is not a complete production backfill.",
+        "Retained representation structure-f9a98a9e6878c845be5d801623472ec2 preserved; exact output/model association unresolved."
+      ]
+    },
+    {
+      "job_ref": "design/20261102-081701-97f7d42e",
+      "owner_node": "16b4dcfd-3b9f-4d59-80a4-95363125fcee",
+      "output_occurrences": 0,
+      "retained_refs": 0,
+      "evaluation_ids": [],
+      "warnings": [
+        "Original source filesystem not reached in this validation; using saved replicated metadata.",
+        "Explicit bounded staging subset; this is not a complete production backfill."
+      ]
+    },
+    {
+      "job_ref": "design/20261028-121331-91d15b3f",
+      "owner_node": "50e484e4-0ad5-47c9-a8c4-b46d4000a59b",
+      "output_occurrences": 5,
+      "retained_refs": 4,
+      "evaluation_ids": [
+        "evaluation-55742d3cf2899e7cab756540ee6a0ca0"
+      ],
+      "warnings": [
+        "Explicit bounded staging subset; this is not a complete production backfill.",
+        "Retained representation structure-7f72e1faec410dba4148a95c928c0fd1 preserved; exact output/model association unresolved.",
+        "Retained representation structure-8049cb9c07502fa9169de6851dd9fd98 preserved; exact output/model association unresolved.",
+        "Retained representation structure-a092acca86d2ff1aa3deafdfcc7d89d7 preserved; exact output/model association unresolved."
+      ]
+    },
+    {
+      "job_ref": "design/20261028-121326-52a55d64",
+      "owner_node": "50e484e4-0ad5-47c9-a8c4-b46d4000a59b",
+      "output_occurrences": 5,
+      "retained_refs": 4,
+      "evaluation_ids": [
+        "evaluation-13f67c7ef2c49765fcb6091e327a9aa1"
+      ],
+      "warnings": [
+        "Explicit bounded staging subset; this is not a complete production backfill.",
+        "Retained representation structure-db4bed0770c7ccae1b4bf09a60a35cfd preserved; exact output/model association unresolved.",
+        "Retained representation structure-0e87bb2796e143bda8ce78efb1f3cbfb preserved; exact output/model association unresolved.",
+        "Retained representation structure-8c99419cccea7e6314ec648449b2dbc2 preserved; exact output/model association unresolved."
+      ]
+    },
+    {
+      "job_ref": "refolding-validation/20261102-184847-e1c4c3e4",
+      "owner_node": "50e484e4-0ad5-47c9-a8c4-b46d4000a59b",
+      "output_occurrences": 11,
+      "retained_refs": 2,
+      "evaluation_ids": [
+        "evaluation-43cd13da064b63e3f54093cf70de56d8",
+        "evaluation-f7e00c9ce2f26ee294c884550957388d",
+        "evaluation-66673cdeac2fbd60014415ec5b51f159",
+        "evaluation-cd84c0ef7de9f94db65d1634792e040e",
+        "evaluation-3628111d5e3f6cc5dc0856ffb665c6c6"
+      ],
+      "warnings": [
+        "Explicit bounded staging subset; this is not a complete production backfill.",
+        "Retained representation structure-473a62dcca0c41c81f2a848043358931 preserved; exact output/model association unresolved."
+      ]
+    },
+    {
+      "job_ref": "docking/mnligand-3f28268e02567ac4",
+      "owner_node": "16b4dcfd-3b9f-4d59-80a4-95363125fcee",
+      "output_occurrences": 6,
+      "retained_refs": 3,
+      "evaluation_ids": [
+        "evaluation-753dd8c9c4b29c2a94dafe40e19084b0",
+        "evaluation-5865a16ea5d0c25e23a8ca5f219768a8",
+        "evaluation-fc117e6ba4bb2b244ff2572109491662"
+      ],
+      "warnings": [
+        "Parent run recorded without its source workstation; linkage unresolved.",
+        "Original source filesystem not reached in this validation; using saved replicated metadata.",
+        "Explicit bounded staging subset; this is not a complete production backfill.",
+        "Retained representation structure-a7e869bd6966f900109ad57735be7bb0 preserved; exact output/model association unresolved.",
+        "Retained representation structure-9445991777b08a9b5cec3d1704cc22d8 preserved; exact output/model association unresolved.",
+        "Retained representation structure-ea3411280a1cb5140cce2edcc93eb463 preserved; exact output/model association unresolved."
+      ]
+    },
+    {
+      "job_ref": "ligand-md/mnligand-md-99d094e268164eca",
+      "owner_node": "16b4dcfd-3b9f-4d59-80a4-95363125fcee",
+      "output_occurrences": 15,
+      "retained_refs": 0,
+      "evaluation_ids": [
+        "evaluation-59a71431f2fa471b154791f96fd942e6",
+        "evaluation-c874b87488e9df9932e3c86851caef3c",
+        "evaluation-dc01a9fa4942583f4383f09c6d3f02cc",
+        "evaluation-8216ab896bbdabaa9b03b35f6ce68d37",
+        "evaluation-d5663c7d6c897abb08fa4bc820a3352c",
+        "evaluation-ee1b5f18973154d9fd8ec94572a835e0"
+      ],
+      "warnings": [
+        "Original source filesystem not reached in this validation; using saved replicated metadata.",
+        "Explicit bounded staging subset; this is not a complete production backfill."
+      ]
+    },
+    {
+      "job_ref": "ligand-mmgbsa/mnligand-md-469ca9ed9a8e156c",
+      "owner_node": "16b4dcfd-3b9f-4d59-80a4-95363125fcee",
+      "output_occurrences": 12,
+      "retained_refs": 0,
+      "evaluation_ids": [
+        "evaluation-82f44ec88108a903cf98050cf9a2b0c2",
+        "evaluation-c250c6408b541d4ece885bf5258da422",
+        "evaluation-29a6c6aad97418b9aacea534b9509fe0",
+        "evaluation-ab3049c786837c541c9d76ed424f9bc4",
+        "evaluation-029c49fef1b9aafff6f417503eb13f44",
+        "evaluation-4b2510a891cbc47f5f7afb60b18700a6",
+        "evaluation-088cb9c1c8e6130e95311e1d9928df18",
+        "evaluation-7df456d7ef7ffe000a188b06e3ceb9a1",
+        "evaluation-1bd994bbab40036bd1644cb16b653b18",
+        "evaluation-2434fc89b07dcef0254febc0e632d460",
+        "evaluation-67b6514d700cd15955e478a22a85b8ea",
+        "evaluation-27137caeb9f93851dab8f6c1b55dbc78"
+      ],
+      "warnings": [
+        "Original source filesystem not reached in this validation; using saved replicated metadata.",
+        "Explicit bounded staging subset; this is not a complete production backfill."
+      ]
+    },
+    {
+      "job_ref": "md-analysis/mnligand-md-85995d463974aade",
+      "owner_node": "16b4dcfd-3b9f-4d59-80a4-95363125fcee",
+      "output_occurrences": 6,
+      "retained_refs": 0,
+      "evaluation_ids": [
+        "evaluation-a15ff065ab3e584658cc065ceddb4483",
+        "evaluation-8d219fdb63cddffa3bb78bd80badd80f",
+        "evaluation-ceb9579fe15196480d082388886725ba",
+        "evaluation-b9b23c06b9dd4971aa59c88cb37f6386",
+        "evaluation-a8a7d28b756630c6ef8cce149cd1861f",
+        "evaluation-522b30d1a1897ca38b5304046ac2fbb0"
+      ],
+      "warnings": [
+        "Original source filesystem not reached in this validation; using saved replicated metadata.",
+        "Explicit bounded staging subset; this is not a complete production backfill."
+      ]
+    }
+  ],
+  "timings_ms": {
+    "campaign_page": {
+      "median": 1.0712966322898865,
+      "max": 1.0921917855739594
+    },
+    "campaign_detail": {
+      "median": 1.6086807008832693,
+      "max": 1.6580340452492237
+    }
+  },
+  "source_database_counts": {
+    "molecules": 21473,
+    "molecule_structures": 21537,
+    "molecule_observations": 41198,
+    "molecule_evaluations": 41198
+  },
+  "browser": {
+    "preview": "http://127.0.0.1:8510/",
+    "isolated": true,
+    "peer_sync": false,
+    "scientific_dispatch": false,
+    "verified": [
+      "distributed campaign parent/controller/worker",
+      "explicit native-pass cohort, no inferred final pass",
+      "one authoritative parent output and retained model",
+      "direct Analyze and Evaluation Board",
+      "Scientific Inspector exact structure and saved Evaluation",
+      "return preserves selected model and acceptance stage"
+    ],
+    "molecule_id": "mol-861abd93038523a290940671b4b62662",
+    "structure_id": "structure-d2772c6c80ed2c92a942d89081ab57ff",
+    "structure_sha256": "a6ebc954057e53aa4907f277c13bec13e22fcf324a5272762a03b8669f3fea9b",
+    "evaluation_id": "evaluation-7a3bc3b55327dccbc1651776de6bec56",
+    "source_run": "campaign/20261029-094447-d4f389fb",
+    "recorded_stage": "native",
+    "campaign_heading_visible_ms": 674,
+    "selected_campaign_controls_ready_ms": 347,
+    "screenshots": [
+      "/tmp/mds-scientific-v2-u51u83xz/campaign-browser.jpg",
+      "/tmp/mds-scientific-v2-u51u83xz/analyze-browser.jpg",
+      "/tmp/mds-scientific-v2-u51u83xz/inspector-browser.jpg"
+    ]
+  },
+  "ssh_read_only": {
+    "PC004032": "compute login succeeded",
+    "PC004033": "No route to host before login"
+  },
+  "focused_tests": {
+    "passed": 43,
+    "deselected": 100,
+    "warnings": 1
+  },
+  "additional_admission_regressions": {
+    "passed": 3,
+    "file": "tests/test_protein_library.py",
+    "checks": [
+      "existing policy",
+      "unaccepted input cannot promote",
+      "queued submission registration"
+    ]
+  }
+}

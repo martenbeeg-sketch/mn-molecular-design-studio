@@ -87,6 +87,26 @@ def install(app, current_user):
         from mn_molecular_design_studio.output_vocabulary import vocabulary
         return vocabulary()
 
+    @router.get("/scientific/campaigns")
+    def scientific_campaigns(kind: str = "", project_id: str = "", target: str = "", query: str = "",
+                             limit: int = Query(25, ge=1, le=100), offset: int = Query(0, ge=0), user=Depends(current_user)):
+        from mn_molecular_design_studio.scientific_lineage import campaigns
+        return call(campaigns, MolecularDatabase(), user, kind=kind, project_id=project_id, target=target,
+                    query=query, limit=limit, offset=offset)
+
+    @router.get("/scientific/campaigns/{campaign_ref}")
+    def scientific_campaign(campaign_ref: str, limit: int = Query(100, ge=1, le=500),
+                            offset: int = Query(0, ge=0), user=Depends(current_user)):
+        from mn_molecular_design_studio.scientific_lineage import campaign_detail
+        return call(campaign_detail, MolecularDatabase(), user, campaign_ref, limit=limit, offset=offset)
+
+    @router.get("/scientific/campaigns/{campaign_ref}/models")
+    def scientific_models(campaign_ref: str, stage: str = "final", limit: int = Query(100, ge=1, le=500),
+                          offset: int = Query(0, ge=0), include_execution_refs: bool = False, user=Depends(current_user)):
+        from mn_molecular_design_studio.scientific_lineage import retained_models
+        return call(retained_models, MolecularDatabase(), user, campaign_ref, stage=stage, limit=limit, offset=offset,
+                    include_execution_refs=include_execution_refs)
+
     @router.get("/metrics")
     def metrics(group_id: str = "", project_id: str = "", scope: str = "organization", collection: str = "all", user=Depends(current_user)):
         return {"items": call(MolecularDatabase().metric_fields, user, group_id=group_id,

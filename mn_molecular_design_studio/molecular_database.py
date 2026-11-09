@@ -281,6 +281,8 @@ class MolecularDatabase:
             _CAPTURE_REVISION_SCHEMA_READY.add(schema_key)
         from mn_molecular_design_studio.evaluations import install_schema
         install_schema(connection)
+        from mn_molecular_design_studio.scientific_lineage import install_schema as install_lineage
+        install_lineage(connection)
         try:
             with connection:
                 yield connection

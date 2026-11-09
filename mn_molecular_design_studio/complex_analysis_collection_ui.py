@@ -219,11 +219,15 @@ def _database_candidate_view(record: dict, structure: dict, components: list[dic
                    if candidate_id and str(item.get("candidate_id") or "") == candidate_id), {})
     provenance = source if isinstance(source, dict) else {}
     source_tool = str(context.get("source_tool") or provenance.get("source_tool") or "")
+    orchestration_tools = {"visual_pipeline", "bindcraft2_campaign"}
+    if source_tool in orchestration_tools:
+        source_tool = ""
     # When the selected structure was produced by a generator job, its own
     # recorded tool is the generator. A later validation Evaluation may carry
     # the validator's name in its candidate metadata and must not replace it.
     if not source_tool and str(context.get("task_group") or "").casefold() != "analysis":
-        source_tool = str(context.get("tool") or "")
+        execution_tool = str(context.get("tool") or "")
+        source_tool = execution_tool if execution_tool not in orchestration_tools else ""
     decision = context.get("acceptance_decision") if isinstance(context.get("acceptance_decision"), dict) else {}
     if not decision:
         decision = provenance.get("acceptance_decision") if isinstance(provenance.get("acceptance_decision"), dict) else {}
@@ -356,7 +360,8 @@ def _database_candidate_view(record: dict, structure: dict, components: list[dic
                          or context.get("model_id") or context.get("model_index") or ""),
         "model_index": str(context.get("model_index") or ""),
         "source_tool": source_tool or (
-            str(context.get("tool") or "") if str(context.get("task_group") or "").casefold() != "analysis" else ""
+            str(context.get("tool") or "") if str(context.get("task_group") or "").casefold() != "analysis"
+            and str(context.get("tool") or "") not in orchestration_tools else ""
         ),
         "binder_sequence": binder_sequence,
         "binder_chains": binder_chains,
@@ -1983,12 +1988,21 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
                                 workflow_schema=None, submit=None) -> None:
     """Render one Database-only Select → Analyze → Compare → Shortlist flow."""
     st.subheader("Design Explorer")
-    st.caption("Complex Analysis uses structures already saved in the Molecular Database. Results remain in My runs; import only the candidates and models you explicitly choose.")
+    st.caption("Open an indexed campaign and its retained Database models, review assessments, compare evidence and shortlist. Full Results remain on their source workstation.")
     step = _workflow_steps()
     if step == "select":
-        st.markdown("### Select Database designs")
-        st.caption("Search and page through lightweight, authorized Database metadata. Full records and coordinates are loaded only after you select exact structure/model rows and click Load selected designs.")
-        _database_collection_samples(user)
+        if st.session_state.get("complex-analysis-saved-cohort-mode"):
+            if st.button("← Scientific campaigns", key="complex-analysis-back-campaigns"):
+                st.session_state["complex-analysis-saved-cohort-mode"] = False
+                st.rerun()
+            _database_collection_samples(user)
+        else:
+            from mn_molecular_design_studio.molecular_database import MolecularDatabase
+            from mn_molecular_design_studio.scientific_lineage_ui import render_campaign_browser
+            render_campaign_browser(MolecularDatabase(), user)
+            if st.button("Saved cohorts and individual designs (advanced)", key="complex-analysis-advanced-cohorts"):
+                st.session_state["complex-analysis-saved-cohort-mode"] = True
+                st.rerun()
         return
 
     samples = _load_workspace_samples(user)
