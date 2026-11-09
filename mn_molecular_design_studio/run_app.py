@@ -752,13 +752,13 @@ with st.sidebar:
 
 if cluster_config.enabled():
     from mn_molecular_design_studio.cluster.ui import execution_selector
-    # Complex Analysis is Database-only and must not wait on a coordinator
-    # workstation-list request on every Streamlit rerun. Keep the last known
-    # placement choices available there; refresh is an explicit sidebar action.
+    # Results and Complex Analysis are browsing workspaces. Do not make their
+    # page changes wait on a coordinator workstation-list request; keep the
+    # last known placement choices available and make refresh explicit.
     execution_selector(
         CURRENT_USER,
         str(st.session_state.get("studio-session-token") or "development-mode"),
-        refresh_nodes=st.session_state.get("page") != "Complex Analysis",
+        refresh_nodes=st.session_state.get("page") not in {"My runs", "Complex Analysis"},
     )
 
 
