@@ -1276,16 +1276,65 @@ def _design_collection_label(group: dict) -> dict[str, str]:
     source_run = origin.get("source_run") if isinstance(origin.get("source_run"), dict) else {}
     run_id = str(source_run.get("run_id") or origin.get("run_id") or "Not recorded")
     task_group = str(source_run.get("task_group") or origin.get("task_group") or "")
-    run_label = f"{task_group}/{run_id}" if task_group else run_id
-    target = origin.get("target_identity") or origin.get("target_id") or "Not recorded"
+    source_label = f"{task_group}/{run_id}" if task_group else run_id
+    workstation = str(source_run.get("source_workstation") or source_run.get("workstation")
+                      or origin.get("source_workstation") or origin.get("workstation") or "")
+    campaign = str(origin.get("campaign_name") or origin.get("source_campaign_name")
+                   or source_run.get("campaign_name") or "")
+    # Indexed Results groups often retain the original job/campaign label as
+    # the group name even when the normalized origin omitted campaign_name.
+    group_name = str(group.get("name") or "")
+    if not campaign and origin.get("type") == "job" and group_name and run_id not in group_name:
+        campaign = group_name
+    # Some imported historic groups used this explanatory placeholder instead
+    # of a campaign name. Keep it from looking like a real campaign label.
+    if campaign.casefold().startswith("historical generator source absent"):
+        campaign = ""
+    campaign_id = str(origin.get("campaign_id") or origin.get("parent_campaign_id") or "")
+    if campaign:
+        run_label = f"{campaign} · {source_label}"
+    elif campaign_id:
+        run_label = f"Campaign {campaign_id} · {source_label}"
+    else:
+        run_label = f"Campaign not recorded · {source_label}"
+    if workstation:
+        run_label += f" · {workstation}"
+    target = (origin.get("target_identity") or origin.get("target_name")
+              or origin.get("design_target_name") or origin.get("target_id"))
     if isinstance(target, list):
         target = ", ".join(str(value) for value in target if value) or "Not recorded"
-    generator = origin.get("generator") or origin.get("tool") or origin.get("generators") or "Not recorded"
+    elif isinstance(target, dict):
+        target = (target.get("name") or target.get("label") or target.get("molecule_id")
+                  or target.get("id") or "Target identity recorded")
+    if not target:
+        target_molecule_id = str(origin.get("design_target_molecule_id") or "")
+        target_digest = str(origin.get("design_target_sequence_sha256") or "")
+        if target_molecule_id:
+            target = f"Target record {target_molecule_id}"
+        elif target_digest:
+            target = f"Sequence SHA-256 {target_digest[:12]}…"
+        else:
+            target = "Not recorded"
+    generator = (origin.get("generator_engine") or origin.get("generator")
+                 or origin.get("generators"))
+    if not generator:
+        tool = str(origin.get("tool") or "")
+        generator = tool if tool and tool.casefold() not in {
+            "validation_acceptance", "biotite_interface", "ipsae", "plip",
+            "complex_analysis", "sequence_composition", "protein_sol",
+        } else "Not recorded"
     if isinstance(generator, list):
         generator = ", ".join(str(value) for value in generator if value) or "Not recorded"
     return {"collection": str(group.get("name") or group.get("id") or "Collection"),
             "target": str(target), "run": run_label, "generator": str(generator),
             "date": str(group.get("updated_at") or group.get("created_at") or "Not recorded")}
+
+
+def _is_design_collection(group: dict) -> bool:
+    """Exclude reference libraries from the saved design-cohort picker."""
+    origin = group.get("origin") if isinstance(group.get("origin"), dict) else {}
+    kind = str(group.get("collection_kind") or origin.get("collection_kind") or "")
+    return kind != "reference"
 
 
 def _load_collection_structures(database, user: dict, records: list[dict], group_ids: list[str],
@@ -1384,6 +1433,8 @@ def _database_collection_samples(user: dict) -> list[dict]:
         groups, statistics = [], {}
     collections = []
     for group in groups:
+        if not _is_design_collection(group):
+            continue
         group_id = str(group.get("id") or "")
         stats = statistics.get(group_id) or {}
         if int(stats.get("structure_count") or 0) <= 0 or int(stats.get("molecule_count") or 0) <= 0:
@@ -1394,7 +1445,7 @@ def _database_collection_samples(user: dict) -> list[dict]:
     st.caption("Start with the passing cohort you collected from Results. Complex Analysis reads collection membership and structure metadata here; coordinates and full Evaluations load only when you open the cohort.")
     if collections:
         table = []
-        for group in collections[:100]:
+        for group in collections:
             summary = group["summary"]
             stats = group["stats"]
             evaluated = stats.get("evaluated_design_count")
@@ -1404,7 +1455,7 @@ def _database_collection_samples(user: dict) -> list[dict]:
                           "Run/campaign": summary["run"], "Generator": summary["generator"],
                           "Collected designs": stats["molecule_count"], "Structures/models": stats["structure_count"],
                           "Assessment coverage": coverage, "Updated": summary["date"]})
-        st.dataframe(table, hide_index=True, use_container_width=True)
+        st.dataframe(table, hide_index=True, use_container_width=True, height=420)
     else:
         st.info("No saved Database collection with structures is available yet. In Results, collect designs that passed a recorded filter, then open that collection here.")
 
