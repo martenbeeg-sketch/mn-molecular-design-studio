@@ -752,7 +752,14 @@ with st.sidebar:
 
 if cluster_config.enabled():
     from mn_molecular_design_studio.cluster.ui import execution_selector
-    execution_selector(CURRENT_USER, str(st.session_state.get("studio-session-token") or "development-mode"))
+    # Complex Analysis is Database-only and must not wait on a coordinator
+    # workstation-list request on every Streamlit rerun. Keep the last known
+    # placement choices available there; refresh is an explicit sidebar action.
+    execution_selector(
+        CURRENT_USER,
+        str(st.session_state.get("studio-session-token") or "development-mode"),
+        refresh_nodes=st.session_state.get("page") != "Complex Analysis",
+    )
 
 
 def _workflow_discovery_tags(row: dict) -> dict[str, list[str]]:

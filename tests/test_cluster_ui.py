@@ -51,6 +51,37 @@ def test_workstation_resources_are_visible_to_an_ordinary_user(isolated, monkeyp
     assert at.selectbox[0].value == "auto"
 
 
+def test_execution_selector_uses_saved_workstation_snapshot_without_coordinator_call(isolated, monkeypatch):
+    config.save({"mode": "peer", "coordinator_url": "http://127.0.0.1:18766", "default_placement": "auto"})
+    node = {"id": "remote", "name": "pc004032", "availability": "online", "snapshot": {"resources": {}}}
+    config.atomic_json(ui._cache("scientist", "nodes-cache"), {"nodes": [node]})
+
+    def unexpected_request(*args, **kwargs):
+        raise AssertionError("Complex Analysis must not synchronously refresh coordinator nodes")
+
+    monkeypatch.setattr(ui, "_request", unexpected_request)
+    at = AppTest.from_string(
+        'from mn_molecular_design_studio.cluster.ui import execution_selector\n'
+        'execution_selector({"id":"scientist", "role":"user"}, "token", refresh_nodes=False)'
+    ).run()
+    assert not at.exception
+    placement = at.selectbox[0]
+    assert "pc004032 · last reported online" in placement.options
+    assert any(button.label == "Refresh workstation list" for button in at.button)
+
+
+def test_execution_selector_without_cached_nodes_stays_available_without_network(isolated, monkeypatch):
+    config.save({"mode": "peer", "coordinator_url": "http://127.0.0.1:18766", "default_placement": "auto"})
+    monkeypatch.setattr(ui, "_request", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected request")))
+    at = AppTest.from_string(
+        'from mn_molecular_design_studio.cluster.ui import execution_selector\n'
+        'execution_selector({"id":"scientist", "role":"user"}, "token", refresh_nodes=False)'
+    ).run()
+    assert not at.exception
+    assert at.selectbox[0].options == ["Automatic · available workstation", "This workstation"]
+    assert any("No saved workstation list yet" in item.value for item in at.caption)
+
+
 def test_shared_results_can_page_beyond_first_hundred_jobs(isolated, monkeypatch):
     rows = [{"cluster_job_id": f"job-{i}", "node_id": "remote", "node_name": "4032", "project_id": "p", "campaign_name": f"Design {i}",
              "status": "completed", "availability": "offline", "created_at": f"{i:05d}"} for i in range(121)]

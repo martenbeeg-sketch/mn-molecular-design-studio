@@ -1794,26 +1794,59 @@ def _gpu_inventory_rows(nodes, *, snapshot_current=True):
     return rows
 
 
-def execution_selector(user, token):
+def _cached_execution_nodes(user_id):
+    """Return this user's last workstation snapshot without contacting the coordinator."""
+    session_key = f"cluster-nodes-snapshot:{user_id}"
+    nodes = st.session_state.get(session_key)
+    if isinstance(nodes, list):
+        return nodes
+    try:
+        nodes = json.loads(_cache(user_id, "nodes-cache").read_text())["nodes"]
+        if not isinstance(nodes, list):
+            nodes = []
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        nodes = []
+    st.session_state[session_key] = nodes
+    return nodes
+
+
+def execution_selector(user, token, *, refresh_nodes=True):
     if not config.enabled():
         return
     settings = config.load()
-    snapshot_current = True
-    try:
-        nodes = _request("/nodes", token)["nodes"]
-        config.atomic_json(_cache(user["id"], "nodes-cache"), {"nodes": nodes})
-    except (transport.ClusterUnavailable, ValueError):
-        snapshot_current = False
+    user_id = str(user["id"])
+    session_key = f"cluster-nodes-snapshot:{user_id}"
+    if not refresh_nodes:
+        refresh_nodes = st.sidebar.button("Refresh workstation list", key="cluster-refresh-nodes")
+    snapshot_current = bool(refresh_nodes)
+    if refresh_nodes:
         try:
-            nodes = json.loads(_cache(user["id"], "nodes-cache").read_text())["nodes"]
-        except (FileNotFoundError, json.JSONDecodeError):
-            nodes = []
-    names = {n["id"]: f"{config.display_name(n['name'])} · {n['availability']}" for n in nodes if n["id"] != config.identity()}
+            nodes = _request("/nodes", token)["nodes"]
+            if not isinstance(nodes, list):
+                raise ValueError("Coordinator returned an invalid workstation list")
+            st.session_state[session_key] = nodes
+            config.atomic_json(_cache(user_id, "nodes-cache"), {"nodes": nodes})
+        except (transport.ClusterUnavailable, ValueError, KeyError):
+            snapshot_current = False
+            nodes = _cached_execution_nodes(user_id)
+    else:
+        snapshot_current = False
+        nodes = _cached_execution_nodes(user_id)
+    names = {}
+    for node in nodes:
+        if not isinstance(node, dict) or not node.get("id") or not node.get("name") or node["id"] == config.identity():
+            continue
+        availability = str(node.get("availability") or "unknown")
+        if not snapshot_current:
+            availability = f"last reported {availability}"
+        names[node["id"]] = f"{config.display_name(node['name'])} · {availability}"
     options = ["auto", "local", *names]
     if st.session_state.get("cluster-placement") not in options:
         st.session_state["cluster-placement"] = settings["default_placement"]
     st.sidebar.selectbox("Run new jobs on", options, format_func=lambda value: {"auto": "Automatic · available workstation", "local": "This workstation"}.get(value, names.get(value, value)), key="cluster-placement")
     st.sidebar.caption(f"This workstation: {config.display_name(settings['name'])}")
+    if not refresh_nodes and not nodes:
+        st.sidebar.caption("No saved workstation list yet. Refresh it here when you need to choose a remote workstation.")
     if nodes:
         with st.sidebar.expander("Workstation resources"):
             pool_counts = [_gpu_counts(node) for node in nodes]
