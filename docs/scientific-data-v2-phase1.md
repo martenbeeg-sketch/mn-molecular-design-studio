@@ -3,6 +3,8 @@
 Implemented and verified locally on 2026-11-09, starting from `2c30eb1`.
 This is an additive first slice, not a production migration. No production
 Database, Results, replication epoch, service or scientific file was changed.
+The Phase 1B retention correction makes this index a compact campaign browser,
+not a second replicated copy of detailed Results.
 
 ## Implemented contract
 
@@ -15,11 +17,15 @@ It does not replace molecules, structures, observations, Evaluations or reviews.
   parent metadata and distributed-ledger cluster-job receipts establish execution
   relationships. Names and filenames do not establish parentage. Project and
   owner boundaries prevent cross-scope campaign grouping.
-- Output occurrences retain candidate/native IDs, model selectors, CandidateSet
-  target/backbone/variant/prediction lineage, sequences, chain roles, raw source
-  metadata, original measurements, existing normalized measurements and recorded
-  acceptance. Equal coordinate hashes do not merge model occurrences. Model `0`
-  is preserved; an unknown model is not assigned to a known model.
+- Full output occurrences remain in Results on the producing workstation. The
+  synchronized source summary retains producer counts, output kind/stage counts,
+  and native/final/other acceptance counts, including rejected, unresolved and
+  unrecorded states. Exact candidate/model identity and its recorded decision
+  are synchronized only as a small link for a structure already retained in the
+  Molecular Database. Rejected/unresolved detail, unselected predictions, full
+  docking score tables, MD trajectory contents, sequences, metrics and raw
+  metadata are not copied into the job snapshot. Model `0` stays distinct; an
+  unknown model is not assigned to a known model.
 - Artifact metadata retains its original path, portable source reference, owner,
   digest and verification evidence. Absolute container paths are provenance,
   not permission to read outside a job. `owner_present` describes observed source
@@ -46,11 +52,22 @@ Capture failures are logged and retriable by explicit backfill.
 ## Synchronization and locality
 
 An optional `scientific_lineage` extension travels in the existing
-owner-authoritative job replication record. Updated receivers validate its
-author, job envelope and ACL scope before materializing the projection. Older
-extension-free job records remain supported; older receivers retain the optional
-JSON without needing new record kinds or epochs. Two isolated peers were tested
-through the existing capture/receive path, replay and reopen.
+owner-authoritative job replication record. Its small manifest contains job and
+target/construct relationships plus aggregate source counts. Bounded side pages,
+when needed, contain only exact pointers to retained Database molecules and
+structures and compact job/controller edges. The Database records, structures
+and Evaluations themselves continue through existing Molecular Database
+replication. Updated receivers validate the author, job envelope and ACL scope
+before materializing the projection. Older extension-free job records remain
+supported; full Results folders and rejected-candidate, score-table or
+trajectory payloads are not synchronized.
+
+The campaign browser reads synchronized metadata only. A recent peer heartbeat
+is connectivity evidence; a missing/stale heartbeat labels source Results
+temporarily unavailable while keeping campaign counts and relationships
+visible. It does not contact the owner or claim that metadata makes source files
+available offline. Explicit Results inspection and owner-local analysis remain
+on the existing Results/scheduler paths.
 
 Metadata synchronization transfers no coordinate files or trajectories. Retained
 structures still use existing authenticated Database/artifact access. The
@@ -65,7 +82,8 @@ Complex Analysis **Select** now opens the indexed campaign browser:
 1. Select project, scientific activity and recorded exact construct.
 2. Open a campaign to see its distributed jobs and original IDs.
 3. Inspect native producer counters with their original units/stages/scopes,
-   separate indexed occurrence counts and retained representation counts.
+   source output totals, stage/acceptance aggregates, and separately counted
+   retained Database candidate/model links and structures.
 4. Keep final computational pass as the default, or explicitly choose an earlier
    recorded passing stage. Native passing never becomes final acceptance.
 5. Open exact retained models directly in the existing Analyze → Compare →
@@ -168,9 +186,12 @@ claim of equivalent performance on a fully backfilled cluster.
 
 Current bounds:
 
-- Snapshot publication explicitly rejects metadata above 1.5 MB; it does not
-  truncate or claim a complete index. Large docking/ensemble jobs need paged
-  metadata publication before comprehensive historical backfill.
+- The former 1.5 MB limit on full candidate populations is no longer a campaign
+  scale limit: a source may have hundreds of thousands of owner-local output
+  occurrences while the replicated manifest contains only aggregate counts.
+  The 1.5 MB transport check remains for an individual compact manifest/page;
+  pages are needed only if a job has an unusually large number of explicitly
+  retained Database links. An oversized target/job manifest still fails safely.
 - Campaign summaries are computed at write time from compact indexed job facts;
   regrouping currently visits all indexed job metadata, not full Results. A
   future bounded improvement is affected-campaign-only regrouping.
@@ -182,6 +203,6 @@ Current bounds:
   existing staging destination is required. Production adoption requires a
   separately reviewed bounded backfill; no automatic migration is enabled.
 
-Next bounded step: add paged owner-published output detail and validate one full
-distributed historical campaign manifest, including explicit execution proxies,
-before enabling a controlled production backfill.
+Detailed Results remain the place to inspect rejected candidates, unselected
+models, full docking scores and trajectory data. The campaign index is
+intentionally not a substitute for owner-local scientific output.

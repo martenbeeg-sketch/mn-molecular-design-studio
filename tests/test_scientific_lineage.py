@@ -70,8 +70,8 @@ def test_distributed_parent_controller_receipt_and_same_coordinates_do_not_doubl
     assert page["total"] == 1
     summary = page["items"][0]["summary"]
     assert summary["jobs"] == 3
-    assert summary["indexed_occurrences"] == 3
-    assert summary["authoritative_output_occurrences"] == 1
+    assert summary["indexed_occurrences"] == summary["retained_link_count"] == 3
+    assert summary["authoritative_output_occurrences"] == summary["source_output_occurrences"] == 1
     assert summary["acceptance_counts"]["native"]["passed"] == 1
     assert isinstance(summary["counts"], list)
     detail = catalog.campaign_detail(db, ADMIN, page["items"][0]["ref"])
@@ -116,7 +116,8 @@ def test_unknown_model_is_not_assigned_to_known_models_and_zero_is_preserved(db,
     assert zero["retained"][0]["structure_id"] != one["retained"][0]["structure_id"]
     save(db, s)
     detail = catalog.campaign_detail(db, ADMIN, catalog.campaigns(db, ADMIN)["items"][0]["ref"])
-    assert any(o.get("source_metadata", {}).get("extra_provenance") == {"checkpoint": "recorded-v1"} for o in detail["outputs"])
+    assert len(detail["outputs"]) == 2
+    assert all("source_metadata" not in o and "metrics" not in o for o in detail["outputs"])
 
 
 def test_campaign_executor_does_not_replace_recorded_scientific_generator():
@@ -136,7 +137,9 @@ def test_mixed_construct_job_cannot_appear_as_one_exact_construct(db):
     save(db, s)
     campaign = catalog.campaigns(db, ADMIN)["items"][0]
     assert campaign["target_key"] == ""
-    assert len(campaign["summary"]["targets"][0]["recorded_constructs"]) == 2
+    assert len(campaign["summary"]["targets"]) == 2
+    with db.connection() as c:
+        assert c.execute("SELECT count(*) FROM scientific_campaign_targets WHERE campaign_ref=?", (campaign["ref"],)).fetchone()[0] == 2
     assert s["outputs"][0]["target_construct"] != s["outputs"][1]["target_construct"]
 
 
@@ -268,7 +271,9 @@ def test_api_pages_and_unauthorized_detail(db, monkeypatch):
     client = TestClient(app)
     result = client.get("/api/v1/molecules/scientific/campaigns?limit=1").json()
     ref = result["items"][0]["ref"]
-    assert client.get(f"/api/v1/molecules/scientific/campaigns/{ref}").json()["output_total"] == 1
+    detail = client.get(f"/api/v1/molecules/scientific/campaigns/{ref}").json()
+    assert detail["output_total"] == 0
+    assert detail["campaign"]["summary"]["source_output_occurrences"] == 1
     assert client.get(f"/api/v1/molecules/scientific/campaigns/{ref}/models").json()["items"] == []
     user.update(id="other", role="user")
     monkeypatch.setattr("mn_molecular_design_studio.auth.accessible_project_ids", lambda u: [])
@@ -320,18 +325,24 @@ def test_existing_job_replication_carries_lineage_and_tombstones_without_files(d
         row = c.execute("SELECT key,kind,author,counter,value FROM records WHERE kind='job'").fetchone()
         record = dict(row, value=json.loads(row["value"]))
     assert record["value"]["scientific_lineage"]["job"]["cluster_job_id"] == cluster_id
-    assert "content" not in json.dumps(record["value"]["scientific_lineage"])
+    assert "outputs" not in record["value"]["scientific_lineage"]
+    records = sender.export(0, 500)["records"]
+    pages = [item for item in records if item["kind"] == "scientific_lineage_page"]
+    assert len(pages) == 0
+    assert len(json.dumps(record).encode()) < 1_500_000
+    assert record["value"]["scientific_lineage"]["publication"]["page_count"] == 0
     active.update(node=b, database=peer_db)
     monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "peer-b"))
     with Store().connect() as c:
         c.execute("INSERT INTO nodes(id,name,token_hash) VALUES (?,?,?)", (a, "source", "fixture"))
     receiver = replication.Replica()
-    receiver.receive([record])
-    receiver.receive([record])
+    receiver.receive(records)
+    receiver.receive(records)
     assert catalog.campaigns(peer_db, ADMIN)["total"] == 1
     reopened = MolecularDatabase(peer_db.root)
     ref = catalog.campaigns(reopened, ADMIN)["items"][0]["ref"]
-    assert catalog.campaign_detail(reopened, ADMIN, ref)["outputs"][0]["candidate_id"] == "c1"
+    assert catalog.campaign_detail(reopened, ADMIN, ref)["output_total"] == 0
+    assert catalog.campaigns(reopened, ADMIN)["items"][0]["summary"]["source_output_occurrences"] == 1
     # Existing transport accepts old job payloads without a lineage extension.
     old = copy.deepcopy(record)
     old["value"].pop("scientific_lineage")
@@ -347,9 +358,42 @@ def test_existing_job_replication_carries_lineage_and_tombstones_without_files(d
     assert catalog.campaigns(db, ADMIN)["total"] == 1
 
 
+def test_capture_compacts_legacy_full_output_pages_before_peer_publication(db, tmp_path, monkeypatch):
+    from mn_molecular_design_studio.cluster import config, replication
+    from mn_molecular_design_studio.cluster.store import Store
+    node = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setattr(config, "identity", lambda: node)
+    monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", lambda: db)
+    monkeypatch.setattr(replication, "capture_identity", lambda: None)
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "legacy-source"))
+    source = snapshot_from_candidates(job("legacy"), [candidate("rejected-detail")], node_id=node)
+    old_pages = catalog._page_rows(source)
+    page_hashes = [hashlib.sha256(catalog.encoded(page).encode()).hexdigest() for page in old_pages]
+    manifest = {key: value for key, value in source.items() if key not in {"outputs", "dependencies"}}
+    manifest["publication"] = {"job_ref": source["job"]["ref"], "revision": hashlib.sha256(catalog.encoded(page_hashes).encode()).hexdigest(),
+        "page_count": len(old_pages), "output_count": len(source["outputs"]), "dependency_count": len(source["dependencies"]),
+        "page_sha256": page_hashes}
+    catalog.put_manifest(db, manifest, author=node)
+    for index, page in enumerate(old_pages):
+        catalog.put_publication_page(db, {"schema": catalog.VERSION, "job_ref": source["job"]["ref"],
+            "page_index": index, "page_sha256": page_hashes[index], "items": page}, author=node)
+    cluster_id = config.job_id(node, "design/legacy")
+    with Store().connect() as c:
+        c.execute("INSERT INTO jobs (id,node_id,local_ref,owner_id,project_id,payload,created_at) VALUES (?,?,?,?,?,?,?)",
+            (cluster_id, node, "design/legacy", "owner", "", json.dumps(dict(source["job"], cluster_job_id=cluster_id, local_reference="design/legacy")), "2026-11-09"))
+    sender = replication.Replica()
+    sender.capture_jobs()
+    records = sender.export(0, 100)["records"]
+    job_record = next(record for record in records if record["kind"] == "job")
+    assert job_record["value"]["scientific_lineage"]["publication"]["page_count"] == 0
+    assert job_record["value"]["scientific_lineage"]["source_summary"]["source_output_occurrences"] == 1
+    assert "rejected-detail" not in json.dumps(records)
+    assert not [record for record in records if record["kind"] == "scientific_lineage_page"]
+
+
 def test_constructs_with_same_target_name_are_not_pooled(db):
     for run, seq in [("one", "ACD"), ("two", "ACDE")]:
-        save(db, snapshot_from_candidates(job(run, target_construct={"biological_target": "Tau", "sequence": seq}), [candidate()], node_id="a"))
+        save(db, snapshot_from_candidates(job(run, target_construct={"biological_target": "Tau", "sequences_by_chain": {"A": seq}}), [candidate()], node_id="a"))
     rows = catalog.campaigns(db, ADMIN)["items"]
     assert len({r["target_key"] for r in rows}) == 2
     assert catalog.campaigns(db, ADMIN, target=rows[0]["target_key"])["total"] == 1
@@ -358,11 +402,133 @@ def test_constructs_with_same_target_name_are_not_pooled(db):
 def test_snapshot_bound_and_invalid_source_cannot_be_published(db):
     s = snapshot_from_candidates(job("oversized"), [candidate()], node_id="a")
     s["oversized"] = "x" * catalog.MAX_BYTES
-    with pytest.raises(ValueError, match="oversized"):
+    with pytest.raises(ValueError, match="manifest is too large"):
         save(db, s)
     with pytest.raises(ValueError):
         catalog.job_reference("a?unsafe", "design", "run")
     assert catalog.campaigns(db, ADMIN)["total"] == 0
+
+
+def test_large_source_population_publishes_aggregates_and_only_retained_links(db):
+    rows = []
+    for index in range(1700):
+        row = candidate(f"candidate-{index:05d}", model=index)
+        row["stage"] = "generation.co-design"
+        row["source_tool"] = "rfd4_proteina"
+        row["raw_metadata"]["producer_note"] = "x" * 1200
+        if index < 3:
+            row["raw_metadata"]["validation_acceptance"] = {
+                "status": "accepted" if index == 0 else "rejected" if index == 1 else "pending",
+                "policy": {"version": "fixture-v1"}}
+        rows.append(row)
+    snapshot = snapshot_from_candidates(job("large"), rows, node_id="a")
+    imported = db.import_records(ADMIN, [{"name": "retained", "components": [{"type": "protein", "chain": "B", "sequence": "A"}]}])
+    structure = db.attach_structure(imported["group_id"], imported["molecule_ids"][0], {"path": "retained.cif"},
+        context={"candidate_id": "candidate-00000", "model_index": 0, "task_group": "design", "run_id": "large"})
+    link_retained(db, snapshot, local_node="a")
+    manifest, pages = catalog.publication_for_snapshot(snapshot)
+    assert len(catalog.encoded(snapshot).encode()) > catalog.MAX_BYTES
+    assert len(pages) == 1
+    assert max(len(catalog.encoded(page).encode()) for page in pages) < catalog.MAX_BYTES
+    payload = catalog.encoded({"manifest": manifest, "pages": pages})
+    assert len(catalog.encoded(manifest).encode()) < catalog.MAX_BYTES
+    assert "producer_note" not in payload and "metrics" not in payload and "binder_sequence" not in payload
+    assert "candidate-00001" not in payload and "candidate-01699" not in payload
+    assert "candidate-00000" in payload and structure in payload
+    assert manifest["source_summary"]["source_output_occurrences"] == 1700
+    assert manifest["source_summary"]["generated_design_occurrences"] == 1700
+    assert manifest["source_summary"]["candidate_model_pose_occurrences"] == 1700
+    assert manifest["source_summary"]["acceptance_counts"]["final"] == {
+        "passed": 1, "rejected": 1, "unresolved": 1, "unrecorded": 1697,
+        "unit": "candidate/model/pose occurrences", "scope": "source-authored saved outputs"}
+    assert manifest["source_summary"]["database_retained_candidate_model_occurrences"] == 1
+
+    peer = MolecularDatabase(db.root.parent / "peer-db")
+    catalog.put_manifest(peer, manifest, author="a")
+    campaign = catalog.campaigns(peer, ADMIN)["items"][0]
+    assert campaign["summary"]["publication"]["complete"] is False
+    assert campaign["summary"]["source_summary_complete"] is True
+    assert campaign["summary"]["source_output_occurrences"] == 1700
+    assert campaign["summary"]["generated_design_occurrences"] == 1700
+    assert campaign["summary"]["candidate_model_pose_occurrences"] == 1700
+    assert campaign["summary"]["acceptance_counts"]["final"]["passed"] == 1
+    assert catalog.campaign_detail(peer, ADMIN, campaign["ref"])["output_total"] == 0
+    assert catalog.retained_models(peer, ADMIN, campaign["ref"])["items"] == []
+
+    for page in reversed(pages):
+        catalog.put_publication_page(peer, page, author="a")
+    catalog.put_publication_page(peer, pages[0], author="a")
+    campaign = catalog.campaigns(peer, ADMIN)["items"][0]
+    assert campaign["summary"]["publication"]["complete"] is True
+    assert campaign["summary"]["source_output_occurrences"] == 1700
+    assert campaign["summary"]["expected_retained_link_count"] == 1
+    detail = catalog.campaign_detail(peer, ADMIN, campaign["ref"], limit=25)
+    assert detail["output_total"] == 1
+    assert detail["outputs"][0]["candidate_id"] == "candidate-00000"
+    assert "producer_note" not in catalog.encoded(detail["outputs"][0])
+    assert catalog.retained_models(peer, ADMIN, campaign["ref"], stage="final")["output_total"] == 1
+
+
+def test_peer_rejects_detailed_candidate_payload_in_a_retained_link_page(db, tmp_path):
+    imported = db.import_records(ADMIN, [{"name": "retained", "components": [{"type": "protein", "chain": "B", "sequence": "A"}]}])
+    db.attach_structure(imported["group_id"], imported["molecule_ids"][0], {"path": "model.cif"},
+        context={"candidate_id": "c1", "task_group": "design", "run_id": "guard"})
+    snapshot = snapshot_from_candidates(job("guard"), [candidate()], node_id="a")
+    link_retained(db, snapshot, local_node="a")
+    manifest, pages = catalog.publication_for_snapshot(snapshot)
+    page = copy.deepcopy(pages[0])
+    page["items"][0]["record"]["metrics"] = {"secret_detail": 1}
+    digest = hashlib.sha256(catalog.encoded(page["items"]).encode()).hexdigest()
+    page["page_sha256"] = digest
+    manifest["publication"]["page_sha256"] = [digest]
+    manifest["publication"]["revision"] = catalog._publication_revision(manifest, [digest])
+    peer = MolecularDatabase(tmp_path / "guard-peer")
+    catalog.put_manifest(peer, manifest, author="a")
+    with pytest.raises(ValueError, match="only compact retained Database links"):
+        catalog.put_publication_page(peer, page, author="a")
+
+
+def test_campaign_availability_uses_cached_peer_heartbeat_without_remote_probe():
+    from mn_molecular_design_studio.scientific_lineage_ui import _campaign_source_status
+    summary = {"source_job_refs": ["cluster://node-a/design/run1"], "workstations": ["node-a"]}
+    status = _campaign_source_status(summary, {"node-a": {"availability": "offline", "last_seen_at": "2026-11-08T10:00:00Z"}})
+    assert "temporarily unavailable" in status
+    assert "last seen" in status
+    assert "node-a: availability not known" in _campaign_source_status(summary, {})
+
+
+def test_target_identity_is_explicit_and_constructs_remain_distinct(db):
+    for run, sequence, boundaries in (("short", "ACDE", "1-4"), ("long", "ACDEF", "1-5")):
+        target = {"biological_target_id": "uniprot:P15692", "biological_target": "PD-L1",
+                  "sequences_by_chain": {"A": sequence}, "residue_boundaries": boundaries,
+                  "chain_roles": {"A": "target"}, "structure_digest": "digest-" + run}
+        save(db, snapshot_from_candidates(job(run, target_construct=target), [candidate()], node_id="a"))
+    campaigns = catalog.campaigns(db, ADMIN)["items"]
+    assert len(campaigns) == 2
+    assert len({row["target_key"] for row in campaigns}) == 2
+    with db.connection() as c:
+        biological = c.execute("SELECT DISTINCT biological_identity_key FROM scientific_target_constructs").fetchall()
+    assert len(biological) == 1 and biological[0][0]
+    assert catalog.campaigns(db, ADMIN, target=biological[0][0])["total"] == 2
+
+
+def test_incremental_update_regroups_only_affected_job(db, monkeypatch):
+    from mn_molecular_design_studio import logical_runs
+    first = snapshot_from_candidates(job("first"), [candidate()], node_id="a")
+    second = snapshot_from_candidates(job("second", "bindcraft2"), [candidate()], node_id="a")
+    save(db, first)
+    save(db, second)
+    grouped_sizes = []
+    actual = logical_runs.group_runs
+    def recording(rows):
+        rows = list(rows)
+        grouped_sizes.append(len(rows))
+        return actual(rows)
+    monkeypatch.setattr(logical_runs, "group_runs", recording)
+    first["outputs"][0]["metrics"]["updated_metric"] = 3
+    save(db, first)
+    assert grouped_sizes and max(grouped_sizes) == 1
+    assert catalog.campaigns(db, ADMIN)["total"] == 2
 
 
 def test_completion_indexes_results_only_failed_candidates_without_promotion(db, tmp_path, monkeypatch):

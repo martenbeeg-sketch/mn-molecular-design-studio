@@ -142,6 +142,7 @@ class Replica:
 
     def capture_jobs(self):
         own = config.identity()
+        import hashlib
         from mn_molecular_design_studio.molecular_database import MolecularDatabase
         with Store().connect() as db:
             rows = db.execute(
@@ -152,7 +153,54 @@ class Replica:
                 "OR (s.origin_node=? AND j.local_ref IS NULL)",
                 (own, own),
             ).fetchall()
-        current = {}
+        source_refs = [f"cluster://{own}/" + row['local_ref'] for row in rows if row['local_ref']]
+        legacy_incomplete_refs = set()
+        if source_refs:
+            marks = ','.join('?' for _ in source_refs)
+            with MolecularDatabase().connection() as local_lineage:
+                legacy = []
+                for stored in local_lineage.execute(
+                    f"SELECT ref,snapshot,publication_state,publication_pages FROM scientific_jobs WHERE node_id=? AND ref IN ({marks})", [own, *source_refs]):
+                    snapshot = json.loads(stored['snapshot'])
+                    if snapshot.get('outputs') is not None:
+                        legacy.append(snapshot)
+                    elif snapshot.get('publication') and 'source_summary' not in snapshot:
+                        # One-time local compaction of pre-correction paged
+                        # snapshots. Only migrate if the complete source pages
+                        # are present and digest-verified. Never re-publish old
+                        # full candidate pages to peers.
+                        publication = snapshot['publication']
+                        pages = local_lineage.execute(
+                            "SELECT page_index,page_sha256,payload FROM scientific_lineage_pages WHERE job_ref=? ORDER BY page_index",
+                            (stored['ref'],)).fetchall()
+                        expected = publication.get('page_sha256') or []
+                        if (stored['publication_state'] == 'complete' and len(pages) == stored['publication_pages']
+                                and len(expected) == stored['publication_pages']
+                                and all(p['page_index'] == i and p['page_sha256'] == expected[i] for i, p in enumerate(pages))):
+                            outputs, dependencies = [], []
+                            valid = True
+                            for p in pages:
+                                page = json.loads(p['payload'])
+                                items = page.get('items') or []
+                                canonical_items = json.dumps(items, sort_keys=True, separators=(",", ":"), allow_nan=False)
+                                if hashlib.sha256(canonical_items.encode()).hexdigest() != p['page_sha256']:
+                                    valid = False
+                                    break
+                                for item in items:
+                                    (outputs if item.get('type') == 'output' else dependencies).append(item.get('record') or {})
+                            if valid and len(outputs) == publication.get('output_count') and len(dependencies) == publication.get('dependency_count'):
+                                snapshot.pop('publication', None)
+                                snapshot['outputs'], snapshot['dependencies'] = outputs, dependencies
+                                legacy.append(snapshot)
+                            else:
+                                legacy_incomplete_refs.add(stored['ref'])
+                        else:
+                            legacy_incomplete_refs.add(stored['ref'])
+            if legacy:
+                from mn_molecular_design_studio.scientific_lineage import put_snapshot
+                for snapshot in legacy:
+                    put_snapshot(MolecularDatabase(), snapshot, author=own, rebuild=True)
+        current, current_pages = {}, {}
         for row in rows:
             value = json.loads(row['payload'])
             # Keep full requests and file manifests on their owning/coordinator
@@ -175,14 +223,35 @@ class Replica:
             for key, value in current.items():
                 value = dict(value)  # Do not accumulate full snapshots in current.
                 if value.get('local_reference'):
+                    source_ref = 'cluster://' + own + '/' + value['local_reference']
                     snapshot_row = lineage_db.execute("SELECT snapshot FROM scientific_jobs WHERE ref=? AND node_id=?",
-                        ('cluster://' + own + '/' + value['local_reference'], own)).fetchone()
+                        (source_ref, own)).fetchone()
                     if snapshot_row:
                         snapshot = json.loads(snapshot_row['snapshot'])
-                        value['scientific_lineage'] = dict(snapshot, job=dict(snapshot['job'], cluster_job_id=value['cluster_job_id']))
+                        if source_ref not in legacy_incomplete_refs:
+                            value['scientific_lineage'] = dict(snapshot, job=dict(snapshot['job'], cluster_job_id=value['cluster_job_id']))
+                        if source_ref not in legacy_incomplete_refs and snapshot.get('publication'):
+                            page_rows = lineage_db.execute(
+                                "SELECT page_index,payload FROM scientific_lineage_pages WHERE job_ref=? ORDER BY page_index",
+                                (snapshot['job']['ref'],),
+                            ).fetchall()
+                            prefix = 'scientific_lineage_page:' + hashlib.sha256(snapshot['job']['ref'].encode()).hexdigest()
+                            for page in page_rows:
+                                page_key = prefix + ':' + str(page['page_index']).zfill(8)
+                                current_pages[page_key] = json.loads(page['payload'])
                 previous = db.execute("SELECT value FROM records WHERE key=?", (key,)).fetchone()
                 if not previous or json.loads(previous[0]) != value:
                     self._write(db, key, 'job', value)
+            previous_pages = db.execute(
+                "SELECT key FROM records WHERE kind='scientific_lineage_page' AND author=? AND value!='null'", (own,)
+            ).fetchall()
+            for record in previous_pages:
+                if record['key'] not in current_pages:
+                    self._write(db, record['key'], 'scientific_lineage_page', None)
+            for key, value in current_pages.items():
+                previous = db.execute("SELECT value FROM records WHERE key=?", (key,)).fetchone()
+                if not previous or json.loads(previous[0]) != value:
+                    self._write(db, key, 'scientific_lineage_page', value)
 
     def compact_legacy_job_payloads(self):
         """Remove mirrored file manifests left by versions before peer compaction."""
@@ -211,7 +280,7 @@ class Replica:
             raise ValueError("Invalid Molecular Database sharing setting.")
         if type(include_review_annotations) is not bool:
             raise ValueError("Invalid human review sharing setting.")
-        molecular_kinds = ("molecule_group", "molecule_entry", "external_library", "complex_review_annotation")
+        molecular_kinds = ("molecule_group", "molecule_entry", "external_library", "complex_review_annotation", "scientific_lineage_page")
         with self.db() as db:
             if include_molecular and include_review_annotations:
                 rows = db.execute("SELECT * FROM records WHERE seq>? ORDER BY seq LIMIT ?", (since, limit)).fetchall()
@@ -228,7 +297,7 @@ class Replica:
                     cursor = rows[-1]["seq"]
             else:
                 rows = db.execute(
-                    "SELECT * FROM records WHERE seq>? AND kind NOT IN (?,?,?,?) ORDER BY seq LIMIT ?",
+                    "SELECT * FROM records WHERE seq>? AND kind NOT IN (?,?,?,?,?) ORDER BY seq LIMIT ?",
                     (since, *molecular_kinds, limit),
                 ).fetchall()
                 # When the filtered page is short, advance across the trailing
@@ -250,6 +319,8 @@ class Replica:
             if row['kind'] == 'job' and isinstance(value, dict):
                 value.pop('request_summary', None)
                 value.pop('artifacts', None)
+                if not include_molecular:
+                    value.pop('scientific_lineage', None)
             records.append(dict(key=row['key'], kind=row['kind'], author=row['author'],
                                 counter=row['counter'], value=value))
         return {
@@ -283,7 +354,7 @@ class Replica:
                 if not isinstance(record, dict) or set(record) != {'key','kind','author','counter','value'}:
                     raise ValueError("Invalid peer metadata record.")
                 key, kind, author, counter, value = (record[k] for k in ('key','kind','author','counter','value'))
-                if author not in known or kind not in IDENTITY_KINDS | {'job', 'molecule_group', 'molecule_entry', 'external_library', 'complex_review_annotation'} or not isinstance(key, str) or not key.startswith(kind + ':') or len(key) > 300 or type(counter) is not int or not 0 < counter < 2**62:
+                if author not in known or kind not in IDENTITY_KINDS | {'job', 'scientific_lineage_page', 'molecule_group', 'molecule_entry', 'external_library', 'complex_review_annotation'} or not isinstance(key, str) or not key.startswith(kind + ':') or len(key) > 300 or type(counter) is not int or not 0 < counter < 2**62:
                     raise ValueError("Invalid metadata authority or version.")
                 if len(encoded(record)) > 2 * 1024 * 1024:
                     raise ValueError("Metadata record exceeds 2 MB.")
@@ -420,6 +491,22 @@ class Replica:
             from mn_molecular_design_studio.molecular_database_peer import apply_record
             apply_record(kind, key, value, author, connection=molecule_connection)
             return
+        if kind == 'scientific_lineage_page':
+            if value is None:
+                return
+            if not isinstance(value, dict):
+                raise ValueError("Invalid scientific lineage page record.")
+            import hashlib
+            job_ref = str(value.get('job_ref') or '')
+            page_index = value.get('page_index')
+            expected_key = ('scientific_lineage_page:' + hashlib.sha256(job_ref.encode()).hexdigest() + ':'
+                            + str(page_index).zfill(8)) if type(page_index) is int else ''
+            if key != expected_key:
+                raise PermissionError("Scientific page identity does not match its source-qualified record key.")
+            from mn_molecular_design_studio.molecular_database import MolecularDatabase
+            from mn_molecular_design_studio.scientific_lineage import put_publication_page
+            put_publication_page(MolecularDatabase(), value, author=author)
+            return
         if kind == 'job':
             if value is None:
                 with Store().connect() as db:
@@ -477,8 +564,11 @@ class Replica:
                 )
             if value.get('scientific_lineage') is not None:
                 from mn_molecular_design_studio.molecular_database import MolecularDatabase
-                from mn_molecular_design_studio.scientific_lineage import put_snapshot
-                put_snapshot(MolecularDatabase(), value['scientific_lineage'], author=author, envelope=value)
+                from mn_molecular_design_studio.scientific_lineage import put_manifest, put_snapshot
+                if value['scientific_lineage'].get('publication'):
+                    put_manifest(MolecularDatabase(), value['scientific_lineage'], author=author, envelope=value)
+                else:
+                    put_snapshot(MolecularDatabase(), value['scientific_lineage'], author=author, envelope=value)
             return
         from mn_molecular_design_studio import auth, workspace
         if kind == 'project':

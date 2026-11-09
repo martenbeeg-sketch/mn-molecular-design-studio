@@ -104,7 +104,8 @@ def snapshot_from_candidates(metadata, candidates, *, node_id, run_dir=None, ver
     elif parent_id:
         snapshot["warnings"].append("Parent run recorded without its source workstation; linkage unresolved.")
     target = metadata.get("target_construct") or {}
-    constructs = {lineage.encoded(target["sequences_by_chain"])} if target.get("sequences_by_chain") else set()
+    normalized_initial_target = lineage._target_construct_record(target)
+    constructs = {lineage._target_construct_key(normalized_initial_target): normalized_initial_target} if target.get("sequences_by_chain") else {}
     duplicate_keys = {}
     for index, candidate in enumerate(candidates):
         raw = candidate.get("raw_metadata") or {}
@@ -148,18 +149,27 @@ def snapshot_from_candidates(metadata, candidates, *, node_id, run_dir=None, ver
         target_identity, sequences = _candidate_target_provenance(candidate)
         sequences = raw.get("target_sequences_by_chain") or sequences
         if sequences:
-            constructs.add(lineage.encoded(sequences))
-            recorded_target = {"sequences_by_chain": sequences}
-            if not target:
-                target = recorded_target
-            elif target.get("sequences_by_chain") and target["sequences_by_chain"] != sequences:
+            explicit = raw.get("target_construct") if isinstance(raw.get("target_construct"), dict) else {}
+            recorded_target = {**explicit, **{key: raw[key] for key in (
+                "biological_target_id", "target_molecule_id", "uniprot_id", "accession", "target_id",
+                "residue_boundaries", "boundaries", "mutations", "chain_roles", "components",
+                "assembly_id", "structure_digest", "target_structure_digest", "model_id",
+                "preparation", "target_receptor") if key in raw}}
+            recorded_target["sequences_by_chain"] = sequences
+            if target_identity and "label" not in recorded_target:
+                recorded_target["label"] = target_identity
+            recorded_target = lineage._target_construct_record(recorded_target)
+            constructs[lineage._target_construct_key(recorded_target)] = recorded_target
+            if not target or target.get("sequences_by_chain") == sequences:
+                target = {**target, **recorded_target}
+            elif target.get("sequences_by_chain") != sequences:
                 snapshot["warnings"].append("Multiple target constructs in this job; no cross-construct metric pooling is permitted.")
-            row["target_construct"] = dict(recorded_target, identity=target_identity)
+            row["target_construct"] = recorded_target
         if duplicate_keys[key] > 1:
             snapshot["warnings"].append(f"Repeated candidate/model key {candidate_id}/{model}; occurrences retained separately.")
     snapshot["target"] = copy.deepcopy(target)
     if len(constructs) > 1:
-        snapshot["target"] = {"mapping_status": "multiple_constructs", "recorded_constructs": [json.loads(s) for s in sorted(constructs)]}
+        snapshot["target"] = {"mapping_status": "multiple_constructs", "recorded_constructs": [constructs[s] for s in sorted(constructs)]}
     from mn_molecular_design_studio.candidate_sets import json_safe
     return json_safe(snapshot)
 
@@ -332,6 +342,8 @@ def link_retained(database, snapshot, *, local_node=None):
     elif not snapshot.get("target") and len(target_evidence) > 1:
         snapshot["warnings"].append("Recorded target contexts differ; construct/receptor correspondence unresolved.")
     snapshot["warnings"] = list(dict.fromkeys(snapshot["warnings"]))
+    for output in snapshot["outputs"]:
+        output["data_location"] = lineage.recorded_data_location(output)
     return snapshot
 
 

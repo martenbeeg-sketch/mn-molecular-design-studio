@@ -96,9 +96,13 @@ def install(app, current_user):
 
     @router.get("/scientific/campaigns/{campaign_ref}")
     def scientific_campaign(campaign_ref: str, limit: int = Query(100, ge=1, le=500),
-                            offset: int = Query(0, ge=0), user=Depends(current_user)):
+                            offset: int = Query(0, ge=0), job_limit: int = Query(100, ge=1, le=500),
+                            job_offset: int = Query(0, ge=0), dependency_limit: int = Query(100, ge=1, le=500),
+                            dependency_offset: int = Query(0, ge=0), user=Depends(current_user)):
         from mn_molecular_design_studio.scientific_lineage import campaign_detail
-        return call(campaign_detail, MolecularDatabase(), user, campaign_ref, limit=limit, offset=offset)
+        return call(campaign_detail, MolecularDatabase(), user, campaign_ref, limit=limit, offset=offset,
+                    job_limit=job_limit, job_offset=job_offset,
+                    dependency_limit=dependency_limit, dependency_offset=dependency_offset)
 
     @router.get("/scientific/campaigns/{campaign_ref}/models")
     def scientific_models(campaign_ref: str, stage: str = "final", limit: int = Query(100, ge=1, le=500),
