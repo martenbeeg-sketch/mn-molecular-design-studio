@@ -1331,10 +1331,19 @@ def _design_collection_label(group: dict) -> dict[str, str]:
 
 
 def _is_design_collection(group: dict) -> bool:
-    """Exclude reference libraries from the saved design-cohort picker."""
+    """Keep run-backed design cohorts in the default picker, not utility groups."""
     origin = group.get("origin") if isinstance(group.get("origin"), dict) else {}
     kind = str(group.get("collection_kind") or origin.get("collection_kind") or "")
-    return kind != "reference"
+    if kind == "reference":
+        return False
+    source_run = origin.get("source_run") if isinstance(origin.get("source_run"), dict) else {}
+    return bool(
+        origin.get("type") == "results_design_collection"
+        or origin.get("saved_selection") is True
+        or origin.get("run_id")
+        or source_run.get("run_id")
+        or origin.get("source_run_aliases")
+    )
 
 
 def _load_collection_structures(database, user: dict, records: list[dict], group_ids: list[str],

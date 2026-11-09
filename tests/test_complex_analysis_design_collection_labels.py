@@ -63,7 +63,18 @@ def test_job_collection_name_is_used_when_campaign_name_was_not_normalized():
     assert label["generator"] == "bindcraft2_campaign"
 
 
-def test_design_collection_picker_excludes_reference_libraries_only():
+def test_design_collection_picker_keeps_explicit_design_collections():
     assert not _is_design_collection({"collection_kind": "reference", "origin": {}})
-    assert _is_design_collection({"collection_kind": "generated", "origin": {}})
-    assert _is_design_collection({"origin": {"collection_kind": "curated"}})
+    assert _is_design_collection({"collection_kind": "generated", "origin": {"run_id": "design-1"}})
+    assert _is_design_collection({"origin": {"collection_kind": "curated", "saved_selection": True}})
+
+
+def test_design_collection_picker_hides_unlinked_utility_groups_but_keeps_run_cohorts():
+    assert not _is_design_collection({
+        "name": "Docking targets",
+        "origin": {"type": "user", "collection_kind": "curated", "purpose": "Reusable docking receptors"},
+    })
+    assert _is_design_collection({
+        "name": "Distributed BindCraft2",
+        "origin": {"type": "job", "collection_kind": "generated", "run_id": "20261029-094457-fb2fd80a"},
+    })
