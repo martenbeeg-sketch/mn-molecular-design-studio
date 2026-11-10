@@ -42,7 +42,7 @@ def _remember_widget_value(widget_key: str, state_key: str) -> None:
 def _stateful_selectbox(label: str, options: list[str], *, key: str, state_key: str,
                         default: str, **kwargs):
     """Render a step-local selectbox backed by state that survives step changes."""
-    if st.session_state.get(state_key) not in options:
+    if state_key not in st.session_state or st.session_state.get(state_key) not in options:
         st.session_state[state_key] = default if default in options else options[0]
     st.session_state[key] = st.session_state[state_key]
     value = st.selectbox(label, options, key=key, on_change=_remember_widget_value,
@@ -142,7 +142,8 @@ def _load_selected_structures(database, user: dict, records: list[dict], selecte
             continue
         try:
             path = database.structure_file(user, structure_id)
-        except (OSError, PermissionError, ValueError):
+        except (OSError, PermissionError, ValueError) as exc:
+            st.warning(f"Could not retrieve selected Database model {structure_id}: {exc}")
             continue
         try:
             components = workspace.component_inventory(path.read_bytes(), path.name, record.get("components"))
@@ -623,24 +624,28 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
         return
     from mn_molecular_design_studio.complex_analysis_batch import (
         ASSESSMENT_METHODS, CORE_PROFILE, COMPREHENSIVE_PROFILE,
-        assessment_applicability, evaluation_coverage, recorded_chain_roles,
+        assessment_applicability, evaluation_coverage, recorded_chain_roles, offered_assessment_methods,
     )
     from mn_molecular_design_studio.complex_analysis_sources import _database_chain_sequence
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
 
     database = MolecularDatabase()
-    st.markdown("#### Analyze selected designs")
+    offered = offered_assessment_methods(database_samples)
+    if not offered:
+        return
+    st.markdown("#### Assess selected protein models")
     st.caption("This action runs existing registered Studio evaluators only when you submit. Each result is attached to the exact selected Database design and structure through the normal Evaluation ingestion path.")
-    profile_name = st.selectbox("Assessment profile", ["Core binder assessment", "Comprehensive binder assessment", "Custom"],
+    profile_name = st.selectbox("Assessment profile", ["Core protein assessment", "Comprehensive protein assessment", "Custom"],
                                 key="complex-analysis-batch-profile")
-    profile_methods = list(CORE_PROFILE if profile_name == "Core binder assessment" else
-                           COMPREHENSIVE_PROFILE if profile_name == "Comprehensive binder assessment" else ())
-    default_methods = [method for method in profile_methods if method in ASSESSMENT_METHODS]
+    profile_methods = list(CORE_PROFILE if profile_name == "Core protein assessment" else
+                           COMPREHENSIVE_PROFILE if profile_name == "Comprehensive protein assessment" else ())
+    default_methods = [method for method in profile_methods if method in offered]
     profile_state_key, method_state_key = "complex-analysis-batch-last-profile", "complex-analysis-batch-methods"
     if st.session_state.get(profile_state_key) != profile_name:
         st.session_state[method_state_key] = default_methods
         st.session_state[profile_state_key] = profile_name
-    methods = st.multiselect("Registered methods", list(ASSESSMENT_METHODS), default=default_methods,
+    st.session_state[method_state_key] = [method for method in st.session_state.get(method_state_key, default_methods) if method in offered]
+    methods = st.multiselect("Registered methods", offered, default=default_methods,
         format_func=lambda value: ASSESSMENT_METHODS[value]["label"], key=method_state_key,
         help="Interface Clustering and Foldseek remain cohort-level methods in Detailed structural comparison. They do not produce one independent per-design evaluation.")
     st.caption("Biotite and Rosetta interface geometry, ipSAE, PEP-Patch, sequence composition, Protein-Sol, liabilities and tag/fusion suitability keep their own method definitions and units. No universal score is calculated.")
@@ -1273,6 +1278,7 @@ def _database_individual_samples(user: dict) -> list[dict]:
         "project_id": project_id, "collection": collection, "group_id": group_id,
         "cache_key": cache_key,
     }
+    st.session_state.pop("complex-analysis-evidence-selection", None)
     st.session_state["complex-analysis-flow-step"] = "analyze"
     st.rerun()
     return samples
@@ -1351,6 +1357,7 @@ def _analysis_activity(group: dict) -> str:
                    or origin.get("work_kind") or "").casefold().replace("-", "_")
     explicit_map = {
         "design": "Protein design", "protein_design": "Protein design",
+        "ligand_design": "Ligand design", "small_molecule_design": "Ligand design",
         "ligand_cofolding": "Ligand co-folding", "cofolding": "Ligand co-folding",
         "docking": "Ligand docking", "molecular_dynamics": "Molecular dynamics", "dynamics": "Molecular dynamics",
         "folding": "Folding and prediction", "prediction": "Folding and prediction",
@@ -1647,9 +1654,13 @@ def _is_design_collection(group: dict) -> bool:
     """Keep run-backed design cohorts in the default picker, not utility groups."""
     origin = group.get("origin") if isinstance(group.get("origin"), dict) else {}
     kind = str(group.get("collection_kind") or origin.get("collection_kind") or "")
+    stats = group.get("stats") or {}
+    if int(stats.get("observation_count") or 0) > 0:
+        return True
     if kind == "reference":
         return False
-    stats = group.get("stats") or {}
+    if kind not in {"inputs", "intermediate"} and origin.get("type") == "user" and int(stats.get("molecule_count") or 0) > 0:
+        return True
     if kind not in {"inputs", "intermediate"} and (kind == "evaluation" or origin.get("type") == "user") and (
             (stats.get("structure_count") or 0) > 0 and (stats.get("evaluated_design_count") or 0) > 0):
         # Historical imports and evaluated models need no synthetic Results job
@@ -1675,7 +1686,8 @@ def _is_design_collection(group: dict) -> bool:
 
 
 def _load_collection_structures(database, user: dict, records: list[dict], group_ids: list[str],
-                               selected_structure_ids: list[str] | None = None, *, passing_cohort: bool = True) -> list[dict]:
+                               selected_structure_ids: list[str] | None = None, *, passing_cohort: bool = True,
+                               next_step: str = "analyze") -> list[dict]:
     """Revalidate and hydrate only the explicitly opened collection structures."""
     chosen = set(str(value) for value in selected_structure_ids) if selected_structure_ids is not None else None
     structures = [structure for record in records
@@ -1741,7 +1753,7 @@ def _load_collection_structures(database, user: dict, records: list[dict], group
     mode = "Collected passing designs" if passing_cohort else "All designs"
     st.session_state["complex-analysis-cohort-acceptance-mode-value"] = mode
     st.session_state["complex-analysis-cohort-acceptance-mode-widget"] = mode
-    st.session_state["complex-analysis-flow-step"] = "analyze"
+    st.session_state["complex-analysis-flow-step"] = next_step
     st.rerun()
     return samples
 
@@ -1753,7 +1765,7 @@ def _database_collection_samples(user: dict) -> list[dict]:
     database = MolecularDatabase()
     user_id = str(user.get("id") or "")
     if st.session_state.get("complex-analysis-individual-mode"):
-        if st.button("← Back to design collections", key="complex-analysis-back-to-collections"):
+        if st.button("← Back to saved work", key="complex-analysis-back-to-collections"):
             st.session_state["complex-analysis-individual-mode"] = False
             st.session_state["complex-analysis-collections-open"] = False
             st.rerun()
@@ -1769,18 +1781,25 @@ def _database_collection_samples(user: dict) -> list[dict]:
                                                             if group.get("id")])
     except (PermissionError, OSError, ValueError, TypeError):
         groups, statistics = [], {}
+    from mn_molecular_design_studio.complex_analysis_catalog import saved_evidence_summary
+    evidence = saved_evidence_summary(database, user, [group["id"] for group in groups])
     collections = []
     for group in groups:
         group_id = str(group.get("id") or "")
-        stats = statistics.get(group_id) or {}
+        stats = {**(statistics.get(group_id) or {}), **evidence.get(group_id, {})}
         if not _is_design_collection({**group, "stats": stats}):
             continue
-        if int(stats.get("structure_count") or 0) <= 0 or int(stats.get("molecule_count") or 0) <= 0:
+        if int(stats.get("molecule_count") or 0) <= 0:
             continue
         collections.append({**group, "summary": _design_collection_label(group), "stats": stats})
     _resolve_collection_target_labels(database, user, collections)
     if callable(getattr(database, "connection", None)) and callable(getattr(database, "_authorize_group_ids_for_query", None)):
-        from mn_molecular_design_studio.complex_analysis_catalog import collection_source_contexts
+        from mn_molecular_design_studio.complex_analysis_catalog import collection_source_contexts, retained_target_references
+        targets = retained_target_references(database, user, [group["id"] for group in collections])
+        for group in collections:
+            refs = targets.get(group["id"], [])
+            if refs and group["summary"]["target"] in {"Not recorded", "Input target not indexed"}:
+                group["summary"]["target"] = refs[0] if len(refs) == 1 else f"{len(refs)} recorded target/system references"
         contexts = collection_source_contexts(database, user, collections)
         for group in collections:
             context = contexts.get(group["id"], {})
@@ -1800,8 +1819,10 @@ def _database_collection_samples(user: dict) -> list[dict]:
         cohort_counts = {}
     for cohort in cohorts:
         cohort["stats"] = cohort_counts.get(cohort["id"], {})
-    cohorts = [row for row in cohorts if int(row.get("stats", {}).get("structure_count") or 0) > 0
-               and int(row.get("stats", {}).get("molecule_count") or 0) > 0]
+        cohort["stats"]["observation_count"] = sum(evidence.get(key, {}).get("observation_count", 0) for key in cohort["group_ids"])
+        if any(name.startswith("md.") for key in cohort["group_ids"] for name in evidence.get(key, {}).get("methods", {})):
+            cohort["activity"] = "Molecular dynamics"
+    cohorts = [row for row in cohorts if int(row.get("stats", {}).get("molecule_count") or 0) > 0]
     cohort_group_map = {str(row["id"]): list(row["group_ids"]) for row in cohorts}
     if cohorts:
         try:
@@ -1813,18 +1834,22 @@ def _database_collection_samples(user: dict) -> list[dict]:
         filters = st.columns(2)
         project_ids = list(dict.fromkeys(row["project_id"] for row in cohorts))
         project_ids.sort(key=lambda value: project_labels.get(value, value).casefold())
-        project = filters[0].selectbox(
-            "Project", [None, *project_ids],
-            format_func=lambda value: "All accessible projects" if value is None else
+        with filters[0]:
+            project = _stateful_selectbox(
+            "Project", ["", *project_ids],
+            format_func=lambda value: "All accessible projects" if not value else
             project_labels.get(value, value or "Personal / owner-scoped"),
-            key="complex-analysis-work-project",
+            key="complex-analysis-work-project", state_key="complex-analysis-work-project-value", default="",
         )
+        project = project or None
         activities = sorted({row["activity"] for row in cohorts})
-        activity = filters[1].selectbox(
-            "Type of work", ["All types", *activities], key="complex-analysis-work-type",
-        )
-        search = st.text_input("Find saved work", placeholder="Target, campaign, engine or source run",
-                               key="complex-analysis-work-search").strip().casefold()
+        with filters[1]:
+            activity = _stateful_selectbox(
+                "Type of work", ["All types", *activities], key="complex-analysis-work-type",
+                state_key="complex-analysis-work-type-value", default="All types",
+            )
+        search = _stateful_text_input("Find saved work", placeholder="Target, campaign, engine or source run",
+                               key="complex-analysis-work-search", state_key="complex-analysis-work-search-value").strip().casefold()
         table_scope = (project, activity, search)
         if st.session_state.get("complex-analysis-work-table-scope") != table_scope:
             # A restored opened cohort must not block selection in a new
@@ -1866,20 +1891,24 @@ def _database_collection_samples(user: dict) -> list[dict]:
                           "Scientific work": cohort["activity"], "Target/construct": cohort["target"],
                           "Generator(s)": cohort["generators"], "DB-retained designs": stats["molecule_count"],
                           "Retained structures/models": stats["structure_count"],
-                          "Recorded validation evidence": validation_text, "Saved Evaluations": coverage,
+                          "Recorded validation evidence": validation_text, "Saved Evaluations": coverage, "Saved observations": stats.get("observation_count", 0),
                           "All-run totals": "Not part of retained Database cohort",
                           "Source jobs": str(cohort["source_runs"]) if cohort["source_runs"] else "Not catalogued",
                           "Source runs": source_summary, "Campaign links": campaigns,
                           "Workstations": cohort["workstations"], "Updated": cohort["updated_at"],
                           **_cohort_source_counts(cohort)})
+        primary_columns = (["Work group", "Source jobs", "Target/construct", "Generated / attempted", "Native accepted",
+                            "Final passed", "DB-retained designs", "Retained structures/models", "Saved observations"]
+                           if all(row["activity"] == "Protein design" for row in cohorts) else
+                           ["Work group", "Scientific work", "Target/construct", "DB-retained designs",
+                            "Retained structures/models", "Saved observations"])
         event = st.dataframe(table, hide_index=True, use_container_width=True, height=min(420, 40 + 35 * max(1, len(table))),
-                             column_order=["Work group", "Source jobs", "Target/construct", "Generated / attempted", "Native accepted",
-                                           "Final passed", "DB-retained designs", "Retained structures/models"],
+                             column_order=primary_columns,
                              column_config={
                                  "Work group": st.column_config.TextColumn("Run / collection", width="large"),
                                  "Target/construct": st.column_config.TextColumn("Input target / construct", width="medium"),
                                  "Scientific work": st.column_config.TextColumn("Type", width="small"),
-                                 "DB-retained designs": st.column_config.NumberColumn("DB retained", width="small"),
+                                 "DB-retained designs": st.column_config.NumberColumn("DB molecules", width="small"),
                                  "Retained structures/models": st.column_config.NumberColumn("Models / poses", width="small"),
                                  "Saved Evaluations": st.column_config.TextColumn("Saved evidence", width="medium"),
                              },
@@ -1906,7 +1935,7 @@ def _database_collection_samples(user: dict) -> list[dict]:
                                   for value in cohort_group_map.get(cohort_id, [])]
             st.session_state[selected_state] = list(dict.fromkeys(selected_group_ids))
     else:
-        st.info("No saved Database cohort with structures is available yet. In Results, collect designs that passed a recorded filter, then open that cohort here.")
+        st.info("No saved scientific work is available in your accessible Database groups.")
         selected_state = "complex-analysis-selected-collections"
         selected_cohort_state = "complex-analysis-selected-cohorts"
         selected_cohorts = []
@@ -1944,7 +1973,7 @@ def _database_collection_samples(user: dict) -> list[dict]:
                 if targets:
                     st.json(targets, expanded=False)
     else:
-        if st.button("Browse individual Database designs (advanced)", key="complex-analysis-open-individual-browser"):
+        if st.button("Browse individual molecules and models (advanced)", key="complex-analysis-open-individual-browser"):
             st.session_state["complex-analysis-individual-mode"] = True
             st.session_state["complex-analysis-collections-open"] = False
             st.rerun()
@@ -1958,65 +1987,18 @@ def _database_collection_samples(user: dict) -> list[dict]:
         st.session_state["complex-analysis-collections-open"] = False
         st.session_state.pop("complex-analysis-workflow-samples", None)
         st.rerun()
-    if st.button("Browse individual Database designs (advanced)", key="complex-analysis-collection-individual-mode"):
+    if st.button("Browse individual molecules and models (advanced)", key="complex-analysis-collection-individual-mode"):
         st.session_state["complex-analysis-individual-mode"] = True
         st.session_state["complex-analysis-collections-open"] = False
         st.rerun()
 
-    group_ids = selected
-    cache_key = _widget_key("complex-analysis-selected-collection-catalog-", user_id + ":" + ":".join(group_ids))
-    try:
-        catalog = authorized_structure_catalog(
-            database, user, session_state=st.session_state, cache_key=cache_key,
-            collection="all", group_ids=group_ids, limit=5000,
-        )
-        records = list(catalog.get("records") or [])
-        next_offset = catalog.get("next_offset")
-        while next_offset is not None and len(records) < 25000:
-            page = database.list_structure_records(
-                user, collection="all", group_ids=group_ids, restrict_structure_groups=True,
-                limit=5000, offset=int(next_offset),
-            )
-            records.extend(page.get("items") or [])
-            next_offset = page.get("next_offset")
-        if next_offset is not None:
-            st.warning("This collection set exceeds the 25,000-record one-open limit. Select fewer collections before loading coordinates.")
-            return []
-    except (OSError, PermissionError, ValueError, TypeError) as exc:
-        st.error(f"Could not list the selected collection members: {exc}")
-        return []
-    structures = [row for record in records for row in record.get("representations") or record.get("structures") or []
-                  if str(row.get("group_id") or "") in set(group_ids)]
-    structure_ids = list(dict.fromkeys(str(row.get("id") or "") for row in structures if row.get("id")))
-    if not structure_ids:
-        st.info("No structural models are available in the selected collection(s).")
-        return []
-    st.caption(f"Ready to open: {len({str(row.get('id') or '') for row in records}):,} molecules · {len(structure_ids):,} models / poses. Coordinates have not been loaded.")
-    selected_structure_ids = structure_ids
-    # Keep explicit model limits when the same collection set is revisited, but
-    # never carry a previous cohort's (possibly single-model) selection into a
-    # newly selected set of collections. New cohorts default to all members.
-    model_selection_key = _collection_model_selection_key(user_id, group_ids)
-    with st.expander("Advanced: choose individual design/model rows", expanded=False):
-        selected_structure_ids = st.multiselect(
-            "Models to open", structure_ids, default=structure_ids,
-            format_func=lambda value: next((f"{record.get('name') or 'Design'} · {row.get('label') or row.get('format') or 'structure'} · {str(value)[-8:]}"
-                                            for record in records for row in record.get("representations") or record.get("structures") or []
-                                            if str(row.get("id") or "") == value), value),
-            key=model_selection_key,
-        )
-    if not selected_structure_ids:
-        st.info("Select at least one model in the advanced selection to continue.")
-        return []
-    if st.button("Open selected models for analysis", type="primary", key="complex-analysis-load-collection"):
+    st.caption("Open saved measurements and provenance first. Coordinates are retrieved only when you explicitly inspect or assess models.")
+    if st.button("Open saved work", type="primary", key="complex-analysis-load-collection"):
+        from mn_molecular_design_studio.complex_analysis_evidence_ui import open_saved_work
+        labels = [row["name"] for row in cohorts if row["id"] in selected_cohorts]
+        open_saved_work(st.session_state, user_id=user_id, group_ids=selected, label=" · ".join(labels))
         st.session_state["complex-analysis-collections-open"] = True
-        st.session_state["complex-analysis-individual-mode"] = False
-        return _load_collection_structures(database, user, records, group_ids,
-                                           selected_structure_ids=selected_structure_ids,
-                                           passing_cohort=all((group.get("origin") or {}).get("run_id") or
-                                               ((group.get("origin") or {}).get("source_run") or {}).get("run_id")
-                                               for group in collections if group["id"] in group_ids))
-    st.caption("All models in the selection are included. Expand the advanced control above to choose individual models.")
+        st.rerun()
     return []
 
 
@@ -2419,14 +2401,14 @@ def _load_workspace_samples(user: dict) -> list[dict]:
 
 
 def _workflow_steps() -> str:
-    labels = [("select", "1 · Select"), ("analyze", "2 · Analyze"),
-              ("compare", "3 · Compare"), ("shortlist", "4 · Shortlist")]
+    labels = [("select", "Saved work"), ("analyze", "Evidence"),
+              ("compare", "Inspect & Visualize"), ("shortlist", "Shortlist & Export")]
     current = str(st.session_state.get("complex-analysis-flow-step") or "select")
     if current not in {key for key, _ in labels}:
         current = "select"
         st.session_state["complex-analysis-flow-step"] = current
     columns = st.columns(4)
-    loaded = bool(st.session_state.get("complex-analysis-workflow-samples"))
+    loaded = bool(st.session_state.get("complex-analysis-workflow-samples") or st.session_state.get("complex-analysis-evidence-selection"))
     for column, (key, label) in zip(columns, labels):
         if column.button(label, key=f"complex-analysis-step-{key}",
                          disabled=key != "select" and not loaded,
@@ -2465,7 +2447,13 @@ def _render_database_connection() -> None:
 
 def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, *,
                                 workflow_schema=None, submit=None) -> None:
-    """Render one Database-only Select → Analyze → Compare → Shortlist flow."""
+    """Render saved Database work, evidence, visualization and explicit assessments."""
+    st.html("""<style>
+    [data-testid="stMetric"] {background:linear-gradient(135deg,#f1f7fa,#fafcff);
+      border:1px solid #dce8ef;border-radius:12px;padding:14px 18px;}
+    [data-testid="stMetricLabel"] {color:#50677b;}
+    [data-testid="stMetricValue"] {color:#163d50;}
+    </style>""")
     _render_database_connection()
     step = _workflow_steps()
     if step == "select":
@@ -2481,14 +2469,39 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
                 st.caption("Optional campaign summaries include generated and passing totals when published. They are separate from the saved models above.")
         return
 
+    selection = st.session_state.get("complex-analysis-evidence-selection")
+    if selection:
+        if selection.get("user_id") != str(user.get("id") or ""):
+            st.session_state.pop("complex-analysis-evidence-selection", None)
+            st.error("Select saved work again with your current account.")
+            return
+        from mn_molecular_design_studio.molecular_database import MolecularDatabase
+        from mn_molecular_design_studio.complex_analysis_evidence_ui import render_saved_evidence, render_model_choices
+        database = MolecularDatabase()
+        try:
+            for group_id in selection["group_ids"]:
+                database.group(group_id, user)
+            if step == "analyze":
+                render_saved_evidence(database, user, selection)
+                if not st.session_state.get("complex-analysis-assessment-open"):
+                    return
+            elif not st.session_state.get("complex-analysis-workflow-samples"):
+                if step == "shortlist":
+                    st.info("Select exact molecular models in Inspect & Visualize before recording an experimental shortlist. MD evidence can be reviewed without a structural shortlist.")
+                render_model_choices(database, user, selection)
+                return
+        except (PermissionError, OSError, ValueError) as exc:
+            st.error(f"Could not open the selected Database work: {exc}")
+            return
+
     samples = _load_workspace_samples(user)
     if not samples:
-        st.info("Select and load Database structures first.")
+        st.info("Open saved work first. Load exact models only for structural inspection or new assessments.")
         if st.button("Go to Select", key="complex-analysis-empty-go-select"):
             st.session_state["complex-analysis-flow-step"] = "select"
             st.rerun()
         return
-    st.caption(f"Loaded cohort: {len(samples)} explicitly selected Database structure/model row(s). Reopen Select to change it.")
+    st.caption(f"Loaded for inspection: {len(samples)} exact Database model(s). Saved work changes the source cohort.")
     if st.button("Refresh selected Database records and Evaluations", key="complex-analysis-refresh-selected"):
         st.session_state.pop("complex-analysis-workflow-selection", None)
         st.session_state.pop("complex-analysis-workflow-samples", None)
@@ -2510,7 +2523,7 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
         and sample["collected_acceptance"].get("cohort_status") == "passed" for sample in samples
     ) else "Final accepted designs")
     if step == "analyze":
-        st.markdown("### Analyze selected structures and models")
+        st.markdown("### Assess selected models")
         cohort_mode = _stateful_selectbox(
             "Acceptance cohort", cohort_options, key=cohort_key, state_key=cohort_state_key,
             default=cohort_default,
@@ -2596,7 +2609,7 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
             state_key=select_state_key, default=visible_ids)
     else:
         selected_ids = [value for value in st.session_state.get(select_state_key, []) if value in visible_ids]
-        st.caption(f"Selected for downstream review: {len(selected_ids)} row(s). Change the selection in Analyze.")
+        st.caption(f"Selected for downstream review: {len(selected_ids)} row(s). Change the selection in Evidence.")
     selected_samples = [sample_by_id[value] for value in selected_ids if value in sample_by_id]
     if not selected_samples:
         if step == "analyze":
@@ -2605,8 +2618,23 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
 
     if step == "analyze":
         st.caption("Stored measurements retain their method, model and units. Missing, failed and measured-zero states remain distinct.")
-        _render_batch_assessment(user, selected_samples, workflow_schema=workflow_schema, submit=submit)
         _render_evaluation_board(selected_samples)
+        with st.expander("Run missing assessments · explicit submission only", expanded=True):
+            protein_samples = [sample for sample in selected_samples if sample.get("kind") in {"protein", "protein-protein"}]
+            if protein_samples:
+                _render_batch_assessment(user, protein_samples, workflow_schema=workflow_schema, submit=submit)
+            ligand_samples = [sample for sample in selected_samples if sample.get("kind") in {"protein-ligand", "protein-protein-and-ligand"}]
+            if ligand_samples:
+                st.markdown("#### Assess a protein–ligand model / pose")
+                st.caption("Docking and cofolding use the same existing ligand-analysis adapter. Select the exact pose and verified ligand chemistry; native scores remain unchanged.")
+                index = st.selectbox("Model / pose to assess", list(range(len(ligand_samples))),
+                    format_func=lambda value: ligand_samples[value]["label"], key="complex-analysis-assess-ligand")
+                sample = ligand_samples[index]
+                from mn_molecular_design_studio import complex_analysis_ui as workspace
+                workspace._render_database_analysis(user, sample["record"], sample["structure"], sample["path"],
+                    sample["components"], "", workflow_schema=workflow_schema, submit=submit)
+            if not protein_samples and not ligand_samples:
+                st.info("No cohort assessment is supported for this representation. Protein–ligand interaction methods require a chemically identified ligand and its receptor complex. Saved measurements remain available above.")
         st.markdown("#### Open one selected model")
         inspect_id = st.selectbox("Scientific Inspector", selected_ids,
             format_func=lambda value: sample_by_id[value]["label"], key="complex-analysis-cohort-inspector")
@@ -2619,8 +2647,24 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
 
     elif step == "compare":
         import pandas as pd
-        st.markdown("### Compare scientific evidence")
+        st.markdown("### Inspect & Visualize")
         st.caption("Contact maps use saved compatible Evaluations only; missing analyses are shown as unavailable, not zero.")
+        focus = st.selectbox("Structure to inspect", selected_ids,
+            format_func=lambda value: sample_by_id[value]["label"], key="complex-analysis-visual-focus")
+        sample = sample_by_id[focus]
+        from mn_molecular_design_studio import complex_analysis_ui as workspace
+        with st.container(border=True):
+            st.caption(f"Model {sample.get('model_id')} · SHA-256 {sample.get('digest')} · source {sample.get('context', {}).get('run_id') or 'see Inspector provenance'}")
+            try:
+                if sample.get("path") and Path(sample["path"]).is_file():
+                    workspace._show_structure(sample["path"], sample.get("context") or {}, sample.get("components") or [],
+                                              key="complex-analysis-workspace-viewer-" + hashlib.sha256(focus.encode()).hexdigest()[:12])
+                else:
+                    st.warning("Coordinates are unavailable for this selected model; its saved evidence remains accessible in Evidence.")
+            except OSError as exc:
+                st.warning(f"The selected structure could not be opened: {exc}")
+        st.markdown("#### Compare selected models and saved contacts")
+        st.caption("An overlay compares the explicitly chosen models using validated target correspondence. It does not compare affinity scores or assign experimental quality.")
         ligand_samples = [sample for sample in selected_samples if sample.get("kind") in {"protein-ligand", "protein-protein-and-ligand"}]
         if ligand_samples:
             st.markdown("#### Protein–ligand pose group")

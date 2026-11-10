@@ -4,6 +4,91 @@ from __future__ import annotations
 from typing import Any, Callable, MutableMapping
 
 
+def retained_target_references(database, user: dict, group_ids: list[str]) -> dict[str, list[str]]:
+    """Use existing Evaluation target links, without guessing biological identity."""
+    import json
+
+    ids = list(dict.fromkeys(map(str, group_ids)))
+    database._authorize_group_ids_for_query(user, ids)
+    with database.connection() as connection:
+        if not connection.execute("SELECT 1 FROM sqlite_master WHERE name='molecule_evaluations' AND type='table'").fetchone():
+            return {}
+        rows = connection.execute(
+            "SELECT DISTINCT group_id,target_id FROM molecule_evaluations "
+            "WHERE group_id IN (SELECT value FROM json_each(?)) AND target_id<>'' ORDER BY target_id",
+            (json.dumps(ids),),
+        ).fetchall()
+    result = {}
+    for row in rows:
+        result.setdefault(row["group_id"], []).append(row["target_id"])
+    return result
+
+
+def saved_evidence_summary(database, user: dict, group_ids: list[str]) -> dict[str, dict]:
+    """Count saved observation methods without hydrating models or reading Results."""
+    import json
+
+    ids = list(dict.fromkeys(map(str, group_ids)))
+    database._authorize_group_ids_for_query(user, ids)
+    with database.connection() as connection:
+        rows = connection.execute(
+            "SELECT group_id,namespace,COUNT(*) AS n FROM molecule_observations "
+            "WHERE group_id IN (SELECT value FROM json_each(?)) GROUP BY group_id,namespace",
+            (json.dumps(ids),),
+        ).fetchall()
+    result = {key: {"observation_count": 0, "methods": {}} for key in ids}
+    for row in rows:
+        result[row["group_id"]]["methods"][row["namespace"]] = row["n"]
+        result[row["group_id"]]["observation_count"] += row["n"]
+    return result
+
+
+def saved_evidence_page(database, user: dict, group_ids: list[str], *, namespace: str = "",
+                        offset: int = 0, limit: int = 25) -> dict:
+    """Page exact, authorized observations, including evidence without coordinates.
+
+    No structure matching, metric flattening or identity creation occurs here.
+    Evaluation descriptors use the same canonical projection as the Database.
+    """
+    import json
+    from mn_molecular_design_studio.evaluations import evaluation_descriptor
+    from mn_molecular_design_studio.output_vocabulary import normalize_metrics
+
+    if not 1 <= limit <= 100 or offset < 0:
+        raise ValueError("Invalid saved-evidence page.")
+    ids = list(dict.fromkeys(map(str, group_ids)))
+    database._authorize_group_ids_for_query(user, ids)
+    clause = "o.group_id IN (SELECT value FROM json_each(?))"
+    parameters = [json.dumps(ids)]
+    if namespace:
+        clause += " AND o.namespace=?"
+        parameters.append(namespace)
+    with database.connection() as connection:
+        has_evaluations = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='molecule_evaluations' AND type='table'").fetchone()
+        total = connection.execute("SELECT COUNT(*) FROM molecule_observations o WHERE " + clause,
+                                   parameters).fetchone()[0]
+        evaluation_select = ",e.descriptor AS saved_evaluation" if has_evaluations else ""
+        evaluation_join = " LEFT JOIN molecule_evaluations e ON e.observation_id=o.id " if has_evaluations else " "
+        rows = connection.execute(
+            "SELECT o.*,m.name AS molecule_name" + evaluation_select + " FROM molecule_observations o "
+            "LEFT JOIN molecule_members m ON m.group_id=o.group_id AND m.molecule_id=o.molecule_id "
+            + evaluation_join + "WHERE " + clause + " ORDER BY o.created_at DESC,o.id LIMIT ? OFFSET ?",
+            [*parameters, limit, offset],
+        ).fetchall()
+    items = []
+    for row in rows:
+        observation = dict(row)
+        observation["metrics"] = json.loads(row["metrics"])
+        observation["context"] = json.loads(row["context"])
+        saved = observation.pop("saved_evaluation", None)
+        observation["evaluation"] = json.loads(saved) if saved else evaluation_descriptor(observation)
+        observation["normalized_output"] = normalize_metrics(observation["metrics"], row["namespace"], observation["context"])
+        items.append(observation)
+    return {"items": items, "total": total,
+            "next_offset": offset + limit if offset + limit < total else None}
+
+
 def collection_source_contexts(database, user: dict, groups: list[dict]) -> dict[str, dict]:
     """Read indexed source-run facts and saved input-target evidence, never Results.
 

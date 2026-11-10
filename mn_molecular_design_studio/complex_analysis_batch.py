@@ -54,6 +54,18 @@ COMPREHENSIVE_PROFILE = CORE_PROFILE + (
 )
 
 
+def offered_assessment_methods(samples: list[dict]) -> list[str]:
+    """Offer existing protein evaluators by molecular input, independent of engine.
+
+    Detailed chain, sequence and settings checks still happen at submission.
+    Protein–ligand methods use the existing Database ligand-analysis adapter.
+    """
+    kinds = {sample.get("kind") for sample in samples}
+    protein = bool(kinds & {"protein", "protein-protein"})
+    return [method for method, profile in ASSESSMENT_METHODS.items()
+            if protein and (profile["kind"] not in {"ppi", "single_ppi"} or "protein-protein" in kinds)]
+
+
 def recorded_chain_roles(sample: dict[str, Any]) -> tuple[list[str], list[str]]:
     """Return only roles explicitly stored with this representation or its components."""
     candidate = sample.get("candidate") if isinstance(sample.get("candidate"), dict) else {}

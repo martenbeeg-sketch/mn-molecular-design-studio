@@ -256,6 +256,7 @@ def test_analysis_cohort_table_keeps_two_runs_selectable_on_the_same_target(monk
                     for key in cohorts}
 
     monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", Database)
+    monkeypatch.setattr("mn_molecular_design_studio.complex_analysis_catalog.saved_evidence_summary", lambda *args: {})
     user = {"id": "student", "role": "user"}
     app = AppTest.from_string(f'''
 from mn_molecular_design_studio.complex_analysis_collection_ui import _database_collection_samples
@@ -301,6 +302,7 @@ def test_analysis_cohort_table_renders_every_distinct_work_group(monkeypatch):
                     for cohort_id in cohorts}
 
     monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", Database)
+    monkeypatch.setattr("mn_molecular_design_studio.complex_analysis_catalog.saved_evidence_summary", lambda *args: {})
     app = AppTest.from_string('''
 from mn_molecular_design_studio.complex_analysis_collection_ui import _database_collection_samples
 _database_collection_samples({"id": "student", "role": "user"})
