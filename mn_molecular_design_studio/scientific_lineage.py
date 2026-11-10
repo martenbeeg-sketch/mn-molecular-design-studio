@@ -746,14 +746,17 @@ def _access(user, alias="c"):
 def campaigns(database, user, *, kind="", project_id="", target="", query="", limit=25, offset=0):
     limit, offset = max(1, min(int(limit), 100)), max(0, int(offset))
     clause, params = _access(user)
-    if kind:
+    kinds = ([str(value) for value in kind if value] if isinstance(kind, (list, tuple, set))
+             else [str(kind)] if kind else [])
+    if kinds:
         # A logical campaign can contain several scientific activities (for
         # example design → independent folding). Keep c.kind as its root
         # identity, while allowing a campaign to be found by any recorded
         # stage in its compact summary.
-        clause += (" AND (c.kind=? OR EXISTS (SELECT 1 FROM json_each(c.summary,'$.activity_kinds') a "
-                   "WHERE a.value=?))")
-        params.extend([kind, kind])
+        marks = ",".join("?" for _ in kinds)
+        clause += (f" AND (c.kind IN ({marks}) OR EXISTS (SELECT 1 FROM json_each(c.summary,'$.activity_kinds') a "
+                   f"WHERE a.value IN ({marks})))")
+        params.extend([*kinds, *kinds])
     if project_id:
         clause += " AND c.project_id=?"
         params.append(project_id)

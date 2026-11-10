@@ -247,6 +247,34 @@ def test_ligand_cofolding_is_explicit_activity_and_appears_in_campaign_filter(db
     assert "ligand_cofolding" in campaigns["items"][0]["summary"]["activity_kinds"]
 
 
+def test_analysis_area_filters_ligand_cofolding_and_docking_together(db):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio.scientific_lineage_ui import render_campaign_browser
+    ligand_job = job("area-cofold", "boltz2",
+        target_construct={"sequences_by_chain": {"A": "ACDE"},
+            "components": [{"type": "protein", "chain": "A"},
+                           {"type": "small_molecule", "chain": "L", "smiles": "C"}]})
+    ligand_job["task_group"] = "refolding-validation"
+    for snapshot in (
+        snapshot_from_candidates(ligand_job, [candidate("cofold", model="0")], node_id="node-a"),
+        snapshot_from_candidates(job("area-docking", "vina", job_type="ligand_docking"),
+                                 [candidate("pose", model="pose-1")], node_id="node-a"),
+    ):
+        save(db, snapshot)
+    assert catalog.campaigns(db, ADMIN, kind=["ligand_cofolding", "docking"])["total"] == 2
+    app = AppTest.from_string(f'''
+from mn_molecular_design_studio.molecular_database import MolecularDatabase
+from mn_molecular_design_studio.scientific_lineage_ui import render_campaign_browser
+render_campaign_browser(MolecularDatabase({str(db.root)!r}), {ADMIN!r})
+''', default_timeout=10).run()
+    assert not app.exception
+    app.button(key="scientific-area-ligand").click().run()
+    assert not app.exception
+    assert app.session_state["scientific-analysis-area"] == "ligand"
+    campaigns = next(frame.value for frame in app.dataframe if frame.value is not None)
+    assert set(campaigns["Campaign"]) == {"area-cofold", "area-docking"}
+
+
 def test_existing_evaluations_keep_id_method_parameters_and_multi_input_dependencies(db):
     imported = db.import_records(ADMIN, [{"name": "binder", "components": [{"type": "protein", "chain": "B", "sequence": "A"}]}])
     molecule = imported["molecule_ids"][0]

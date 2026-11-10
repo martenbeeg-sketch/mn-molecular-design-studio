@@ -38,8 +38,33 @@ def _campaign_source_status(summary, nodes):
 
 
 def render_campaign_browser(database, user):
+    st.markdown("### Choose an analysis area")
+    st.caption("Complex Analysis uses the Molecular Database: campaign metadata and explicitly retained structures only. It does not scan Results or load coordinates until you open a saved Database model.")
+    areas = {
+        "protein": {"label": "Protein design & complexes", "kinds": ["design"],
+            "help": "Protein binder cohorts open the existing interface, contact-map, comparison and shortlist tools."},
+        "ligand": {"label": "Ligand co-folding & docking", "kinds": ["ligand_cofolding", "docking"],
+            "help": "Open a retained receptor–ligand model for PLIP/PandaMap interactions and PoseBusters pose checks. Native engine scores remain separate evidence."},
+        "structure": {"label": "Folding & dynamics", "kinds": ["folding", "dynamics"],
+            "help": "Review saved prediction models or Database-retained simulation structures and their recorded Evaluations."},
+        "all": {"label": "All Database campaigns", "kinds": [],
+            "help": "All indexed campaign types are shown; only authorized Database-retained structures can enter analysis."},
+    }
+    area_key = "scientific-analysis-area"
+    selected_area = str(st.session_state.get(area_key) or "all")
+    if selected_area not in areas:
+        selected_area = "all"
+    area_columns = st.columns(4)
+    for column, (key, area) in zip(area_columns, areas.items()):
+        if column.button(area["label"], key=f"scientific-area-{key}",
+                         type="primary" if key == selected_area else "secondary"):
+            st.session_state[area_key] = key
+            st.session_state["scientific-offset"] = 0
+            st.rerun()
+    st.caption(areas[selected_area]["help"])
+
     st.markdown("### Scientific campaigns")
-    st.caption("Project → target/construct → campaign → designs and models. This view reads indexed metadata; original Results remain on their source workstation.")
+    st.caption("Project → target/construct → campaign → retained designs and models. Detailed Results remain on their source workstation.")
     clause, parameters = lineage._access(user)
     with database.connection() as c:
         facets = c.execute("SELECT c.project_id,ct.target_key,t.biological_identity_key,t.target_json "
@@ -61,14 +86,13 @@ def render_campaign_browser(database, user):
     activity_labels = {"design": "Protein / molecular design", "folding": "Folding and prediction",
         "ligand_cofolding": "Ligand co-folding", "docking": "Docking and rescoring",
         "dynamics": "Molecular dynamics", "analysis": "Downstream analysis", "unknown": "Unclassified"}
-    kind = st.selectbox("Scientific activity", ["", *activity_labels],
-                        format_func=lambda v: activity_labels.get(v, "All activities"), key="scientific-kind")
+    kind = areas[selected_area]["kinds"]
     targets = sorted({key for row in facets if not project or row["project_id"] == project
                       for key in (row["target_key"], row["biological_identity_key"]) if key})
     target = st.selectbox("Biological target or exact construct", ["", *targets],
         format_func=lambda v: target_names.get(v, v) if v else "All recorded targets/constructs", key="scientific-target")
     query = st.text_input("Find campaign", key="scientific-query")
-    filters = (project, kind, target, query)
+    filters = (project, tuple(kind), target, query)
     if st.session_state.get("scientific-filters") != filters:
         st.session_state["scientific-offset"] = 0
         st.session_state["scientific-filters"] = filters

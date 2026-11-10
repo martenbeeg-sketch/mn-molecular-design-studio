@@ -1987,8 +1987,8 @@ def _workflow_steps() -> str:
 def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, *,
                                 workflow_schema=None, submit=None) -> None:
     """Render one Database-only Select → Analyze → Compare → Shortlist flow."""
-    st.subheader("Design Explorer")
-    st.caption("Open an indexed campaign and its retained Database models, review assessments, compare evidence and shortlist. Full Results remain on their source workstation.")
+    st.subheader("Scientific Explorer")
+    st.caption("Start from an indexed campaign and its Database-retained molecular models. Review domain-appropriate evidence, compare compatible structures and shortlist. Full Results remain on their source workstation.")
     step = _workflow_steps()
     if step == "select":
         if st.session_state.get("complex-analysis-saved-cohort-mode"):
@@ -2034,7 +2034,7 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
         and sample["collected_acceptance"].get("cohort_status") == "passed" for sample in samples
     ) else "Final accepted designs")
     if step == "analyze":
-        st.markdown("### Analyze selected designs")
+        st.markdown("### Analyze selected structures and models")
         cohort_mode = _stateful_selectbox(
             "Acceptance cohort", cohort_options, key=cohort_key, state_key=cohort_state_key,
             default=cohort_default,
