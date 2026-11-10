@@ -58,8 +58,11 @@ def render_campaign_browser(database, user):
                 target_names[row["biological_identity_key"]] = label + " · all recorded constructs"
     projects = sorted({row["project_id"] for row in facets if row["project_id"]})
     project = st.selectbox("Project", ["", *projects], format_func=lambda v: project_names.get(v, v) if v else "All accessible projects", key="scientific-project")
-    kind = st.selectbox("Scientific activity", ["design", "folding", "docking", "dynamics", "analysis", ""],
-                        format_func=lambda v: v.title() if v else "All activities", key="scientific-kind")
+    activity_labels = {"design": "Protein / molecular design", "folding": "Folding and prediction",
+        "ligand_cofolding": "Ligand co-folding", "docking": "Docking and rescoring",
+        "dynamics": "Molecular dynamics", "analysis": "Downstream analysis", "unknown": "Unclassified"}
+    kind = st.selectbox("Scientific activity", ["", *activity_labels],
+                        format_func=lambda v: activity_labels.get(v, "All activities"), key="scientific-kind")
     targets = sorted({key for row in facets if not project or row["project_id"] == project
                       for key in (row["target_key"], row["biological_identity_key"]) if key})
     target = st.selectbox("Biological target or exact construct", ["", *targets],
@@ -76,7 +79,9 @@ def render_campaign_browser(database, user):
         return []
     source_nodes = _local_source_status()
     st.caption("Campaign counts and job relationships are synchronized metadata. Detailed Results stay on their owner workstation; an offline owner is shown as temporarily unavailable, and this page never scans or contacts remote workstations.")
-    st.dataframe([{"Campaign": r["name"], "Type": r["kind"], "Target/construct": "; ".join(
+    st.dataframe([{"Campaign": r["name"], "Primary activity": activity_labels.get(r["kind"], r["kind"]),
+        "Activities": ", ".join(activity_labels.get(v, v) for v in r["summary"].get("activity_kinds", [])) or "Not recorded",
+        "Target/construct": "; ".join(
             target_names.get(lineage._target_construct_key(t), str(t.get("biological_target") or t.get("label") or "Recorded construct"))
             for t in r["summary"].get("targets", [])) or "Not recorded / unresolved", "Jobs": r["summary"]["jobs"],
         "Workstations": ", ".join(r["summary"]["workstations"]), "Methods": ", ".join(r["summary"]["methods"]),
@@ -114,6 +119,10 @@ def render_campaign_browser(database, user):
         st.session_state["scientific-open-ref"] = selected
     detail = lineage.campaign_detail(database, user, selected, offset=output_offset, job_offset=job_offset,
                                      dependency_offset=dependency_offset)
+    campaign_summary = detail["campaign"]["summary"]
+    activities = set(campaign_summary.get("activity_kinds") or [detail["campaign"].get("kind", "unknown")])
+    if activities & {"ligand_cofolding", "docking"}:
+        st.info("Ligand co-folding and docking stay distinct in the source records. Open a retained protein–ligand model below to review PLIP/PandaMap interaction evidence and PoseBusters pose validation. Native docking/co-folding scores remain method-specific in the source Results; they are not combined with these analyses.")
     if detail["incomplete_job_count"]:
         st.warning(f"Retained Database links are still synchronizing for {detail['incomplete_job_count']} job(s). The source-authored campaign counts and acceptance totals remain available; exact retained models become selectable after all link pages arrive.")
     st.caption(f"Showing {min(job_offset + 1, detail['job_total'])}–{min(job_offset + len(detail['jobs']), detail['job_total'])} of {detail['job_total']} distributed execution jobs.")
@@ -121,6 +130,27 @@ def render_campaign_browser(database, user):
         {"source_job_refs": [row.get("ref", "")], "workstations": [row.get("workstation", "")]}, source_nodes))
         for row in detail["jobs"]]
     st.dataframe(job_rows, hide_index=True, column_order=["name", "workstation", "source_availability", "task_group", "run_id", "method", "status", "publication_state"])
+    source_jobs = {row["ref"]: row for row in detail["jobs"] if row.get("ref") and row.get("task_group") and row.get("run_id")}
+    if source_jobs:
+        source_ref = st.selectbox("Open detailed source Results", ["", *source_jobs],
+            format_func=lambda value: (f"{source_jobs[value].get('method') or source_jobs[value].get('tool') or 'Scientific job'} · "
+                f"{source_jobs[value].get('workstation') or source_jobs[value].get('node_id')} · "
+                f"{source_jobs[value].get('task_group')}/{source_jobs[value].get('run_id')}" if value else "Choose the exact source job"),
+            key="scientific-source-job-" + selected)
+        if st.button("Open full Results, native scores and unretained outputs", disabled=not source_ref,
+                     key="scientific-open-source-results-" + selected):
+            source = source_jobs[source_ref]
+            from mn_molecular_design_studio.cluster import config as cluster_config
+            local_reference = f"{source['task_group']}/{source['run_id']}"
+            if str(source.get("node_id") or "") == cluster_config.identity():
+                destination = local_reference
+            else:
+                cluster_id = str(source.get("cluster_job_id") or cluster_config.job_id(source["node_id"], local_reference))
+                destination = "cluster:" + cluster_id
+            st.session_state["selected-job-reference"] = destination
+            st.session_state["page"] = "Job details"
+            st.rerun()
+        st.caption("This opens the existing authorized Results view for one selected source job; campaign browsing itself does not retrieve or scan its files.")
     job_left, job_right = st.columns(2)
     if job_left.button("Previous execution jobs", disabled=not job_offset, key="scientific-job-prev"):
         st.session_state["scientific-job-offset"] = max(0, job_offset - 100)

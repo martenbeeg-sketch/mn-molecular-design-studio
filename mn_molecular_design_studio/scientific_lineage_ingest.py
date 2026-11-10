@@ -27,9 +27,32 @@ def experiment_kind(job):
         return "docking"
     if "analysis" in text:
         return "analysis"
+    if _has_recorded_ligand(job) and any(k in text for k in ("cofold", "folding", "prediction", "boltz", "chai", "protenix")):
+        return "ligand_cofolding"
     if any(k in text for k in ("folding", "prediction")):
         return "folding"
     return "design" if "design" in text and "visual_pipeline" not in text else "unknown"
+
+
+def _has_recorded_ligand(value):
+    """Use typed source metadata only; never infer a ligand from a run name."""
+    if not isinstance(value, dict):
+        return False
+    if any(value.get(key) not in (None, "", [], {}) for key in ("ligand_smiles", "ligand_ccd_codes", "ligand_component")):
+        return True
+    for key in ("components", "target_construct", "molecular_context", "input", "params", "target"):
+        nested = value.get(key)
+        if isinstance(nested, dict) and _has_recorded_ligand(nested):
+            return True
+        if isinstance(nested, list):
+            for component in nested:
+                if isinstance(component, dict):
+                    kind = str(component.get("type") or component.get("component_type") or "").casefold()
+                    if kind in {"small_molecule", "ligand"}:
+                        return True
+                    if _has_recorded_ligand(component):
+                        return True
+    return False
 
 
 def artifact(value, job, *, run_dir=None, sha256="", verify=False, required=True):
@@ -85,6 +108,7 @@ def snapshot_from_candidates(metadata, candidates, *, node_id, run_dir=None, ver
     job = {k: copy.deepcopy(metadata[k]) for k in (
         "owner_id", "project_id", "cluster_job_id", "created_at", "updated_at", "status",
         "studio_run_id", "studio_run_name", "studio_run_output_id", "studio_run_output_name",
+        "campaign_group_id", "campaign_group_name",
         "parent_role", "pipeline_iteration", "campaign_step", "campaign_step_index", "execution_proxy",
         "distributed_campaign_id", "graph_node_id", "pipeline_parent_node_id",
     ) if k in metadata}
@@ -116,7 +140,7 @@ def snapshot_from_candidates(metadata, candidates, *, node_id, run_dir=None, ver
         output_ref = ref + "#" + lineage.identifier("output-", candidate_id, model, duplicate_keys[key])
         stage = str(candidate.get("stage") or "")
         kind = ("docking_pose" if job["kind"] == "docking" else "prediction_model" if
-                stage in {"complex_refolding", "monomer_refolding"} or job["kind"] == "folding" else
+                stage in {"complex_refolding", "monomer_refolding"} or job["kind"] in {"folding", "ligand_cofolding"} else
                 "sequence_variant" if stage == "sequence_design" else "backbone" if stage == "generation.backbone" else "design")
         info = raw.get("candidate_set") or {}
         metrics = candidate.get("metrics") or {}
@@ -397,36 +421,118 @@ def chaperone_records(metadata, rows, *, node_id):
     return result
 
 
+def _atomic_json(path: Path, payload: dict) -> None:
+    """Write resumable backfill progress without exposing a partial checkpoint."""
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        temporary.write_text(json.dumps(payload, sort_keys=True, indent=2))
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _backfill_checkpoint(path: Path, *, manifest_digest: str, destination: Path,
+                         total: int, resume: bool) -> dict:
+    if resume:
+        try:
+            state = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("Cannot resume: the backfill checkpoint is missing or unreadable.") from exc
+        if (state.get("schema") != lineage.VERSION
+                or state.get("manifest_sha256") != manifest_digest
+                or state.get("destination") != str(destination)
+                or state.get("total_entries") != total
+                or not isinstance(state.get("next_index"), int)
+                or not 0 <= state["next_index"] <= total):
+            raise ValueError("Cannot resume: checkpoint, manifest, schema or staging destination changed.")
+        return state
+    if path.exists():
+        raise ValueError("Checkpoint already exists; pass --resume or choose a new staging destination/checkpoint.")
+    return {"schema": lineage.VERSION, "manifest_sha256": manifest_digest,
+            "destination": str(destination), "total_entries": total,
+            "next_index": 0, "completed_jobs": [], "complete": total == 0}
+
+
 def main():
     """Controlled, explicit historical manifest; no recursive Results scan."""
     import argparse
+    import hashlib
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
     from mn_molecular_design_studio.runtime import app_home
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--staging-database-root", required=True)
     parser.add_argument("--manifest", required=True, help="JSON list of source node, metadata, and optional exact run_dir")
+    parser.add_argument("--batch-size", type=int, default=0,
+                        help="Process this many explicit manifest entries (requires checkpoint); run again with --resume.")
+    parser.add_argument("--checkpoint", help="Progress file (defaults inside the staging Database root when batching).")
+    parser.add_argument("--resume", action="store_true", help="Resume the same unchanged manifest and staging Database.")
     args = parser.parse_args()
     destination = Path(args.staging_database_root).resolve()
     if destination == (app_home() / "database").resolve() or destination == (Path.home() / ".local/share/mn-molecular-design-studio/database").resolve():
         parser.error("This backfill command is staging-only; production destination refused.")
+    if args.batch_size < 0:
+        parser.error("--batch-size must be positive when supplied.")
+    if args.resume and not (args.checkpoint or args.batch_size):
+        parser.error("--resume requires --batch-size or --checkpoint.")
+    manifest_path = Path(args.manifest).resolve()
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+        entries = json.loads(manifest_bytes)
+    except (OSError, json.JSONDecodeError) as exc:
+        parser.error(f"Could not read the explicit JSON manifest: {exc}")
+    if not isinstance(entries, list) or any(not isinstance(row, dict) for row in entries):
+        parser.error("The explicit manifest must be a JSON list of entry objects.")
     marker = destination / "scientific-lineage-staging.json"
     if (destination / "molecular_library.sqlite3").exists() and not marker.is_file():
         parser.error("An existing destination requires an explicit scientific-lineage-staging.json marker.")
     destination.mkdir(parents=True, exist_ok=True)
-    marker.write_text(json.dumps({"purpose": "isolated scientific lineage validation", "schema": lineage.VERSION}))
+    if marker.exists():
+        try:
+            marker_record = json.loads(marker.read_text())
+        except (OSError, json.JSONDecodeError):
+            parser.error("The staging marker is unreadable; refusing to reuse this destination.")
+        if marker_record.get("purpose") != "isolated scientific lineage validation" or marker_record.get("schema") != lineage.VERSION:
+            parser.error("The destination has a different staging marker; refusing to reuse it.")
+    else:
+        marker.write_text(json.dumps({"purpose": "isolated scientific lineage validation", "schema": lineage.VERSION}))
     database = MolecularDatabase(destination)
-    entries = json.loads(Path(args.manifest).read_text())
+    use_checkpoint = bool(args.batch_size or args.checkpoint or args.resume)
+    checkpoint_path = Path(args.checkpoint).resolve() if args.checkpoint else destination / "scientific-lineage-backfill.checkpoint.json"
+    checkpoint = None
+    start = 0
+    if use_checkpoint:
+        try:
+            checkpoint = _backfill_checkpoint(checkpoint_path,
+                manifest_digest=hashlib.sha256(manifest_bytes).hexdigest(), destination=destination,
+                total=len(entries), resume=args.resume)
+        except ValueError as exc:
+            parser.error(str(exc))
+        start = checkpoint["next_index"]
+    batch_end = len(entries) if not args.batch_size else min(len(entries), start + args.batch_size)
     reports = []
-    for entry in entries:
+    for index in range(start, batch_end):
+        entry = entries[index]
+        if not entry.get("node_id") or not isinstance(entry.get("metadata") or {}, dict):
+            parser.error(f"Manifest entry {index} needs node_id and metadata.")
         node = entry["node_id"]
         snapshot = (build_snapshot(entry["run_dir"], node_id=node, metadata=entry.get("metadata"), verify=True)
                     if entry.get("run_dir") else snapshot_from_candidates(entry["metadata"], entry.get("candidates", []), node_id=node))
         link_retained(database, snapshot, local_node=entry.get("local_node_id", node))
         lineage.put_snapshot(database, snapshot, author=node, rebuild=False)
         reports.append({"job": snapshot["job"]["ref"], "outputs": len(snapshot["outputs"]), "warnings": snapshot["warnings"]})
+        if checkpoint is not None:
+            checkpoint["next_index"] = index + 1
+            checkpoint["completed_jobs"].append(snapshot["job"]["ref"])
+            checkpoint["complete"] = checkpoint["next_index"] == len(entries)
+            from datetime import datetime, timezone
+            checkpoint["updated_at"] = datetime.now(timezone.utc).isoformat()
+            _atomic_json(checkpoint_path, checkpoint)
     with database.connection() as c:
         lineage.rebuild_campaigns(c)
-    print(json.dumps({"schema": lineage.VERSION, "jobs": reports}, indent=2))
+    print(json.dumps({"schema": lineage.VERSION, "jobs": reports,
+        "checkpoint": str(checkpoint_path) if checkpoint is not None else None,
+        "processed_entries": len(reports), "next_index": checkpoint["next_index"] if checkpoint is not None else len(entries),
+        "total_entries": len(entries), "complete": checkpoint["complete"] if checkpoint is not None else True}, indent=2))
 
 
 if __name__ == "__main__":

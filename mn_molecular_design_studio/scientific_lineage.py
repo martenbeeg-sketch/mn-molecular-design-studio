@@ -10,7 +10,7 @@ import json
 import re
 
 VERSION = "studio.scientific-lineage.v1"
-KINDS = {"design", "folding", "docking", "dynamics", "analysis", "unknown"}
+KINDS = {"design", "folding", "ligand_cofolding", "docking", "dynamics", "analysis", "unknown"}
 MAX_BYTES = 1_500_000  # Existing replication record envelope, not a campaign limit.
 PAGE_BYTES = 700_000   # Keep a generous margin below the existing 2 MB peer-record limit.
 
@@ -509,6 +509,14 @@ def _index_job_aliases(c, job):
     aliases = {job["ref"], f"node-run:{job['node_id']}:{job['run_id']}"}
     if job.get("cluster_job_id"):
         aliases.add("cluster-job:" + str(job["cluster_job_id"]))
+    # These explicit identifiers are also grouping evidence in logical_runs.
+    # Scope them by owner/project and hash the tuple so names never become
+    # scientific identity or cross-project aliases.
+    for field in ("studio_run_id", "campaign_group_id", "distributed_campaign_id"):
+        value = str(job.get(field) or "")
+        if value:
+            aliases.add("logical-group:" + identifier("", job.get("owner_id", ""),
+                job.get("project_id", ""), field, value))
     c.execute("DELETE FROM scientific_job_aliases WHERE job_ref=?", (ref,))
     c.executemany("INSERT OR IGNORE INTO scientific_job_aliases VALUES (?,?)", [(alias, ref) for alias in aliases])
     # Resolve only edges touching this job's aliases. A newly arrived worker or
@@ -535,6 +543,19 @@ def rebuild_campaigns(c, *, affected_job_ref=None):
     if affected_job_ref:
         old_campaigns = {r[0] for r in c.execute("SELECT campaign_ref FROM scientific_campaign_jobs WHERE job_ref=?", (affected_job_ref,))}
         impacted = {affected_job_ref}
+        # Jobs sharing an explicit Studio run/group identity may not yet have
+        # a resolved execution edge (for example a controller or analysis job
+        # can arrive before its parent). Rebuild that indexed logical group
+        # alongside the affected execution component.
+        group_aliases = [r[0] for r in c.execute(
+            "SELECT alias FROM scientific_job_aliases WHERE job_ref=? AND alias LIKE 'logical-group:%'",
+            (affected_job_ref,))]
+        for alias in group_aliases:
+            impacted.update(r[0] for r in c.execute(
+                "SELECT a.job_ref FROM scientific_job_aliases a JOIN scientific_jobs j ON j.ref=a.job_ref "
+                "JOIN scientific_jobs source ON source.ref=? "
+                "WHERE a.alias=? AND j.owner_id=source.owner_id AND j.project_id=source.project_id",
+                (affected_job_ref, alias)))
         if old_campaigns:
             marks = ",".join("?" for _ in old_campaigns)
             impacted.update(r[0] for r in c.execute(f"SELECT job_ref FROM scientific_campaign_jobs WHERE campaign_ref IN ({marks})", sorted(old_campaigns)))
@@ -623,6 +644,8 @@ def rebuild_campaigns(c, *, affected_job_ref=None):
                 stage_counts[key] = stage_counts.get(key, 0) + int(value or 0)
         complete_jobs = sum(snapshots[j["ref"]].get("publication_state") != "incomplete" for j in jobs)
         summary = {"targets": [json.loads(t) for t in sorted(targets)], "counts": counts,
+                   "activity_kinds": sorted({str(j.get("kind") or "unknown") for j in jobs
+                                              if j.get("kind") not in {"", "unknown"}}),
                    "jobs": len(jobs), "workstations": sorted({j.get("workstation") or j["node_id"] for j in jobs}),
                    "methods": sorted({j.get("method") for j in jobs if j.get("method")}),
                    "indexed_occurrences": indexed_links,
@@ -723,10 +746,17 @@ def _access(user, alias="c"):
 def campaigns(database, user, *, kind="", project_id="", target="", query="", limit=25, offset=0):
     limit, offset = max(1, min(int(limit), 100)), max(0, int(offset))
     clause, params = _access(user)
-    for field, value in (("kind", kind), ("project_id", project_id)):
-        if value:
-            clause += f" AND c.{field}=?"
-            params.append(value)
+    if kind:
+        # A logical campaign can contain several scientific activities (for
+        # example design → independent folding). Keep c.kind as its root
+        # identity, while allowing a campaign to be found by any recorded
+        # stage in its compact summary.
+        clause += (" AND (c.kind=? OR EXISTS (SELECT 1 FROM json_each(c.summary,'$.activity_kinds') a "
+                   "WHERE a.value=?))")
+        params.extend([kind, kind])
+    if project_id:
+        clause += " AND c.project_id=?"
+        params.append(project_id)
     if target:
         clause += " AND (c.target_key=? OR EXISTS (SELECT 1 FROM scientific_campaign_targets ct JOIN scientific_target_constructs t USING(target_key) WHERE ct.campaign_ref=c.ref AND (t.target_key=? OR t.biological_identity_key=?)))"
         params.extend([target, target, target])

@@ -228,6 +228,25 @@ def test_docking_chemistry_and_model_provenance_are_distinct_from_compound_ident
         assert conn.execute("SELECT count(*) FROM molecules").fetchone()[0] == 0
 
 
+def test_ligand_cofolding_is_explicit_activity_and_appears_in_campaign_filter(db):
+    from mn_molecular_design_studio.scientific_lineage_ingest import experiment_kind
+    cofold_job = job("ligand-cofold", "boltz2", studio_run_id="workflow-1",
+        target_construct={"sequences_by_chain": {"A": "ACDE"},
+        "components": [{"type": "protein", "chain": "A"},
+                      {"type": "small_molecule", "chain": "L", "smiles": "C[C@H](O)N"}]})
+    cofold_job["task_group"] = "refolding-validation"
+    assert experiment_kind(cofold_job) == "ligand_cofolding"
+    cofold = snapshot_from_candidates(cofold_job, [candidate("ligand-model", model="0")], node_id="node-a")
+    assert cofold["outputs"][0]["kind"] == "prediction_model"
+    assert cofold["target"]["components"][1]["type"] == "small_molecule"
+    root = snapshot_from_candidates(job("workflow-1", "visual_pipeline", studio_run_id="workflow-1"), [], node_id="node-a")
+    save(db, root)
+    save(db, cofold)
+    campaigns = catalog.campaigns(db, ADMIN, kind="ligand_cofolding")
+    assert campaigns["total"] == 1
+    assert "ligand_cofolding" in campaigns["items"][0]["summary"]["activity_kinds"]
+
+
 def test_existing_evaluations_keep_id_method_parameters_and_multi_input_dependencies(db):
     imported = db.import_records(ADMIN, [{"name": "binder", "components": [{"type": "protein", "chain": "B", "sequence": "A"}]}])
     molecule = imported["molecule_ids"][0]
@@ -300,6 +319,52 @@ render_campaign_browser(MolecularDatabase({str(db.root)!r}), {ADMIN!r})
     assert any("No final decision" in info.value for info in app.info)
     app.selectbox(key="scientific-stage-" + ref).select("native").run()
     assert not app.exception
+
+
+def test_campaign_source_results_button_opens_exact_job_reference(db, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio.cluster import config
+    monkeypatch.setattr(config, "identity", lambda: "a")
+    snapshot = snapshot_from_candidates(job("source-results", "vina", job_type="ligand_docking"),
+        [candidate("pose-1", model="pose-1")], node_id="a")
+    save(db, snapshot)
+    ref = catalog.campaigns(db, ADMIN)["items"][0]["ref"]
+    app = AppTest.from_string(f'''
+from mn_molecular_design_studio.molecular_database import MolecularDatabase
+from mn_molecular_design_studio.scientific_lineage_ui import render_campaign_browser
+render_campaign_browser(MolecularDatabase({str(db.root)!r}), {ADMIN!r})
+''', default_timeout=10).run()
+    app.selectbox(key="scientific-campaign").select(ref).run()
+    assert not app.exception
+    source = snapshot["job"]["ref"]
+    app.selectbox(key="scientific-source-job-" + ref).select(source).run()
+    app.button(key="scientific-open-source-results-" + ref).click().run()
+    assert not app.exception
+    assert app.session_state["page"] == "Job details"
+    assert app.session_state["selected-job-reference"] == "design/source-results"
+
+
+def test_campaign_source_results_button_uses_recorded_remote_job_reference(db, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio.cluster import config
+    monkeypatch.setattr(config, "identity", lambda: "local-node")
+    snapshot = snapshot_from_candidates(job("remote-source", "boltz2", cluster_job_id="remote-exact-job"),
+        [candidate("remote-model", model="model-2")], node_id="source-node")
+    save(db, snapshot)
+    ref = catalog.campaigns(db, ADMIN)["items"][0]["ref"]
+    app = AppTest.from_string(f'''
+from mn_molecular_design_studio.molecular_database import MolecularDatabase
+from mn_molecular_design_studio.scientific_lineage_ui import render_campaign_browser
+render_campaign_browser(MolecularDatabase({str(db.root)!r}), {ADMIN!r})
+''', default_timeout=10).run()
+    assert not app.exception
+    app.selectbox(key="scientific-campaign").select(ref).run()
+    source = snapshot["job"]["ref"]
+    app.selectbox(key="scientific-source-job-" + ref).select(source).run()
+    app.button(key="scientific-open-source-results-" + ref).click().run()
+    assert not app.exception
+    assert app.session_state["page"] == "Job details"
+    assert app.session_state["selected-job-reference"] == "cluster:remote-exact-job"
 
 
 def test_existing_job_replication_carries_lineage_and_tombstones_without_files(db, tmp_path, monkeypatch):
@@ -559,5 +624,35 @@ def test_controlled_backfill_is_staging_only_and_idempotent(db, tmp_path, monkey
     with MolecularDatabase(destination).connection() as c:
         assert c.execute("SELECT count(*) FROM molecules").fetchone()[0] == 0
     monkeypatch.setattr("sys.argv", ["backfill", "--staging-database-root", str(tmp_path / "app/database"), "--manifest", str(manifest)])
+    with pytest.raises(SystemExit):
+        main()
+
+
+def test_controlled_backfill_resumes_in_manifest_batches_and_rejects_manifest_drift(tmp_path, monkeypatch, capsys):
+    from mn_molecular_design_studio.scientific_lineage_ingest import main
+    from mn_molecular_design_studio import scientific_lineage as catalog
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps([
+        {"node_id": "a", "metadata": job("batch-1"), "candidates": [candidate("one")]},
+        {"node_id": "b", "metadata": job("batch-2"), "candidates": [candidate("two")]},
+    ]))
+    destination = tmp_path / "resumable-backfill"
+    monkeypatch.setattr("sys.argv", ["backfill", "--staging-database-root", str(destination),
+        "--manifest", str(manifest), "--batch-size", "1"])
+    main()
+    first = json.loads(capsys.readouterr().out)
+    assert first["processed_entries"] == 1 and first["complete"] is False
+    with MolecularDatabase(destination).connection() as c:
+        assert c.execute("SELECT count(*) FROM scientific_jobs").fetchone()[0] == 1
+
+    monkeypatch.setattr("sys.argv", ["backfill", "--staging-database-root", str(destination),
+        "--manifest", str(manifest), "--batch-size", "1", "--resume"])
+    main()
+    second = json.loads(capsys.readouterr().out)
+    assert second["processed_entries"] == 1 and second["complete"] is True
+    assert catalog.campaigns(MolecularDatabase(destination), ADMIN)["total"] == 2
+
+    manifest.write_text(manifest.read_text().replace("batch-2", "changed"))
     with pytest.raises(SystemExit):
         main()
