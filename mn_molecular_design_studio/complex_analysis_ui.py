@@ -4410,7 +4410,7 @@ def render_complex_analysis_workspace(user: dict, *, workflow_schema=None, proje
                                            project_selector=project_selector, submit=submit)
         return
     st.session_state["complex-analysis-workspace-view"] = "database"
-    st.title("Scientific Work")
-    st.caption("Select Database-retained scientific work—designs, predicted structures, ligand poses or simulation models—then review saved evidence, compare and shortlist.")
+    st.title("Complex Analysis")
+    st.caption("Choose saved designs, predictions, ligand poses or simulation models. Review their evidence, compare structures and shortlist candidates.")
     from mn_molecular_design_studio.complex_analysis_collection_ui import render_collection_workspace
     render_collection_workspace(user, workflow_schema=workflow_schema, submit=submit)

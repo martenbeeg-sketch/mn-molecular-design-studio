@@ -2,6 +2,7 @@ from mn_molecular_design_studio.complex_analysis_collection_ui import (
     _database_analysis_cohorts,
     _design_collection_label,
     _is_design_collection,
+    _resolve_collection_target_labels,
 )
 
 
@@ -132,6 +133,36 @@ def test_analysis_cohort_keeps_unlinked_unknown_targets_distinct_and_names_them(
     assert {row["name"] for row in cohorts} == {"Design A", "Design B"}
 
 
+def test_target_wide_cohort_is_not_named_as_one_partially_linked_campaign():
+    groups = [{"id": key, "project_id": "p", "origin": {
+        "tool": "rfd4_proteina", "target_molecule_id": "target", "run_id": key,
+        **({"campaign_id": "campaign-a", "campaign_name": "200 passing designs"} if key == "a" else {}),
+    }, "summary": {"target": "Tau R3", "generator": "RFD4"}} for key in ("a", "b")]
+    cohort, = _database_analysis_cohorts(groups)
+    assert cohort["cohort_type"] == "Cross-run comparison cohort"
+    assert cohort["name"] != "200 passing designs"
+    assert cohort["campaign_ids"] == ["campaign-a"]
+
+
+def test_target_display_names_use_authorized_metadata_without_changing_identity():
+    groups = [{"origin": {"target_molecule_id": "target"},
+               "summary": {"target": "Target record target"}},
+              {"origin": {"target_molecule_id": "inaccessible"},
+               "summary": {"target": "Target record inaccessible"}}]
+    user = {"id": "student"}
+
+    class Database:
+        def list_structure_records(self, selected_user, **kwargs):
+            assert selected_user is user
+            assert kwargs["molecule_ids"] == ["target", "inaccessible"]
+            return {"items": [{"id": "target", "name": "Tau R3 (31 aa)"}]}
+
+    _resolve_collection_target_labels(Database(), user, groups)
+    assert groups[0]["summary"]["target"] == "Tau R3 (31 aa) · target"
+    assert groups[0]["origin"]["target_molecule_id"] == "target"
+    assert groups[1]["summary"]["target"] == "Target record inaccessible"
+
+
 def test_scientific_result_task_groups_show_the_stage_of_the_source_work():
     cohorts = _database_analysis_cohorts([
         {"id": "fold", "project_id": "p", "origin": {
@@ -244,6 +275,15 @@ _database_collection_samples({"id": "student", "role": "user"})
     rows = app.dataframe[0].value
     assert set(rows["Work group"]) == {"Fold run", "Dock run"}
     assert set(rows["Scientific work"]) == {"Folding and prediction", "Ligand docking"}
+
+    app.session_state["complex-analysis-collections-open"] = True
+    app.selectbox(key="complex-analysis-work-type").select("Ligand docking").run()
+    assert not app.exception
+    assert not app.session_state["complex-analysis-collections-open"]
+    assert list(app.dataframe[0].value["Work group"]) == ["Dock run"]
+    app.text_input(key="complex-analysis-work-search").input("fold-run").run()
+    assert not app.exception
+    assert any("No saved work matches" in item.value for item in app.info)
 
 
 def test_unlinked_analysis_outputs_are_not_listed_as_design_collections():
