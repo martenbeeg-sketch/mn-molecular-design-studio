@@ -216,6 +216,7 @@ def build_snapshot(run_dir, *, node_id, metadata=None, verify=False):
                 "stage": snapshot["job"]["method"], "source": "result.json/metrics", "scope": "producer_reported"})
     snapshot["counts"].append({"name": "normalized_output_occurrences", "value": len(candidates),
         "unit": "candidate/model rows", "stage": "saved output", "source": "candidates.jsonl", "scope": "this_job"})
+    capture_source_execution_context(snapshot, root)
     ledger = _read(root / "artifacts/distributed_campaign/ledger.json")
     for attempt in (ledger.get("attempts") or {}).values():
         if attempt.get("cluster_job_id"):
@@ -228,6 +229,70 @@ def build_snapshot(run_dir, *, node_id, metadata=None, verify=False):
         for item in study.get("studies", [study]):
             add_md_study(snapshot, item)
     return snapshot
+
+
+def capture_source_execution_context(snapshot, run_dir):
+    """Capture small original input/count evidence at indexing time, never on UI reads.
+
+    BindCraft2's native state counts trajectories and redesigned variants;
+    normalized result counts may only describe retained outputs. Keep both
+    sources, explicitly identifying the native state rather than rewriting it.
+    """
+    root = Path(run_dir).resolve()
+    job = snapshot["job"]
+    if not str(job.get("method") or "").startswith("bindcraft2"):
+        return
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import read_bindcraft2_campaign_state
+
+    state = read_bindcraft2_campaign_state(root)
+    if state is not None:
+        relative = "artifacts/raw/bindcraft2/output/.campaign_state.json"
+        digest = hashlib.sha256((root / relative).read_bytes()).hexdigest()
+        definitions = [
+            ("trajectory_attempt_count", state["trajectories"], "trajectories", "native generation"),
+            ("accepted_design_count", state["accepted"], "ranked designs", "native acceptance"),
+            *[(name, state["rejections"].get(name), "redesigned candidates", "native refolding filters")
+              for name in ("candidates_scored", "candidates_rejected")],
+        ]
+        for name, value, unit, stage in definitions:
+            if type(value) is int and value >= 0:
+                row = {"name": name, "value": value, "unit": unit, "stage": stage,
+                       "source": job["ref"] + "/" + relative, "source_sha256": digest,
+                       "scope": "this_job", "authoritative": True}
+                if row not in snapshot["counts"]:
+                    snapshot["counts"].append(row)
+    payload = _read(root / "input.json")
+    reference = (payload.get("inputs") or {}).get("target_fasta")
+    if not reference:
+        return
+    path = Path(reference)
+    path = path if path.is_absolute() else root / path
+    try:
+        relative = path.resolve().relative_to(root).as_posix()
+    except ValueError:
+        return  # Never read an arbitrary source path outside the authorized job.
+    if not path.is_file() or path.stat().st_size > 1024 * 1024:
+        return
+    from Bio import SeqIO
+
+    records = list(SeqIO.parse(path, "fasta"))
+    if not records or any(not str(record.seq) for record in records):
+        return
+    params = payload.get("params") or {}
+    output_target = snapshot.get("target") or {}
+    previous = output_target.get("preparation") or {}
+    if previous.get("scope") == "original input; output crops are model-specific":
+        output_target = previous.get("saved_output_target_provenance") or {}
+    snapshot["target"] = {
+        "label": params.get("target_name") or ", ".join(record.id for record in records),
+        "components": [{"type": "protein", "role": "target", "sequence_id": record.id,
+                        "sequence": str(record.seq)} for record in records],
+        "preparation": {"scope": "original input; output crops are model-specific",
+                        "input_reference": job["ref"] + "/" + relative,
+                        "input_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        "crop_lengths": params.get("target_crop_lengths"),
+                        "saved_output_target_provenance": output_target},
+    }
 
 
 def add_md_study(snapshot, study):

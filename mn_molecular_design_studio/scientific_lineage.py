@@ -612,7 +612,8 @@ def rebuild_campaigns(c, *, affected_job_ref=None):
             target = snapshots[j["ref"]].get("target") or {}
             candidates = target.get("recorded_constructs", []) if target.get("mapping_status") == "multiple_constructs" else ([target] if target else [])
             for item in candidates:
-                if item and item.get("sequences_by_chain"):
+                if item and (item.get("sequences_by_chain") or
+                             any(component.get("sequence") for component in item.get("components") or [])):
                     normalized_target = _target_construct_record(item)
                     target_records[_target_construct_key(normalized_target)] = normalized_target
         targets = {encoded(target) for target in target_records.values()}

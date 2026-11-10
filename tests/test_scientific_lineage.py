@@ -43,6 +43,58 @@ def save(db, snapshot):
     catalog.put_snapshot(db, snapshot, author=snapshot["job"]["node_id"])
 
 
+def test_native_source_counts_and_exact_input_target_survive_compact_index(db, tmp_path):
+    from mn_molecular_design_studio.scientific_lineage_ingest import build_snapshot
+
+    root = tmp_path / "source"
+    state_path = root / "artifacts/raw/bindcraft2/output/.campaign_state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(json.dumps({"trajectories": 3665, "accepted": 35,
+        "rejections": {"candidates_scored": 6614, "candidates_rejected": 6525}}))
+    sequence = "VQIVYKPVDLSKVTSKCGSLGNIHHKPGGGQ"
+    fasta = root / "artifacts/raw/bindcraft2/target.fasta"
+    fasta.write_text(">Tau_2N4R_R3_residues_306-336\n" + sequence + "\n")
+    (root / "metadata.json").write_text(json.dumps(job("native-counts", "bindcraft2")))
+    (root / "result.json").write_text(json.dumps({"metrics": {"trajectory_attempt_count": 0}}))
+    (root / "input.json").write_text(json.dumps({
+        "inputs": {"target_fasta": "artifacts/raw/bindcraft2/target.fasta"},
+        "params": {"target_name": "Tau R3", "target_crop_lengths": [20, 25]}}))
+    s = build_snapshot(root, node_id="a")
+    attempts = [row for row in s["counts"] if row["name"] == "trajectory_attempt_count"]
+    assert [row["value"] for row in attempts] == [0, 3665]
+    assert attempts[1]["authoritative"] and attempts[1]["unit"] == "trajectories"
+    assert attempts[1]["source_sha256"] == hashlib.sha256(state_path.read_bytes()).hexdigest()
+    assert s["target"]["components"][0]["sequence"] == sequence
+    assert "chain" not in s["target"]["components"][0]  # FASTA doesn't establish a coordinate chain.
+    assert s["target"]["preparation"]["crop_lengths"] == [20, 25]
+    assert s["target"]["preparation"]["input_reference"].startswith(s["job"]["ref"])
+    from mn_molecular_design_studio.scientific_lineage_ingest import capture_source_execution_context
+    original = copy.deepcopy(s)
+    capture_source_execution_context(s, root)
+    assert s == original
+    save(db, s)
+    page = catalog.campaigns(db, ADMIN)
+    assert page["total"] == 1
+    with db.connection() as c:
+        target = json.loads(c.execute("SELECT facts FROM scientific_jobs").fetchone()[0])["target"]
+        assert target["components"][0]["sequence"] == sequence
+        assert c.execute("SELECT count(*) FROM scientific_target_constructs").fetchone()[0] == 1
+
+
+def test_source_input_context_never_reads_a_fasta_outside_its_job(tmp_path):
+    from mn_molecular_design_studio.scientific_lineage_ingest import capture_source_execution_context
+
+    outside = tmp_path / "other-target.fasta"
+    outside.write_text(">unrelated\nACDE\n")
+    root = tmp_path / "job"
+    root.mkdir()
+    (root / "target.fasta").symlink_to(outside)
+    (root / "input.json").write_text(json.dumps({"inputs": {"target_fasta": "target.fasta"}}))
+    s = snapshot_from_candidates(job("outside-input", "bindcraft2"), [], node_id="a")
+    capture_source_execution_context(s, root)
+    assert not s.get("target")
+
+
 def test_distributed_parent_controller_receipt_and_same_coordinates_do_not_double_count_models(db, tmp_path):
     imported = db.import_records(ADMIN, [{"name": "binder", "components": [{"type": "protein", "chain": "B", "sequence": "A"}]}])
     molecule = imported["molecule_ids"][0]

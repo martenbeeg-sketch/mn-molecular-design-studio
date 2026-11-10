@@ -1387,25 +1387,40 @@ def _exact_target_group_key(group: dict) -> tuple[str, ...] | None:
 
 
 def _database_analysis_cohorts(collections: list[dict]) -> list[dict]:
-    """Group Database memberships into comparable cohorts, retaining every source group.
+    """Group retained memberships by source run, never by target similarity.
 
-    This is a query view, not a new campaign or molecular identity. Exact target
-    metadata and work type define compatibility; campaign IDs are displayed as
-    provenance but are never inferred from similar names.
+    Reuse Results' explicitly labelled legacy batch presentation when historical
+    parent links are absent. This does not invent a scientific parent identity.
     """
+    from mn_molecular_design_studio.logical_runs import legacy_batch
+
     buckets: dict[tuple, list[dict]] = {}
     for group in collections:
         origin = group.get("origin") if isinstance(group.get("origin"), dict) else {}
-        target_key = _exact_target_group_key(group)
-        if target_key is None:
-            # An explicit campaign relation can group source jobs for review,
-            # but never use similar display names to infer a target. Without a
-            # campaign ID, unresolved-target records stay separate.
-            campaign_id = str(origin.get("campaign_id") or origin.get("parent_campaign_id") or "")
-            target_key = (("unresolved-campaign", campaign_id) if campaign_id else
-                          ("unresolved-group", str(group.get("id") or "")))
-        owner_scope = str(group.get("project_id") or "owner:" + str(group.get("owner_id") or ""))
-        key = (owner_scope, _analysis_activity(group), target_key)
+        context = group.get("scientific_context") or {}
+        source = origin.get("source_run") or origin
+        campaign_id = str(context.get("campaign_ref") or origin.get("studio_run_id") or
+                          origin.get("campaign_group_id") or origin.get("campaign_id") or
+                          origin.get("parent_campaign_id") or "")
+        legacy = legacy_batch({"campaign_name": origin.get("campaign_name") or group.get("name")})
+        activity = _analysis_activity(group)
+        if campaign_id:
+            run_key = ("campaign", campaign_id)
+            if context.get("campaign_kind"):
+                activity = _analysis_activity({"origin": {"scientific_activity": context["campaign_kind"]}})
+        elif legacy:
+            run_key = ("legacy-batches", str(origin.get("tool") or ""), legacy["label"])
+        elif origin.get("registration_batch") and _exact_target_group_key(group):
+            # A saved registration cohort is explicit grouping evidence, but
+            # does not establish that its source jobs share a parent campaign.
+            run_key = ("registration", str(origin["registration_batch"]), _exact_target_group_key(group))
+        elif source.get("run_id"):
+            run_key = ("job", str(origin.get("_replica_node") or source.get("source_node") or source.get("node_id") or source.get("source_workstation") or
+                                   source.get("workstation") or ""), str(source.get("task_group") or ""), str(source["run_id"]))
+        else:
+            run_key = ("saved-group", str(group.get("id") or ""))
+        owner_scope = (str(group.get("project_id") or ""), str(group.get("owner_id") or ""))
+        key = (owner_scope, activity, run_key)
         buckets.setdefault(key, []).append(group)
 
     cohorts = []
@@ -1413,6 +1428,9 @@ def _database_analysis_cohorts(collections: list[dict]) -> list[dict]:
         group_ids = sorted({str(row.get("id") or "") for row in members if row.get("id")})
         target_label_counts = Counter(str((row.get("summary") or {}).get("target") or "Not recorded")
                                       for row in members)
+        unknown_labels = {label for label in target_label_counts if label.casefold() in {
+            "not recorded", "unknown", "input target not indexed"}}
+        target_label_counts = {label: count for label, count in target_label_counts.items() if label not in unknown_labels}
         generators = sorted({str((row.get("summary") or {}).get("generator") or "") for row in members
                              if (row.get("summary") or {}).get("generator") not in {"", "Not recorded"}})
         source_runs = set()
@@ -1430,8 +1448,12 @@ def _database_analysis_cohorts(collections: list[dict]) -> list[dict]:
             if workstation:
                 workstations.add(workstation)
             if run_id:
-                source_runs.add((task_group, run_id, workstation))
-            campaign_id = str(origin.get("campaign_id") or origin.get("parent_campaign_id") or "")
+                node = str(origin.get("_replica_node") or source_run.get("source_node") or
+                           source_run.get("node_id") or origin.get("source_node") or workstation.casefold())
+                source_runs.add((node, task_group, run_id))
+            campaign_id = str((row.get("scientific_context") or {}).get("campaign_ref") or
+                              origin.get("studio_run_id") or origin.get("campaign_group_id") or
+                              origin.get("campaign_id") or origin.get("parent_campaign_id") or "")
             if campaign_id:
                 campaign_ids.add(campaign_id)
             if origin.get("registration_batch"):
@@ -1440,35 +1462,46 @@ def _database_analysis_cohorts(collections: list[dict]) -> list[dict]:
                 campaign_names.add(str(origin.get("campaign_name") or origin.get("source_campaign_name")))
         workstations = sorted(workstations)
         activity = key[1]
-        target = target_label_counts.most_common(1)[0][0] if target_label_counts else "Not recorded"
+        target = (next(iter(target_label_counts)) if len(target_label_counts) == 1 else
+                  f"Target correspondence not indexed ({len(target_label_counts)} references)") if target_label_counts else "Not recorded"
+        if target_label_counts and unknown_labels:
+            target += " · other inputs not indexed"
         if target.casefold() in {"", "not recorded", "unknown", "none", "null"}:
-            target_key = key[2]
-            if len(target_key) == 3 and any(target_key):
+            target_key = _exact_target_group_key(members[0])
+            if target_key:
                 identity, construct_id, sequence_digest = target_key
                 identity_label = (f"construct {construct_id}" if construct_id else
                                   f"record {identity}" if identity else
                                   f"sequence {sequence_digest[:12]}…" if sequence_digest else "")
                 target = f"Target {identity_label}" if identity_label else "Target identity recorded"
-            elif target_key and target_key[0] == "unresolved-campaign":
-                target = "Target unresolved"
             else:
-                target = "Target identity missing"
+                target = "Input target not indexed"
         all_campaign_linked = all(str((row.get("origin") or {}).get("campaign_id") or
                                      (row.get("origin") or {}).get("parent_campaign_id") or "")
                                   in campaign_ids for row in members)
         all_batch_linked = all(str((row.get("origin") or {}).get("registration_batch") or "")
                                in registration_batches for row in members)
-        if len(campaign_ids) == 1 and all_campaign_linked:
+        source_context = members[0].get("scientific_context") or {}
+        if source_context.get("campaign_ref"):
+            name = str(source_context.get("campaign_name") or members[0].get("name") or "Recorded run")
+            cohort_type = "Recorded run / campaign"
+        elif key[2][0] == "legacy-batches":
+            name = key[2][2]
+            cohort_type = "Historical batch group · parent not recorded"
+        elif len(campaign_ids) == 1 and (all_campaign_linked or key[2][0] == "campaign"):
             campaign_id = next(iter(campaign_ids))
-            name = next(iter(campaign_names)) if len(campaign_names) == 1 else f"Campaign {campaign_id[-8:]}"
+            origin = members[0].get("origin") or {}
+            name = (next(iter(campaign_names)) if len(campaign_names) == 1 else
+                    origin.get("studio_run_name") or origin.get("campaign_group_name") or f"Campaign {campaign_id[-8:]}")
             cohort_type = ("Recorded campaign" if _exact_target_group_key(members[0])
                            else "Recorded campaign · target unresolved")
         elif len(registration_batches) == 1 and all_batch_linked:
             name = f"Retained cohort · {target} · {', '.join(generators) or activity}"
             cohort_type = "Saved Database cohort"
-        elif key[2][0] == "unresolved-group":
-            name = str((members[0].get("summary") or {}).get("collection") or members[0].get("id") or "Unlinked source group")
-            cohort_type = "Source group · target identity missing"
+        elif key[2][0] in {"saved-group", "job"}:
+            name = str((members[0].get("summary") or {}).get("collection") or members[0].get("name") or
+                       members[0].get("id") or "Unlinked source group")
+            cohort_type = "Source job" if key[2][0] == "job" else "Saved Database collection"
         else:
             name = f"{target} · {activity}"
             cohort_type = "Cross-run comparison cohort"
@@ -1483,6 +1516,7 @@ def _database_analysis_cohorts(collections: list[dict]) -> list[dict]:
             "activity": activity,
             "generators": ", ".join(generators) or "Not recorded",
             "source_runs": len(source_runs),
+            "source_job_keys": sorted(source_runs),
             "source_groups": len(group_ids),
             "campaigns": len(campaign_ids),
             "campaign_ids": sorted(campaign_ids),
@@ -1521,6 +1555,60 @@ def _resolve_collection_target_labels(database, user: dict, collections: list[di
                     # Legacy target records can share generic names such as
                     # idr_sequence_carrier; retain a visible identity suffix.
                     group["summary"]["target"] = f"{label} · {str(record['id'])[-8:]}"
+
+
+def _input_target_label(target: dict) -> str:
+    label = str(target.get("label") or target.get("target_id") or target.get("target_molecule_id") or "")
+    sequences = list((target.get("sequences_by_chain") or {}).values())
+    sequences += [row["sequence"] for row in target.get("components") or [] if row.get("sequence")]
+    if sequences:
+        lengths = "+".join(str(len(sequence)) for sequence in sequences)
+        label = (label + " · " if label else "Input sequence · ") + lengths + " aa"
+    if not label and (target.get("target_structure_digest") or target.get("structure_digest")):
+        label = "Target structure SHA-256 " + str(target.get("target_structure_digest") or target["structure_digest"])[:12]
+    return label or "Input target not indexed"
+
+
+def _cohort_source_counts(cohort: dict) -> dict[str, str]:
+    """Keep attempt, sequence-variant and acceptance populations separate."""
+    contexts = {}
+    for group in cohort["groups"]:
+        context = group.get("scientific_context") or {}
+        origin = group.get("origin") or {}
+        key = context.get("job_ref") or json.dumps(context.get("source") or {
+            "node": origin.get("_replica_node") or origin.get("source_node") or origin.get("workstation"),
+            "task_group": origin.get("task_group"),
+            "run": origin.get("run_id"), "group": group["id"] if not origin.get("run_id") else "",
+        }, sort_keys=True)
+        contexts[key] = context
+
+    def count(names):
+        selected = []
+        for context in contexts.values():
+            matches = [row for row in context.get("counts") or [] if row.get("name") in names]
+            authoritative = [row for row in matches if row.get("authoritative")]
+            matches = authoritative or matches
+            if any(type(row.get("value")) not in (int, float) or row["value"] < 0 for row in matches):
+                return "Invalid source count"
+            values = {(row.get("value"), row.get("unit")) for row in matches}
+            if len(values) != 1:
+                return "Not indexed" if not values else "Conflicting source counts"
+            selected.append(matches[0])
+        if not selected:
+            return "Not indexed"
+        if len(selected) > 1 and any(row.get("scope") != "this_job" for row in selected):
+            return "See job breakdown"  # Do not sum parent aggregates and workers.
+        units = {row.get("unit") for row in selected}
+        if len(units) != 1:
+            return "Different source units"
+        return f"{sum(row['value'] for row in selected):,} {selected[0].get('unit') or ''}".strip()
+
+    finals = [context.get("acceptance", {}).get("final") for context in contexts.values()]
+    final = (f"{sum(row['passed'] for row in finals):,} candidate/models" if len(finals) == 1 and all(finals)
+             else "Not recorded" if not any(finals) else "See job breakdown")
+    return {"Attempts": count({"trajectory_attempt_count", "attempted_design_count", "attempt_count"}),
+            "Native accepted": count({"accepted_design_count", "native_accepted_count"}),
+            "Final passed": final}
 
 
 def _is_design_collection(group: dict) -> bool:
@@ -1652,9 +1740,18 @@ def _database_collection_samples(user: dict) -> list[dict]:
             continue
         collections.append({**group, "summary": _design_collection_label(group), "stats": stats})
     _resolve_collection_target_labels(database, user, collections)
+    if callable(getattr(database, "connection", None)) and callable(getattr(database, "_authorize_group_ids_for_query", None)):
+        from mn_molecular_design_studio.complex_analysis_catalog import collection_source_contexts
+        contexts = collection_source_contexts(database, user, collections)
+        for group in collections:
+            context = contexts.get(group["id"], {})
+            group["scientific_context"] = context
+            labels = sorted({_input_target_label(target) for target in context.get("targets") or []})
+            if labels:
+                group["summary"]["target"] = "; ".join(labels)
     collections.sort(key=lambda row: (str(row.get("updated_at") or ""), str(row.get("name") or "").casefold()), reverse=True)
-    st.markdown("### Choose saved work")
-    st.caption("Select a row below, then open its saved models for analysis. Counts describe structures retained in the Molecular Database.")
+    st.markdown("### Choose a run or campaign")
+    st.caption("Attempts and native acceptance describe source execution; Database-retained counts describe the models available here. A missing count is unknown, not zero.")
     cohorts = _database_analysis_cohorts(collections)
     cohort_group_map = {str(row["id"]): list(row["group_ids"]) for row in cohorts}
     try:
@@ -1702,7 +1799,7 @@ def _database_collection_samples(user: dict) -> list[dict]:
                        {key: value for key, value in row.items() if key not in {"groups", "stats"}},
                        ensure_ascii=False, default=str).casefold())]
         cohort_group_map = {str(row["id"]): list(row["group_ids"]) for row in cohorts}
-        st.caption(f"{len(cohorts):,} saved work group(s) match. Compatible source runs share a row; unknown target constructs remain separate.")
+        st.caption(f"{len(cohorts):,} run / campaign group(s) match. Historical batch groups reuse Results grouping and do not assert an unrecorded parent run.")
         if not cohorts:
             st.info("No saved work matches these filters. Choose another project or type, or clear the search.")
             return []
@@ -1730,15 +1827,18 @@ def _database_collection_samples(user: dict) -> list[dict]:
                           "Retained structures/models": stats["structure_count"],
                           "Recorded validation evidence": validation_text, "Saved Evaluations": coverage,
                           "All-run totals": "Not part of retained Database cohort",
+                          "Source jobs": cohort["source_runs"],
                           "Source runs": source_summary, "Campaign links": campaigns,
-                          "Workstations": cohort["workstations"], "Updated": cohort["updated_at"]})
+                          "Workstations": cohort["workstations"], "Updated": cohort["updated_at"],
+                          **_cohort_source_counts(cohort)})
         event = st.dataframe(table, hide_index=True, use_container_width=True, height=min(420, 40 + 35 * max(1, len(table))),
-                             column_order=["Work group", *(["Scientific work"] if activity == "All types" else []),
-                                           "DB-retained designs", "Retained structures/models", "Saved Evaluations"],
+                             column_order=["Work group", "Source jobs", "Target/construct", "Attempts", "Native accepted",
+                                           "Final passed", "DB-retained designs", "Retained structures/models"],
                              column_config={
-                                 "Work group": st.column_config.TextColumn("Target / saved work", width="medium" if activity == "All types" else "large"),
+                                 "Work group": st.column_config.TextColumn("Run / campaign", width="large"),
+                                 "Target/construct": st.column_config.TextColumn("Input target / construct", width="medium"),
                                  "Scientific work": st.column_config.TextColumn("Type", width="small"),
-                                 "DB-retained designs": st.column_config.NumberColumn("Molecules", width="small"),
+                                 "DB-retained designs": st.column_config.NumberColumn("DB retained", width="small"),
                                  "Retained structures/models": st.column_config.NumberColumn("Models / poses", width="small"),
                                  "Saved Evaluations": st.column_config.TextColumn("Saved evidence", width="medium"),
                              },
@@ -1772,13 +1872,35 @@ def _database_collection_samples(user: dict) -> list[dict]:
         selected_group_ids = []
 
     if selected_cohorts:
-        selected_runs = {run for cohort_id in selected_cohorts
-                         for run in next((row["source_run_labels"] for row in cohorts if row["id"] == cohort_id), []) if run}
+        selected_runs = {tuple(run) for cohort_id in selected_cohorts
+                         for run in next((row["source_job_keys"] for row in cohorts if row["id"] == cohort_id), [])}
         st.caption(f"Selected {len(selected_cohorts):,} work group(s) across {len(selected_runs):,} source run(s).")
+        if len(selected_cohorts) == 1:
+            cohort = next(row for row in cohorts if row["id"] == selected_cohorts[0])
+            counts = _cohort_source_counts(cohort)
+            st.markdown(f"**{cohort['name']}** · {cohort['cohort_type']}")
+            st.write(" · ".join(f"{label}: {value}" for label, value in counts.items()) +
+                     f" · Database retained: {cohort['stats']['molecule_count']:,} designs, "
+                     f"{cohort['stats']['structure_count']:,} models / poses")
         with st.expander("Selected sources and recorded acceptance", expanded=False):
             st.dataframe([row for row, cohort in zip(table, cohorts) if cohort["id"] in selected_cohorts],
                          hide_index=True, use_container_width=True)
             st.caption("Source jobs and recorded decisions are preserved. Retained counts do not include discarded Results; full campaign totals require a published campaign summary.")
+            for cohort in cohorts:
+                if cohort["id"] not in selected_cohorts:
+                    continue
+                st.caption(cohort["cohort_type"])
+                st.dataframe([{"Job": group["summary"]["run"], "Input target": group["summary"]["target"],
+                               "Retained": group["stats"]["molecule_count"]}
+                              for group in cohort["groups"]], hide_index=True, use_container_width=True)
+                contexts = [group.get("scientific_context") or {} for group in cohort["groups"]]
+                evidence = [dict(row, source_job=context.get("job_ref") or "Not indexed")
+                            for context in contexts for row in context.get("counts") or []]
+                if evidence:
+                    st.dataframe(evidence, hide_index=True, use_container_width=True)
+                targets = [target for context in contexts for target in context.get("targets") or []]
+                if targets:
+                    st.json(targets, expanded=False)
     else:
         if st.button("Browse individual Database designs (advanced)", key="complex-analysis-open-individual-browser"):
             st.session_state["complex-analysis-individual-mode"] = True

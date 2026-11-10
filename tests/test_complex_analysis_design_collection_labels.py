@@ -82,7 +82,7 @@ def test_design_collection_picker_hides_unlinked_utility_groups_but_keeps_run_co
     })
 
 
-def test_analysis_cohort_groups_cross_engine_source_runs_by_exact_target_not_names():
+def test_analysis_cohort_keeps_source_runs_distinct_even_for_the_same_exact_target():
     same_target = "a" * 64
     groups = [
         {"id": "rfd4-run", "project_id": "project-1", "owner_id": "owner",
@@ -109,13 +109,11 @@ def test_analysis_cohort_groups_cross_engine_source_runs_by_exact_target_not_nam
 
     cohorts = _database_analysis_cohorts(groups)
 
-    assert len(cohorts) == 3
-    compatible = next(row for row in cohorts if set(row["group_ids"]) == {"rfd4-run", "bindcraft-run"})
-    assert compatible["cohort_type"] == "Cross-run comparison cohort"
-    assert compatible["source_runs"] == 2
-    assert compatible["workstations"] == "PC004033, pc002975"
-    assert compatible["generators"] == "BindCraft2, RFD4"
-    assert compatible["campaign_ids"] == []
+    assert len(cohorts) == 4
+    assert all(row["source_runs"] == 1 for row in cohorts)
+    assert all(row["cohort_type"] == "Source job" for row in cohorts)
+    assert {tuple(row["group_ids"]) for row in cohorts} == {
+        ("rfd4-run",), ("bindcraft-run",), ("different-construct",), ("unknown-target",)}
 
 
 def test_analysis_cohort_keeps_unlinked_unknown_targets_distinct_and_names_them():
@@ -129,7 +127,7 @@ def test_analysis_cohort_keeps_unlinked_unknown_targets_distinct_and_names_them(
     ])
 
     assert len(cohorts) == 2
-    assert {row["cohort_type"] for row in cohorts} == {"Source group · target identity missing"}
+    assert {row["cohort_type"] for row in cohorts} == {"Source job"}
     assert {row["name"] for row in cohorts} == {"Design A", "Design B"}
 
 
@@ -138,10 +136,12 @@ def test_target_wide_cohort_is_not_named_as_one_partially_linked_campaign():
         "tool": "rfd4_proteina", "target_molecule_id": "target", "run_id": key,
         **({"campaign_id": "campaign-a", "campaign_name": "200 passing designs"} if key == "a" else {}),
     }, "summary": {"target": "Tau R3", "generator": "RFD4"}} for key in ("a", "b")]
-    cohort, = _database_analysis_cohorts(groups)
-    assert cohort["cohort_type"] == "Cross-run comparison cohort"
-    assert cohort["name"] != "200 passing designs"
-    assert cohort["campaign_ids"] == ["campaign-a"]
+    cohorts = _database_analysis_cohorts(groups)
+    assert len(cohorts) == 2
+    campaign = next(row for row in cohorts if row["campaign_ids"])
+    assert campaign["group_ids"] == ["a"]
+    assert campaign["name"] == "200 passing designs"
+    assert next(row for row in cohorts if not row["campaign_ids"])["group_ids"] == ["b"]
 
 
 def test_target_display_names_use_authorized_metadata_without_changing_identity():
@@ -193,10 +193,10 @@ def test_cohorts_with_missing_target_names_show_their_exact_target_identity():
 
     assert len(cohorts) == 2
     assert {row["target"] for row in cohorts} == {"Target record mol-a", "Target record mol-b"}
-    assert len({row["name"] for row in cohorts}) == 2
+    assert len({row["id"] for row in cohorts}) == 2
 
 
-def test_analysis_cohort_table_has_one_row_for_a_multi_run_target_cohort(monkeypatch):
+def test_analysis_cohort_table_keeps_two_runs_selectable_on_the_same_target(monkeypatch):
     from streamlit.testing.v1 import AppTest
 
     class Database:
@@ -219,7 +219,7 @@ def test_analysis_cohort_table_has_one_row_for_a_multi_run_target_cohort(monkeyp
                     for group_id in group_ids}
 
         def cohort_statistics(self, user, cohorts):
-            return {key: {"molecule_count": 2, "structure_count": 2, "evaluated_design_count": 0}
+            return {key: {"molecule_count": 1, "structure_count": 1, "evaluated_design_count": 0}
                     for key in cohorts}
 
     monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", Database)
@@ -232,10 +232,12 @@ _database_collection_samples({user!r})
     assert not app.exception
     assert len(app.dataframe) == 1
     rows = app.dataframe[0].value
-    assert len(rows) == 1
-    assert rows.iloc[0]["DB-retained designs"] == 2
+    assert len(rows) == 2
+    assert list(rows["DB-retained designs"]) == [1, 1]
+    assert set(rows["Attempts"]) == {"Not indexed"}
+    assert set(rows["Final passed"]) == {"Not recorded"}
     assert rows.iloc[0]["All-run totals"] == "Not part of retained Database cohort"
-    assert rows.iloc[0]["Source runs"] == "2 source run(s) · 2 Database group(s)"
+    assert rows.iloc[0]["Source runs"] == "1 source run(s) · 1 Database group(s)"
     assert not any(widget.label == "Design collection(s)" for widget in app.multiselect)
 
 
@@ -299,3 +301,69 @@ def test_unlinked_analysis_outputs_are_not_listed_as_design_collections():
         "collection_kind": "generated",
         "origin": {"type": "scientific_results", "tool": "plip", "run_id": "analysis-2"},
     })
+
+
+def test_historical_batch_presentation_groups_workstations_without_inventing_parent():
+    groups = [{"id": f"batch-{index}", "owner_id": "owner", "project_id": "tau",
+               "name": f"R3 IDR · RFD4 10-design batch {index:02} · {node} GPU0 · 2026-10-30",
+               "origin": {"tool": "rfd4_proteina", "run_id": f"batch-{index}",
+                          "task_group": "design", "workstation": node},
+               "summary": {"generator": "RFD4", "target": "Not recorded"}}
+              for index, node in enumerate(("pc002975", "PC004032", "PC004033"), 1)]
+    cohort, = _database_analysis_cohorts(groups)
+    assert cohort["name"] == "R3 IDR · RFD4 10-design · 2026-10-30"
+    assert cohort["cohort_type"] == "Historical batch group · parent not recorded"
+    assert cohort["campaign_ids"] == []
+    assert cohort["source_runs"] == 3
+    assert len(cohort["group_ids"]) == 3
+    assert all("parent_run_id" not in group["origin"] for group in groups)
+    other_scope = {**groups[0], "id": "different-project", "project_id": "pdl1"}
+    assert len(_database_analysis_cohorts([*groups, other_scope])) == 2
+
+
+def test_indexed_parent_campaign_groups_children_with_different_labels():
+    groups = [{"id": key, "owner_id": "owner", "project_id": "p", "name": key,
+               "origin": {"tool": "rfd4_proteina", "run_id": key, "workstation": key},
+               "scientific_context": {"campaign_ref": "source-qualified-parent",
+                                      "campaign_name": "Distributed R3", "campaign_kind": "design"},
+               "summary": {"target": "Tau R3", "generator": "RFD4"}}
+              for key in ("controller", "worker-a", "worker-b")]
+    cohort, = _database_analysis_cohorts(groups)
+    assert cohort["name"] == "Distributed R3"
+    assert cohort["cohort_type"] == "Recorded run / campaign"
+    assert cohort["source_runs"] == 3
+    assert cohort["campaign_ids"] == ["source-qualified-parent"]
+
+
+def test_explicit_registration_cohort_is_not_presented_as_a_parent_run():
+    groups = [{"id": run, "project_id": "tau", "owner_id": "owner", "origin": {
+        "run_id": run, "task_group": "design", "tool": "rfd4_proteina",
+        "registration_batch": "saved-accepted-review", "target_molecule_id": "target-r3"},
+        "summary": {"target": "Tau R3", "generator": "RFD4"}}
+        for run in ("source-a", "source-b")]
+    cohort, = _database_analysis_cohorts(groups)
+    assert cohort["cohort_type"] == "Saved Database cohort"
+    assert cohort["source_runs"] == 2
+    assert cohort["campaign_ids"] == []
+
+
+def test_source_counts_do_not_treat_retained_models_as_attempts_or_sum_parent_totals():
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _cohort_source_counts
+
+    counts = [
+        {"name": "trajectory_attempt_count", "value": 0, "unit": "native trajectory_attempt_count"},
+        {"name": "trajectory_attempt_count", "value": 3665, "unit": "trajectories", "authoritative": True, "scope": "this_job"},
+        {"name": "accepted_design_count", "value": 35, "unit": "ranked designs", "authoritative": True, "scope": "this_job"},
+        {"name": "candidates_scored", "value": 6614, "unit": "redesigned candidates", "scope": "this_job"},
+    ]
+    group = {"id": "retained35", "scientific_context": {"job_ref": "node:job", "counts": counts}}
+    cohort = {"groups": [group, group]}  # Duplicate memberships are one source job.
+    assert _cohort_source_counts(cohort) == {
+        "Attempts": "3,665 trajectories", "Native accepted": "35 ranked designs", "Final passed": "Not recorded"}
+    zero = {"id": "zero", "scientific_context": {"job_ref": "node:zero", "counts": [
+        {"name": "trajectory_attempt_count", "value": 0, "unit": "trajectories", "scope": "this_job"}]}}
+    assert _cohort_source_counts({"groups": [zero]})["Attempts"] == "0 trajectories"
+    assert _cohort_source_counts({"groups": [group, {"id": "missing"}]})["Attempts"] == "Not indexed"
+    aggregate = {"id": "parent", "scientific_context": {"job_ref": "node:parent", "counts": [
+        {"name": "trajectory_attempt_count", "value": 3665, "unit": "trajectories", "scope": "campaign"}]}}
+    assert _cohort_source_counts({"groups": [group, aggregate]})["Attempts"] == "See job breakdown"

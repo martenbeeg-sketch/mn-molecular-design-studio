@@ -3,6 +3,42 @@ from __future__ import annotations
 from mn_molecular_design_studio.complex_analysis_catalog import authorized_structure_catalog
 
 
+def test_source_context_uses_native_job_evidence_and_source_qualified_index(tmp_path, monkeypatch):
+    import pytest
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+    from mn_molecular_design_studio.complex_analysis_catalog import collection_source_contexts
+    from mn_molecular_design_studio.scientific_lineage_ingest import snapshot_from_candidates
+    from mn_molecular_design_studio.scientific_lineage import put_snapshot
+
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_APP_HOME", str(tmp_path / "app"))
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_HOME", str(tmp_path / "app"))
+    monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
+    database = MolecularDatabase(tmp_path / "db")
+    user = {"id": "owner", "role": "admin"}
+    origin = {"run_id": "same-run-id", "task_group": "design", "tool": "bindcraft2",
+              "source_node": "remote-a", "workstation": "PC004032"}
+    imported = database.import_records(user, [{"name": "saved binder", "components": [
+        {"type": "protein", "sequence": "ACDE", "chain": "B"}]}], origin=origin)
+    group_id, molecule_id = imported["group_id"], imported["molecule_ids"][0]
+    database.add_observation(group_id, molecule_id, "bindcraft2", "same-run-id", {},
+        context={"target_id": "original-target", "settings": {"target_name": "Tau R3"}})
+    database.add_observation(group_id, molecule_id, "biotite_interface", "analysis-run", {},
+        context={"target_id": "unrelated-target", "settings": {"target_name": "Wrong target"}})
+    groups = [group for group in database.groups(user, collection="all") if group["id"] == group_id]
+    context = collection_source_contexts(database, user, groups)[group_id]
+    assert [target["target_id"] for target in context["targets"]] == ["original-target"]
+    for node, value in (("remote-a", 3665), ("remote-b", 999)):
+        s = snapshot_from_candidates({"run_id": "same-run-id", "task_group": "design",
+            "owner_id": "owner", "project_id": "", "tool": "bindcraft2", "workstation": "PC004032"}, [], node_id=node)
+        s["counts"] = [{"name": "trajectory_attempt_count", "value": value, "unit": "trajectories"}]
+        put_snapshot(database, s, author=node)
+    context = collection_source_contexts(database, user, groups)[group_id]
+    assert context["job"]["node_id"] == "remote-a"
+    assert context["counts"][0]["value"] == 3665
+    with pytest.raises(PermissionError):
+        collection_source_contexts(database, {"id": "stranger", "role": "user"}, groups)
+
+
 class FakeDatabase:
     def __init__(self):
         self.rows = [{"id": f"molecule-{index}", "name": f"Record {index}"} for index in range(5)]

@@ -4,6 +4,99 @@ from __future__ import annotations
 from typing import Any, Callable, MutableMapping
 
 
+def collection_source_contexts(database, user: dict, groups: list[dict]) -> dict[str, dict]:
+    """Read indexed source-run facts and saved input-target evidence, never Results.
+
+    Native Evaluations may describe the original input target even when older
+    group origins omitted it. Only the group's exact producing job is used;
+    downstream analyses stored in that group cannot redefine its source target.
+    """
+    import json
+    from mn_molecular_design_studio import scientific_lineage as lineage
+
+    ids = [str(group["id"]) for group in groups if group.get("id")]
+    if not ids:
+        return {}
+    database._authorize_group_ids_for_query(user, ids)
+    result = {key: {"targets": [], "counts": []} for key in ids}
+    sources = {}
+    for group in groups:
+        origin = group.get("origin") or {}
+        source = origin.get("source_run") or origin
+        sources[str(group["id"])] = {
+            "run_id": str(source.get("run_id") or ""),
+            "task_group": str(source.get("task_group") or ""),
+            "node_id": str(origin.get("_replica_node") or source.get("source_node") or source.get("node_id") or ""),
+            "workstation": str(source.get("source_workstation") or source.get("workstation") or ""),
+            "project_id": str(group.get("project_id") or ""), "owner_id": str(group.get("owner_id") or ""),
+        }
+    with database.connection() as connection:
+        rows = connection.execute(
+            "SELECT DISTINCT o.group_id, json_extract(o.context,'$.target_id') AS target_id, "
+            "json_extract(o.context,'$.target_structure_digest') AS target_structure_digest, "
+            "json_extract(o.context,'$.settings.target_name') AS target_name, "
+            "json_extract(o.context,'$.settings.target_crop_lengths') AS crop_lengths, "
+            "json_extract(o.context,'$.candidate.raw_metadata.target_sequences_by_chain') AS sequences, "
+            "COALESCE(json_extract(o.context,'$._replica_node'),json_extract(o.context,'$.source_node')) AS node_id "
+            "FROM molecule_observations o JOIN molecule_groups g ON g.id=o.group_id "
+            "WHERE o.group_id IN (SELECT value FROM json_each(?)) "
+            "AND o.run_id=COALESCE(json_extract(g.origin,'$.source_run.run_id'),json_extract(g.origin,'$.run_id')) "
+            "AND o.namespace=COALESCE(json_extract(g.origin,'$.source_run.tool'),json_extract(g.origin,'$.tool'))",
+            (json.dumps(ids),),
+        ).fetchall()
+        for row in rows:
+            key = str(row["group_id"])
+            source = sources[key]
+            if source["node_id"] and row["node_id"] and source["node_id"] != row["node_id"]:
+                continue
+            if row["node_id"]:
+                source["node_id"] = row["node_id"]
+            target = {"label": row["target_name"] or "", "target_id": row["target_id"] or "",
+                      "target_structure_digest": row["target_structure_digest"] or "",
+                      "evidence": "saved native Evaluation input context"}
+            if row["crop_lengths"]:
+                target["crop_lengths"] = json.loads(row["crop_lengths"])
+            if row["sequences"]:
+                target["sequences_by_chain"] = json.loads(row["sequences"])
+            if any(target.get(key) for key in ("label", "target_id", "target_structure_digest", "sequences_by_chain")):
+                if target not in result[key]["targets"]:
+                    result[key]["targets"].append(target)
+        run_ids = sorted({source["run_id"] for source in sources.values() if source["run_id"]})
+        clause, parameters = lineage._access(user, alias="j")
+        jobs = connection.execute(
+            "SELECT j.ref,j.job_metadata,j.facts,m.campaign_ref,c.name AS campaign_name,c.kind AS campaign_kind "
+            "FROM scientific_jobs j LEFT JOIN scientific_campaign_jobs m ON m.job_ref=j.ref "
+            "LEFT JOIN scientific_campaigns c ON c.ref=m.campaign_ref "
+            "WHERE j.run_id IN (SELECT value FROM json_each(?)) AND " + clause,
+            [json.dumps(run_ids), *parameters],
+        ).fetchall() if run_ids else []
+    for key, source in sources.items():
+        result[key]["source"] = source
+        matching = []
+        for row in jobs:
+            job = json.loads(row["job_metadata"])
+            if any(str(job.get(field) or "") != source[field] for field in ("run_id", "task_group", "project_id", "owner_id")):
+                continue
+            if source["node_id"]:
+                if job.get("node_id") != source["node_id"]:
+                    continue
+            elif not source["workstation"] or str(job.get("workstation") or "").casefold() != source["workstation"].casefold():
+                continue
+            matching.append((row, job))
+        if len(matching) != 1:
+            continue  # Missing or ambiguous source facts remain unknown.
+        row, job = matching[0]
+        facts = json.loads(row["facts"])
+        target = facts.get("target") or {}
+        if target:
+            result[key]["targets"] = target.get("recorded_constructs") or [target]
+        result[key].update(job=job, job_ref=row["ref"], counts=facts.get("counts") or [],
+                           acceptance=(facts.get("source_summary") or {}).get("acceptance_counts") or {},
+                           campaign_ref=row["campaign_ref"] or "", campaign_name=row["campaign_name"] or "",
+                           campaign_kind=row["campaign_kind"] or "")
+    return result
+
+
 def authorized_structure_catalog(
     database,
     user: dict,
