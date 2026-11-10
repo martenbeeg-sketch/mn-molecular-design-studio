@@ -20,6 +20,16 @@ def method_label(namespace: str) -> str:
     return METHOD_LABELS.get(namespace, namespace)
 
 
+def evidence_summary_cards(stats: dict, methods: dict, collection_count: int) -> list[tuple[str, int]]:
+    """Describe the selected scientific work, rather than a mixed record total."""
+    if methods and all(method.startswith("md.") for method in methods):
+        return [(method_label(method).removeprefix("MD · ") + " records", count)
+                for method, count in sorted(methods.items())]
+    return [("Molecules / designs", stats["molecule_count"]),
+            ("Saved structures", stats["structure_count"]),
+            ("Evidence types", len(methods)), ("Selected collections", collection_count)]
+
+
 def evidence_row(observation: dict) -> dict:
     """Keep scopes and zero values intact; never collapse method-specific scores."""
     descriptor = observation["evaluation"]
@@ -42,10 +52,12 @@ def evidence_row(observation: dict) -> dict:
     }
 
 
-def open_saved_work(state, *, user_id: str, group_ids: list[str], label: str) -> None:
+def open_saved_work(state, *, user_id: str, group_ids: list[str], label: str,
+                    project_label: str = "", work_type: str = "") -> None:
     """Navigation state only; source membership/acceptance is never rewritten."""
     state["complex-analysis-evidence-selection"] = {
         "user_id": user_id, "group_ids": list(dict.fromkeys(group_ids)), "label": label,
+        "project_label": project_label, "work_type": work_type,
     }
     state.pop("complex-analysis-workflow-samples", None)
     state.pop("complex-analysis-workflow-selection", None)
@@ -103,14 +115,18 @@ def render_saved_evidence(database, user: dict, selection: dict) -> None:
         methods.update(summary["methods"])
     st.markdown("### Saved evidence")
     st.write(selection.get("label") or "Selected scientific work")
-    cards = st.columns(4)
-    for card, title, value in zip(cards, ("Molecules / designs", "Models / poses", "Saved observations", "Recorded methods"),
-                                  (stats["molecule_count"], stats["structure_count"], sum(methods.values()), len(methods))):
-        card.metric(title, f"{value:,}")
-    st.caption("Saved observations can include native scores, assessments, replicas and continuation records; they are not necessarily independent experiments. Opening this view runs no calculations.")
+    scope = " · ".join(value for value in (selection.get("project_label"), selection.get("work_type")) if value)
+    st.caption((scope + " · " if scope else "") + f"Viewing {len(groups)} selected collection(s), not the entire Database.")
+    summaries_to_show = evidence_summary_cards(stats, methods, len(groups))
+    for start in range(0, len(summaries_to_show), 4):
+        row = summaries_to_show[start:start + 4]
+        for card, (title, value) in zip(st.columns(len(row)), row):
+            card.metric(title, f"{value:,}")
+    st.caption("Counts describe saved evidence, including historical or superseded entries; they are not counts of independent experiments. Opening this view runs no calculations.")
     view = st.radio("Evidence view", ["Measurements", "Models & sequences", "Sources & provenance"],
                     horizontal=True, key="complex-evidence-view")
     if view == "Sources & provenance":
+        st.caption(f"Technical inventory: {sum(methods.values()):,} underlying saved records across {len(methods)} method namespaces.")
         for group in groups:
             with st.expander(group["name"], expanded=len(groups) == 1):
                 st.json({"group_id": group["id"], "project_id": group["project_id"],

@@ -97,7 +97,7 @@ from mn_molecular_design_studio.complex_analysis_evidence_ui import render_saved
 render_saved_evidence(MolecularDatabase(), {OWNER!r}, {{"group_ids": [{group!r}], "label": "Saved MD study"}})
 ''').run()
     assert not app.exception
-    assert [metric.value for metric in app.metric] == ['1', '0', '4', '2']
+    assert [metric.value for metric in app.metric] == ['3', '1']
     app.selectbox[0].select('md.mmgbsa.gb').run()
     assert not app.exception
     assert len(app.dataframe[0].value) == 3
@@ -163,7 +163,7 @@ render_collection_workspace({OWNER!r})
     app.button(key='complex-analysis-load-collection').click().run()
     assert not app.exception
     assert app.session_state['complex-analysis-flow-step'] == 'analyze'
-    assert [metric.value for metric in app.metric] == ['1', '0', '4', '2']
+    assert [metric.value for metric in app.metric] == ['3', '1']
 
 
 def test_native_metric_names_cannot_replace_evidence_identity(records):
@@ -181,3 +181,16 @@ def test_ligand_design_work_keeps_its_declared_activity():
     from mn_molecular_design_studio.complex_analysis_collection_ui import _analysis_activity
     assert _analysis_activity({'origin': {'scientific_activity': 'ligand_design'}}) == 'Ligand design'
     assert _analysis_activity({'origin': {'scientific_activity': 'prediction'}}) == 'Folding and prediction'
+
+
+def test_summary_describes_work_instead_of_treating_all_records_as_designs():
+    from mn_molecular_design_studio.complex_analysis_evidence_ui import evidence_summary_cards
+    cards = evidence_summary_cards({'molecule_count': 1, 'structure_count': 0},
+        {'md.mmgbsa.gb': 23, 'md.mmgbsa.pb': 23, 'md.analysis': 18, 'md.production': 15}, 1)
+    assert dict(cards) == {'MM/GBSA records': 23, 'MM/PBSA records': 23,
+                           'trajectory analysis records': 18, 'production information records': 15}
+    assert all(value != 79 for _, value in cards)
+    generic = evidence_summary_cards({'molecule_count': 3, 'structure_count': 16},
+                                    {'vina': 10, 'boltz2': 6}, 1)
+    assert dict(generic) == {'Molecules / designs': 3, 'Saved structures': 16,
+                             'Evidence types': 2, 'Selected collections': 1}

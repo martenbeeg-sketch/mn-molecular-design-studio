@@ -1995,8 +1995,12 @@ def _database_collection_samples(user: dict) -> list[dict]:
     st.caption("Open saved measurements and provenance first. Coordinates are retrieved only when you explicitly inspect or assess models.")
     if st.button("Open saved work", type="primary", key="complex-analysis-load-collection"):
         from mn_molecular_design_studio.complex_analysis_evidence_ui import open_saved_work
-        labels = [row["name"] for row in cohorts if row["id"] in selected_cohorts]
-        open_saved_work(st.session_state, user_id=user_id, group_ids=selected, label=" · ".join(labels))
+        opened = [row for row in cohorts if row["id"] in selected_cohorts]
+        labels = [row["name"] for row in opened]
+        projects = sorted({project_labels.get(row["project_id"], row["project_id"] or "Personal") for row in opened})
+        activities = sorted({row["activity"] for row in opened})
+        open_saved_work(st.session_state, user_id=user_id, group_ids=selected, label=" · ".join(labels),
+                        project_label=" / ".join(projects), work_type=" / ".join(activities))
         st.session_state["complex-analysis-collections-open"] = True
         st.rerun()
     return []

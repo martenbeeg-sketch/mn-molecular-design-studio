@@ -72,3 +72,14 @@ chemical identities or acceptance decisions are inferred.
 - complex_analysis_batch.py: existing evaluator choices by molecular input.
 - complex_analysis_ui.py: workspace description; existing Results deep links are unchanged.
 - test_complex_analysis_saved_evidence.py and the existing collection-label tests.
+
+## Summary wording correction
+
+The initial screenshot showed only the selected MD reference collection, not a
+Database-wide inventory. Its 79 observations were a technical record count,
+not 79 designs or simulations. The summary now identifies the selected project
+and work type, displays MD evidence by method (18 trajectory-analysis, 23 GB,
+23 PB and 15 production records), and keeps the aggregate record count under
+Sources & provenance. Other work uses molecular, structural and evidence-type
+counts. Historical/superseded entries are not relabelled as independent runs.
+Focused follow-up: 34 saved-evidence and collection-label tests passed.
