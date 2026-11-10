@@ -64,19 +64,23 @@ def collection_source_contexts(database, user: dict, groups: list[dict]) -> dict
         run_ids = sorted({source["run_id"] for source in sources.values() if source["run_id"]})
         clause, parameters = lineage._access(user, alias="j")
         jobs = connection.execute(
-            "SELECT j.ref,j.job_metadata,j.facts,m.campaign_ref,c.name AS campaign_name,c.kind AS campaign_kind "
+            "SELECT j.ref,j.job_metadata,j.facts,m.campaign_ref,c.name AS campaign_name,c.kind AS campaign_kind, "
+            "(SELECT count(*) FROM scientific_campaign_jobs members WHERE members.campaign_ref=m.campaign_ref) AS campaign_jobs "
             "FROM scientific_jobs j LEFT JOIN scientific_campaign_jobs m ON m.job_ref=j.ref "
             "LEFT JOIN scientific_campaigns c ON c.ref=m.campaign_ref "
             "WHERE j.run_id IN (SELECT value FROM json_each(?)) AND " + clause,
             [json.dumps(run_ids), *parameters],
         ).fetchall() if run_ids else []
+    jobs_by_scope = {}
+    for row in jobs:
+        job = json.loads(row["job_metadata"])
+        scope = tuple(str(job.get(field) or "") for field in ("run_id", "task_group", "project_id", "owner_id"))
+        jobs_by_scope.setdefault(scope, []).append((row, job))
     for key, source in sources.items():
         result[key]["source"] = source
         matching = []
-        for row in jobs:
-            job = json.loads(row["job_metadata"])
-            if any(str(job.get(field) or "") != source[field] for field in ("run_id", "task_group", "project_id", "owner_id")):
-                continue
+        scope = tuple(source[field] for field in ("run_id", "task_group", "project_id", "owner_id"))
+        for row, job in jobs_by_scope.get(scope, []):
             if source["node_id"]:
                 if job.get("node_id") != source["node_id"]:
                     continue
@@ -90,9 +94,13 @@ def collection_source_contexts(database, user: dict, groups: list[dict]) -> dict
         target = facts.get("target") or {}
         if target:
             result[key]["targets"] = target.get("recorded_constructs") or [target]
+        # Every indexed standalone job also has a one-job campaign projection.
+        # That projection must not erase Results' historical batch presentation.
+        campaign_link = (row["campaign_ref"] or "") if row["campaign_jobs"] > 1 or any(
+            job.get(field) for field in ("studio_run_id", "campaign_group_id", "distributed_campaign_id")) else ""
         result[key].update(job=job, job_ref=row["ref"], counts=facts.get("counts") or [],
                            acceptance=(facts.get("source_summary") or {}).get("acceptance_counts") or {},
-                           campaign_ref=row["campaign_ref"] or "", campaign_name=row["campaign_name"] or "",
+                           campaign_ref=campaign_link, campaign_name=row["campaign_name"] or "",
                            campaign_kind=row["campaign_kind"] or "")
     return result
 

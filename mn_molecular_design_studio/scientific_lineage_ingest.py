@@ -240,6 +240,11 @@ def capture_source_execution_context(snapshot, run_dir):
     """
     root = Path(run_dir).resolve()
     job = snapshot["job"]
+    if _capture_distributed_source_counts(snapshot, root):
+        return
+    if job.get("method") == "rfd4_proteina":
+        _capture_rfd4_source_counts(snapshot, root)
+        return
     if not str(job.get("method") or "").startswith("bindcraft2"):
         return
     from mn_molecular_design_studio.engine.workflow_engine.workflows.bindcraft2 import read_bindcraft2_campaign_state
@@ -293,6 +298,95 @@ def capture_source_execution_context(snapshot, run_dir):
                         "crop_lengths": params.get("target_crop_lengths"),
                         "saved_output_target_provenance": output_target},
     }
+
+
+def _capture_distributed_source_counts(snapshot, root):
+    relative = "artifacts/distributed_campaign/summary.json"
+    path = root / relative
+    summary = _read(path)
+    if not summary:
+        return False
+    counters = summary.get("counters") or {}
+    definitions = [
+        ("attempted_design_count", "designs_started", "started design slots", "generation"),
+        ("generated_design_count", "generated_candidates", "returned candidates", "generation"),
+        ("native_accepted_count", "native_accepted_candidates", "native-passed candidates", "native acceptance"),
+        ("native_unresolved_count", "native_acceptance_unavailable_attempts", "worker attempts", "native acceptance unavailable"),
+    ]
+    if summary.get("acceptance_level") == "validated":
+        definitions.append(("final_accepted_count", "validated_accepted_candidates", "validated candidates", "final acceptance"))
+    for name, field, unit, stage in definitions:
+        value = counters.get(field)
+        if type(value) is int and value >= 0:
+            count = {"name": name, "value": value, "unit": unit, "stage": stage,
+                     "source": snapshot["job"]["ref"] + "/" + relative,
+                     "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                     "source_field": "counters." + field, "scope": "campaign", "authoritative": True}
+            if count not in snapshot["counts"]:
+                snapshot["counts"].append(count)
+    return bool(counters)
+
+
+def _capture_rfd4_source_counts(snapshot, root):
+    """Count original generation metrics, including outputs discarded by filters.
+
+    Requested replicates and Database-retained rows are not attempt counters.
+    Native CSV rows record generations that reached metric collection, not
+    failed launches or sampling failures before a row was written.
+    """
+    import csv
+    from mn_molecular_design_studio.engine.workflow_engine.workflows.rfd4_proteina import local_path
+    from mn_molecular_design_studio.native_filter_metrics import native_filter_evidence
+
+    params = _read(root / "input.json").get("params") or {}
+    if snapshot["job"].get("kind") != "design" or params.get("task") == "score_structures" or (
+            params.get("options") or {}).get("operation") == "structure_prediction":
+        return
+    index_path = root / "artifacts/rfd4_proteina/result_index.json"
+    index = _read(index_path)
+    if not index.get("metrics_files"):
+        return
+    records, evidence = {}, []
+    for reference in dict.fromkeys(index["metrics_files"]):
+        path = local_path(root, reference)
+        relative = path.resolve().relative_to(root).as_posix()
+        evidence.append({"reference": snapshot["job"]["ref"] + "/" + relative,
+                         "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+        with path.open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            if not {"example_id", "designed_structure_path"}.intersection(reader.fieldnames or []):
+                raise ValueError("RFD4 metric table has no generation identity column.")
+            for row in reader:
+                key = row.get("designed_structure_path") or (
+                    row.get("example_id"), row.get("seed"), row.get("input_cif_path"))
+                if not row.get("designed_structure_path") and not row.get("example_id"):
+                    raise ValueError("RFD4 metric row has no generation identity.")
+                metrics = {}
+                for field in ("ppi.pass", "ppi.all_metrics_present"):
+                    value = row.get(field)
+                    try:
+                        metrics[field] = float(value)
+                    except (ValueError, TypeError):
+                        metrics[field] = value
+                decision = native_filter_evidence({"metrics": metrics})
+                # Aggregate and part CSVs can contain the same generation.
+                # Conflicting saved decisions are unresolved, never last-write-wins.
+                states = records.setdefault(key, set())
+                if decision["value"] is not None:
+                    states.add(decision["value"])
+    decisions = [next(iter(states)) if len(states) == 1 else None for states in records.values()]
+    counts = [("generated_design_count", len(records), "native scored generation records"),
+              ("native_accepted_count", sum(value is True for value in decisions), "native PPI pass"),
+              ("native_rejected_count", sum(value is False for value in decisions), "native PPI fail"),
+              ("native_unresolved_count", sum(value is None for value in decisions), "native PPI incomplete or unrecorded")]
+    for name, value, definition in counts:
+        count = {"name": name, "value": value, "unit": "scored generations", "stage": definition,
+                 "source": snapshot["job"]["ref"] + "/artifacts/rfd4_proteina/result_index.json",
+                 "source_sha256": hashlib.sha256(index_path.read_bytes()).hexdigest(),
+                 "source_artifacts": evidence, "scope": "this_job", "authoritative": True,
+                 "definition": "Distinct native per-example generation rows; excludes failures before metrics exist."}
+        if count not in snapshot["counts"]:
+            snapshot["counts"].append(count)
 
 
 def add_md_study(snapshot, study):
@@ -441,6 +535,8 @@ def capture_completed_run(run_dir, *, database=None, node_id=None):
     from mn_molecular_design_studio.cluster import config
     database = database or MolecularDatabase()
     snapshot = build_snapshot(run_dir, node_id=node_id or config.identity(), verify=True)
+    if snapshot["job"]["workstation"] == snapshot["job"]["node_id"] == config.identity():
+        snapshot["job"]["workstation"] = config.load().get("name") or snapshot["job"]["workstation"]
     link_retained(database, snapshot)
     lineage.put_snapshot(database, snapshot, author=snapshot["job"]["node_id"])
     return snapshot

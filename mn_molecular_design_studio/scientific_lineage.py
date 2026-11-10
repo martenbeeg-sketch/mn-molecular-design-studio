@@ -73,6 +73,7 @@ def _source_summary(snapshot):
         "acceptance_counts": acceptance_counts(outputs),
         "producer_counts": list(snapshot.get("counts") or []),
         "database_retained_candidate_model_occurrences": len(retained_occurrences),
+        "database_retained_link_occurrences": sum(_retained_link(row) is not None for row in snapshot.get("outputs", [])),
         "database_retained_structure_references": retained_structure_refs,
         "mapping_warning_counts": _warning_counts(snapshot.get("warnings") or []),
         "source_summary_complete": True,
@@ -261,7 +262,8 @@ def validate_snapshot(snapshot, author, envelope=None):
                     (type(publication["source_output_count"]) is not int or publication["source_output_count"] < 0))
                 or ("source_summary" in snapshot and
                     (publication.get("source_output_count") != snapshot["source_summary"].get("source_output_occurrences")
-                     or publication.get("output_count") != snapshot["source_summary"].get("database_retained_candidate_model_occurrences")))
+                     or publication.get("output_count") != snapshot["source_summary"].get(
+                         "database_retained_link_occurrences", snapshot["source_summary"].get("database_retained_candidate_model_occurrences"))))
                 or len(encoded(snapshot).encode()) > MAX_BYTES):
             raise ValueError("Invalid or oversized scientific lineage publication manifest.")
         page_hashes = publication.get("page_sha256")

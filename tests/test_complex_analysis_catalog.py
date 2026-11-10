@@ -35,6 +35,7 @@ def test_source_context_uses_native_job_evidence_and_source_qualified_index(tmp_
     context = collection_source_contexts(database, user, groups)[group_id]
     assert context["job"]["node_id"] == "remote-a"
     assert context["counts"][0]["value"] == 3665
+    assert context["campaign_ref"] == ""  # One-job projection isn't a recorded shared parent.
     with pytest.raises(PermissionError):
         collection_source_contexts(database, {"id": "stranger", "role": "user"}, groups)
 

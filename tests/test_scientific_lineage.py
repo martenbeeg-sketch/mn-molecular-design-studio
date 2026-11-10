@@ -95,6 +95,118 @@ def test_source_input_context_never_reads_a_fasta_outside_its_job(tmp_path):
     assert not s.get("target")
 
 
+def test_rfd4_counts_use_saved_generation_rows_not_requests_or_retained_structures(tmp_path, db):
+    from mn_molecular_design_studio.scientific_lineage_ingest import capture_source_execution_context
+
+    root = tmp_path / "rfd4"
+    area = root / "artifacts/rfd4_proteina"
+    area.mkdir(parents=True)
+    metrics = area / "metrics.csv"
+    metrics.write_text("example_id,designed_structure_path,ppi.pass,ppi.all_metrics_present\n"
+                       "one,/work/artifacts/one.cif,1.0,1.0\n"
+                       "two,/work/artifacts/two.cif,0.0,1.0\n"
+                       "three,/work/artifacts/three.cif,0.0,0.0\n")
+    duplicate = area / "aggregate.csv"
+    duplicate.write_bytes(metrics.read_bytes())
+    index = area / "result_index.json"
+    index.write_text(json.dumps({"metrics_files": ["/work/artifacts/rfd4_proteina/metrics.csv",
+                                                   "artifacts/rfd4_proteina/aggregate.csv"], "structures": []}))
+    (root / "input.json").write_text(json.dumps({"params": {"num_designs": 100}}))
+    s = snapshot_from_candidates(job("rfd4-native"), [], node_id="a")
+    capture_source_execution_context(s, root)
+    counts = {row["name"]: row for row in s["counts"]}
+    assert counts["generated_design_count"]["value"] == 3
+    assert counts["native_accepted_count"]["value"] == 1
+    assert counts["native_rejected_count"]["value"] == 1
+    assert counts["native_unresolved_count"]["value"] == 1
+    assert counts["generated_design_count"]["source_artifacts"][0]["sha256"] == hashlib.sha256(metrics.read_bytes()).hexdigest()
+    saved = copy.deepcopy(s)
+    capture_source_execution_context(s, root)
+    assert s == saved
+    save(db, s)
+    with db.connection() as c:
+        facts = json.loads(c.execute("SELECT facts FROM scientific_jobs").fetchone()[0])
+        assert facts["counts"] == s["counts"]
+    # A partial metric table is absence of evidence, not a disagreement with
+    # the complete native decision in the aggregate table.
+    duplicate.write_text(duplicate.read_text().replace("one,/work/artifacts/one.cif,1.0,1.0",
+                                                       "one,/work/artifacts/one.cif,0.0,0.0"))
+    partial = snapshot_from_candidates(job("partial"), [], node_id="a")
+    capture_source_execution_context(partial, root)
+    assert next(row["value"] for row in partial["counts"] if row["name"] == "native_accepted_count") == 1
+    # Conflicting copies of one original generation are not separate attempts
+    # and cannot turn into a last-write-wins acceptance decision.
+    duplicate.write_text(metrics.read_text().replace("one,/work/artifacts/one.cif,1.0,1.0",
+                                                       "one,/work/artifacts/one.cif,0.0,1.0"))
+    conflict = snapshot_from_candidates(job("conflict"), [], node_id="a")
+    capture_source_execution_context(conflict, root)
+    assert {row["name"]: row["value"] for row in conflict["counts"]} == {
+        "generated_design_count": 3, "native_accepted_count": 0,
+        "native_rejected_count": 1, "native_unresolved_count": 2}
+    index.write_text(json.dumps({"metrics_files": ["/work/../unrelated.csv"]}))
+    with pytest.raises(ValueError):
+        capture_source_execution_context(s, root)
+
+
+def test_rfd4_prediction_is_not_counted_as_design_generation(tmp_path):
+    from mn_molecular_design_studio.scientific_lineage_ingest import capture_source_execution_context
+    (tmp_path / "input.json").write_text(json.dumps({"params": {
+        "options": {"operation": "structure_prediction"}}}))
+    s = snapshot_from_candidates(job("folding"), [], node_id="a")
+    capture_source_execution_context(s, tmp_path)
+    assert s["counts"] == []
+
+
+def test_publication_keeps_supplemental_target_representation_separate_from_design_count(db):
+    s = snapshot_from_candidates(job("retained-target"), [candidate()], node_id="a")
+    retained = {"molecule_id": "m1", "structure_id": "s1", "source_node": "a", "owner_structure_id": "s1"}
+    s["outputs"][0]["retained"] = [retained]
+    s["outputs"].append({"ref": s["job"]["ref"] + "#target", "kind": "retained_representation",
+                         "retained": [{**retained, "molecule_id": "target", "structure_id": "target-structure"}]})
+    manifest, pages = catalog.publication_for_snapshot(s)
+    assert manifest["publication"]["output_count"] == 2
+    assert manifest["source_summary"]["database_retained_candidate_model_occurrences"] == 1
+    assert manifest["source_summary"]["database_retained_link_occurrences"] == 2
+    catalog.validate_snapshot(manifest, "a")
+    catalog.put_snapshot(db, s, author="a")
+    assert catalog.campaigns(db, ADMIN)["total"] == 1
+
+
+def test_distributed_count_capture_preserves_parent_scope_and_requires_explicit_final_stage(tmp_path):
+    from mn_molecular_design_studio.scientific_lineage_ingest import capture_source_execution_context
+    path = tmp_path / "artifacts/distributed_campaign/summary.json"
+    path.parent.mkdir(parents=True)
+    summary = {"acceptance_level": "validated", "counters": {
+        "designs_started": 6700, "generated_candidates": 6700,
+        "native_accepted_candidates": 0, "native_acceptance_unavailable_attempts": 134,
+        "validated_accepted_candidates": 100}}
+    path.write_text(json.dumps(summary))
+    s = snapshot_from_candidates(job("parent"), [], node_id="a")
+    capture_source_execution_context(s, tmp_path)
+    assert {row["name"]: row["value"] for row in s["counts"]} == {
+        "attempted_design_count": 6700, "generated_design_count": 6700,
+        "native_accepted_count": 0, "native_unresolved_count": 134, "final_accepted_count": 100}
+    assert all(row["scope"] == "campaign" for row in s["counts"])
+    summary["acceptance_level"] = "native"
+    path.write_text(json.dumps(summary))
+    native = snapshot_from_candidates(job("native"), [], node_id="a")
+    capture_source_execution_context(native, tmp_path)
+    assert not any(row["name"] == "final_accepted_count" for row in native["counts"])
+
+
+def test_completion_capture_records_the_actual_local_workstation_label(db, tmp_path, monkeypatch):
+    from mn_molecular_design_studio.scientific_lineage_ingest import capture_completed_run
+    from mn_molecular_design_studio.cluster import config
+    root = tmp_path / "design" / "local-job"
+    root.mkdir(parents=True)
+    (root / "metadata.json").write_text(json.dumps(job("local-job")))
+    monkeypatch.setattr(config, "identity", lambda: "a")
+    monkeypatch.setattr(config, "load", lambda: {"name": "source-workstation"})
+    s = capture_completed_run(root, database=db)
+    assert s["job"]["node_id"] == "a"
+    assert s["job"]["workstation"] == "source-workstation"
+
+
 def test_distributed_parent_controller_receipt_and_same_coordinates_do_not_double_count_models(db, tmp_path):
     imported = db.import_records(ADMIN, [{"name": "binder", "components": [{"type": "protein", "chain": "B", "sequence": "A"}]}])
     molecule = imported["molecule_ids"][0]

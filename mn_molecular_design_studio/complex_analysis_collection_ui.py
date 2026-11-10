@@ -1345,6 +1345,8 @@ def _design_collection_label(group: dict) -> dict[str, str]:
 def _analysis_activity(group: dict) -> str:
     """Classify a retained source group without using its display name as evidence."""
     origin = group.get("origin") if isinstance(group.get("origin"), dict) else {}
+    if origin.get("final_screening_selection") is True:
+        return "Ligand docking"
     explicit = str(origin.get("scientific_activity") or origin.get("activity_kind")
                    or origin.get("work_kind") or "").casefold().replace("-", "_")
     explicit_map = {
@@ -1560,10 +1562,12 @@ def _resolve_collection_target_labels(database, user: dict, collections: list[di
 def _input_target_label(target: dict) -> str:
     label = str(target.get("label") or target.get("target_id") or target.get("target_molecule_id") or "")
     sequences = list((target.get("sequences_by_chain") or {}).values())
-    sequences += [row["sequence"] for row in target.get("components") or [] if row.get("sequence")]
+    if not sequences:
+        sequences = [row["sequence"] for row in target.get("components") or [] if row.get("sequence")]
     if sequences:
         lengths = "+".join(str(len(sequence)) for sequence in sequences)
-        label = (label + " · " if label else "Input sequence · ") + lengths + " aa"
+        if lengths + " aa" not in label:
+            label = (label + " · " if label else "Input sequence · ") + lengths + " aa"
     if not label and (target.get("target_structure_digest") or target.get("structure_digest")):
         label = "Target structure SHA-256 " + str(target.get("target_structure_digest") or target["structure_digest"])[:12]
     return label or "Input target not indexed"
@@ -1571,6 +1575,11 @@ def _input_target_label(target: dict) -> str:
 
 def _cohort_source_counts(cohort: dict) -> dict[str, str]:
     """Keep attempt, sequence-variant and acceptance populations separate."""
+    if not any((group.get("scientific_context") or {}).get("job_ref") or
+               (group.get("origin") or {}).get("run_id") or
+               ((group.get("origin") or {}).get("source_run") or {}).get("run_id") for group in cohort["groups"]):
+        return {"Generated / attempted": "Not applicable to imported collection",
+                "Native accepted": "Not recorded", "Final passed": "Not recorded"}
     contexts = {}
     for group in cohort["groups"]:
         context = group.get("scientific_context") or {}
@@ -1582,32 +1591,55 @@ def _cohort_source_counts(cohort: dict) -> dict[str, str]:
         }, sort_keys=True)
         contexts[key] = context
 
-    def count(names):
+    def count(names, fallback_names=()):
         selected = []
         for context in contexts.values():
             matches = [row for row in context.get("counts") or [] if row.get("name") in names]
+            if not matches and fallback_names:
+                matches = [row for row in context.get("counts") or [] if row.get("name") in fallback_names]
             authoritative = [row for row in matches if row.get("authoritative")]
             matches = authoritative or matches
             if any(type(row.get("value")) not in (int, float) or row["value"] < 0 for row in matches):
                 return "Invalid source count"
             values = {(row.get("value"), row.get("unit")) for row in matches}
+            if not values:
+                continue
             if len(values) != 1:
-                return "Not indexed" if not values else "Conflicting source counts"
+                return "Conflicting source counts"
             selected.append(matches[0])
         if not selected:
             return "Not indexed"
-        if len(selected) > 1 and any(row.get("scope") != "this_job" for row in selected):
-            return "See job breakdown"  # Do not sum parent aggregates and workers.
+        if len(contexts) > 1 and any(row.get("scope") != "this_job" for row in selected):
+            aggregates = [row for row in selected if row.get("scope") == "campaign"]
+            campaigns = {context.get("campaign_ref") for context in contexts.values()}
+            if len(aggregates) == 1 and len(campaigns) == 1 and all(campaigns):
+                selected = aggregates  # One recorded parent total replaces, never adds to, worker totals.
+            else:
+                return "See job breakdown"
         units = {row.get("unit") for row in selected}
         if len(units) != 1:
             return "Different source units"
-        return f"{sum(row['value'] for row in selected):,} {selected[0].get('unit') or ''}".strip()
+        text = f"{sum(row['value'] for row in selected):,} {selected[0].get('unit') or ''}".strip()
+        if len(selected) < len(contexts) and selected[0].get("scope") != "campaign":
+            text += f" · {len(selected)}/{len(contexts)} jobs indexed"
+        return text
 
     finals = [context.get("acceptance", {}).get("final") for context in contexts.values()]
     final = (f"{sum(row['passed'] for row in finals):,} candidate/models" if len(finals) == 1 and all(finals)
              else "Not recorded" if not any(finals) else "See job breakdown")
-    return {"Attempts": count({"trajectory_attempt_count", "attempted_design_count", "attempt_count"}),
-            "Native accepted": count({"accepted_design_count", "native_accepted_count"}),
+    if any(row.get("name") == "final_accepted_count" for context in contexts.values() for row in context.get("counts") or []):
+        final = count({"final_accepted_count"})
+    native = count({"accepted_design_count", "native_accepted_count"})
+    if any(row.get("name") == "native_unresolved_count" and row.get("value", 0) > 0
+           for context in contexts.values() for row in context.get("counts") or []):
+        complete = any(row.get("name") in {"accepted_design_count", "native_accepted_count", "native_rejected_count"}
+                       and row.get("value", 0) > 0 for context in contexts.values() for row in context.get("counts") or [])
+        incomplete = count({"native_unresolved_count"})
+        native = (native + " · incomplete: " + incomplete if complete else
+                  "No complete native decision · " + incomplete + " incomplete")
+    return {"Generated / attempted": count({"trajectory_attempt_count", "attempted_design_count", "attempt_count"},
+                                            {"generated_design_count"}),
+            "Native accepted": native,
             "Final passed": final}
 
 
@@ -1617,6 +1649,12 @@ def _is_design_collection(group: dict) -> bool:
     kind = str(group.get("collection_kind") or origin.get("collection_kind") or "")
     if kind == "reference":
         return False
+    stats = group.get("stats") or {}
+    if kind not in {"inputs", "intermediate"} and (kind == "evaluation" or origin.get("type") == "user") and (
+            (stats.get("structure_count") or 0) > 0 and (stats.get("evaluated_design_count") or 0) > 0):
+        # Historical imports and evaluated models need no synthetic Results job
+        # or automatic promotion to become discoverable in their Database group.
+        return True
     explicitly_saved = origin.get("type") == "results_design_collection" or origin.get("saved_selection") is True
     tool = " ".join(str(origin.get(key) or "") for key in (
         "tool", "workflow", "workflow_id", "task_type",
@@ -1637,7 +1675,7 @@ def _is_design_collection(group: dict) -> bool:
 
 
 def _load_collection_structures(database, user: dict, records: list[dict], group_ids: list[str],
-                               selected_structure_ids: list[str] | None = None) -> list[dict]:
+                               selected_structure_ids: list[str] | None = None, *, passing_cohort: bool = True) -> list[dict]:
     """Revalidate and hydrate only the explicitly opened collection structures."""
     chosen = set(str(value) for value in selected_structure_ids) if selected_structure_ids is not None else None
     structures = [structure for record in records
@@ -1698,10 +1736,11 @@ def _load_collection_structures(database, user: dict, records: list[dict], group
         "user_id": str(user.get("id") or ""), "structure_ids": valid_ids,
         "molecule_ids": list(authorized), "collection_ids": list(group_ids),
         "collection": "all", "group_id": "", "project_id": "", "cache_key": cache_key,
-        "collection_passing_cohort": True,
+        "collection_passing_cohort": passing_cohort,
     }
-    st.session_state["complex-analysis-cohort-acceptance-mode-value"] = "Collected passing designs"
-    st.session_state["complex-analysis-cohort-acceptance-mode-widget"] = "Collected passing designs"
+    mode = "Collected passing designs" if passing_cohort else "All designs"
+    st.session_state["complex-analysis-cohort-acceptance-mode-value"] = mode
+    st.session_state["complex-analysis-cohort-acceptance-mode-widget"] = mode
     st.session_state["complex-analysis-flow-step"] = "analyze"
     st.rerun()
     return samples
@@ -1725,17 +1764,17 @@ def _database_collection_samples(user: dict) -> list[dict]:
         # not exposed collection summaries.
         return _database_individual_samples(user)
     try:
-        groups = database.groups(user, collection="library")
+        groups = database.groups(user, collection="all")
         statistics = database.collection_statistics(user, [str(group.get("id") or "") for group in groups
                                                             if group.get("id")])
     except (PermissionError, OSError, ValueError, TypeError):
         groups, statistics = [], {}
     collections = []
     for group in groups:
-        if not _is_design_collection(group):
-            continue
         group_id = str(group.get("id") or "")
         stats = statistics.get(group_id) or {}
+        if not _is_design_collection({**group, "stats": stats}):
+            continue
         if int(stats.get("structure_count") or 0) <= 0 or int(stats.get("molecule_count") or 0) <= 0:
             continue
         collections.append({**group, "summary": _design_collection_label(group), "stats": stats})
@@ -1750,8 +1789,8 @@ def _database_collection_samples(user: dict) -> list[dict]:
             if labels:
                 group["summary"]["target"] = "; ".join(labels)
     collections.sort(key=lambda row: (str(row.get("updated_at") or ""), str(row.get("name") or "").casefold()), reverse=True)
-    st.markdown("### Choose a run or campaign")
-    st.caption("Attempts and native acceptance describe source execution; Database-retained counts describe the models available here. A missing count is unknown, not zero.")
+    st.markdown("### Choose a run or saved collection")
+    st.caption("Generated / attempted totals and native acceptance come from recorded source evidence; Database counts describe retained models. Scored generations exclude failures before metrics were saved. Incomplete filters are not failures.")
     cohorts = _database_analysis_cohorts(collections)
     cohort_group_map = {str(row["id"]): list(row["group_ids"]) for row in cohorts}
     try:
@@ -1799,7 +1838,9 @@ def _database_collection_samples(user: dict) -> list[dict]:
                        {key: value for key, value in row.items() if key not in {"groups", "stats"}},
                        ensure_ascii=False, default=str).casefold())]
         cohort_group_map = {str(row["id"]): list(row["group_ids"]) for row in cohorts}
-        st.caption(f"{len(cohorts):,} run / campaign group(s) match. Historical batch groups reuse Results grouping and do not assert an unrecorded parent run.")
+        st.caption(f"{len(cohorts):,} saved run / collection group(s) match.")
+        if any(row["cohort_type"].startswith("Historical batch") for row in cohorts):
+            st.caption("Historical batch groups reuse Results grouping; they do not assert an unrecorded parent run.")
         if not cohorts:
             st.info("No saved work matches these filters. Choose another project or type, or clear the search.")
             return []
@@ -1827,15 +1868,15 @@ def _database_collection_samples(user: dict) -> list[dict]:
                           "Retained structures/models": stats["structure_count"],
                           "Recorded validation evidence": validation_text, "Saved Evaluations": coverage,
                           "All-run totals": "Not part of retained Database cohort",
-                          "Source jobs": cohort["source_runs"],
+                          "Source jobs": str(cohort["source_runs"]) if cohort["source_runs"] else "Not catalogued",
                           "Source runs": source_summary, "Campaign links": campaigns,
                           "Workstations": cohort["workstations"], "Updated": cohort["updated_at"],
                           **_cohort_source_counts(cohort)})
         event = st.dataframe(table, hide_index=True, use_container_width=True, height=min(420, 40 + 35 * max(1, len(table))),
-                             column_order=["Work group", "Source jobs", "Target/construct", "Attempts", "Native accepted",
+                             column_order=["Work group", "Source jobs", "Target/construct", "Generated / attempted", "Native accepted",
                                            "Final passed", "DB-retained designs", "Retained structures/models"],
                              column_config={
-                                 "Work group": st.column_config.TextColumn("Run / campaign", width="large"),
+                                 "Work group": st.column_config.TextColumn("Run / collection", width="large"),
                                  "Target/construct": st.column_config.TextColumn("Input target / construct", width="medium"),
                                  "Scientific work": st.column_config.TextColumn("Type", width="small"),
                                  "DB-retained designs": st.column_config.NumberColumn("DB retained", width="small"),
@@ -1874,13 +1915,14 @@ def _database_collection_samples(user: dict) -> list[dict]:
     if selected_cohorts:
         selected_runs = {tuple(run) for cohort_id in selected_cohorts
                          for run in next((row["source_job_keys"] for row in cohorts if row["id"] == cohort_id), [])}
-        st.caption(f"Selected {len(selected_cohorts):,} work group(s) across {len(selected_runs):,} source run(s).")
+        st.caption(f"Selected {len(selected_cohorts):,} work group(s) across {len(selected_runs):,} source run(s)." if selected_runs else
+                   f"Selected {len(selected_cohorts):,} saved collection(s); original source runs are not catalogued.")
         if len(selected_cohorts) == 1:
             cohort = next(row for row in cohorts if row["id"] == selected_cohorts[0])
             counts = _cohort_source_counts(cohort)
             st.markdown(f"**{cohort['name']}** · {cohort['cohort_type']}")
             st.write(" · ".join(f"{label}: {value}" for label, value in counts.items()) +
-                     f" · Database retained: {cohort['stats']['molecule_count']:,} designs, "
+                     f" · Database retained: {cohort['stats']['molecule_count']:,} molecular records, "
                      f"{cohort['stats']['structure_count']:,} models / poses")
         with st.expander("Selected sources and recorded acceptance", expanded=False):
             st.dataframe([row for row, cohort in zip(table, cohorts) if cohort["id"] in selected_cohorts],
@@ -1970,7 +2012,10 @@ def _database_collection_samples(user: dict) -> list[dict]:
         st.session_state["complex-analysis-collections-open"] = True
         st.session_state["complex-analysis-individual-mode"] = False
         return _load_collection_structures(database, user, records, group_ids,
-                                           selected_structure_ids=selected_structure_ids)
+                                           selected_structure_ids=selected_structure_ids,
+                                           passing_cohort=all((group.get("origin") or {}).get("run_id") or
+                                               ((group.get("origin") or {}).get("source_run") or {}).get("run_id")
+                                               for group in collections if group["id"] in group_ids))
     st.caption("All models in the selection are included. Expand the advanced control above to choose individual models.")
     return []
 

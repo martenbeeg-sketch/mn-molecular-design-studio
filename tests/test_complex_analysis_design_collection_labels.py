@@ -82,6 +82,39 @@ def test_design_collection_picker_hides_unlinked_utility_groups_but_keeps_run_co
     })
 
 
+def test_saved_imported_scientific_models_need_no_invented_run_and_inputs_stay_separate():
+    imported = {"origin": {"type": "user"}, "stats": {
+        "structure_count": 16, "evaluated_design_count": 3}}
+    assert _is_design_collection(imported)
+    assert _is_design_collection({**imported, "collection_kind": "evaluation", "origin": {"type": "job"}})
+    assert not _is_design_collection({**imported, "collection_kind": "inputs", "origin": {"type": "job"}})
+    assert not _is_design_collection({**imported, "stats": {"structure_count": 0, "evaluated_design_count": 1}})
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _analysis_activity
+    assert _analysis_activity({"origin": {"final_screening_selection": True}}) == "Ligand docking"
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _cohort_source_counts
+    assert _cohort_source_counts({"groups": [{"id": "imported", **imported}]}) == {
+        "Generated / attempted": "Not applicable to imported collection",
+        "Native accepted": "Not recorded", "Final passed": "Not recorded"}
+
+
+def test_opening_imported_evidence_does_not_assign_a_computational_pass(monkeypatch):
+    from mn_molecular_design_studio import complex_analysis_collection_ui as ui
+    records = [{"id": "compound", "representations": [{"id": "pose", "group_id": "legacy"}]}]
+    class Database:
+        def list_structure_records(self, *args, **kwargs):
+            return {"items": records}
+        def get_complex_review(self, *args, **kwargs):
+            return {"status": "Unreviewed", "note": ""}
+    state = {}
+    monkeypatch.setattr(ui.st, "session_state", state)
+    monkeypatch.setattr(ui.st, "rerun", lambda: None)
+    monkeypatch.setattr(ui, "_load_selected_structures", lambda *args: [
+        {"molecule_id": "compound", "structure_id": "pose"}])
+    ui._load_collection_structures(Database(), {"id": "owner"}, records, ["legacy"], passing_cohort=False)
+    assert state["complex-analysis-cohort-acceptance-mode-value"] == "All designs"
+    assert state["complex-analysis-workflow-selection"]["collection_passing_cohort"] is False
+
+
 def test_analysis_cohort_keeps_source_runs_distinct_even_for_the_same_exact_target():
     same_target = "a" * 64
     groups = [
@@ -234,7 +267,7 @@ _database_collection_samples({user!r})
     rows = app.dataframe[0].value
     assert len(rows) == 2
     assert list(rows["DB-retained designs"]) == [1, 1]
-    assert set(rows["Attempts"]) == {"Not indexed"}
+    assert set(rows["Generated / attempted"]) == {"Not indexed"}
     assert set(rows["Final passed"]) == {"Not recorded"}
     assert rows.iloc[0]["All-run totals"] == "Not part of retained Database cohort"
     assert rows.iloc[0]["Source runs"] == "1 source run(s) · 1 Database group(s)"
@@ -359,11 +392,37 @@ def test_source_counts_do_not_treat_retained_models_as_attempts_or_sum_parent_to
     group = {"id": "retained35", "scientific_context": {"job_ref": "node:job", "counts": counts}}
     cohort = {"groups": [group, group]}  # Duplicate memberships are one source job.
     assert _cohort_source_counts(cohort) == {
-        "Attempts": "3,665 trajectories", "Native accepted": "35 ranked designs", "Final passed": "Not recorded"}
+        "Generated / attempted": "3,665 trajectories", "Native accepted": "35 ranked designs", "Final passed": "Not recorded"}
     zero = {"id": "zero", "scientific_context": {"job_ref": "node:zero", "counts": [
         {"name": "trajectory_attempt_count", "value": 0, "unit": "trajectories", "scope": "this_job"}]}}
-    assert _cohort_source_counts({"groups": [zero]})["Attempts"] == "0 trajectories"
-    assert _cohort_source_counts({"groups": [group, {"id": "missing"}]})["Attempts"] == "Not indexed"
+    assert _cohort_source_counts({"groups": [zero]})["Generated / attempted"] == "0 trajectories"
+    assert _cohort_source_counts({"groups": [group, {"id": "missing"}]})["Generated / attempted"] == "3,665 trajectories · 1/2 jobs indexed"
     aggregate = {"id": "parent", "scientific_context": {"job_ref": "node:parent", "counts": [
         {"name": "trajectory_attempt_count", "value": 3665, "unit": "trajectories", "scope": "campaign"}]}}
-    assert _cohort_source_counts({"groups": [group, aggregate]})["Attempts"] == "See job breakdown"
+    assert _cohort_source_counts({"groups": [group, aggregate]})["Generated / attempted"] == "See job breakdown"
+
+
+def test_rfd4_generated_and_incomplete_native_counts_are_visible_without_inferred_acceptance():
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _cohort_source_counts
+    source = {"id": "rfd4", "scientific_context": {"job_ref": "node:rfd4", "counts": [
+        {"name": name, "value": value, "unit": "scored generations", "scope": "this_job"}
+        for name, value in (("generated_design_count", 10), ("native_accepted_count", 0),
+                            ("native_unresolved_count", 10))]}}
+    counts = _cohort_source_counts({"groups": [source]})
+    assert counts["Generated / attempted"] == "10 scored generations"
+    assert counts["Native accepted"] == "No complete native decision · 10 scored generations incomplete"
+    assert counts["Final passed"] == "Not recorded"
+
+
+def test_one_recorded_parent_total_replaces_its_workers_and_keeps_final_stage_distinct():
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _cohort_source_counts, _input_target_label
+    parent = {"id": "parent", "scientific_context": {"job_ref": "parent", "campaign_ref": "campaign-a", "counts": [
+        {"name": name, "value": value, "unit": "candidates", "scope": "campaign"}
+        for name, value in (("generated_design_count", 6700), ("final_accepted_count", 100))]}}
+    worker = {"id": "worker", "scientific_context": {"job_ref": "worker", "campaign_ref": "campaign-a", "counts": [
+        {"name": "generated_design_count", "value": 50, "unit": "candidates", "scope": "this_job"}]}}
+    counts = _cohort_source_counts({"groups": [parent, worker]})
+    assert counts["Generated / attempted"] == "6,700 candidates"
+    assert counts["Final passed"] == "100 candidates"
+    assert _input_target_label({"label": "Target (4 aa)", "sequences_by_chain": {"A": "ACDE"},
+                                "components": [{"sequence": "ACDE"}]}) == "Target (4 aa)"
