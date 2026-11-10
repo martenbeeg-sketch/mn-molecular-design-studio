@@ -50,11 +50,12 @@ def evidence_row(observation: dict) -> dict:
 
 
 def open_saved_work(state, *, user_id: str, group_ids: list[str], label: str,
-                    project_label: str = "", work_type: str = "") -> None:
+                    project_label: str = "", work_type: str = "", system_label: str = "", system_scope=None) -> None:
     """Navigation state only; source membership/acceptance is never rewritten."""
     state["complex-analysis-evidence-selection"] = {
         "user_id": user_id, "group_ids": list(dict.fromkeys(group_ids)), "label": label,
         "project_label": project_label, "work_type": work_type,
+        "system_label": system_label, "system_scope": system_scope,
     }
     state.pop("complex-analysis-workflow-samples", None)
     state.pop("complex-analysis-workflow-selection", None)
@@ -63,7 +64,78 @@ def open_saved_work(state, *, user_id: str, group_ids: list[str], label: str,
         if key.startswith("complex-analysis-cohort-"):
             del state[key]
     state["complex-evidence-view"] = "Measurements"
-    state["complex-analysis-flow-step"] = "analyze"
+    state["complex-analysis-flow-step"] = "overview"
+
+
+def render_work_overview(database, user, selection):
+    """Explain the saved experiment before loading models or submitting work."""
+    from mn_molecular_design_studio import complex_analysis_collection_ui as collection
+    from mn_molecular_design_studio.complex_analysis_catalog import collection_source_contexts, collection_system_facets, retained_system_contexts
+
+    groups = [database.group(key, user) for key in selection["group_ids"]]
+    contexts = collection_source_contexts(database, user, groups)
+    fallback_ids = [group["id"] for group in groups
+                    if not collection_system_facets({**group, "scientific_context": contexts.get(group["id"], {})})]
+    systems = retained_system_contexts(database, user, fallback_ids) if fallback_ids else {}
+    stats = database.cohort_statistics(user, {"selected": selection["group_ids"]})["selected"]
+    st.markdown("### Campaign / study overview")
+    st.write(selection["label"])
+    st.caption(" → ".join(value for value in (selection.get("project_label"), selection.get("system_label"),
+                                               selection.get("work_type")) if value))
+    for column, (label, value) in zip(st.columns(3), [
+        ("Retained molecules / designs", stats["molecule_count"]),
+        ("Retained models / poses", stats["structure_count"]),
+        ("Saved source memberships", len(groups)),
+    ]):
+        column.metric(label, f"{value:,}")
+    st.caption("These are retained Database inventories. Generated attempts and recorded acceptance stages are shown separately below. Opening this overview reads metadata only.")
+    prepared = [{**group, "scientific_context": contexts.get(group["id"], {}),
+                 "retained_system_contexts": systems.get(group["id"], []),
+                 "summary": collection._design_collection_label(group)} for group in groups]
+    cohorts = collection._database_analysis_cohorts(prepared)
+    for cohort in cohorts:
+        if cohort["activity"] in {"Protein design", "Ligand design"}:
+            if len(cohorts) > 1:
+                st.markdown("**" + cohort["name"] + "**")
+            for column, (label, value) in zip(st.columns(3), collection._cohort_source_counts(cohort).items()):
+                with column.container(border=True):
+                    st.caption(label)
+                    st.write(value)
+    st.dataframe([{"Campaign / source": cohort["name"], "Grouping evidence": cohort["cohort_type"],
+                   "Source jobs": cohort["source_runs"], "Generator / source engine": cohort["generators"],
+                   **collection._cohort_source_counts(cohort)} for cohort in cohorts],
+                 hide_index=True, use_container_width=True)
+    st.markdown("#### Original target / input system")
+    st.caption("The input target or assembly is distinct from generated, cofolded and independently predicted output models. Variants and models retain their own acceptance and Evaluation evidence.")
+    displayed = set()
+    for group in prepared:
+        facets = collection_system_facets(group)
+        for facet in facets:
+            if facet["key"] in displayed:
+                continue
+            displayed.add(facet["key"])
+            target = facet["target"]
+            with st.expander(facet["label"], expanded=len(groups) == 1):
+                st.caption("Recorded input: " + facet["input_kind"])
+                sequences = target.get("sequences_by_chain") or {}
+                for chain, sequence in sorted(sequences.items()):
+                    st.caption(f"Recorded target chain {chain} · {len(sequence)} residues")
+                    st.code(sequence, language=None)
+                st.json(target, expanded=False)
+    if not displayed:
+        st.info("No exact original input target or assembly is recorded in the source summary. Saved evidence can still expose recorded target/preparation references; names do not supply missing identity.")
+    with st.expander("Distributed source jobs, settings and provenance"):
+        st.dataframe([{"Source job": (contexts.get(group["id"], {}).get("job_ref") or group["summary"]["run"]),
+                       "Database membership": group["id"], "Source label": group["name"]} for group in prepared],
+                     hide_index=True, use_container_width=True)
+        st.json([{ "group_id": group["id"], "origin": group.get("origin"),
+                   "saved_source_context": contexts.get(group["id"], {})} for group in prepared], expanded=False)
+    st.caption("Existing saved measurements are available without coordinates. New compatible assessments require explicit model selection and submission; no calculations start here.")
+    left, right = st.columns(2)
+    left.button("Review evidence & assessments", type="primary", key="overview-open-evidence",
+                on_click=lambda: st.session_state.update({"complex-analysis-flow-step": "analyze"}))
+    right.button("Choose structures to visualize", key="overview-open-models",
+                 on_click=lambda: st.session_state.update({"complex-analysis-flow-step": "compare"}))
 
 
 def _relationship_label(row: dict) -> str:
@@ -77,12 +149,13 @@ def _relationship_label(row: dict) -> str:
 def render_relationship_choices(database, user, selection, retained_stats):
     """Navigate recorded systems/studies; never create a molecular identity."""
     group_ids = selection["group_ids"]
-    token = hashlib.sha256(str(group_ids).encode()).hexdigest()[:10]
+    token = hashlib.sha256(str([group_ids, selection.get("system_scope")]).encode()).hexdigest()[:10]
     st.markdown("#### Molecule–target systems and studies")
     query = st.text_input("Find molecule, target or study", key="relationship-search-" + token)
     page_key = token + hashlib.sha256(query.encode()).hexdigest()[:8]
     number = int(st.number_input("Relationship page", min_value=1, value=1, step=1, key="relationship-page-" + page_key))
-    page = saved_relationship_page(database, user, group_ids, query=query, offset=(number - 1) * 25)
+    page = saved_relationship_page(database, user, group_ids, query=query, offset=(number - 1) * 25,
+                                   system_scope=selection.get("system_scope"))
     totals, rows = page["totals"], page["items"]
     cards = [("Molecular identities", totals["molecules"] if totals["relationships"] or query else retained_stats["molecule_count"]),
              ("Target / preparation contexts", totals["target_contexts"]),

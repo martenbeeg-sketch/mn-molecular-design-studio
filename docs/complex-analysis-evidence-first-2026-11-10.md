@@ -130,3 +130,38 @@ molecule-target-study-navigation.jpg in the isolated preview directory.
 Final focused regressions: 82 passed across relationships, saved evidence,
 collection state/acceptance, labels, authorized catalog and Database hydration.
 Production data, Results, scheduler state and services remain unchanged.
+
+## Target / system → campaign entry
+
+The landing page now offers Project, Type of work and an exact recorded input
+target/system facet before the paged campaign list (25 rows). Facets reuse the
+lineage construct-key definition as transient navigation state; no scientific
+identity or schema is added. Names alone never merge inputs. Explicit target
+sequences take precedence over generated binder components; other recorded
+assembly components, structural digests, boundaries and preparations remain
+distinct. Unresolved inputs stay accessible without an invented target.
+
+Opening work now shows Overview → Evidence → Structures & 3D → Shortlist &
+export. Overview separates original input sequence/structure provenance from
+retained output models and distinguishes source attempts, native acceptance,
+final acceptance and Database inventory. Existing campaign/worker grouping is
+reused; historical batch presentations still disclose missing parent links.
+Multiple recorded receptor contexts in one collection can narrow the paged
+evidence/study view. Exact models still require their existing representation
+links. Missing biological cross-references are not repaired by matching labels.
+
+Browser validation on the existing isolated 8510 snapshot selected Michele_tau,
+the recorded 31-residue target and the RFD4 10-design historical batch group.
+Overview showed 18 source memberships, 180 scored generations and 174 retained
+designs/models, with incomplete native decisions and no invented final pass.
+The original target sequence was displayed; Evidence opened existing acceptance
+and Biotite records with their saved Evaluation IDs. No coordinates or scientific
+calculations were required. Screenshot: target-campaign-overview.png in the
+isolated preview directory. The MD preparation facets separately selected its
+two TRalpha studies and its one TRbeta study using original references.
+
+System-facet fallback queries inspect saved observation metadata only when
+compact source input facts are absent: 58 groups in this snapshot, 0.685 s for
+that query (not whole-page timing). No Results scans or remote requests occur.
+Canonical staging counts remain 21,473 molecules, 1,050 groups and 21,537
+structures. Production services and scientific records are untouched.

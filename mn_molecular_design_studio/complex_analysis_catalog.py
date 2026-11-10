@@ -50,7 +50,7 @@ def _evidence_scope_query(database, user, group_ids, relationship=None, *, repli
     return cte, " AND ".join(conditions) or "1", parameters
 
 
-def saved_relationship_page(database, user: dict, group_ids: list[str], *, offset=0, limit=25, query="") -> dict:
+def saved_relationship_page(database, user: dict, group_ids: list[str], *, offset=0, limit=25, query="", system_scope=None) -> dict:
     """Page molecule–target/preparation–study relationships from saved evidence.
 
     Membership scope prevents unrelated sources with missing study/target IDs
@@ -62,8 +62,16 @@ def saved_relationship_page(database, user: dict, group_ids: list[str], *, offse
     cte, _, parameters = _evidence_scope_query(database, user, group_ids)
     fields = ",".join("o." + field for field in _RELATION_FIELDS)
     clause = "1"
+    if system_scope is not None:
+        scope_fields = ("group_id", "target_ref", "target_revision", "preparation_id")
+        if any(set(scope) != set(scope_fields) or scope["group_id"] not in group_ids
+               or any(not isinstance(value, str) for value in scope.values()) for scope in system_scope):
+            raise ValueError("The selected system is outside these source memberships.")
+        clause = "(" + " OR ".join("(" + " AND ".join("o." + key + "=?" for key in scope_fields) + ")"
+                                     for scope in system_scope) + ")" if system_scope else "0"
+        parameters += [scope[key] for scope in system_scope for key in scope_fields]
     if query:
-        clause = "(m.name LIKE ? OR o.target_ref LIKE ? OR o.study_id LIKE ? OR o.preparation_id LIKE ?)"
+        clause += " AND (m.name LIKE ? OR o.target_ref LIKE ? OR o.study_id LIKE ? OR o.preparation_id LIKE ?)"
         parameters += ["%" + query + "%"] * 4
     grouped = ("SELECT " + fields + ",MAX(m.name) AS molecule_name, COUNT(*) AS record_count, "
         "COUNT(DISTINCT replica) AS replica_count, "
@@ -87,6 +95,101 @@ def saved_relationship_page(database, user: dict, group_ids: list[str], *, offse
     items = [{**dict(row), "methods": json.loads(row["methods"]),
               "relationship": {key: str(row[key]) for key in _RELATION_FIELDS}} for row in rows]
     return {"items": items, "totals": totals, "next_offset": offset + limit if offset + limit < totals["relationships"] else None}
+
+
+def retained_system_contexts(database, user, group_ids):
+    """Small, authorized system facets from existing evidence; no model hydration.
+
+    These are recorded target/preparation references, not inferred biological
+    identities. Source membership remains attached even for a shared target.
+    """
+    cte, _, parameters = _evidence_scope_query(database, user, group_ids)
+    with database.connection() as connection:
+        rows = connection.execute(cte + "SELECT group_id,target_ref,target_revision,preparation_id, "
+            "MAX(json_extract(context,'$.target_receptor')) AS label, "
+            "MAX(json_extract(context,'$.target_pdb_id')) AS pdb "
+            "FROM evidence WHERE target_ref<>'' OR target_revision<>'' OR preparation_id<>'' "
+            "GROUP BY group_id,target_ref,target_revision,preparation_id", parameters).fetchall()
+    result = {}
+    for row in rows:
+        target = {key: str(row[key]) for key in ("group_id", "target_ref", "target_revision", "preparation_id")}
+        result.setdefault(row["group_id"], []).append({
+            "target": {"target_id": row["target_ref"], "target_structure_digest": row["target_revision"],
+                       "preparation": row["preparation_id"]},
+            "label": " · ".join(str(row[key]) for key in ("label", "pdb") if row[key]) or row["target_ref"],
+            "scope": target,
+        })
+    return result
+
+
+def collection_system_facets(group):
+    """Presentation facets from exact saved inputs, never names or binder sequence.
+
+    Reuse the lineage construct-key definition. Facet keys are transient UI
+    state, not new molecular or campaign identities. Ambiguous/label-only inputs
+    remain unresolved. Evidence scopes keep multi-target collections selectable.
+    """
+    from mn_molecular_design_studio.scientific_lineage import _target_construct_key, _target_construct_record
+    origin = group.get("origin") or {}
+    context = group.get("scientific_context") or {}
+    inputs = [{"target": target, "label": target.get("label") or ""}
+              for target in context.get("targets") or []]
+    if not inputs:
+        fields = {
+            "target_molecule_id": origin.get("design_target_molecule_id") or origin.get("target_molecule_id"),
+            "target_id": origin.get("target_id"),
+            "target_construct_id": origin.get("target_construct_id") or origin.get("target_key"),
+            "sequence_sha256": origin.get("design_target_sequence_sha256") or origin.get("target_sequence_sha256") or origin.get("target_construct_sha256"),
+            "target_structure_digest": origin.get("target_structure_digest"),
+            "preparation": origin.get("prepared_target_run_id") or origin.get("receptor_preparation_run_id"),
+        }
+        if any(fields.values()):
+            inputs = [{"target": {key: value for key, value in fields.items() if value},
+                       "label": (group.get("summary") or {}).get("target") or ""}]
+    if not inputs:
+        inputs = group.get("retained_system_contexts") or []
+    facets = {}
+    for item in inputs:
+        target = item["target"]
+        record = _target_construct_record(target)
+        record.update({key: target[key] for key in ("sequence_sha256", "target_construct_id") if target.get(key)})
+        # Some historical source facts include the designed binder in components.
+        # Explicit target-chain sequences take precedence over that full complex.
+        if record.get("sequences_by_chain"):
+            other_components = [component for component in record.get("components") or []
+                                if component.get("type") not in {"protein", "peptide"}
+                                and component.get("role") not in {"binder", "design"}]
+            record.pop("components", None)
+            if other_components:
+                # Keep cofactors, ligands and nucleic acids in the input system.
+                # Equal protein sequence does not establish equal assembly.
+                record["components"] = other_components
+        identity = {key: value for key, value in record.items() if key not in {"label", "biological_target"} and value}
+        has_sequence = bool(record.get("sequences_by_chain") or record.get("sequence_sha256") or
+                            any(component.get("sequence") for component in record.get("components") or []))
+        has_structure = bool(record.get("target_structure_digest") or record.get("structure_digest"))
+        if not (has_sequence or has_structure or any(record.get(key) for key in (
+                "target_molecule_id", "target_id", "biological_target_id", "uniprot_id", "accession",
+                "target_construct_id", "assembly_id", "preparation"))):
+            continue
+        key = _target_construct_key(identity)
+        label = str(item.get("label") or record.get("target_molecule_id") or record.get("target_id") or "Recorded input system")
+        sequences = record.get("sequences_by_chain") or {}
+        if sequences and "aa" not in label:
+            label += " · " + "+".join(str(len(value)) for _, value in sorted(sequences.items())) + " aa"
+        if record.get("preparation"):
+            preparation = record["preparation"]
+            if isinstance(preparation, dict):
+                reference = preparation.get("id") or preparation.get("run_id") or preparation.get("name")
+                label += " · prep " + str(reference) if reference else " · preparation recorded"
+            else:
+                label += " · prep " + str(preparation)[-8:]
+        if record.get("target_structure_digest") or record.get("structure_digest"):
+            label += " · structure " + str(record.get("target_structure_digest") or record["structure_digest"])[:10]
+        input_kind = ("Sequence + structure" if has_sequence and has_structure else "Sequence" if has_sequence
+                      else "Structure" if has_structure else "Recorded target / system reference")
+        facets[key] = {"key": key, "label": label, "target": record, "input_kind": input_kind, "scope": item.get("scope")}
+    return list(facets.values())
 
 
 def relationship_structure_ids(database, user, group_ids, relationship):

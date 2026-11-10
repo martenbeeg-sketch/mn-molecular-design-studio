@@ -72,7 +72,7 @@ def test_open_work_is_metadata_only_and_does_not_invent_acceptance():
     open_saved_work(state, user_id="owner", group_ids=["md-study", "md-study"], label="MD study")
     assert state["complex-analysis-evidence-selection"]["group_ids"] == ["md-study"]
     assert "complex-analysis-workflow-samples" not in state
-    assert state["complex-analysis-flow-step"] == "analyze"
+    assert state["complex-analysis-flow-step"] == "overview"
     assert "acceptance" not in str(state)
 
 
@@ -150,7 +150,7 @@ def test_open_saved_work_button_reaches_evidence_dashboard(records, monkeypatch)
     def selected_cohort(groups):
         cohorts = original(groups)
         st.session_state['complex-analysis-collections-open'] = True
-        st.session_state['complex-analysis-work-table-scope'] = (None, 'All types', '')
+        st.session_state['complex-analysis-work-table-scope'] = (None, 'All types', '', '')
         st.session_state['complex-analysis-selected-cohorts'] = [cohorts[0]['id']]
         st.session_state['complex-analysis-selected-collections'] = [group]
         return cohorts
@@ -161,6 +161,10 @@ render_collection_workspace({OWNER!r})
 ''').run()
     assert not app.exception
     app.button(key='complex-analysis-load-collection').click().run()
+    assert not app.exception
+    assert app.session_state['complex-analysis-flow-step'] == 'overview'
+    assert any('Campaign / study overview' in item.value for item in app.markdown)
+    app.button(key='overview-open-evidence').click().run()
     assert not app.exception
     assert app.session_state['complex-analysis-flow-step'] == 'analyze'
     assert [metric.value for metric in app.metric] == ['1', '1', '1']

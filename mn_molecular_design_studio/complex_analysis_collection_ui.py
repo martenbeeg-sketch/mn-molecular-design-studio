@@ -1781,7 +1781,7 @@ def _database_collection_samples(user: dict) -> list[dict]:
                                                             if group.get("id")])
     except (PermissionError, OSError, ValueError, TypeError):
         groups, statistics = [], {}
-    from mn_molecular_design_studio.complex_analysis_catalog import saved_evidence_summary
+    from mn_molecular_design_studio.complex_analysis_catalog import saved_evidence_summary, collection_system_facets
     evidence = saved_evidence_summary(database, user, [group["id"] for group in groups])
     collections = []
     for group in groups:
@@ -1794,7 +1794,7 @@ def _database_collection_samples(user: dict) -> list[dict]:
         collections.append({**group, "summary": _design_collection_label(group), "stats": stats})
     _resolve_collection_target_labels(database, user, collections)
     if callable(getattr(database, "connection", None)) and callable(getattr(database, "_authorize_group_ids_for_query", None)):
-        from mn_molecular_design_studio.complex_analysis_catalog import collection_source_contexts, retained_target_references
+        from mn_molecular_design_studio.complex_analysis_catalog import collection_source_contexts, retained_target_references, retained_system_contexts
         targets = retained_target_references(database, user, [group["id"] for group in collections])
         for group in collections:
             refs = targets.get(group["id"], [])
@@ -1807,10 +1807,19 @@ def _database_collection_samples(user: dict) -> list[dict]:
             labels = sorted({_input_target_label(target) for target in context.get("targets") or []})
             if labels:
                 group["summary"]["target"] = "; ".join(labels)
+        # Source input facts are already compact. Consult observation contexts
+        # only for collections whose input relationship is otherwise absent.
+        fallback_ids = [group["id"] for group in collections if not collection_system_facets(group)
+                        and group["stats"].get("observation_count", 0)]
+        systems = retained_system_contexts(database, user, fallback_ids) if fallback_ids else {}
+        for group in collections:
+            group["retained_system_contexts"] = systems.get(group["id"], [])
     collections.sort(key=lambda row: (str(row.get("updated_at") or ""), str(row.get("name") or "").casefold()), reverse=True)
-    st.markdown("### Choose a run or saved collection")
-    st.caption("Generated / attempted totals and native acceptance come from recorded source evidence; Database counts describe retained models. Scored generations exclude failures before metrics were saved. Incomplete filters are not failures.")
+    st.markdown("### Choose a target or molecular system, then a campaign")
+    st.caption("Project → recorded target / input system → campaign or study. Open its Overview, review evidence, inspect exact models and record a shortlist. All discovery uses saved Database metadata.")
     cohorts = _database_analysis_cohorts(collections)
+    for cohort in cohorts:
+        cohort["system_facets"] = {group["id"]: collection_system_facets(group) for group in cohort["groups"]}
     cohort_group_map = {str(row["id"]): list(row["group_ids"]) for row in cohorts}
     try:
         cohort_counts = database.cohort_statistics(user, cohort_group_map) if callable(
@@ -1848,22 +1857,36 @@ def _database_collection_samples(user: dict) -> list[dict]:
                 "Type of work", ["All types", *activities], key="complex-analysis-work-type",
                 state_key="complex-analysis-work-type-value", default="All types",
             )
-        search = _stateful_text_input("Find saved work", placeholder="Target, campaign, engine or source run",
+        scoped_cohorts = [row for row in cohorts if (project is None or row["project_id"] == project)
+                          and (activity == "All types" or row["activity"] == activity)]
+        system_options = {facet["key"]: facet for row in scoped_cohorts
+                          for facets in row["system_facets"].values() for facet in facets}
+        system_ids = sorted(system_options, key=lambda key: (system_options[key]["label"].casefold(), key))
+        unresolved = any(not any(row["system_facets"].values()) for row in scoped_cohorts)
+        system = _stateful_selectbox("Input target / molecular system",
+            ["", *system_ids, *(["unresolved"] if unresolved else [])],
+            format_func=lambda key: ("All recorded systems and unresolved inputs" if not key else
+                "Input relationship not recorded" if key == "unresolved" else
+                system_options[key]["label"] + " · " + key[-8:]),
+            key="complex-analysis-work-system", state_key="complex-analysis-work-system-value", default="")
+        st.caption("Sequence, structure, construct and receptor preparations remain distinct. Matching names do not establish identity. A prediction may describe an input assembly rather than a separate target.")
+        search = _stateful_text_input("Find saved work", placeholder="Campaign, study, engine or source job",
                                key="complex-analysis-work-search", state_key="complex-analysis-work-search-value").strip().casefold()
-        table_scope = (project, activity, search)
+        table_scope = (project, activity, search, system)
         if st.session_state.get("complex-analysis-work-table-scope") != table_scope:
             # A restored opened cohort must not block selection in a new
             # project/filter table, or silently carry old rows into it.
             st.session_state["complex-analysis-collections-open"] = False
             st.session_state["complex-analysis-work-table-scope"] = table_scope
-        cohorts = [row for row in cohorts
-                   if (project is None or row["project_id"] == project)
-                   and (activity == "All types" or row["activity"] == activity)
+        cohorts = [row for row in scoped_cohorts
+                   if (not system or (not any(row["system_facets"].values()) if system == "unresolved" else
+                                      any(facet["key"] == system for facets in row["system_facets"].values() for facet in facets)))
                    and (not search or search in json.dumps(
                        {key: value for key, value in row.items() if key not in {"groups", "stats"}},
                        ensure_ascii=False, default=str).casefold())]
         cohort_group_map = {str(row["id"]): list(row["group_ids"]) for row in cohorts}
         st.caption(f"{len(cohorts):,} saved run / collection group(s) match.")
+        st.caption("Generated / attempted and acceptance totals retain their recorded stage and units. Database counts describe retained members, not total attempts. Campaign rows keep their complete membership; the selected system narrows the evidence view where exact links are recorded.")
         if any(row["cohort_type"].startswith("Historical batch") for row in cohorts):
             st.caption("Historical batch groups reuse Results grouping; they do not assert an unrecorded parent run.")
         if not cohorts:
@@ -1902,7 +1925,11 @@ def _database_collection_samples(user: dict) -> list[dict]:
                            if all(row["activity"] == "Protein design" for row in cohorts) else
                            ["Work group", "Scientific work", "Target/construct", "DB-retained designs",
                             "Retained structures/models", "Saved observations"])
-        event = st.dataframe(table, hide_index=True, use_container_width=True, height=min(420, 40 + 35 * max(1, len(table))),
+        page_key = _widget_key("complex-analysis-campaign-page-", str(table_scope))
+        page = int(st.number_input("Campaign page", min_value=1, max_value=max(1, (len(cohorts) + 24) // 25),
+                                   value=1, step=1, key=page_key))
+        visible_cohorts = cohorts[(page - 1) * 25:page * 25]
+        event = st.dataframe(table[(page - 1) * 25:page * 25], hide_index=True, use_container_width=True, height=min(420, 40 + 35 * max(1, len(visible_cohorts))),
                              column_order=primary_columns,
                              column_config={
                                  "Work group": st.column_config.TextColumn("Run / collection", width="large"),
@@ -1913,7 +1940,7 @@ def _database_collection_samples(user: dict) -> list[dict]:
                                  "Saved Evaluations": st.column_config.TextColumn("Saved evidence", width="medium"),
                              },
                              on_select="rerun", selection_mode="multi-row",
-                             key=_widget_key("complex-analysis-cohort-table-", user_id + str(project) + activity + search))
+                             key=_widget_key("complex-analysis-cohort-table-", user_id + str(table_scope) + str(page)))
         selected_state = "complex-analysis-selected-collections"
         selected_cohort_state = "complex-analysis-selected-cohorts"
         if st.session_state.get("complex-analysis-collections-open"):
@@ -1929,7 +1956,7 @@ def _database_collection_samples(user: dict) -> list[dict]:
                                       if value in {group_id for ids in cohort_group_map.values() for group_id in ids}]
         else:
             selected_rows = list(getattr(getattr(event, "selection", None), "rows", []) or [])
-            selected_cohorts = [cohorts[index]["id"] for index in selected_rows if 0 <= index < len(cohorts)]
+            selected_cohorts = [visible_cohorts[index]["id"] for index in selected_rows if 0 <= index < len(visible_cohorts)]
             st.session_state[selected_cohort_state] = selected_cohorts
             selected_group_ids = [value for cohort_id in selected_cohorts
                                   for value in cohort_group_map.get(cohort_id, [])]
@@ -1996,11 +2023,23 @@ def _database_collection_samples(user: dict) -> list[dict]:
     if st.button("Open saved work", type="primary", key="complex-analysis-load-collection"):
         from mn_molecular_design_studio.complex_analysis_evidence_ui import open_saved_work
         opened = [row for row in cohorts if row["id"] in selected_cohorts]
+        matching_facets = [(group_id, facet) for row in opened for group_id, facets in row["system_facets"].items()
+                           for facet in facets if facet["key"] == system]
+        system_scope = None
+        if system in system_options:
+            selected = list(dict.fromkeys(group_id for group_id, _ in matching_facets))
+            if all(facet.get("scope") for _, facet in matching_facets):
+                system_scope = [facet["scope"] for _, facet in matching_facets]
+        elif system == "unresolved":
+            selected = list(dict.fromkeys(group_id for row in opened for group_id, facets in row["system_facets"].items()
+                                          if not facets))
         labels = [row["name"] for row in opened]
         projects = sorted({project_labels.get(row["project_id"], row["project_id"] or "Personal") for row in opened})
         activities = sorted({row["activity"] for row in opened})
         open_saved_work(st.session_state, user_id=user_id, group_ids=selected, label=" · ".join(labels),
-                        project_label=" / ".join(projects), work_type=" / ".join(activities))
+                        project_label=" / ".join(projects), work_type=" / ".join(activities),
+                        system_label=system_options[system]["label"] if system in system_options else "",
+                        system_scope=system_scope)
         st.session_state["complex-analysis-collections-open"] = True
         st.rerun()
     return []
@@ -2405,13 +2444,13 @@ def _load_workspace_samples(user: dict) -> list[dict]:
 
 
 def _workflow_steps() -> str:
-    labels = [("select", "Saved work"), ("analyze", "Evidence"),
-              ("compare", "Inspect & Visualize"), ("shortlist", "Shortlist & Export")]
+    labels = [("select", "Select campaign"), ("overview", "Overview"), ("analyze", "Evidence"),
+              ("compare", "Structures & 3D"), ("shortlist", "Shortlist & export")]
     current = str(st.session_state.get("complex-analysis-flow-step") or "select")
     if current not in {key for key, _ in labels}:
         current = "select"
         st.session_state["complex-analysis-flow-step"] = current
-    columns = st.columns(4)
+    columns = st.columns(len(labels))
     loaded = bool(st.session_state.get("complex-analysis-workflow-samples") or st.session_state.get("complex-analysis-evidence-selection"))
     for column, (key, label) in zip(columns, labels):
         if column.button(label, key=f"complex-analysis-step-{key}",
@@ -2480,11 +2519,14 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
             st.error("Select saved work again with your current account.")
             return
         from mn_molecular_design_studio.molecular_database import MolecularDatabase
-        from mn_molecular_design_studio.complex_analysis_evidence_ui import render_saved_evidence, render_model_choices
+        from mn_molecular_design_studio.complex_analysis_evidence_ui import render_saved_evidence, render_model_choices, render_work_overview
         database = MolecularDatabase()
         try:
             for group_id in selection["group_ids"]:
                 database.group(group_id, user)
+            if step == "overview":
+                render_work_overview(database, user, selection)
+                return
             if step == "analyze":
                 render_saved_evidence(database, user, selection)
                 if not st.session_state.get("complex-analysis-assessment-open"):
@@ -2492,6 +2534,10 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
             elif not st.session_state.get("complex-analysis-workflow-samples"):
                 if step == "shortlist":
                     st.info("Select exact molecular models in Inspect & Visualize before recording an experimental shortlist. MD evidence can be reviewed without a structural shortlist.")
+                if selection.get("system_scope") is not None and not selection.get("relationship"):
+                    from mn_molecular_design_studio.complex_analysis_evidence_ui import render_relationship_choices
+                    stats = database.cohort_statistics(user, {"selected": selection["group_ids"]})["selected"]
+                    render_relationship_choices(database, user, selection, stats)
                 render_model_choices(database, user, selection)
                 return
         except (PermissionError, OSError, ValueError) as exc:
