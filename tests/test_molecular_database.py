@@ -60,6 +60,37 @@ def test_collection_statistics_aggregate_selected_group_counts_and_enforce_acces
         database.collection_statistics(A, [private["group_id"]])
 
 
+def test_cohort_statistics_deduplicate_designs_across_groups_and_enforce_access(database):
+    record = imports.parse_sequences(">shared\nACDEFG")
+    first = database.import_records(A, record, name="Run A", project_id="project-1")
+    second = database.import_records(A, record, name="Run B", project_id="project-1")
+    molecule_id = first["molecule_ids"][0]
+    assert second["molecule_ids"] == [molecule_id]
+    for group_id, model in ((first["group_id"], "model-a"), (second["group_id"], "model-b")):
+        database.attach_structure(group_id, molecule_id,
+            {"name": model + ".cif", "content": ("data_" + model + "\\n").encode()},
+            context={"model_id": model})
+    with database.connection() as connection:
+        connection.execute("UPDATE molecule_members SET metadata=? WHERE group_id=?",
+            (json.dumps({"validation_acceptance": {"status": "accepted",
+                "policy": {"schema": "studio.validation-acceptance.v1"}}}), first["group_id"]))
+        connection.execute("UPDATE molecule_members SET metadata=? WHERE group_id=?",
+            (json.dumps({"validation_acceptance": {"status": "rejected",
+                "policy": {"schema": "studio.validation-acceptance.v1"}}}), second["group_id"]))
+
+    result = database.cohort_statistics(A, {"target-cohort": [first["group_id"], second["group_id"]]})
+
+    assert result["target-cohort"]["molecule_count"] == 1
+    assert result["target-cohort"]["structure_count"] == 2
+    assert result["target-cohort"]["validation_acceptance"] == {
+        "passed": 1, "rejected": 1, "unresolved": 0, "not_recorded": 0,
+        "source_memberships": 2, "policies": ["studio.validation-acceptance.v1"],
+    }
+    private = database.import_records(B, imports.parse_sequences(">private\nGGGGGG"), name="Private")
+    with pytest.raises(PermissionError, match="not accessible"):
+        database.cohort_statistics(A, {"private": [private["group_id"]]})
+
+
 def test_selected_compound_snapshot_contains_exact_members_and_is_immutable(database):
     result = database.import_records(A, imports.parse_smiles("CCO selected\nCC excluded"), name="Original")
     snapshot = database.compound_snapshot(A, [result["molecule_ids"][0]], project_id="project-1")

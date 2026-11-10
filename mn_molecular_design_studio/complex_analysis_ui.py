@@ -4367,8 +4367,8 @@ def _render_complex_analysis_inspector(user: dict, *, workflow_schema=None, proj
     if opened:
         st.session_state["complex-analysis-active"] = opened
     active = st.session_state.get("complex-analysis-active") or {}
-    st.title("Complex Analysis")
-    if st.button("← Select Database designs", key="complex-analysis-return-database"):
+    st.title("Scientific Inspector")
+    if st.button("← Scientific Work", key="complex-analysis-return-database"):
         st.session_state["complex-analysis-workspace-view"] = "database"
         st.session_state.pop("complex-analysis-source-kind", None)
         st.session_state.pop("complex-analysis-active", None)
@@ -4410,7 +4410,7 @@ def render_complex_analysis_workspace(user: dict, *, workflow_schema=None, proje
                                            project_selector=project_selector, submit=submit)
         return
     st.session_state["complex-analysis-workspace-view"] = "database"
-    st.title("Complex Analysis")
-    st.caption("Select saved Database designs, review or run assessments, compare structures, then record an experimental shortlist.")
+    st.title("Scientific Work")
+    st.caption("Select Database-retained scientific work—designs, predicted structures, ligand poses or simulation models—then review saved evidence, compare and shortlist.")
     from mn_molecular_design_studio.complex_analysis_collection_ui import render_collection_workspace
     render_collection_workspace(user, workflow_schema=workflow_schema, submit=submit)

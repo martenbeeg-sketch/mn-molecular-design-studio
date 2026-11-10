@@ -272,7 +272,7 @@ render_campaign_browser(MolecularDatabase({str(db.root)!r}), {ADMIN!r})
     assert not app.exception
     assert app.session_state["scientific-analysis-area"] == "ligand"
     campaigns = next(frame.value for frame in app.dataframe if frame.value is not None)
-    assert set(campaigns["Campaign"]) == {"area-cofold", "area-docking"}
+    assert set(campaigns["Campaign / source run"]) == {"area-cofold", "area-docking"}
 
 
 def test_existing_evaluations_keep_id_method_parameters_and_multi_input_dependencies(db):

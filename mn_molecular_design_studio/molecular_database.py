@@ -341,6 +341,12 @@ class MolecularDatabase:
             raise ValueError("Collection must be 'all' or 'library'.")
         if scope not in {"organization", "all", "mine", "shared"}:
             raise ValueError("Scope must be 'mine', 'shared', or 'all'.")
+        if user.get("role") == "admin":
+            accessible_projects = None
+        else:
+            from mn_molecular_design_studio.auth import accessible_project_ids
+            accessible_projects = set(accessible_project_ids(user))
+        user_id = str(user.get("id") or "")
         with self.connection() as connection:
             rows = connection.execute("SELECT g.*, COUNT(mm.molecule_id) AS molecule_count FROM molecule_groups g "
                                       "LEFT JOIN molecule_members mm ON mm.group_id=g.id GROUP BY g.id ORDER BY g.updated_at DESC").fetchall()
@@ -349,7 +355,10 @@ class MolecularDatabase:
             item = {**dict(row), "origin": json.loads(row["origin"]), "schema": json.loads(row["schema_json"])}
             item["read_only"] = bool(item["origin"].get("_replica_node"))
             item["collection_kind"] = self._collection_kind(item)
-            if not self._can_read(row, user) or (project_id and row["project_id"] != project_id):
+            row_project = str(row["project_id"] or "")
+            authorized = (accessible_projects is None or
+                          (row_project in accessible_projects if row_project else str(row["owner_id"]) == user_id))
+            if not authorized or (project_id and row["project_id"] != project_id):
                 continue
             if scope == "mine" and (row["owner_id"] != user["id"] or bool(row["project_id"])):
                 continue
@@ -369,6 +378,33 @@ class MolecularDatabase:
                 continue
             result.append(item)
         return result
+
+    def _authorize_group_ids_for_query(self, user: dict, group_ids: list[str]) -> set[str]:
+        """Authorize only the requested group IDs instead of rescanning the catalog."""
+        requested = list(dict.fromkeys(str(value) for value in group_ids if str(value)))
+        if not requested:
+            return set()
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT id,owner_id,project_id FROM molecule_groups "
+                "WHERE id IN (SELECT value FROM json_each(?))", (_json(requested),)
+            ).fetchall()
+        found = {str(row["id"]) for row in rows}
+        if found != set(requested):
+            raise PermissionError("One or more selected Database collections are not accessible.")
+        if user.get("role") == "admin":
+            return found
+        from mn_molecular_design_studio.auth import accessible_project_ids
+        accessible = set(accessible_project_ids(user))
+        user_id = str(user.get("id") or "")
+        for row in rows:
+            project_id = str(row["project_id"] or "")
+            if project_id:
+                if project_id not in accessible:
+                    raise PermissionError("One or more selected Database collections are not accessible.")
+            elif str(row["owner_id"] or "") != user_id:
+                raise PermissionError("One or more selected Database collections are not accessible.")
+        return found
 
     def create_group(self, user: dict, name: str, *, project_id="", import_method="user_uploads", origin=None, group_id=None, schema=None) -> str:
         from mn_molecular_design_studio.molecule_schema import validate_schema
@@ -934,10 +970,11 @@ class MolecularDatabase:
 
     def collection_statistics(self, user, group_ids: list[str] | None = None) -> dict[str, dict[str, int | None]]:
         """Return lightweight member, structure, and saved-Evaluation counts for visible groups."""
-        visible_ids = {str(row["id"]) for row in self.groups(user, collection="all")}
-        requested = list(dict.fromkeys(str(value) for value in (group_ids or visible_ids) if str(value)))
-        if set(requested) - visible_ids:
-            raise PermissionError("One or more selected Database collections are not accessible.")
+        if group_ids is None:
+            requested = [str(row["id"]) for row in self.groups(user, collection="all") if row.get("id")]
+        else:
+            requested = list(dict.fromkeys(str(value) for value in group_ids if str(value)))
+            self._authorize_group_ids_for_query(user, requested)
         if not requested:
             return {}
         with self.connection() as connection:
@@ -982,6 +1019,89 @@ class MolecularDatabase:
                                  "evaluated_design_count": (int(row["evaluation_count"] or 0)
                                                             if row["evaluation_count"] is not None else None)}
                 for row in rows}
+
+    def cohort_statistics(self, user, cohorts: dict[str, list[str]]) -> dict[str, dict]:
+        """Count distinct Database designs/models across authorized source groups.
+
+        Cohorts are a presentation/query grouping, not a new scientific identity.
+        A molecule or structure present in multiple source groups is counted once
+        within a cohort, while its original memberships and provenance remain intact.
+        """
+        if not isinstance(cohorts, dict):
+            raise ValueError("Cohorts must map stable UI keys to source group IDs.")
+        rows = []
+        for cohort_id, group_ids in cohorts.items():
+            key = str(cohort_id or "")
+            if not key or not isinstance(group_ids, (list, tuple)):
+                raise ValueError("Each cohort requires a stable key and a list of source groups.")
+            for group_id in dict.fromkeys(str(value) for value in group_ids if str(value)):
+                rows.append({"cohort_id": key, "group_id": group_id})
+        if not rows:
+            return {}
+        group_to_cohorts: dict[str, set[str]] = {}
+        for row in rows:
+            group_to_cohorts.setdefault(row["group_id"], set()).add(row["cohort_id"])
+        requested_json = _json(list(group_to_cohorts))
+        self._authorize_group_ids_for_query(user, list(group_to_cohorts))
+        molecule_ids = {key: set() for key in cohorts}
+        structure_ids = {key: set() for key in cohorts}
+        evaluated_molecules = {key: set() for key in cohorts}
+        validation_counts = {key: {"passed": 0, "rejected": 0, "unresolved": 0,
+                                   "not_recorded": 0, "policies": set(), "source_memberships": 0}
+                            for key in cohorts}
+        with self.connection() as connection:
+            has_evaluations = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='molecule_evaluations'"
+            ).fetchone() is not None
+            member_rows = connection.execute(
+                "SELECT group_id,molecule_id, "
+                "json_extract(metadata,'$.validation_acceptance.status') AS validation_status, "
+                "COALESCE(json_extract(metadata,'$.validation_acceptance.policy.schema'), "
+                "json_extract(metadata,'$.recorded_policy_id')) AS validation_policy "
+                "FROM molecule_members "
+                "WHERE group_id IN (SELECT value FROM json_each(?))", (requested_json,)
+            ).fetchall()
+            structure_rows = connection.execute(
+                "SELECT group_id,id FROM molecule_structures "
+                "WHERE group_id IN (SELECT value FROM json_each(?))", (requested_json,)
+            ).fetchall()
+            evaluation_rows = (connection.execute(
+                "SELECT DISTINCT group_id,molecule_id FROM molecule_evaluations "
+                "WHERE group_id IN (SELECT value FROM json_each(?))", (requested_json,)
+            ).fetchall() if has_evaluations else [])
+        for row in member_rows:
+            for cohort_id in group_to_cohorts.get(str(row["group_id"]), ()):
+                molecule_ids[cohort_id].add(str(row["molecule_id"]))
+                summary = validation_counts[cohort_id]
+                summary["source_memberships"] += 1
+                status = str(row["validation_status"] or "").casefold()
+                if status in {"accepted", "pass", "passed"}:
+                    summary["passed"] += 1
+                elif status in {"rejected", "fail", "failed"}:
+                    summary["rejected"] += 1
+                elif status in {"pending", "unresolved", "unknown"}:
+                    summary["unresolved"] += 1
+                else:
+                    summary["not_recorded"] += 1
+                if row["validation_policy"]:
+                    summary["policies"].add(str(row["validation_policy"]))
+        for row in structure_rows:
+            for cohort_id in group_to_cohorts.get(str(row["group_id"]), ()):
+                structure_ids[cohort_id].add(str(row["id"]))
+        for row in evaluation_rows:
+            for cohort_id in group_to_cohorts.get(str(row["group_id"]), ()):
+                evaluated_molecules[cohort_id].add(str(row["molecule_id"]))
+        return {str(cohort_id): {
+            "molecule_count": len(molecule_ids.get(str(cohort_id), set())),
+            "structure_count": len(structure_ids.get(str(cohort_id), set())),
+            "evaluated_design_count": (len(evaluated_molecules.get(str(cohort_id), set()))
+                                       if has_evaluations else None),
+            "validation_acceptance": {
+                **{name: int(count) for name, count in validation_counts.get(str(cohort_id), {}).items()
+                   if name != "policies"},
+                "policies": sorted(validation_counts.get(str(cohort_id), {}).get("policies", set())),
+            },
+        } for cohort_id in cohorts}
 
     def metric_fields(self, user, *, group_id="", project_id="", scope="organization", methods=None, collection="all",
                       hide_smoke_test=False):

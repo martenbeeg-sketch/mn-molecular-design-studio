@@ -1,4 +1,5 @@
 from mn_molecular_design_studio.complex_analysis_collection_ui import (
+    _database_analysis_cohorts,
     _design_collection_label,
     _is_design_collection,
 )
@@ -77,4 +78,184 @@ def test_design_collection_picker_hides_unlinked_utility_groups_but_keeps_run_co
     assert _is_design_collection({
         "name": "Distributed BindCraft2",
         "origin": {"type": "job", "collection_kind": "generated", "run_id": "20261029-094457-fb2fd80a"},
+    })
+
+
+def test_analysis_cohort_groups_cross_engine_source_runs_by_exact_target_not_names():
+    same_target = "a" * 64
+    groups = [
+        {"id": "rfd4-run", "project_id": "project-1", "owner_id": "owner",
+         "origin": {"type": "job", "collection_kind": "generated", "tool": "rfd4_proteina",
+                     "run_id": "run-rfd4", "task_group": "design", "workstation": "PC004033",
+                     "design_target_molecule_id": "target-1", "design_target_sequence_sha256": same_target},
+         "summary": {"target": "PD-L1", "generator": "RFD4"}},
+        {"id": "bindcraft-run", "project_id": "project-1", "owner_id": "owner",
+         "origin": {"type": "job", "collection_kind": "generated", "tool": "bindcraft2",
+                     "run_id": "run-bindcraft", "task_group": "design", "workstation": "pc002975",
+                     "design_target_molecule_id": "target-1", "design_target_sequence_sha256": same_target},
+         "summary": {"target": "PD-L1 construct A", "generator": "BindCraft2"}},
+        {"id": "different-construct", "project_id": "project-1", "owner_id": "owner",
+         "origin": {"type": "job", "collection_kind": "generated", "tool": "bindcraft2",
+                     "run_id": "run-other", "task_group": "design", "workstation": "pc002975",
+                     "design_target_molecule_id": "target-1", "design_target_sequence_sha256": "b" * 64},
+         "summary": {"target": "PD-L1", "generator": "BindCraft2"}},
+        # A matching display name alone does not make an unknown target compatible.
+        {"id": "unknown-target", "project_id": "project-1", "owner_id": "owner",
+         "origin": {"type": "job", "collection_kind": "generated", "tool": "rfd4_proteina",
+                     "run_id": "run-unknown", "task_group": "design", "workstation": "PC004032"},
+         "summary": {"target": "PD-L1", "generator": "RFD4"}},
+    ]
+
+    cohorts = _database_analysis_cohorts(groups)
+
+    assert len(cohorts) == 3
+    compatible = next(row for row in cohorts if set(row["group_ids"]) == {"rfd4-run", "bindcraft-run"})
+    assert compatible["cohort_type"] == "Cross-run comparison cohort"
+    assert compatible["source_runs"] == 2
+    assert compatible["workstations"] == "PC004033, pc002975"
+    assert compatible["generators"] == "BindCraft2, RFD4"
+    assert compatible["campaign_ids"] == []
+
+
+def test_analysis_cohort_keeps_unlinked_unknown_targets_distinct_and_names_them():
+    cohorts = _database_analysis_cohorts([
+        {"id": "unknown-a", "name": "Design A", "project_id": "p",
+         "origin": {"type": "job", "tool": "rfd4_proteina", "run_id": "run-a"},
+         "summary": {"target": "Not recorded", "collection": "Design A", "generator": "RFD4"}},
+        {"id": "unknown-b", "name": "Design B", "project_id": "p",
+         "origin": {"type": "job", "tool": "rfd4_proteina", "run_id": "run-b"},
+         "summary": {"target": "Not recorded", "collection": "Design B", "generator": "RFD4"}},
+    ])
+
+    assert len(cohorts) == 2
+    assert {row["cohort_type"] for row in cohorts} == {"Source group · target identity missing"}
+    assert {row["name"] for row in cohorts} == {"Design A", "Design B"}
+
+
+def test_scientific_result_task_groups_show_the_stage_of_the_source_work():
+    cohorts = _database_analysis_cohorts([
+        {"id": "fold", "project_id": "p", "origin": {
+            "type": "scientific_results", "task_group": "refolding-validation", "run_id": "fold-run"},
+            "summary": {"target": "Not recorded", "collection": "Fold output"}},
+        {"id": "dock", "project_id": "p", "origin": {
+            "type": "scientific_results", "task_group": "docking", "run_id": "dock-run"},
+            "summary": {"target": "Not recorded", "collection": "Dock output"}},
+    ])
+
+    assert {tuple(row["group_ids"]): row["activity"] for row in cohorts} == {
+        ("fold",): "Folding and prediction",
+        ("dock",): "Ligand docking",
+    }
+
+
+def test_cohorts_with_missing_target_names_show_their_exact_target_identity():
+    cohorts = _database_analysis_cohorts([
+        {"id": "target-a", "name": "RFD4", "project_id": "p",
+         "origin": {"type": "job", "tool": "rfd4_proteina", "target_identity": "Not recorded",
+                    "target_molecule_id": "mol-a", "target_sequence_sha256": "a" * 64},
+         "summary": {"target": "Not recorded", "generator": "RFD4"}},
+        {"id": "target-b", "name": "RFD4", "project_id": "p",
+         "origin": {"type": "job", "tool": "rfd4_proteina", "target_identity": "Not recorded",
+                    "target_molecule_id": "mol-b", "target_sequence_sha256": "b" * 64},
+         "summary": {"target": "Not recorded", "generator": "RFD4"}},
+    ])
+
+    assert len(cohorts) == 2
+    assert {row["target"] for row in cohorts} == {"Target record mol-a", "Target record mol-b"}
+    assert len({row["name"] for row in cohorts}) == 2
+
+
+def test_analysis_cohort_table_has_one_row_for_a_multi_run_target_cohort(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    class Database:
+        def groups(self, user, *, collection):
+            return [
+                {"id": "rfd4", "name": "RFD4 candidate", "project_id": "project-1", "owner_id": user["id"],
+                 "collection_kind": "generated", "updated_at": "2026-11-10", "origin": {
+                     "type": "job", "collection_kind": "generated", "tool": "rfd4_proteina",
+                     "run_id": "run-rfd4", "task_group": "design", "workstation": "PC004033",
+                     "design_target_molecule_id": "target-1", "design_target_sequence_sha256": "a" * 64}},
+                {"id": "bindcraft", "name": "BindCraft candidate", "project_id": "project-1", "owner_id": user["id"],
+                 "collection_kind": "generated", "updated_at": "2026-11-09", "origin": {
+                     "type": "job", "collection_kind": "generated", "tool": "bindcraft2",
+                     "run_id": "run-bindcraft", "task_group": "design", "workstation": "pc002975",
+                     "design_target_molecule_id": "target-1", "design_target_sequence_sha256": "a" * 64}},
+            ]
+
+        def collection_statistics(self, user, group_ids):
+            return {group_id: {"molecule_count": 1, "structure_count": 1, "evaluated_design_count": 0}
+                    for group_id in group_ids}
+
+        def cohort_statistics(self, user, cohorts):
+            return {key: {"molecule_count": 2, "structure_count": 2, "evaluated_design_count": 0}
+                    for key in cohorts}
+
+    monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", Database)
+    user = {"id": "student", "role": "user"}
+    app = AppTest.from_string(f'''
+from mn_molecular_design_studio.complex_analysis_collection_ui import _database_collection_samples
+_database_collection_samples({user!r})
+''', default_timeout=10).run()
+
+    assert not app.exception
+    assert len(app.dataframe) == 1
+    rows = app.dataframe[0].value
+    assert len(rows) == 1
+    assert rows.iloc[0]["DB-retained designs"] == 2
+    assert rows.iloc[0]["All-run totals"] == "Not part of retained Database cohort"
+    assert rows.iloc[0]["Source runs"] == "2 source run(s) · 2 Database group(s)"
+    assert not any(widget.label == "Design collection(s)" for widget in app.multiselect)
+
+
+def test_analysis_cohort_table_renders_every_distinct_work_group(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    groups = [
+        {"id": "fold", "name": "Fold run", "project_id": "", "owner_id": "student",
+         "collection_kind": "generated", "origin": {"type": "scientific_results",
+             "task_group": "refolding-validation", "run_id": "fold-run"}},
+        {"id": "dock", "name": "Dock run", "project_id": "", "owner_id": "student",
+         "collection_kind": "generated", "origin": {"type": "scientific_results",
+             "task_group": "docking", "run_id": "dock-run"}},
+    ]
+
+    class Database:
+        def groups(self, user, *, collection):
+            return groups
+
+        def collection_statistics(self, user, group_ids):
+            return {group_id: {"molecule_count": 1, "structure_count": 1, "evaluated_design_count": 0}
+                    for group_id in group_ids}
+
+        def cohort_statistics(self, user, cohorts):
+            return {cohort_id: {"molecule_count": 1, "structure_count": 1,
+                                "evaluated_design_count": 0,
+                                "validation_acceptance": {"source_memberships": 0}}
+                    for cohort_id in cohorts}
+
+    monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", Database)
+    app = AppTest.from_string('''
+from mn_molecular_design_studio.complex_analysis_collection_ui import _database_collection_samples
+_database_collection_samples({"id": "student", "role": "user"})
+''', default_timeout=10).run()
+
+    assert not app.exception
+    rows = app.dataframe[0].value
+    assert set(rows["Work group"]) == {"Fold run", "Dock run"}
+    assert set(rows["Scientific work"]) == {"Folding and prediction", "Ligand docking"}
+
+
+def test_unlinked_analysis_outputs_are_not_listed_as_design_collections():
+    assert not _is_design_collection({
+        "collection_kind": "generated",
+        "origin": {"type": "job", "tool": "biotite_interface", "run_id": "analysis-1"},
+    })
+    assert _is_design_collection({
+        "collection_kind": "curated",
+        "origin": {"type": "job", "tool": "plip", "saved_selection": True, "run_id": "pose-cohort"},
+    })
+    assert not _is_design_collection({
+        "collection_kind": "generated",
+        "origin": {"type": "scientific_results", "tool": "plip", "run_id": "analysis-2"},
     })

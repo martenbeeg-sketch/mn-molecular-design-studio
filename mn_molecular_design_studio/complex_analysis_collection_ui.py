@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -1311,13 +1312,19 @@ def _design_collection_label(group: dict) -> dict[str, str]:
     elif isinstance(target, dict):
         target = (target.get("name") or target.get("label") or target.get("molecule_id")
                   or target.get("id") or "Target identity recorded")
+    if str(target or "").strip().casefold() in {"", "not recorded", "unknown", "none", "null"}:
+        target = ""
     if not target:
-        target_molecule_id = str(origin.get("design_target_molecule_id") or "")
-        target_digest = str(origin.get("design_target_sequence_sha256") or "")
-        if target_molecule_id:
+        target_molecule_id = str(origin.get("design_target_molecule_id") or origin.get("target_molecule_id") or "")
+        target_construct_id = str(origin.get("target_construct_id") or origin.get("target_key") or "")
+        target_digest = str(origin.get("design_target_sequence_sha256") or origin.get("target_sequence_sha256")
+                            or origin.get("target_construct_sha256") or "")
+        if target_construct_id:
+            target = f"Target construct {target_construct_id}"
+        elif target_molecule_id:
             target = f"Target record {target_molecule_id}"
         elif target_digest:
-            target = f"Sequence SHA-256 {target_digest[:12]}…"
+            target = f"Target sequence SHA-256 {target_digest[:12]}…"
         else:
             target = "Not recorded"
     generator = (origin.get("generator_engine") or origin.get("generator")
@@ -1335,11 +1342,167 @@ def _design_collection_label(group: dict) -> dict[str, str]:
             "date": str(group.get("updated_at") or group.get("created_at") or "Not recorded")}
 
 
+def _analysis_activity(group: dict) -> str:
+    """Classify a retained source group without using its display name as evidence."""
+    origin = group.get("origin") if isinstance(group.get("origin"), dict) else {}
+    explicit = str(origin.get("scientific_activity") or origin.get("activity_kind")
+                   or origin.get("work_kind") or "").casefold().replace("-", "_")
+    explicit_map = {
+        "design": "Protein design", "protein_design": "Protein design",
+        "ligand_cofolding": "Ligand co-folding", "cofolding": "Ligand co-folding",
+        "docking": "Ligand docking", "molecular_dynamics": "Molecular dynamics", "dynamics": "Molecular dynamics",
+        "folding": "Folding and prediction", "prediction": "Folding and prediction",
+    }
+    if explicit in explicit_map:
+        return explicit_map[explicit]
+    tool = " ".join(str(origin.get(key) or "") for key in (
+        "generator_engine", "generator", "tool", "workflow", "workflow_id", "task_type",
+        "task_group", "source_stage", "stage",
+    )).casefold().replace("_", " ").replace("-", " ")
+    if any(token in tool for token in ("vina", "gnina", "unidock", "docking", "dock ", "posebusters")):
+        return "Ligand docking"
+    if any(token in tool for token in ("cofold", "ligand cofold")):
+        return "Ligand co-folding"
+    if any(token in tool for token in ("molecular dynamics", "openmm", "gromacs", "amber", "namd", "trajectory")):
+        return "Molecular dynamics"
+    if origin.get("generator_engine") or origin.get("generator") or any(
+        token in tool for token in ("rfd", "bindcraft", "boltzgen", "protein design", "generator")
+    ):
+        return "Protein design"
+    if any(token in tool for token in ("fold", "boltz", "protenix", "alphafold", "chai", "prediction")):
+        return "Folding and prediction"
+    return "Molecular structures"
+
+
+def _exact_target_group_key(group: dict) -> tuple[str, ...] | None:
+    """Return exact target evidence only; names are deliberately not identities."""
+    origin = group.get("origin") if isinstance(group.get("origin"), dict) else {}
+    identity = str(origin.get("design_target_molecule_id") or origin.get("target_molecule_id") or "")
+    sequence_digest = str(origin.get("design_target_sequence_sha256") or origin.get("target_sequence_sha256")
+                          or origin.get("target_construct_sha256") or "")
+    construct_id = str(origin.get("target_construct_id") or origin.get("target_key") or "")
+    if not (identity or sequence_digest or construct_id):
+        return None
+    return (identity, construct_id, sequence_digest)
+
+
+def _database_analysis_cohorts(collections: list[dict]) -> list[dict]:
+    """Group Database memberships into comparable cohorts, retaining every source group.
+
+    This is a query view, not a new campaign or molecular identity. Exact target
+    metadata and work type define compatibility; campaign IDs are displayed as
+    provenance but are never inferred from similar names.
+    """
+    buckets: dict[tuple, list[dict]] = {}
+    for group in collections:
+        origin = group.get("origin") if isinstance(group.get("origin"), dict) else {}
+        target_key = _exact_target_group_key(group)
+        if target_key is None:
+            # An explicit campaign relation can group source jobs for review,
+            # but never use similar display names to infer a target. Without a
+            # campaign ID, unresolved-target records stay separate.
+            campaign_id = str(origin.get("campaign_id") or origin.get("parent_campaign_id") or "")
+            target_key = (("unresolved-campaign", campaign_id) if campaign_id else
+                          ("unresolved-group", str(group.get("id") or "")))
+        owner_scope = str(group.get("project_id") or "owner:" + str(group.get("owner_id") or ""))
+        key = (owner_scope, _analysis_activity(group), target_key)
+        buckets.setdefault(key, []).append(group)
+
+    cohorts = []
+    for key, members in buckets.items():
+        group_ids = sorted({str(row.get("id") or "") for row in members if row.get("id")})
+        target_label_counts = Counter(str((row.get("summary") or {}).get("target") or "Not recorded")
+                                      for row in members)
+        generators = sorted({str((row.get("summary") or {}).get("generator") or "") for row in members
+                             if (row.get("summary") or {}).get("generator") not in {"", "Not recorded"}})
+        source_runs = set()
+        campaign_ids = set()
+        registration_batches = set()
+        campaign_names = set()
+        workstations = set()
+        for row in members:
+            origin = row.get("origin") if isinstance(row.get("origin"), dict) else {}
+            source_run = origin.get("source_run") if isinstance(origin.get("source_run"), dict) else {}
+            run_id = str(source_run.get("run_id") or origin.get("run_id") or "")
+            task_group = str(source_run.get("task_group") or origin.get("task_group") or "")
+            workstation = str(source_run.get("source_workstation") or source_run.get("workstation")
+                              or origin.get("source_workstation") or origin.get("workstation") or "")
+            if workstation:
+                workstations.add(workstation)
+            if run_id:
+                source_runs.add((task_group, run_id, workstation))
+            campaign_id = str(origin.get("campaign_id") or origin.get("parent_campaign_id") or "")
+            if campaign_id:
+                campaign_ids.add(campaign_id)
+            if origin.get("registration_batch"):
+                registration_batches.add(str(origin["registration_batch"]))
+            if campaign_id and (origin.get("campaign_name") or origin.get("source_campaign_name")):
+                campaign_names.add(str(origin.get("campaign_name") or origin.get("source_campaign_name")))
+        workstations = sorted(workstations)
+        activity = key[1]
+        target = target_label_counts.most_common(1)[0][0] if target_label_counts else "Not recorded"
+        if target.casefold() in {"", "not recorded", "unknown", "none", "null"}:
+            target_key = key[2]
+            if len(target_key) == 3 and any(target_key):
+                identity, construct_id, sequence_digest = target_key
+                identity_label = (f"construct {construct_id}" if construct_id else
+                                  f"record {identity}" if identity else
+                                  f"sequence {sequence_digest[:12]}…" if sequence_digest else "")
+                target = f"Target {identity_label}" if identity_label else "Target identity recorded"
+            elif target_key and target_key[0] == "unresolved-campaign":
+                target = "Target unresolved"
+            else:
+                target = "Target identity missing"
+        if len(campaign_ids) == 1:
+            campaign_id = next(iter(campaign_ids))
+            name = next(iter(campaign_names)) if len(campaign_names) == 1 else f"Campaign {campaign_id[-8:]}"
+            cohort_type = ("Recorded campaign" if _exact_target_group_key(members[0])
+                           else "Recorded campaign · target unresolved")
+        elif len(registration_batches) == 1:
+            name = f"Retained cohort · {target} · {', '.join(generators) or activity}"
+            cohort_type = "Saved Database cohort"
+        elif key[2][0] == "unresolved-group":
+            name = str((members[0].get("summary") or {}).get("collection") or members[0].get("id") or "Unlinked source group")
+            cohort_type = "Source group · target identity missing"
+        else:
+            name = f"Comparable {activity.casefold()} cohort · {target}"
+            cohort_type = "Cross-run comparison cohort"
+        digest = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:20]
+        cohorts.append({
+            "id": "database-cohort-" + digest,
+            "group_ids": group_ids,
+            "groups": members,
+            "project_id": str(members[0].get("project_id") or ""),
+            "name": name,
+            "target": target,
+            "activity": activity,
+            "generators": ", ".join(generators) or "Not recorded",
+            "source_runs": len(source_runs),
+            "source_groups": len(group_ids),
+            "campaigns": len(campaign_ids),
+            "campaign_ids": sorted(campaign_ids),
+            "cohort_type": cohort_type,
+            "workstations": ", ".join(workstations) or "Not recorded",
+            "updated_at": max((str(row.get("updated_at") or row.get("created_at") or "") for row in members), default=""),
+            "source_run_labels": sorted({(row.get("summary") or {}).get("run", "") for row in members}),
+        })
+    return sorted(cohorts, key=lambda row: (row["updated_at"], row["name"].casefold()), reverse=True)
+
+
 def _is_design_collection(group: dict) -> bool:
     """Keep run-backed design cohorts in the default picker, not utility groups."""
     origin = group.get("origin") if isinstance(group.get("origin"), dict) else {}
     kind = str(group.get("collection_kind") or origin.get("collection_kind") or "")
     if kind == "reference":
+        return False
+    explicitly_saved = origin.get("type") == "results_design_collection" or origin.get("saved_selection") is True
+    tool = " ".join(str(origin.get(key) or "") for key in (
+        "tool", "workflow", "workflow_id", "task_type",
+    )).casefold().replace("-", "_")
+    analysis_tools = ("biotite_interface", "ipsae", "plip", "pandamap", "posebusters",
+                      "complex_analysis", "validation_acceptance", "sequence_composition",
+                      "protein_sol", "interface_clustering", "foldseek", "rosetta_interface")
+    if not explicitly_saved and any(value in tool for value in analysis_tools):
         return False
     source_run = origin.get("source_run") if isinstance(origin.get("source_run"), dict) else {}
     return bool(
@@ -1455,44 +1618,93 @@ def _database_collection_samples(user: dict) -> list[dict]:
             continue
         collections.append({**group, "summary": _design_collection_label(group), "stats": stats})
     collections.sort(key=lambda row: (str(row.get("updated_at") or ""), str(row.get("name") or "").casefold()), reverse=True)
-    st.markdown("### Select a saved design collection")
-    st.caption("Start with the passing cohort you collected from Results. Complex Analysis reads collection membership and structure metadata here; coordinates and full Evaluations load only when you open the cohort.")
-    if collections:
+    st.markdown("### Choose scientific work to analyze")
+    st.caption("Each row groups compatible Database source groups by recorded target identity and work type. Campaigns, source jobs and workstations remain visible as provenance. Counts cover retained designs/models only; full generated, passed, rejected and unresolved totals require a published campaign summary. Coordinates load only after you open a work group.")
+    cohorts = _database_analysis_cohorts(collections)
+    cohort_group_map = {str(row["id"]): list(row["group_ids"]) for row in cohorts}
+    try:
+        cohort_counts = database.cohort_statistics(user, cohort_group_map) if callable(
+            getattr(database, "cohort_statistics", None)) else {}
+    except (PermissionError, OSError, ValueError, TypeError):
+        cohort_counts = {}
+    for cohort in cohorts:
+        cohort["stats"] = cohort_counts.get(cohort["id"], {})
+    cohorts = [row for row in cohorts if int(row.get("stats", {}).get("structure_count") or 0) > 0
+               and int(row.get("stats", {}).get("molecule_count") or 0) > 0]
+    cohort_group_map = {str(row["id"]): list(row["group_ids"]) for row in cohorts}
+    if any("target identity missing" in row["cohort_type"] or "target unresolved" in row["cohort_type"]
+           for row in cohorts):
+        st.info("Some retained records do not contain an exact target/construct identity. They remain visibly separate unless an explicit campaign link exists; the app will not merge them by similar names.")
+    if cohorts:
+        try:
+            from mn_molecular_design_studio.workspace import load_organization
+            project_labels = {str(project.get("id") or ""): str(project.get("name") or project.get("id") or "")
+                              for project in load_organization().get("projects", [])}
+        except (OSError, ValueError, TypeError):
+            project_labels = {}
         table = []
-        for group in collections:
-            summary = group["summary"]
-            stats = group["stats"]
+        for cohort in cohorts:
+            stats = cohort["stats"]
             evaluated = stats.get("evaluated_design_count")
             coverage = (f"{evaluated:,} / {stats['molecule_count']:,} designs with saved Evaluations"
                         if evaluated is not None else "Evaluation coverage not indexed")
-            table.append({"Collection": summary["collection"], "Target": summary["target"],
-                          "Run/campaign": summary["run"], "Generator": summary["generator"],
-                          "Collected designs": stats["molecule_count"], "Structures/models": stats["structure_count"],
-                          "Assessment coverage": coverage, "Updated": summary["date"]})
-        st.dataframe(table, hide_index=True, use_container_width=True, height=420)
+            validation = stats.get("validation_acceptance") or {}
+            validation_text = (f"{validation.get('passed', 0):,} passed · {validation.get('rejected', 0):,} rejected · "
+                               f"{validation.get('unresolved', 0):,} unresolved · "
+                               f"{validation.get('not_recorded', 0):,} no saved validation decision"
+                               if validation.get("source_memberships") else "No saved validation decision")
+            if validation.get("policies"):
+                validation_text += " · " + ", ".join(validation["policies"])
+            campaigns = (f"{len(cohort['campaign_ids']):,} recorded campaign ID(s)"
+                         if cohort["campaign_ids"] else "Campaign link not recorded")
+            source_summary = f"{cohort['source_runs']:,} source run(s) · {cohort['source_groups']:,} Database group(s)"
+            table.append({"Work group": cohort["name"], "Project": project_labels.get(cohort["project_id"],
+                                                                                         cohort["project_id"] or "Personal / owner-scoped"),
+                          "Basis": cohort["cohort_type"],
+                          "Scientific work": cohort["activity"], "Target/construct": cohort["target"],
+                          "Generator(s)": cohort["generators"], "DB-retained designs": stats["molecule_count"],
+                          "Retained structures/models": stats["structure_count"],
+                          "Recorded validation evidence": validation_text, "Saved Evaluations": coverage,
+                          "All-run totals": "Not part of retained Database cohort",
+                          "Source runs": source_summary, "Campaign links": campaigns,
+                          "Workstations": cohort["workstations"], "Updated": cohort["updated_at"]})
+        event = st.dataframe(table, hide_index=True, use_container_width=True, height=420,
+                             on_select="rerun", selection_mode="multi-row",
+                             key=_widget_key("complex-analysis-cohort-table-", user_id))
+        selected_state = "complex-analysis-selected-collections"
+        selected_cohort_state = "complex-analysis-selected-cohorts"
+        if st.session_state.get("complex-analysis-collections-open"):
+            valid_cohorts = set(cohort_group_map)
+            selected_cohorts = [value for value in st.session_state.get(selected_cohort_state, [])
+                                if value in valid_cohorts]
+            selected_group_ids = [value for cohort_id in selected_cohorts
+                                  for value in cohort_group_map.get(cohort_id, [])]
+            # Preserve the opened source memberships even if the table selection
+            # widget clears its transient row selection during a Streamlit rerun.
+            if not selected_group_ids:
+                selected_group_ids = [value for value in st.session_state.get(selected_state, [])
+                                      if value in {group_id for ids in cohort_group_map.values() for group_id in ids}]
+        else:
+            selected_rows = list(getattr(getattr(event, "selection", None), "rows", []) or [])
+            selected_cohorts = [cohorts[index]["id"] for index in selected_rows if 0 <= index < len(cohorts)]
+            st.session_state[selected_cohort_state] = selected_cohorts
+            selected_group_ids = [value for cohort_id in selected_cohorts
+                                  for value in cohort_group_map.get(cohort_id, [])]
+            st.session_state[selected_state] = list(dict.fromkeys(selected_group_ids))
     else:
-        st.info("No saved Database collection with structures is available yet. In Results, collect designs that passed a recorded filter, then open that collection here.")
+        st.info("No saved Database cohort with structures is available yet. In Results, collect designs that passed a recorded filter, then open that cohort here.")
+        selected_state = "complex-analysis-selected-collections"
+        selected_cohort_state = "complex-analysis-selected-cohorts"
+        selected_cohorts = []
+        selected_group_ids = []
 
-    picker_key = "complex-analysis-design-collection-picker"
-    selected_state = "complex-analysis-selected-collections"
-    ids = [str(group["id"]) for group in collections]
-    if st.session_state.get("complex-analysis-collections-open") and selected_state in st.session_state:
-        st.session_state[picker_key] = [value for value in st.session_state.get(selected_state, []) if value in ids]
-    elif picker_key not in st.session_state and st.session_state.get("molecular-preselect-group") in ids:
-        st.session_state[picker_key] = [str(st.session_state["molecular-preselect-group"])]
-    labels = {str(group["id"]): f"{group['summary']['collection']} · {group['summary']['target']} · {group['summary']['run']}"
-              for group in collections}
-    selected = st.multiselect("Design collection(s)", ids, key=picker_key,
-        on_change=_remember_widget_value, args=(picker_key, selected_state),
-        format_func=lambda value: labels.get(value, value))
-    st.session_state[selected_state] = list(selected)
-    group_by_id = {str(group["id"]): group for group in collections}
-    if selected:
-        selected_groups = [group_by_id[value] for value in selected if value in group_by_id]
-        targets = {json.dumps(group["summary"]["target"], sort_keys=True) for group in selected_groups}
-        st.caption(f"Selected {len(selected_groups):,} collection(s), {sum(int(group['stats']['molecule_count']) for group in selected_groups):,} design member(s). Target correspondence will be validated before shared structural comparison.")
-        if st.button("Open selected collection(s)", type="primary", key="complex-analysis-open-collections"):
-            st.session_state[selected_state] = list(selected)
+    if selected_cohorts:
+        selected_runs = {run for cohort_id in selected_cohorts
+                         for run in next((row["source_run_labels"] for row in cohorts if row["id"] == cohort_id), []) if run}
+        st.caption(f"Selected {len(selected_cohorts):,} work group(s) across {len(selected_runs):,} recorded source run(s). Shared molecule/model identities are retained once when opened; target correspondence is validated before comparison.")
+        if st.button("Open selected work group(s)", type="primary", key="complex-analysis-open-collections"):
+            st.session_state[selected_state] = list(dict.fromkeys(selected_group_ids))
+            st.session_state[selected_cohort_state] = list(selected_cohorts)
             st.session_state["complex-analysis-collections-open"] = True
             st.session_state["complex-analysis-individual-mode"] = False
             st.rerun()
@@ -1505,7 +1717,7 @@ def _database_collection_samples(user: dict) -> list[dict]:
 
     if not st.session_state.get("complex-analysis-collections-open"):
         return []
-    selected = [value for value in st.session_state.get(selected_state, []) if value in group_by_id]
+    selected = [value for value in selected_group_ids if value in {group_id for ids in cohort_group_map.values() for group_id in ids}]
     if not selected:
         st.session_state["complex-analysis-collections-open"] = False
         return []
@@ -1987,22 +2199,15 @@ def _workflow_steps() -> str:
 def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, *,
                                 workflow_schema=None, submit=None) -> None:
     """Render one Database-only Select → Analyze → Compare → Shortlist flow."""
-    st.subheader("Scientific Explorer")
-    st.caption("Start from an indexed campaign and its Database-retained molecular models. Review domain-appropriate evidence, compare compatible structures and shortlist. Full Results remain on their source workstation.")
+    st.subheader("Scientific Work Explorer")
+    st.caption("Select a compatible cohort of Database-retained designs, predicted structures, ligand poses or simulation models. Review saved evidence, compare structures and shortlist; Results stay on their source workstation.")
     step = _workflow_steps()
     if step == "select":
-        if st.session_state.get("complex-analysis-saved-cohort-mode"):
-            if st.button("← Scientific campaigns", key="complex-analysis-back-campaigns"):
-                st.session_state["complex-analysis-saved-cohort-mode"] = False
-                st.rerun()
-            _database_collection_samples(user)
-        else:
+        _database_collection_samples(user)
+        with st.expander("Campaign totals and distributed source jobs", expanded=False):
             from mn_molecular_design_studio.molecular_database import MolecularDatabase
             from mn_molecular_design_studio.scientific_lineage_ui import render_campaign_browser
             render_campaign_browser(MolecularDatabase(), user)
-            if st.button("Saved cohorts and individual designs (advanced)", key="complex-analysis-advanced-cohorts"):
-                st.session_state["complex-analysis-saved-cohort-mode"] = True
-                st.rerun()
         return
 
     samples = _load_workspace_samples(user)

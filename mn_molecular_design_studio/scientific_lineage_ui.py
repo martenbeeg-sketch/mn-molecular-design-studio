@@ -38,8 +38,8 @@ def _campaign_source_status(summary, nodes):
 
 
 def render_campaign_browser(database, user):
-    st.markdown("### Choose an analysis area")
-    st.caption("Complex Analysis uses the Molecular Database: campaign metadata and explicitly retained structures only. It does not scan Results or load coordinates until you open a saved Database model.")
+    st.markdown("### Choose scientific work")
+    st.caption("Complex Analysis starts from Molecular Database records only. Analysis methods are stages attached to design, folding, docking or dynamics work; this page does not scan Results or load coordinates until you open a retained Database model.")
     areas = {
         "protein": {"label": "Protein design & complexes", "kinds": ["design"],
             "help": "Protein binder cohorts open the existing interface, contact-map, comparison and shortlist tools."},
@@ -47,8 +47,8 @@ def render_campaign_browser(database, user):
             "help": "Open a retained receptor–ligand model for PLIP/PandaMap interactions and PoseBusters pose checks. Native engine scores remain separate evidence."},
         "structure": {"label": "Folding & dynamics", "kinds": ["folding", "dynamics"],
             "help": "Review saved prediction models or Database-retained simulation structures and their recorded Evaluations."},
-        "all": {"label": "All Database campaigns", "kinds": [],
-            "help": "All indexed campaign types are shown; only authorized Database-retained structures can enter analysis."},
+        "all": {"label": "All scientific work", "kinds": [],
+            "help": "All indexed work types and their linked analysis stages are shown; only authorized Database-retained structures can enter analysis."},
     }
     area_key = "scientific-analysis-area"
     selected_area = str(st.session_state.get(area_key) or "all")
@@ -63,8 +63,8 @@ def render_campaign_browser(database, user):
             st.rerun()
     st.caption(areas[selected_area]["help"])
 
-    st.markdown("### Scientific campaigns")
-    st.caption("Project → target/construct → campaign → retained designs and models. Detailed Results remain on their source workstation.")
+    st.markdown("### Campaigns and retained outputs")
+    st.caption("Project → exact target construct → source campaign/jobs → retained designs and models. Assessment jobs remain linked stages, not separate scientific activities. Detailed Results remain on their source workstation.")
     clause, parameters = lineage._access(user)
     with database.connection() as c:
         facets = c.execute("SELECT c.project_id,ct.target_key,t.biological_identity_key,t.target_json "
@@ -85,7 +85,7 @@ def render_campaign_browser(database, user):
     project = st.selectbox("Project", ["", *projects], format_func=lambda v: project_names.get(v, v) if v else "All accessible projects", key="scientific-project")
     activity_labels = {"design": "Protein / molecular design", "folding": "Folding and prediction",
         "ligand_cofolding": "Ligand co-folding", "docking": "Docking and rescoring",
-        "dynamics": "Molecular dynamics", "analysis": "Downstream analysis", "unknown": "Unclassified"}
+        "dynamics": "Molecular dynamics", "analysis": "Assessment stage (linked to source work)", "unknown": "Unclassified"}
     kind = areas[selected_area]["kinds"]
     targets = sorted({key for row in facets if not project or row["project_id"] == project
                       for key in (row["target_key"], row["biological_identity_key"]) if key})
@@ -99,12 +99,13 @@ def render_campaign_browser(database, user):
     offset = int(st.session_state.get("scientific-offset", 0))
     page = lineage.campaigns(database, user, kind=kind, project_id=project, target=target, query=query, offset=offset)
     if not page["items"]:
-        st.info("No indexed campaign matches. Historical indexing is an explicit staging/administrator operation; opening this page does not scan Results or contact remote workstations.")
+        st.info("No published campaign summary matches this filter. The retained Database cohorts remain available in the main selector, but total generated, rejected and unresolved counts are not recoverable from those retained designs alone. This page will not scan Results or contact owner workstations to fill the gap.")
         return []
     source_nodes = _local_source_status()
     st.caption("Campaign counts and job relationships are synchronized metadata. Detailed Results stay on their owner workstation; an offline owner is shown as temporarily unavailable, and this page never scans or contacts remote workstations.")
-    st.dataframe([{"Campaign": r["name"], "Primary activity": activity_labels.get(r["kind"], r["kind"]),
-        "Activities": ", ".join(activity_labels.get(v, v) for v in r["summary"].get("activity_kinds", [])) or "Not recorded",
+    st.dataframe([{"Campaign / source run": r["name"],
+        "Work type / stage": activity_labels.get(r["kind"], r["kind"]),
+        "Linked scientific work": ", ".join(activity_labels.get(v, v) for v in r["summary"].get("activity_kinds", []) if v != "analysis") or "Source activity not recorded",
         "Target/construct": "; ".join(
             target_names.get(lineage._target_construct_key(t), str(t.get("biological_target") or t.get("label") or "Recorded construct"))
             for t in r["summary"].get("targets", [])) or "Not recorded / unresolved", "Jobs": r["summary"]["jobs"],
