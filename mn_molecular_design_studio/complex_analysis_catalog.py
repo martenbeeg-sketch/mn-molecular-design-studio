@@ -4,6 +4,130 @@ from __future__ import annotations
 from typing import Any, Callable, MutableMapping
 
 
+# Query keys are existing scientific references, not new system/study identities.
+_RELATION_FIELDS = ("group_id", "molecule_id", "target_ref", "target_revision", "preparation_id", "study_id")
+
+
+def _evidence_scope_query(database, user, group_ids, relationship=None, *, replica=None, include_history=True):
+    import json
+
+    ids = list(dict.fromkeys(map(str, group_ids)))
+    database._authorize_group_ids_for_query(user, ids)
+    if relationship is not None and (
+        set(relationship) != set(_RELATION_FIELDS) or relationship["group_id"] not in ids
+        or any(not isinstance(value, str) for value in relationship.values())
+    ):
+        raise ValueError("The selected relationship is outside these source memberships.")
+    cte = """WITH evidence AS (
+        SELECT o.*,
+          COALESCE(NULLIF(json_extract(context,'$.target_molecule_id'),''),
+                   NULLIF(json_extract(context,'$.target_id'),''),
+                   CASE WHEN json_type(context,'$.target')='text' THEN json_extract(context,'$.target') END,'') AS target_ref,
+          COALESCE(json_extract(context,'$.target_structure_digest'),'') AS target_revision,
+          COALESCE(NULLIF(json_extract(context,'$.prepared_target_run_id'),''),
+                   NULLIF(json_extract(context,'$.target_provenance.prepared_target_run_id'),''),
+                   json_extract(context,'$.receptor_preparation_run_id'),'') AS preparation_id,
+          COALESCE(json_extract(context,'$.study_id'),'') AS study_id,
+          json_extract(context,'$.replica_index') AS replica,
+          COALESCE(NULLIF(json_extract(context,'$.source_production_run_id'),''),
+                   json_extract(context,'$.production_run_id'),'') AS production_run,
+          COALESCE(json_extract(context,'$.continuation_of_run_id'),'') AS continuation_of,
+          CASE WHEN json_type(context,'$.endpoint_superseded_by_run_id')='text'
+               THEN COALESCE(json_extract(context,'$.endpoint_superseded_by_run_id'),'') ELSE '' END AS superseded_by
+        FROM molecule_observations o
+        WHERE group_id IN (SELECT value FROM json_each(?))
+    ) """
+    conditions, parameters = [], [json.dumps(ids)]
+    if relationship is not None:
+        for field in _RELATION_FIELDS:
+            conditions.append(f"o.{field}=?")
+            parameters.append(relationship[field])
+    if replica is not None:
+        conditions.append("o.replica=?")
+        parameters.append(replica)
+    if not include_history:
+        conditions.append("o.superseded_by=''")
+    return cte, " AND ".join(conditions) or "1", parameters
+
+
+def saved_relationship_page(database, user: dict, group_ids: list[str], *, offset=0, limit=25, query="") -> dict:
+    """Page molecule–target/preparation–study relationships from saved evidence.
+
+    Membership scope prevents unrelated sources with missing study/target IDs
+    from being merged. Neither labels nor shared normalized run IDs establish a
+    relationship. Historical records contribute coverage, not new simulations.
+    """
+    if not 1 <= limit <= 100 or offset < 0:
+        raise ValueError("Invalid relationship page.")
+    cte, _, parameters = _evidence_scope_query(database, user, group_ids)
+    fields = ",".join("o." + field for field in _RELATION_FIELDS)
+    clause = "1"
+    if query:
+        clause = "(m.name LIKE ? OR o.target_ref LIKE ? OR o.study_id LIKE ? OR o.preparation_id LIKE ?)"
+        parameters += ["%" + query + "%"] * 4
+    grouped = ("SELECT " + fields + ",MAX(m.name) AS molecule_name, COUNT(*) AS record_count, "
+        "COUNT(DISTINCT replica) AS replica_count, "
+        "COUNT(DISTINCT NULLIF(production_run,'')) AS production_count, "
+        "JSON_GROUP_ARRAY(DISTINCT namespace) AS methods, "
+        "MAX(json_extract(o.context,'$.target_receptor')) AS target_name, "
+        "MAX(json_extract(o.context,'$.target_pdb_id')) AS target_pdb, "
+        "SUM(CASE WHEN superseded_by<>'' THEN 1 ELSE 0 END) AS historical_count "
+        "FROM evidence o LEFT JOIN molecule_members m ON m.molecule_id=o.molecule_id AND m.group_id=o.group_id "
+        "WHERE " + clause + " GROUP BY " + fields)
+    with database.connection() as connection:
+        totals = dict(connection.execute(cte + "SELECT COUNT(*) AS relationships, "
+            "COUNT(DISTINCT molecule_id) AS molecules, "
+            "COUNT(DISTINCT CASE WHEN target_ref<>'' OR target_revision<>'' OR preparation_id<>'' "
+            "THEN json_array(target_ref,target_revision,preparation_id) END) AS target_contexts, "
+            "COUNT(DISTINCT CASE WHEN study_id<>'' THEN json_array(group_id,study_id) END) AS studies, "
+            "COALESCE(SUM(replica_count),0) AS replica_memberships FROM (" + grouped + ")", parameters).fetchone())
+        rows = connection.execute(cte + grouped + " ORDER BY o.target_ref,o.study_id,o.molecule_id,o.group_id LIMIT ? OFFSET ?",
+                                  [*parameters, limit, offset]).fetchall()
+    import json
+    items = [{**dict(row), "methods": json.loads(row["methods"]),
+              "relationship": {key: str(row[key]) for key in _RELATION_FIELDS}} for row in rows]
+    return {"items": items, "totals": totals, "next_offset": offset + limit if offset + limit < totals["relationships"] else None}
+
+
+def relationship_structure_ids(database, user, group_ids, relationship):
+    """Return only explicit representation/digest or exact target-context links.
+
+    A shared molecule or normalized run ID alone cannot attach a model to a
+    study. This does not fetch coordinates or infer receptor correspondence.
+    """
+    cte, clause, parameters = _evidence_scope_query(database, user, group_ids, relationship)
+    with database.connection() as connection:
+        rows = connection.execute(cte + "SELECT s.id FROM molecule_structures s "
+            "WHERE s.group_id=? AND s.molecule_id=? AND (EXISTS (SELECT 1 FROM evidence o WHERE " + clause + " AND ("
+            "NULLIF(json_extract(o.context,'$.representation_id'),'')=s.id OR "
+            "COALESCE(NULLIF(json_extract(o.context,'$.source_structure_digest'),''),"
+            "NULLIF(json_extract(o.context,'$.structure_digest'),''))="
+            "COALESCE(NULLIF(json_extract(s.context,'$.portable_sha256'),''),"
+            "NULLIF(json_extract(s.context,'$.content_sha256'),''),"
+            "NULLIF(json_extract(s.context,'$.structure_digest'),'')))) OR "
+            "(?='' AND ?<>'' AND "
+            "COALESCE(NULLIF(json_extract(s.context,'$.target_molecule_id'),''),json_extract(s.context,'$.target_id'),'')=? "
+            "AND COALESCE(json_extract(s.context,'$.target_structure_digest'),'')=? "
+            "AND COALESCE(NULLIF(json_extract(s.context,'$.prepared_target_run_id'),''),"
+            "json_extract(s.context,'$.target_provenance.prepared_target_run_id'),'')=?))",
+            [parameters[0], relationship["group_id"], relationship["molecule_id"], *parameters[1:],
+             relationship["study_id"], relationship["target_ref"], relationship["target_ref"],
+             relationship["target_revision"], relationship["preparation_id"]]).fetchall()
+    return {row["id"] for row in rows}
+
+
+def saved_execution_groups(database, user: dict, group_ids: list[str], relationship: dict) -> list[dict]:
+    """Show recorded replicas/segments and parent references without finalizing jobs."""
+    cte, clause, parameters = _evidence_scope_query(database, user, group_ids, relationship)
+    with database.connection() as connection:
+        rows = connection.execute(cte + "SELECT replica,production_run, "
+            "GROUP_CONCAT(DISTINCT NULLIF(continuation_of,'')) AS recorded_parents, "
+            "COUNT(*) AS records, SUM(CASE WHEN superseded_by<>'' THEN 1 ELSE 0 END) AS historical_count "
+            "FROM evidence o WHERE " + clause + " GROUP BY replica,production_run ORDER BY replica,production_run",
+            parameters).fetchall()
+    return [dict(row) for row in rows]
+
+
 def retained_target_references(database, user: dict, group_ids: list[str]) -> dict[str, list[str]]:
     """Use existing Evaluation target links, without guessing biological identity."""
     import json
@@ -24,18 +148,23 @@ def retained_target_references(database, user: dict, group_ids: list[str]) -> di
     return result
 
 
-def saved_evidence_summary(database, user: dict, group_ids: list[str]) -> dict[str, dict]:
+def saved_evidence_summary(database, user: dict, group_ids: list[str], *, relationship=None,
+                           replica=None, include_history=True) -> dict[str, dict]:
     """Count saved observation methods without hydrating models or reading Results."""
     import json
 
     ids = list(dict.fromkeys(map(str, group_ids)))
-    database._authorize_group_ids_for_query(user, ids)
+    if relationship is not None or replica is not None or not include_history:
+        cte, clause, parameters = _evidence_scope_query(database, user, ids, relationship,
+            replica=replica, include_history=include_history)
+        sql = cte + "SELECT group_id,namespace,COUNT(*) AS n FROM evidence o WHERE " + clause + " GROUP BY group_id,namespace"
+    else:
+        database._authorize_group_ids_for_query(user, ids)
+        sql = ("SELECT group_id,namespace,COUNT(*) AS n FROM molecule_observations "
+               "WHERE group_id IN (SELECT value FROM json_each(?)) GROUP BY group_id,namespace")
+        parameters = [json.dumps(ids)]
     with database.connection() as connection:
-        rows = connection.execute(
-            "SELECT group_id,namespace,COUNT(*) AS n FROM molecule_observations "
-            "WHERE group_id IN (SELECT value FROM json_each(?)) GROUP BY group_id,namespace",
-            (json.dumps(ids),),
-        ).fetchall()
+        rows = connection.execute(sql, parameters).fetchall()
     result = {key: {"observation_count": 0, "methods": {}} for key in ids}
     for row in rows:
         result[row["group_id"]]["methods"][row["namespace"]] = row["n"]
@@ -44,7 +173,8 @@ def saved_evidence_summary(database, user: dict, group_ids: list[str]) -> dict[s
 
 
 def saved_evidence_page(database, user: dict, group_ids: list[str], *, namespace: str = "",
-                        offset: int = 0, limit: int = 25) -> dict:
+                        offset: int = 0, limit: int = 25, relationship=None,
+                        replica=None, include_history=True) -> dict:
     """Page exact, authorized observations, including evidence without coordinates.
 
     No structure matching, metric flattening or identity creation occurs here.
@@ -56,22 +186,20 @@ def saved_evidence_page(database, user: dict, group_ids: list[str], *, namespace
 
     if not 1 <= limit <= 100 or offset < 0:
         raise ValueError("Invalid saved-evidence page.")
-    ids = list(dict.fromkeys(map(str, group_ids)))
-    database._authorize_group_ids_for_query(user, ids)
-    clause = "o.group_id IN (SELECT value FROM json_each(?))"
-    parameters = [json.dumps(ids)]
+    cte, clause, parameters = _evidence_scope_query(database, user, group_ids, relationship,
+        replica=replica, include_history=include_history)
     if namespace:
         clause += " AND o.namespace=?"
         parameters.append(namespace)
     with database.connection() as connection:
         has_evaluations = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE name='molecule_evaluations' AND type='table'").fetchone()
-        total = connection.execute("SELECT COUNT(*) FROM molecule_observations o WHERE " + clause,
+        total = connection.execute(cte + "SELECT COUNT(*) FROM evidence o WHERE " + clause,
                                    parameters).fetchone()[0]
         evaluation_select = ",e.descriptor AS saved_evaluation" if has_evaluations else ""
         evaluation_join = " LEFT JOIN molecule_evaluations e ON e.observation_id=o.id " if has_evaluations else " "
         rows = connection.execute(
-            "SELECT o.*,m.name AS molecule_name" + evaluation_select + " FROM molecule_observations o "
+            cte + "SELECT o.*,m.name AS molecule_name" + evaluation_select + " FROM evidence o "
             "LEFT JOIN molecule_members m ON m.group_id=o.group_id AND m.molecule_id=o.molecule_id "
             + evaluation_join + "WHERE " + clause + " ORDER BY o.created_at DESC,o.id LIMIT ? OFFSET ?",
             [*parameters, limit, offset],

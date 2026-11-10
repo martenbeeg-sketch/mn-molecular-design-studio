@@ -7,7 +7,10 @@ import json
 
 import streamlit as st
 
-from mn_molecular_design_studio.complex_analysis_catalog import saved_evidence_page, saved_evidence_summary
+from mn_molecular_design_studio.complex_analysis_catalog import (
+    saved_evidence_page, saved_evidence_summary, saved_relationship_page,
+    saved_execution_groups, relationship_structure_ids,
+)
 
 
 METHOD_LABELS = {
@@ -18,16 +21,6 @@ METHOD_LABELS = {
 
 def method_label(namespace: str) -> str:
     return METHOD_LABELS.get(namespace, namespace)
-
-
-def evidence_summary_cards(stats: dict, methods: dict, collection_count: int) -> list[tuple[str, int]]:
-    """Describe the selected scientific work, rather than a mixed record total."""
-    if methods and all(method.startswith("md.") for method in methods):
-        return [(method_label(method).removeprefix("MD · ") + " records", count)
-                for method, count in sorted(methods.items())]
-    return [("Molecules / designs", stats["molecule_count"]),
-            ("Saved structures", stats["structure_count"]),
-            ("Evidence types", len(methods)), ("Selected collections", collection_count)]
 
 
 def evidence_row(observation: dict) -> dict:
@@ -43,6 +36,10 @@ def evidence_row(observation: dict) -> dict:
         "Source run": observation["run_id"],
         "Study / replica": " · ".join(str(context[key]) for key in ("study_id", "replica_index")
                                      if context.get(key) is not None),
+        "Production segment": context.get("source_production_run_id") or context.get("production_run_id") or "Not recorded",
+        "Continuation of": context.get("continuation_of_run_id") or "Not recorded",
+        "Evidence history": ("Superseded by " + str(context["endpoint_superseded_by_run_id"]))
+                            if context.get("endpoint_superseded_by_run_id") else "No supersession recorded",
         "Target": descriptor.get("target_id") or "Not recorded",
         "Recorded status": descriptor.get("status") or "Not recorded",
         "Saved measurements": "; ".join(f"{key}: {value}" for key, value in observation.get("metrics", {}).items()
@@ -69,22 +66,94 @@ def open_saved_work(state, *, user_id: str, group_ids: list[str], label: str,
     state["complex-analysis-flow-step"] = "analyze"
 
 
+def _relationship_label(row: dict) -> str:
+    target = " · ".join(str(row[key]) for key in ("target_name", "target_pdb") if row.get(key))
+    target = target or row["target_ref"] or "Target not recorded"
+    if row["preparation_id"]:
+        target += " · prep " + row["preparation_id"][-8:]
+    return target
+
+
+def render_relationship_choices(database, user, selection, retained_stats):
+    """Navigate recorded systems/studies; never create a molecular identity."""
+    group_ids = selection["group_ids"]
+    token = hashlib.sha256(str(group_ids).encode()).hexdigest()[:10]
+    st.markdown("#### Molecule–target systems and studies")
+    query = st.text_input("Find molecule, target or study", key="relationship-search-" + token)
+    page_key = token + hashlib.sha256(query.encode()).hexdigest()[:8]
+    number = int(st.number_input("Relationship page", min_value=1, value=1, step=1, key="relationship-page-" + page_key))
+    page = saved_relationship_page(database, user, group_ids, query=query, offset=(number - 1) * 25)
+    totals, rows = page["totals"], page["items"]
+    cards = [("Molecular identities", totals["molecules"] if totals["relationships"] or query else retained_stats["molecule_count"]),
+             ("Target / preparation contexts", totals["target_contexts"]),
+             ("Recorded studies", totals["studies"]) if totals["studies"] else ("Source relationships", totals["relationships"])]
+    for column, (label, value) in zip(st.columns(3), cards):
+        column.metric(label, f"{value:,}")
+    st.caption("One molecule can participate in several target systems and studies. Each row keeps its recorded target/preparation and source membership; matching names do not merge studies. Counts apply to the current search.")
+    if not rows:
+        selection.pop("relationship", None)
+        st.session_state.pop("complex-analysis-workflow-samples", None)
+        st.session_state.pop("complex-analysis-workflow-selection", None)
+        st.session_state["complex-analysis-assessment-open"] = False
+        st.session_state["complex-analysis-evidence-selection"] = dict(selection)
+        st.info("No saved evidence relationships on this page. Clear the search, choose another page, or inspect retained molecules and models below.")
+        return None, []
+    relationship_columns = (["Target / preparation", "Study", "Replicas", "Production segments", "Molecule / design", "Saved evidence"]
+                            if any(row["study_id"] for row in rows) else
+                            ["Molecule / design", "Target / preparation", "Saved evidence", "Study"])
+    st.dataframe([{
+        "Molecule / design": row["molecule_name"] or row["molecule_id"],
+        "Target / preparation": _relationship_label(row),
+        "Study": row["study_id"] or "No study recorded · source membership kept",
+        "Replicas": row["replica_count"], "Production segments": row["production_count"],
+        "Saved evidence": ", ".join(method_label(method) for method in row["methods"]),
+        "Source membership": row["group_id"],
+    } for row in rows], hide_index=True, use_container_width=True, column_order=relationship_columns,
+        column_config={"Target / preparation": st.column_config.TextColumn(width="medium"),
+                       "Study": st.column_config.TextColumn(width="medium"),
+                       "Replicas": st.column_config.NumberColumn(width="small"),
+                       "Production segments": st.column_config.NumberColumn(width="small")})
+    chosen = st.selectbox("Open molecular system / study", list(range(len(rows))),
+        format_func=lambda index: f"{rows[index]['molecule_name'] or rows[index]['molecule_id']} · {_relationship_label(rows[index])} · {rows[index]['study_id'] or rows[index]['group_id']}",
+        key="relationship-selected-" + page_key + str(number))
+    row = rows[chosen]
+    relationship = row["relationship"]
+    if selection.get("relationship") != relationship:
+        st.session_state.pop("complex-analysis-workflow-samples", None)
+        st.session_state.pop("complex-analysis-workflow-selection", None)
+        st.session_state["complex-analysis-assessment-open"] = False
+        for key in list(st.session_state):
+            if key.startswith("complex-analysis-cohort-"):
+                del st.session_state[key]
+        selection["relationship"] = relationship
+        st.session_state["complex-analysis-evidence-selection"] = dict(selection)
+    with st.expander("Exact molecule, target, preparation and study references"):
+        st.json(relationship)
+    execution = saved_execution_groups(database, user, group_ids, relationship)
+    return row, execution
+
+
 def render_model_choices(database, user: dict, selection: dict, *, intent: str = "compare") -> None:
     """Read one metadata page. Coordinates are fetched only by the load action."""
     from mn_molecular_design_studio import complex_analysis_collection_ui as collection
 
     group_ids = selection["group_ids"]
-    token = hashlib.sha256(json.dumps(group_ids, sort_keys=True).encode()).hexdigest()[:12]
+    relationship = selection.get("relationship")
+    token = hashlib.sha256(json.dumps([group_ids, relationship], sort_keys=True).encode()).hexdigest()[:12]
     st.markdown("#### Choose exact models to inspect or assess")
     st.caption("Coordinates are loaded only after you click an action. Docking and cofolding models share this view; their source scores remain separate.")
     page_number = int(st.number_input("Model page", min_value=1, value=1, step=1, key="evidence-model-page-" + token))
     page = database.list_structure_records(user, collection="all", group_ids=group_ids,
+        molecule_ids=[relationship["molecule_id"]] if relationship else None,
         restrict_structure_groups=True, limit=25, offset=(page_number - 1) * 25)
     records = list(page.get("items") or [])
     options = {str(model["id"]): (record, model) for record in records
                for model in record.get("representations") or record.get("structures") or []}
+    if relationship:
+        linked = relationship_structure_ids(database, user, group_ids, relationship)
+        options = {key: value for key, value in options.items() if key in linked}
     if not options:
-        st.info("No structural models on this page. Saved measurements remain available without coordinates.")
+        st.info("No exact representation link to this selected system/study is recorded on this page. Saved measurements remain available. This view does not substitute a model from another target or study.")
         return
     chosen = st.multiselect("Models / poses", list(options), default=list(options)[:1], max_selections=50,
         format_func=lambda key: collection._structure_label(*options[key]), key="evidence-models-" + token)
@@ -117,16 +186,36 @@ def render_saved_evidence(database, user: dict, selection: dict) -> None:
     st.write(selection.get("label") or "Selected scientific work")
     scope = " · ".join(value for value in (selection.get("project_label"), selection.get("work_type")) if value)
     st.caption((scope + " · " if scope else "") + f"Viewing {len(groups)} selected collection(s), not the entire Database.")
-    summaries_to_show = evidence_summary_cards(stats, methods, len(groups))
-    for start in range(0, len(summaries_to_show), 4):
-        row = summaries_to_show[start:start + 4]
-        for card, (title, value) in zip(st.columns(len(row)), row):
-            card.metric(title, f"{value:,}")
-    st.caption("Counts describe saved evidence, including historical or superseded entries; they are not counts of independent experiments. Opening this view runs no calculations.")
+    row, execution = render_relationship_choices(database, user, selection, stats)
+    relationship = row["relationship"] if row else None
+    replica = None
+    include_history = True
+    if row:
+        st.markdown("#### Evidence for the selected system / study")
+        if row["historical_count"]:
+            include_history = st.checkbox(f"Include explicitly superseded history ({row['historical_count']} saved records)",
+                value=False, key="relationship-history-" + hashlib.sha256(str(relationship).encode()).hexdigest()[:10])
+            st.caption("Only records explicitly marked as superseded are hidden by default. Other results are not automatically ranked or replaced.")
+        replicas = list(dict.fromkeys(item["replica"] for item in execution if item["replica"] is not None))
+        if replicas:
+            replica = st.selectbox("Recorded replica", [None, *replicas],
+                format_func=lambda value: "All recorded replicas" if value is None else str(value),
+                key="relationship-replica-" + hashlib.sha256(str(relationship).encode()).hexdigest()[:10])
+            with st.expander("Replicas, production segments and continuation references"):
+                st.dataframe([{"Replica": item["replica"], "Production segment": item["production_run"] or "Not recorded",
+                               "Recorded continuation parent(s)": item["recorded_parents"] or "Not recorded",
+                               "Superseded evidence records": item["historical_count"]}
+                              for item in execution], hide_index=True, use_container_width=True)
+        scoped = saved_evidence_summary(database, user, group_ids, relationship=relationship,
+                                        replica=replica, include_history=include_history)
+        methods = Counter()
+        for summary in scoped.values():
+            methods.update(summary["methods"])
     view = st.radio("Evidence view", ["Measurements", "Models & sequences", "Sources & provenance"],
                     horizontal=True, key="complex-evidence-view")
     if view == "Sources & provenance":
-        st.caption(f"Technical inventory: {sum(methods.values()):,} underlying saved records across {len(methods)} method namespaces.")
+        st.caption(f"Selected evidence scope: {sum(methods.values()):,} visible saved records across {len(methods)} method namespaces. Collection inventories below retain their full history.")
+        st.json({"selected_relationship": relationship, "replica": replica, "include_superseded_history": include_history}, expanded=False)
         for group in groups:
             with st.expander(group["name"], expanded=len(groups) == 1):
                 st.json({"group_id": group["id"], "project_id": group["project_id"],
@@ -136,11 +225,13 @@ def render_saved_evidence(database, user: dict, selection: dict) -> None:
         render_model_choices(database, user, selection)
         # This explicit view can inspect sequence/chemical identities even when
         # no coordinate representation exists. Hydration is bounded to one page.
-        group_id = st.selectbox("Molecular identities from collection", group_ids,
+        component_groups = [relationship["group_id"]] if relationship else group_ids
+        group_id = st.selectbox("Molecular identities from collection", component_groups,
             format_func=lambda key: next(group["name"] for group in groups if group["id"] == key),
             key="complex-evidence-sequence-group")
         page = int(st.number_input("Molecule page", min_value=1, value=1, step=1, key="complex-evidence-molecule-page"))
-        records = database.list_molecules(user, group_id=group_id, collection="all", limit=10, offset=(page - 1) * 10)
+        records = database.list_molecules(user, group_id=group_id, collection="all", limit=10, offset=(page - 1) * 10,
+                                         molecule_ids=[relationship["molecule_id"]] if relationship else None)
         for record in records.get("items") or []:
             with st.expander(record.get("name") or record["id"]):
                 st.json({"molecule_id": record["id"], "components": record.get("components"),
@@ -149,20 +240,24 @@ def render_saved_evidence(database, user: dict, selection: dict) -> None:
     if not methods:
         st.info("No saved measurements in these memberships. Open Models & sequences to inspect retained models and explicitly assess compatible inputs.")
         return
+    if not row:
+        return
     method = st.selectbox("Recorded method", ["", *sorted(methods)],
         format_func=lambda key: "All recorded methods" if not key else f"{method_label(key)} · {methods[key]} records",
-        key="complex-evidence-method-" + hashlib.sha256(str(group_ids).encode()).hexdigest()[:10])
+        key="complex-evidence-method-" + hashlib.sha256(str([relationship, replica, include_history]).encode()).hexdigest()[:10])
     st.caption("Scores keep their original method and scope. Missing values are not zero. MM/GBSA and MM/PBSA are separate methods; native confidence and affinity predictions are not interchangeable.")
-    token = hashlib.sha256((str(group_ids) + method).encode()).hexdigest()[:10]
+    token = hashlib.sha256((str([group_ids, relationship, replica, include_history]) + method).encode()).hexdigest()[:10]
     page_number = int(st.number_input("Evidence page", min_value=1, value=1, step=1, key="evidence-page-" + token))
-    page = saved_evidence_page(database, user, group_ids, namespace=method, offset=(page_number - 1) * 25)
+    page = saved_evidence_page(database, user, group_ids, namespace=method, offset=(page_number - 1) * 25,
+                               relationship=relationship, replica=replica, include_history=include_history)
     items = page["items"]
     st.caption(f"{page['total']:,} matching saved observations · page {page_number} · up to 25 records per page")
     if not items:
         st.info("No observations on this page.")
         return
     st.dataframe([evidence_row(item) for item in items], hide_index=True, use_container_width=True,
-                 column_order=["Molecule / design", "Method", "Target", "Saved measurements", "Recorded status", "Model / pose", "Source run"],
+                 column_order=["Method", "Study / replica", "Production segment", "Saved measurements", "Recorded status",
+                               "Model / pose", "Source run", "Evidence history"],
                  column_config={"Source run": st.column_config.TextColumn(width="medium")})
     item_by_id = {item["id"]: item for item in items}
     selected = st.selectbox("Inspect saved evidence", list(item_by_id),

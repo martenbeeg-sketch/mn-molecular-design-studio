@@ -83,3 +83,50 @@ and work type, displays MD evidence by method (18 trajectory-analysis, 23 GB,
 Sources & provenance. Other work uses molecular, structural and evidence-type
 counts. Historical/superseded entries are not relabelled as independent runs.
 Focused follow-up: 34 saved-evidence and collection-label tests passed.
+
+## Recorded molecule–target–study navigation
+
+The primary evidence view now pages relationships identified only by existing
+source membership, molecular ID, target reference/revision, preparation ID and
+study ID. A shared compound, label or normalized run ID cannot merge studies.
+This is a read-only Database query/view, not a new scientific identity or schema.
+
+Researchers select a system/study and, where recorded, a replica. Method coverage,
+measurement pages and their source/provenance are restricted to that selection.
+The execution breakdown shows original production and continuation references.
+Only records with an explicit superseding endpoint reference are hidden by
+default; history remains selectable and no records are deleted or rewritten.
+
+Model selection is restricted to explicit representation/digest links or a
+recorded exact target context when no study is recorded. Shared molecules or
+run labels alone do not establish model membership. Older unlinked models remain
+in the existing individual Database browser; this view does not invent links.
+
+Authentic snapshot reconciliation:
+
+| Target / preparation | Study | Replicas | Recorded production segments | All evidence records | Explicit superseded history |
+| --- | --- | ---: | ---: | ---: | ---: |
+| TRalpha / 4LNW / 3d629f36… | study-4e85465e29b723ec | 3 | 6 | 30 | 12 |
+| TRalpha / 4LNW / 3d629f36… | study-c07b94a0b3714981 | 3 | 6 | 31 | 16 |
+| TRbeta / 3GWS / 6f5a529f… | study-045cac8db3067594 | 3 | 3 | 18 | 0 |
+
+All three retain the same canonical ligand identity. The 79 total records are
+not independent simulations. The relationship query took 0.016 s on the staging
+snapshot. Piccirillo docking/cofolding contexts and a retained RFD4 source were
+also queried without reading coordinates; exact links to available saved models
+remain usable, and missing links remain explicit.
+
+Focused tests additionally cover replica zero, continuation parentage, explicit
+history, source ACLs, missing references, separate receptor preparations,
+docking/cofolding model identity and switching studies without coordinate reads.
+
+Browser verification on the isolated 8510 preview displayed the three original
+studies and their 3/3/3 recorded replicas. Selecting TRbeta / 3GWS switched the
+measurement table to study-045cac8db3067594; selecting replica 1 restricted it
+to six saved records from that replica and its original production segment.
+No coordinates or calculations were required. The screenshot is
+molecule-target-study-navigation.jpg in the isolated preview directory.
+
+Final focused regressions: 82 passed across relationships, saved evidence,
+collection state/acceptance, labels, authorized catalog and Database hydration.
+Production data, Results, scheduler state and services remain unchanged.
