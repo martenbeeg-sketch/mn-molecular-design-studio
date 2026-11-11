@@ -2446,6 +2446,9 @@ def _load_workspace_samples(user: dict) -> list[dict]:
 def _workflow_steps() -> str:
     labels = [("select", "Select campaign"), ("overview", "Overview"), ("analyze", "Evidence"),
               ("compare", "Structures & 3D"), ("shortlist", "Shortlist & export")]
+    if (st.session_state.get("complex-analysis-evidence-selection") or {}).get("work_type") == "Protein design":
+        labels = [("select", "Campaign"), ("overview", "Review designs"), ("analyze", "Assessments"),
+                  ("compare", "Structures & 3D"), ("shortlist", "Shortlist & export")]
     current = str(st.session_state.get("complex-analysis-flow-step") or "select")
     if current not in {key for key, _ in labels}:
         current = "select"
@@ -2524,11 +2527,16 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
         try:
             for group_id in selection["group_ids"]:
                 database.group(group_id, user)
+            if selection.get("work_type") == "Protein design" and step in {"overview", "analyze"} and not st.session_state.get("complex-analysis-assessment-open"):
+                from mn_molecular_design_studio.complex_analysis_design_review_ui import render_design_review
+                render_design_review(database, user, selection)
+                return
             if step == "overview":
                 render_work_overview(database, user, selection)
                 return
             if step == "analyze":
-                render_saved_evidence(database, user, selection)
+                if not st.session_state.get("complex-analysis-assessment-open"):
+                    render_saved_evidence(database, user, selection)
                 if not st.session_state.get("complex-analysis-assessment-open"):
                     return
             elif not st.session_state.get("complex-analysis-workflow-samples"):
