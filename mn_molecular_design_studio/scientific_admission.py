@@ -11,14 +11,47 @@ import sqlite3
 import tempfile
 
 
-def _subject_identity(value):
+def _subject_identity(value, *, component=False, retain_component_roles=False):
     if isinstance(value, dict):
-        return {key: _subject_identity(child) for key, child in value.items()
+        return {key: _subject_identity(child, component=component or key == "database_identity_components",
+                                       retain_component_roles=retain_component_roles) for key, child in value.items()
                 if key not in {"path", "record_name", "structure_label", "source_run_dir", "candidates_jsonl"}
+                and not (component and key == "role" and not retain_component_roles)
                 and not key.endswith("_path")}
     if isinstance(value, list):
-        return [_subject_identity(child) for child in value]
+        return [_subject_identity(child, component=component, retain_component_roles=retain_component_roles) for child in value]
     return value
+
+
+def _legacy_admissions(root, scope, canonical):
+    from mn_molecular_design_studio.api_idempotency import Conflict
+
+    path = root.parent / "api-requests.sqlite3"
+    if not path.is_file():
+        return []
+    with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as connection:
+        rows = connection.execute("SELECT key,fingerprint,status,response FROM requests WHERE owner=? "
+                                  "AND kind='scientific' AND key NOT LIKE 'v2:%'", (scope["id"],)).fetchall()
+    matches = []
+    for key, fingerprint, status, response in rows:
+        identity = hashlib.sha256((scope["id"] + key).encode()).hexdigest()
+        manifest_path = root / "inputs" / identity / "complex_analysis_source.json"
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except (OSError, ValueError) as exc:
+            raise Conflict("Legacy scientific admission lacks verifiable inputs; reconcile it before submitting new work.") from exc
+        if _subject_identity(manifest) != canonical["source"]:
+            continue
+        legacy = {**canonical, "source": _subject_identity(manifest, retain_component_roles=True)}
+        if hashlib.sha256(json.dumps(legacy, sort_keys=True, allow_nan=False).encode()).hexdigest() != fingerprint:
+            continue
+        if status != "completed":
+            raise Conflict("This exact legacy assessment is pending or uncertain; inspect it before retrying.")
+        result = json.loads(response) if response else None
+        if not isinstance(result, dict) or not isinstance(result.get("job"), dict) or not result["job"].get("run_id"):
+            raise Conflict("Legacy scientific admission has an incomplete response; reconcile it before retrying.")
+        matches.append(result)
+    return sorted(matches, key=lambda result: str(result["job"]["run_id"]))
 
 
 def submit_database_assessment(user, project_id, payload, operation, *, validate=None):
@@ -92,7 +125,7 @@ def _submit_database_assessment(user, project_id, payload, operation):
     with (root / (lock_name + ".lock")).open("a+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         retry_of = str((payload.get("execution") or {}).get("reassessment_of") or "")
-        key = fingerprint
+        key = "v2:" + fingerprint
         retry_authorized = False
         if retry_of:
             path = Path(app_home()) / "api-requests.sqlite3"
@@ -110,6 +143,10 @@ def _submit_database_assessment(user, project_id, payload, operation):
             if previous["status"] == "completed":
                 return previous["response"]
             raise Conflict("This exact assessment is pending or uncertain; inspect its submission before retrying.")
+        legacy = _legacy_admissions(root, scope, canonical)
+        if legacy and not retry_of:
+            return submit_once(scope, "scientific", key, canonical, lambda: legacy[0])
+        retry_authorized = retry_authorized or any(row["job"]["run_id"] == retry_of for row in legacy)
         from mn_molecular_design_studio.runtime import runs_root
         analysis_root = Path(runs_root()) / "analysis"
         existing = None
