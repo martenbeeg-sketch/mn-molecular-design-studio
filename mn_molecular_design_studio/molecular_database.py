@@ -521,6 +521,8 @@ class MolecularDatabase:
         for item in record.get("files") or []:
             path = Path(item["path"]) if item.get("path") else self._store_file(item["name"], item["content"])
             context = {**(origin or {}), **{key: value for key, value in item.items() if key not in {"path", "content", "name", "label"}}}
+            if path.is_file():
+                context.setdefault("content_sha256", hashlib.sha256(path.read_bytes()).hexdigest())
             structure_id = _id("structure-", _json([molecule_id, group_id, str(path), context]))
             connection.execute("INSERT OR IGNORE INTO molecule_structures VALUES (?,?,?,?,?,?,?,?)", (
                 structure_id, molecule_id, group_id, str(path), str(item.get("label") or path.name),
@@ -536,7 +538,10 @@ class MolecularDatabase:
         directory = self.root / "molecular_files" / digest[:2]
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / (digest + suffix)
-        if not path.exists():
+        if path.exists():
+            if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                raise ValueError("Stored molecular file content digest mismatch.")
+        else:
             with tempfile.NamedTemporaryFile(dir=directory, delete=False) as temporary:
                 temporary.write(content)
                 temporary_path = Path(temporary.name)
@@ -882,7 +887,7 @@ class MolecularDatabase:
         source = Path(row["path"])
         if not source.is_file():
             raise FileNotFoundError("The source structure is unavailable on this workstation.")
-        content = source.read_bytes()
+        content = self._verified_structure_content(row, source)
         digest = hashlib.sha256(content).hexdigest()
         destination = self._store_file(source.name, content)
         context = json.loads(row["context"])
@@ -1503,7 +1508,38 @@ class MolecularDatabase:
             result.append({**snapshot, "group_id": "library:" + group["id"]})
         return result
 
+    def _verified_structure_content(self, row, path):
+        """Verify one read against retained identity, never current-byte identity."""
+        context = json.loads(row["context"] or "{}")
+        expected = context.get("portable_sha256") or context.get("sha256") or context.get("content_sha256")
+        if not expected:
+            # Older uploads already encode their immutable digest in our CAS
+            # layout. This is evidence, not a new digest inferred from bytes.
+            try:
+                relative = path.absolute().relative_to((self.root / "molecular_files").absolute())
+            except ValueError:
+                relative = None
+            if (relative is not None and len(relative.parts) == 2
+                    and re.fullmatch(r"[0-9a-f]{64}", path.stem)
+                    and relative.parts[0] == path.stem[:2]):
+                expected = path.stem
+            else:
+                raise ValueError("Legacy structure has no recorded content digest; verified access requires an explicitly retained representation.")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(expected)):
+            raise ValueError("The recorded structure content digest is invalid.")
+        content = path.read_bytes()
+        if hashlib.sha256(content).hexdigest() != expected:
+            raise ValueError("Structure content digest mismatch: the saved representation is not the current source bytes.")
+        return content
+
     def structure_file(self, user, structure_id, *, materialize=False):
+        """Authorize and snapshot verified bytes for download or analysis.
+
+        Both modes return a private immutable input copy: returning the mutable
+        source path would let FileResponse or a later reader reopen other bytes
+        after validation. ``materialize`` remains accepted for existing callers.
+        No scientific record or original source file is changed.
+        """
         with self.connection() as connection:
             row = connection.execute("SELECT * FROM molecule_structures WHERE id=?", (structure_id,)).fetchone()
         if not row:
@@ -1516,14 +1552,24 @@ class MolecularDatabase:
             path = Path(row["path"])
         if not path.is_file():
             raise FileNotFoundError("The source structure is unavailable on this workstation.")
-        if not materialize:
-            return path
         from mn_molecular_design_studio.auth import user_input_root
-        content = path.read_bytes()
+        content = self._verified_structure_content(row, path)
         destination = user_input_root(user["id"]) / "database_structures" / (hashlib.sha256(content).hexdigest() + path.suffix)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        if not destination.exists():
-            destination.write_bytes(content)
+        # Replace atomically with only the validated bytes. Concurrent readers
+        # of this content-addressed path therefore see the same exact payload;
+        # an old corrupt input cache is never trusted by filename alone.
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as temporary:
+                temporary_path = Path(temporary.name)
+                temporary.write(content)
+                temporary.flush()
+                os.fchmod(temporary.fileno(), 0o400)
+            os.replace(temporary_path, destination)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
         return destination
 
     def _complex_reference_structure(self, user, molecule_id, structure_id):

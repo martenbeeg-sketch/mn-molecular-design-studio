@@ -1110,6 +1110,8 @@ def install_routes(app):
             return FileResponse(path, filename=path.name)
         except (PermissionError, FileNotFoundError) as exc:
             raise HTTPException(404, "Structure not found or inaccessible.") from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @router.post("/structures/{structure_id}/portable")
     def mark_portable(structure_id: str, request: Request, payload: dict = Body(...)):
