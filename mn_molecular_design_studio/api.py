@@ -218,8 +218,8 @@ def _with_request_file(
 
 
 def _request_directory(user: dict[str, Any], base_dir: str | None) -> Path:
-    if user.get("role") == "admin":
-        directory = Path(base_dir or Path.cwd()).expanduser().resolve()
+    if user.get("role") == "admin" and base_dir:
+        directory = Path(base_dir).expanduser().resolve()
     else:
         if base_dir:
             raise HTTPException(status_code=403, detail="Only an admin can choose a server-side request directory.")
