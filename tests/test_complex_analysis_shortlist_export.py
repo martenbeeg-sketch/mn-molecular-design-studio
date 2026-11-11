@@ -187,7 +187,6 @@ def test_namespaced_shortlist_save_uses_the_rendered_panel_values(monkeypatch):
     # so the script's fake cannot escape into subsequent Database/API tests.
     monkeypatch.setattr(molecular_database, "MolecularDatabase", molecular_database.MolecularDatabase)
 
-    token = hashlib.sha256(b"mol-1:structure-1").hexdigest()[:12]
     app = AppTest.from_string(
         f"""
 import streamlit as st
@@ -198,10 +197,10 @@ class FakeDatabase:
     def group(self, group_id, user):
         return {{"project_id": "staging"}}
     def get_complex_review(self, user, **kwargs):
-        return {{"status": "Unreviewed", "note": ""}}
-    def save_complex_review(self, user, **kwargs):
-        st.session_state.setdefault("saved_reviews", []).append(kwargs)
-        return {{"status": kwargs["status"], "note": kwargs["note"]}}
+        return {{"status": "Unreviewed", "note": "", "revision": "base"}}
+    def save_complex_reviews(self, user, decisions):
+        st.session_state.setdefault("saved_reviews", []).extend(decisions)
+        return [{{"status": d["status"], "note": d["note"], "revision": "saved"}} for d in decisions]
 
 db_module.MolecularDatabase = FakeDatabase
 sample = {{
@@ -210,14 +209,14 @@ sample = {{
     "record": {{"id": "mol-1"}}, "structure": {{"id": "structure-1", "group_id": "group-1"}},
     "candidate": {{"candidate_id": "c-1", "raw_metadata": {{}}}},
 }}
-st.session_state["explorer-shortlist-decision-{token}"] = "Shortlisted for experimental testing"
-st.session_state["explorer-shortlist-rationale-{token}"] = "Advance for pilot review."
 render_shortlist_review_export({{"id": "test-user"}}, [sample], key_prefix="explorer-shortlist")
 render_shortlist_review_export({{"id": "test-user"}}, [sample], key_prefix="comparison-shortlist")
 """,
         default_timeout=10,
     ).run()
     assert not app.exception
+    app.selectbox[0].set_value("Shortlisted for experimental testing").run()
+    app.text_area[0].set_value("Advance for pilot review.").run()
     app.button(key="explorer-shortlist-save-review").click().run()
     assert not app.exception
     saved = app.session_state["saved_reviews"]

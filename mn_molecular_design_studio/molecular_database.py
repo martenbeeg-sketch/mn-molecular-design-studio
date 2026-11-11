@@ -29,6 +29,10 @@ _SYNC_TIMES: dict[str, float] = {}
 _CAPTURE_REVISION_SCHEMA_READY: set[str] = set()
 
 
+class ReviewConflictError(ValueError):
+    """The human review changed since the editor's saved base revision."""
+
+
 def _observation_identity(context):
     """Keep supplied selectors (including zero) without guessing missing lineage."""
     candidate = context.get("candidate") or {}
@@ -242,6 +246,29 @@ class MolecularDatabase:
             );
             CREATE INDEX IF NOT EXISTS complex_review_lookup
                 ON complex_review_annotations(source_kind,subject_id,structure_ref,evaluation_id,user_id);
+            -- Local edit generations, not a second review store or peer identity.
+            -- Keep deletion generations to reject stale forms after delete/recreate.
+            CREATE TABLE IF NOT EXISTS complex_review_versions (
+                id TEXT PRIMARY KEY, revision INTEGER NOT NULL
+            );
+            CREATE TRIGGER IF NOT EXISTS complex_review_version_insert
+            AFTER INSERT ON complex_review_annotations BEGIN
+                INSERT INTO complex_review_versions(id,revision) VALUES (NEW.id,1)
+                ON CONFLICT(id) DO UPDATE SET revision=revision+1;
+            END;
+            CREATE TRIGGER IF NOT EXISTS complex_review_version_update
+            AFTER UPDATE ON complex_review_annotations
+            WHEN NEW.status IS NOT OLD.status OR NEW.note IS NOT OLD.note
+                OR NEW.updated_at IS NOT OLD.updated_at OR NEW.created_at IS NOT OLD.created_at
+            BEGIN
+                INSERT INTO complex_review_versions(id,revision) VALUES (NEW.id,1)
+                ON CONFLICT(id) DO UPDATE SET revision=revision+1;
+            END;
+            CREATE TRIGGER IF NOT EXISTS complex_review_version_delete
+            AFTER DELETE ON complex_review_annotations BEGIN
+                INSERT INTO complex_review_versions(id,revision) VALUES (OLD.id,1)
+                ON CONFLICT(id) DO UPDATE SET revision=revision+1;
+            END;
             CREATE TABLE IF NOT EXISTS complex_reference_contexts (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
@@ -1793,49 +1820,85 @@ class MolecularDatabase:
         if not selected.is_file():
             raise FileNotFoundError("The Results structure is no longer available.")
 
-    def get_complex_review(self, user, *, source_kind, subject_id, structure_ref, evaluation_id=""):
-        """Read this user's persistent, non-scientific review annotation after rechecking source access."""
-        source_kind = str(source_kind or "").casefold()
-        subject_id = str(subject_id or "")
-        structure_ref = str(structure_ref or "")
-        evaluation_id = str(evaluation_id or "")
-        self._validate_complex_review_subject(user, source_kind, subject_id, structure_ref, evaluation_id)
-        with self.connection() as connection:
-            row = connection.execute(
-                "SELECT status,note,created_at,updated_at FROM complex_review_annotations "
-                "WHERE source_kind=? AND subject_id=? AND structure_ref=? AND evaluation_id=? AND user_id=?",
-                (source_kind, subject_id, structure_ref, evaluation_id, str(user["id"])),
-            ).fetchone()
-        return dict(row) if row else {"status": "Unreviewed", "note": "", "created_at": "", "updated_at": ""}
+    @staticmethod
+    def _review_identity(user, source_kind, subject_id, structure_ref, evaluation_id=""):
+        return (str(source_kind or "").casefold(), str(subject_id or ""),
+                str(structure_ref or ""), str(evaluation_id or ""), str(user.get("id") or ""))
 
-    def save_complex_review(self, user, *, source_kind, subject_id, structure_ref, evaluation_id="", status="Unreviewed", note=""):
-        """Save a user's manual review separately from calculated observations and metrics."""
-        source_kind = str(source_kind or "").casefold()
-        subject_id = str(subject_id or "")
-        structure_ref = str(structure_ref or "")
-        evaluation_id = str(evaluation_id or "")
-        status = str(status or "").strip()
-        note = str(note or "")
-        if status not in {"Unreviewed", "Needs review", "Reviewed", "Shortlisted for experimental testing",
-                          "Not shortlisted for experimental testing", "Not applicable"}:
-            raise ValueError("Choose a supported review status.")
-        if len(note) > 10_000:
-            raise ValueError("Review notes are limited to 10,000 characters.")
-        self._validate_complex_review_subject(user, source_kind, subject_id, structure_ref, evaluation_id)
-        stamp = _now()
-        identifier = _id("review-", _json([source_kind, subject_id, structure_ref, evaluation_id, user["id"]]))
+    @staticmethod
+    def _review_state(connection, identity):
+        identifier = _id("review-", _json(list(identity)))
+        # One statement reads content and generation from the same SQLite snapshot.
+        row = connection.execute(
+            "SELECT a.status,a.note,a.created_at,a.updated_at,COALESCE(v.revision,0) AS generation "
+            "FROM (SELECT ? AS id) k LEFT JOIN complex_review_annotations a "
+            "ON a.source_kind=? AND a.subject_id=? AND a.structure_ref=? AND a.evaluation_id=? AND a.user_id=? "
+            "LEFT JOIN complex_review_versions v ON v.id=COALESCE(a.id,k.id)",
+            (identifier, *identity),
+        ).fetchone()
+        saved = {key: row[key] or default for key, default in
+                 (("status", "Unreviewed"), ("note", ""), ("created_at", ""), ("updated_at", ""))}
+        saved["revision"] = hashlib.sha256(_json([identifier, row["generation"], saved]).encode()).hexdigest()
+        return saved, int(row["generation"])
+
+    def get_complex_review(self, user, *, source_kind, subject_id, structure_ref, evaluation_id=""):
+        """Read an authorized review and its opaque, local compare-and-set revision."""
+        identity = self._review_identity(user, source_kind, subject_id, structure_ref, evaluation_id)
+        self._validate_complex_review_subject(user, *identity[:4])
         with self.connection() as connection:
-            connection.execute(
-                "INSERT INTO complex_review_annotations "
-                "(id,source_kind,subject_id,structure_ref,evaluation_id,user_id,status,note,created_at,updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_kind,subject_id,structure_ref,evaluation_id,user_id) "
-                "DO UPDATE SET status=excluded.status,note=excluded.note,updated_at=excluded.updated_at",
-                (identifier, source_kind, subject_id, structure_ref, evaluation_id, str(user["id"]), status, note, stamp, stamp),
-            )
-        return self.get_complex_review(
-            user, source_kind=source_kind, subject_id=subject_id,
-            structure_ref=structure_ref, evaluation_id=evaluation_id,
-        )
+            return self._review_state(connection, identity)[0]
+
+    def save_complex_reviews(self, user, decisions):
+        """Atomically save intentional review changes against their displayed revisions.
+
+        Review content and peer conflict semantics are unchanged. Local generations
+        also invalidate stale forms after writes from older clients or peer apply.
+        """
+        prepared, seen = [], set()
+        for decision in decisions:
+            identity = self._review_identity(user, decision.get("source_kind"), decision.get("subject_id"),
+                                            decision.get("structure_ref"), decision.get("evaluation_id", ""))
+            status, note = str(decision.get("status") or "Unreviewed").strip(), str(decision.get("note") or "")
+            if status not in {"Unreviewed", "Needs review", "Reviewed", "Shortlisted for experimental testing",
+                              "Not shortlisted for experimental testing", "Not applicable"}:
+                raise ValueError("Choose a supported review status.")
+            if len(note) > 10_000:
+                raise ValueError("Review notes are limited to 10,000 characters.")
+            if identity in seen:
+                raise ValueError("A review may occur only once in a batch save.")
+            seen.add(identity)
+            self._validate_complex_review_subject(user, *identity[:4])
+            prepared.append((identity, status, note, decision.get("expected_revision")))
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            states = [self._review_state(connection, identity) for identity, *_ in prepared]
+            for (identity, status, note, expected), (current, generation) in zip(prepared, states):
+                # Legacy callers may create a genuinely new review. Updating or
+                # resurrecting a review always requires a displayed base revision.
+                first_create = expected is None and not current["created_at"] and generation == 0
+                if not first_create and expected != current["revision"]:
+                    raise ReviewConflictError("Review changed since it was loaded. Load the latest saved review and reconcile your draft before saving.")
+            saved = []
+            for (identity, status, note, _), (current, _) in zip(prepared, states):
+                if (status, note) != (current["status"], current["note"]):
+                    stamp = _now()
+                    identifier = _id("review-", _json(list(identity)))
+                    connection.execute(
+                        "INSERT INTO complex_review_annotations "
+                        "(id,source_kind,subject_id,structure_ref,evaluation_id,user_id,status,note,created_at,updated_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_kind,subject_id,structure_ref,evaluation_id,user_id) "
+                        "DO UPDATE SET status=excluded.status,note=excluded.note,updated_at=excluded.updated_at",
+                        (identifier, *identity, status, note, stamp, stamp),
+                    )
+                saved.append(self._review_state(connection, identity)[0])
+            return saved
+
+    def save_complex_review(self, user, *, source_kind, subject_id, structure_ref, evaluation_id="",
+                            status="Unreviewed", note="", expected_revision=None):
+        """Save one review using the same atomic compare-and-set boundary as batches."""
+        return self.save_complex_reviews(user, [{"source_kind": source_kind, "subject_id": subject_id,
+            "structure_ref": structure_ref, "evaluation_id": evaluation_id, "status": status, "note": note,
+            "expected_revision": expected_revision}])[0]
 
 
 def save_legacy_groups(path: Path, groups: list[dict], user: dict):

@@ -581,7 +581,7 @@ def test_shortlist_reviews_replicate_by_stable_structure_identity_and_converge(p
         source = MolecularDatabase()
         source_record = source.list_molecules(user, molecule_ids=[molecule_id])["items"][0]
         assert source_record["representations"][0]["id"] == source_structure
-        source.save_complex_review(
+        original_a = source.save_complex_review(
             user, source_kind="database", subject_id=molecule_id, structure_ref=source_structure,
             status="Shortlisted for experimental testing", note="A: pass recorded; retain for the pilot.",
         )
@@ -596,22 +596,33 @@ def test_shortlist_reviews_replicate_by_stable_structure_identity_and_converge(p
         assert replica.get_complex_review(
             user, source_kind="database", subject_id=molecule_id, structure_ref=replica_structure,
         )["note"] == "A: pass recorded; retain for the pilot."
-        replica.save_complex_review(
-            user, source_kind="database", subject_id=molecule_id, structure_ref=replica_structure,
+        original_b = replica.get_complex_review(user, source_kind="database", subject_id=molecule_id, structure_ref=replica_structure)
+        revised_b = replica.save_complex_review(
+            user, source_kind="database", subject_id=molecule_id, structure_ref=replica_structure, expected_revision=original_b["revision"],
             status="Shortlisted for experimental testing", note="B: rationale revised after construct review.",
         )
         capture(Replica(), database=replica, node_id=nodes[1]["id"])
     transfer(on, 1, 0)
-    transfer(on, 1, 0)  # Replayed delivery must be idempotent.
+    with on(0):
+        received = MolecularDatabase().get_complex_review(user, source_kind="database", subject_id=molecule_id,
+            structure_ref=source_structure)
+    transfer(on, 1, 0)  # Replayed delivery must preserve the local editor revision too.
     with on(0):
         source = MolecularDatabase()
         saved = source.get_complex_review(
             user, source_kind="database", subject_id=molecule_id, structure_ref=source_structure,
         )
+        assert saved == received
         assert saved["note"] == "B: rationale revised after construct review."
+        with pytest.raises(ValueError, match="changed"):
+            source.save_complex_review(user, source_kind="database", subject_id=molecule_id,
+                structure_ref=source_structure, status="Reviewed", note="Stale open editor from A.",
+                expected_revision=original_a["revision"])
+        assert source.get_complex_review(user, source_kind="database", subject_id=molecule_id,
+            structure_ref=source_structure)["note"] == saved["note"]
         source.save_complex_review(
             user, source_kind="database", subject_id=molecule_id, structure_ref=source_structure,
-            status="Unreviewed", note="",
+            status="Unreviewed", note="", expected_revision=saved["revision"],
         )
         capture(Replica(), database=source, node_id=nodes[0]["id"])
     transfer(on, 0, 1)
@@ -621,6 +632,12 @@ def test_shortlist_reviews_replicate_by_stable_structure_identity_and_converge(p
             user, source_kind="database", subject_id=molecule_id, structure_ref=replica_structure,
         )
         assert saved["status"] == "Unreviewed" and saved["note"] == ""
+        with pytest.raises(ValueError, match="changed"):
+            replica.save_complex_review(user, source_kind="database", subject_id=molecule_id,
+                structure_ref=replica_structure, status="Reviewed", note="Stale edit after remote clear.",
+                expected_revision=revised_b["revision"])
+        assert MolecularDatabase().get_complex_review(user, source_kind="database", subject_id=molecule_id,
+            structure_ref=replica_structure) == saved
         source_observations = source.list_molecules(user, molecule_ids=[molecule_id])["items"][0]["observations"]
         replica_observations = replica.list_molecules(user, molecule_ids=[molecule_id])["items"][0]["observations"]
         assert len(source_observations) == len(replica_observations) == 1
@@ -642,6 +659,7 @@ def test_shortlist_reviews_replicate_by_stable_structure_identity_and_converge(p
         source.save_complex_review(
             user, source_kind="database", subject_id=molecule_id, structure_ref=source_structure,
             status="Reviewed", note="Concurrent rationale from A.",
+            expected_revision=source.get_complex_review(user, source_kind="database", subject_id=molecule_id, structure_ref=source_structure)["revision"],
         )
         capture(Replica(), database=source, node_id=nodes[0]["id"])
     with on(1):
@@ -649,6 +667,7 @@ def test_shortlist_reviews_replicate_by_stable_structure_identity_and_converge(p
         replica.save_complex_review(
             user, source_kind="database", subject_id=molecule_id, structure_ref=replica_structure,
             status="Not shortlisted for experimental testing", note="Concurrent rationale from B.",
+            expected_revision=replica.get_complex_review(user, source_kind="database", subject_id=molecule_id, structure_ref=replica_structure)["revision"],
         )
         capture(Replica(), database=replica, node_id=nodes[1]["id"])
     transfer(on, 0, 1)
@@ -663,6 +682,13 @@ def test_shortlist_reviews_replicate_by_stable_structure_identity_and_converge(p
                 "SELECT error FROM conflicts WHERE key LIKE 'complex_review_annotation:%'",
             ).fetchone()
         assert conflict and "Concurrent shortlist edits" in conflict["error"]
+        with Replica().db() as connection:
+            value = json.loads(connection.execute(
+                "SELECT value FROM records WHERE kind='complex_review_annotation' AND value!='null'"
+            ).fetchone()["value"])
+        assert {branch["note"] for branch in value["_conflicts"]} >= {
+            "Concurrent rationale from A.", "Concurrent rationale from B.",
+        }
     with on(1):
         replica = MolecularDatabase()
         b_value = replica.get_complex_review(
@@ -674,6 +700,13 @@ def test_shortlist_reviews_replicate_by_stable_structure_identity_and_converge(p
                 "SELECT error FROM conflicts WHERE key LIKE 'complex_review_annotation:%'",
             ).fetchone()
         assert conflict and "Concurrent shortlist edits" in conflict["error"]
+        with Replica().db() as connection:
+            value = json.loads(connection.execute(
+                "SELECT value FROM records WHERE kind='complex_review_annotation' AND value!='null'"
+            ).fetchone()["value"])
+        assert {branch["note"] for branch in value["_conflicts"]} >= {
+            "Concurrent rationale from A.", "Concurrent rationale from B.",
+        }
 
 
 def test_old_peer_export_skips_new_review_record_without_advancing_shared_cursor(peers):

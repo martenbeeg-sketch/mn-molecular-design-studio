@@ -382,62 +382,54 @@ def render_shortlist_review_export(user: dict, samples: list[dict], *, key_prefi
     st.caption("Review decisions are account-scoped human annotations, separate from computational acceptance and Evaluations. Export preserves source and model provenance; it creates no score or Database promotion.")
     database_samples = [(sample, _database_identity(sample)) for sample in samples]
     database_samples = [(sample, identity) for sample, identity in database_samples if identity]
-    database = None
+    from mn_molecular_design_studio.complex_analysis_review_ui import render_review_editor, mark_review_saved
+    database, editors, unavailable = None, [], False
     if database_samples:
         from mn_molecular_design_studio.molecular_database import MolecularDatabase
         database = MolecularDatabase()
         for sample, (molecule_id, structure_id) in database_samples:
             structure = sample.get("structure") if isinstance(sample.get("structure"), dict) else {}
             group_id = str(structure.get("group_id") or "")
-            if group_id:
-                try:
-                    group = database.group(group_id, user)
-                    sample.setdefault("project_id", str(group.get("project_id") or ""))
-                except (OSError, PermissionError, ValueError, KeyError):
-                    sample.setdefault("project_id", "")
+            identity = {"source_kind": "database", "subject_id": molecule_id, "structure_ref": structure_id}
             try:
-                current = database.get_complex_review(user, source_kind="database", subject_id=molecule_id,
-                                                      structure_ref=structure_id)
-            except (OSError, PermissionError, ValueError, TypeError):
-                current = sample.get("review_annotation") or {"status": "Unreviewed", "note": ""}
-            token = __import__("hashlib").sha256(f"{molecule_id}:{structure_id}".encode()).hexdigest()[:12]
-            # The same cohort can be rendered in the Explorer and its nested
-            # comparison view during one Streamlit run. Namespace widget keys
-            # by view while hydrating both from the same persisted annotation.
-            status_key = f"{key_prefix}-decision-{token}"
-            note_key = f"{key_prefix}-rationale-{token}"
-            if status_key not in st.session_state:
-                st.session_state[status_key] = current.get("status") or "Unreviewed"
-            if note_key not in st.session_state:
-                st.session_state[note_key] = current.get("note") or ""
+                if group_id:
+                    sample["project_id"] = str(database.group(group_id, user).get("project_id") or "")
+                current = database.get_complex_review(user, **identity)
+            except (OSError, PermissionError, ValueError, TypeError) as exc:
+                st.warning(f"Cannot load saved review for {sample.get('label') or molecule_id}: {exc}")
+                unavailable = True
+                continue
+            # Export the current persisted value, never a cached or unsaved draft.
+            sample["review_annotation"] = current
             with st.expander(f"Review decision · {sample.get('label') or molecule_id}", expanded=False):
-                st.selectbox("Experimental review decision", REVIEW_STATUSES, key=status_key)
-                st.text_area("Rationale or exclusion reason", key=note_key, max_chars=10_000,
-                             placeholder="Record the evidence and practical reason for advancing or excluding this design.")
+                decision, base_key, dirty = render_review_editor(user, identity, current,
+                    key_prefix=key_prefix, status_label="Experimental review decision", note_label="Rationale or exclusion reason",
+                    placeholder="Record the evidence and practical reason for advancing or excluding this design.")
+                if dirty:
+                    editors.append((sample, decision, base_key))
     if st.button("Save selected-design review decisions", key=f"{key_prefix}-save-review",
-                  disabled=not bool(database_samples)):
-        decisions = []
-        for sample, (molecule_id, structure_id) in database_samples:
-            token = __import__("hashlib").sha256(f"{molecule_id}:{structure_id}".encode()).hexdigest()[:12]
-            status = str(st.session_state.get(f"{key_prefix}-decision-{token}") or "Unreviewed")
-            note = str(st.session_state.get(f"{key_prefix}-rationale-{token}") or "")
-            decisions.append((sample, molecule_id, structure_id, status, note))
-        errors = [f"{sample.get('label') or molecule_id}: enter a rationale for this decision."
-                  for sample, molecule_id, _structure_id, status, note in decisions
-                  if status in {SHORTLISTED, NOT_SHORTLISTED} and not note.strip()]
+                  disabled=not bool(database_samples) or unavailable):
+        errors = [f"{sample.get('label') or decision['subject_id']}: enter a rationale for this decision."
+                  for sample, decision, _ in editors
+                  if decision["status"] in {SHORTLISTED, NOT_SHORTLISTED} and not decision["note"].strip()]
         if errors:
             for error in errors:
                 st.error(error)
-            return
-        for sample, molecule_id, structure_id, status, note in decisions:
+        elif editors:
             try:
-                saved = database.save_complex_review(user, source_kind="database", subject_id=molecule_id,
-                    structure_ref=structure_id, status=status, note=note)
-                sample["review_annotation"] = {"status": saved["status"], "note": saved["note"]}
+                saved = database.save_complex_reviews(user, [decision for _, decision, _ in editors])
             except (OSError, PermissionError, ValueError, TypeError) as exc:
-                st.error(f"{sample.get('label') or molecule_id}: {exc}")
-                return
-        st.success("Saved the review decisions against the exact selected Database structures.")
+                st.error(str(exc))
+            else:
+                for (sample, _, base_key), review in zip(editors, saved):
+                    sample["review_annotation"] = review
+                    mark_review_saved(base_key, review)
+                st.success("Saved the review decisions against the exact selected Database structures.")
+        else:
+            st.info("No review changes to save.")
+    if unavailable:
+        st.info("Review export is unavailable until access to the current saved reviews is restored.")
+        return
     results_count = sum(1 for sample in samples if str(sample.get("source_kind") or sample.get("kind") or "").casefold() == "results")
     if results_count:
         st.info("Results-source structures remain in the export with their original job references. This panel persists shortlist annotations only for existing Database structures; it does not promote Results into the Database.")

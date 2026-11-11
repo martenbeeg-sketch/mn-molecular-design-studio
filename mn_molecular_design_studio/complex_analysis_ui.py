@@ -2938,35 +2938,32 @@ def _show_components(components: list[dict]) -> None:
 def _show_human_review(database, user: dict, *, source_kind: str, subject_id: str,
                        structure_ref: str, evaluation_id: str = "") -> None:
     """Edit one account's durable review note, separate from scientific evaluations."""
-    review = database.get_complex_review(
-        user, source_kind=source_kind, subject_id=subject_id,
-        structure_ref=structure_ref, evaluation_id=evaluation_id,
-    )
-    token = hashlib.sha256("\0".join((source_kind, subject_id, structure_ref, evaluation_id)).encode()).hexdigest()[:16]
-    status_key = f"complex-analysis-review-status-{token}"
-    note_key = f"complex-analysis-review-note-{token}"
-    if status_key not in st.session_state:
-        st.session_state[status_key] = review["status"]
-    if note_key not in st.session_state:
-        st.session_state[note_key] = review["note"]
+    from mn_molecular_design_studio.complex_analysis_review_ui import render_review_editor, mark_review_saved
+    identity = {"source_kind": source_kind, "subject_id": subject_id,
+                "structure_ref": structure_ref, "evaluation_id": evaluation_id}
+    try:
+        review = database.get_complex_review(user, **identity)
+    except (OSError, PermissionError, ValueError, TypeError) as exc:
+        st.warning(f"Cannot load saved human review: {exc}")
+        return
     st.markdown("#### Human review")
     st.caption("Your review is saved persistently under your account, separately from calculated evaluations.")
-    st.selectbox("Review status", ["Unreviewed", "Needs review", "Reviewed",
-                                   "Shortlisted for experimental testing",
-                                   "Not shortlisted for experimental testing", "Not applicable"], key=status_key)
-    st.text_area("Review notes", key=note_key, max_chars=10_000,
-                 placeholder="Record observations or questions for a human reviewer.")
-    if st.button("Save review", key=f"complex-analysis-review-save-{token}"):
-        if st.session_state[status_key] in {"Shortlisted for experimental testing",
-                                            "Not shortlisted for experimental testing"} and not str(st.session_state[note_key]).strip():
+    decision, base_key, dirty = render_review_editor(user, identity, review,
+        key_prefix="complex-analysis-review", status_label="Review status", note_label="Review notes",
+        placeholder="Record observations or questions for a human reviewer.")
+    if st.button("Save review", key=base_key.replace("-base-", "-save-")):
+        if decision["status"] in {"Shortlisted for experimental testing", "Not shortlisted for experimental testing"} and not decision["note"].strip():
             st.error("Enter a short rationale for this shortlist decision.")
-            return
-        saved = database.save_complex_review(
-            user, source_kind=source_kind, subject_id=subject_id,
-            structure_ref=structure_ref, evaluation_id=evaluation_id,
-            status=st.session_state[status_key], note=st.session_state[note_key],
-        )
-        st.success(f"Review saved · {saved['updated_at']}")
+        elif dirty:
+            try:
+                saved = database.save_complex_review(user, **decision)
+            except (OSError, PermissionError, ValueError, TypeError) as exc:
+                st.error(str(exc))
+            else:
+                mark_review_saved(base_key, saved)
+                st.success(f"Review saved · {saved['updated_at']}")
+        else:
+            st.info("No review changes to save.")
 
 
 def _explicit_reference_link(structure: dict) -> tuple[str, str, str]:

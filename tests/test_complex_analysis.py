@@ -231,7 +231,8 @@ def test_completed_results_inspector_opens_registered_cross_run_structure_withou
     candidate_file.write_text(json.dumps(candidate) + "\\n")
     (source / "metadata.json").write_text(json.dumps({"tool": "boltz2", "project_id": "project-1"}))
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(runs_root))
-    monkeypatch.setattr(runtime, "runs_root", lambda: runs_root)
+    # The configured environment is sufficient; do not let a lazily imported
+    # compatibility module retain a monkeypatched function after this fixture.
     access = {
         ("campaign", "campaign-1"): {"owner_id": USER["id"], "project_id": "project-1", "run_relative_path": "campaign/campaign-1"},
         ("refolding-validation", "prediction-1"): {"owner_id": USER["id"], "project_id": "project-1", "run_relative_path": "refolding-validation/prediction-1"},
@@ -340,8 +341,7 @@ render_complex_analysis_workspace({USER!r})
     app = AppTest.from_string(script, default_timeout=10).run()
 
     assert not app.exception
-    assert any("Design Explorer" in element.value for element in app.subheader)
-    assert any("Select Database designs" in element.value for element in app.markdown)
+    assert any("Choose a target or molecular system, then a campaign" in element.value for element in app.markdown)
     assert not any(element.label == "Completed Results job" for element in app.selectbox)
     assert app.session_state["complex-analysis-workspace-view"] == "database"
     assert "complex-analysis-source-kind" not in app.session_state
@@ -895,14 +895,14 @@ def test_database_review_annotations_persist_separately_and_follow_record_access
     assert database.list_molecules(USER, molecule_ids=[record["id"]])["items"][0]["observations"] == before_observations
     shortlisted = database.save_complex_review(
         USER, source_kind="database", subject_id=record["id"], structure_ref=structure_id,
-        status="Shortlisted for experimental testing", note="Advance after construct review.",
+        status="Shortlisted for experimental testing", note="Advance after construct review.", expected_revision=saved["revision"],
     )
     assert shortlisted["status"] == "Shortlisted for experimental testing"
     assert database.get_complex_review(USER, source_kind="database", subject_id=record["id"],
                                        structure_ref=structure_id)["note"] == "Advance after construct review."
     not_shortlisted = database.save_complex_review(
         USER, source_kind="database", subject_id=record["id"], structure_ref=structure_id,
-        status="Not shortlisted for experimental testing", note="Keep for diagnostic comparison only.",
+        status="Not shortlisted for experimental testing", note="Keep for diagnostic comparison only.", expected_revision=shortlisted["revision"],
     )
     assert not_shortlisted["status"] == "Not shortlisted for experimental testing"
     with pytest.raises(PermissionError):
@@ -1077,7 +1077,7 @@ def test_workspace_review_form_saves_persistent_annotation(tmp_path, monkeypatch
     imported = database.import_records(USER, [imported_record], name="Review form complex")
     record = database.list_molecules(USER, molecule_ids=imported["molecule_ids"])["items"][0]
     structure_id = record["representations"][0]["id"]
-    token = hashlib.sha256("\0".join(("database", record["id"], structure_id, "")).encode()).hexdigest()[:16]
+    token = hashlib.sha256("\0".join((USER["id"], "database", record["id"], structure_id, "")).encode()).hexdigest()[:16]
     from mn_molecular_design_studio import complex_analysis_ui, molecular_database
 
     monkeypatch.setattr(molecular_database, "MolecularDatabase", lambda: database)
@@ -1346,6 +1346,8 @@ def test_ligand_workflow_reuses_evaluation_with_prepared_digest_and_exact_source
 
 def test_database_workspace_submits_direct_analysis_with_stable_source_ids(tmp_path, monkeypatch):
     database = _isolated_database(tmp_path, monkeypatch)
+    from mn_molecular_design_studio.job_catalog import reconcile
+    reconcile()  # An explicitly initialized, empty execution catalog.
     imported_record = molecule_imports.parse_structure(_complex_pdb("protein"), "imported-ppi.pdb")[0]
     imported = database.import_records(USER, [imported_record], name="Database PPI")
     record = database.list_molecules(USER, molecule_ids=imported["molecule_ids"])["items"][0]
