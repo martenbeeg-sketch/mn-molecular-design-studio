@@ -3971,6 +3971,7 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
     if current and current["status"] not in {"failed", "cancelled", "canceled"}:
         return
     if st.button("Retry analysis" if matches else "Run analysis", type="primary", key=f"complex-analysis-db-run-{workflow_id.replace('.', '-')}-{key}", disabled=submit is None):
+        from mn_molecular_design_studio.complex_analysis_batch import analysis_chain_parameters
         st.session_state["complex-analysis-active"] = {
             "kind": "database", "molecule_id": source["molecule_id"],
             "structure_id": source["structure_id"], "evaluation_id": source.get("evaluation_id", ""),
@@ -3978,8 +3979,8 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
         try:
             submit(schema, workflow_id, {**parameters, "candidate_ids": [candidate_id],
                 "selected_structure_path": source.get("selected_structure_path"),
-                "selected_model_id": model_id, "binder_chains": list(binder_chains),
-                "target_chains": list(target_chains), "database_source": {
+                "selected_model_id": model_id, **analysis_chain_parameters(workflow_id, binder_chains, target_chains),
+                "database_source": {
                     "molecule_id": source["molecule_id"], "structure_id": source["structure_id"],
                     "group_id": source["group_id"], "evaluation_id": source.get("evaluation_id", ""),
                     "model_id": model_id, "binder_chains": list(binder_chains),

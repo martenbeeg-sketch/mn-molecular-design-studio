@@ -625,6 +625,7 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
     from mn_molecular_design_studio.complex_analysis_batch import (
         ASSESSMENT_METHODS, CORE_PROFILE, COMPREHENSIVE_PROFILE,
         assessment_applicability, evaluation_coverage, recorded_chain_roles, offered_assessment_methods,
+        analysis_chain_parameters,
     )
     from mn_molecular_design_studio.complex_analysis_sources import _database_chain_sequence
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
@@ -828,8 +829,9 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
                     "group_id": group_id, "model_id": model_id, "binder_chains": binder,
                     "target_chains": method_target}
                 parameters.update({"candidate_ids": [candidate_id], "selected_structure_path": str(sample.get("path") or ""),
-                                   "selected_model_id": model_id, "binder_chains": binder,
-                                   "target_chains": method_target, "database_source": source_selection})
+                                   "selected_model_id": model_id,
+                                   **analysis_chain_parameters(method, binder, method_target),
+                                   "database_source": source_selection})
                 submission_plan.append({"method": method, "sample": sample, "parameters": parameters,
                                         "project_id": project_id, "source": source})
 

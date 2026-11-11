@@ -54,6 +54,18 @@ COMPREHENSIVE_PROFILE = CORE_PROFILE + (
 )
 
 
+def analysis_chain_parameters(workflow_id: str, binder_chains: list[str], target_chains: list[str]) -> dict:
+    """Keep surface-only selection separate from interface workflow arguments.
+
+    PEP-Patch accepts the selected surface chains as binder_chains; it has no
+    target_chains argument. Database source provenance retains both roles.
+    """
+    parameters = {"binder_chains": list(binder_chains)}
+    if workflow_id != "analysis.pep_patch":
+        parameters["target_chains"] = list(target_chains)
+    return parameters
+
+
 def offered_assessment_methods(samples: list[dict]) -> list[str]:
     """Offer existing protein evaluators by molecular input, independent of engine.
 

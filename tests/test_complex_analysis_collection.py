@@ -199,8 +199,11 @@ sample = {
     ], "associated": [],
 }
 def schema(workflow):
-    return {"workflow": workflow, "parameters": []}
+    from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import workflow_schema
+    return workflow_schema(workflow)
 def submit(schema_value, workflow, parameters, project_id, settings, label):
+    declared = {item["name"] for item in schema_value["parameters"]}
+    assert set(parameters) - {"database_source"} <= declared
     st.session_state.setdefault("batch_submissions", []).append({
         "workflow": workflow, "parameters": parameters, "project_id": project_id,
     })
@@ -214,6 +217,10 @@ _render_batch_assessment({"id": "user-1"}, [sample], workflow_schema=schema, sub
         "analysis.sequence_qc", "analysis.proteinsol", "analysis.biotite_interface", "analysis.pep_patch",
     }
     assert all(item["project_id"] == "project-1" for item in submitted)
+    pep = next(item for item in submitted if item["workflow"] == "analysis.pep_patch")
+    assert "target_chains" not in pep["parameters"]
+    assert pep["parameters"]["binder_chains"] == ["B"]
+    assert pep["parameters"]["database_source"]["target_chains"] == []
     qc = next(item for item in submitted if item["workflow"] == "analysis.sequence_qc")
     assert qc["parameters"]["database_source"] == {
         "molecule_id": "mol-1", "structure_id": "structure-1", "group_id": "group-1",
@@ -754,3 +761,16 @@ def test_comparison_projection_does_not_invent_missing_chain_roles(tmp_path):
     assert projected["binder_chains"] == []
     assert projected["target_numbering"] == []
     assert projected["binder_numbering"] == []
+
+
+def test_surface_chain_arguments_follow_registered_contract_without_changing_provenance():
+    from mn_molecular_design_studio.complex_analysis_batch import analysis_chain_parameters
+    from mn_molecular_design_studio.engine.workflow_engine.services.workflow_automation import workflow_schema
+    for method in ["analysis.pep_patch", "analysis.biotite_interface"]:
+        binder, target = ["B"], ["A"]
+        parameters = analysis_chain_parameters(method, binder, target)
+        declared = {item["name"] for item in workflow_schema(method)["parameters"]}
+        assert set(parameters) <= declared
+        assert parameters["binder_chains"] == ["B"]
+        assert ("target_chains" in parameters) == (method != "analysis.pep_patch")
+        assert binder == ["B"] and target == ["A"]
