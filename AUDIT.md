@@ -294,6 +294,21 @@ Test roots (Studio home, app home, Results, references and cluster) were redirec
 
 Next phase: assessment compatibility/lifecycle and indexed job lookup (AUD-004/AUD-006/AUD-011, with AUD-012), followed by human-review concurrency (AUD-005), following the guidance below. Phase-1 completion is not a declaration that the remaining High findings are resolved or that a production rollout is authorized.
 
+## Implementation ledger — phase 2 assessment planning (2026-11-11)
+
+| Finding | Resolution and commit |
+|---|---|
+| AUD-004 | Implemented: deterministic, exact-source, scientific-settings and protocol-aware reuse; `2680bf0875a9b4512b68927244078aa9f73bc83d` |
+| AUD-006 | Implemented: every nonterminal state blocks duplicate submission; lookup errors block safely; `f74e18546622264f275f24daac4750daa527cbe8` |
+| AUD-011 | Implemented: batched indexed source lookup, paginated matching history and bounded target queries; final pre-submit recheck; `3db1a8a305bf4eb32980d4e1046499f9c333b086` |
+| AUD-012 | Implemented: one binder chain plus a disjoint multi-chain protein partner is supported, matching the existing adapter; `ced65cc1bb819cf084f06f1138b124c6e40f0501` |
+
+**Combined verification:** 597 passed, 10 skipped, 42 warnings in 238.48 s, across 32 modules including Phase-1 identity/artifact, Database, Evaluation, peer, lineage, API, scheduler, QC and native-assessor regressions. Ten installed-container QC tests retain their existing opt-in skip (`MDS_QC_DOCKER_TESTS=1`); no new calculation was launched. Warnings are four existing pydssp numerical warnings and 38 existing Biopython alignment-name deprecations. Log: `/tmp/mds-audit-phase2/group2-combined-final.log`. All Studio, Results, reference and cluster roots were isolated under `/tmp/mds-audit-phase2/final/`; production was untouched.
+
+**Reproduction and test corrections:** The indexed lookup regression first failed to find the older exact source and performed forbidden Results reads. The lifecycle AppTest first offered collecting/transferring/finalizing work for resubmission. Protocol and Tag/Fusion failing-before evidence is retained in `/tmp/mds-audit-phase2/`. The first combined run had 592 passes and five failures: four targeted UI fixtures lacked an explicitly initialized job catalog, and one synthetic versioned Evaluation omitted its method version. Fixtures now establish those contract prerequisites; the UI also reports unavailable index state without crashing. A separate expanded run exposed a pre-existing PLIP assertion missing three optional provenance keyword arguments already present in the adapter; its expected call was corrected without changing PLIP behavior. No assertions were permanently excluded.
+
+**Limits:** Legacy catalog projections require the existing reconciler before assessment submission; rendering itself never initiates a scan. Unknown historical method versions and mutable unverified Rosetta/ipSAE images are not assumed compatible. A final indexed recheck narrows submission races but does not claim a new distributed, atomic scheduler-admission contract. Timing evidence measures exact-source lookup only, not a full browser page. Unrelated findings AUD-007–010, AUD-013 and AUD-014 remain unchanged.
+
 ## IMPLEMENTATION_GUIDANCE
 
 ### Recommended order and grouping
