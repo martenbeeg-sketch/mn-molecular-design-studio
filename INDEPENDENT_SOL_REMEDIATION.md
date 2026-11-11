@@ -100,6 +100,14 @@ The launcher requires Linux Bubblewrap. Interrupted broad development runs are
 excluded from final totals. Retain final JUnit/logs separately from the original
 audit evidence.
 
+Final local JUnit/logs, projection-rehearsal statistics, source checksums,
+non-sensitive cleanup counts and per-host staging receipts are packaged in
+`INDEPENDENT_SOL_REMEDIATION_EVIDENCE.tar.gz` (SHA-256
+`12a55c559bd40ae266f02eca676d4409b45997f6ceabf32c759dd94adfa0bed5`).
+The package excludes scientific Databases, raw structures, complete private
+cleanup inventories and credentials. It includes the blocked remote launcher
+logs rather than claiming remote regression passes.
+
 ### Actual-data projection migration rehearsal
 
 A consistent SQLite backup was made from a read-only connection to the primary
@@ -183,3 +191,48 @@ plan the separately reviewed account/ownership transition.
 Commit identity and per-host source/checksum receipts belong outside the immutable
 source artifact. Staging the same candidate on `compute@pc004032.marionegri.it`
 and `compute@pc004033.marionegri.it` is distinct from activating their services.
+
+## Source distribution and remote validation
+
+Application correction commit: `8dd52dbf502198146d2e4fdc975da2be1279f36a`,
+pushed to `origin/codex/p0-production-visibility`. The same tracked source archive
+is staged on the primary and both `compute` hosts under
+`~/programs/deployments/mn-molecular-design-studio/sol-8dd52dbf5021/source`.
+Its SHA-256 is
+`a1d85ef6de968d50b4f450179cf788953297dd886dc883418fddfaa7d101cb17`.
+Every application/test/launcher file also passed its per-file SHA-256 check on
+each host. An incremental Git bundle imported the pinned commit without changing
+the compute workstations' active `main` checkouts.
+
+Remote isolated regression launches on **both** compute hosts stopped before
+pytest collection with `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`.
+An explicit user-namespace probe also failed; filesystem-only namespace setup
+was denied. These are unavailable remote test runs, not passing regressions or
+evidence of an application failure. No host security policy was weakened and no
+unisolated fallback test was run. Runtime parity on those hosts remains an
+activation blocker. Staging receipts retain the nonzero launcher exit status.
+
+Service PIDs, active states and source directories were identical before and
+after distribution. All active production APIs/agents still use the previous
+`p11-25e003c/source`; the primary UI is unchanged and peer UIs remain inactive.
+The source artifact is a **staged candidate, not a production-ready activation**.
+This later documentation/evidence update does not change its application code.
+
+### Cleanup dry run
+
+Using the user's suggested smoke/testing-name and single-entry heuristics, the
+primary inventory flags 284 name matches and 223 tool-output groups with exactly
+one member and at most one structure. These sets overlap. Group membership is
+not a verified whole-campaign result count: a one-result child may belong to a
+valuable multi-job campaign, and shared molecules may occur in several groups.
+No flag is deletion approval.
+
+The primary union is 436 flagged groups, not 507 independent campaigns. All
+other data remain preserved too; lack of a flag is not an importance assessment.
+
+Separate read-only transactions inventoried both peer Databases. They each have
+1,050 groups and 15 lineage campaign records at capture, but no local import-batch
+rows; the primary has four. Host-specific import history and replica state must
+not be treated as interchangeable. Inventories are private local review artifacts,
+not new scientific imports; all records remain `UNREVIEWED_PRESERVE`. Counts across
+replicas must not be added together to estimate unique scientific data.
