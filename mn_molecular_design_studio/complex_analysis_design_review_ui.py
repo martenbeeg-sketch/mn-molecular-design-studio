@@ -44,7 +44,7 @@ def _metric_priority(item):
     return next((index for index, part in enumerate(priorities) if part in field), len(priorities))
 
 
-def render_design_review(database, user, selection, *, requested_action=""):
+def render_design_review(database, user, selection, *, requested_action="", workflow_schema=None, submit=None):
     """Review numeric evidence first; retrieve only explicitly selected coordinates."""
     from mn_molecular_design_studio import complex_analysis_collection_ui as collection
     import pandas as pd
@@ -53,9 +53,9 @@ def render_design_review(database, user, selection, *, requested_action=""):
     token = hashlib.sha256(json.dumps([user["id"], selection["group_ids"], selection.get("system_scope")], sort_keys=True).encode()).hexdigest()[:12]
     assessment_requested = requested_action == "analyze"
     inspection_requested = requested_action == "compare"
-    st.markdown("### Shortlist & export" if requested_action == "shortlist" else "### Review designs")
+    st.markdown("### Shortlist & export" if requested_action == "shortlist" else "### Review & assess")
     st.write(selection["label"])
-    st.caption("1. Review saved measurements and select rows or plot points. 2. Calculate missing assessments or inspect the selected models. 3. Record a shortlist. Coordinates load only when requested.")
+    st.caption("Review saved results, select designs, then check assessment coverage below or inspect their structures. New calculations require explicit submission; coordinates load only when requested.")
     with st.expander("Campaign totals, input target and source provenance"):
         if st.button("Show campaign context", key="review-context-" + token):
             st.session_state["review-context-open-" + token] = True
@@ -160,23 +160,29 @@ def render_design_review(database, user, selection, *, requested_action=""):
         st.info("Select designs in the table or plot below, then click Inspect selected in 3D. Use 2–5 compatible models for overlays.")
     if assessment_requested and not selected:
         st.info("Select designs in the table or plot below, then click Calculate missing assessments. The table shows saved evidence; opening it does not calculate new parameters.")
-    actions = st.columns(2)
+    actions = st.columns(3)
     assess = actions[0].button("Calculate missing assessments", type="primary", disabled=not selected,
                                key="review-assess-" + token)
     inspect = actions[1].button("Inspect selected in 3D", disabled=not selected, key="review-inspect-" + token)
-    if assess or inspect or ((assessment_requested or inspection_requested) and selected):
+    actions[2].button("Refresh saved results", key="review-refresh-" + token,
+                      help="Reload saved Evaluations without resubmitting calculations.")
+    if assess or inspect or ((inspection_requested or (assessment_requested and not
+            st.session_state.get("complex-analysis-assessment-open"))) and selected):
         if len(selected) > 50:
             st.warning("Select at most 50 models for explicit structure loading; use 2–5 for overlays.")
         else:
             assessment = assess or (assessment_requested and not inspect)
             st.session_state["complex-analysis-assessment-open"] = assessment
             collection._load_collection_structures(database, user, [s["record"] for s in selected], selection["group_ids"],
-                selected_structure_ids=selected_ids, passing_cohort=False, next_step="analyze" if assessment else "compare",
+                selected_structure_ids=selected_ids, passing_cohort=False, next_step="overview" if assessment else "compare",
                 display_labels={s["structure_id"]: s["label"] for s in selected})
             # Loading can fail (for example an unavailable exact source file).
             # Keep the review visible without claiming an assessment was opened.
             st.session_state["complex-analysis-assessment-open"] = False
-    st.caption("Calculations use the selected exact models. The next screen shows Core / Comprehensive / Custom methods, chain assignments, settings, existing Evaluation coverage and an explicit submission button.")
+    if st.session_state.get("complex-analysis-assessment-open"):
+        st.caption("Assessment settings are open below · [Go to coverage & settings](#assessment-coverage-and-settings). Compatible saved Evaluations are reused.")
+    else:
+        st.caption("Calculate missing assessments opens coverage and settings on this page for the selected exact models. Compatible saved Evaluations are reused.")
     # Labels only identify rows within this view; persistent IDs remain in samples.
     labels = {key: metric_label(key) for key in metrics}
     columns = {key: f"{_field_label(series[key]['field'])[:28]} [{i+1}]" for i, key in enumerate(metrics)}
@@ -298,3 +304,26 @@ def render_design_review(database, user, selection, *, requested_action=""):
                  "model_id": focused["model_id"], "candidate": focused["candidate"],
                  "source": focused["context"], "evaluations": [descriptor for _, descriptor in focused["associated"]],
                  "displayed_measurements": {columns[key]: series[key] for key in metrics}}, expanded=False)
+
+    if st.session_state.get("complex-analysis-assessment-open"):
+        with st.container(border=True):
+            st.markdown("#### Assessment coverage & settings")
+            if st.button("Close assessment settings", key="review-close-assess-" + token):
+                st.session_state["complex-analysis-assessment-open"] = False
+                st.rerun()
+            # Revalidate access on every rerun; never assess stale coordinates
+            # from another campaign, model selection or user account.
+            hydrated = collection._load_workspace_samples(user)
+            expected = {(sample["molecule_id"], sample["structure_id"], sample["digest"]) for sample in selected}
+            actual = {(sample["molecule_id"], sample["structure_id"], sample["digest"]) for sample in hydrated}
+            if not hydrated or actual != expected:
+                st.session_state["complex-analysis-assessment-open"] = False
+                st.warning("Selected models changed or could not be revalidated. Click Calculate missing assessments to reopen their exact coverage.")
+            else:
+                st.caption(f"{len(hydrated)} selected model(s) · saved results remain above. Choose methods and settings, review coverage, then explicitly submit missing work. Changing the design selection closes these settings.")
+                # Coordinates stay cached, but coverage must reflect newly
+                # ingested Evaluations read by this page, not an old snapshot.
+                evidence = {(sample["molecule_id"], sample["structure_id"]): sample["associated"] for sample in selected}
+                assessment_samples = [{**sample, "associated": evidence[(sample["molecule_id"], sample["structure_id"])]}
+                                      for sample in hydrated]
+                collection._render_selected_assessments(user, assessment_samples, workflow_schema=workflow_schema, submit=submit)

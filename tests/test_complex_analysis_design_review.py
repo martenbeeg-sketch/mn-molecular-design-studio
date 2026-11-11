@@ -348,19 +348,22 @@ render_design_review(MolecularDatabase(), {OWNER!r}, {{"group_ids": [{group!r}],
     assert not app.exception
     app.button(key="review-assess-" + token).click().run()
     assert not app.exception
-    assert opened == [([group], {"selected_structure_ids": [models[0]], "passing_cohort": False, "next_step": "analyze", "display_labels": {models[0]: "Design 1 · sample 0"}})]
+    assert opened == [([group], {"selected_structure_ids": [models[0]], "passing_cohort": False, "next_step": "overview", "display_labels": {models[0]: "Design 1 · sample 0"}})]
     app.session_state['request'] = action
     app.run()
     assert not app.exception
-    assert opened[-1] == ([group], {"selected_structure_ids": [models[0]], "passing_cohort": False, "next_step": action, "display_labels": {models[0]: "Design 1 · sample 0"}})
+    assert opened[-1] == ([group], {"selected_structure_ids": [models[0]], "passing_cohort": False, "next_step": "overview" if action == "analyze" else action, "display_labels": {models[0]: "Design 1 · sample 0"}})
     # The second model has only native acceptance; it is never implicitly added.
     assert models[1] not in opened[-1][1]["selected_structure_ids"]
 
 
-def test_assessment_screen_keeps_source_and_reuses_existing_submission_ui(designs, monkeypatch):
+def test_inline_assessments_keep_saved_results_selection_and_submission_ui(designs, monkeypatch):
+    import hashlib
+    import json
     from streamlit.testing.v1 import AppTest
     from mn_molecular_design_studio import complex_analysis_collection_ui as collection
-    db, group, _, _ = designs
+    db, group, _, models = designs
+    token = hashlib.sha256(json.dumps([OWNER["id"], [group], None], sort_keys=True).encode()).hexdigest()[:12]
     samples = design_review_page(db, OWNER, [group])["items"][:1]
     samples[0].update(kind="protein-protein", components=[
         {"type": "protein", "chain": "A", "sequence": "ACDEFGHIKLMNPQRSTVWYACDE"},
@@ -376,6 +379,7 @@ if 'complex-analysis-evidence-selection' not in st.session_state:
     open_saved_work(st.session_state, user_id={OWNER['id']!r}, group_ids=[{group!r}],
                     label='Selected mixed-engine campaign', work_type='Protein design', next_step='analyze')
     st.session_state['complex-analysis-assessment-open'] = True
+    st.session_state['design-review-selected-{token}'] = [{models[0]!r}]
 render_collection_workspace({OWNER!r}, workflow_schema=lambda method: {{'parameters': []}},
                             submit=lambda *args: st.error('Unexpected calculation'))
 ''').run()
@@ -385,8 +389,14 @@ render_collection_workspace({OWNER!r}, workflow_schema=lambda method: {{'paramet
     assert any(item.value == 'Selected mixed-engine campaign' for item in app.markdown)
     assert any('Analysis coverage' in item.value for item in app.markdown)
     assert app.number_input(key="complex-analysis-batch-biotite-distance").value == 5.0
-    assert app.multiselect[1].value == ["B"]
-    assert app.multiselect[2].value == ["A"]
+    assert next(w for w in app.multiselect if w.label == "Protein component(s) to assess").value == ["B"]
+    assert next(w for w in app.multiselect if w.label == "Interface partner / target chains").value == ["A"]
+    assert any(w.label == "Saved result" for w in app.selectbox)
+    assert any(item.value == "### Review & assess" for item in app.markdown)
+    assert app.button(key="complex-analysis-step-overview").label == "Review & assess"
+    assert not any(b.label in {"Review designs", "Assessments"} for b in app.button)
+    assert len(app.dataframe[0].value) == 1
+    assert app.session_state["design-review-selected-" + token] == [models[0]]
     assert not app.error
     assert not any(item.label == 'Acceptance cohort' for item in app.selectbox)
     assert not any(item.label == 'Design/model rows to assess and compare' for item in app.multiselect)
@@ -400,10 +410,15 @@ render_collection_workspace({OWNER!r}, workflow_schema=lambda method: {{'paramet
     assert not any(item.key == 'complex-analysis-batch-tag-format' for item in app.selectbox)
     assert not any(item.key == 'complex-analysis-batch-liability-format' for item in app.selectbox)
     assert not app.error
-    app.button(key="complex-analysis-back-to-design-review").click().run()
+    app.button(key="review-close-assess-" + token).click().run()
     assert not app.exception
-    assert any(item.value == '### Review designs' for item in app.markdown)
+    assert any(item.value == '### Review & assess' for item in app.markdown)
     assert not app.session_state['complex-analysis-assessment-open']
+    assert any(w.label == 'Saved result' for w in app.selectbox)
+    assert not any(w.label == 'Assessment profile' for w in app.selectbox)
+    app.button(key='review-refresh-' + token).click().run()
+    assert not app.exception
+    assert app.session_state['design-review-selected-' + token] == [models[0]]
 
 
 def test_changing_review_models_invalidates_only_the_old_loaded_selection():
@@ -460,3 +475,106 @@ _render_selected_assessments({OWNER!r}, [{{'kind': 'protein-protein', 'structure
     assert not app.exception
     assert calls == [('protein', [{'kind': 'protein-protein', 'structure_id': 'binder-model'}]),
                      ('ligand', {'id': 'exact-pose'}, '/unused/preserved-pose')]
+
+
+def test_mixed_stage_selection_closes_inline_settings_when_models_change(designs, monkeypatch):
+    import hashlib
+    import json
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import complex_analysis_collection_ui as collection
+    db, group, _, models = designs
+    token = hashlib.sha256(json.dumps([OWNER["id"], [group], None], sort_keys=True).encode()).hexdigest()[:12]
+    hydrated = design_review_page(db, OWNER, [group])["items"]
+    calls = []
+    monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", lambda: db)
+    monkeypatch.setattr(collection, "_load_workspace_samples", lambda user: hydrated)
+    monkeypatch.setattr(collection, "_render_selected_assessments", lambda user, samples, **kw: calls.append(
+        [s['structure_id'] for s in samples]))
+    monkeypatch.setattr(db, "structure_file", lambda *a: pytest.fail("Review reruns must not reload coordinates"))
+    app = AppTest.from_string(f'''
+import streamlit as st
+from mn_molecular_design_studio.complex_analysis_evidence_ui import open_saved_work
+from mn_molecular_design_studio.complex_analysis_collection_ui import render_collection_workspace
+if 'complex-analysis-evidence-selection' not in st.session_state:
+    open_saved_work(st.session_state, user_id={OWNER['id']!r}, group_ids=[{group!r}],
+                    label='Two engines', work_type='Protein design', next_step='overview')
+    st.session_state['review-cohort-value-{token}'] = 'All designs'
+    st.session_state['design-review-selected-{token}'] = {models!r}
+    st.session_state['complex-analysis-assessment-open'] = True
+render_collection_workspace({OWNER!r})
+''').run()
+    assert not app.exception
+    assert set(calls[-1]) == set(models)
+    assert len(app.dataframe[0].value) == 2
+    _select_rows(app, [0])
+    assert not app.exception
+    assert not app.session_state['complex-analysis-assessment-open']
+    assert len(calls) == 1  # no stale assessment panel for the previous selection
+    assert any(w.label == 'Saved result' for w in app.selectbox)
+    assert app.session_state['design-review-selected-' + token] == [models[0]]
+
+
+@pytest.mark.parametrize("wrong_source", ["model", "digest"])
+def test_inline_assessments_reject_other_loaded_models(designs, monkeypatch, wrong_source):
+    import hashlib
+    import json
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import complex_analysis_collection_ui as collection
+    db, group, _, models = designs
+    token = hashlib.sha256(json.dumps([OWNER["id"], [group], None], sort_keys=True).encode()).hexdigest()[:12]
+    samples = design_review_page(db, OWNER, [group])["items"]
+    wrong = samples[1:] if wrong_source == "model" else [{**samples[0], "digest": "0" * 64}]
+    monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", lambda: db)
+    monkeypatch.setattr(collection, "_load_workspace_samples", lambda user: wrong)
+    monkeypatch.setattr(collection, "_render_selected_assessments", lambda *a, **kw: pytest.fail("Wrong model"))
+    app = AppTest.from_string(f'''
+import streamlit as st
+from mn_molecular_design_studio.complex_analysis_collection_ui import render_collection_workspace
+st.session_state.setdefault('complex-analysis-evidence-selection', {{'user_id': {OWNER['id']!r},
+    'group_ids': [{group!r}], 'label': 'Saved campaign', 'work_type': 'Protein design'}})
+st.session_state.setdefault('complex-analysis-flow-step', 'overview')
+st.session_state.setdefault('design-review-selected-{token}', [{models[0]!r}])
+st.session_state.setdefault('complex-analysis-assessment-open', True)
+render_collection_workspace({OWNER!r})
+''').run()
+    assert not app.exception
+    assert any('could not be revalidated' in item.value for item in app.warning)
+    assert not app.session_state['complex-analysis-assessment-open']
+    assert any(w.label == 'Saved result' for w in app.selectbox)
+
+
+def test_refresh_updates_coverage_from_new_saved_evaluations_without_coordinate_reload(designs, monkeypatch):
+    import hashlib
+    import json
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import complex_analysis_collection_ui as collection
+    db, group, molecule, models = designs
+    token = hashlib.sha256(json.dumps([OWNER["id"], [group], None], sort_keys=True).encode()).hexdigest()[:12]
+    hydrated = design_review_page(db, OWNER, [group])["items"][:1]
+    captured = []
+    monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", lambda: db)
+    monkeypatch.setattr(collection, "_load_workspace_samples", lambda user: hydrated)
+    monkeypatch.setattr(collection, "_render_selected_assessments", lambda user, samples, **kw: captured.append(
+        [o['namespace'] for o, _ in samples[0]['associated']]))
+    monkeypatch.setattr(db, "structure_file", lambda *a: pytest.fail("Refresh needs no coordinate retrieval"))
+    app = AppTest.from_string(f'''
+import streamlit as st
+from mn_molecular_design_studio.complex_analysis_collection_ui import render_collection_workspace
+st.session_state.setdefault('complex-analysis-evidence-selection', {{'user_id': {OWNER['id']!r},
+    'group_ids': [{group!r}], 'label': 'Saved campaign', 'work_type': 'Protein design'}})
+st.session_state.setdefault('complex-analysis-flow-step', 'overview')
+st.session_state.setdefault('design-review-selected-{token}', [{models[0]!r}])
+st.session_state.setdefault('complex-analysis-assessment-open', True)
+render_collection_workspace({OWNER!r})
+''').run()
+    assert not app.exception
+    assert 'sequence_qc' not in captured[-1]
+    db.add_observation(group, molecule, 'sequence_qc', 'just-ingested-analysis', {'length': 4}, context={
+        'source_structure_id': models[0], 'representation_id': models[0], 'source_molecule_id': molecule,
+        'source_structure_digest': hydrated[0]['digest'], 'model_id': models[0], 'candidate_id': 'database-sequence'})
+    app.button(key='review-refresh-' + token).click().run()
+    assert not app.exception
+    assert 'sequence_qc' in captured[-1]
+    assert app.session_state['design-review-selected-' + token] == [models[0]]
+    assert any('just-ingested-analysis' in ' '.join(w.options) for w in app.selectbox if w.label == 'Saved result')
+    assert 'sequence_qc' not in [o['namespace'] for o, _ in hydrated[0]['associated']]  # no cache mutation

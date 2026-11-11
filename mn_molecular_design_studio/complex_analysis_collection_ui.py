@@ -2502,19 +2502,24 @@ def _load_workspace_samples(user: dict) -> list[dict]:
 def _workflow_steps() -> str:
     labels = [("select", "Select campaign"), ("overview", "Overview"), ("analyze", "Evidence"),
               ("compare", "Structures & 3D"), ("shortlist", "Shortlist & export")]
-    if (st.session_state.get("complex-analysis-evidence-selection") or {}).get("work_type") == "Protein design":
-        labels = [("select", "Campaign"), ("overview", "Review designs"), ("analyze", "Assessments"),
+    design_review = (st.session_state.get("complex-analysis-evidence-selection") or {}).get("work_type") == "Protein design"
+    if design_review:
+        labels = [("select", "Campaign"), ("overview", "Review & assess"),
                   ("compare", "Structures & 3D"), ("shortlist", "Shortlist & export")]
     current = str(st.session_state.get("complex-analysis-flow-step") or "select")
-    if current not in {key for key, _ in labels}:
+    # Preserve old assessment links/session state as an explicit request to
+    # open the inline assessment panel in the unified design review.
+    active = "overview" if current == "analyze" and design_review else current
+    if active not in {key for key, _ in labels}:
         current = "select"
+        active = current
         st.session_state["complex-analysis-flow-step"] = current
     columns = st.columns(len(labels))
     loaded = bool(st.session_state.get("complex-analysis-workflow-samples") or st.session_state.get("complex-analysis-evidence-selection"))
     for column, (key, label) in zip(columns, labels):
         if column.button(label, key=f"complex-analysis-step-{key}",
                          disabled=key != "select" and not loaded,
-                         type="primary" if key == current else "secondary"):
+                         type="primary" if key == active else "secondary"):
             st.session_state["complex-analysis-flow-step"] = key
             st.rerun()
     return current
@@ -2583,28 +2588,15 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
         try:
             for group_id in selection["group_ids"]:
                 database.group(group_id, user)
-            if selection.get("work_type") == "Protein design" and (step in {"overview", "shortlist"} or
-                    (step == "analyze" and not st.session_state.get("complex-analysis-assessment-open")) or
+            if selection.get("work_type") == "Protein design" and (step in {"overview", "analyze", "shortlist"} or
                     (step == "compare" and not st.session_state.get("complex-analysis-workflow-samples"))):
-                st.session_state["complex-analysis-assessment-open"] = False
                 from mn_molecular_design_studio.complex_analysis_design_review_ui import render_design_review
-                render_design_review(database, user, selection, requested_action=step)
-                return
-            if selection.get("work_type") == "Protein design" and step == "analyze":
-                samples = _load_workspace_samples(user)
-                st.markdown("### Calculate missing assessments")
-                st.write(selection["label"])
-                st.info("Completed results are under Review designs → select a model → Saved assessment results. "
-                        "This screen checks coverage and submits missing work; it does not replace your saved results.")
-                if st.button("← Back to design review", key="complex-analysis-back-to-design-review"):
+                if step == "analyze":
+                    # Consume a legacy request once. Later reruns (including
+                    # closing settings) remain in the unified review page.
                     st.session_state["complex-analysis-flow-step"] = "overview"
-                    st.session_state["complex-analysis-assessment-open"] = False
-                    st.rerun()
-                if not samples:
-                    st.info("Return to Review designs and select exact models to assess.")
-                    return
-                st.caption(f"{len(samples)} selected model(s) from this cohort. Choose methods and settings below. Compatible saved Evaluations are reused; only explicitly submitted missing work runs.")
-                _render_selected_assessments(user, samples, workflow_schema=workflow_schema, submit=submit)
+                render_design_review(database, user, selection, requested_action=step,
+                                     workflow_schema=workflow_schema, submit=submit)
                 return
             if step == "overview":
                 render_work_overview(database, user, selection)
