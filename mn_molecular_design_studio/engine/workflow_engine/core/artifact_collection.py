@@ -395,6 +395,10 @@ def validate_run_artifacts(
             errors.append({"path": "artifacts.json", "reason": f"Artifact manifest is invalid: {exc}"})
 
     required_paths = {item["path"] for item in [*required, *declared, *downstream_refs]}
+    canonical_files = {
+        resolved for value in required_paths
+        if (resolved := _resolve_host_or_container_path(value, run_dir=run_dir, mounts=mounts)) is not None
+    }
     dangling = _dangling_links(run_dir)
     for item in dangling:
         if item["path"] in required_paths:
@@ -403,23 +407,28 @@ def validate_run_artifacts(
         if item["path"] in optional_paths:
             item["classification"] = "optional_execution_artifact"
             continue
-        # Known caches, inputs and container-provided runtimes are execution
-        # references, not retained scientific outputs. Preserve and report
-        # them, but do not follow them during validation or backup.
-        normalized = (item["path"] + " " + item["target"]).casefold()
-        optional_markers = ("/input/", "/inputs/", "/cache/", "/.cache/", "/tmp/", "/temp/",
-                            "/processed/", "/weights/", "/checkpoint/", "/model_params/",
-                            "/.venv/", "/community_models/", "/assets/")
-        if any(marker in normalized for marker in optional_markers):
-            item["classification"] = "optional_execution_artifact"
+        # A container-only alias is dispensable only when this exact mapped
+        # file is already a verified canonical reference. Similar names or a
+        # different saved model are not evidence of a replacement payload.
+        resolved_alias = _resolve_host_or_container_path(item["path"], run_dir=run_dir, mounts=mounts)
+        if resolved_alias is not None and resolved_alias in canonical_files:
+            item["classification"] = "retained_scientific_alias"
             continue
         suffix = Path(item["path"]).suffix.casefold()
         in_output = any(part.casefold() in {"output", "outputs", "poses", "predictions"}
                         for part in Path(item["path"]).parts)
-        if suffix in {".pdb", ".cif", ".mmcif", ".sdf", ".pdbqt", ".mol2"} and in_output:
+        if suffix in {".pdb", ".cif", ".mmcif", ".sdf", ".pdbqt", ".mol2"} or in_output:
             item["classification"] = "unresolved_scientific_output"
             if strict_dangling_links:
                 errors.append({"path": item["path"], "reason": "Dangling scientific output is not declared or materialized as a canonical Results artifact"})
+            continue
+        # Execution layout may classify non-output links. The target's /tmp
+        # or cache location says nothing about the link's scientific role.
+        optional_directories = {"input", "inputs", "cache", ".cache", "tmp", "temp",
+                                "processed", "weights", "checkpoint", "model_params",
+                                ".venv", "community_models", "assets"}
+        if any(part.casefold() in optional_directories for part in Path(item["path"]).parts[:-1]):
+            item["classification"] = "optional_execution_artifact"
             continue
         item["classification"] = "unclassified_dangling_link"
         if strict_dangling_links:

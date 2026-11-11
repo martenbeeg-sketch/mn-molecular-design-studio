@@ -5,6 +5,8 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
 from mn_molecular_design_studio.engine.workflow_engine.core import jobs
 from mn_molecular_design_studio.engine.workflow_engine.core.artifact_collection import validate_run_artifacts
 from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates, write_candidates
@@ -155,6 +157,7 @@ def test_manifest_distinguishes_missing_required_and_optional_execution_artifact
         "artifacts": [
             {"run_id": run.name, "artifact_type": "predicted_complex", "path": "artifacts/required.cif"},
             {"run_id": run.name, "artifact_type": "temporary_cache", "path": "artifacts/cache.tmp", "required": False},
+            {"run_id": run.name, "artifact_type": "temporary_cache", "path": "artifacts/optional-link", "required": False},
         ],
     }))
     dangling = run / "artifacts" / "optional-link"
@@ -209,3 +212,91 @@ def test_backup_style_copy_preserves_historical_dangling_link_and_checks_canonic
     }]
     assert hashlib.sha256(restored_canonical.read_bytes()).hexdigest() == hashlib.sha256(canonical.read_bytes()).hexdigest()
     assert read_candidates(backup)[0]["candidate_id"] == "design-1"
+
+
+@pytest.mark.parametrize("suffix", [".cif", ".pdb", ".sdf"])
+@pytest.mark.parametrize("container_target", [
+    "/tmp/removed/output", "/workspace/processed", "/boltz-context/processed",
+    "/work/tmp/output", "/workspace/outputs",
+])
+def test_scientific_output_precedes_temporary_origin_heuristics(tmp_path, monkeypatch, suffix, container_target):
+    run = tmp_path / "runs" / "design" / "scientific-output"
+    output = run / "artifacts/raw/engine/output" / ("model" + suffix)
+    output.parent.mkdir(parents=True)
+    output.symlink_to(container_target + "/model" + suffix)
+    validation = validate_run_artifacts(run)
+    assert validation["status"] == "incomplete"
+    assert validation["dangling_symlinks"][0]["classification"] == "unresolved_scientific_output"
+    _finish(run, monkeypatch)
+    assert jobs.read_json(run / "metadata.json")["artifact_collection_complete"] is False
+    assert jobs.read_json(run / "metadata.json")["status"] == "failed"
+    # The other normal finalization entry point must enforce the same gate.
+    jobs.update_status(run, "completed")
+    assert jobs.read_json(run / "metadata.json")["status"] == "failed"
+    assert output.is_symlink()  # Validation never repairs/deletes historical entries.
+
+
+def test_output_inside_a_cache_named_directory_is_still_scientific(tmp_path):
+    run = tmp_path / "design/cache-contained-output"
+    output = run / "artifacts/raw/engine/cache/output/model.cif"
+    output.parent.mkdir(parents=True)
+    output.symlink_to("/workspace/cache/model.cif")
+    assert validate_run_artifacts(run)["status"] == "incomplete"
+
+
+@pytest.mark.parametrize("relative", ["artifacts/processed/prediction.cif", "artifacts/cache/output/confidence.npz"])
+def test_scientific_payload_cannot_be_hidden_by_its_own_cache_directory(tmp_path, relative):
+    run = tmp_path / "design/cache-payload"
+    output = run / relative
+    output.parent.mkdir(parents=True)
+    output.symlink_to("/workspace/cache/payload")
+    assert validate_run_artifacts(run)["status"] == "incomplete"
+
+
+def test_target_cache_path_alone_cannot_declare_an_unknown_link_optional(tmp_path):
+    run = tmp_path / "design/unknown-link"
+    run.mkdir(parents=True)
+    (run / "opaque-artifact").symlink_to("/tmp/.cache/unknown-payload")
+    validation = validate_run_artifacts(run)
+    assert validation["status"] == "incomplete"
+    assert validation["dangling_symlinks"][0]["classification"] == "unclassified_dangling_link"
+
+
+def test_explicit_optional_alias_preserves_the_canonical_scientific_output(tmp_path):
+    run = tmp_path / "design/declared-alias"
+    canonical = run / "artifacts/model.cif"
+    alias = run / "artifacts/raw/engine/output/old-model.cif"
+    alias.parent.mkdir(parents=True)
+    canonical.write_text("data_retained\n")
+    alias.symlink_to("/tmp/no-longer-needed/model.cif")
+    jobs.write_json(run / "artifacts.json", {
+        "schema_version": 1, "run_id": run.name, "artifacts": [
+            {"path": "artifacts/model.cif", "artifact_type": "predicted_complex",
+             "sha256": hashlib.sha256(canonical.read_bytes()).hexdigest()},
+            {"path": "artifacts/raw/engine/output/old-model.cif", "required": False},
+        ],
+    })
+    validation = validate_run_artifacts(run)
+    assert validation["status"] == "complete"
+    assert validation["required_artifact_count"] == 1
+    assert validation["dangling_symlinks"][0]["classification"] == "optional_execution_artifact"
+    canonical.unlink()
+    assert validate_run_artifacts(run)["status"] == "incomplete"
+
+
+def test_container_alias_is_optional_only_when_its_exact_canonical_output_is_retained(tmp_path, monkeypatch):
+    run = tmp_path / "design/retained-alias"
+    canonical = run / "artifacts/raw/engine/output/model.cif"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text("data_retained\n")
+    alias = canonical.with_name("alias.cif")
+    alias.symlink_to("/work/artifacts/raw/engine/output/model.cif")
+    write_candidates(run, "fixture-generator", [_candidate(str(alias))])
+    validation = validate_run_artifacts(run)
+    assert validation["status"] == "complete"
+    assert validation["required_artifact_count"] == 1
+    assert validation["dangling_symlinks"][0]["classification"] == "retained_scientific_alias"
+    _finish(run, monkeypatch)
+    assert jobs.read_json(run / "metadata.json")["status"] == "completed"
+    canonical.unlink()
+    assert validate_run_artifacts(run)["status"] == "incomplete"

@@ -178,9 +178,14 @@ render_shortlist_review_export({'id': 'test-user'}, [sample], key_prefix='compar
     assert not app.exception
 
 
-def test_namespaced_shortlist_save_uses_the_rendered_panel_values():
+def test_namespaced_shortlist_save_uses_the_rendered_panel_values(monkeypatch):
     from streamlit.testing.v1 import AppTest
     import hashlib
+    from mn_molecular_design_studio import molecular_database
+
+    # AppTest shares imported modules with pytest. Register the original class
+    # so the script's fake cannot escape into subsequent Database/API tests.
+    monkeypatch.setattr(molecular_database, "MolecularDatabase", molecular_database.MolecularDatabase)
 
     token = hashlib.sha256(b"mol-1:structure-1").hexdigest()[:12]
     app = AppTest.from_string(

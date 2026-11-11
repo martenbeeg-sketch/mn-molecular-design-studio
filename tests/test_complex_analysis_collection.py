@@ -638,6 +638,10 @@ def test_streamlit_collection_picker_loads_next_acl_filtered_page(monkeypatch):
 
 def test_explorer_preserves_acceptance_and_multi_engine_selection_across_steps(monkeypatch):
     from mn_molecular_design_studio import complex_analysis_collection_ui as explorer
+    from mn_molecular_design_studio import complex_analysis_comparison_ui as comparison
+
+    monkeypatch.setattr(comparison, "render_comparison",
+                        lambda *args, **kwargs: explorer.st.caption("comparison stub"))
 
     samples = [
         {"identity": "database:rfd4:structure-rfd4", "molecule_id": "rfd4", "structure_id": "structure-rfd4",
@@ -662,8 +666,6 @@ def test_explorer_preserves_acceptance_and_multi_engine_selection_across_steps(m
     script = (
         "import streamlit as st\n"
         "import mn_molecular_design_studio.complex_analysis_collection_ui as ui\n"
-        "import mn_molecular_design_studio.complex_analysis_comparison_ui as comparison\n"
-        "comparison.render_comparison = lambda *args, **kwargs: st.caption('comparison stub')\n"
         "st.session_state.setdefault('complex-analysis-flow-step', 'analyze')\n"
         f"ui.render_collection_workspace({USER!r})\n"
     )
