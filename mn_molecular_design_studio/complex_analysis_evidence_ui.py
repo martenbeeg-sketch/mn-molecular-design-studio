@@ -49,22 +49,29 @@ def evidence_row(observation: dict) -> dict:
     }
 
 
+def clear_saved_work(state) -> None:
+    """Invalidate opened models and evidence together when the source changes."""
+    for key in ("complex-analysis-evidence-selection", "complex-analysis-workflow-samples",
+                "complex-analysis-workflow-selection"):
+        state.pop(key, None)
+    state["complex-analysis-assessment-open"] = False
+    for key in list(state):
+        if key.startswith("complex-analysis-cohort-") and not key.startswith("complex-analysis-cohort-table-"):
+            del state[key]
+
+
 def open_saved_work(state, *, user_id: str, group_ids: list[str], label: str,
-                    project_label: str = "", work_type: str = "", system_label: str = "", system_scope=None) -> None:
+                    project_label: str = "", work_type: str = "", system_label: str = "", system_scope=None,
+                    next_step: str = "overview") -> None:
     """Navigation state only; source membership/acceptance is never rewritten."""
+    clear_saved_work(state)
     state["complex-analysis-evidence-selection"] = {
         "user_id": user_id, "group_ids": list(dict.fromkeys(group_ids)), "label": label,
         "project_label": project_label, "work_type": work_type,
         "system_label": system_label, "system_scope": system_scope,
     }
-    state.pop("complex-analysis-workflow-samples", None)
-    state.pop("complex-analysis-workflow-selection", None)
-    state["complex-analysis-assessment-open"] = False
-    for key in list(state):
-        if key.startswith("complex-analysis-cohort-"):
-            del state[key]
     state["complex-evidence-view"] = "Measurements"
-    state["complex-analysis-flow-step"] = "overview"
+    state["complex-analysis-flow-step"] = next_step
 
 
 def render_work_overview(database, user, selection):

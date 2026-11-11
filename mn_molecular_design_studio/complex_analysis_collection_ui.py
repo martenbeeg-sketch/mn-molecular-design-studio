@@ -649,38 +649,43 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
         format_func=lambda value: ASSESSMENT_METHODS[value]["label"], key=method_state_key,
         help="Interface Clustering and Foldseek remain cohort-level methods in Detailed structural comparison. They do not produce one independent per-design evaluation.")
     st.caption("Biotite and Rosetta interface geometry, ipSAE, PEP-Patch, sequence composition, Protein-Sol, liabilities and tag/fusion suitability keep their own method definitions and units. No universal score is calculated.")
-    first, second = st.columns(2)
-    contact_distance = float(first.number_input("Biotite contact distance (Å)", min_value=0.1, max_value=20.0,
-        value=5.0, step=0.1, key="complex-analysis-batch-biotite-distance"))
-    ph = float(second.number_input("Sequence / PEP-Patch pH", min_value=0.0, max_value=14.0,
-        value=7.4, step=0.1, key="complex-analysis-batch-ph"))
-    liability_format_options = {"": "Choose construct format…", "linear_protein": "Linear protein chain(s)",
-                                "cyclic_construct": "Cyclic construct (no free termini)",
-                                "multichain_construct": "Multichain construct (chain-by-chain screen)"}
-    liability_format = st.selectbox("Sequence-liability construct format", list(liability_format_options),
-        format_func=lambda value: liability_format_options[value], key="complex-analysis-batch-liability-format",
-        disabled="analysis.sequence_liability" not in methods)
-    liability_plddt = st.checkbox("The selected structure stores pLDDT in Cα B-factors (verified from its source)",
-        value=False, key="complex-analysis-batch-liability-plddt", disabled="analysis.sequence_liability" not in methods)
-    tag_plddt = st.checkbox("The selected structure stores pLDDT in Cα B-factors (verified from its source)",
-        value=False, key="complex-analysis-batch-tag-plddt", disabled="analysis.tag_fusion_suitability" not in methods)
-    tag_columns = st.columns(2)
-    tag_format = tag_columns[0].selectbox("Tag/fusion component format",
-        ["", "single_chain_linear_protein", "cyclic_peptide", "multichain_construct"],
-        format_func=lambda value: {"": "Choose format…", "single_chain_linear_protein": "Single-chain linear protein",
-                                   "cyclic_peptide": "Cyclic peptide", "multichain_construct": "Multichain construct"}[value],
-        key="complex-analysis-batch-tag-format", disabled="analysis.tag_fusion_suitability" not in methods)
-    tag_termini_confirmed = tag_columns[1].checkbox(
-        "Complete intended termini are present (verified)", value=False,
-        key="complex-analysis-batch-tag-termini", disabled="analysis.tag_fusion_suitability" not in methods)
-    tag_cutoff = float(st.number_input("Tag/fusion interface contact cutoff (Å)", min_value=1.0, max_value=10.0,
-        value=4.5, step=0.25, key="complex-analysis-batch-tag-cutoff",
-        disabled="analysis.tag_fusion_suitability" not in methods))
-    ipsae_defaults = {"pae_cutoff": 10.0, "dist_cutoff": 10.0, "ipdae_contact_cutoff": 8.0,
-                     "structure_contact_cutoff": 4.0, "hotspot_contact_cutoff": 5.0}
-    ipsae_parameters = {}
-    if "analysis.ipsae" in methods:
-        with st.expander("ipSAE and structure-analysis cutoffs", expanded=False):
+    with st.expander("Method settings", expanded=False):
+        contact_distance, ph = 5.0, 7.4
+        if "analysis.biotite_interface" in methods:
+            contact_distance = float(st.number_input("Biotite contact distance (Å)", min_value=0.1, max_value=20.0,
+            value=5.0, step=0.1, key="complex-analysis-batch-biotite-distance"))
+        if set(methods) & {"analysis.sequence_qc", "analysis.pep_patch"}:
+            ph = float(st.number_input("Sequence / PEP-Patch pH", min_value=0.0, max_value=14.0,
+            value=7.4, step=0.1, key="complex-analysis-batch-ph"))
+        if "analysis.sequence_liability" in methods:
+            liability_format_options = {"": "Choose construct format…", "linear_protein": "Linear protein chain(s)",
+                                        "cyclic_construct": "Cyclic construct (no free termini)",
+                                        "multichain_construct": "Multichain construct (chain-by-chain screen)"}
+            liability_format = st.selectbox("Sequence-liability construct format", list(liability_format_options),
+                format_func=lambda value: liability_format_options[value], key="complex-analysis-batch-liability-format",
+                disabled="analysis.sequence_liability" not in methods)
+            liability_plddt = st.checkbox("The selected structure stores pLDDT in Cα B-factors (verified from its source)",
+                value=False, key="complex-analysis-batch-liability-plddt", disabled="analysis.sequence_liability" not in methods)
+        if "analysis.tag_fusion_suitability" in methods:
+            tag_plddt = st.checkbox("The selected structure stores pLDDT in Cα B-factors (verified from its source)",
+                value=False, key="complex-analysis-batch-tag-plddt", disabled="analysis.tag_fusion_suitability" not in methods)
+            tag_columns = st.columns(2)
+            tag_format = tag_columns[0].selectbox("Tag/fusion component format",
+                ["", "single_chain_linear_protein", "cyclic_peptide", "multichain_construct"],
+                format_func=lambda value: {"": "Choose format…", "single_chain_linear_protein": "Single-chain linear protein",
+                                           "cyclic_peptide": "Cyclic peptide", "multichain_construct": "Multichain construct"}[value],
+                key="complex-analysis-batch-tag-format", disabled="analysis.tag_fusion_suitability" not in methods)
+            tag_termini_confirmed = tag_columns[1].checkbox(
+                "Complete intended termini are present (verified)", value=False,
+                key="complex-analysis-batch-tag-termini", disabled="analysis.tag_fusion_suitability" not in methods)
+            tag_cutoff = float(st.number_input("Tag/fusion interface contact cutoff (Å)", min_value=1.0, max_value=10.0,
+                value=4.5, step=0.25, key="complex-analysis-batch-tag-cutoff",
+                disabled="analysis.tag_fusion_suitability" not in methods))
+        ipsae_defaults = {"pae_cutoff": 10.0, "dist_cutoff": 10.0, "ipdae_contact_cutoff": 8.0,
+                         "structure_contact_cutoff": 4.0, "hotspot_contact_cutoff": 5.0}
+        ipsae_parameters = {}
+        if "analysis.ipsae" in methods:
+            st.caption("ipSAE and structure-analysis cutoffs")
             fields = st.columns(3)
             for index, (name, default) in enumerate(ipsae_defaults.items()):
                 ipsae_parameters[name] = round(float(fields[index % len(fields)].number_input(
@@ -856,6 +861,25 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
             st.success(f"Submitted {submitted} analysis job(s). Evaluations will appear here after the normal Results ingestion completes.")
         for error in errors:
             st.error(error)
+
+
+def _render_selected_assessments(user: dict, samples: list[dict], *, workflow_schema=None, submit=None) -> None:
+    """Use the existing assessment adapters for the selected molecular inputs."""
+    protein_samples = [sample for sample in samples if sample.get("kind") in {"protein", "protein-protein"}]
+    if protein_samples:
+        _render_batch_assessment(user, protein_samples, workflow_schema=workflow_schema, submit=submit)
+    ligand_samples = [sample for sample in samples if sample.get("kind") in {"protein-ligand", "protein-protein-and-ligand"}]
+    if ligand_samples:
+        st.markdown("#### Assess a protein–ligand model / pose")
+        st.caption("Docking and cofolding use the same existing ligand-analysis adapter. Select the exact pose and verified ligand chemistry; native scores remain unchanged.")
+        index = st.selectbox("Model / pose to assess", list(range(len(ligand_samples))),
+            format_func=lambda value: ligand_samples[value]["label"], key="complex-analysis-assess-ligand")
+        sample = ligand_samples[index]
+        from mn_molecular_design_studio import complex_analysis_ui as workspace
+        workspace._render_database_analysis(user, sample["record"], sample["structure"], sample["path"],
+            sample["components"], "", workflow_schema=workflow_schema, submit=submit)
+    if not protein_samples and not ligand_samples:
+        st.info("No cohort assessment is supported for this representation. Protein–ligand interaction methods require a chemically identified ligand and its receptor complex. Saved measurements remain available above.")
 
 
 def _open_in_inspector(sample: dict, selector: str = "", evaluation_id: str = "") -> None:
@@ -1687,7 +1711,7 @@ def _is_design_collection(group: dict) -> bool:
 
 def _load_collection_structures(database, user: dict, records: list[dict], group_ids: list[str],
                                selected_structure_ids: list[str] | None = None, *, passing_cohort: bool = True,
-                               next_step: str = "analyze") -> list[dict]:
+                               next_step: str = "analyze", display_labels: dict[str, str] | None = None) -> list[dict]:
     """Revalidate and hydrate only the explicitly opened collection structures."""
     chosen = set(str(value) for value in selected_structure_ids) if selected_structure_ids is not None else None
     structures = [structure for record in records
@@ -1730,6 +1754,8 @@ def _load_collection_structures(database, user: dict, records: list[dict], group
     for sample in samples:
         sample.update({"source_kind": "Database", "identity": "database:" + sample["molecule_id"] + ":" + sample["structure_id"],
                        "user": user, "source_reference": "database:" + sample["molecule_id"]})
+        if display_labels and sample["structure_id"] in display_labels:
+            sample["label"] = display_labels[sample["structure_id"]]
         try:
             sample["review_annotation"] = database.get_complex_review(
                 user, source_kind="database", subject_id=sample["molecule_id"],
@@ -1876,7 +1902,11 @@ def _database_collection_samples(user: dict) -> list[dict]:
         if st.session_state.get("complex-analysis-work-table-scope") != table_scope:
             # A restored opened cohort must not block selection in a new
             # project/filter table, or silently carry old rows into it.
+            from mn_molecular_design_studio.complex_analysis_evidence_ui import clear_saved_work
+            clear_saved_work(st.session_state)
             st.session_state["complex-analysis-collections-open"] = False
+            st.session_state["complex-analysis-selected-cohorts"] = []
+            st.session_state["complex-analysis-selected-collections"] = []
             st.session_state["complex-analysis-work-table-scope"] = table_scope
         cohorts = [row for row in scoped_cohorts
                    if (not system or (not any(row["system_facets"].values()) if system == "unresolved" else
@@ -1929,7 +1959,42 @@ def _database_collection_samples(user: dict) -> list[dict]:
         page = int(st.number_input("Campaign page", min_value=1, max_value=max(1, (len(cohorts) + 24) // 25),
                                    value=1, step=1, key=page_key))
         visible_cohorts = cohorts[(page - 1) * 25:page * 25]
-        event = st.dataframe(table[(page - 1) * 25:page * 25], hide_index=True, use_container_width=True, height=min(420, 40 + 35 * max(1, len(visible_cohorts))),
+        def navigation_for_cohorts(selected_cohorts):
+            opened = [row for row in cohorts if row["id"] in selected_cohorts]
+            matching_facets = [(group_id, facet) for row in opened for group_id, facets in row["system_facets"].items()
+                               for facet in facets if facet["key"] == system]
+            system_scope = None
+            selected = list(dict.fromkeys(key for row in opened for key in row["group_ids"]))
+            if system in system_options:
+                selected = list(dict.fromkeys(group_id for group_id, _ in matching_facets))
+                if all(facet.get("scope") for _, facet in matching_facets):
+                    system_scope = [facet["scope"] for _, facet in matching_facets]
+            elif system == "unresolved":
+                selected = list(dict.fromkeys(group_id for row in opened for group_id, facets in row["system_facets"].items()
+                                              if not facets))
+            labels = [row["name"] for row in opened]
+            projects = sorted({project_labels.get(row["project_id"], row["project_id"] or "Personal") for row in opened})
+            activities = sorted({row["activity"] for row in opened})
+            return dict(user_id=user_id, group_ids=selected, label=" · ".join(labels),
+                              project_label=" / ".join(projects), work_type=" / ".join(activities),
+                              system_label=system_options[system]["label"] if system in system_options else "",
+                              system_scope=system_scope)
+
+        table_key = _widget_key("complex-analysis-cohort-table-", user_id + str(table_scope) + str(page))
+        def select_campaigns():
+            # A real selection event supersedes the opened cohort. Widget
+            # recreation after navigation is not a user clearing their choice.
+            rows = st.session_state[table_key]["selection"]["rows"]
+            selected = [visible_cohorts[i]["id"] for i in rows if 0 <= i < len(visible_cohorts)]
+            st.session_state["complex-analysis-selected-cohorts"] = selected
+            from mn_molecular_design_studio.complex_analysis_evidence_ui import open_saved_work, clear_saved_work
+            if selected:
+                open_saved_work(st.session_state, **navigation_for_cohorts(selected), next_step="select")
+            else:
+                clear_saved_work(st.session_state)
+            st.session_state["complex-analysis-collections-open"] = bool(selected)
+
+        st.dataframe(table[(page - 1) * 25:page * 25], hide_index=True, use_container_width=True, height=min(420, 40 + 35 * max(1, len(visible_cohorts))),
                              column_order=primary_columns,
                              column_config={
                                  "Work group": st.column_config.TextColumn("Run / collection", width="large"),
@@ -1939,28 +2004,16 @@ def _database_collection_samples(user: dict) -> list[dict]:
                                  "Retained structures/models": st.column_config.NumberColumn("Models / poses", width="small"),
                                  "Saved Evaluations": st.column_config.TextColumn("Saved evidence", width="medium"),
                              },
-                             on_select="rerun", selection_mode="multi-row",
-                             key=_widget_key("complex-analysis-cohort-table-", user_id + str(table_scope) + str(page)))
+                             on_select=select_campaigns, selection_mode="multi-row", key=table_key,
+                             selection_default={"selection": {"rows": [i for i, row in enumerate(visible_cohorts)
+                                 if row["id"] in st.session_state.get("complex-analysis-selected-cohorts", [])]}})
         selected_state = "complex-analysis-selected-collections"
         selected_cohort_state = "complex-analysis-selected-cohorts"
-        if st.session_state.get("complex-analysis-collections-open"):
-            valid_cohorts = set(cohort_group_map)
-            selected_cohorts = [value for value in st.session_state.get(selected_cohort_state, [])
-                                if value in valid_cohorts]
-            selected_group_ids = [value for cohort_id in selected_cohorts
-                                  for value in cohort_group_map.get(cohort_id, [])]
-            # Preserve the opened source memberships even if the table selection
-            # widget clears its transient row selection during a Streamlit rerun.
-            if not selected_group_ids:
-                selected_group_ids = [value for value in st.session_state.get(selected_state, [])
-                                      if value in {group_id for ids in cohort_group_map.values() for group_id in ids}]
-        else:
-            selected_rows = list(getattr(getattr(event, "selection", None), "rows", []) or [])
-            selected_cohorts = [visible_cohorts[index]["id"] for index in selected_rows if 0 <= index < len(visible_cohorts)]
-            st.session_state[selected_cohort_state] = selected_cohorts
-            selected_group_ids = [value for cohort_id in selected_cohorts
-                                  for value in cohort_group_map.get(cohort_id, [])]
-            st.session_state[selected_state] = list(dict.fromkeys(selected_group_ids))
+        selected_cohorts = [value for value in st.session_state.get(selected_cohort_state, [])
+                            if value in cohort_group_map]
+        selected_group_ids = list(dict.fromkeys(value for cohort_id in selected_cohorts
+                                                for value in cohort_group_map[cohort_id]))
+        st.session_state[selected_state] = selected_group_ids
     else:
         st.info("No saved scientific work is available in your accessible Database groups.")
         selected_state = "complex-analysis-selected-collections"
@@ -1980,25 +2033,38 @@ def _database_collection_samples(user: dict) -> list[dict]:
             st.write(" · ".join(f"{label}: {value}" for label, value in counts.items()) +
                      f" · Database retained: {cohort['stats']['molecule_count']:,} molecular records, "
                      f"{cohort['stats']['structure_count']:,} models / poses")
+        from mn_molecular_design_studio.complex_analysis_evidence_ui import open_saved_work
+        navigation = navigation_for_cohorts(selected_cohorts)
+        if st.session_state.get("complex-analysis-evidence-selection") != navigation:
+            open_saved_work(st.session_state, **navigation, next_step="select")
+            st.session_state["complex-analysis-collections-open"] = True
+            # Refresh the navigation buttons with this exact source selection.
+            st.rerun()
+        if st.button("Review selected designs" if navigation["work_type"] == "Protein design" else "Open selected work",
+                     type="primary", key="complex-analysis-load-collection"):
+            st.session_state["complex-analysis-flow-step"] = "overview"
+            st.rerun()
+        st.caption("Next: select designs in the review table → calculate missing assessments or inspect in 3D → shortlist. Saved measurements open immediately; calculations require explicit submission.")
         with st.expander("Selected sources and recorded acceptance", expanded=False):
-            st.dataframe([row for row, cohort in zip(table, cohorts) if cohort["id"] in selected_cohorts],
-                         hide_index=True, use_container_width=True)
-            st.caption("Source jobs and recorded decisions are preserved. Retained counts do not include discarded Results; full campaign totals require a published campaign summary.")
-            for cohort in cohorts:
-                if cohort["id"] not in selected_cohorts:
-                    continue
-                st.caption(cohort["cohort_type"])
-                st.dataframe([{"Job": group["summary"]["run"], "Input target": group["summary"]["target"],
-                               "Retained": group["stats"]["molecule_count"]}
-                              for group in cohort["groups"]], hide_index=True, use_container_width=True)
-                contexts = [group.get("scientific_context") or {} for group in cohort["groups"]]
-                evidence = [dict(row, source_job=context.get("job_ref") or "Not indexed")
-                            for context in contexts for row in context.get("counts") or []]
-                if evidence:
-                    st.dataframe(evidence, hide_index=True, use_container_width=True)
-                targets = [target for context in contexts for target in context.get("targets") or []]
-                if targets:
-                    st.json(targets, expanded=False)
+            if st.checkbox("Show source records and acceptance provenance", key="complex-analysis-show-source-records"):
+                st.dataframe([row for row, cohort in zip(table, cohorts) if cohort["id"] in selected_cohorts],
+                             hide_index=True, use_container_width=True)
+                st.caption("Source jobs and recorded decisions are preserved. Retained counts do not include discarded Results; full campaign totals require a published campaign summary.")
+                for cohort in cohorts:
+                    if cohort["id"] not in selected_cohorts:
+                        continue
+                    st.caption(cohort["cohort_type"])
+                    st.dataframe([{"Job": group["summary"]["run"], "Input target": group["summary"]["target"],
+                                   "Retained": group["stats"]["molecule_count"]}
+                                  for group in cohort["groups"]], hide_index=True, use_container_width=True)
+                    contexts = [group.get("scientific_context") or {} for group in cohort["groups"]]
+                    evidence = [dict(row, source_job=context.get("job_ref") or "Not indexed")
+                                for context in contexts for row in context.get("counts") or []]
+                    if evidence:
+                        st.dataframe(evidence, hide_index=True, use_container_width=True)
+                    targets = [target for context in contexts for target in context.get("targets") or []]
+                    if targets:
+                        st.json(targets, expanded=False)
     else:
         if st.button("Browse individual molecules and models (advanced)", key="complex-analysis-open-individual-browser"):
             st.session_state["complex-analysis-individual-mode"] = True
@@ -2006,41 +2072,9 @@ def _database_collection_samples(user: dict) -> list[dict]:
             st.rerun()
         return []
 
-    selected = [value for value in selected_group_ids if value in {group_id for ids in cohort_group_map.values() for group_id in ids}]
-    if not selected:
-        st.session_state["complex-analysis-collections-open"] = False
-        return []
-    if st.session_state.get("complex-analysis-collections-open") and st.button("Change selection", key="complex-analysis-change-collections"):
-        st.session_state["complex-analysis-collections-open"] = False
-        st.session_state.pop("complex-analysis-workflow-samples", None)
-        st.rerun()
     if st.button("Browse individual molecules and models (advanced)", key="complex-analysis-collection-individual-mode"):
         st.session_state["complex-analysis-individual-mode"] = True
         st.session_state["complex-analysis-collections-open"] = False
-        st.rerun()
-
-    st.caption("Open saved measurements and provenance first. Coordinates are retrieved only when you explicitly inspect or assess models.")
-    if st.button("Open saved work", type="primary", key="complex-analysis-load-collection"):
-        from mn_molecular_design_studio.complex_analysis_evidence_ui import open_saved_work
-        opened = [row for row in cohorts if row["id"] in selected_cohorts]
-        matching_facets = [(group_id, facet) for row in opened for group_id, facets in row["system_facets"].items()
-                           for facet in facets if facet["key"] == system]
-        system_scope = None
-        if system in system_options:
-            selected = list(dict.fromkeys(group_id for group_id, _ in matching_facets))
-            if all(facet.get("scope") for _, facet in matching_facets):
-                system_scope = [facet["scope"] for _, facet in matching_facets]
-        elif system == "unresolved":
-            selected = list(dict.fromkeys(group_id for row in opened for group_id, facets in row["system_facets"].items()
-                                          if not facets))
-        labels = [row["name"] for row in opened]
-        projects = sorted({project_labels.get(row["project_id"], row["project_id"] or "Personal") for row in opened})
-        activities = sorted({row["activity"] for row in opened})
-        open_saved_work(st.session_state, user_id=user_id, group_ids=selected, label=" · ".join(labels),
-                        project_label=" / ".join(projects), work_type=" / ".join(activities),
-                        system_label=system_options[system]["label"] if system in system_options else "",
-                        system_scope=system_scope)
-        st.session_state["complex-analysis-collections-open"] = True
         st.rerun()
     return []
 
@@ -2527,9 +2561,26 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
         try:
             for group_id in selection["group_ids"]:
                 database.group(group_id, user)
-            if selection.get("work_type") == "Protein design" and step in {"overview", "analyze"} and not st.session_state.get("complex-analysis-assessment-open"):
+            if selection.get("work_type") == "Protein design" and (step in {"overview", "shortlist"} or
+                    (step == "analyze" and not st.session_state.get("complex-analysis-assessment-open")) or
+                    (step == "compare" and not st.session_state.get("complex-analysis-workflow-samples"))):
+                st.session_state["complex-analysis-assessment-open"] = False
                 from mn_molecular_design_studio.complex_analysis_design_review_ui import render_design_review
-                render_design_review(database, user, selection)
+                render_design_review(database, user, selection, requested_action=step)
+                return
+            if selection.get("work_type") == "Protein design" and step == "analyze":
+                samples = _load_workspace_samples(user)
+                st.markdown("### Calculate missing assessments")
+                st.write(selection["label"])
+                if st.button("← Back to design review", key="complex-analysis-back-to-design-review"):
+                    st.session_state["complex-analysis-flow-step"] = "overview"
+                    st.session_state["complex-analysis-assessment-open"] = False
+                    st.rerun()
+                if not samples:
+                    st.info("Return to Review designs and select exact models to assess.")
+                    return
+                st.caption(f"{len(samples)} selected model(s) from this cohort. Choose methods and settings below. Compatible saved Evaluations are reused; only explicitly submitted missing work runs.")
+                _render_selected_assessments(user, samples, workflow_schema=workflow_schema, submit=submit)
                 return
             if step == "overview":
                 render_work_overview(database, user, selection)
@@ -2678,21 +2729,7 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
         st.caption("Stored measurements retain their method, model and units. Missing, failed and measured-zero states remain distinct.")
         _render_evaluation_board(selected_samples)
         with st.expander("Run missing assessments · explicit submission only", expanded=True):
-            protein_samples = [sample for sample in selected_samples if sample.get("kind") in {"protein", "protein-protein"}]
-            if protein_samples:
-                _render_batch_assessment(user, protein_samples, workflow_schema=workflow_schema, submit=submit)
-            ligand_samples = [sample for sample in selected_samples if sample.get("kind") in {"protein-ligand", "protein-protein-and-ligand"}]
-            if ligand_samples:
-                st.markdown("#### Assess a protein–ligand model / pose")
-                st.caption("Docking and cofolding use the same existing ligand-analysis adapter. Select the exact pose and verified ligand chemistry; native scores remain unchanged.")
-                index = st.selectbox("Model / pose to assess", list(range(len(ligand_samples))),
-                    format_func=lambda value: ligand_samples[value]["label"], key="complex-analysis-assess-ligand")
-                sample = ligand_samples[index]
-                from mn_molecular_design_studio import complex_analysis_ui as workspace
-                workspace._render_database_analysis(user, sample["record"], sample["structure"], sample["path"],
-                    sample["components"], "", workflow_schema=workflow_schema, submit=submit)
-            if not protein_samples and not ligand_samples:
-                st.info("No cohort assessment is supported for this representation. Protein–ligand interaction methods require a chemically identified ligand and its receptor complex. Saved measurements remain available above.")
+            _render_selected_assessments(user, selected_samples, workflow_schema=workflow_schema, submit=submit)
         st.markdown("#### Open one selected model")
         inspect_id = st.selectbox("Scientific Inspector", selected_ids,
             format_func=lambda value: sample_by_id[value]["label"], key="complex-analysis-cohort-inspector")

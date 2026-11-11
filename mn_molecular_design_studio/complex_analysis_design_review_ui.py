@@ -41,16 +41,18 @@ def _metric_priority(item):
     return next((index for index, part in enumerate(priorities) if part in field), len(priorities))
 
 
-def render_design_review(database, user, selection):
+def render_design_review(database, user, selection, *, requested_action=""):
     """Review numeric evidence first; retrieve only explicitly selected coordinates."""
     from mn_molecular_design_studio import complex_analysis_collection_ui as collection
     import pandas as pd
     import plotly.express as px
 
     token = hashlib.sha256(json.dumps([user["id"], selection["group_ids"], selection.get("system_scope")], sort_keys=True).encode()).hexdigest()[:12]
-    st.markdown("### Review designs")
+    assessment_requested = requested_action == "analyze"
+    inspection_requested = requested_action == "compare"
+    st.markdown("### Shortlist & export" if requested_action == "shortlist" else "### Review designs")
     st.write(selection["label"])
-    st.caption("Select designs using their saved evidence. Row and plot selections share one shortlist selection; structures load only when requested.")
+    st.caption("1. Review saved measurements and select rows or plot points. 2. Calculate missing assessments or inspect the selected models. 3. Record a shortlist. Coordinates load only when requested.")
     with st.expander("Campaign totals, input target and source provenance"):
         if st.button("Show campaign context", key="review-context-" + token):
             st.session_state["review-context-open-" + token] = True
@@ -77,6 +79,14 @@ def render_design_review(database, user, selection):
     if not samples:
         st.info("No exact retained models on this page. Choose another page or return to campaign selection; source evidence remains unchanged.")
         return
+    if requested_action == "shortlist":
+        selected_ids = st.session_state.get("design-review-selected-" + token, [])
+        selected = [s for s in samples if s["structure_id"] in selected_ids]
+        if selected:
+            from mn_molecular_design_studio.complex_analysis_shortlist_export import render_shortlist_review_export
+            render_shortlist_review_export(user, selected, key_prefix="review-shortlist-" + token)
+            return
+        st.info("Select designs in the review table below, then open Shortlist & export to record decisions and rationale.")
     final_count = sum(any(d["stage_id"] == "final" and d["cohort_status"] == "passed" for d in sample["decisions"]) for sample in samples)
     evidence_count = sum(bool(sample["associated"]) for sample in samples)
     shortlisted = sum(sample["review_annotation"]["status"] == "Shortlisted for experimental testing" for sample in samples)
@@ -86,15 +96,18 @@ def render_design_review(database, user, selection):
     st.caption("Acceptance counts refer to explicitly linked decisions on these exact models. They are not an inferred campaign-wide pass count.")
     controls = st.columns([1.2, 1.4, 1.3])
     with controls[0]:
-        mode = st.selectbox("Cohort", ["Final accepted designs", "Passed at selected stage", "All designs",
-            "Rejected at selected stage", "Pending / unresolved at selected stage", "No recorded decision"], key="review-cohort-" + token)
+        mode = collection._stateful_selectbox("Cohort", ["Final accepted designs", "Passed at selected stage", "All designs",
+            "Rejected at selected stage", "Pending / unresolved at selected stage", "No recorded decision"],
+            key="review-cohort-" + token, state_key="review-cohort-value-" + token, default="Final accepted designs")
     stages = acceptance_stage_options(samples)
     with controls[1]:
-        stage = st.selectbox("Recorded passing stage", [key for key, _ in stages] or [""],
+        stage = collection._stateful_selectbox("Recorded passing stage", [key for key, _ in stages] or [""],
             format_func=lambda key: dict(stages).get(key, "No decision recorded"),
-            disabled="selected stage" not in mode, key="review-stage-" + token)
+            disabled="selected stage" not in mode, key="review-stage-" + token,
+            state_key="review-stage-value-" + token, default=stages[0][0] if stages else "")
     with controls[2]:
-        search = st.text_input("Find a design", placeholder="Design, native ID or source run", key="review-search-" + token)
+        search = collection._stateful_text_input("Find a design", placeholder="Design, native ID or source run",
+            key="review-search-" + token, state_key="review-search-value-" + token)
     if not final_count and mode == "Final accepted designs":
         st.info("No final computational pass is recorded on this page. Choose Passed at selected stage to review an earlier recorded pass, or All designs for diagnostics.")
     filtered = filter_acceptance_cohort(samples, mode, stage)
@@ -138,6 +151,29 @@ def render_design_review(database, user, selection):
     st.caption(f"{len(filtered)} models shown · page {page_number} of {(page['total'] + 249) // 250}. Blank measurements mean missing, conflicting or failed evidence, not zero. Parameters and versions remain separate; no combined quality score.")
     if not filtered:
         return
+    selected = [s for s in filtered if s["structure_id"] in selected_ids]
+    st.markdown(f"#### {len(selected)} selected for review")
+    if inspection_requested and not selected:
+        st.info("Select designs in the table or plot below, then click Inspect selected in 3D. Use 2–5 compatible models for overlays.")
+    if assessment_requested and not selected:
+        st.info("Select designs in the table or plot below, then click Calculate missing assessments. The table shows saved evidence; opening it does not calculate new parameters.")
+    actions = st.columns(2)
+    assess = actions[0].button("Calculate missing assessments", type="primary", disabled=not selected,
+                               key="review-assess-" + token)
+    inspect = actions[1].button("Inspect selected in 3D", disabled=not selected, key="review-inspect-" + token)
+    if assess or inspect or ((assessment_requested or inspection_requested) and selected):
+        if len(selected) > 50:
+            st.warning("Select at most 50 models for explicit structure loading; use 2–5 for overlays.")
+        else:
+            assessment = assess or (assessment_requested and not inspect)
+            st.session_state["complex-analysis-assessment-open"] = assessment
+            collection._load_collection_structures(database, user, [s["record"] for s in selected], selection["group_ids"],
+                selected_structure_ids=selected_ids, passing_cohort=False, next_step="analyze" if assessment else "compare",
+                display_labels={s["structure_id"]: s["label"] for s in selected})
+            # Loading can fail (for example an unavailable exact source file).
+            # Keep the review visible without claiming an assessment was opened.
+            st.session_state["complex-analysis-assessment-open"] = False
+    st.caption("Calculations use the selected exact models. The next screen shows Core / Comprehensive / Custom methods, chain assignments, settings, existing Evaluation coverage and an explicit submission button.")
     # Labels only identify rows within this view; persistent IDs remain in samples.
     labels = {key: metric_label(key) for key in metrics}
     columns = {key: f"{_field_label(series[key]['field'])[:28]} [{i+1}]" for i, key in enumerate(metrics)}
@@ -161,6 +197,8 @@ def render_design_review(database, user, selection):
     with left:
         st.dataframe(pd.DataFrame(data), hide_index=True, width="stretch", height=380,
                      on_select=from_table, selection_mode="multi-row", key=table_key,
+                     selection_default={"selection": {"rows": [i for i, sample in enumerate(filtered)
+                         if sample["structure_id"] in selected_ids]}},
                      column_config={"Design": st.column_config.TextColumn(width="medium"),
                                     **{column: st.column_config.NumberColumn(width="small", format="%.3g") for column in columns.values()}},
                      column_order=["Design", *columns.values(), "Decision", "Engine"])
@@ -194,27 +232,15 @@ def render_design_review(database, user, selection):
             st.caption("Recorded decisions only. Select at least two numeric measurements for an evidence plot.")
     selected_ids = st.session_state.get(state_key, [])
     selected = [s for s in filtered if s["structure_id"] in selected_ids]
-    st.markdown(f"#### {len(selected)} selected for review")
     if not selected:
-        st.info("Click a row or point to see its evidence and available actions here.")
+        st.info("Select one or more designs above to inspect their evidence or calculate missing assessments.")
         return
     chosen = st.selectbox("Focused design", selected_ids, format_func=lambda key: next(s["label"] for s in selected if s["structure_id"] == key), key="review-focus-" + token + selection_version)
     focused = next(s for s in selected if s["structure_id"] == chosen)
-    a, b, c = st.columns(3)
-    inspect = a.button("Inspect selected in 3D", key="review-inspect-" + token)
-    assess = b.button("Assess selected…", key="review-assess-" + token)
-    inspector = c.button("Open focused Scientific Inspector", key="review-inspector-" + token)
-    if inspector:
+    if st.button("Open focused Scientific Inspector", key="review-inspector-" + token):
         from mn_molecular_design_studio.complex_analysis_ui import open_database_complex
         open_database_complex(focused["molecule_id"], structure_id=focused["structure_id"])
         st.rerun()
-    if inspect or assess:
-        if len(selected) > 50:
-            st.warning("Select at most 50 models for explicit structure loading; use 2–5 for overlays.")
-        else:
-            st.session_state["complex-analysis-assessment-open"] = assess
-            collection._load_collection_structures(database, user, [s["record"] for s in selected], selection["group_ids"],
-                selected_structure_ids=selected_ids, passing_cohort=False, next_step="analyze" if assess else "compare")
     evidence_tab, shortlist_tab, provenance_tab = st.tabs(["Design evidence", "Shortlist & export", "Exact identities & methods"])
     with evidence_tab:
         st.caption(focused["label"] + " · " + (focused["candidate"].get("source_tool") or "Engine not recorded"))

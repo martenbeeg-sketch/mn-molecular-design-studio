@@ -14,7 +14,8 @@ OTHER = {"id": "b" * 32, "role": "user", "_cluster_project_ids": []}
 @pytest.fixture
 def designs(tmp_path):
     db = MolecularDatabase(tmp_path / "db")
-    created = db.import_records(OWNER, molecule_imports.parse_smiles("CCO example"), name="Saved designs")
+    created = db.import_records(OWNER, molecule_imports.parse_smiles("CCO example"), name="Saved designs",
+        origin={"tool": "rfd4_proteina", "type": "job", "run_id": "design-source", "campaign_id": "mixed-campaign"})
     group, molecule = created["group_id"], created["molecule_ids"][0]
     models = []
     for index, engine in enumerate(("rfd4_proteina", "bindcraft2")):
@@ -115,6 +116,7 @@ def test_digest_aliases_link_evidence_but_not_other_models_or_private_groups(des
 
 def test_display_labels_and_selection_do_not_replace_scientific_identity():
     assert short_design_label("rfd4_000010_idr_peptide_binder_rep9") == "Design 10 · sample 9"
+    assert short_design_label("rfd4_000001_idr_peptide_binder") == "Design 1"
     state = {}
     assert remember_review_selection(state, "cohort", ["model-1", "model-1", "unrelated"], {"model-1"}) == ["model-1"]
     assert remember_review_selection(state, "cohort", state["design-review-selected-cohort"], set()) == []
@@ -162,3 +164,198 @@ render_design_review(MolecularDatabase(), {OWNER!r}, {{"group_ids": [{group!r}],
     assert not app.exception
     assert any(button.label == "Save selected-design review decisions" for button in app.button)
     assert len(app.get("download_button")) == 3
+
+
+def _select_rows(app, rows):
+    """Deliver a real Streamlit dataframe selection event, including its callback."""
+    import json
+    states = app._tree.get_widget_states()
+    widget = states.widgets.add()
+    widget.id = app.dataframe[0].proto.id
+    widget.string_value = json.dumps({"selection": {"rows": rows, "columns": [], "cells": []}})
+    return app._run(states)
+
+
+def test_campaign_switch_replaces_opened_review_and_assessment_models(designs, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    db, group, molecule, models = designs
+    second = db.create_group(OWNER, "Other campaign", origin={"tool": "rfd4_proteina", "type": "job",
+        "campaign_id": "other-campaign", "run_id": "other-source", "task_group": "design"})
+    db.add_to_group(OWNER, second, [molecule])
+    db.attach_structure(second, molecule, {"name": "other.cif", "content": b"data_other\n"},
+        context={"model_id": "other-model", "candidate_id": "other-candidate", "tool": "rfd4_proteina"})
+    monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", lambda: db)
+    monkeypatch.setattr(db, "structure_file", lambda *a: pytest.fail("Campaign navigation must not retrieve coordinates"))
+    app = AppTest.from_string(f'''
+from mn_molecular_design_studio.complex_analysis_collection_ui import render_collection_workspace
+render_collection_workspace({OWNER!r})
+''').run()
+    assert not app.exception
+    assert len(app.dataframe[0].value) == 2
+    _select_rows(app, [0])
+    assert not app.exception
+    first_selection = dict(app.session_state["complex-analysis-evidence-selection"])
+    app.button(key="complex-analysis-step-overview").click().run()
+    assert not app.exception
+    assert first_selection["label"] in [item.value for item in app.markdown]
+    app.button(key="complex-analysis-step-select").click().run()
+    app.session_state["complex-analysis-workflow-samples"] = [{"structure_id": "previous-model"}]
+    app.session_state["complex-analysis-workflow-selection"] = {"structure_ids": ["previous-model"]}
+    app.session_state["complex-analysis-assessment-open"] = True
+    _select_rows(app, [1])
+    assert not app.exception
+    current = dict(app.session_state["complex-analysis-evidence-selection"])
+    assert set(current["group_ids"]) != set(first_selection["group_ids"])
+    assert not app.session_state["complex-analysis-assessment-open"]
+    assert "complex-analysis-workflow-samples" not in app.session_state
+    assert "complex-analysis-workflow-selection" not in app.session_state
+    app.button(key="complex-analysis-step-overview").click().run()
+    assert not app.exception
+    assert current["label"] in [item.value for item in app.markdown]
+    expected = 1 if current["group_ids"] == [second] else 2
+    assert app.metric[0].value == str(expected)
+    app.button(key="complex-analysis-step-select").click().run()
+    assert app.session_state["complex-analysis-evidence-selection"] == current  # widget recreation retains source
+    _select_rows(app, [])
+    assert not app.exception
+    assert "complex-analysis-evidence-selection" not in app.session_state
+    assert app.button(key="complex-analysis-step-overview").disabled
+
+
+@pytest.mark.parametrize("action", ["analyze", "compare"])
+def test_assessment_action_and_step_use_only_the_review_selected_models(designs, monkeypatch, action):
+    import hashlib
+    import json
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import complex_analysis_collection_ui as collection
+    db, group, _, models = designs
+    token = hashlib.sha256(json.dumps([OWNER["id"], [group], None], sort_keys=True).encode()).hexdigest()[:12]
+    opened = []
+    def load(database, user, records, group_ids, **kwargs):
+        opened.append((group_ids, kwargs))
+        return []  # no scientific calculations or coordinate retrieval in this test
+    monkeypatch.setattr(collection, "_load_collection_structures", load)
+    monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", lambda: db)
+    app = AppTest.from_string(f'''
+import streamlit as st
+from mn_molecular_design_studio.complex_analysis_design_review_ui import render_design_review
+from mn_molecular_design_studio.molecular_database import MolecularDatabase
+st.session_state.setdefault('design-review-selected-{token}', [{models[0]!r}])
+render_design_review(MolecularDatabase(), {OWNER!r}, {{"group_ids": [{group!r}], "label": "Mixed engines"}},
+                     requested_action=st.session_state.get('request', ''))
+''').run()
+    assert not app.exception
+    app.button(key="review-assess-" + token).click().run()
+    assert not app.exception
+    assert opened == [([group], {"selected_structure_ids": [models[0]], "passing_cohort": False, "next_step": "analyze", "display_labels": {models[0]: "Design 1 · sample 0"}})]
+    app.session_state['request'] = action
+    app.run()
+    assert not app.exception
+    assert opened[-1] == ([group], {"selected_structure_ids": [models[0]], "passing_cohort": False, "next_step": action, "display_labels": {models[0]: "Design 1 · sample 0"}})
+    # The second model has only native acceptance; it is never implicitly added.
+    assert models[1] not in opened[-1][1]["selected_structure_ids"]
+
+
+def test_assessment_screen_keeps_source_and_reuses_existing_submission_ui(designs, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import complex_analysis_collection_ui as collection
+    db, group, _, _ = designs
+    samples = design_review_page(db, OWNER, [group])["items"][:1]
+    samples[0].update(kind="protein-protein", components=[
+        {"type": "protein", "chain": "A", "sequence": "ACDEFGHIKLMNPQRSTVWYACDE"},
+        {"type": "protein", "chain": "B", "sequence": "ACDEFGHIKLMNPQRSTVWYACDE"}])
+    monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", lambda: db)
+    monkeypatch.setattr(collection, "_load_workspace_samples", lambda user: samples)
+    monkeypatch.setattr("mn_molecular_design_studio.complex_analysis_ui._matching_database_analysis_jobs", lambda *a, **kw: [])
+    app = AppTest.from_string(f'''
+import streamlit as st
+from mn_molecular_design_studio.complex_analysis_evidence_ui import open_saved_work
+from mn_molecular_design_studio.complex_analysis_collection_ui import render_collection_workspace
+if 'complex-analysis-evidence-selection' not in st.session_state:
+    open_saved_work(st.session_state, user_id={OWNER['id']!r}, group_ids=[{group!r}],
+                    label='Selected mixed-engine campaign', work_type='Protein design', next_step='analyze')
+    st.session_state['complex-analysis-assessment-open'] = True
+render_collection_workspace({OWNER!r}, workflow_schema=lambda method: {{'parameters': []}},
+                            submit=lambda *args: st.error('Unexpected calculation'))
+''').run()
+    assert not app.exception
+    assert app.selectbox(key="complex-analysis-batch-profile").options == [
+        "Core protein assessment", "Comprehensive protein assessment", "Custom"]
+    assert any(item.value == 'Selected mixed-engine campaign' for item in app.markdown)
+    assert any('Analysis coverage' in item.value for item in app.markdown)
+    assert app.number_input(key="complex-analysis-batch-biotite-distance").value == 5.0
+    assert app.multiselect[1].value == ["B"]
+    assert app.multiselect[2].value == ["A"]
+    assert not app.error
+    assert not any(item.label == 'Acceptance cohort' for item in app.selectbox)
+    assert not any(item.label == 'Design/model rows to assess and compare' for item in app.multiselect)
+    app.selectbox(key="complex-analysis-batch-profile").select("Comprehensive protein assessment").run()
+    assert not app.exception
+    assert app.selectbox(key="complex-analysis-batch-tag-format")
+    app.selectbox(key="complex-analysis-batch-profile").select("Custom").run()
+    assert not app.exception
+    app.multiselect(key="complex-analysis-batch-methods").select("analysis.biotite_interface").run()
+    assert not app.exception
+    assert not any(item.key == 'complex-analysis-batch-tag-format' for item in app.selectbox)
+    assert not any(item.key == 'complex-analysis-batch-liability-format' for item in app.selectbox)
+    assert not app.error
+    app.button(key="complex-analysis-back-to-design-review").click().run()
+    assert not app.exception
+    assert any(item.value == '### Review designs' for item in app.markdown)
+    assert not app.session_state['complex-analysis-assessment-open']
+
+
+def test_changing_review_models_invalidates_only_the_old_loaded_selection():
+    state = {"design-review-selected-cohort": ["model-a"], "complex-analysis-workflow-samples": ["old"],
+             "complex-analysis-workflow-selection": {"structure_ids": ["model-a"]},
+             "complex-analysis-evidence-selection": {"group_ids": ["campaign"]},
+             "complex-analysis-assessment-open": True, "complex-analysis-cohort-selected-value": ["model-a"]}
+    remember_review_selection(state, "cohort", ["model-b"], {"model-a", "model-b"})
+    assert "complex-analysis-workflow-samples" not in state
+    assert "complex-analysis-workflow-selection" not in state
+    assert "complex-analysis-cohort-selected-value" not in state
+    assert not state["complex-analysis-assessment-open"]
+    assert state["complex-analysis-evidence-selection"] == {"group_ids": ["campaign"]}
+    state["complex-analysis-workflow-samples"] = ["model-b"]
+    remember_review_selection(state, "cohort", ["model-b"], {"model-a", "model-b"})
+    assert state["complex-analysis-workflow-samples"] == ["model-b"]
+
+
+def test_shortlist_step_uses_review_models_without_reselection_or_coordinates(designs, monkeypatch):
+    import hashlib
+    import json
+    from streamlit.testing.v1 import AppTest
+    db, group, _, models = designs
+    token = hashlib.sha256(json.dumps([OWNER["id"], [group], None], sort_keys=True).encode()).hexdigest()[:12]
+    monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", lambda: db)
+    monkeypatch.setattr(db, "structure_file", lambda *a: pytest.fail("Shortlist needs no coordinates"))
+    app = AppTest.from_string(f'''
+import streamlit as st
+from mn_molecular_design_studio.molecular_database import MolecularDatabase
+from mn_molecular_design_studio.complex_analysis_design_review_ui import render_design_review
+st.session_state.setdefault('design-review-selected-{token}', [{models[0]!r}])
+render_design_review(MolecularDatabase(), {OWNER!r}, {{"group_ids": [{group!r}], "label": "My campaign"}},
+                     requested_action='shortlist')
+''').run()
+    assert not app.exception
+    assert any(button.label == "Save selected-design review decisions" for button in app.button)
+    assert len(app.get("download_button")) == 3
+    assert not app.get("plotly_chart")
+
+
+def test_assessment_navigation_preserves_existing_ligand_adapter(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import complex_analysis_collection_ui as ui
+    calls = []
+    monkeypatch.setattr(ui, '_render_batch_assessment', lambda user, samples, **kw: calls.append(('protein', samples)))
+    monkeypatch.setattr('mn_molecular_design_studio.complex_analysis_ui._render_database_analysis',
+        lambda user, record, structure, path, components, *a, **kw: calls.append(('ligand', structure, path)))
+    app = AppTest.from_string(f'''
+from mn_molecular_design_studio.complex_analysis_collection_ui import _render_selected_assessments
+_render_selected_assessments({OWNER!r}, [{{'kind': 'protein-protein', 'structure_id': 'binder-model'}},
+    {{'kind': 'protein-ligand', 'label': 'Pose 1', 'record': {{'id': 'compound'}},
+      'structure': {{'id': 'exact-pose'}}, 'path': '/unused/preserved-pose', 'components': []}}])
+''').run()
+    assert not app.exception
+    assert calls == [('protein', [{'kind': 'protein-protein', 'structure_id': 'binder-model'}]),
+                     ('ligand', {'id': 'exact-pose'}, '/unused/preserved-pose')]

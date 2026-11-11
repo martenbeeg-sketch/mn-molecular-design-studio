@@ -17,6 +17,9 @@ def short_design_label(candidate_id: str, fallback: str = "Design") -> str:
     match = re.fullmatch(r"rfd4_0*(\d+)_.+_rep(\d+)", candidate_id, re.I)
     if match:
         return f"Design {int(match[1])} · sample {match[2]}"
+    match = re.fullmatch(r"rfd4_0*(\d+)_.+", candidate_id, re.I)
+    if match:
+        return f"Design {int(match[1])}"
     label = candidate_id or fallback
     return label if len(label) <= 44 else label[:30] + "…" + label[-9:]
 
@@ -164,5 +167,15 @@ def review_measurements(samples):
 def remember_review_selection(state, token, ids, allowed):
     """One ID-based selection shared by plot/table/actions, scoped to current access."""
     key = "design-review-selected-" + token
-    state[key] = list(dict.fromkeys(value for value in ids if value in allowed))
-    return state[key]
+    selected = list(dict.fromkeys(value for value in ids if value in allowed))
+    if selected != state.get(key, []):
+        # Previously hydrated coordinates and downstream row filters belong to
+        # the old exact model selection, even within the same campaign.
+        state.pop("complex-analysis-workflow-samples", None)
+        state.pop("complex-analysis-workflow-selection", None)
+        state["complex-analysis-assessment-open"] = False
+        for old_key in list(state):
+            if old_key.startswith("complex-analysis-cohort-") and not old_key.startswith("complex-analysis-cohort-table-"):
+                del state[old_key]
+    state[key] = selected
+    return selected
