@@ -14,11 +14,16 @@ The user authorized preparing the recovery, validation, account and teaching
 checks. Production services, production authentication, scientific records and
 the 436 cleanup candidates have not been changed. The old research deployment
 remains `p11-25e003c/source` on all three hosts. Only the independent teaching
-container and its loopback relay are newly running.
+container, its loopback relay and its separate institute-LAN HTTPS entry point
+are newly running. The agreed class size is three students and one instructor;
+they connect through browsers on the institute network. See `TEACHING_ACCESS.md`
+for the URL, one-time certificate setup and account handoff.
 
 ## Open the pilot
 
 - UI: <http://127.0.0.1:18502/>
+- Institute-LAN UI: <https://pc002975.marionegri.it:18502/>, after trusting the
+  separate teaching certificate as described in `TEACHING_ACCESS.md`.
 - API: <http://127.0.0.1:18766/api/v1/health>
 - Current release/state directory:
   `/home/user/programs/deployments/mn-molecular-design-studio/teaching-pilot-current`
@@ -26,12 +31,13 @@ container and its loopback relay are newly running.
   that directory, mode `0600`, inside private `0700` release/state directories.
   Do not publish, commit, email or reuse this file for real students.
 
-The accounts are `teaching_instructor`, `teaching_student_one` and
-`teaching_student_two`. They are disposable test identities, not actual student
-accounts. Acceptance exercised the students' mandatory temporary-password
-change and session revocation; their current test passwords are in the private
-file. Real students need individual provisioning and a fresh mandatory password
-change, not a shared demonstration login.
+The accounts are `teaching_instructor`, `teaching_student_one`,
+`teaching_student_two` and `teaching_student_three`. They are four distinct
+teaching seats, not verified real-person identities. Acceptance exercised the
+students' mandatory temporary-password change and session revocation. All three
+student passwords were then reset to new individual temporary passwords in the
+private file, with a fresh mandatory change for first human sign-in. Assign one
+seat per student and record that mapping; do not share demonstration logins.
 
 The pilot contains two instructional small molecules and a public structure
 already shipped with the repository. It contains no copied production library,
@@ -59,8 +65,10 @@ a completed manual review of every authenticated browser page or teaching lesson
   Supervise small examples, monitor free space, and do not enable large uploads
   or campaigns. A classroom storage budget remains a production gate.
 - A bounded host-side relay forwards only loopback ports 18502 and 18766 into
-  the network-disabled container. No public listener or firewall opening was made.
-  It is a local pilot transport, not a hardened public reverse proxy.
+  the network-disabled container. A separate Caddy HTTPS gateway now binds only
+  `172.18.24.170:18502`, allows the connected institute subnet `172.18.24.0/22`
+  and forwards only the teaching UI. The API remains loopback-only. No firewall
+  changes, public-Internet listener or production proxy changes were made.
 - No production service definitions were changed. The pilot is not configured
   for automatic startup after reboot.
 - Pilot Streamlit usage telemetry is disabled and the toolbar uses viewer mode.
@@ -72,9 +80,11 @@ measurement as a failed scientific result or a measured zero.
 
 Do not give students the shared `compute`/`user` workstation login or Docker
 access as a substitute for application accounts. That would bypass filesystem
-isolation and expose private operator state. Remote class access requires an
-agreed individual-account SSH/VPN arrangement or a separately secured TLS front
-end; the number of students, roster and access method have not been supplied.
+isolation and expose private operator state. Class access is through the
+separate institute-LAN TLS front end, for the confirmed three students and
+instructor. A real-person seat mapping and first authenticated-browser lesson
+are still required. Students in other institute VLANs may need a separately
+approved source-subnet rule; network membership is not a replacement for login.
 
 ## Defects discovered and corrected during acceptance
 
@@ -126,6 +136,8 @@ Upgrade every writer before reopening admission.
 | Native saved Evaluation and review/export | Exact method version, run, structure digest and Evaluation ID retained; stale review rejected |
 | Fresh pilot complete offline data restore | 61 regular files/links and four SQLite Databases verified; Evaluation identity preserved |
 | Pilot restart/replay | Original run reused, one analysis job |
+| Institute LAN follow-up | 73 focused isolated tests passed; four distinct sign-in sessions rendered over verified TLS WebSockets from each of three PCs |
+| Four teaching seats | Four concurrent authenticated reads; students denied admin; temporary passwords reset for first human sign-in |
 | Production Database-only snapshots/restores | Six per host, 18 total; integrity and foreign-key checks passed |
 
 Remote tests use the installed workstation Python runtime in a read-only,
@@ -173,8 +185,10 @@ clear research-production recovery gates or constitute a clean-machine restore.
 
 Before production activation or unsupervised class use:
 
-1. Confirm the student roster, connection method, teaching workflows and resource
-   budgets; validate per-user access and scheduling at that intended scale.
+1. The class size (three students plus instructor) and institute-browser access
+   are confirmed. Finish the roster/seat mapping, certificate trust on the actual
+   laptops, teaching workflows and resource budgets; validate authenticated
+   browser journeys and scheduling at that intended scale.
 2. Review the production account/ownership transition. All three production
    account stores currently have zero real users and explicitly use development
    authentication. Preserve existing owner/project IDs; do not just flip the
@@ -201,4 +215,5 @@ and its evidence have not been rewritten as a certification of these later fixes
 research service. Keep its state and recovery directories. The separate loopback
 relay's PID file is `teaching-relay.pid` in the current teaching release directory;
 verify that PID's command line before stopping it. A restart uses the same retained
-state; do not rerun bootstrap against the production account store.
+state; do not rerun bootstrap against the production account store. To close
+only LAN access, run `systemctl --user stop mds-teaching-lan.service`.
