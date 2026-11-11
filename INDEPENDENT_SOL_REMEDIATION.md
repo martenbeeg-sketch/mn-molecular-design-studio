@@ -236,3 +236,16 @@ rows; the primary has four. Host-specific import history and replica state must
 not be treated as interchangeable. Inventories are private local review artifacts,
 not new scientific imports; all records remain `UNREVIEWED_PRESERVE`. Counts across
 replicas must not be added together to estimate unique scientific data.
+
+## Subsequent student-readiness acceptance
+
+The user authorized proceeding with recovery, isolated teaching and student
+acceptance. `STUDENT_READINESS.md` records that later work and its current GO/NO-GO
+boundary. New acceptance found and corrected default admin request staging in
+immutable deployments and post-ingestion descriptive-role changes in scientific
+admission identity. Admission v2 includes conservative v1 reservation reconciliation.
+Remote container isolation now permits actual peer regression execution without
+changing the hosts' security policies. A separate, authenticated, bounded teaching
+pilot is running; research production remains unchanged and is not activated.
+The original independent report remains the baseline assessment, not a retrospective
+independent certification of these additional implementation changes.
