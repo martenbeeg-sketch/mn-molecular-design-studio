@@ -230,6 +230,8 @@ No Critical finding was established. “Confirmed” describes the specific evid
 **Dependencies:** None; test with AUD-004.  
 **Verification:** One component with one and multiple partner chains, overlapping chains, absent partner, and multiple assessed components. Confirm UI, adapter and workflow validation agree without executing scientific calculations.
 
+**Phase-2 implementation — 2026-11-11:** Tag/Fusion now uses the existing profile mechanism with a one-component/multiple-partner capability. Non-overlap and PPI checks remain, Rosetta/ipSAE retain their single-pair restriction, and construct/termini validation is unchanged. A multi-partner regression failed before the correction. Five applicability cases plus the existing registered Tag/Fusion adapter/workflow suite passed: 22 tests, 26 existing Biopython deprecation warnings. Commit and group-level verification are recorded in the phase-2 ledger. No scientific calculation or production operation was performed.
+
 ### AUD-013 — Production currently relies on localhost isolation, not user authentication
 
 **ID:** AUD-013  

@@ -41,7 +41,7 @@ ASSESSMENT_METHODS = {
     },
     "analysis.tag_fusion_suitability": {
         "label": "Tag and Fusion Suitability", "evaluators": {"tag_fusion_suitability"},
-        "scope": "one component, partner chain(s), and declared construct termini", "kind": "single_ppi",
+        "scope": "one component, partner chain(s), and declared construct termini", "kind": "component_ppi",
     },
 }
 
@@ -118,7 +118,7 @@ def offered_assessment_methods(samples: list[dict]) -> list[str]:
     kinds = {sample.get("kind") for sample in samples}
     protein = bool(kinds & {"protein", "protein-protein"})
     return [method for method, profile in ASSESSMENT_METHODS.items()
-            if protein and (profile["kind"] not in {"ppi", "single_ppi"} or "protein-protein" in kinds)]
+            if protein and (profile["kind"] not in {"ppi", "single_ppi", "component_ppi"} or "protein-protein" in kinds)]
 
 
 def recorded_chain_roles(sample: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -160,13 +160,13 @@ def assessment_applicability(sample: dict[str, Any], method: str,
         if method == "analysis.proteinsol" and len(sequence) < 21:
             return False, "Protein-Sol requires a sequence of at least 21 residues."
         return True, ""
-    if profile["kind"] in {"ppi", "single_ppi"} and not is_ppi:
+    if profile["kind"] in {"ppi", "single_ppi", "component_ppi"} and not is_ppi:
         return False, "This analysis applies to protein–protein structures."
     if profile["kind"] == "protein_structure" and sample.get("kind") not in {"protein", "protein-protein"}:
         return False, "This analysis requires a protein structure."
     if profile["kind"] == "protein_surface" and not binder_chains:
         return False, "Select at least one protein chain for surface analysis."
-    if profile["kind"] in {"ppi", "single_ppi"} and (
+    if profile["kind"] in {"ppi", "single_ppi", "component_ppi"} and (
         not binder_chains or not target_chains or set(binder_chains) & set(target_chains)
     ):
         return False, "Explicit, non-overlapping binder and target chain groups are required."
@@ -174,8 +174,8 @@ def assessment_applicability(sample: dict[str, Any], method: str,
         return False, "The registered evaluator accepts exactly one chain in each group."
     if profile["kind"] == "protein_structure" and not binder_chains:
         return False, "Select at least one protein chain to assess."
-    if profile["kind"] == "single_ppi" and method == "analysis.tag_fusion_suitability" and not target_chains:
-        return False, "Choose at least one interface partner chain."
+    if profile["kind"] == "component_ppi" and len(binder_chains) != 1:
+        return False, "Select exactly one assessed component and one or more interface partner chains."
     return True, ""
 
 
