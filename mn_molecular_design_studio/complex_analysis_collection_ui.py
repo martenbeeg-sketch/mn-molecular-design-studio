@@ -1889,16 +1889,23 @@ def _database_collection_samples(user: dict) -> list[dict]:
         except (OSError, ValueError, TypeError):
             project_labels = {}
         filters = st.columns(2)
-        project_ids = list(dict.fromkeys(row["project_id"] for row in cohorts))
+        project_ids = list(dict.fromkeys(row["project_id"] for row in cohorts if row["project_id"]))
         project_ids.sort(key=lambda value: project_labels.get(value, value).casefold())
+        # The empty option means all projects. Owner-scoped work needs its
+        # own UI value, otherwise it appears as a duplicate of that option.
+        owner_scope = "__owner_scoped__"
+        project_options = ["", *project_ids]
+        if any(not row["project_id"] for row in cohorts):
+            project_options.append(owner_scope)
         with filters[0]:
             project = _stateful_selectbox(
-            "Project", ["", *project_ids],
+            "Project", project_options,
             format_func=lambda value: "All accessible projects" if not value else
-            project_labels.get(value, value or "Personal / owner-scoped"),
+            "Personal / owner-scoped" if value == owner_scope else
+            project_labels.get(value) or f"Project name unavailable · {value[:8]}",
             key="complex-analysis-work-project", state_key="complex-analysis-work-project-value", default="",
         )
-        project = project or None
+        project = "" if project == owner_scope else project or None
         activities = sorted({row["activity"] for row in cohorts})
         with filters[1]:
             activity = _stateful_selectbox(

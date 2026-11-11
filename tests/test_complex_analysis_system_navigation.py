@@ -151,3 +151,36 @@ _database_collection_samples({OWNER!r})
     assert not app.exception
     assert len(app.dataframe[0].value) == 1
     assert not app.session_state["complex-analysis-collections-open"]
+
+
+def test_project_picker_uses_names_and_distinct_owner_scope(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    project_id = '1a4f7ce287d348d9af6a79bc80cbfeff'
+    groups = [{'id': f'g-{i}', 'name': name, 'owner_id': OWNER['id'], 'project_id': project,
+               'origin': {'type': 'job', 'tool': 'bindcraft2', 'run_id': f'run-{i}'}}
+              for i, (name, project) in enumerate([('Named campaign', project_id), ('Personal campaign', '')])]
+    class Database:
+        def groups(self, *a, **kw):
+            return groups
+        def collection_statistics(self, user, ids):
+            return {key: {'molecule_count': 1, 'structure_count': 1} for key in ids}
+        def cohort_statistics(self, user, cohorts):
+            return {key: {'molecule_count': len(ids), 'structure_count': len(ids)} for key, ids in cohorts.items()}
+    monkeypatch.setattr('mn_molecular_design_studio.molecular_database.MolecularDatabase', Database)
+    monkeypatch.setattr('mn_molecular_design_studio.complex_analysis_catalog.saved_evidence_summary', lambda *a: {})
+    monkeypatch.setattr('mn_molecular_design_studio.workspace.load_organization', lambda: {
+        'projects': [{'id': project_id, 'name': 'Michele_tau'}]})
+    app = AppTest.from_string(f'''
+from mn_molecular_design_studio.complex_analysis_collection_ui import _database_collection_samples
+_database_collection_samples({OWNER!r})
+''').run()
+    assert not app.exception
+    picker = app.selectbox(key='complex-analysis-work-project')
+    assert picker.options == ['All accessible projects', 'Michele_tau', 'Personal / owner-scoped']
+    picker.select(project_id).run()
+    assert not app.exception
+    assert app.session_state['complex-analysis-work-project-value'] == project_id
+    assert app.dataframe[0].value['Work group'].tolist() == ['Named campaign']
+    app.selectbox(key='complex-analysis-work-project').select('__owner_scoped__').run()
+    assert not app.exception
+    assert app.dataframe[0].value['Work group'].tolist() == ['Personal campaign']
