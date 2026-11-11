@@ -56,6 +56,8 @@ No Critical finding was established. “Confirmed” describes the specific evid
 **Dependencies:** None. Coordinate with AUD-002 and AUD-004.  
 **Verification:** Two models of one candidate in one run; reversed insertion order; explicit and absent model IDs; ambiguous candidates; pose IDs; zero-valued model indices; peer-qualified representations. Confirm stored context, Evaluation descriptor, review, and Inspector all agree, and repeated ingestion remains idempotent.
 
+**Implementation — 2026-11-11:** Corrected automatic attachment to require exactly one source-group/run representation matching every supplied candidate, model, pose and source-digest selector. Ambiguous/unknown selectors remain unattached. Recorded calculation digests are preserved separately from source identity; zero model indices are canonicalized only on newly inserted observations. No historical observations or projection schema were rewritten. Added 14 isolated regressions, including insertion order, nested selectors, repeated ingestion and peer-qualified source groups. Eleven functional regression cases failed against the original implementation (one additional initial failure was a corrected replica-fixture setup error). Verification: 74 tests passed across identity, Evaluation/comparison, Database and peer suites. Fix commit recorded in the phase-1 ledger below. Status: implemented; production data reconciliation is deliberately outside scope.
+
 ### AUD-002 — Local artifact reads can violate immutable structure identity
 
 **ID:** AUD-002  

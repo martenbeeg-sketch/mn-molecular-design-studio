@@ -29,6 +29,49 @@ _SYNC_TIMES: dict[str, float] = {}
 _CAPTURE_REVISION_SCHEMA_READY: set[str] = set()
 
 
+def _observation_identity(context):
+    """Keep supplied selectors (including zero) without guessing missing lineage."""
+    candidate = context.get("candidate") or {}
+    raw = candidate.get("raw_metadata") or {}
+    selection = raw.get("complex_analysis_selection") or {}
+    layers = (context, candidate, raw, selection, context.get("row") or {})
+    selectors = {}
+    for key in ("candidate_id", "model_id", "model_index", "model", "pose_id", "pose_rank"):
+        values = {str(layer[key]).strip() for layer in layers
+                  if layer.get(key) is not None and str(layer[key]).strip()}
+        if key == "pose_id":
+            values.update(str(pose["id"]) for layer in layers
+                          if isinstance(pose := layer.get("pose_identity"), dict) and pose.get("id") is not None)
+        if values:
+            selectors[key] = values
+    # Source and calculation coordinates may differ (normalization/protonation).
+    # A source digest identifies the retained representation; never replace the
+    # recorded calculation digest with the source file's current bytes.
+    digests = {str(layer["source_structure_digest"]) for layer in layers if layer.get("source_structure_digest")}
+    if not digests:
+        digests = {str(layer[key]) for layer in layers for key in ("structure_digest", "calculation_structure_digest", "pose_digest")
+                   if layer.get(key)}
+    if digests:
+        selectors["digest"] = digests
+    return selectors
+
+
+def _observation_structure_matches(provenance, run_id, selectors):
+    if provenance.get("run_id") != run_id:
+        return False
+    for key, values in selectors.items():
+        if key == "digest":
+            actual = provenance.get("portable_sha256") or provenance.get("sha256") or provenance.get("content_sha256")
+        elif key == "pose_id":
+            pose = provenance.get("pose_identity") or {}
+            actual = provenance.get(key) if provenance.get(key) is not None else (pose.get("id") if isinstance(pose, dict) else pose)
+        else:
+            actual = provenance.get(key)
+        if actual is None or values != {str(actual).strip()}:
+            return False
+    return True
+
+
 def _structure_model_evidence_compatible(path, content, existing_context, incoming_context):
     """Conservatively reconcile absent legacy model metadata from single-model coordinates."""
     model_fields = ("model_id", "model_index", "model")
@@ -723,13 +766,26 @@ class MolecularDatabase:
             if not context.get("representation_id") and context.get("is_representative") is not False:
                 structures = connection.execute("SELECT * FROM molecule_structures WHERE molecule_id=? AND group_id=? ORDER BY created_at DESC,id DESC",
                                                 (molecule_id, group_id)).fetchall()
+                selectors = _observation_identity(context)
+                matches = []
                 for structure in structures:
                     provenance = json.loads(structure["context"])
-                    if provenance.get("run_id") != run_id or (context.get("candidate_id") and provenance.get("candidate_id") != context["candidate_id"]):
-                        continue
+                    if _observation_structure_matches(provenance, run_id, selectors):
+                        matches.append((structure, provenance))
+                if len(matches) == 1:
+                    structure, provenance = matches[0]
                     context["representation_id"] = structure["id"]
-                    context["structure_digest"] = file_digest(structure["path"])
-                    break
+                    digest = provenance.get("portable_sha256") or provenance.get("sha256") or provenance.get("content_sha256")
+                    if digest:
+                        context.setdefault("structure_digest", digest)
+            # Canonicalize only this new observation, not historical projections.
+            # Evaluation descriptors must retain a recorded zero-valued model.
+            if context.get("model_id") in (None, ""):
+                selectors = _observation_identity(context)
+                model = next((values for key in ("model_id", "model_index", "model")
+                              if len(values := selectors.get(key, set())) == 1), None)
+                if model:
+                    context["model_id"] = next(iter(model))
             metrics_json, context_json = _json(clean), _json(context or {})
             identical = connection.execute(
                 "SELECT id FROM molecule_observations WHERE id=? AND molecule_id=? AND group_id=? "
