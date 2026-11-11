@@ -1556,7 +1556,15 @@ def _allocated_cpu_cores(requested: int | None = None) -> int:
 def _resolve_path(base_dir: Path, path_text: str | None) -> Path | None:
     if not path_text:
         return None
-    return resolve_stored_path(path_text, run_dir=base_dir)
+    resolved = resolve_stored_path(path_text, run_dir=base_dir)
+    if resolved is not None and resolved.is_file():
+        from mn_molecular_design_studio.artifact_integrity import retained_artifact_file
+        from mn_molecular_design_studio.runtime import runs_root
+        root = Path(runs_root()).resolve()
+        relative = resolved.resolve().relative_to(root) if resolved.resolve().is_relative_to(root) else None
+        owner = root.joinpath(*relative.parts[:2]) if relative is not None and len(relative.parts) > 2 else base_dir
+        return retained_artifact_file(owner, resolved)
+    return resolved
 
 
 def _safe_id(candidate: dict[str, Any]) -> str:
@@ -3055,7 +3063,8 @@ def run_analysis_contract(
              for key, value in thresholds.items() if key in threshold_fields and value is not None]
     projections = [{**source_candidates[int(row["source_index"])], "metrics": {**(source_candidates[int(row["source_index"])].get("metrics") or {}),
                     **{key: row[key] for key in METRIC_ALIASES}}} for row in df.to_dict("records")]
-    outcomes = evaluate_selection(projections, {"rules": rules, "limit": max(0, int(keep_top_n)),
+    outcomes = evaluate_selection(projections, {"rules": rules,
+        "limit": max(0, int(keep_top_n)) if rules or ranking_metric != "analysis_score" else 0,
         "ranking_metric": "" if ranking_metric == "analysis_score" else ranking_metric,
         "direction": "lower" if ranking_metric in {"ipae", "ipde", "binder_rmsd", "monomer_rmsd", "rosetta_interface_dG"} else "higher"})
     if keep_per_attempt is not None:

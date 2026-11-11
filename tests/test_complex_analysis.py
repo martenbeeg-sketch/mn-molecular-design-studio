@@ -355,6 +355,9 @@ def test_biotite_matching_reuses_only_accessible_exact_analysis_jobs(monkeypatch
     private_run = tmp_path / "analysis" / "private"
     for run_dir, owner in ((accessible_run, USER["id"]), (private_run, OTHER_USER["id"])):
         (run_dir / "artifacts" / "analysis").mkdir(parents=True)
+        from mn_molecular_design_studio.complex_analysis_batch import assessment_protocol
+        (run_dir / "input.json").write_text(json.dumps({"params": {
+            "assessment_protocol": assessment_protocol("analysis.biotite_interface")}}))
         (run_dir / "metadata.json").write_text(json.dumps({
             "upstream_task_group": "prediction", "upstream_run_id": "source", "status": "completed",
         }))
@@ -939,6 +942,8 @@ def test_contextual_matching_reuses_only_exact_accessible_evaluations(tmp_path, 
             manifest = {"selection": {"model_id": "model-2"}, "settings": {"ph": 7.4, "workers": 2, "protocol_revision": "abc"},
                         "items": [{"id": "item_000000", "candidate_id": "candidate-1", "structure_digest": "digest-1",
                                    "binder_chains": ["B"], "target_chains": ["A"]}]}
+            from mn_molecular_design_studio.complex_analysis_batch import assessment_protocol
+            manifest["settings"].update(assessment_protocol(workflow_id))
             (run_dir / "artifacts" / "analysis" / "batch_manifest.json").write_text(json.dumps(manifest))
             (run_dir / "artifacts" / "analysis" / "batch_status.json").write_text(json.dumps({
                 "items": [{"id": "item_000000", "status": "completed"}],
@@ -963,7 +968,7 @@ def test_contextual_matching_reuses_only_exact_accessible_evaluations(tmp_path, 
             parameters=parameters,
         )
         expected = {"analysis.rosetta": "rosetta_metrics", "analysis.ipsae": "ipsae", "analysis.pep_patch": "pep_patch"}[workflow_id]
-        assert [item["run_id"] for item in matches] == ([] if expected == "ipsae" else [expected])
+        assert [item["run_id"] for item in matches] == ([expected] if expected == "pep_patch" else [])
 
     assert complex_analysis_ui._matching_contextual_jobs(
         USER, workflow_id="analysis.pep_patch", source_task_group="prediction", source_run_id="source",

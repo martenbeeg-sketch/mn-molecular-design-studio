@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import re
+from mn_molecular_design_studio.scientific_settings import model_identity
 
 
 def short_design_label(candidate_id: str, fallback: str = "Design") -> str:
@@ -29,29 +30,38 @@ def _digest(context):
                context.get("sha256") or context.get("structure_digest") or "")
 
 
-def design_review_page(database, user, group_ids, *, offset=0, limit=250):
+def design_review_page(database, user, group_ids, *, offset=0, limit=250, structure_ids=None):
     """Read a bounded model page with linked evidence from authorized memberships.
 
     An Evaluation links by exact representation, or by a recorded digest with
     compatible candidate/model identity. Shared names, runs and molecule IDs
     alone are insufficient. Multiple saved parameter sets remain separate.
     """
-    from mn_molecular_design_studio.evaluations import evaluation_descriptor
+    from mn_molecular_design_studio.evaluations import evaluation_descriptor, PROJECTION_VERSION
     from mn_molecular_design_studio.complex_analysis_collection import acceptance_decisions, evaluation_table_rows, component_kind
     from mn_molecular_design_studio.complex_analysis_collection_ui import _database_candidate_view
 
     if not 1 <= limit <= 250 or offset < 0:
         raise ValueError("Invalid design review page.")
+    if structure_ids is not None and (not isinstance(structure_ids, list) or len(structure_ids) > 250):
+        raise ValueError("Select at most 250 exact models per metadata request.")
     ids = list(dict.fromkeys(group_ids))
     database._authorize_group_ids_for_query(user, ids)
     visible = database._visible_ids(user, collection="all")
     with database.connection() as connection:
-        total = connection.execute("SELECT COUNT(*) FROM molecule_structures WHERE group_id IN "
-            "(SELECT value FROM json_each(?))", (json.dumps(ids),)).fetchone()[0]
+        membership = ("s.group_id IN (SELECT value FROM json_each(?)) AND EXISTS (SELECT 1 FROM molecule_members selected "
+                      "WHERE selected.molecule_id=s.molecule_id AND selected.group_id IN (SELECT value FROM json_each(?)) "
+                      "AND (selected.group_id=s.group_id OR NOT EXISTS (SELECT 1 FROM molecule_structures owned "
+                      "WHERE owned.group_id=selected.group_id AND owned.molecule_id=selected.molecule_id)))")
+        scope = (json.dumps(visible), json.dumps(ids))
+        if structure_ids is not None:
+            membership += " AND s.id IN (SELECT value FROM json_each(?))"
+            scope += (json.dumps(structure_ids),)
+        total = connection.execute("SELECT COUNT(*) FROM molecule_structures s WHERE " + membership, scope).fetchone()[0]
         rows = connection.execute("SELECT s.*,m.name,m.components,m.metadata,g.project_id,g.origin "
             "FROM molecule_structures s JOIN molecule_members m ON m.group_id=s.group_id AND m.molecule_id=s.molecule_id "
-            "JOIN molecule_groups g ON g.id=s.group_id WHERE s.group_id IN (SELECT value FROM json_each(?)) "
-            "ORDER BY m.name,s.created_at,s.id LIMIT ? OFFSET ?", (json.dumps(ids), limit, offset)).fetchall()
+            "JOIN molecule_groups g ON g.id=s.group_id WHERE " + membership +
+            " ORDER BY m.name,s.created_at,s.id LIMIT ? OFFSET ?", (*scope, limit, offset)).fetchall()
         molecule_ids = list({row["molecule_id"] for row in rows})
         observations = connection.execute("SELECT * FROM molecule_observations WHERE molecule_id IN "
             "(SELECT value FROM json_each(?)) AND group_id IN (SELECT value FROM json_each(?))",
@@ -59,9 +69,12 @@ def design_review_page(database, user, group_ids, *, offset=0, limit=250):
         has_evaluations = connection.execute("SELECT 1 FROM sqlite_master WHERE name='molecule_evaluations' AND type='table'").fetchone()
         saved_evaluations = ({row["observation_id"]: json.loads(row["descriptor"]) for row in connection.execute(
             "SELECT observation_id,descriptor FROM molecule_evaluations WHERE molecule_id IN "
-            "(SELECT value FROM json_each(?)) AND group_id IN (SELECT value FROM json_each(?))",
-            (json.dumps(molecule_ids), json.dumps(visible)))} if has_evaluations and rows else {})
+            "(SELECT value FROM json_each(?)) AND group_id IN (SELECT value FROM json_each(?)) AND projection_version=?",
+            (json.dumps(molecule_ids), json.dumps(visible), PROJECTION_VERSION))} if has_evaluations and rows else {})
         aliases = connection.execute("SELECT id,molecule_id,context FROM molecule_structures WHERE molecule_id IN "
+            "(SELECT value FROM json_each(?)) AND group_id IN (SELECT value FROM json_each(?))",
+            (json.dumps(molecule_ids), json.dumps(visible))).fetchall() if rows else []
+        sources = connection.execute("SELECT molecule_id,source_key,provenance FROM molecule_sources WHERE molecule_id IN "
             "(SELECT value FROM json_each(?)) AND group_id IN (SELECT value FROM json_each(?))",
             (json.dumps(molecule_ids), json.dumps(visible))).fetchall() if rows else []
         reviews = connection.execute("SELECT subject_id,structure_ref,status,note FROM complex_review_annotations "
@@ -70,6 +83,9 @@ def design_review_page(database, user, group_ids, *, offset=0, limit=250):
     annotation = {row["structure_ref"]: dict(row) for row in reviews}
     aliases = {row["id"]: {**dict(row), "context": json.loads(row["context"])} for row in aliases}
     by_molecule = defaultdict(list)
+    source_by_molecule = defaultdict(list)
+    for row in sources:
+        source_by_molecule[row["molecule_id"]].append({"source_key": row["source_key"], **json.loads(row["provenance"])})
     for row in observations:
         observation = {**dict(row), "metrics": json.loads(row["metrics"]), "context": json.loads(row["context"])}
         by_molecule[row["molecule_id"]].append((observation, saved_evaluations.get(row["id"]) or evaluation_descriptor(observation)))
@@ -77,7 +93,7 @@ def design_review_page(database, user, group_ids, *, offset=0, limit=250):
     for row in rows:
         context = json.loads(row["context"])
         digest = _digest(context)
-        model = str(context.get("model_id") or context.get("candidate_model_id") or context.get("source_model_id") or context.get("model_index") or "")
+        model = model_identity(context.get("model_id"), context.get("candidate_model_id"), context.get("source_model_id"), context.get("model_index"))
         native_id = str(context.get("candidate_id") or context.get("native_candidate_id") or "")
         associated = []
         for observation, descriptor in by_molecule[row["molecule_id"]]:
@@ -88,7 +104,7 @@ def design_review_page(database, user, group_ids, *, offset=0, limit=250):
             source = observation["context"]
             source_structure = str(source.get("source_structure_id") or "")
             source_digest = str(source.get("source_structure_digest") or "")
-            source_model = str(source.get("model_id") or "")
+            source_model = model_identity(source.get("model_id"))
             if (representation == row["id"] and source_structure in {
                     row["id"], str(context.get("_replica_structure") or "")}
                     and source_structure and digest and source_digest == digest
@@ -109,7 +125,7 @@ def design_review_page(database, user, group_ids, *, offset=0, limit=250):
             if representation and (not alias or alias["molecule_id"] != row["molecule_id"]):
                 continue
             if alias:
-                alias_model = str(alias["context"].get("model_id") or alias["context"].get("candidate_model_id") or alias["context"].get("source_model_id") or alias["context"].get("model_index") or "")
+                alias_model = model_identity(alias["context"].get("model_id"), alias["context"].get("candidate_model_id"), alias["context"].get("source_model_id"), alias["context"].get("model_index"))
                 alias_candidate = alias["context"].get("candidate_id") or alias["context"].get("native_candidate_id")
                 if (alias_model and model and alias_model != model) or (alias_candidate and native_id and alias_candidate != native_id):
                     continue
@@ -122,7 +138,7 @@ def design_review_page(database, user, group_ids, *, offset=0, limit=250):
         structure["context"] = context
         record = {"id": row["molecule_id"], "name": row["name"], "components": components,
                   "metadata": json.loads(row["metadata"]), "structures": [structure], "representations": [structure],
-                  "observations": [observation for observation, _ in associated]}
+                  "observations": [observation for observation, _ in associated], "sources": source_by_molecule[row["molecule_id"]]}
         candidate = _database_candidate_view(record, structure, components, [], associated)
         # Use recorded sequence fields; no chain-role or sequence inference.
         for observation, _ in associated:
@@ -180,10 +196,26 @@ def review_measurements(samples):
     return series, dict(values)
 
 
+def selected_review_models(database, user, group_ids, structure_ids, *, system_scope=None):
+    ids = list(dict.fromkeys(structure_ids))
+    if len(ids) > 1000:
+        raise ValueError("Select at most 1,000 models for metadata review.")
+    selected = []
+    for offset in range(0, len(ids), 250):
+        selected.extend(design_review_page(database, user, group_ids, structure_ids=ids[offset:offset + 250])["items"])
+    if system_scope is not None:
+        from mn_molecular_design_studio.complex_analysis_catalog import scoped_structure_ids
+        allowed = scoped_structure_ids(database, user, group_ids, system_scope, [sample["structure_id"] for sample in selected])
+        selected = [sample for sample in selected if sample["structure_id"] in allowed]
+    return selected
+
+
 def remember_review_selection(state, token, ids, allowed):
     """One ID-based selection shared by plot/table/actions, scoped to current access."""
     key = "design-review-selected-" + token
-    selected = list(dict.fromkeys(value for value in ids if value in allowed))
+    previous = state.get(key, [])
+    selected = list(dict.fromkeys([value for value in previous if value not in allowed] +
+                                 [value for value in ids if value in allowed])) if allowed else []
     if selected != state.get(key, []):
         # Previously hydrated coordinates and downstream row filters belong to
         # the old exact model selection, even within the same campaign.

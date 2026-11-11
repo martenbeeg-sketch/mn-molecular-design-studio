@@ -131,7 +131,8 @@ def test_normalized_outputs_keep_target_ligand_coordinates_and_remove_old_confid
     assert row["stage"] == "sequence_design" and row["binder_sequence"] == "KAMNP"
     assert row["binder_chains"] == ["B"] and row["target_chains"] == ["A"]
     assert "plddt" not in row["metrics"] and row["metrics"]["caliby_energy"] == -3.
-    output = next(read_structure(Path(row["complex_pdb"])).get_models())
+    from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+    output = next(read_structure(resolve_stored_path(row["complex_pdb"], run_dir=run, must_exist=True)).get_models())
     original = next(read_structure(source[3]).get_models())
     assert "L" in output and output["L"][("H_NAG", 101, " ")].resname == "NAG"
     assert output["B"][(" ", 2, " ")].resname == "ALA"

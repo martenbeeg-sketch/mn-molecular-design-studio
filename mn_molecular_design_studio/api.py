@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Annotated, Any, Callable
@@ -726,7 +727,15 @@ def submit_workflow(
             result, project_id=project_id if project_id is not None else None,
             owner_id=str(user["id"]), allow_private_source=project_id is None,
         )
-    return _submit_once(request_payload, project_id, user, "workflow", idempotency_key, perform)
+    operation = perform
+    if is_database_source:
+        from mn_molecular_design_studio.scientific_admission import submit_database_assessment
+        def validate_assessment():
+            _guard_source_job(request_payload, user, project_id=project_id)
+            _with_request_file({key: value for key, value in request_payload.items() if key != "execution"},
+                               validate_workflow_request, base_dir=str(request_dir))
+        operation = lambda: submit_database_assessment(user, project_id, request_payload, perform, validate=validate_assessment)
+    return _submit_once(request_payload, project_id, user, "workflow", idempotency_key, operation)
 
 
 @app.get("/api/v1/runs")
@@ -839,6 +848,8 @@ def _submit_once(payload, project_id, user, kind, header_key, operation):
         raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
+        raise HTTPException(503, "Submission state is unavailable; inspect the existing request before retrying.") from exc
 
 def _cluster_submission(payload, project_id, user, request_dir, credentials, *, kind="workflow", validate_only=False):
     from mn_molecular_design_studio.cluster.service import submit_from_api
@@ -1372,4 +1383,6 @@ def download_job_artifact(reference: str, path: str, user=Depends(_current_user)
     selected = (root / path).resolve()
     if Path(path).is_absolute() or not selected.is_relative_to(root) or not selected.is_file():
         raise HTTPException(404, "Artifact not found or inaccessible.")
-    return FileResponse(selected, filename=selected.name)
+    from mn_molecular_design_studio.artifact_integrity import retained_artifact_file
+    verified = _call(retained_artifact_file, root, selected)
+    return FileResponse(verified, filename=selected.name)

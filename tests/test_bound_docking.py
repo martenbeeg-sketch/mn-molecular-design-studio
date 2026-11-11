@@ -373,7 +373,9 @@ def test_receptor_resolves_via_authorized_database_structure_on_peers(bound):
     record = db.list_molecules(USER, molecule_ids=[molecule])["items"][0]
     pose = record["structures"][0]
     pose["context"].pop("target_path")
-    assert bound_docking.receptor_file(db, USER, pose) == Path(linked["target_path"])
+    resolved = bound_docking.receptor_file(db, USER, pose)
+    assert resolved.read_bytes() == Path(linked["target_path"]).read_bytes()
+    assert not resolved.stat().st_mode & 0o222
     with pytest.raises(PermissionError):
         bound_docking.prepare_bound_inputs(db, {"id": "b" * 32}, molecule, structure_id=structure)
 

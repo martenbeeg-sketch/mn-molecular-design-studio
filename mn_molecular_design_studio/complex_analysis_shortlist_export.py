@@ -54,6 +54,10 @@ def _sequence_by_chain(sample: dict, chain_ids: list[str], *, side: str) -> dict
         if isinstance(numbering, list):
             by_chain = {str(row.get("chain_id") or ""): str(row.get("sequence") or "")
                         for row in numbering if isinstance(row, dict)}
+    for component in sample.get("components") or (sample.get("record") or {}).get("components") or []:
+        chain = str(component.get("chain") or component.get("chain_id") or "")
+        if chain and component.get("sequence"):
+            by_chain.setdefault(chain, str(component["sequence"]))
     return {chain: by_chain[chain] for chain in chain_ids if chain in by_chain}
 
 
@@ -176,7 +180,8 @@ def build_shortlist_record(sample: dict) -> dict:
         native_candidate_id = "Not recorded"
     molecule_id = str(sample.get("molecule_id") or record.get("id") or "")
     structure_id = str(sample.get("structure_id") or structure.get("id") or "")
-    model_id = str(sample.get("model_id") or context.get("model_id") or context.get("model_index") or "")
+    from mn_molecular_design_studio.scientific_settings import model_identity
+    model_id = model_identity(sample.get("model_id"), context.get("model_id"), context.get("model_index"))
     digest = str(sample.get("digest") or sample.get("structure_digest") or structure.get("sha256") or "")
     binder_chains = [str(value) for value in (sample.get("binder_chains") or candidate.get("binder_chains")
                      or raw.get("binder_chains") or context.get("binder_chains") or [])]
@@ -356,8 +361,10 @@ def manifest_csv(manifest: dict, *, shortlisted_only: bool = False) -> bytes:
             "missing_evidence_json": row.get("missing_evidence"),
             "limitations_json": row.get("limitations_and_missing_evidence"),
         }
-        writer.writerow({key: json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
-                         if isinstance(value, (dict, list)) else value for key, value in values.items()})
+        serialized = {key: json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+                      if isinstance(value, (dict, list)) else value for key, value in values.items()}
+        writer.writerow({key: "'" + value if isinstance(value, str) and value.lstrip(" \t\r\n").startswith(("=", "+", "-", "@"))
+                         else value for key, value in serialized.items()})
     return output.getvalue().encode("utf-8")
 
 

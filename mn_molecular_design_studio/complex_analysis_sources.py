@@ -261,8 +261,9 @@ def authorize_database_structure(
 
     context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
     structure_context = context
-    saved_model = str(context.get("model_id") or context.get("model_index") or context.get("model") or "")
-    model_id = str(selection.get("model_id") or saved_model or structure_id)
+    from mn_molecular_design_studio.scientific_settings import model_identity
+    saved_model = model_identity(context.get("model_id"), context.get("model_index"), context.get("model"))
+    model_id = model_identity(selection.get("model_id"), saved_model, structure_id)
     if saved_model and model_id != saved_model:
         raise ValueError("The selected model does not match this Database structure representation.")
     path = database.structure_file(user, structure_id, materialize=True).resolve()
@@ -516,6 +517,25 @@ def build_database_analysis_source(
     project_id: str | None,
     database=None,
 ) -> dict[str, Any]:
+    """Serialize preparation of private deterministic bundles before admission."""
+    import fcntl
+    from mn_molecular_design_studio.auth import user_input_root
+    root = user_input_root(str(user["id"])) / "complex_analysis_sources"
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (root / ".preparation.lock").open("a+b") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _build_database_analysis_source(user, selection, workflow_id=workflow_id,
+                                               project_id=project_id, database=database)
+
+
+def _build_database_analysis_source(
+    user: dict,
+    selection: dict,
+    *,
+    workflow_id: str,
+    project_id: str | None,
+    database=None,
+) -> dict[str, Any]:
     """Create a deterministic structure-input bundle for a registered evaluator."""
     source = authorize_database_structure(
         user, selection, project_id=project_id, database=database, workflow_id=workflow_id,
@@ -524,6 +544,7 @@ def build_database_analysis_source(
         "kind", "molecule_id", "structure_id", "group_id", "project_id", "evaluation_id",
         "model_id", "structure_digest", "binder_chains", "target_chains", "ligand_selection",
     )}
+    identity["workflow"] = workflow_id
     pae_evidence = database_pae_evidence(user, source) if workflow_id == "analysis.ipsae" else None
     if workflow_id == "analysis.ipsae":
         identity["pae_digest"] = pae_evidence["sha256"] if pae_evidence else ""
@@ -1231,6 +1252,10 @@ def apply_database_analysis_source(payload: dict, user: dict, project_id: str | 
     adapter = build_database_analysis_source(
         user, selection, workflow_id=workflow_id, project_id=project_id,
     )
+    source_context = adapter["source"].get("structure_context") or {}
+    source_origin = adapter["source"].get("group_origin") or {}
+    if source_context.get("_replica_node") or source_origin.get("_replica_node"):
+        raise ValueError("Submit this Database assessment on its source-owning workstation; replicated coordinates do not provide distributed admission authority.")
     parameters = dict(raw_parameters)
     parameters.update({
         "source_run_dir": adapter["source_run_dir"],

@@ -446,3 +446,23 @@ The finding descriptions provide the reproduction conditions and observed output
 Unverified: full production historical data correctness; all scientific numerical definitions; real container/tool availability; long-running scheduler recovery; storage/backup restoration; every workflow and UI page; all remote services; browser download behavior after proposed corrections; independent live Mol* overlay in this audit; adversarial security beyond the stated observations. Existing deployment/backup investigations were not repeated. No unsupported claim of data loss, public network exposure, or broken replication is made.
 
 **Recommended next step:** Sol should implement the narrow fixes in the order above, starting with the five High findings, and append verification evidence to this document. A redesign or Database replacement is not justified by the evidence collected in this pass.
+
+## Post-Phase-2 independent review and subsequent corrections
+
+The fresh independent assessment at `e7cd3a95c5163f6e973187a24aab002f5e5c351b`
+is preserved in `INDEPENDENT_SOL_AUDIT.md` with its original evidence archive.
+It distinguishes independently verified corrections, partial resolution, a
+confirmed native-chemistry reuse regression, new defects and unresolved risks.
+Its full offline baseline result was 3,006 passed, 14 failed and 55 skipped.
+
+The user subsequently authorized release-blocking corrections, commit/push and
+distribution to the `compute` workstations, explicitly choosing fixes before
+deployment. `INDEPENDENT_SOL_REMEDIATION.md` records the subsequent changes,
+maintained adversarial regressions, derived-projection versions, source-owner
+admission fence, sealed queued inputs, validation evidence and remaining
+activation gates. These implementation claims do not replace the independent
+baseline report or certify the correctness of historical production records.
+
+No original finding is deleted or retroactively relabelled as independently
+verified by the implementation author. Production authentication and scientific
+data remain unchanged; staging source artifacts is not service activation.

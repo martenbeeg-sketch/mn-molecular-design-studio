@@ -68,19 +68,9 @@ def screening_receptor(run_dir, target):
 
 
 def receptor_file(database, user, structure):
-    context = structure.get("context") or {}
-    if context.get("target_structure_id"):
-        # Resolve through the Database ACL and replica mapping before host paths.
-        return database.structure_file(user, context["target_structure_id"])
-    if context.get("target_path") and Path(context["target_path"]).is_file():
-        return Path(context["target_path"])
-    if context.get("target_molecule_id"):
-        rows = database.list_molecules(user, molecule_ids=[context["target_molecule_id"]], limit=1)["items"]
-        for target in rows:
-            for item in target["structures"]:
-                if item["format"] in {"pdb", "ent", "cif", "mmcif"}:
-                    return database.structure_file(user, item["id"])
-    return None
+    path, digest, _structure_id = _resolve_pose_receptor(database, user, structure)
+    from mn_molecular_design_studio.artifact_integrity import verified_snapshot
+    return verified_snapshot(path, digest)
 
 
 def is_bound_pose(structure):

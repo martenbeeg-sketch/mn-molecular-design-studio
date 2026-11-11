@@ -96,69 +96,39 @@ def test_evaluation_matching_rejects_a_different_model_even_for_same_candidate()
     assert _evaluation_matches_candidate(observation, descriptor, candidate, digest) == (False, True)
 
 
-def test_complex_analysis_defaults_to_run_first_dashboard():
-    user = {"id": "user-1", "role": "admin"}
-    run = {
-        "id": "run:0123456789abcdef01234567",
-        "name": "R3 BindCraft campaign",
-        "status": "completed",
-        "project_id": "project-1",
-        "outputs": [{
-            "id": "results",
-            "name": "Results",
-            "sources": [{
-                "task_group": "bindcraft2",
-                "run_id": "20261019-181522-21f9a96c",
-                "tool": "bindcraft2",
-                "status": "completed",
-                "project_id": "project-1",
-                "candidate_summary": {"candidate_count": 65, "structure_count": 65},
-            }],
-        }],
-        "jobs": [],
-    }
-    script = f'''import streamlit as st
-from unittest.mock import patch
-from mn_molecular_design_studio import logical_runs
-from mn_molecular_design_studio import complex_analysis_landing
-from mn_molecular_design_studio.complex_analysis_ui import render_complex_analysis_workspace
-def capture_landing(**kwargs):
-    st.session_state["test-landing-payload"] = kwargs
-    return None
-with patch.object(logical_runs, "catalog", return_value=[{run!r}]), patch.object(complex_analysis_landing, "render_landing", side_effect=capture_landing):
-    render_complex_analysis_workspace({user!r})
-'''
-    app = AppTest.from_string(script, default_timeout=10).run()
-    assert not app.exception
-    payload = app.session_state["test-landing-payload"]
-    assert payload["view"] == "Runs"
-    assert payload["selected_view"] == "analyze"
-    assert len(payload["rows"]) == 1
-    assert payload["rows"][0]["name"] == "R3 BindCraft campaign"
-    assert payload["rows"][0]["structures"] == 65
-    assert not app.session_state["complex-analysis-detail-visible"]
-
-
-def test_results_board_exposes_navigation_back_to_dashboard():
+def test_complex_analysis_defaults_to_database_without_results_discovery():
     script = '''import streamlit as st
 from unittest.mock import patch
-from mn_molecular_design_studio import complex_analysis_dashboard, complex_analysis_results_ui
+from mn_molecular_design_studio import logical_runs, complex_analysis_collection_ui
 from mn_molecular_design_studio.complex_analysis_ui import render_complex_analysis_workspace
-if "complex-analysis-workspace-view" not in st.session_state:
-    st.session_state["complex-analysis-workspace-view"] = "results_board"
-def dashboard(user, **kwargs):
-    st.session_state["test-dashboard-opened"] = True
-with patch.object(complex_analysis_results_ui, "render_results_board"), \\
-     patch.object(complex_analysis_dashboard, "render_complex_analysis_dashboard", side_effect=dashboard):
+def collection(user, **kwargs):
+    st.session_state["test-collection-user"] = user["id"]
+with patch.object(logical_runs, "catalog", side_effect=AssertionError("Unexpected Results discovery")), \\
+     patch.object(complex_analysis_collection_ui, "render_collection_workspace", side_effect=collection):
     render_complex_analysis_workspace({"id": "user-1"})
 '''
     app = AppTest.from_string(script, default_timeout=10).run()
     assert not app.exception
-    assert app.button[0].label == "← Complex Analysis Dashboard"
-    app.button[0].click().run()
+    assert app.session_state["test-collection-user"] == "user-1"
+    assert app.session_state["complex-analysis-workspace-view"] == "database"
+
+
+def test_stale_results_board_state_returns_to_database_workspace():
+    script = '''import streamlit as st
+from unittest.mock import patch
+from mn_molecular_design_studio import complex_analysis_collection_ui, complex_analysis_results_ui
+from mn_molecular_design_studio.complex_analysis_ui import render_complex_analysis_workspace
+st.session_state["complex-analysis-workspace-view"] = "results_board"
+def collection(user, **kwargs):
+    st.session_state["test-collection-opened"] = True
+with patch.object(complex_analysis_results_ui, "render_results_board", side_effect=AssertionError("Unexpected Results discovery")), \\
+     patch.object(complex_analysis_collection_ui, "render_collection_workspace", side_effect=collection):
+    render_complex_analysis_workspace({"id": "user-1"})
+'''
+    app = AppTest.from_string(script, default_timeout=10).run()
     assert not app.exception
-    assert app.session_state["complex-analysis-workspace-view"] == "dashboard"
-    assert app.session_state["test-dashboard-opened"] is True
+    assert app.session_state["complex-analysis-workspace-view"] == "database"
+    assert app.session_state["test-collection-opened"] is True
 
 
 def test_landing_does_not_count_completed_jobs_as_verified_coverage():

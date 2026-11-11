@@ -247,12 +247,16 @@ def test_queued_rfd4_folding_adopts_refolding_job_and_completes(monkeypatch, tmp
 
     captured={}
     monkeypatch.setattr(workflow,'reference_root',lambda:tmp_path/'references')
+    (tmp_path/'folded.cif').write_text('data_folded\n')
     monkeypatch.setattr(workflow,'run_docker_job',lambda *args,**kwargs:captured.update(docker=(args,kwargs)) or 0)
     monkeypatch.setattr(workflow,'normalize_outputs',lambda run,prepared,task,requested:
                         captured.update(normalized=(prepared,task,requested)) or
                         [{'candidate_id':'folded','complex_pdb':str(tmp_path/'folded.cif'),
                           'binder_sequence':'ACDEFGHIK'}])
-    monkeypatch.setattr(workflow,'write_candidates',lambda *args,**kwargs:['candidate-row'])
+    def write_saved_candidates(run, tool, rows):
+        from mn_molecular_design_studio.engine.workflow_engine.core.candidates import write_candidates
+        return write_candidates(run, tool, rows)
+    monkeypatch.setattr(workflow,'write_candidates',write_saved_candidates)
     from mn_molecular_design_studio import molecular_database_ingest
     monkeypatch.setattr(molecular_database_ingest,'record_completed_run',lambda *_args,**_kwargs:None)
 

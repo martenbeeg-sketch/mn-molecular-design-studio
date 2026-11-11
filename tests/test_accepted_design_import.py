@@ -148,35 +148,31 @@ def test_promotion_is_explicit_and_idempotent(tmp_path, monkeypatch):
 
 def test_local_results_ui_requires_researcher_click_before_accepted_database_promotion(tmp_path, monkeypatch):
     from streamlit.testing.v1 import AppTest
-    from mn_molecular_design_studio import accepted_design_import
+    from mn_molecular_design_studio import molecular_database_results
 
     monkeypatch.setenv("MDS_CLUSTER_HOME", str(tmp_path / "cluster"))
-    run_dir = tmp_path / "runs/refolding-validation/accepted-run"
-    run_dir.mkdir(parents=True)
-    (run_dir / "metadata.json").write_text(json.dumps({"database_collection_policy": "manual"}))
-    (run_dir / "result.json").write_text(json.dumps({
-        "success": True, "metrics": {"validation_acceptance": {"accepted": 2, "rejected": 3}},
-    }))
-    (run_dir / "molecular_design_studio.json").write_text(json.dumps({"project_id": "project-1"}))
+    run_dir = tmp_path / "accepted-run"
+    run_dir.mkdir()
+    passing = [{"candidate_id": "accepted-1", "model_id": "0"},
+               {"candidate_id": "accepted-2", "model_id": "0"}]
+    inventory = {"run_id": run_dir.name, "candidate_count": 5, "model_count": 5,
+                 "stages": [{"stage_id": "final", "label": "Final computational acceptance",
+                             "passed": passing, "passed_design_count": 2}]}
+    records = [{"id": "molecule-" + row["candidate_id"], "result_only": True, **row} for row in passing]
     calls = []
-    monkeypatch.setattr(
-        accepted_design_import, "build_accepted_design_bundle",
-        lambda *args, **kwargs: calls.append((args, kwargs)) or (b"accepted-only", {"candidate_count": 2}),
-    )
-    monkeypatch.setattr(
-        accepted_design_import, "promote_accepted_design_bundle",
-        lambda *args, **kwargs: {"candidate_count": 2, "already_imported": False},
-    )
+    monkeypatch.setattr(molecular_database_results, "run_acceptance_inventory", lambda *args: inventory)
+    monkeypatch.setattr(molecular_database_results, "save_run_selection",
+                        lambda *args, **kwargs: calls.append((args, kwargs)) or {"group_id": "saved", "saved_count": 2})
     app = AppTest.from_string(
         "from pathlib import Path\n"
-        "from mn_molecular_design_studio.molecular_database_results_ui import _render_accepted_design_promotion\n"
-        f"_render_accepted_design_promotion(Path({str(run_dir)!r}), {{'id':'researcher'}})\n"
+        "from mn_molecular_design_studio.molecular_database_results_ui import _render_run_passing_collection\n"
+        f"_render_run_passing_collection(Path({str(run_dir)!r}), {{'id':'researcher'}}, None, {records!r}, 'accepted')\n"
     ).run()
-
     assert not app.exception
     assert len(app.button) == 1
     assert calls == []
     app.button[0].click().run()
     assert not app.exception
     assert len(calls) == 1
-    assert any("Saved 2 accepted design(s)" in item.value for item in app.success)
+    assert calls[0][1]["candidate_models"] == passing
+    assert any("Saved 2 passing design(s)" in item.value for item in app.success)

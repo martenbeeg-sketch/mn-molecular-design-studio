@@ -4,17 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 
-_PROTOCOL_FIELDS = {"method_version", "engine_version", "protocol_revision", "image", "image_digest", "checkpoint_sha256"}
-_PLACEMENT_FIELDS = {"source_run_dir", "candidates_jsonl", "candidate_ids", "selected_structure_path", "selected_model_id",
-                     "binder_chains", "target_chains", "source_job", "job_name", "campaign_name", "backend",
-                     "cpu_cores", "cpu_threads", "nprocs", "workers", "gpu_device", "output_dir", "method", "assessment_protocol", "database_source"}
-
-
-def scientific_parameters(parameters):
-    """Keep scientific settings separate from protocol and source placement."""
-    return {key: value for key, value in parameters.items()
-            if key not in _PLACEMENT_FIELDS | _PROTOCOL_FIELDS and value is not None
-            and not (key == "interface_ligand_selection" and value == {})}
+from mn_molecular_design_studio.scientific_settings import PROTOCOL_FIELDS as _PROTOCOL_FIELDS, scientific_parameters
 
 
 def assessment_protocol(method):
@@ -37,10 +27,21 @@ def assessment_protocol(method):
     if method == "analysis.tag_fusion_suitability":
         from mn_molecular_design_studio.complex_analysis_tag_fusion import METHOD_VERSION
         return {"method_version": METHOD_VERSION}
+    if method == "analysis.reference_placement":
+        from mn_molecular_design_studio.complex_analysis_placement import PLACEMENT_VERSION
+        return {"method_version": PLACEMENT_VERSION}
+    if method == "analysis.reference_environment":
+        from mn_molecular_design_studio.complex_analysis_environment import METHOD_VERSION
+        return {"method_version": METHOD_VERSION}
+    if method == "analysis.tag_fusion_context":
+        from mn_molecular_design_studio.complex_analysis_tag_fusion import CONTEXT_VERSION
+        return {"method_version": CONTEXT_VERSION}
     return {"image_digest": ""}  # Unknown is not an implicit version match.
 
 
 def protocol_matches(saved, expected):
+    if any(saved.get(field) and not (expected or {}).get(field) for field in ("image_digest", "checkpoint_sha256")):
+        return False
     return bool(expected) and all(value not in (None, "") and saved.get(key) == value for key, value in expected.items())
 
 
@@ -275,7 +276,7 @@ def evaluation_coverage(sample: dict[str, Any], method: str, *, parameters: dict
                           **{key: raw[key] for key in _PROTOCOL_FIELDS if raw.get(key)},
                           **{key: settings[key] for key in _PROTOCOL_FIELDS if settings.get(key)},
                           **(settings.get("assessment_protocol") or {})}
-        settings_match = (scientific_parameters(settings) == scientific_parameters(parameters)
+        settings_match = (scientific_parameters(settings, method) == scientific_parameters(parameters, method)
                           and protocol_matches(saved_protocol, expected_protocol))
         if settings_match:
             exact.append((observation, descriptor, context))

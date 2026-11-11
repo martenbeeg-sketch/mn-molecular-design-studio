@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -748,7 +749,7 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
     index_error = ""
     try:
         indexed_jobs = database_analysis_jobs(user, [s for s in indexed_sources if all(v is not None and str(v) for v in s.values())])
-    except (OSError, PermissionError, RuntimeError, TypeError, ValueError) as exc:
+    except (OSError, PermissionError, RuntimeError, TypeError, ValueError, sqlite3.Error) as exc:
         indexed_jobs, index_error = [], str(exc)
     if index_error:
         st.info("Analysis job status is unavailable: " + index_error)
@@ -842,7 +843,7 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
                         expected_protocol=(method_schemas.get(method) or {}).get("assessment_protocol"),
                         allow_reassessment=status == "Existing Evaluation · different settings" and include_mismatched,
                     )
-                except (OSError, PermissionError, RuntimeError, TypeError, ValueError) as exc:
+                except (OSError, PermissionError, RuntimeError, TypeError, ValueError, sqlite3.Error) as exc:
                     status, detail = "Job lookup unavailable", str(exc)
                 else:
                     job_coverage = analysis_job_coverage(matching_jobs)
@@ -888,7 +889,7 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
         submitted, errors = 0, []
         try:
             fresh_jobs = database_analysis_jobs(user, indexed_sources)
-        except (OSError, PermissionError, RuntimeError, TypeError, ValueError) as exc:
+        except (OSError, PermissionError, RuntimeError, TypeError, ValueError, sqlite3.Error) as exc:
             st.error(f"Cannot verify existing analysis work before submission: {exc}")
             return
         for item in submission_plan:
@@ -906,7 +907,8 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
                 if existing and existing[0] != "Previously failed":
                     errors.append(f"{ASSESSMENT_METHODS[method]['label']}: matching work already exists ({existing[1]}).")
                     continue
-                submit(schema, method, item["parameters"], item["project_id"], {},
+                settings = {"_execution": {"placement": "local", "reassessment_of": blocking[0]["run_id"]}} if existing else {}
+                submit(schema, method, item["parameters"], item["project_id"], settings,
                        ASSESSMENT_METHODS[method]["label"])
                 submitted += 1
             except (OSError, RuntimeError, TypeError, ValueError, PermissionError) as exc:

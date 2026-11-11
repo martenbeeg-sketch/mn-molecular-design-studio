@@ -147,12 +147,12 @@ def test_stale_or_unvalidated_association_cannot_be_staged_for_placement(tmp_pat
     from mn_molecular_design_studio.complex_analysis_sources import build_database_analysis_source
 
     database, source, source_structure, _reference, reference_structure, saved, selection = _database_pair(tmp_path, monkeypatch)
-    reference_file = database.structure_file(USER, reference_structure["id"])
+    reference_file = Path(reference_structure["path"])
     reference_file.write_bytes(reference_file.read_bytes() + b"REMARK changed after association\n")
     stale = database.get_complex_reference_context(
         USER, source_molecule_id=source["id"], source_structure_id=source_structure["id"], source_chain="A",
     )
-    assert stale["status"] == "stale"
+    assert stale["status"] == "reference_unavailable"
     with pytest.raises(ValueError, match="explicit, current, unique exact"):
         build_database_analysis_source(
             USER, selection, workflow_id="analysis.reference_placement", project_id=None, database=database,
@@ -386,6 +386,7 @@ def test_database_workspace_launches_placement_from_saved_association(tmp_path, 
     database, source, source_structure, reference, _reference_structure, saved, _selection = _database_pair(tmp_path, monkeypatch)
     monkeypatch.setattr(molecular_database, "MolecularDatabase", lambda: database)
     monkeypatch.setattr(complex_analysis_ui, "_show_structure", lambda *args, **kwargs: None)
+    monkeypatch.setattr("mn_molecular_design_studio.job_catalog.database_analysis_jobs", lambda *args, **kwargs: [])
     script = f'''\
 import streamlit as st
 from mn_molecular_design_studio.complex_analysis_ui import render_complex_analysis_workspace

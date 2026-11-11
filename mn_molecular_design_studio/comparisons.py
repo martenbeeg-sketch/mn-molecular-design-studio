@@ -142,6 +142,12 @@ def compatibility_warnings(rows, fields):
     target_fields = [f for f in fields if not f.startswith(("common.sequence.", "common.geometry.binder.", "common.secondary_structure.binder.", "sequence_qc.", "proteinsol.", "common.design.sequence_length"))]
     if target_fields and len(targets - {None, ""}) > 1:
         warnings.append("This comparison includes different targets. Select one target for binding-score ranking.")
+    contexts = {(str(evaluation.get("target_id") or ""), str(evaluation.get("target_revision") or ""),
+                 tuple(sorted(map(str, evaluation.get("target_chains") or []))))
+                for row in rows if any(field in row.get("scores", {}) for field in target_fields)
+                for evaluation in [row.get("evaluation") or row.get("selected_evaluation") or {}]}
+    if target_fields and len(contexts) > 1:
+        warnings.append("Binding-score ranking requires the same target structure revision and chain scope; unknown and known context cannot be pooled.")
     for field in fields:
         definitions = {(row.get("score_sources", {}).get(field, {}).get("method"),
                         row.get("score_sources", {}).get(field, {}).get("unit"),

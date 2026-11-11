@@ -8,7 +8,7 @@ import json
 import streamlit as st
 
 from mn_molecular_design_studio.complex_analysis_design_review import (
-    design_review_page, review_measurements, remember_review_selection,
+    design_review_page, review_measurements, remember_review_selection, selected_review_models,
 )
 from mn_molecular_design_studio.complex_analysis_collection import (
     filter_acceptance_cohort, acceptance_stage_options,
@@ -76,7 +76,8 @@ def render_design_review(database, user, selection, *, requested_action="", work
         return
     if requested_action == "shortlist":
         selected_ids = st.session_state.get("design-review-selected-" + token, [])
-        selected = [s for s in samples if s["structure_id"] in selected_ids]
+        selected = selected_review_models(database, user, selection["group_ids"], selected_ids,
+                                         system_scope=selection.get("system_scope"))
         if selected:
             from mn_molecular_design_studio.complex_analysis_shortlist_export import render_shortlist_review_export
             render_shortlist_review_export(user, selected, key_prefix="review-shortlist-" + token)
@@ -146,7 +147,11 @@ def render_design_review(database, user, selection, *, requested_action="", work
     st.caption(f"{len(filtered)} models shown · page {page_number} of {(page['total'] + 249) // 250}. Blank measurements mean missing, conflicting or failed evidence, not zero. Parameters and versions remain separate; no combined quality score.")
     if not filtered:
         return
-    selected = [s for s in filtered if s["structure_id"] in selected_ids]
+    selected = selected_review_models(database, user, selection["group_ids"], selected_ids,
+                                     system_scope=selection.get("system_scope"))
+    selected = filter_acceptance_cohort(selected, mode, stage)
+    selected_ids = [sample["structure_id"] for sample in selected]
+    st.session_state[state_key] = selected_ids
     st.markdown(f"#### {len(selected)} selected for review")
     if inspection_requested and not selected:
         st.info("Select designs in the table or plot below, then click Inspect selected in 3D. Use 2–5 compatible models for overlays.")
@@ -232,7 +237,10 @@ def render_design_review(database, user, selection, *, requested_action="", work
             st.bar_chart(pd.DataFrame({"Models": counts}), height=280)
             st.caption("Recorded decisions only. Select at least two numeric measurements for an evidence plot.")
     selected_ids = st.session_state.get(state_key, [])
-    selected = [s for s in filtered if s["structure_id"] in selected_ids]
+    selected = selected_review_models(database, user, selection["group_ids"], selected_ids,
+                                     system_scope=selection.get("system_scope"))
+    selected = filter_acceptance_cohort(selected, mode, stage)
+    selected_ids = [sample["structure_id"] for sample in selected]
     if not selected:
         st.info("Select one or more designs above to inspect their evidence or calculate missing assessments.")
         return

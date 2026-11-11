@@ -72,10 +72,15 @@ def test_historical_rosetta_sasa_ratio_is_preserved_raw_but_not_projected_or_fil
             connection.execute('INSERT OR REPLACE INTO molecule_metric_values VALUES (?,?,?,?,?,?)',
                                (observation_id, 'rosetta_metrics.'+bad_key, 'number', 171.0, '171.0', '{}'))
         with monkeypatch.context() as isolated:
-            def no_full_rebuild(*args):
-                raise AssertionError('Compatible v4 projections must upgrade without recalculation')
-            isolated.setattr(evaluations, 'normalize_metrics', no_full_rebuild)
+            normalize = evaluations.normalize_metrics
+            calls = []
+            def reproject_metrics(*args):
+                calls.append(args)
+                return normalize(*args)
+            isolated.setattr(evaluations, 'normalize_metrics', reproject_metrics)
             with database.connection() as connection:
                 evaluations.rebuild_missing(connection)
                 assert connection.execute('SELECT projection_version FROM molecule_evaluations WHERE observation_id=?',
                                           (observation_id,)).fetchone()[0] == evaluations.PROJECTION_VERSION
+                assert len(calls) == 1
+                assert bad_key not in calls[0][0]

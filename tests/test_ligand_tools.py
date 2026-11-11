@@ -1587,6 +1587,8 @@ def test_gromacs_md_tile_stages_typed_artifacts_and_mounts_studio_runtime_read_o
         production.mkdir(parents=True)
         (production / "production_whole.xtc").write_bytes(b"trajectory")
         (production / "trajectory_analysis.json").write_text(json.dumps({"ligand_rmsd": 1.2}))
+        (run_dir / "artifacts/md/preparation").mkdir()
+        (run_dir / "artifacts/md/preparation/system.top").write_text("prepared system")
         jobs.write_json(run_dir / "artifacts" / "md" / "result.json", {
             "success": True,
             "output_files": {

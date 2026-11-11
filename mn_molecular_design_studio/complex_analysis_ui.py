@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import sqlite3
 import tempfile
 from pathlib import Path, PurePosixPath
 import streamlit as st
@@ -201,6 +202,8 @@ def open_result_complex(run_dir: Path | str, structure_path: Path | str, candida
         raise ValueError("The selected structure is outside Studio's managed Results storage.") from exc
     task_group, run_id, relative_path = _registered_cross_run_structure(
         user, resolved_structure, source_run_dir=run_dir, runs_root=root)
+    from mn_molecular_design_studio.artifact_integrity import retained_artifact_file
+    verified_structure = retained_artifact_file(root / task_group / run_id, resolved_structure)
     candidate = candidate if isinstance(candidate, dict) else {}
     raw_metadata = candidate.get("raw_metadata") if isinstance(candidate.get("raw_metadata"), dict) else {}
     if candidate:
@@ -227,7 +230,7 @@ def open_result_complex(run_dir: Path | str, structure_path: Path | str, candida
         "candidate": candidate,
         "model_index": str(model_id if model_id is not None else ""),
         "relative_path": relative_path,
-        "structure_sha256": hashlib.sha256(resolved_structure.read_bytes()).hexdigest(),
+        "structure_sha256": hashlib.sha256(verified_structure.read_bytes()).hexdigest(),
     }
     st.session_state["complex-analysis-source-kind"] = "Results"
     st.session_state["complex-analysis-workspace-view"] = "inspector"
@@ -901,6 +904,33 @@ def _biotite_item_matches_source(item: dict, outputs: dict[str, dict], *, candid
     return matches, receipt if matches else {}
 
 
+def _results_analysis_rows(user, tool, source_task_group, source_run_id):
+    from mn_molecular_design_studio.auth import accessible_project_ids
+    from mn_molecular_design_studio.job_catalog import search_jobs
+    rows, cursor = [], None
+    while True:
+        page = search_jobs(tools=[tool], task_group="analysis", limit=500, cursor=cursor,
+                           upstream_task_group=source_task_group, upstream_run_id=source_run_id,
+                           access_owner_id=str(user.get("id") or ""),
+                           accessible_project_ids=accessible_project_ids(user),
+                           access_admin=user.get("role") == "admin", sort_by="active_desc")
+        rows.extend(page["items"])
+        next_cursor = page.get("next_cursor")
+        if next_cursor is None or next_cursor == cursor:
+            return rows
+        cursor = next_cursor
+
+
+def _saved_analysis_protocol(run_dir, settings):
+    from mn_molecular_design_studio.scientific_settings import PROTOCOL_FIELDS
+    params = _read_json(Path(run_dir) / "input.json").get("params") or {}
+    command = _read_json(Path(run_dir) / "command.json")
+    return {**{key: value for key, value in params.items() if key in PROTOCOL_FIELDS},
+            **(params.get("assessment_protocol") or {}),
+            **{key: value for key, value in settings.items() if key in PROTOCOL_FIELDS},
+            **{key: value for key, value in command.items() if key in {"image", "image_digest"}}}
+
+
 def _matching_biotite_jobs(user: dict, *, source_task_group: str, source_run_id: str,
                            candidate_id: str, structure_digest: str,
                            binder_chains: list[str], target_chains: list[str],
@@ -909,12 +939,7 @@ def _matching_biotite_jobs(user: dict, *, source_task_group: str, source_run_id:
     from mn_molecular_design_studio.auth import accessible_project_ids, can_access_job
     from mn_molecular_design_studio.job_catalog import get_job_access_record, search_jobs
 
-    rows = search_jobs(
-        tools=["biotite_interface"], task_group="analysis", limit=1000,
-        access_owner_id=str(user.get("id") or ""),
-        accessible_project_ids=accessible_project_ids(user),
-        access_admin=user.get("role") == "admin", sort_by="active_desc",
-    )["items"]
+    rows = _results_analysis_rows(user, "biotite_interface", source_task_group, source_run_id)
     matches = []
     from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
     for row in rows:
@@ -958,6 +983,10 @@ def _matching_biotite_jobs(user: dict, *, source_task_group: str, source_run_id:
         if saved_model_id != model_id:
             continue
         status = str(row.get("status") or metadata.get("status") or "unknown").casefold()
+        from mn_molecular_design_studio.complex_analysis_batch import assessment_protocol, protocol_matches
+        if status in {"completed", "succeeded"} and not protocol_matches(
+                _saved_analysis_protocol(run_dir, settings), assessment_protocol("analysis.biotite_interface")):
+            continue
         result = _read_json(run_dir / "artifacts" / "analysis" / "batch_status.json")
         item_status = next((item for item in result.get("items", []) if item.get("id") == selected_item.get("id")), {})
         error = str(item_status.get("error") or metadata.get("error") or "")
@@ -1004,6 +1033,7 @@ def _matching_contextual_jobs(user: dict, *, workflow_id: str, source_task_group
                               model_id: str, binder_chains: list[str], target_chains: list[str],
                               parameters: dict, ligand_selection: dict | None = None) -> list[dict]:
     """Find an exact reusable evaluation for one selected source pose."""
+    from mn_molecular_design_studio.scientific_settings import scientific_parameters
     from mn_molecular_design_studio.auth import accessible_project_ids, can_access_job
     from mn_molecular_design_studio.job_catalog import get_job_access_record, search_jobs
 
@@ -1011,11 +1041,7 @@ def _matching_contextual_jobs(user: dict, *, workflow_id: str, source_task_group
             "analysis.plip": "plip", "analysis.pandamap": "pandamap", "analysis.posebusters": "posebusters"}.get(workflow_id)
     if not tool:
         return []
-    rows = search_jobs(
-        tools=[tool], task_group="analysis", limit=1000, sort_by="active_desc",
-        access_owner_id=str(user.get("id") or ""),
-        accessible_project_ids=accessible_project_ids(user), access_admin=user.get("role") == "admin",
-    )["items"]
+    rows = _results_analysis_rows(user, tool, source_task_group, source_run_id)
     desired_binder = sorted(map(str, binder_chains))
     desired_target = sorted(map(str, target_chains))
     matches = []
@@ -1071,13 +1097,18 @@ def _matching_contextual_jobs(user: dict, *, workflow_id: str, source_task_group
                     and sorted(map(str, item.get("binder_chains") or [])) != desired_binder)
                 or (workflow_id not in {"analysis.pep_patch", "analysis.plip", "analysis.pandamap", "analysis.posebusters"}
                     and sorted(map(str, item.get("target_chains") or [])) != desired_target)
-                or saved_parameters != parameters
+                or scientific_parameters(saved_parameters, workflow_id) != scientific_parameters(parameters, workflow_id)
                 or (workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}
                     and ((selection.get("ligand_selections") or {}).get(candidate_id)
                          or selection.get("ligand_selection") or item.get("ligand_selection") or {})
                     != (ligand_selection or {}))):
             continue
         status = str(row.get("status") or metadata.get("status") or "unknown").casefold()
+        from mn_molecular_design_studio.complex_analysis_batch import assessment_protocol, protocol_matches
+        if status in {"completed", "succeeded"} and not protocol_matches(
+                _saved_analysis_protocol(run_dir, manifest.get("settings") or manifest.get("parameters") or {}),
+                assessment_protocol(workflow_id)):
+            continue
         error = str(metadata.get("error") or "")
         if workflow_id in {"analysis.pep_patch", "analysis.plip", "analysis.pandamap", "analysis.posebusters"} and status in {"completed", "succeeded"}:
             batch = _read_json(run_dir / "artifacts" / "analysis" / "batch_status.json")
@@ -2402,7 +2433,9 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
     """Find exact indexed work; full evidence is read only for targeted inspection."""
     from mn_molecular_design_studio.auth import can_access_job
     from mn_molecular_design_studio.job_catalog import database_analysis_jobs, analysis_source_key
-    from mn_molecular_design_studio.complex_analysis_batch import scientific_parameters, protocol_matches
+    from mn_molecular_design_studio.complex_analysis_batch import scientific_parameters, protocol_matches, assessment_protocol
+    require_verified_protocol = expected_protocol is None
+    expected_protocol = assessment_protocol(workflow_id) if expected_protocol is None else expected_protocol
     tool = {"analysis.biotite_interface": "biotite_interface", "analysis.ipsae": "ipsae",
             "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
             "analysis.sequence_qc": "sequence_qc", "analysis.proteinsol": "proteinsol",
@@ -2442,8 +2475,8 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
             continue
         if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"} and projection.get("ligand_selection") != (ligand_selection or {}):
             continue
-        saved_parameters = scientific_parameters(projection.get("parameters") or {})
-        requested = scientific_parameters(parameters)
+        saved_parameters = scientific_parameters(projection.get("parameters") or {}, workflow_id)
+        requested = scientific_parameters(parameters, workflow_id)
         if workflow_id == "analysis.reference_environment":
             fields = ("source_component_chain", "selected_reference_chains", "assembly_id")
             if any(saved_parameters.get(field) != requested.get(field) for field in fields):
@@ -2456,7 +2489,7 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
             if not protocol_matches(saved_protocol, expected_protocol):
                 known = bool(expected_protocol) and all(v not in (None, "") and saved_protocol.get(k) not in (None, "")
                                                        for k, v in expected_protocol.items())
-                if known or allow_reassessment:
+                if known or allow_reassessment or require_verified_protocol:
                     continue
         if status in {"completed", "succeeded"} and projection.get("item_status"):
             status = str(projection["item_status"]).casefold()
@@ -3062,7 +3095,7 @@ def _reference_placement_match(user: dict, record: dict, structure: dict, saved:
             candidate_id=candidate_id, model_id=str(model_id), binder_chains=[], target_chains=[],
             parameters=parameters,
         )
-    except (OSError, PermissionError, RuntimeError, ValueError) as exc:
+    except (OSError, PermissionError, RuntimeError, ValueError, sqlite3.Error) as exc:
         st.info(f"Saved placement job status is unavailable: {exc}")
         return None
     current = next((item for item in matches if item.get("status") in {"completed", "succeeded"}), None)
@@ -3454,7 +3487,8 @@ def _render_database_analysis(user: dict, record: dict, structure: dict, path: P
     default_binder, default_target = _database_chain_defaults(
         context, protein_chains, stored_components=record.get("components"), parsed_components=components,
     )
-    model_id = str(context.get("model_id") or context.get("model_index") or context.get("model") or structure.get("model_index") or structure["id"])
+    from mn_molecular_design_studio.scientific_settings import model_identity
+    model_id = model_identity(context.get("model_id"), context.get("model_index"), context.get("model"), structure.get("model_index"), structure["id"])
     source = {
         "molecule_id": str(record["id"]), "structure_id": str(structure["id"]),
         "group_id": group_id, "evaluation_id": evaluation_id, "model_id": model_id,
@@ -3900,8 +3934,9 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
     try:
         matches = _matching_database_analysis_jobs(user, workflow_id=workflow_id, source=source,
             candidate_id=candidate_id, model_id=model_id, binder_chains=list(binder_chains),
-            target_chains=list(target_chains), parameters=parameters, ligand_selection=ligand_selection)
-    except (OSError, PermissionError, RuntimeError, ValueError) as exc:
+            target_chains=list(target_chains), parameters=parameters, ligand_selection=ligand_selection,
+            expected_protocol=schema.get("assessment_protocol"))
+    except (OSError, PermissionError, RuntimeError, ValueError, sqlite3.Error) as exc:
         st.info(f"Cannot verify analysis job status: {exc}")
         if st.button("Refresh analysis job index", key=f"refresh-analysis-index-{workflow_id}-{key}"):
             from mn_molecular_design_studio.job_catalog import reconcile
@@ -3912,6 +3947,12 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
     if current is None:
         current = next((item for item in matches if item["status"] not in {"failed", "cancelled", "canceled"}), None)
     if current:
+        from mn_molecular_design_studio.complex_analysis_batch import protocol_matches
+        if (current["status"] in {"completed", "succeeded"}
+                and not protocol_matches((current.get("database_analysis") or {}).get("protocol") or {},
+                                         schema.get("assessment_protocol") or {})):
+            st.info("Historical analysis has unverified protocol compatibility; it is not reused as a current Evaluation.")
+            return
         if workflow_id == "analysis.biotite_interface":
             _render_biotite_results(user, current, source_candidate_id=candidate_id, key=key,
                 structure_path=structure_path, structure_context=structure_context,
@@ -3954,7 +3995,8 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
                        if workflow_id in {"analysis.reference_placement", "analysis.tag_fusion_context"} else {}),
                     **({"ligand_selection": dict(ligand_selection)} if ligand_selection else {}),
                 }, **({"ligand_selection": dict(ligand_selection)}
-                      if ligand_selection and workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"} else {})}, project_id, {}, title)
+                      if ligand_selection and workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"} else {})}, project_id,
+                {"_execution": {"placement": "local", "reassessment_of": matches[0]["run_id"]}} if matches else {}, title)
             st.rerun()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             st.error(f"Could not start {title}: {exc}")
@@ -4089,8 +4131,9 @@ def _render_database_source(user: dict, opened: dict, *, workflow_schema=None, s
     _show_components(component_rows)
     viewer_key = f"complex-analysis-db-viewer-{structure_id}"
     structure_context = structure.get("context") if isinstance(structure.get("context"), dict) else {}
-    model_id = str(structure_context.get("model_id") or structure_context.get("model_index")
-                   or structure_context.get("model") or structure.get("model_index") or structure_id)
+    from mn_molecular_design_studio.scientific_settings import model_identity
+    model_id = model_identity(structure_context.get("model_id"), structure_context.get("model_index"),
+                              structure_context.get("model"), structure.get("model_index"), structure_id)
     associated = []
     for observation in all_record.get("observations", []):
         evaluation = next((item for known_observation, item in all_evaluation_by_id.values()

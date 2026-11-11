@@ -49,6 +49,19 @@ _AA3_TO_1 = {"ALA":"A", "ARG":"R", "ASN":"N", "ASP":"D", "CYS":"C", "GLN":"Q", "
              "SEC":"U", "PYL":"O"}
 
 
+def fixed_parameters():
+    return {"sasa_algorithm": "Bio.PDB ShrakeRupley", "sasa_sphere_points": SASA_POINTS,
+            "sasa_probe_angstrom": SASA_PROBE_ANGSTROM, "heavy_atoms_only_for_sasa": True,
+            "contact_cutoff_angstrom": CONTACT_CUTOFF_ANGSTROM,
+            "hbond_donor_acceptor_cutoff_angstrom": HBOND_DA_CUTOFF_ANGSTROM,
+            "hbond_hydrogen_acceptor_cutoff_angstrom": HBOND_HA_CUTOFF_ANGSTROM,
+            "hbond_min_donor_hydrogen_acceptor_angle_degrees": HBOND_DHA_MIN_DEGREES,
+            "hbond_min_acceptor_antecedent_angle_degrees_without_hydrogen": HBOND_ACCEPTOR_ANGLE_MIN_DEGREES,
+            "buried_polar_minimum_delta_sasa_angstrom2": BURIED_POLAR_MIN_DELTA_SASA,
+            "buried_polar_maximum_complex_sasa_angstrom2": BURIED_POLAR_MAX_COMPLEX_SASA,
+            "heteroatoms_waters_and_ligands": "excluded from this protein–protein interface calculation"}
+
+
 def _element(atom) -> str:
     element = str(getattr(atom, "element", "") or "").strip().upper()
     if element:
@@ -359,16 +372,7 @@ def assess_protein_interface(
     return {
         "schema": "studio.ppi-interface-chemistry.v1", "method": METHOD, "method_version": METHOD_VERSION,
         "source": source, "selected_chains": {"binder": binder, "target": target},
-        "parameters": {"sasa_algorithm": "Bio.PDB ShrakeRupley", "sasa_sphere_points": SASA_POINTS,
-            "sasa_probe_angstrom": SASA_PROBE_ANGSTROM, "heavy_atoms_only_for_sasa": True,
-            "contact_cutoff_angstrom": CONTACT_CUTOFF_ANGSTROM,
-            "hbond_donor_acceptor_cutoff_angstrom": HBOND_DA_CUTOFF_ANGSTROM,
-            "hbond_hydrogen_acceptor_cutoff_angstrom": HBOND_HA_CUTOFF_ANGSTROM,
-            "hbond_min_donor_hydrogen_acceptor_angle_degrees": HBOND_DHA_MIN_DEGREES,
-            "hbond_min_acceptor_antecedent_angle_degrees_without_hydrogen": HBOND_ACCEPTOR_ANGLE_MIN_DEGREES,
-            "buried_polar_minimum_delta_sasa_angstrom2": BURIED_POLAR_MIN_DELTA_SASA,
-            "buried_polar_maximum_complex_sasa_angstrom2": BURIED_POLAR_MAX_COMPLEX_SASA,
-            "heteroatoms_waters_and_ligands": "excluded from this protein–protein interface calculation"},
+        "parameters": fixed_parameters(),
         "metrics": {"interface_total_delta_sasa_angstrom2": round(total_buried, 3),
             "interface_buried_surface_area_half_delta_sasa_angstrom2": round(total_buried / 2.0, 3),
             "binder_delta_sasa_angstrom2": round(binder_delta, 3),

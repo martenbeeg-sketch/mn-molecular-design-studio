@@ -95,14 +95,10 @@ def install(app, current_user, *, resolve_job, call):
         if is_bound_pose(selected):
             context = selected.get("context") or {}
             target_id = context.get("target_structure_id")
-            if target_id:
-                call(database.structure_file, user, target_id)
-                url = "/api/v1/molecules/structures/" + quote(target_id, safe="") + "/file"
-            else:
-                receptor = call(receptor_file, database, user, selected)
-                if receptor is None:
-                    raise HTTPException(404, "The saved target structure is unavailable.")
-                url = "/api/v1/molecules/" + quote(molecule_id, safe="") + "/viewer/receptor?" + urlencode({"structure_id": selected["id"]})
+            receptor = call(receptor_file, database, user, selected)
+            if receptor is None:
+                raise HTTPException(404, "The saved target structure is unavailable.")
+            url = "/api/v1/molecules/" + quote(molecule_id, safe="") + "/viewer/receptor?" + urlencode({"structure_id": selected["id"]})
             layers.insert(0, {"molecule_id": context.get("target_molecule_id"), "structure_id": target_id,
                               "label": "Docking target", "url": url, "representation": "cartoon",
                               "requires_authentication": True})

@@ -403,7 +403,7 @@ def workflow_schema(workflow_id: str) -> dict[str, Any]:
         request_fields.append("source_job")
     schema = {"schema_version": WORKFLOW_SCHEMA_VERSION, **row, "request_fields": request_fields}
     from mn_molecular_design_studio.complex_analysis_batch import ASSESSMENT_METHODS, assessment_protocol
-    if workflow_id in ASSESSMENT_METHODS:
+    if workflow_id in ASSESSMENT_METHODS or workflow_id in {"analysis.reference_placement", "analysis.reference_environment", "analysis.tag_fusion_context"}:
         schema["assessment_protocol"] = assessment_protocol(workflow_id)
     schema["collection_execution"] = {
         "automatic": True, "one_job_per_selection": True,

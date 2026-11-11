@@ -55,8 +55,8 @@ def test_biotite_receipt_joins_candidate_set_output_to_native_results_identity()
     assert _biotite_item_matches_source(item, outputs, **{**args, "source_run_id": "other-run"}) == (False, {})
 
 
-def test_complex_analysis_initialization_preserves_explicit_results_board_deep_link():
+def test_complex_analysis_initialization_discards_obsolete_results_board_state():
     state = {"complex-analysis-workspace-view": "results_board"}
     initialize_workspace_view(state)
-    assert state == {"complex-analysis-workspace-view": "results_board",
-                     "complex-analysis-dashboard-version": "run-first-v1"}
+    assert state == {"complex-analysis-workspace-view": "database",
+                     "complex-analysis-dashboard-version": "database-only-v1"}

@@ -13,8 +13,9 @@ from functools import lru_cache
 from urllib.parse import urlsplit
 
 from mn_molecular_design_studio.output_vocabulary import PREFIX, VERSION, normalize_metrics, normalize_parameters
+from mn_molecular_design_studio.scientific_settings import PROTOCOL_FIELDS, scientific_parameters, model_identity
 
-PROJECTION_VERSION = "evaluation.v6:" + VERSION
+PROJECTION_VERSION = "evaluation.v7:" + VERSION
 _RUNTIME_FIELDS = {"source_run_dir", "candidates_jsonl", "job_name", "campaign_name", "cpu_cores", "cpu_threads",
                    "nprocs", "workers", "gpu_device", "backend", "output_dir"}
 
@@ -67,9 +68,9 @@ def evaluation_descriptor(observation):
     selection = raw.get("complex_analysis_selection") if isinstance(raw.get("complex_analysis_selection"), dict) else {}
     pose = context.get("pose_identity") or candidate.get("pose_identity") or row.get("pose_identity") or {}
     pose_id = str(pose.get("id") or context.get("pose_id") or "") if isinstance(pose, dict) else str(pose or "")
-    model_id = str(context.get("model_id") or candidate.get("model_id") or candidate.get("model_index")
-                   or row.get("model_id") or selection.get("model_id") or selection.get("model_index")
-                   or raw.get("model_id") or raw.get("model_index") or "")
+    model_id = model_identity(context.get("model_id"), candidate.get("model_id"), candidate.get("model_index"),
+                              row.get("model_id"), selection.get("model_id"), selection.get("model_index"),
+                              raw.get("model_id"), raw.get("model_index"))
     binder_chains = (candidate.get("binder_chains") or selection.get("binder_chains")
                      or raw.get("binder_chains") or context.get("binder_chains") or [])
     target_chains = (candidate.get("target_chains") or selection.get("target_chains")
@@ -89,7 +90,10 @@ def evaluation_descriptor(observation):
     representation = (structure_digest or context.get("_replica_representation") or context.get("representation_id")
                       or pose_id or row.get("pose_path") or candidate.get("complex_pdb") or candidate.get("binder_pdb") or "")
     settings = context.get("settings") or raw.get("analysis_parameters") or {}
-    scientific_settings = {k: v for k, v in settings.items() if k not in _RUNTIME_FIELDS}
+    method = candidate.get("source_tool") or observation.get("namespace")
+    scientific_settings = {**scientific_parameters(settings, method),
+                           **{key: value for key, value in settings.items()
+                              if key in PROTOCOL_FIELDS | {"assessment_protocol"}}}
     parameter_projection = normalize_parameters(scientific_settings, candidate.get("source_tool") or observation.get("namespace"))
     parameters_digest = identifier("params-", scientific_settings)
     instance = identifier("instance-", [context.get("node_id"), context.get("task_group"), run, candidate_id,

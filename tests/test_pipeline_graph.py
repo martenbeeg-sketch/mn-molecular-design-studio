@@ -751,6 +751,7 @@ def test_shared_objective_results_preserve_successful_branch_when_other_generato
             raise RuntimeError("simulated BindCraft branch startup failure")
         child = tmp_path / "child-rfd4"
         child.mkdir()
+        (child / "designed.cif").write_bytes((source / "designed.cif").read_bytes())
         candidate = copy.deepcopy(template_candidate)
         candidate["candidate_id"] = "rfd4-candidate"
         normalized = child / "artifacts/normalized_candidates"

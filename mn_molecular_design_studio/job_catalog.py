@@ -178,7 +178,7 @@ def _initialize(connection: sqlite3.Connection) -> None:
         connection.execute("UPDATE jobs SET metadata_mtime_ns=0")
     from mn_molecular_design_studio.logical_runs import IDENTITY_FIELDS
     connection.execute("CREATE TABLE IF NOT EXISTS catalog_projection (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-    revision = json.dumps([*IDENTITY_FIELDS, "database_analysis:v1"])
+    revision = json.dumps([*IDENTITY_FIELDS, "database_analysis:v2"])
     previous = connection.execute("SELECT value FROM catalog_projection WHERE key='run_identity'").fetchone()
     if previous is None or previous[0] != revision:
         connection.execute("UPDATE jobs SET metadata_mtime_ns=0")
@@ -335,6 +335,13 @@ def _database_analysis_projection(run_dir, metadata, inputs):
             valid = valid and item.get("ligand_selection") == selected.get("ligand_selection")
     outcome = next((row for row in _read_json(run_dir / "artifacts/analysis/batch_status.json").get("items") or []
                     if row.get("id") == item.get("id")), {}) if item else {}
+    command = _read_json(run_dir / "command.json")
+    protocol = {**{key: value for key, value in params.items()
+                   if key in {"method_version", "protocol_revision", "engine_version", "image", "image_digest", "checkpoint_sha256"}},
+                **(params.get("assessment_protocol") or {}),
+                **{key: value for key, value in (batch.get("settings") or {}).items()
+                   if key in {"method_version", "protocol_revision", "engine_version", "image", "image_digest", "checkpoint_sha256"}},
+                **{key: value for key, value in command.items() if key in {"image", "image_digest"}}}
     return {"source_key": key, "source": {k: v for k, v in source.items() if k in {
                 "molecule_id", "structure_id", "group_id", "structure_digest", "model_id", "pae_digest", "ligand_selection",
                 "reference_context_id", "reference_molecule_id", "reference_structure_id", "reference_structure_digest",
@@ -342,8 +349,7 @@ def _database_analysis_projection(run_dir, metadata, inputs):
             "candidate_id": candidate, "model_id": str(selected.get("model_id") or selected.get("selected_model_id") or source["model_id"]),
             "binder_chains": binder, "target_chains": target, "ligand_selection": selected.get("ligand_selection") or source.get("ligand_selection") or {},
             "parameters": batch.get("settings") or selection.get("parameters") or params,
-            "protocol": params.get("assessment_protocol") or {k: v for k, v in (batch.get("settings") or params).items()
-                if k in {"method_version", "protocol_revision", "engine_version", "image", "image_digest"}},
+            "protocol": protocol,
             "item_status": outcome.get("status"), "error": outcome.get("error") or metadata.get("error") or "",
             "invalid": not valid}
 
@@ -753,6 +759,8 @@ def search_jobs(
     access_owner_id: str | None = None,
     accessible_project_ids: list[str] | None = None,
     access_admin: bool = False,
+    upstream_task_group: str | None = None,
+    upstream_run_id: str | None = None,
     limit: int = 100,
     offset: int = 0,
     sort_by: str = "created_desc",
@@ -804,6 +812,10 @@ def search_jobs(
     if task_group:
         clauses.append("j.task_group=?")
         params.append(task_group)
+    for field, value in (("upstream_task_group", upstream_task_group), ("upstream_run_id", upstream_run_id)):
+        if value is not None:
+            clauses.append("json_extract(j.run_identity_json,'$." + field + "')=?")
+            params.append(value)
     if not access_admin:
         access_clauses: list[str] = []
         if access_owner_id:
