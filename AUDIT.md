@@ -9,6 +9,7 @@ This is a bounded, risk-prioritized technical audit, not a certification of the 
 - 2026-11-11: Initial root `AUDIT.md`; no previous root audit existed. Existing audit documents under `docs/` and unrelated untracked cleanup material were left untouched. This document does not supersede their conclusions or claim to have re-audited them.
 - IDs `AUD-001` through `AUD-014` are stable. Preserve them when implementing fixes. Append resolution evidence, commit, and date rather than removing the original finding. A changed conclusion must explicitly explain the new evidence.
 - Line numbers refer to the baseline above. Function names remain the primary locator after edits.
+- 2026-11-11: Implementation phase 1 completed for AUD-001/AUD-002/AUD-003. The original audit text describes the original audit operation; later implementation changes and verification are recorded separately below. Production services, data, authentication and replication state remain unchanged.
 
 ## Overall assessment
 
@@ -258,6 +259,32 @@ No Critical finding was established. “Confirmed” describes the specific evid
 **Recommended fix:** During the relevant fixes only, extract the minimal pure projection/compatibility helpers into existing non-UI modules. Avoid a broad UI rewrite, new application or replacement scientific model. Keep adapters for current callers until equivalent behavior is tested.  
 **Dependencies:** Let AUD-004/AUD-009/AUD-012 determine the smallest extraction; do not delay high-severity fixes for cleanup.  
 **Verification:** Contract tests compare metadata review, hydrated Inspector, assessment planning and export for the same exact model, including remote aliases and unknown fields. Importing projection helpers should not require constructing Streamlit UI state.
+
+## Implementation ledger — phase 1 (2026-11-11)
+
+The first implementation phase is complete. Original findings and their evidence remain above; these resolution entries apply to the corrected code and covered contracts, not to retrospective production-data reconciliation.
+
+| Finding | Resolution | Implementation commits |
+|---|---|---|
+| AUD-001 | Resolved for automatic attachment of new observations: unique exact candidate/model/pose/source-digest match; ambiguity remains unattached; zero-valued model selectors retained | `2a2534014aece5ec46cf5849126f15504b001f4b`, follow-up `cc984c51e89400304cc68640842d094bc2e8aff2` |
+| AUD-002 | Resolved at authorized local/remote file read, download, materialization and portable-copy boundaries, with explicit handling of unverifiable legacy paths | `ab91b40b1fbab330f66cb5dd6b4eea6bdf45a6d5` |
+| AUD-003 | Resolved for strict finalization of referenced/declared artifacts and dangling coordinate/output paths; historical non-strict inventory preserved | `2f20f9b1a6d165914c5e089e5472fabdb3308c4e` |
+
+**Final verification:** 482 passed, 4 warnings in 187.58 seconds, in one combined invocation of 22 test modules. This includes 49 newly added parameterized regression cases (28 identity/integrity and 21 artifact cases), the existing Database/policy/integration, Evaluation/comparison, Explorer/hydration/navigation, shortlist, independent-peer, scientific-lineage, authenticated API, remote Results and scheduler-worker suites. No tests were filtered out for this run. The four warnings are the existing `pydssp` invalid-divide warnings in tiny validation-acceptance fixtures.
+
+Test roots (Studio home, app home, Results, references and cluster) were redirected to `/tmp/mds-audit-fixes-20261111/verified/`; GPU tests were disabled and scheduler mode set to local. Authentic production scientific records were not used as mutable fixtures. Final combined log: `/tmp/mds-audit-fixes-20261111/phase1-verified.log`. Targeted final run: 84 passed in 6.08 seconds; log `phase1-targeted-final.log` in the same temporary evidence directory. Reproduction and intermediate logs remain there; source regression tests are committed in the repository.
+
+**Test-isolation corrections:** The initial combined run had 428 passing tests, 30 failures and 21 setup errors after a pre-existing AppTest left `MolecularDatabase = FakeDatabase` installed in the shared module. Registering cleanup removed those downstream failures. A second run had 477 passing tests and four failures caused by a separate existing AppTest leaving `render_comparison` replaced by a stub. That fixture now uses scoped monkeypatching. The targeted order-sensitive run and the final 482-test run passed after both cleanup corrections. These were test harness repairs, not changes to application behavior or test exclusions.
+
+**Remaining risks and scope:**
+
+- A legacy external structure without a recorded digest cannot be scientifically verified. Verified access now reports this explicitly; no historical hash or identity is invented. Legacy CAS paths remain verifiable from their recorded content-addressed filenames. Any retention/re-import decision for external legacy sources must be explicit and preserve the old record.
+- Artifact finalization cannot infer a wholly absent regular file that no producer declares or references. Opaque optional execution links must be declared in the existing artifact manifest. This phase did not certify every engine's manifest coverage.
+- Historical observations are not rewritten. Discovery or correction of any already incorrect historical association requires a separate, evidenced operation.
+- AUD-004 through AUD-012 remain open for later implementation phases; AUD-014 remains a limited consolidation recommendation. AUD-013's operational authentication transition is explicitly deferred pending separate authorization/account readiness.
+- No push, deployment, service restart, authentication change, production migration or scientific-data modification was performed. The read-only service check still identifies both primary production services with release directory `p11-25e003c`; these fixes are in the main application repository for a subsequent authorized release.
+
+Next phase: assessment compatibility/lifecycle and indexed job lookup (AUD-004/AUD-006/AUD-011, with AUD-012), followed by human-review concurrency (AUD-005), following the guidance below. Phase-1 completion is not a declaration that the remaining High findings are resolved or that a production rollout is authorized.
 
 ## IMPLEMENTATION_GUIDANCE
 
