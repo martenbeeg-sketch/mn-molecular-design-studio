@@ -142,6 +142,8 @@ No Critical finding was established. “Confirmed” describes the specific evid
 **Dependencies:** Group with AUD-004/AUD-011.  
 **Verification:** Queued, running, collecting, transfer/finalization, failed, cancelled, unknown and completed-but-not-ingested states; inspect coverage and assert submission callback counts. Preserve queued jobs and do not force-finalize records.
 
+**Phase-2 implementation — 2026-11-11:** Coverage uses the scheduler's terminal-state contract: collecting, transferring, finalizing, paused and unknown/new nonterminal states block equivalent submission. A completed job blocks while Evaluation ingestion is pending; lookup errors are visibly unavailable, never treated as missing. Five real AppTest cases failed before the UI correction. Nine state-contract cases and six UI/callback cases now pass; combined planning/collection suite: 60 passed. Existing queue records are not edited. Final commit and group verification appear in the phase-2 ledger.
+
 ### AUD-007 — Saved collections with membership references appear empty in review
 
 **ID:** AUD-007  

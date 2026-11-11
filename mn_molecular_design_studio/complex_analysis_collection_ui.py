@@ -626,6 +626,7 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
         ASSESSMENT_METHODS, CORE_PROFILE, COMPREHENSIVE_PROFILE,
         assessment_applicability, evaluation_coverage, recorded_chain_roles, offered_assessment_methods,
         analysis_chain_parameters, recorded_component_format,
+        analysis_job_coverage,
     )
     from mn_molecular_design_studio.complex_analysis_sources import _database_chain_sequence
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
@@ -823,17 +824,12 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
                         model_id=model_id, binder_chains=binder, target_chains=method_target,
                         parameters=parameters,
                     )
-                except (OSError, PermissionError, RuntimeError, TypeError, ValueError):
-                    matching_jobs = []
-                if matching_jobs:
-                    existing_job = matching_jobs[0]
-                    job_status = str(existing_job.get("status") or "").casefold()
-                    if job_status in {"completed", "succeeded"}:
-                        status, detail = "Completed job · Evaluation ingestion pending", str(existing_job.get("run_id") or "Completed job")
-                    elif job_status in {"queued", "pending", "submitted", "scheduled", "starting", "preparing", "running", "staging", "waiting"}:
-                        status, detail = "Queued / running", str(existing_job.get("run_id") or job_status)
-                    elif job_status in {"failed", "cancelled", "canceled"}:
-                        status, detail = "Previously failed", str(existing_job.get("error") or existing_job.get("run_id") or "Previous job failed")
+                except (OSError, PermissionError, RuntimeError, TypeError, ValueError) as exc:
+                    status, detail = "Job lookup unavailable", str(exc)
+                else:
+                    job_coverage = analysis_job_coverage(matching_jobs)
+                    if job_coverage:
+                        status, detail = job_coverage
             rows.append({"Design / structure": sample.get("label") or structure_id,
                          "Method": ASSESSMENT_METHODS[method]["label"], "Status": status,
                          "Reason / Evaluation": detail,
