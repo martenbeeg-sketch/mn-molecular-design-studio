@@ -810,7 +810,8 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
             elif schema_errors.get(method):
                 compatible, reason = False, schema_errors[method]
             status, detail = (evaluation_coverage(sample, method, parameters=parameters,
-                         binder_chains=binder, target_chains=method_target) if compatible else ("Unsupported input", reason))
+                         binder_chains=binder, target_chains=method_target,
+                         expected_protocol=(method_schemas.get(method) or {}).get("assessment_protocol")) if compatible else ("Unsupported input", reason))
             if format_missing and not role_error:
                 status = "Needs construct information"
             if compatible and status in {"Missing evaluation", "Existing Evaluation · different settings", "Previously failed"}:

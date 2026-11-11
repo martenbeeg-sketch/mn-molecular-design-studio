@@ -146,7 +146,7 @@ def test_database_generator_identity_survives_linked_validation_tool_name():
 
 def test_batch_assessment_coverage_requires_same_model_structure_chains_and_settings():
     from mn_molecular_design_studio.complex_analysis_batch import (
-        assessment_applicability, evaluation_coverage,
+        assessment_applicability, evaluation_coverage, assessment_protocol,
     )
 
     sample = {"kind": "protein-protein", "structure_id": "structure-1", "model_id": "model-2",
@@ -157,7 +157,8 @@ def test_batch_assessment_coverage_requires_same_model_structure_chains_and_sett
     assert assessment_applicability(sample, "analysis.biotite_interface", ["B"], ["A"]) == (True, "")
     observation = {"namespace": "biotite_interface", "context": {
         "source_structure_id": "structure-1", "source_structure_digest": "sha256:source",
-        "status": "completed", "settings": {"contact_distance": 5.0},
+        "status": "completed", "settings": {"contact_distance": 5.0,
+            "assessment_protocol": assessment_protocol("analysis.biotite_interface")},
         "candidate": {"model_index": "model-2", "binder_chains": ["B"], "target_chains": ["A"],
                       "raw_metadata": {"complex_analysis_selection": {"model_id": "model-2"}}},
     }}

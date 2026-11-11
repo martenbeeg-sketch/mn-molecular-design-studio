@@ -344,6 +344,11 @@ def _analysis_job(
 ) -> Any:
     source_metadata = read_json(source_run_dir / "metadata.json")
     source_identity = {**read_json(source_run_dir / "molecular_design_studio.json"), **source_metadata}
+    from mn_molecular_design_studio.complex_analysis_batch import ASSESSMENT_METHODS, assessment_protocol
+    assessment_method = next((method for method, profile in ASSESSMENT_METHODS.items()
+                              if tool in profile["evaluators"]), None)
+    if assessment_method:
+        params = {**params, "assessment_protocol": assessment_protocol(assessment_method)}
     job = create_job(
         ANALYSIS_GROUP,
         job_type="analysis",

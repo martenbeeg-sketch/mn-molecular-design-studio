@@ -402,6 +402,9 @@ def workflow_schema(workflow_id: str) -> dict[str, Any]:
     if {"source_run_dir", "candidates_jsonl"}.issubset(inspect.signature(function).parameters) or workflow_id == "campaign.validation_sequence":
         request_fields.append("source_job")
     schema = {"schema_version": WORKFLOW_SCHEMA_VERSION, **row, "request_fields": request_fields}
+    from mn_molecular_design_studio.complex_analysis_batch import ASSESSMENT_METHODS, assessment_protocol
+    if workflow_id in ASSESSMENT_METHODS:
+        schema["assessment_protocol"] = assessment_protocol(workflow_id)
     schema["collection_execution"] = {
         "automatic": True, "one_job_per_selection": True,
         "parameters_accepts": ["object", "array"] if spec.mode == "queued" else ["object"],
