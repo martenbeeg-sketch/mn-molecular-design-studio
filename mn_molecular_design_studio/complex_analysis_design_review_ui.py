@@ -32,7 +32,10 @@ def _field_label(field):
 
 def _method_label(method):
     return {"rfd4_proteina": "RFD4", "bindcraft2": "BindCraft2", "biotite_interface": "Biotite",
-            "validation_acceptance": "Saved validation", "binder_interface_chemistry_v1": "Interface chemistry"}.get(method, method)
+            "validation_acceptance": "Saved validation", "binder_interface_chemistry_v1": "Interface chemistry",
+            "sequence_qc": "Sequence Composition", "proteinsol": "Protein-Sol", "rosetta_metrics": "Rosetta",
+            "ipsae": "ipSAE", "tag_fusion_suitability": "Tag & fusion suitability",
+            "sequence_liability": "Sequence liabilities", "pep_patch": "PEP-Patch"}.get(method, method)
 
 
 def _metric_priority(item):
@@ -250,6 +253,30 @@ def render_design_review(database, user, selection, *, requested_action=""):
         if focused["candidate"].get("binder_sequence"):
             st.code(focused["candidate"]["binder_sequence"], language=None)
         st.dataframe([{"Measurement": labels[key], "Value": values.get(chosen, {}).get(key)} for key in metrics], hide_index=True, width="stretch")
+        st.markdown("#### Saved assessment results")
+        saved = sorted(focused["associated"], key=lambda item: (
+            item[1].get("stage") == "analysis", str(item[1].get("created_at") or item[0].get("created_at") or "")), reverse=True)
+        if saved:
+            options = {descriptor["id"]: (observation, descriptor) for observation, descriptor in saved}
+            result_id = st.selectbox("Saved result", list(options),
+                format_func=lambda value: _method_label(options[value][0]["namespace"]) + " · " +
+                    str(options[value][1].get("run_id") or value), key="review-saved-result-" + token + chosen)
+            observation, descriptor = options[result_id]
+            st.caption("Status: " + str(descriptor.get("status") or "not recorded") + " · Evaluation " + result_id +
+                       " · exact structure SHA-256 " + focused["digest"])
+            if observation["namespace"] == "tag_fusion_suitability" and not (
+                    observation.get("context", {}).get("settings") or {}).get("termini_confirmed"):
+                st.info("This saved tag/fusion assessment is provisional: complete intended construct termini were not confirmed. "
+                        "Its geometry evidence is available; it is not experimental tag validation.")
+            st.dataframe([{"Measurement (saved field)": key, "Saved value": json.dumps(value, ensure_ascii=False)}
+                          for key, value in observation["metrics"].items() if isinstance(value, (int, float, str, bool)) or value is None],
+                         hide_index=True, width="stretch")
+            with st.expander("Selected result settings, units and residue-level evidence"):
+                st.json({"evaluation": descriptor, "measurements": observation["metrics"],
+                         "source_context": observation["context"]}, expanded=False)
+            st.caption("Values retain their saved field names and method definitions. Open Scientific Inspector for residue-level evidence and the exact model.")
+        else:
+            st.info("No saved assessment is linked to this exact model yet. Use Calculate missing assessments to review coverage and explicitly request an analysis.")
         st.caption("Computational acceptance and experimental shortlisting are separate. Supporting decisions retain their original scope and policy.")
         with st.expander("Recorded acceptance policies and evidence"):
             st.json(focused["decisions"], expanded=False)

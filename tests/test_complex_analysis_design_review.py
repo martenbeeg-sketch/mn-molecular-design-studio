@@ -67,6 +67,107 @@ def test_no_run_or_name_only_join_and_model_decisions_cannot_leak(designs):
     assert samples[0]["label"] != samples[1]["label"]
 
 
+def test_database_assessment_ids_link_through_exact_source_not_generator_namespace(designs):
+    db, group, molecule, models = designs
+    sample = design_review_page(db, OWNER, [group])["items"][0]
+    source = {"representation_id": models[0], "source_structure_id": models[0],
+              "source_molecule_id": molecule, "source_structure_digest": sample["digest"],
+              "model_id": models[0], "candidate_id": "database-normalized_biotite_interface",
+              "candidate": {"candidate_id": "database-normalized_biotite_interface", "model_id": models[0]}}
+    other = db.create_group(OWNER, "Assessment execution")
+    db.add_to_group(OWNER, other, [molecule])
+    for name, update in [("exact", {}), ("wrong-digest", {"source_structure_digest": "0" * 64}),
+                         ("wrong-source", {"source_structure_id": models[1]}),
+                         ("wrong-model", {"model_id": models[1]})]:
+        db.add_observation(other, molecule, name, "analysis-" + name, {"contacts": 0}, context={**source, **update})
+    page = design_review_page(db, OWNER, [group])
+    first = next(s for s in page["items"] if s["structure_id"] == models[0])
+    assert "exact" in {o["namespace"] for o, _ in first["associated"]}
+    assert not {"wrong-digest", "wrong-source", "wrong-model"} & {o["namespace"] for o, _ in first["associated"]}
+    assert "exact" not in {o["namespace"] for o, _ in page["items"][1]["associated"]}
+    series, values = review_measurements([first])
+    key = next(key for key, value in series.items() if value["method"] == "exact")
+    assert values[models[0]][key] == 0
+
+
+def test_recorded_component_defaults_do_not_assert_termini_or_confidence():
+    from mn_molecular_design_studio.complex_analysis_batch import recorded_component_format
+    sample = {"record": {"metadata": {"task": "protein_binder"}}, "associated": []}
+    assert recorded_component_format(sample, ["B"])[0] == "single_chain_linear_protein"
+    assert recorded_component_format(sample, ["B", "C"])[0] == ""
+    assert recorded_component_format({}, ["B"])[0] == ""
+    assert recorded_component_format(sample, [])[0] == ""
+    sample["record"]["metadata"]["component_format"] = "cyclic_peptide"
+    assert recorded_component_format(sample, ["B"])[0] == "cyclic_peptide"
+    sample["context"] = {"component_format": "single_chain_linear_protein"}
+    assert recorded_component_format(sample, ["B"])[0] == ""  # conflicting topology is not guessed.
+    previous = {"associated": [({"context": {"settings": {"component_format": "single_chain_linear_protein"}}},
+                  {"evaluator": "tag_fusion_suitability", "binder_chains": ["B"], "status": "completed"})]}
+    assert recorded_component_format(previous, ["B"])[0] == "single_chain_linear_protein"
+    assert recorded_component_format(previous, ["A"])[0] == ""
+
+
+def test_saved_assessment_is_visible_in_review_without_coordinates(designs, monkeypatch):
+    import hashlib
+    import json
+    from streamlit.testing.v1 import AppTest
+    db, group, molecule, models = designs
+    digest = design_review_page(db, OWNER, [group])["items"][0]["digest"]
+    db.add_observation(group, molecule, "tag_fusion_suitability", "saved-tag-analysis", {"terminal_contacts": 0},
+        context={"representation_id": models[0], "source_structure_id": models[0], "source_molecule_id": molecule,
+                 "source_structure_digest": digest, "model_id": models[0], "stage": "analysis",
+                 "candidate_id": "database-analysis-namespace"})
+    monkeypatch.setattr(db, "structure_file", lambda *a: pytest.fail("Saved results do not load coordinates"))
+    monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", lambda: db)
+    token = hashlib.sha256(json.dumps([OWNER["id"], [group], None], sort_keys=True).encode()).hexdigest()[:12]
+    app = AppTest.from_string(f'''
+import streamlit as st
+from mn_molecular_design_studio.molecular_database import MolecularDatabase
+from mn_molecular_design_studio.complex_analysis_design_review_ui import render_design_review
+st.session_state.setdefault('design-review-selected-{token}', [{models[0]!r}])
+render_design_review(MolecularDatabase(), {OWNER!r}, {{"group_ids": [{group!r}], "label": "Saved campaign"}})
+''').run()
+    assert not app.exception
+    saved = next(w for w in app.selectbox if w.label == "Saved result")
+    assert "saved-tag-analysis" in " ".join(saved.options)
+    result = next(frame.value for frame in app.dataframe if "Measurement (saved field)" in frame.value.columns)
+    assert result.to_dict("records") == [{"Measurement (saved field)": "terminal_contacts", "Saved value": "0"}]
+
+
+def test_batch_uses_recorded_task_format_but_leaves_termini_unconfirmed(designs, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import complex_analysis_collection_ui as collection
+    db, group, _, _ = designs
+    sample = design_review_page(db, OWNER, [group])["items"][0]
+    sample.update(kind="protein-protein", source_kind="Database", components=[
+        {"type": "protein", "chain": "A", "sequence": "ACDEFGHIKLMNPQRSTVWYACDE"},
+        {"type": "protein", "chain": "B", "sequence": "ACDEFGHIKLMNPQRSTVWYACDE"}])
+    sample["record"]["metadata"]["task"] = "protein_binder"
+    monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", lambda: db)
+    monkeypatch.setattr(collection, "_load_workspace_samples", lambda *_: [sample])
+    monkeypatch.setattr("mn_molecular_design_studio.complex_analysis_ui._matching_database_analysis_jobs", lambda *a, **kw: [])
+    app = AppTest.from_string(f'''
+import streamlit as st
+from mn_molecular_design_studio.complex_analysis_collection_ui import _render_batch_assessment, _load_workspace_samples
+st.session_state.setdefault('complex-analysis-batch-profile', 'Comprehensive protein assessment')
+def submit(*args):
+    st.session_state['submitted'] = True
+_render_batch_assessment({OWNER!r}, _load_workspace_samples({OWNER!r}),
+    workflow_schema=lambda method: {{'parameters': []}}, submit=submit)
+''').run()
+    assert not app.exception
+    assert app.selectbox(key="complex-analysis-batch-tag-format").value == "auto"
+    table = next(frame.value for frame in app.dataframe if "Method" in frame.value.columns)
+    for name, fmt in [("Tag and Fusion Suitability", "single_chain_linear_protein"),
+                      ("Sequence and Developability Liabilities", "linear_protein")]:
+        row = table[table["Method"] == name].iloc[0]
+        assert row["Component format"] == fmt
+        assert row["Status"] == "Missing evaluation"
+    assert app.checkbox(key="complex-analysis-batch-tag-termini").value is False
+    assert app.checkbox(key="complex-analysis-batch-tag-plddt").value is False
+    assert 'submitted' not in app.session_state
+
+
 def test_protocol_conflicts_and_failed_evidence_are_not_silent_numbers(designs):
     db, group, molecule, models = designs
     for run, value, cutoff, status in [("repeat", 3, 4, "completed"), ("different", 9, 5, "completed"), ("failed", 99, 4, "failed")]:

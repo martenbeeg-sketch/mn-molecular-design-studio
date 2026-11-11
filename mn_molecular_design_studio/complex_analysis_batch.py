@@ -54,6 +54,49 @@ COMPREHENSIVE_PROFILE = CORE_PROFILE + (
 )
 
 
+def recorded_component_format(sample: dict[str, Any], binder_chains: list[str]) -> tuple[str, str]:
+    """Suggest a component format from saved evidence, never from chain order.
+
+    A target chain does not make the assessed binder a multichain construct.
+    The design task establishes topology, not complete termini or B-factor
+    semantics; those remain separately declared evaluator parameters.
+    """
+    if not binder_chains:
+        return "", "Select the component to assess."
+    formats = {"linear_protein": "single_chain_linear_protein",
+               "single_chain_linear_protein": "single_chain_linear_protein",
+               "cyclic_construct": "cyclic_peptide", "cyclic_peptide": "cyclic_peptide",
+               "multichain_construct": "multichain_construct"}
+    context = sample.get("context") or {}
+    metadata = (sample.get("record") or {}).get("metadata") or {}
+    recorded = {formats[value] for item in (context, metadata)
+                for value in [item.get("component_format") or item.get("construct_format")]
+                if isinstance(value, str) and value in formats}
+    if not recorded:
+        for observation, descriptor in sample.get("associated") or []:
+            if descriptor.get("status", "completed") not in {"completed", "succeeded"}:
+                continue
+            if descriptor.get("binder_chains") != binder_chains:
+                continue
+            if descriptor.get("evaluator") not in {"tag_fusion_suitability", "sequence_liability"}:
+                continue
+            settings = (observation.get("context") or {}).get("settings") or {}
+            value = settings.get("component_format")
+            if isinstance(value, str) and value in formats:
+                recorded.add(formats[value])
+    if len(recorded) > 1:
+        return "", "Saved component formats conflict; select the format explicitly."
+    if recorded:
+        value = next(iter(recorded))
+        if value == "single_chain_linear_protein" and len(binder_chains) != 1:
+            return "", "The saved single-chain format does not apply to this chain selection."
+        return value, "Recorded component format / saved assessment settings."
+    if (len(binder_chains) == 1 and metadata.get("task") == "protein_binder"
+            and not metadata.get("unsupported_chemistry")):
+        return "single_chain_linear_protein", "Recorded protein-binder design task; one assessed binder chain."
+    return "", "No applicable component topology is recorded; select the format explicitly."
+
+
 def analysis_chain_parameters(workflow_id: str, binder_chains: list[str], target_chains: list[str]) -> dict:
     """Keep surface-only selection separate from interface workflow arguments.
 

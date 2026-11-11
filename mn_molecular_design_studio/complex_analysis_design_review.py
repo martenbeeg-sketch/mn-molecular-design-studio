@@ -81,11 +81,27 @@ def design_review_page(database, user, group_ids, *, offset=0, limit=250):
         native_id = str(context.get("candidate_id") or context.get("native_candidate_id") or "")
         associated = []
         for observation, descriptor in by_molecule[row["molecule_id"]]:
+            representation = descriptor.get("representation_id")
+            # Database assessments have their own execution candidate/model
+            # namespace. Their explicit source binding, not those execution
+            # IDs, identifies the design whose coordinates were assessed.
+            source = observation["context"]
+            source_structure = str(source.get("source_structure_id") or "")
+            source_digest = str(source.get("source_structure_digest") or "")
+            source_model = str(source.get("model_id") or "")
+            if (representation == row["id"] and source_structure in {
+                    row["id"], str(context.get("_replica_structure") or "")}
+                    and source_structure and digest and source_digest == digest
+                    and source.get("source_molecule_id") == row["molecule_id"]
+                    and str(descriptor.get("model_id") or "") in {
+                        "", row["id"], model, str(context.get("_replica_structure") or "")}
+                    and source_model in {"", row["id"], model, str(context.get("_replica_structure") or "")}):
+                associated.append((observation, descriptor))
+                continue
             if descriptor.get("model_id") and model and str(descriptor["model_id"]) != model:
                 continue
             if descriptor.get("candidate_id") and native_id and descriptor["candidate_id"] != native_id:
                 continue
-            representation = descriptor.get("representation_id")
             if representation == row["id"]:
                 associated.append((observation, descriptor))
                 continue

@@ -625,7 +625,7 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
     from mn_molecular_design_studio.complex_analysis_batch import (
         ASSESSMENT_METHODS, CORE_PROFILE, COMPREHENSIVE_PROFILE,
         assessment_applicability, evaluation_coverage, recorded_chain_roles, offered_assessment_methods,
-        analysis_chain_parameters,
+        analysis_chain_parameters, recorded_component_format,
     )
     from mn_molecular_design_studio.complex_analysis_sources import _database_chain_sequence
     from mn_molecular_design_studio.molecular_database import MolecularDatabase
@@ -659,9 +659,11 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
             ph = float(st.number_input("Sequence / PEP-Patch pH", min_value=0.0, max_value=14.0,
             value=7.4, step=0.1, key="complex-analysis-batch-ph"))
         if "analysis.sequence_liability" in methods:
-            liability_format_options = {"": "Choose construct format…", "linear_protein": "Linear protein chain(s)",
+            liability_format_options = {"auto": "From each saved design (automatic)", "linear_protein": "Linear protein chain(s)",
                                         "cyclic_construct": "Cyclic construct (no free termini)",
                                         "multichain_construct": "Multichain construct (chain-by-chain screen)"}
+            if not st.session_state.get("complex-analysis-batch-liability-format"):
+                st.session_state["complex-analysis-batch-liability-format"] = "auto"
             liability_format = st.selectbox("Sequence-liability construct format", list(liability_format_options),
                 format_func=lambda value: liability_format_options[value], key="complex-analysis-batch-liability-format",
                 disabled="analysis.sequence_liability" not in methods)
@@ -671,9 +673,11 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
             tag_plddt = st.checkbox("The selected structure stores pLDDT in Cα B-factors (verified from its source)",
                 value=False, key="complex-analysis-batch-tag-plddt", disabled="analysis.tag_fusion_suitability" not in methods)
             tag_columns = st.columns(2)
+            if not st.session_state.get("complex-analysis-batch-tag-format"):
+                st.session_state["complex-analysis-batch-tag-format"] = "auto"
             tag_format = tag_columns[0].selectbox("Tag/fusion component format",
-                ["", "single_chain_linear_protein", "cyclic_peptide", "multichain_construct"],
-                format_func=lambda value: {"": "Choose format…", "single_chain_linear_protein": "Single-chain linear protein",
+                ["auto", "single_chain_linear_protein", "cyclic_peptide", "multichain_construct"],
+                format_func=lambda value: {"auto": "From each saved design (automatic)", "single_chain_linear_protein": "Single-chain linear protein",
                                            "cyclic_peptide": "Cyclic peptide", "multichain_construct": "Multichain construct"}[value],
                 key="complex-analysis-batch-tag-format", disabled="analysis.tag_fusion_suitability" not in methods)
             tag_termini_confirmed = tag_columns[1].checkbox(
@@ -682,6 +686,9 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
             tag_cutoff = float(st.number_input("Tag/fusion interface contact cutoff (Å)", min_value=1.0, max_value=10.0,
                 value=4.5, step=0.25, key="complex-analysis-batch-tag-cutoff",
                 disabled="analysis.tag_fusion_suitability" not in methods))
+            st.caption("Automatic format uses recorded component topology, a prior assessment, or the protein-binder task. "
+                       "Target chains do not make a single-chain binder multichain. Termini completeness and pLDDT "
+                       "are separate declarations; without confirmation, tag/fusion geometry is provisional and B-factors remain uninterpreted.")
         ipsae_defaults = {"pae_cutoff": 10.0, "dist_cutoff": 10.0, "ipdae_contact_cutoff": 8.0,
                          "structure_contact_cutoff": 4.0, "hotspot_contact_cutoff": 5.0}
         ipsae_parameters = {}
@@ -760,6 +767,13 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
                   "model_id": model_id, "structure_digest": digest, "binder_chains": binder,
                   "target_chains": target, "structure_context": sample.get("context") or {},
                   "group_origin": group_origin}
+        inferred_format, format_basis = recorded_component_format(sample, binder)
+        effective_tag_format = inferred_format if "analysis.tag_fusion_suitability" in methods and tag_format == "auto" else (
+            tag_format if "analysis.tag_fusion_suitability" in methods else "")
+        effective_liability_format = ({"single_chain_linear_protein": "linear_protein", "cyclic_peptide": "cyclic_construct",
+                                      "multichain_construct": "multichain_construct"}.get(inferred_format, "")
+                                      if "analysis.sequence_liability" in methods and liability_format == "auto" else (
+                                          liability_format if "analysis.sequence_liability" in methods else ""))
         for method in methods:
             method_target = [] if method in {"analysis.sequence_qc", "analysis.proteinsol", "analysis.pep_patch"} else target
             parameters: dict[str, Any] = {}
@@ -770,11 +784,11 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
             elif method == "analysis.sequence_qc":
                 parameters = {"ph": round(ph, 3)}
             elif method == "analysis.sequence_liability":
-                parameters = {"component_format": liability_format,
+                parameters = {"component_format": effective_liability_format,
                               "b_factor_interpretation": "plddt_0_100" if liability_plddt else "uninterpreted"}
             elif method == "analysis.tag_fusion_suitability":
                 parameters = {"interface_contact_cutoff": tag_cutoff, "termini_confirmed": tag_termini_confirmed,
-                              "component_format": tag_format,
+                              "component_format": effective_tag_format,
                               "b_factor_interpretation": "plddt_0_100" if tag_plddt else "uninterpreted"}
             elif method in {"analysis.rosetta", "analysis.ipsae"}:
                 parameters = {str(item.get("name")): item.get("default")
@@ -785,10 +799,10 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
             elif method == "analysis.proteinsol":
                 parameters = {}
             compatible, reason = assessment_applicability(sample, method, binder, target)
-            if method == "analysis.sequence_liability" and not liability_format:
-                compatible, reason = False, "Choose the construct format before submitting sequence-liability screening."
-            if method == "analysis.tag_fusion_suitability" and not tag_format:
-                compatible, reason = False, "Choose the component format before submitting tag/fusion assessment."
+            format_missing = (method == "analysis.sequence_liability" and not effective_liability_format or
+                              method == "analysis.tag_fusion_suitability" and not effective_tag_format)
+            if compatible and format_missing:
+                compatible, reason = False, format_basis
             if role_error:
                 compatible, reason = False, role_error
             if not schema_errors.get(method) and not method_schemas.get(method):
@@ -797,6 +811,8 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
                 compatible, reason = False, schema_errors[method]
             status, detail = (evaluation_coverage(sample, method, parameters=parameters,
                          binder_chains=binder, target_chains=method_target) if compatible else ("Unsupported input", reason))
+            if format_missing and not role_error:
+                status = "Needs construct information"
             if compatible and status in {"Missing evaluation", "Existing Evaluation · different settings", "Previously failed"}:
                 from mn_molecular_design_studio import complex_analysis_ui as workspace
                 candidate_id = "database-" + hashlib.sha256((molecule_id + ":" + structure_id).encode()).hexdigest()[:24]
@@ -819,7 +835,11 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
                         status, detail = "Previously failed", str(existing_job.get("error") or existing_job.get("run_id") or "Previous job failed")
             rows.append({"Design / structure": sample.get("label") or structure_id,
                          "Method": ASSESSMENT_METHODS[method]["label"], "Status": status,
-                         "Reason / Evaluation": detail})
+                         "Reason / Evaluation": detail,
+                         "Component format": parameters.get("component_format", ""),
+                         "Format basis": (format_basis if (method == "analysis.tag_fusion_suitability" and tag_format == "auto" or
+                                                          method == "analysis.sequence_liability" and liability_format == "auto")
+                                          else "Explicit selection") if "component_format" in parameters else ""})
             queue = compatible and status == "Missing evaluation"
             queue = queue or (compatible and status == "Existing Evaluation · different settings" and include_mismatched)
             queue = queue or (compatible and status == "Previously failed" and retry_failed)
@@ -2574,6 +2594,8 @@ def render_collection_workspace(user: dict, run_rows: list[dict] | None = None, 
                 samples = _load_workspace_samples(user)
                 st.markdown("### Calculate missing assessments")
                 st.write(selection["label"])
+                st.info("Completed results are under Review designs → select a model → Saved assessment results. "
+                        "This screen checks coverage and submits missing work; it does not replace your saved results.")
                 if st.button("← Back to design review", key="complex-analysis-back-to-design-review"):
                     st.session_state["complex-analysis-flow-step"] = "overview"
                     st.session_state["complex-analysis-assessment-open"] = False
