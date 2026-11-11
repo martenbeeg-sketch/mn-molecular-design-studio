@@ -183,6 +183,7 @@ def test_batch_assessment_ui_submits_explicit_missing_database_evaluations(monke
 
     monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", FakeDatabase)
     monkeypatch.setattr(complex_analysis_ui, "_matching_database_analysis_jobs", lambda *args, **kwargs: [])
+    monkeypatch.setattr("mn_molecular_design_studio.job_catalog.database_analysis_jobs", lambda *a, **kw: [])
     script = '''
 import streamlit as st
 from pathlib import Path

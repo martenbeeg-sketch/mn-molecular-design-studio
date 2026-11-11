@@ -433,6 +433,7 @@ def test_ligand_workflow_adapters_accept_context_selection_and_reject_interface_
     assert captured == {"tool": tool, "kwargs": {
         "settings": {}, "cpu_cores": 4, "candidate_ids": ["candidate-1"],
         "selected_structure_path": path, "selected_model_id": "model-2", "ligand_selection": selection,
+        **({"source_job_reference": None, "source_workstation_id": None, "source_workstation": None} if tool == "plip" else {}),
     }}
     with pytest.raises(ValueError, match="does not accept protein interface chain groups"):
         runner(tmp_path, tmp_path / "candidates.jsonl", binder_chains=["A"])

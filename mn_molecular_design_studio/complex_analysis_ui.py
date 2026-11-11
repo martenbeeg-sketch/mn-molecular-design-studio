@@ -2397,11 +2397,12 @@ def _render_contextual_workflow(user: dict, *, workflow_id: str, schema: dict | 
 def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: dict,
                                     candidate_id: str, model_id: str, binder_chains: list[str],
                                     target_chains: list[str], parameters: dict,
-                                    ligand_selection: dict | None = None) -> list[dict]:
-    """Reuse only an accessible evaluation for this exact Database representation."""
-    from mn_molecular_design_studio.auth import accessible_project_ids, can_access_job
-    from mn_molecular_design_studio.job_catalog import get_job_access_record, search_jobs
-
+                                    ligand_selection: dict | None = None, indexed_rows=None,
+                                    load_evidence=True, expected_protocol=None, allow_reassessment=False) -> list[dict]:
+    """Find exact indexed work; full evidence is read only for targeted inspection."""
+    from mn_molecular_design_studio.auth import can_access_job
+    from mn_molecular_design_studio.job_catalog import database_analysis_jobs, analysis_source_key
+    from mn_molecular_design_studio.complex_analysis_batch import scientific_parameters, protocol_matches
     tool = {"analysis.biotite_interface": "biotite_interface", "analysis.ipsae": "ipsae",
             "analysis.rosetta": "rosetta_metrics", "analysis.pep_patch": "pep_patch",
             "analysis.sequence_qc": "sequence_qc", "analysis.proteinsol": "proteinsol",
@@ -2414,112 +2415,67 @@ def _matching_database_analysis_jobs(user: dict, *, workflow_id: str, source: di
             "analysis.binder_interface_chemistry": "binder_interface_chemistry_v1"}.get(workflow_id)
     if not tool:
         return []
-    rows = search_jobs(tools=[tool], task_group="analysis", limit=1000, sort_by="active_desc",
-                       access_owner_id=str(user.get("id") or ""),
-                       accessible_project_ids=accessible_project_ids(user),
-                       access_admin=user.get("role") == "admin")["items"]
+    rows = database_analysis_jobs(user, [source]) if indexed_rows is None else indexed_rows
+    key = analysis_source_key(source)
     identity_keys = ("molecule_id", "structure_id", "group_id", "structure_digest", "model_id")
-    if workflow_id == "analysis.ipsae":
-        identity_keys = (*identity_keys, "pae_digest")
+    if workflow_id == "analysis.ipsae" and source.get("pae_digest"):
+        identity_keys += ("pae_digest",)
     if workflow_id == "analysis.sequence_liability":
-        identity_keys = (*identity_keys, "ligand_selection")
+        identity_keys += ("ligand_selection",)
     if workflow_id == "analysis.reference_environment":
-        identity_keys = (*identity_keys, "reference_context_id", "reference_molecule_id",
-                         "reference_structure_id", "reference_structure_digest",
-                         "reference_model_id", "reference_chain_id", "placement_run_id")
+        identity_keys += ("reference_context_id", "reference_molecule_id", "reference_structure_id",
+                          "reference_structure_digest", "reference_model_id", "reference_chain_id", "placement_run_id")
     matches = []
-    desired_binder, desired_target = sorted(map(str, binder_chains)), sorted(map(str, target_chains))
     for row in rows:
-        task_group, run_id = str(row.get("task_group") or ""), str(row.get("run_id") or "")
-        if not task_group or not run_id or not can_access_job(user, get_job_access_record(task_group, run_id)):
+        projection = row.get("database_analysis") or {}
+        if row.get("tool") != tool or projection.get("source_key") != key or projection.get("invalid"):
             continue
-        run_dir = Path(str(row.get("run_dir") or "")).expanduser().resolve()
-        metadata = _read_json(run_dir / "metadata.json")
-        if str(metadata.get("upstream_source_kind") or "") != "database":
+        if not can_access_job(user, row):
             continue
-        saved_source = metadata.get("database_source") if isinstance(metadata.get("database_source"), dict) else {}
-        if any(str(saved_source.get(key) or "") != str(source.get(key) or "") for key in identity_keys):
+        saved_source = projection.get("source") or {}
+        if any((saved_source.get(field) or {}) != (source.get(field) or {}) if field == "ligand_selection"
+               else saved_source.get(field, "") != source.get(field, "") for field in identity_keys):
             continue
-        if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"}:
-            manifest = _read_json(run_dir / "artifacts" / "analysis" / "batch_manifest.json")
-            selection = manifest.get("selection") if isinstance(manifest.get("selection"), dict) else {}
-            item = next((candidate for candidate in manifest.get("items", [])
-                         if str(candidate.get("candidate_id") or "") == candidate_id
-                         and str(candidate.get("source_structure_digest") or "") == str(source.get("structure_digest") or "")
-                         and str(candidate.get("model_id") or selection.get("model_id") or "") == model_id
-                         and candidate.get("ligand_selection") == (ligand_selection or {})), None)
-            if item is None:
-                continue
-            saved_model = str(selection.get("model_id") or "")
-            saved_binder, saved_target, item_binder, item_target = [], [], [], []
-            saved_parameters = {key: value for key, value in (manifest.get("settings") or {}).items()
-                                if key not in {"workers", "protocol_revision", "checkpoint_sha256"}}
-            selected_item = item
-            if selection.get("ligand_selection") != (ligand_selection or {}):
-                continue
-        elif workflow_id in {"analysis.biotite_interface", "analysis.pep_patch",
-                             "analysis.sequence_qc", "analysis.proteinsol"}:
-            manifest = _read_json(run_dir / "artifacts" / "analysis" / "batch_manifest.json")
-            selection = manifest.get("selection") if isinstance(manifest.get("selection"), dict) else {}
-            item = next((candidate for candidate in manifest.get("items", [])
-                         if str(candidate.get("candidate_id") or "") == candidate_id
-                         and str(candidate.get("structure_digest") or "") == str(source.get("structure_digest") or "")), None)
-            if item is None:
-                continue
-            saved_model = str(selection.get("model_id") or "")
-            saved_binder = sorted(map(str, selection.get("binder_chains") or []))
-            saved_target = sorted(map(str, selection.get("target_chains") or []))
-            settings = manifest.get("settings") if isinstance(manifest.get("settings"), dict) else {}
-            if workflow_id == "analysis.biotite_interface":
-                saved_parameters = {"contact_distance": float(settings.get("contact_distance", 5.0))}
-                item_binder = sorted(map(str, item.get("binder_chains") or []))
-                item_target = sorted(map(str, item.get("target_chains") or []))
-            elif workflow_id == "analysis.pep_patch":
-                saved_parameters = {"ph": float(settings.get("ph", 7.4))}
-                item_binder, item_target = saved_binder, []
-            elif workflow_id == "analysis.sequence_qc":
-                saved_parameters = {"ph": float(settings.get("ph", 7.4))}
-                item_binder, item_target = saved_binder, []
-            else:
-                saved_parameters = {}
-                item_binder, item_target = saved_binder, []
-            selected_item = item
-        else:
-            manifest = _read_json(run_dir / "artifacts" / "analysis" / "complex_analysis_selection.json")
-            if manifest.get("schema") != "studio.complex_analysis_selection.v1":
-                continue
-            saved_model = str(manifest.get("model_id") or "")
-            saved_binder = sorted(map(str, manifest.get("binder_chains") or []))
-            saved_target = sorted(map(str, manifest.get("target_chains") or []))
-            saved_parameters = manifest.get("parameters") if isinstance(manifest.get("parameters"), dict) else {}
-            item_binder, item_target = saved_binder, saved_target
-            selected_item = manifest
-        parameters_match = saved_parameters == parameters
+        if (projection.get("candidate_id") != candidate_id or projection.get("model_id") != str(model_id)
+                or sorted(map(str, projection.get("binder_chains") or [])) != sorted(map(str, binder_chains))
+                or sorted(map(str, projection.get("target_chains") or [])) != sorted(map(str, target_chains))):
+            continue
+        if workflow_id in {"analysis.plip", "analysis.pandamap", "analysis.posebusters"} and projection.get("ligand_selection") != (ligand_selection or {}):
+            continue
+        saved_parameters = scientific_parameters(projection.get("parameters") or {})
+        requested = scientific_parameters(parameters)
         if workflow_id == "analysis.reference_environment":
-            parameters_match = all(saved_parameters.get(key) == parameters.get(key)
-                                   for key in ("source_component_chain", "selected_reference_chains", "assembly_id"))
-        elif workflow_id == "analysis.sequence_liability":
-            parameters_match = all(saved_parameters.get(key) == parameters.get(key)
-                                   for key in ("component_format", "b_factor_interpretation"))
-        if (saved_model != model_id or saved_binder != desired_binder or saved_target != desired_target
-                or item_binder != desired_binder or item_target != desired_target
-                or not parameters_match):
+            fields = ("source_component_chain", "selected_reference_chains", "assembly_id")
+            if any(saved_parameters.get(field) != requested.get(field) for field in fields):
+                continue
+        elif saved_parameters != requested:
             continue
-        status = str(row.get("status") or metadata.get("status") or "unknown").casefold()
-        error = str(metadata.get("error") or "")
-        if workflow_id in {"analysis.biotite_interface", "analysis.pep_patch", "analysis.plip", "analysis.pandamap", "analysis.posebusters"} and status in {"completed", "succeeded"}:
-            batch = _read_json(run_dir / "artifacts" / "analysis" / "batch_status.json")
-            item_status = next((candidate for candidate in batch.get("items", [])
-                                if candidate.get("id") == selected_item.get("id")), {})
-            selected_status = str(item_status.get("status") or "").casefold()
-            error = str(item_status.get("error") or error)
-            if selected_status and selected_status not in {"completed", "succeeded"}:
-                status = selected_status
-        matches.append({**row, "status": status, "run_dir": run_dir, "manifest": manifest,
-                        "metadata": metadata, "selected_item": selected_item, "error": error})
-    rank = {"completed": 0, "succeeded": 0, "running": 1, "starting": 1, "queued": 1,
-            "preparing": 1, "pending": 1, "failed": 2, "cancelled": 3, "canceled": 3}
-    return sorted(matches, key=lambda item: (rank.get(item["status"], 4), str(item.get("created_at") or "")))
+        status = str(row.get("status") or "unknown").casefold()
+        if expected_protocol is not None and status in {"completed", "succeeded", "failed", "cancelled", "canceled", "error"}:
+            saved_protocol = projection.get("protocol") or {}
+            if not protocol_matches(saved_protocol, expected_protocol):
+                known = bool(expected_protocol) and all(v not in (None, "") and saved_protocol.get(k) not in (None, "")
+                                                       for k, v in expected_protocol.items())
+                if known or allow_reassessment:
+                    continue
+        if status in {"completed", "succeeded"} and projection.get("item_status"):
+            status = str(projection["item_status"]).casefold()
+        result = {**row, "status": status, "error": projection.get("error") or ""}
+        matches.append(result)
+    matches.sort(key=lambda item: (0 if item["status"] in {"completed", "succeeded"} else
+                 2 if item["status"] in {"failed", "cancelled", "canceled", "error"} else 1,
+                 str(item.get("created_at") or ""), str(item.get("run_id") or "")))
+    if load_evidence:
+        # These callers have explicitly opened an individual structure/analysis.
+        # Coverage planning passes False and never reads any Results files.
+        for match in matches:
+            run = Path(match["run_dir"])
+            batch = _read_json(run / "artifacts/analysis/batch_manifest.json")
+            match["manifest"] = batch or _read_json(run / "artifacts/analysis/complex_analysis_selection.json")
+            match["metadata"] = _read_json(run / "metadata.json")
+            match["selected_item"] = next((item for item in batch.get("items", [])
+                if str(item.get("candidate_id") or "") == candidate_id), match["manifest"])
+    return matches
 
 
 def _render_biotite_workspace(user: dict, job: dict, selected: dict, components: list[dict], *,
@@ -3103,11 +3059,15 @@ def _reference_placement_match(user: dict, record: dict, structure: dict, saved:
         (source["molecule_id"] + ":" + source["structure_id"]).encode()
     ).hexdigest()[:24]
     parameters = _reference_placement_parameters(saved, model_id)
-    matches = _matching_database_analysis_jobs(
-        user, workflow_id="analysis.reference_placement", source=source,
-        candidate_id=candidate_id, model_id=str(model_id), binder_chains=[], target_chains=[],
-        parameters=parameters,
-    )
+    try:
+        matches = _matching_database_analysis_jobs(
+            user, workflow_id="analysis.reference_placement", source=source,
+            candidate_id=candidate_id, model_id=str(model_id), binder_chains=[], target_chains=[],
+            parameters=parameters,
+        )
+    except (OSError, PermissionError, RuntimeError, ValueError) as exc:
+        st.info(f"Saved placement job status is unavailable: {exc}")
+        return None
     current = next((item for item in matches if item.get("status") in {"completed", "succeeded"}), None)
     if current is None:
         return None
@@ -3940,9 +3900,17 @@ def _render_database_workflow(user: dict, workflow_id: str, schema: dict | None,
         st.info(unavailable)
         return
     candidate_id = "database-" + hashlib.sha256((str(source["molecule_id"]) + ":" + str(source["structure_id"])).encode()).hexdigest()[:24]
-    matches = _matching_database_analysis_jobs(user, workflow_id=workflow_id, source=source,
-        candidate_id=candidate_id, model_id=model_id, binder_chains=list(binder_chains),
-        target_chains=list(target_chains), parameters=parameters, ligand_selection=ligand_selection)
+    try:
+        matches = _matching_database_analysis_jobs(user, workflow_id=workflow_id, source=source,
+            candidate_id=candidate_id, model_id=model_id, binder_chains=list(binder_chains),
+            target_chains=list(target_chains), parameters=parameters, ligand_selection=ligand_selection)
+    except (OSError, PermissionError, RuntimeError, ValueError) as exc:
+        st.info(f"Cannot verify analysis job status: {exc}")
+        if st.button("Refresh analysis job index", key=f"refresh-analysis-index-{workflow_id}-{key}"):
+            from mn_molecular_design_studio.job_catalog import reconcile
+            reconcile(wait=False)
+            st.rerun()
+        return
     current = next((item for item in matches if item["status"] in {"completed", "succeeded"}), None)
     if current is None:
         current = next((item for item in matches if item["status"] not in {"failed", "cancelled", "canceled"}), None)

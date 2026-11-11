@@ -34,6 +34,7 @@ def test_real_planning_ui_does_not_submit_matching_nonterminal_or_unverified_wor
         def group(self, *args, **kwargs):
             return {"project_id": "", "origin": {}}
     monkeypatch.setattr(molecular_database, "MolecularDatabase", Database)
+    monkeypatch.setattr("mn_molecular_design_studio.job_catalog.database_analysis_jobs", lambda *a, **kw: [])
     def matching(*args, **kwargs):
         if state == "catalog-error":
             raise RuntimeError("catalog temporarily unavailable")
@@ -43,3 +44,22 @@ def test_real_planning_ui_does_not_submit_matching_nonterminal_or_unverified_wor
     assert not app.exception
     assert app.button(key="complex-analysis-submit-batch-assessment").disabled
     assert "submissions" not in app.session_state
+
+
+def test_submission_rechecks_index_after_preview_and_before_callbacks(monkeypatch):
+    from mn_molecular_design_studio import complex_analysis_ui, molecular_database, job_catalog
+    class Database:
+        def group(self, *args, **kwargs):
+            return {"project_id": "", "origin": {}}
+    monkeypatch.setattr(molecular_database, "MolecularDatabase", Database)
+    calls = []
+    def indexed(*args, **kwargs):
+        calls.append(1)
+        return [{"status": "collecting", "run_id": "another-editor-job"}] if len(calls) >= 3 else []
+    monkeypatch.setattr(job_catalog, "database_analysis_jobs", indexed)
+    monkeypatch.setattr(complex_analysis_ui, "_matching_database_analysis_jobs", lambda *a, **kw: kw["indexed_rows"])
+    app = AppTest.from_string(SCRIPT).run()
+    assert not app.button(key="complex-analysis-submit-batch-assessment").disabled
+    app.button(key="complex-analysis-submit-batch-assessment").click().run()
+    assert "submissions" not in app.session_state
+    assert len(calls) == 3  # one batched lookup per render plus the final check

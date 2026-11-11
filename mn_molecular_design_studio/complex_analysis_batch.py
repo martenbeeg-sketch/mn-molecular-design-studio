@@ -7,13 +7,14 @@ from typing import Any
 _PROTOCOL_FIELDS = {"method_version", "engine_version", "protocol_revision", "image", "image_digest", "checkpoint_sha256"}
 _PLACEMENT_FIELDS = {"source_run_dir", "candidates_jsonl", "candidate_ids", "selected_structure_path", "selected_model_id",
                      "binder_chains", "target_chains", "source_job", "job_name", "campaign_name", "backend",
-                     "cpu_cores", "cpu_threads", "nprocs", "workers", "gpu_device", "output_dir", "method", "assessment_protocol"}
+                     "cpu_cores", "cpu_threads", "nprocs", "workers", "gpu_device", "output_dir", "method", "assessment_protocol", "database_source"}
 
 
 def scientific_parameters(parameters):
     """Keep scientific settings separate from protocol and source placement."""
     return {key: value for key, value in parameters.items()
-            if key not in _PLACEMENT_FIELDS | _PROTOCOL_FIELDS and value is not None}
+            if key not in _PLACEMENT_FIELDS | _PROTOCOL_FIELDS and value is not None
+            and not (key == "interface_ligand_selection" and value == {})}
 
 
 def assessment_protocol(method):

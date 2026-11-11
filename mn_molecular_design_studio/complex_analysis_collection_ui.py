@@ -741,10 +741,21 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
             if not recorded_binder and not binder:
                 st.info("No saved binder role was found. Select the component explicitly; chain order is not used to guess it.")
 
+    from mn_molecular_design_studio.job_catalog import database_analysis_jobs
+    indexed_sources = [{"molecule_id": s.get("molecule_id"), "structure_id": s.get("structure_id"),
+                       "group_id": (s.get("structure") or {}).get("group_id"),
+                       "structure_digest": s.get("digest"), "model_id": s.get("model_id")} for s in database_samples]
+    index_error = ""
     try:
-        from mn_molecular_design_studio.engine.workflow_engine.core.candidates import read_candidates
-    except ImportError:
-        read_candidates = None
+        indexed_jobs = database_analysis_jobs(user, [s for s in indexed_sources if all(v is not None and str(v) for v in s.values())])
+    except (OSError, PermissionError, RuntimeError, TypeError, ValueError) as exc:
+        indexed_jobs, index_error = [], str(exc)
+    if index_error:
+        st.info("Analysis job status is unavailable: " + index_error)
+        if st.button("Refresh analysis job index", key="batch-analysis-refresh-index"):
+            from mn_molecular_design_studio.job_catalog import reconcile
+            reconcile(wait=False)
+            st.rerun()
 
     rows, submission_plan = [], []
     for sample in database_samples:
@@ -806,6 +817,8 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
                 compatible, reason = False, format_basis
             if role_error:
                 compatible, reason = False, role_error
+            if not all((molecule_id, structure_id, group_id, model_id, digest)):
+                compatible, reason = False, "Exact Database structure/model/digest identity is incomplete."
             if not schema_errors.get(method) and not method_schemas.get(method):
                 compatible, reason = False, schema_errors.get(method, "Schema unavailable")
             elif schema_errors.get(method):
@@ -819,10 +832,15 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
                 from mn_molecular_design_studio import complex_analysis_ui as workspace
                 candidate_id = "database-" + hashlib.sha256((molecule_id + ":" + structure_id).encode()).hexdigest()[:24]
                 try:
+                    if index_error:
+                        raise RuntimeError(index_error)
                     matching_jobs = workspace._matching_database_analysis_jobs(
                         user, workflow_id=method, source=source, candidate_id=candidate_id,
                         model_id=model_id, binder_chains=binder, target_chains=method_target,
                         parameters=parameters,
+                        indexed_rows=indexed_jobs, load_evidence=False,
+                        expected_protocol=(method_schemas.get(method) or {}).get("assessment_protocol"),
+                        allow_reassessment=status == "Existing Evaluation · different settings" and include_mismatched,
                     )
                 except (OSError, PermissionError, RuntimeError, TypeError, ValueError) as exc:
                     status, detail = "Job lookup unavailable", str(exc)
@@ -850,7 +868,8 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
                                    **analysis_chain_parameters(method, binder, method_target),
                                    "database_source": source_selection})
                 submission_plan.append({"method": method, "sample": sample, "parameters": parameters,
-                                        "project_id": project_id, "source": source})
+                                        "project_id": project_id, "source": source,
+                                        "allow_reassessment": status == "Existing Evaluation · different settings" and include_mismatched})
 
     if not rows:
         st.info("Select at least one registered assessment method to inspect coverage.")
@@ -867,10 +886,26 @@ def _render_batch_assessment(user: dict, samples: list[dict], *, workflow_schema
     if st.button("Analyze selected designs", type="primary", key="complex-analysis-submit-batch-assessment",
                  disabled=submit is None or not submission_plan or len(submission_plan) > 50):
         submitted, errors = 0, []
+        try:
+            fresh_jobs = database_analysis_jobs(user, indexed_sources)
+        except (OSError, PermissionError, RuntimeError, TypeError, ValueError) as exc:
+            st.error(f"Cannot verify existing analysis work before submission: {exc}")
+            return
         for item in submission_plan:
             method = item["method"]
             try:
                 schema = method_schemas[method]
+                from mn_molecular_design_studio import complex_analysis_ui as workspace
+                blocking = workspace._matching_database_analysis_jobs(user, workflow_id=method, source=item["source"],
+                    candidate_id=item["parameters"]["candidate_ids"][0], model_id=item["source"]["model_id"],
+                    binder_chains=item["source"]["binder_chains"],
+                    target_chains=[] if method in {"analysis.sequence_qc", "analysis.proteinsol", "analysis.pep_patch"} else item["source"]["target_chains"],
+                    parameters=item["parameters"], indexed_rows=fresh_jobs, load_evidence=False,
+                    expected_protocol=schema.get("assessment_protocol"), allow_reassessment=item["allow_reassessment"])
+                existing = analysis_job_coverage(blocking)
+                if existing and existing[0] != "Previously failed":
+                    errors.append(f"{ASSESSMENT_METHODS[method]['label']}: matching work already exists ({existing[1]}).")
+                    continue
                 submit(schema, method, item["parameters"], item["project_id"], {},
                        ASSESSMENT_METHODS[method]["label"])
                 submitted += 1

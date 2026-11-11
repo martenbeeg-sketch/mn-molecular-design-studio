@@ -67,17 +67,9 @@ def render_design_review(database, user, selection, *, requested_action="", work
     page = design_review_page(database, user, selection["group_ids"], offset=(page_number - 1) * 250)
     samples = page["items"]
     if selection.get("system_scope") is not None:
-        from mn_molecular_design_studio.complex_analysis_catalog import saved_relationship_page, relationship_structure_ids
-        # Resolve only the explicit selected context; no cross-target substitution.
-        linked, offset = set(), 0
-        while True:
-            relationships = saved_relationship_page(database, user, selection["group_ids"], limit=100,
-                offset=offset, system_scope=selection["system_scope"])
-            for row in relationships["items"]:
-                linked.update(relationship_structure_ids(database, user, selection["group_ids"], row["relationship"]))
-            if relationships["next_offset"] is None:
-                break
-            offset = relationships["next_offset"]
+        from mn_molecular_design_studio.complex_analysis_catalog import scoped_structure_ids
+        linked = scoped_structure_ids(database, user, selection["group_ids"], selection["system_scope"],
+                                      [sample["structure_id"] for sample in samples])
         samples = [sample for sample in samples if sample["structure_id"] in linked]
     if not samples:
         st.info("No exact retained models on this page. Choose another page or return to campaign selection; source evidence remains unchanged.")

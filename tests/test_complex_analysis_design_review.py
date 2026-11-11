@@ -146,6 +146,7 @@ def test_batch_uses_recorded_task_format_but_leaves_termini_unconfirmed(designs,
     monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", lambda: db)
     monkeypatch.setattr(collection, "_load_workspace_samples", lambda *_: [sample])
     monkeypatch.setattr("mn_molecular_design_studio.complex_analysis_ui._matching_database_analysis_jobs", lambda *a, **kw: [])
+    monkeypatch.setattr("mn_molecular_design_studio.job_catalog.database_analysis_jobs", lambda *a, **kw: [])
     app = AppTest.from_string(f'''
 import streamlit as st
 from mn_molecular_design_studio.complex_analysis_collection_ui import _render_batch_assessment, _load_workspace_samples
@@ -371,6 +372,7 @@ def test_inline_assessments_keep_saved_results_selection_and_submission_ui(desig
     monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", lambda: db)
     monkeypatch.setattr(collection, "_load_workspace_samples", lambda user: samples)
     monkeypatch.setattr("mn_molecular_design_studio.complex_analysis_ui._matching_database_analysis_jobs", lambda *a, **kw: [])
+    monkeypatch.setattr("mn_molecular_design_studio.job_catalog.database_analysis_jobs", lambda *a, **kw: [])
     app = AppTest.from_string(f'''
 import streamlit as st
 from mn_molecular_design_studio.complex_analysis_evidence_ui import open_saved_work

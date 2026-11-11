@@ -526,6 +526,8 @@ def test_database_workspace_launches_intrinsic_tag_fusion_with_selected_chain_pr
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_HOME", str(workspace))
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_APP_HOME", str(workspace))
     monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_RUN_DIR", str(workspace / "runs"))
+    from mn_molecular_design_studio.job_catalog import reconcile
+    reconcile()  # Explicitly establish the fixture's known-empty execution index.
     database = MolecularDatabase(workspace / "database")
     path = _write_complex(tmp_path / "ui-complex.pdb")
     parsed = molecule_imports.parse_structure(path.read_bytes(), path.name)[0]

@@ -160,6 +160,7 @@ def test_interface_chemistry_rejects_ligand_only_selected_partner(tmp_path):
 
 
 def test_interface_chemistry_is_in_comprehensive_profile_and_reuses_its_versioned_evaluation():
+    from mn_molecular_design_studio.complex_analysis_interface_chemistry import METHOD_VERSION
     from mn_molecular_design_studio.complex_analysis_batch import (
         ASSESSMENT_METHODS, COMPREHENSIVE_PROFILE, assessment_applicability, evaluation_coverage,
     )
@@ -172,7 +173,7 @@ def test_interface_chemistry_is_in_comprehensive_profile_and_reuses_its_versione
     assert assessment_applicability(sample, method, ["B"], ["A"]) == (True, "")
     assert evaluation_coverage(sample, method, parameters={}, binder_chains=["B"], target_chains=["A"])[0] == "Missing evaluation"
     observation = {"namespace": "binder_interface_chemistry_v1", "context": {
-        "representation_id": "s1", "source_structure_digest": "d1", "settings": {},
+        "representation_id": "s1", "source_structure_digest": "d1", "settings": {"method_version": METHOD_VERSION},
         "candidate": {"candidate_id": "db-candidate", "model_id": "m1", "binder_chains": ["B"], "target_chains": ["A"]},
     }}
     descriptor = {"id": "evaluation-stage", "evaluator": "binder_interface_chemistry_v1", "representation_id": "s1"}

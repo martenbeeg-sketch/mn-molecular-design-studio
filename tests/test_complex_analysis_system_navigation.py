@@ -117,6 +117,25 @@ render_collection_workspace({OWNER!r})
     assert selected["relationship"]["preparation_id"] == "prep-3"
 
 
+def test_scope_resolution_is_bounded_to_visible_model_ids_and_preserves_relationship_contract(systems, tmp_path, monkeypatch):
+    from mn_molecular_design_studio import complex_analysis_catalog as catalog
+    db, group = systems
+    molecule = db.list_molecules(OWNER)["items"][0]["id"]
+    model = db.attach_structure(group, molecule, {"name": "model.cif", "content": b"data_fixture\n"})
+    db.add_observation(group, molecule, "biotite_interface", "assessed-model", {"contacts": 0},
+                       context={"representation_id": model, "target_id": "beta", "prepared_target_run_id": "prep-3"})
+    scope = [{"group_id": group, "target_ref": "beta", "target_revision": "", "preparation_id": "prep-3"}]
+    old = set()
+    for row in catalog.saved_relationship_page(db, OWNER, [group], system_scope=scope)["items"]:
+        old.update(catalog.relationship_structure_ids(db, OWNER, [group], row["relationship"]))
+    monkeypatch.setattr(catalog, "saved_relationship_page", lambda *a, **kw: pytest.fail("all-relationship paging"))
+    monkeypatch.setattr(db, "structure_file", lambda *a, **kw: pytest.fail("coordinate hydration"))
+    assert catalog.scoped_structure_ids(db, OWNER, [group], scope, [model]) == old == {model}
+    assert catalog.scoped_structure_ids(db, OWNER, [group], scope, ["another-visible-model"]) == set()
+    with pytest.raises(PermissionError):
+        catalog.scoped_structure_ids(db, OTHER, [group], scope, [model])
+
+
 def test_campaign_pages_and_exact_system_selection_are_metadata_only(monkeypatch):
     from streamlit.testing.v1 import AppTest
     groups = [{"id": f"g-{i}", "name": f"Campaign {i:02}", "owner_id": OWNER["id"], "project_id": "p",

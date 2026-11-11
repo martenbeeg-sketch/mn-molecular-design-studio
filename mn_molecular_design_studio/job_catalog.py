@@ -178,11 +178,13 @@ def _initialize(connection: sqlite3.Connection) -> None:
         connection.execute("UPDATE jobs SET metadata_mtime_ns=0")
     from mn_molecular_design_studio.logical_runs import IDENTITY_FIELDS
     connection.execute("CREATE TABLE IF NOT EXISTS catalog_projection (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-    revision = json.dumps(IDENTITY_FIELDS)
+    revision = json.dumps([*IDENTITY_FIELDS, "database_analysis:v1"])
     previous = connection.execute("SELECT value FROM catalog_projection WHERE key='run_identity'").fetchone()
     if previous is None or previous[0] != revision:
         connection.execute("UPDATE jobs SET metadata_mtime_ns=0")
         connection.execute("INSERT OR REPLACE INTO catalog_projection VALUES ('run_identity', ?)", (revision,))
+    connection.execute("CREATE INDEX IF NOT EXISTS studio_jobs_analysis_source ON jobs "
+                       "(storage_root_id,json_extract(run_identity_json,'$.database_analysis.source_key'),tool)")
     try:
         connection.executescript(
             """
@@ -284,6 +286,109 @@ def _read_result_index_fields(path: Path) -> tuple[Any, list[Any]]:
     return success, []
 
 
+def analysis_source_key(source):
+    fields = ("molecule_id", "structure_id", "group_id", "structure_digest", "model_id")
+    values = [str(source.get(key)) if source.get(key) is not None else "" for key in fields]
+    if not all(values):
+        raise ValueError("Exact Database analysis source identity is incomplete.")
+    return hashlib.sha256(json.dumps(values).encode()).hexdigest()
+
+
+def _database_analysis_projection(run_dir, metadata, inputs):
+    """Rebuildable compact execution metadata, authored during normal indexing.
+
+    Only the exact Database subject is indexed, never a complete population or
+    coordinate payload. Reading a manifest here is independent of UI rendering.
+    """
+    from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+    params = inputs.get("params") if isinstance(inputs.get("params"), dict) else {}
+    source = metadata.get("database_source") if isinstance(metadata.get("database_source"), dict) else {}
+    if not source:
+        source_path = (inputs.get("inputs") or {}).get("source_run_dir") or params.get("source_run_dir")
+        if source_path:
+            try:
+                resolved = resolve_stored_path(source_path, run_dir=run_dir, must_exist=True)
+            except (OSError, TypeError, ValueError):
+                resolved = None
+            if resolved:
+                source = _read_json(Path(resolved) / "complex_analysis_source.json")
+    if not source or not source.get("structure_id"):
+        return None
+    try:
+        key = analysis_source_key(source)
+    except ValueError:
+        return {"source_key": "", "invalid": True}
+    batch = _read_json(run_dir / "artifacts/analysis/batch_manifest.json")
+    selection = _read_json(run_dir / "artifacts/analysis/complex_analysis_selection.json")
+    selected = batch.get("selection") or selection or params
+    candidate = str(source.get("candidate_id") or next(iter(params.get("candidate_ids") or []), ""))
+    item = next((row for row in batch.get("items") or [] if str(row.get("candidate_id") or "") == candidate), {})
+    binder = selected.get("binder_chains") or []
+    target = selected.get("target_chains") or []
+    valid = not batch.get("items") or bool(item)
+    if item:
+        valid = valid and str(item.get("source_structure_digest") or item.get("structure_digest") or "") == source["structure_digest"]
+        if str(metadata.get("tool") or inputs.get("tool")) == "biotite_interface":
+            valid = valid and sorted(item.get("binder_chains", binder)) == sorted(binder)
+            valid = valid and sorted(item.get("target_chains", target)) == sorted(target)
+        if str(metadata.get("tool") or inputs.get("tool")) in {"plip", "pandamap", "posebusters"}:
+            valid = valid and item.get("ligand_selection") == selected.get("ligand_selection")
+    outcome = next((row for row in _read_json(run_dir / "artifacts/analysis/batch_status.json").get("items") or []
+                    if row.get("id") == item.get("id")), {}) if item else {}
+    return {"source_key": key, "source": {k: v for k, v in source.items() if k in {
+                "molecule_id", "structure_id", "group_id", "structure_digest", "model_id", "pae_digest", "ligand_selection",
+                "reference_context_id", "reference_molecule_id", "reference_structure_id", "reference_structure_digest",
+                "reference_model_id", "reference_chain_id", "placement_run_id"}},
+            "candidate_id": candidate, "model_id": str(selected.get("model_id") or selected.get("selected_model_id") or source["model_id"]),
+            "binder_chains": binder, "target_chains": target, "ligand_selection": selected.get("ligand_selection") or source.get("ligand_selection") or {},
+            "parameters": batch.get("settings") or selection.get("parameters") or params,
+            "protocol": params.get("assessment_protocol") or {k: v for k, v in (batch.get("settings") or params).items()
+                if k in {"method_version", "protocol_revision", "engine_version", "image", "image_digest"}},
+            "item_status": outcome.get("status"), "error": outcome.get("error") or metadata.get("error") or "",
+            "invalid": not valid}
+
+
+def database_analysis_jobs(user, sources):
+    """Read exact source-qualified indexed jobs; never reconcile or read Results.
+
+    SQL pages are bounded to 500 rows and filtered by source keys before paging.
+    ACLs are checked afresh, without a global first-N historical job limit.
+    """
+    from mn_molecular_design_studio.auth import accessible_project_ids
+    keys = sorted({analysis_source_key(source) for source in sources})
+    if not keys:
+        return []
+    root = _results_root()
+    parameters = [_root_id(root)]
+    access = "j.storage_root_id=? AND j.task_group='analysis'"
+    if user.get("role") != "admin":
+        access += " AND (j.owner_id=? OR j.project_id IN (SELECT value FROM json_each(?)))"
+        parameters += [str(user.get("id") or ""), json.dumps(accessible_project_ids(user))]
+    with _connection() as connection:
+        if not connection.execute("SELECT 1 FROM storage_roots WHERE id=?", (parameters[0],)).fetchone():
+            raise RuntimeError("Analysis job index is not initialized; refresh through the existing Results catalog before submitting.")
+        pending = connection.execute("SELECT 1 FROM jobs j WHERE " + access +
+            " AND (j.metadata_mtime_ns=0 OR json_type(j.run_identity_json,'$.database_analysis') IS NULL) LIMIT 1", parameters).fetchone()
+        if pending:
+            raise RuntimeError("Analysis job index upgrade is incomplete; wait for the existing catalog reconciliation.")
+        rows, offset = [], 0
+        while True:
+            page = connection.execute("SELECT j.* FROM jobs j WHERE " + access +
+                " AND json_extract(j.run_identity_json,'$.database_analysis.source_key') IN (SELECT value FROM json_each(?)) "
+                "ORDER BY j.created_at DESC,j.id DESC LIMIT 500 OFFSET ?", [*parameters, json.dumps(keys), offset]).fetchall()
+            rows.extend(page)
+            if len(page) < 500:
+                break
+            offset += 500
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["database_analysis"] = json.loads(item.pop("run_identity_json"))["database_analysis"]
+        item["run_dir"] = root / item["run_relative_path"]
+        result.append(item)
+    return result
+
+
 def _job_payload(
     run_dir: Path,
     *,
@@ -338,6 +443,8 @@ def _job_payload(
     collection = run_dir / "artifacts/normalized_candidates/candidates.jsonl"
     identity["has_candidate_collection"] = collection.is_file() and collection.stat().st_size > 0
     identity["has_docking_results"] = (run_dir / "artifacts/docking_scores.csv").is_file()
+    if run_dir.parent.name == "analysis":
+        identity["database_analysis"] = _database_analysis_projection(run_dir, metadata, inputs)
     return {
         "run_identity_json": json.dumps(identity, sort_keys=True),
         "run_id": run_dir.name,

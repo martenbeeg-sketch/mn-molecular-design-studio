@@ -192,6 +192,32 @@ def collection_system_facets(group):
     return list(facets.values())
 
 
+def scoped_structure_ids(database, user, group_ids, system_scope, structure_ids):
+    """Resolve only the visible model IDs in one saved-system query, not every relationship page."""
+    import json
+    cte, _, parameters = _evidence_scope_query(database, user, group_ids)
+    fields = ("group_id", "target_ref", "target_revision", "preparation_id")
+    if any(set(scope) != set(fields) or scope["group_id"] not in group_ids
+           or any(not isinstance(v, str) for v in scope.values()) for scope in system_scope):
+        raise ValueError("The selected system is outside these source memberships.")
+    if not structure_ids or not system_scope:
+        return set()
+    with database.connection() as connection:
+        rows = connection.execute(cte + "SELECT s.id FROM molecule_structures s WHERE s.id IN (SELECT value FROM json_each(?)) "
+            "AND EXISTS (SELECT 1 FROM evidence o JOIN json_each(?) q ON " +
+            " AND ".join("o." + field + "=json_extract(q.value,'$." + field + "')" for field in fields) +
+            " WHERE o.group_id=s.group_id AND o.molecule_id=s.molecule_id AND ("
+            "NULLIF(json_extract(o.context,'$.representation_id'),'')=s.id OR "
+            "COALESCE(NULLIF(json_extract(o.context,'$.source_structure_digest'),''),NULLIF(json_extract(o.context,'$.structure_digest'),''))="
+            "COALESCE(NULLIF(json_extract(s.context,'$.portable_sha256'),''),NULLIF(json_extract(s.context,'$.content_sha256'),''),NULLIF(json_extract(s.context,'$.structure_digest'),'')) OR "
+            "(o.study_id='' AND o.target_ref<>'' AND "
+            "COALESCE(NULLIF(json_extract(s.context,'$.target_molecule_id'),''),json_extract(s.context,'$.target_id'),'')=o.target_ref "
+            "AND COALESCE(json_extract(s.context,'$.target_structure_digest'),'')=o.target_revision "
+            "AND COALESCE(NULLIF(json_extract(s.context,'$.prepared_target_run_id'),''),json_extract(s.context,'$.target_provenance.prepared_target_run_id'),'')=o.preparation_id)))",
+            [*parameters, json.dumps(list(structure_ids)), json.dumps(system_scope)]).fetchall()
+    return {row["id"] for row in rows}
+
+
 def relationship_structure_ids(database, user, group_ids, relationship):
     """Return only explicit representation/digest or exact target-context links.
 
