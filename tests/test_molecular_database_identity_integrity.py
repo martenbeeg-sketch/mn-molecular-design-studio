@@ -93,6 +93,14 @@ def test_source_digest_does_not_overwrite_calculation_digest(subject, tmp_path):
     assert observation["context"]["structure_digest"] == "a" * 64
 
 
+def test_numeric_zero_model_id_remains_visible_in_evaluation_identity(subject, tmp_path):
+    first, _ = attach(subject, tmp_path, "zero-id", model_id=0)
+    attach(subject, tmp_path, "one-id", model_id=1)
+    observation = observe(subject, {"model_id": 0})
+    assert observation["context"]["representation_id"] == first
+    assert evaluation_descriptor(observation)["model_id"] == "0"
+
+
 def test_identical_models_with_different_source_candidates_are_ambiguous(subject, tmp_path):
     attach(subject, tmp_path, "one", candidate_id="candidate-1", model_id="1")
     attach(subject, tmp_path, "two", candidate_id="candidate-2", model_id="1")

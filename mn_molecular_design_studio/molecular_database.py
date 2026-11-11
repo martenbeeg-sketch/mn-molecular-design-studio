@@ -791,6 +791,8 @@ class MolecularDatabase:
                               if len(values := selectors.get(key, set())) == 1), None)
                 if model:
                     context["model_id"] = next(iter(model))
+            else:
+                context["model_id"] = str(context["model_id"])
             metrics_json, context_json = _json(clean), _json(context or {})
             identical = connection.execute(
                 "SELECT id FROM molecule_observations WHERE id=? AND molecule_id=? AND group_id=? "
