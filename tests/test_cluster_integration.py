@@ -110,12 +110,13 @@ def api_cluster(monkeypatch, tmp_path):
         monkeypatch.setenv(name, str(value))
     from mn_molecular_design_studio import workspace, api
     workspace.ensure_studio_workspace()
-    project = workspace.create_project("Shared project", owner_id="owner")
+    owner_id = uuid.uuid4().hex
+    project = workspace.create_project("Shared project", owner_id=owner_id)
     config.save({"mode": "coordinator", "coordinator_url": "http://coordinator.test:8766", "default_placement": "auto"})
     store = Store()
     origin = store.enroll("current", config.identity())
     remote = store.enroll("4032")
-    actor = {"id": "owner", "role": "admin", "must_change_password": False}
+    actor = {"id": owner_id, "role": "admin", "must_change_password": False}
     snapshot = {"images": {}, "references": {}, "code_revision": "test-code", "accept_jobs": True, "scheduler_online": True,
                 "resources": {"free_gpus": [], "cpu_free": 16, "ram_available_gb": 64, "scratch_free_gb": 100}}
     needs = {"images": {}, "references": [], "code_revision": "test-code", "gpu_count": 0, "cpu_threads": 1}
@@ -132,7 +133,7 @@ def api_cluster(monkeypatch, tmp_path):
 
 def test_api_to_remote_agent_to_local_scheduler_preserves_source_and_ownership(api_cluster, monkeypatch, tmp_path):
     client, store, origin, remote, actor, project, snapshot, needs = api_cluster
-    source = {"task_group": "design", "run_id": "source", "owner_id": "owner", "project_id": project["id"], "status": "completed"}
+    source = {"task_group": "design", "run_id": "source", "owner_id": actor["id"], "project_id": project["id"], "status": "completed"}
     store.heartbeat(remote["node_id"], snapshot, [source])
     source_id = config.job_id(remote["node_id"], "design/source")
     payload = {"schema_version": 1, "project_id": project["id"], "workflow": "analysis.ipsae", "parameters": {"pae_cutoff": 10.0},
@@ -171,7 +172,7 @@ def test_api_to_remote_agent_to_local_scheduler_preserves_source_and_ownership(a
     assert captured[0]["source_job"] == "design/source"
     local_run = Path(result["job"]["run_dir"])
     metadata = json.loads((local_run / "metadata.json").read_text())
-    assert metadata["project_id"] == project["id"] and metadata["studio_owner_id"] == "owner"
+    assert metadata["project_id"] == project["id"] and metadata["studio_owner_id"] == actor["id"]
     assert metadata["execution_node_id"] == remote["node_id"]
     assert metadata["cluster_job_id"] == job["cluster_job_id"]
     acknowledgement = client.post("/api/v1/cluster/node/commands/" + command["id"] + "/finish", headers=headers,
@@ -372,7 +373,7 @@ def test_cluster_preflight_enforces_local_input_access_before_schema_validation(
 
 def test_remote_source_cannot_be_forced_onto_a_different_workstation(api_cluster):
     client, store, origin, remote, actor, project, snapshot, _ = api_cluster
-    store.heartbeat(remote["node_id"], snapshot, [{"task_group": "design", "run_id": "remote", "owner_id": "owner", "project_id": project["id"], "status": "completed"}])
+    store.heartbeat(remote["node_id"], snapshot, [{"task_group": "design", "run_id": "remote", "owner_id": actor["id"], "project_id": project["id"], "status": "completed"}])
     payload = {"schema_version": 1, "workflow": "analysis.ipsae", "project_id": project["id"], "source_job": "cluster:" + config.job_id(remote["node_id"], "design/remote"),
                "execution": {"placement": origin["node_id"]}}
     result = client.post("/api/v1/workflows", json=payload)
@@ -438,7 +439,7 @@ def test_direct_cluster_endpoint_rejects_unstaged_machine_paths(api_cluster, pat
 
 def test_input_and_artifact_requests_are_bound_to_job_access(api_cluster):
     client, store, origin, remote, actor, project, snapshot, _ = api_cluster
-    store.heartbeat(remote["node_id"], snapshot, [{"task_group": "design", "run_id": "private", "owner_id": "owner", "project_id": project["id"], "status": "completed"}])
+    store.heartbeat(remote["node_id"], snapshot, [{"task_group": "design", "run_id": "private", "owner_id": actor["id"], "project_id": project["id"], "status": "completed"}])
     jid = config.job_id(remote["node_id"], "design/private")
     operation = client.post(f"/api/v1/cluster/jobs/{jid}/actions", json={"action": "artifact", "parameters": {"path": "result.json"}})
     assert operation.status_code == 202

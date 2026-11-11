@@ -59,8 +59,11 @@ def main():
     if not (source / "mn_molecular_design_studio/api.py").is_file() or not python.is_file():
         parser.error("The source or Python runtime is absent.")
     arguments = options.arguments[1:] if options.arguments[:1] == ["--"] else options.arguments
+    security = json.loads(subprocess.check_output(["docker", "info", "--format", "{{json .SecurityOptions}}"], text=True))
+    rootless = "name=rootless" in security
+    container_user = "0:0" if rootless else f"{os.getuid()}:{os.getgid()}"
     command = build_command(source=source, runtime_root=runtime, python=python, image=options.image,
-                            output=output, arguments=arguments, user=f"{os.getuid()}:{os.getgid()}")
+                            output=output, arguments=arguments, user=container_user)
     inspected = subprocess.check_output(["docker", "image", "inspect", "--format", "{{.Id}}", options.image], text=True).strip()
     if inspected != options.image:
         parser.error("Local image identity differs from the requested immutable ID.")
@@ -72,7 +75,7 @@ def main():
                "hostname": os.uname().nodename, "source": str(source), "python": str(python),
                "image_id": inspected, "command": command, "exit_code": result.returncode,
                "network": "none", "production_storage_mounted": False, "docker_socket_mounted": False,
-               "scientific_inference": False}
+               "scientific_inference": False, "rootless_daemon": rootless, "container_user": container_user}
     (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
     print(json.dumps({"hostname": receipt["hostname"], "output": str(output), "exit_code": result.returncode}))
     raise SystemExit(result.returncode)
