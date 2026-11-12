@@ -224,7 +224,7 @@ def build_browser_index(database, user, *, project_id="", scope="all", methods=N
                 if identity:
                     molecule["component_roles"].setdefault(identity, set()).add("target")
             molecule["target_names"].update(molecule["import_names"] or molecule["names"])
-            if not molecule["output_record"]:
+            if not any(roles & {"binder", "designed_binder", "design"} for roles in molecule["component_roles"].values()):
                 molecule["target_record"] = True
             run["target_molecule_ids"].add(molecule_id)
         elif not _is_input(index, molecule_id, group_id, provenance, table):
@@ -275,7 +275,7 @@ def build_browser_index(database, user, *, project_id="", scope="all", methods=N
         molecule["target_names"].update(target_names.get(molecule_id, set()))
         if molecule_id in referenced_targets and len(molecule["components"]) == 1:
             identity = _component_identity(molecule["components"][0])
-            if identity and not molecule["output_record"] and "binder" not in molecule["component_roles"].get(identity, set()):
+            if identity and not molecule["component_roles"].get(identity, set()) & {"binder", "designed_binder", "design"}:
                 molecule["component_roles"].setdefault(identity, set()).add("target")
                 molecule["target_record"] = True
                 molecule["target_names"].update(molecule["import_names"])

@@ -558,7 +558,7 @@ def test_legacy_design_links_use_only_unambiguous_origin_qualified_target_inputs
 def test_protein_targets_and_ligands_keep_distinct_poses_and_designed_binders(database):
     receptor = _import(database, name="Protein receptor", run_id="", method="user_uploads", kind="reference",
         records=[_record(name="Protein receptor", metadata={"target_identity_type": "sequence_only"})])
-    ligand = _import(database, name="Ligand library", run_id="", method="user_uploads", kind="curated", records=[
+    ligand = _import(database, name="Ligand pose records", run_id="", task="docking", records=[
         _record(name="Compound", components=[{"chain": "L", "type": "small_molecule", "smiles": "CCO"}])])
     for pose in ("1", "2"):
         database.add_observation(ligand["group_id"], ligand["molecule_ids"][0], "dock", "docking", {"score": int(pose)},
