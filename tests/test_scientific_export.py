@@ -104,3 +104,30 @@ def test_structure_reference_cannot_escape_managed_results(linked_runs, tmp_path
     collection.write_text(json.dumps({"candidate_id": "malicious", "complex_pdb": str(secret)}) + "\n")
     with pytest.raises(ValueError, match="managed Results"):
         build_run_zip(parent, user={"id": "owner"})
+
+
+def test_top_level_artifacts_directory_alias_is_not_followed(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    outside = tmp_path / "private-directory"
+    outside.mkdir()
+    (outside / "private.txt").write_text("not an authorized job artifact")
+    (run / "artifacts").symlink_to(outside, target_is_directory=True)
+    with ZipFile(BytesIO(build_run_zip(run))) as archive:
+        assert archive.namelist() == ["export_manifest.json"]
+        assert json.loads(archive.read("export_manifest.json"))["skipped_symlinks"] == ["artifacts"]
+
+
+def test_dangling_candidate_collection_is_not_reported_as_scientific_bundle(linked_runs):
+    parent, _, _, collection, _, _ = linked_runs
+    collection.unlink()
+    collection.symlink_to(collection.parent / "missing.jsonl")
+    with pytest.raises(ValueError, match="collection is unavailable"):
+        build_run_zip(parent, user={"id": "owner"})
+
+
+def test_no_collection_is_reported_as_local_archive_only(linked_runs):
+    parent, _, _, collection, _, _ = linked_runs
+    collection.unlink()
+    with ZipFile(BytesIO(build_run_zip(parent, user={"id": "owner"}))) as archive:
+        assert json.loads(archive.read("export_manifest.json"))["scientific_bundle"] is False

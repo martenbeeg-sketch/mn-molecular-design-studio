@@ -50,7 +50,13 @@ def build_run_zip(run_dir: Path, *, user: dict | None = None) -> bytes:
                       "artifacts.json", "graph_execution.json", "graph_snapshot.json", "native_execution.json"]
     skipped_links = []
     paths = [run_dir / name for name in contract_names]
-    for directory, folders, files in os.walk(run_dir / "artifacts", followlinks=False):
+    artifacts_root = run_dir / "artifacts"
+    if artifacts_root.is_symlink():
+        skipped_links.append("artifacts")
+        directories = []
+    else:
+        directories = os.walk(artifacts_root, followlinks=False)
+    for directory, folders, files in directories:
         for folder in list(folders):
             path = Path(directory) / folder
             if path.is_symlink():
@@ -60,20 +66,19 @@ def build_run_zip(run_dir: Path, *, user: dict | None = None) -> bytes:
     buffer = BytesIO()
     with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
         for path in paths:
-            if path.is_symlink() and (not path.exists() or not path.resolve().is_relative_to(run_dir)):
+            if not path.resolve().is_relative_to(run_dir) or (path.is_symlink() and not path.exists()):
                 skipped_links.append(path.relative_to(run_dir).as_posix())
                 continue
             if path.is_file():
                 verified = retained_artifact_file(run_dir, path)
                 archive.writestr(path.relative_to(run_dir).as_posix(), verified.read_bytes())
-        if user is not None:
-            _write_scientific_bundle(archive, run_dir, user)
+        has_bundle = _write_scientific_bundle(archive, run_dir, user) if user is not None else False
         archive.writestr("export_manifest.json", json.dumps({"schema": "studio.run_export.v1",
-            "skipped_symlinks": sorted(skipped_links), "scientific_bundle": user is not None}, indent=2))
+            "skipped_symlinks": sorted(skipped_links), "scientific_bundle": has_bundle}, indent=2))
     return buffer.getvalue()
 
 
-def _write_scientific_bundle(archive: ZipFile, run_dir: Path, user: dict) -> None:
+def _write_scientific_bundle(archive: ZipFile, run_dir: Path, user: dict) -> bool:
     from mn_molecular_design_studio.artifact_integrity import authorize_result_artifact, retained_artifact_file
     from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
     from mn_molecular_design_studio.runtime import runs_root
@@ -81,7 +86,9 @@ def _write_scientific_bundle(archive: ZipFile, run_dir: Path, user: dict) -> Non
     root = Path(runs_root()).resolve()
     candidate_file = run_dir / "artifacts/normalized_candidates/candidates.jsonl"
     if not candidate_file.exists():
-        return
+        if candidate_file.is_symlink():
+            raise ValueError("Candidate collection is unavailable for export.")
+        return False
     if not candidate_file.resolve().is_relative_to(run_dir):
         raise ValueError("Candidate collection escapes its Results run.")
     rows, structures = [], {}
@@ -113,3 +120,4 @@ def _write_scientific_bundle(archive: ZipFile, run_dir: Path, user: dict) -> Non
     archive.writestr("scientific_bundle/manifest.json", json.dumps({"schema": "studio.scientific_bundle.v1",
         "paths_relative_to": "archive_root", "candidate_count": len(rows), "structures": list(structures.values()),
         "scope": "final candidate coordinates and measurements; not all intermediate child-run files"}, indent=2))
+    return True
