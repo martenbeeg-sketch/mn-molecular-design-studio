@@ -25,11 +25,16 @@ def write_json(path, data):
     temporary.replace(path)
 
 
-def sequence_metrics(sequence, ph=7.4):
-    from Bio.SeqUtils.ProtParam import ProteinAnalysis
+def validate_sequence(sequence):
     sequence = sequence.upper()
     if not sequence or set(sequence) - set("ACDEFGHIKLMNPQRSTVWY"):
         raise ValueError("Sequence composition requires a nonempty sequence of standard amino acids; unknown residues are not discarded.")
+    return sequence
+
+
+def sequence_metrics(sequence, ph=7.4):
+    sequence = validate_sequence(sequence)
+    from Bio.SeqUtils.ProtParam import ProteinAnalysis
     analysis = ProteinAnalysis(sequence)
     frequencies = Counter(sequence)
     return {"qc_sequence_length": len(sequence), "qc_sequence_pi": analysis.isoelectric_point(),
@@ -144,8 +149,7 @@ def select_pdb(item, destination):
 
 
 def proteinsol(item, destination):
-    sequence = item["sequence"]
-    sequence_metrics(sequence)  # Validate without guessing unknown residue identities.
+    sequence = validate_sequence(item["sequence"])
     if len(sequence) < 21:
         raise ValueError("Protein-Sol requires at least 21 residues.")
     from importlib.util import spec_from_file_location, module_from_spec
@@ -344,19 +348,25 @@ def esm_scores(items, tool, output, progress):
     results = {}
     if tool == "esm1v_score":
         probabilities = {}
+        valid_items = []
         for item in items:
             try:
-                sequence_metrics(item["sequence"])
-                if len(item["sequence"]) > 1022:
+                if item.get("input_error"):
+                    raise ValueError(item["input_error"])
+                sequence = validate_sequence(item["sequence"])
+                if len(sequence) > 1022:
                     raise ValueError("ESM-1v supports at most 1,022 residues in this scoring protocol; windowed scores are a different protocol.")
-                probabilities[item["id"]] = [0.] * len(item["sequence"])
+                valid_items.append({**item, "sequence": sequence})
+                probabilities[item["id"]] = [0.] * len(sequence)
             except ValueError as exc:
                 results[item["id"]] = {"id": item["id"], "status": "failed", "metrics": {}, "error": str(exc)}
+        if not valid_items:
+            return list(results.values())
         for number in range(1, 6):
             model, alphabet = esm.pretrained.load_model_and_alphabet_local(f"/reference/esm_models/esm1v_t33_650M_UR90S_{number}.pt")
             model = model.eval().to(device)
             convert = alphabet.get_batch_converter()
-            for item in items:
+            for item in valid_items:
                 if item["id"] in results:
                     continue
                 try:
@@ -365,6 +375,8 @@ def esm_scores(items, tool, output, progress):
                         values = model(tokens.to(device))["logits"][0, 1:len(item["sequence"]) + 1].softmax(-1)
                         indices = torch.tensor([alphabet.get_idx(aa) for aa in item["sequence"]], device=device)
                         native = values.gather(-1, indices[:, None]).squeeze(-1).cpu().tolist()
+                    if len(native) != len(item["sequence"]) or any(not math.isfinite(value) or not 0 <= value <= 1 for value in native):
+                        raise ValueError("ESM-1v returned invalid native residue probabilities.")
                     probabilities[item["id"]] = [a + b / 5 for a, b in zip(probabilities[item["id"]], native)]
                 except Exception as exc:
                     results[item["id"]] = {"id": item["id"], "status": "failed", "metrics": {}, "error": str(exc)}
@@ -372,7 +384,7 @@ def esm_scores(items, tool, output, progress):
             if device == "cuda":
                 torch.cuda.empty_cache()
             progress(list(results.values()), phase=f"Scored ESM-1v checkpoint {number}/5")
-        for item in items:
+        for item in valid_items:
             if item["id"] not in results:
                 native = probabilities[item["id"]]
                 write_json(Path(output) / item["id"] / "native_probabilities.json", {"sequence": item["sequence"], "probabilities": native, "protocol": "five-model unmasked wild-type marginals"})

@@ -8,6 +8,37 @@ from pathlib import Path
 import tempfile
 
 
+def authorize_result_artifact(user, structure_path, *, source_run_dir, runs_root):
+    """Require authorization and catalogue membership for linked run artifacts."""
+    from mn_molecular_design_studio.auth import can_access_job
+    from mn_molecular_design_studio.job_catalog import get_job_access_record, job_artifacts
+
+    try:
+        relative = structure_path.relative_to(runs_root)
+    except ValueError as exc:
+        raise ValueError("The selected structure is outside Studio's managed Results storage.") from exc
+    if structure_path.is_relative_to(source_run_dir):
+        return source_run_dir.parent.name, source_run_dir.name, structure_path.relative_to(source_run_dir).as_posix()
+    if len(relative.parts) < 3:
+        raise ValueError("The selected structure is not inside a registered Results artifact.")
+    task_group, run_id = relative.parts[:2]
+    access = get_job_access_record(task_group, run_id)
+    if not access or not can_access_job(user, access):
+        raise PermissionError("The structure-producing Results job is unavailable or you do not have access to it.")
+    for artifact in job_artifacts(task_group, run_id):
+        artifact_relative = Path(str(artifact.get("relative_path") or ""))
+        if artifact_relative.is_absolute() or ".." in artifact_relative.parts:
+            continue
+        try:
+            path = (runs_root / artifact_relative).resolve(strict=True)
+            path.relative_to(runs_root / task_group / run_id)
+        except (OSError, ValueError):
+            continue
+        if path == structure_path:
+            return task_group, run_id, f"runs:///{relative.as_posix()}"
+    raise ValueError("The selected structure is not a registered artifact of its producing job.")
+
+
 def verified_snapshot(path, expected):
     from mn_molecular_design_studio.runtime import app_home
     if not isinstance(expected, str) or len(expected) != 64 or any(char not in "0123456789abcdef" for char in expected):

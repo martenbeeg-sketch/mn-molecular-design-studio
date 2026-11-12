@@ -8,6 +8,7 @@ import re
 import secrets
 import shlex
 import subprocess
+import tempfile
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
@@ -1282,6 +1283,46 @@ def _attach_reference_boltz_msas(
         "reference_msa_missing_chains": missing,
         "msa_fallback": "ColabFold server (https://api.colabfold.com)" if missing else "reference files",
     }
+
+
+def _materialize_boltz_input_aliases(run_dir: Path, items: list[dict], identities: list[dict]) -> None:
+    run_dir = run_dir.resolve()
+    staging = run_dir / "artifacts/raw/optimized_prediction/output/.mn-predict-boltz2-inputs"
+    if not staging.exists() and not staging.is_symlink():
+        return
+    if staging.resolve() != staging or not staging.is_dir():
+        raise ValueError("Boltz input staging must be a directory inside the run.")
+    digests = {str(Path(row["path"]).resolve()): row["sha256"] for row in identities}
+    for item in items:
+        item_id = str(item["id"])
+        if Path(item_id).name != item_id or item_id in {".", ".."}:
+            raise ValueError("Invalid Boltz input alias ID.")
+        expected = run_dir / "artifacts/raw/optimized_prediction/inputs" / f"{item_id}.yaml"
+        container_path = "/work/" + expected.relative_to(run_dir).as_posix()
+        if item["input"] != container_path:
+            raise ValueError("Boltz input alias does not match the submitted input.")
+        alias = staging / f"{item_id}.yaml"
+        if not alias.exists() and not alias.is_symlink():
+            continue
+        if expected.resolve() != expected or not expected.is_file():
+            raise ValueError("Canonical Boltz input is missing or redirected.")
+        contents = expected.read_bytes()
+        digest = digests.get(str(expected))
+        if not digest or hashlib.sha256(contents).hexdigest() != digest:
+            raise ValueError("Canonical Boltz input changed after submission.")
+        if not alias.is_symlink():
+            if not alias.is_file() or alias.read_bytes() != contents:
+                raise ValueError("Boltz staged input differs from the submitted input.")
+            continue
+        if os.readlink(alias) != container_path:
+            raise ValueError("Boltz input alias points to an unexpected target.")
+        with tempfile.NamedTemporaryFile(dir=staging, delete=False) as handle:
+            temporary = Path(handle.name)
+            handle.write(contents)
+        try:
+            temporary.replace(alias)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _cache_generated_boltz_msas(run_dir: Path, output_dir: Path) -> dict[str, list[dict[str, str]]]:
@@ -3014,6 +3055,7 @@ def run_optimized_prediction(
             result_path = output_dir / "mn-batch-result.json"
             write_json(result_path, {"api_version": "esmfold-cli/v1", "items": esmfold_rows})
         if profile["api_engine"] == "boltz2":
+            _materialize_boltz_input_aliases(job.run_dir, manifest_items, prediction_inputs)
             _cache_generated_boltz_msas(job.run_dir, output_dir)
         result_path = output_dir / "mn-batch-result.json"
         batch_result = json.loads(result_path.read_text(encoding="utf-8")) if result_path.is_file() else {}

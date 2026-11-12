@@ -58,42 +58,8 @@ def open_database_complex(molecule_id: str, *, evaluation_id: str = "", structur
 def _registered_cross_run_structure(user: dict, structure_path: Path, *, source_run_dir: Path,
                                     runs_root: Path) -> tuple[str, str, str]:
     """Authorize and identify a structure artifact in a linked Results job."""
-    from mn_molecular_design_studio.auth import can_access_job
-    from mn_molecular_design_studio.job_catalog import get_job_access_record, job_artifacts
-
-    try:
-        relative_to_root = structure_path.relative_to(runs_root)
-    except ValueError as exc:
-        raise ValueError("The selected structure is outside Studio's managed Results storage.") from exc
-    try:
-        relative_to_source = structure_path.relative_to(source_run_dir)
-    except ValueError:
-        relative_to_source = None
-    if relative_to_source is not None:
-        return source_run_dir.parent.name, source_run_dir.name, relative_to_source.as_posix()
-    if len(relative_to_root.parts) < 3:
-        raise ValueError("The selected structure is not inside a registered Results artifact.")
-    task_group, run_id = relative_to_root.parts[:2]
-    access = get_job_access_record(task_group, run_id)
-    if not access or not can_access_job(user, access):
-        raise PermissionError("The structure-producing Results job is unavailable or you do not have access to it.")
-    registered = False
-    for artifact in job_artifacts(task_group, run_id):
-        artifact_relative = Path(str(artifact.get("relative_path") or ""))
-        if artifact_relative.is_absolute() or ".." in artifact_relative.parts:
-            continue
-        try:
-            artifact_path = (runs_root / artifact_relative).resolve(strict=True)
-            artifact_path.relative_to(runs_root)
-            artifact_path.relative_to(runs_root / task_group / run_id)
-        except (OSError, ValueError):
-            continue
-        if artifact_path == structure_path:
-            registered = True
-            break
-    if not registered:
-        raise ValueError("The selected structure is not a registered artifact of its producing job.")
-    return task_group, run_id, f"runs:///{relative_to_root.as_posix()}"
+    from mn_molecular_design_studio.artifact_integrity import authorize_result_artifact
+    return authorize_result_artifact(user, structure_path, source_run_dir=source_run_dir, runs_root=runs_root)
 
 
 def linked_result_structure(run_dir: Path | str, candidate: dict, *, user: dict) -> dict | None:

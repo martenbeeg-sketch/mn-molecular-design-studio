@@ -8057,7 +8057,7 @@ def _render_job_details() -> None:
     archive_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", title).strip("._-") or "job"
     action_cols[0].download_button(
         "Download job ZIP",
-        data=lambda: build_run_zip(run_dir),
+        data=lambda: build_run_zip(run_dir, user=CURRENT_USER),
         file_name=f"{archive_stem}_{run_id}.zip",
         mime="application/zip",
         use_container_width=True,

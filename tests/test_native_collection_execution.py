@@ -176,6 +176,11 @@ def test_prediction_reaches_image_native_directory_launcher(n, engine, seeds, co
                 output = host_path(run, command[command.index('--output-dir') + 1])
                 active.update(request=native_request, output=output)
                 item_rows, execution = adapter.run_batch(native_request, output)
+                if engine == 'boltz2':
+                    for item in native_request.items:
+                        alias = output / '.mn-predict-boltz2-inputs' / f'{item.item_id}.yaml'
+                        alias.unlink()
+                        alias.symlink_to('/work/' + item.input_path.relative_to(run).as_posix())
                 for row in item_rows:
                     row['outputs'] = ['/work/' + Path(value).relative_to(run).as_posix() for value in row.get('outputs', [])]
                 (output / 'mn-batch-result.json').write_text(json.dumps({'items': item_rows, 'execution': execution}))

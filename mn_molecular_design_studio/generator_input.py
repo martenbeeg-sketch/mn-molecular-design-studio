@@ -16,7 +16,7 @@ ENGINES = {
                  'tasks':{'binder':'Binder Design'}, 'description':'Generate protein binder backbones with diffusion models.'},
     'rfdiffusion': {'title':'RFdiffusion', 'version':'RFdiffusion · version not pinned', 'image':'mn-rfdiffusion:latest', 'repo':'https://github.com/RosettaCommons/RFdiffusion',
                    'tasks':{'custom':'Custom Contigs','binder':'Binder Design','redesign':'Binder Redesign','motif':'Motif Scaffolding','partial':'Partial Diffusion','fold':'Fold Conditioning','symmetry':'Symmetric Oligomer','symmetric_motif':'Symmetric Motif Scaffolding'}, 'description':'Design or diversify proteins with target, motif, fold, or symmetry conditioning.'},
-    'genie3': {'title':'Genie3', 'version':'Genie3 d77ae5a', 'image':'mn-genie3:cu128', 'repo':'https://github.com/aqlaboratory/genie3',
+    'genie3': {'title':'Genie3', 'version':'Genie3 d77ae5a', 'image':'mn-genie3:cu128-sm120-7549829b', 'repo':'https://github.com/aqlaboratory/genie3',
                'tasks':{'binder':'Binder Design','unconditional':'Unconditional Generation','motif':'Motif Scaffolding'}, 'description':'Generate protein structures with fast all-atom diffusion.'},
     'protpardelle': {'title':'Protpardelle-1C', 'version':'Protpardelle-1C ee37840', 'image':'mn-protpardelle-1c:cu128', 'repo':'https://github.com/ProteinDesignLab/protpardelle-1c',
                     'tasks':{'binder':'Binder Design','unconditional':'Unconditional Generation','motif':'Motif Scaffolding','partial':'Partial Diffusion','multichain':'Multichain Generation'}, 'description':'Generate protein structures with sidechain, motif, and multichain conditioning.'},
