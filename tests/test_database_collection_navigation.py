@@ -81,7 +81,7 @@ def browser(tmp_path, monkeypatch):
     monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
     monkeypatch.setattr(database_ui, "sync_workspace", lambda *args, **kwargs: pytest.fail("Browsing must not start indexing"))
     monkeypatch.setattr(database_ui, "render_details", lambda *args, **kwargs: None)
-    app = AppTest.from_string(f"from mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
+    app = AppTest.from_string(f"import streamlit as st\nst.session_state.setdefault('database-browser-view', 'Collections')\nfrom mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
     assert not app.exception
     return app, database, library
 

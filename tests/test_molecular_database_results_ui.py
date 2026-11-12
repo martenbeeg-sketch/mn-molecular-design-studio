@@ -221,6 +221,8 @@ def test_database_defaults_to_library_and_passes_collection_to_queries(tmp_path,
     monkeypatch.setattr(database_ui, "MolecularDatabase", DatabaseSpy)
     monkeypatch.setattr(database_ui, "sync_workspace", lambda *args, **kwargs: [])
     script = f'''\
+import streamlit as st
+st.session_state.setdefault("database-browser-view", "Collections")
 from mn_molecular_design_studio.database_ui import render_database
 render_database({USER!r}, [])
 '''

@@ -861,6 +861,7 @@ def render_database(user, projects):
             st.session_state["molecular-method-" + method] = True
         st.session_state["molecular-collection-section"] = "All collections"
         st.session_state["database-selected-group"] = pending_group
+        st.session_state["database-browser-view"] = "Collections"
     if pending_molecule:
         st.session_state["database-focus"] = pending_molecule
     if message := st.session_state.pop("molecular-database-flash", None):
@@ -868,6 +869,13 @@ def render_database(user, projects):
     if errors:
         with st.expander(f"{len(errors)} source jobs could not be indexed"):
             st.dataframe(errors, hide_index=True)
+    browser_view = st.segmented_control("Database view", ["Molecules", "Runs", "Collections"],
+                                        default=None if "database-browser-view" in st.session_state else "Molecules",
+                                        key="database-browser-view") or "Molecules"
+    if browser_view != "Collections":
+        from mn_molecular_design_studio.database_browser_ui import render_browser
+        render_browser(database, user, projects, browser_view)
+        return
     with st.container(key="molecular-database"):
         sidebar, main, details = st.columns([.25, .50, .25], gap="medium")
         with sidebar, st.container(key="database-groups"):
