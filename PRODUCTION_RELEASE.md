@@ -51,7 +51,52 @@ Gateway uploads are capped at 256 MB, with application limits still applicable.
 IT must confirm client addresses belong to this subnet. No public-Internet
 listener or automatic client trust installation was added.
 
-## Exact deployed source
+## Library navigation update — 12 November 2026
+
+The current deployed application is **`304fc295416995f0e338c745582c2772053940fd`**
+on PC002975, PC004032 and PC004033. This supersedes the original application
+source below, not its scientific qualification limits.
+
+- Archive SHA-256: `10b747f4b50995112b238fb1226566f923799a3bef52ece73acbf9630898799a`.
+- Agent code fingerprint on all three workstations:
+  `5e040dcd4cf4d8b3097e35fb7d0848b4f83c896e97c749938894c177d0c662e8`.
+- Source: `~/programs/deployments/mn-molecular-design-studio/prod-304fc2954169/source`.
+- Collections now have prominent search, provenance-based categories, deterministic
+  libraries-first/name/date/size sorting and 15-collection pages. Imports are
+  easier to find among generated single-result collections. Access/source filters
+  are collapsed, the selected collection has a clear heading and source badges,
+  and an empty project filter explicitly means **All projects**.
+- Categories/search narrow collection navigation only; **All molecules** retains
+  the existing access-filtered scope. No groups are merged, renamed or hidden
+  based on names or size. Direct Results-to-Database navigation resets browsing
+  filters and opens the correct page; changing pages retains the current selection.
+- Final isolated primary database/review suite: **200 passed**. The focused
+  **38-test** suite also passes independently on each compute workstation in
+  network-disabled containers without production storage, GPU or Docker access.
+  Browser checks use explicitly labelled synthetic preview data. These are UI
+  regression checks, not new qualification of scientific tools or pipelines.
+- Studio jobs and cluster commands were idle before the coordinated restart.
+  Six active application SQLite databases per host have fresh integrity-checked,
+  private cold snapshots with systemd/configuration recovery copies under
+  `~/.local/state/mn-molecular-design-studio/releases/library-304fc2954169/`.
+  This supplements the earlier full recovery snapshots; it does not recopy
+  scientific files or establish an off-site backup service.
+- Runtime working directories, process environments, production authentication,
+  API health, primary Streamlit health and all three agent fingerprints were
+  checked after restart. Accounts, passwords and node IDs are unchanged. All
+  seven checked research table counts are exactly unchanged on each host.
+  Primary retains 21,473 molecules and 1,050 groups; each peer retains 21,470
+  molecules and 1,050 groups. The previously reported peer-sync warnings/count
+  differences are **not resolved by this UI-only update**.
+- The shared scheduler, teaching pilot, TLS gateway and authentication policy
+  are unchanged. Live hot reload remains disabled: refresh the research browser
+  after deployment and sign in again if prompted.
+
+Focused test XML and non-secret runtime receipts are retained in
+`docs/audits/2026-11-12-library-navigation/`. The earlier evidence archive below
+continues to describe the original production acceptance, not this follow-up.
+
+## Original production source (superseded above)
 
 - Application commit: `87cb209e3884844076434df601e80a6152bf3c18`.
 - Archive SHA-256: `db8a705786b7e8bab5f41cfe79a1e51b1c66b203c1c7d8a29d04e73bf566353f`.
@@ -68,8 +113,8 @@ listener or automatic client trust installation was added.
   on their original `main`/`d5df4d66`; bundles import objects without resetting them.
 
 The research gateway, renewal helper and corresponding tests are separate
-operational artifacts delivered with this report. Scientific application code
-remains the pinned commit above.
+operational artifacts delivered with this report. The original acceptance used
+the pinned commit in this section; the navigation follow-up is identified above.
 
 ## Corrections closed
 
