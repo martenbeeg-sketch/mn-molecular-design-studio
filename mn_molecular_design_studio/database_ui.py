@@ -28,17 +28,64 @@ CSS = '''<style>
 .st-key-database-groups [data-testid="stRadio"] label:has(input:checked){background:#e8f0e9;color:#246444}
 .database-empty{border:1px dashed #c9d8cd;border-radius:6px;padding:35px 20px;text-align:center;color:#859188;font-size:13px}
 .database-label{color:#8b958d;font-size:10px;letter-spacing:.05em;text-transform:uppercase;margin:12px 0 5px}
+.st-key-database-groups{background:color-mix(in srgb,currentColor 4%,transparent);border-radius:12px;padding:14px;border-right:0}
+.st-key-database-groups [data-testid="stRadio"] label{padding:9px 8px;border-radius:7px;overflow-wrap:anywhere}
+.st-key-database-groups [data-testid="stRadio"] label:has(input:checked){box-shadow:inset 3px 0 #36815b}
+.database-collection-heading{font-size:1.35rem;font-weight:650;line-height:1.3;margin:.35rem 0;overflow-wrap:anywhere}
+.database-collection-meta{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 14px}
+.database-collection-meta span{background:color-mix(in srgb,currentColor 4%,transparent);border:1px solid #d6e2d9;border-radius:20px;padding:4px 10px;font-size:12px}
+@media(max-width:900px){.st-key-database-details{padding-left:0;border-left:0}}
 </style>'''
 
 
-def _projects(projects, key, *, default="", label="Project", optional=True):
+def _projects(projects, key, *, default="", label="Project", optional=True, empty_label="None"):
     options = ([""] if optional else []) + [row["id"] for row in projects]
     if not options:
         st.caption("Create a project in Projects before starting a calculation.")
         return ""
     if st.session_state.get(key) not in options:
         st.session_state[key] = default if default in options else options[0]
-    return st.selectbox(label, options, key=key, format_func=lambda value: next((row["name"] for row in projects if row["id"] == value), "None"))
+    return st.selectbox(label, options, key=key, format_func=lambda value: next((row["name"] for row in projects if row["id"] == value), empty_label))
+
+
+COLLECTION_SECTIONS = ["All collections", "Imported libraries", "Saved groups", "Generated results", "Job history"]
+COLLECTION_SORTS = ["Libraries first", "Recently updated", "Name A–Z", "Largest first"]
+COLLECTION_PAGE_SIZE = 15
+
+
+def _collection_section(group):
+    if group.get("import_method") == "user_uploads":
+        return "Imported libraries"
+    if group.get("collection_kind") == "generated":
+        return "Generated results"
+    if group.get("collection_kind") in {"curated", "reference"}:
+        return "Saved groups"
+    return "Job history"
+
+
+def _browse_collections(groups, *, query="", section="All collections", sort="Libraries first", projects=()):
+    project_names = {row["id"]: row["name"] for row in projects}
+    terms = query.casefold().split()
+    result = []
+    for group in groups:
+        category = _collection_section(group)
+        if section != "All collections" and category != section:
+            continue
+        searchable = " ".join([
+            group["name"], category, project_names.get(group.get("project_id"), ""),
+            _remote_source_workstation(group.get("origin")),
+        ]).casefold()
+        if all(term in searchable for term in terms):
+            result.append(group)
+    result.sort(key=lambda row: (row["name"].casefold(), row["id"]))
+    if sort == "Recently updated":
+        result.sort(key=lambda row: row.get("updated_at") or "", reverse=True)
+    elif sort == "Largest first":
+        result.sort(key=lambda row: row.get("molecule_count", 0), reverse=True)
+    elif sort == "Libraries first":
+        result.sort(key=lambda row: row.get("molecule_count", 0), reverse=True)
+        result.sort(key=lambda row: COLLECTION_SECTIONS.index(_collection_section(row)))
+    return result
 
 
 def _reset_import():
@@ -812,6 +859,7 @@ def render_database(user, projects):
         st.session_state["molecular-score-filters"] = []
         for method in IMPORT_METHODS:
             st.session_state["molecular-method-" + method] = True
+        st.session_state["molecular-collection-section"] = "All collections"
         st.session_state["database-selected-group"] = pending_group
     if pending_molecule:
         st.session_state["database-focus"] = pending_molecule
@@ -821,66 +869,85 @@ def render_database(user, projects):
         with st.expander(f"{len(errors)} source jobs could not be indexed"):
             st.dataframe(errors, hide_index=True)
     with st.container(key="molecular-database"):
-        sidebar, main, details = st.columns([.23, .51, .26], gap="medium")
+        sidebar, main, details = st.columns([.25, .50, .25], gap="medium")
         with sidebar, st.container(key="database-groups"):
-            heading, new, refresh = st.columns([3, 1.5, 1])
-            heading.markdown("### Groups")
-            if new.button("+ New", key="molecular-database-new"):
+            st.markdown("### Collections")
+            new, refresh = st.columns([4, 1])
+            if new.button("Import / new", icon=":material/add:", use_container_width=True, key="molecular-database-new"):
                 st.session_state["molecular-import-open"] = True
                 st.session_state["molecular-import-step"] = 0
             if refresh.button("↻", key="molecular-database-refresh", help="Refresh molecules and job results"):
                 st.session_state["molecular-indexing-errors"] = sync_workspace(user, database=database, force=True)
                 st.rerun()
-            group_query = st.text_input("Search groups", placeholder="Search groups…", label_visibility="collapsed", key="molecular-group-search")
-            collection_label = st.segmented_control(
-                "Collection",
-                ["Library", "All indexed"],
-                default="Library",
-                key="molecular-collection-view",
-                help="Library includes eligible imported and selected collections. All indexed also shows historical/unreviewed screening shortlists, evaluations, and intermediate job collections.",
-            )
-            collection = "library" if collection_label == "Library" else "all"
-            if collection == "all":
-                st.caption("All indexed includes the original unreviewed SpiroSpace screening shortlists and their saved history.")
-            scope_options = ["Mine", "Shared", "All"]
-            old_scope = st.session_state.get("molecular-scope")
-            scope_aliases = {"My groups": "Mine", "Organization": "All", "organization": "All", "mine": "Mine", "shared": "Shared", "all": "All"}
-            if old_scope in scope_aliases:
-                st.session_state["molecular-scope"] = scope_aliases[old_scope]
-            if st.session_state.get("molecular-scope") not in scope_options:
-                st.session_state["molecular-scope"] = "All"
-            scope_label = st.segmented_control(
-                "Collection access",
-                scope_options,
-                default="All",
-                key="molecular-scope",
-                label_visibility="visible",
-                help="Mine shows personal collections. Shared shows project collections. All combines both.",
-            )
-            scope = {"Mine": "mine", "Shared": "shared", "All": "all"}[scope_label]
-            st.caption("Mine: personal · Shared: project collections · All: both")
-            hide_smoke_test = st.checkbox(
-                "Hide confirmed development runs",
-                value=True,
-                key="molecular-hide-smoke-test-groups",
-                help="Hides only the eight audited owner/run pairs. Names and development-account flags alone do not hide campaigns. Turn this off to inspect those runs.",
-            )
-            with st.popover("Import Method", use_container_width=True):
+            group_query = st.text_input("Find a collection", placeholder="Find a library, campaign, project…", label_visibility="collapsed", key="molecular-group-search")
+            with st.popover("Access & source filters", icon=":material/tune:", use_container_width=True):
+                collection_label = st.segmented_control(
+                    "Collection", ["Library", "All indexed"], default="Library", key="molecular-collection-view",
+                    help="Library includes eligible imported and selected collections. All indexed also shows historical/unreviewed screening shortlists, evaluations, and intermediate job collections.",
+                ) or "Library"
+                scope_options = ["Mine", "Shared", "All"]
+                old_scope = st.session_state.get("molecular-scope")
+                scope_aliases = {"My groups": "Mine", "Organization": "All", "organization": "All", "mine": "Mine", "shared": "Shared", "all": "All"}
+                if old_scope in scope_aliases:
+                    st.session_state["molecular-scope"] = scope_aliases[old_scope]
+                if st.session_state.get("molecular-scope") not in scope_options:
+                    st.session_state["molecular-scope"] = "All"
+                scope_label = st.segmented_control(
+                    "Collection access", scope_options, default="All", key="molecular-scope",
+                    help="Mine shows personal collections. Shared shows project collections. All combines both.",
+                ) or "All"
+                project_id = _projects(projects, "molecular-project-filter", label="Project filter", empty_label="All projects")
+                hide_smoke_test = st.checkbox(
+                    "Hide confirmed development runs", value=True, key="molecular-hide-smoke-test-groups",
+                    help="Hides only the eight audited owner/run pairs. Names and development-account flags alone do not hide campaigns. Turn this off to inspect those runs.",
+                )
+                st.markdown("**Import method**")
                 methods = [value for value, label in IMPORT_METHODS.items() if st.checkbox(label, value=True, key="molecular-method-" + value)]
-            project_id = _projects(projects, "molecular-project-filter", label="Project filter")
+            collection = "library" if collection_label == "Library" else "all"
+            scope = {"Mine": "mine", "Shared": "shared", "All": "all"}[scope_label]
+            project_name = next((row["name"] for row in projects if row["id"] == project_id), "All projects")
+            st.caption(f"{collection_label} · {scope_label} access · {project_name}")
+            if collection == "all":
+                st.caption("Includes historical/unreviewed screening shortlists and intermediate job collections.")
             if not methods:
                 methods = ["__none__"]
             groups = database.groups(
                 user, project_id=project_id, scope=scope, methods=methods, collection=collection,
                 hide_smoke_test=hide_smoke_test,
             )
-            filtered_groups = [row for row in groups if not group_query or group_query.casefold() in row["name"].casefold()]
-            options = ["", *[row["id"] for row in filtered_groups]]
-            if st.session_state.get("database-selected-group") not in options:
+            section_counts = {section: sum(_collection_section(row) == section for row in groups) for section in COLLECTION_SECTIONS[1:]}
+            section = st.selectbox(
+                "Browse collections", COLLECTION_SECTIONS, key="molecular-collection-section",
+                format_func=lambda value: f"{value} ({len(groups) if value == 'All collections' else section_counts[value]:,})",
+            )
+            group_sort = st.selectbox("Collection order", COLLECTION_SORTS, key="molecular-collection-order", label_visibility="collapsed")
+            filtered_groups = _browse_collections(groups, query=group_query, section=section, sort=group_sort, projects=projects)
+            filtered_ids = {row["id"] for row in filtered_groups}
+            if st.session_state.get("database-selected-group") not in filtered_ids:
                 st.session_state["database-selected-group"] = ""
-            with st.container(height=560, border=False):
+            browse_signature = json.dumps([group_query, section, group_sort, [row["id"] for row in filtered_groups]])
+            page_count = max(1, math.ceil(len(filtered_groups) / COLLECTION_PAGE_SIZE))
+            if st.session_state.get("molecular-browse-signature") != browse_signature:
+                selected_index = next((index for index, row in enumerate(filtered_groups) if row["id"] == st.session_state.get("database-selected-group")), 0)
+                st.session_state["molecular-collection-page"] = selected_index // COLLECTION_PAGE_SIZE + 1
+                st.session_state["molecular-browse-signature"] = browse_signature
+            if pending_group and pending_group in filtered_ids:
+                selected_index = next(index for index, row in enumerate(filtered_groups) if row["id"] == pending_group)
+                st.session_state["molecular-collection-page"] = selected_index // COLLECTION_PAGE_SIZE + 1
+            group_page = int(st.session_state.get("molecular-collection-page", 1))
+            page_groups = filtered_groups[(group_page - 1) * COLLECTION_PAGE_SIZE:group_page * COLLECTION_PAGE_SIZE]
+            options = ["", *[row["id"] for row in page_groups]]
+            selected_group = st.session_state.get("database-selected-group")
+            if selected_group and selected_group not in options:
+                options.insert(1, selected_group)
+                st.caption("Your selected collection stays visible while browsing other pages.")
+            group_lookup = {row["id"]: row for row in filtered_groups}
+            st.caption(f"{len(filtered_groups):,} collections" + (f" · filtered from {len(groups):,}" if len(filtered_groups) != len(groups) else ""))
+            if not filtered_groups:
+                st.info("No matching collections. Try a shorter search, another category, or the access filters.")
+            with st.container(height=490, border=False):
                 def group_label(value):
-                    row = next((row for row in filtered_groups if row["id"] == value), None)
+                    row = group_lookup.get(value)
                     if row is None:
                         return "All molecules"
                     label = f"{row['name']} · {row['molecule_count']:,}"
@@ -891,6 +958,10 @@ def render_database(user, projects):
                     source = _remote_source_workstation(row.get("origin"))
                     return label + (f" · from {source}" if source else "")
                 group_id = st.radio("Molecule groups", options, format_func=group_label, key="database-selected-group", label_visibility="collapsed")
+            if page_count > 1:
+                st.number_input("Collection page", min_value=1, max_value=page_count, step=1, key="molecular-collection-page")
+                st.caption(f"Page {group_page} of {page_count} · {COLLECTION_PAGE_SIZE} collections per page")
+            st.caption("Category and search narrow this list only. All molecules includes every collection allowed by the access filters.")
         group_name = next((row["name"] for row in groups if row["id"] == group_id), "All molecules")
         active_group = next((row for row in groups if row["id"] == group_id), {})
         if st.session_state.get("database-comparison-group") != group_id:
@@ -901,8 +972,8 @@ def render_database(user, projects):
                       "collection": collection, "hide_smoke_test": hide_smoke_test}
         metric_fields = database.metric_fields(user, **query_args)
         with main:
-            title, file_col, edit_col, view_col, export_col = st.columns([3, 1, 1, 1, 1.3])
-            title.markdown("### Molecules")
+            st.markdown("### Molecules")
+            file_col, edit_col, view_col, export_col = st.columns(4)
             with file_col.popover("File", use_container_width=True):
                 if st.button("Upload molecules…", key="molecular-database-upload"):
                     st.session_state["molecular-import-open"] = True
@@ -915,6 +986,15 @@ def render_database(user, projects):
                     st.session_state["molecular-column-open"] = True
             with view_col.popover("View", use_container_width=True):
                 plot = st.checkbox("Compare candidates", key="molecular-plot")
+            st.markdown(f'<div class="database-collection-heading">{html.escape(group_name)}</div>', unsafe_allow_html=True)
+            if active_group:
+                badges = [_collection_section(active_group), f"{active_group['molecule_count']:,} molecules",
+                          "Project collection" if active_group.get("project_id") else "Personal collection"]
+                if source := _remote_source_workstation(active_group.get("origin")):
+                    badges.append("From " + source + " · read-only")
+                st.markdown('<div class="database-collection-meta">' + "".join(f"<span>{html.escape(value)}</span>" for value in badges) + '</div>', unsafe_allow_html=True)
+            else:
+                st.caption("Browse all accessible molecules, or choose a collection on the left. Imported libraries appear first by default.")
             if group_id:
                 batches = database.import_batches(user, group_id)
                 if batches:
@@ -974,13 +1054,13 @@ def render_database(user, projects):
                     if value:
                         evaluation_filters[field] = value
                 st.caption("Each molecule row shows scores from one result: the latest representative model or pose by default. Use these selectors to choose a target, tool or run. Other model results remain available on Results.")
-            search, sort_col, order_col, filter_col = st.columns([4, 1.5, 1, 1])
+            search, sort_col, order_col, filter_col = st.columns([3, 1.5, .8, 1.2])
             query = search.text_input("Search molecules", placeholder="Search name, sequence, SMILES, tag…", label_visibility="collapsed", key="molecular-query")
             sort_options = ["added", "name", *metric_fields]
             if st.session_state.get("molecular-sort") not in sort_options:
                 st.session_state["molecular-sort"] = "added"
             sort = sort_col.selectbox("Sort", sort_options, format_func=lambda value: value.title() if value in {"added", "name"} else field_label(value), key="molecular-sort", label_visibility="collapsed")
-            descending = order_col.toggle("Desc", value=True, key="molecular-desc")
+            descending = order_col.toggle("↓", value=True, key="molecular-desc", help="Descending sort order; turn off for ascending.")
             filters = []
             with filter_col.popover("Filter", use_container_width=True):
                 kind = st.selectbox("Molecule type", ["", *TYPE_LABELS], format_func=lambda value: TYPE_LABELS.get(value, "All types"), key="molecular-type-filter")
