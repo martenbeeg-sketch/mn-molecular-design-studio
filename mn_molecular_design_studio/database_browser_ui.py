@@ -1,4 +1,4 @@
-"""Grouped Database browsing in the established filter/table/inspector layout."""
+"""Choose a molecule/run on the left, its evidence centrally, and inspect on the right."""
 from __future__ import annotations
 
 import hashlib
@@ -10,10 +10,17 @@ import streamlit as st
 from mn_molecular_design_studio.database_browser import (
     browse_subjects,
     build_browser_index,
+    component_subjects,
+    load_result_record,
     molecular_subjects,
     run_subjects,
+    subject_results,
 )
 from mn_molecular_design_studio.molecular_database import IMPORT_METHODS
+
+
+def _signature(values):
+    return hashlib.sha256(json.dumps(values).encode()).hexdigest()[:16]
 
 
 def render_browser(database, user, projects, view):
@@ -28,6 +35,7 @@ def render_browser(database, user, projects, view):
         with navigation:
             st.markdown("### Browse")
             _database_view_selector(view)
+            st.caption("Choose on the left → results in the middle → viewer on the right.")
             new, refresh = st.columns([4, 1])
             if new.button("Import / new", icon=":material/add:", key="molecular-database-new", use_container_width=True):
                 st.session_state["molecular-import-open"] = True
@@ -35,14 +43,18 @@ def render_browser(database, user, projects, view):
             if refresh.button("↻", key="molecular-database-refresh", help="Explicitly refresh saved job indexing"):
                 st.session_state["molecular-indexing-errors"] = sync_workspace(user, database=database, force=True)
                 st.rerun()
-            query = st.text_input("Search grouped records", placeholder="Name, sequence, library, job…", key="database-browser-query")
-            if view == "Molecules":
-                grouping_label = st.selectbox("Group by", ["Whole molecule", "Individual sequence"], key="database-browser-molecule-grouping")
-            else:
-                grouping_label = st.selectbox("Group by", ["Campaigns + runs", "Individual runs"], key="database-browser-run-grouping")
-            sort = st.selectbox("Order", ["Most jobs", "Recently added", "Name A–Z", "Most molecules"], key="database-browser-sort")
-            with st.popover("Access & source filters", use_container_width=True):
-                collection_label = st.segmented_control("Collection", ["Library", "All indexed"], default="Library", key="molecular-collection-view") or "Library"
+            query = st.text_input("Find a molecule" if view == "Molecules" else "Find a run / campaign",
+                                  placeholder="Name, sequence, library, job…", key="database-browser-query")
+            chooser = st.container()
+            with st.popover("Browse & access filters", use_container_width=True):
+                if view == "Molecules":
+                    grouping_label = st.selectbox("Group by", ["Ligands & targets", "Whole molecule", "Individual sequence"],
+                                                  key="database-browser-molecule-grouping-v2")
+                else:
+                    grouping_label = st.selectbox("Group by", ["Campaigns + runs", "Individual runs"], key="database-browser-run-grouping")
+                sort = st.selectbox("Order", ["Most jobs", "Recently added", "Name A–Z", "Most molecules"], key="database-browser-sort")
+                collection_label = st.segmented_control("Starting collection", ["Library", "All indexed"], default="Library",
+                                                        key="molecular-collection-view") or "Library"
                 scope_options = ["Mine", "Shared", "All"]
                 if st.session_state.get("molecular-scope") not in scope_options:
                     st.session_state["molecular-scope"] = "All"
@@ -55,92 +67,136 @@ def render_browser(database, user, projects, view):
             collection = "library" if collection_label == "Library" else "all"
             project_name = next((row["name"] for row in projects if row["id"] == project_id), "All projects")
             st.caption(f"{collection_label} · {scope_label} access · {project_name}")
-            with st.expander("How grouping works"):
-                st.caption("Grouping changes navigation only. Exact sequences and recorded molecular contents link jobs without merging identities, structures or scores. Campaigns require explicit links. Related history is included only where you have access.")
+            with st.expander("Molecules, runs or collections?"):
+                st.caption("Molecules: one exact ligand or polymer, including complexes that contain it and designs with a recorded target link. Whole molecule keeps complete complexes separate.")
+                st.caption("Runs: results of one recorded execution. Campaigns combine only explicitly linked executions, not similarly named jobs.")
+                st.caption("Collections: imported libraries or folders of selected molecules. A molecule can belong to several folders; a folder is not a new calculation.")
+                st.caption("Only indexed, accessible evidence is shown. Missing historical links are not guessed from names. No identities, structures or scores are merged.")
             index = build_browser_index(database, user, project_id=project_id, scope=scope, methods=methods,
-                                        collection=collection, hide_smoke_test=hide_smoke)
-            subjects = (molecular_subjects(index, individual_sequences=grouping_label == "Individual sequence")
-                        if view == "Molecules" else run_subjects(index, combine_campaigns=grouping_label == "Campaigns + runs"))
+                                        collection=collection, hide_smoke_test=hide_smoke, include_related=True)
+            if view == "Runs":
+                subjects = run_subjects(index, combine_campaigns=grouping_label == "Campaigns + runs")
+            elif grouping_label == "Ligands & targets":
+                subjects = component_subjects(index)
+            else:
+                subjects = molecular_subjects(index, individual_sequences=grouping_label == "Individual sequence")
+            if view == "Molecules":
+                types = sorted({row["type"] for row in subjects})
+                type_filter = st.selectbox("Molecule type", ["All types", *types], key="database-browser-entity-type-" + grouping_label)
+                if type_filter != "All types":
+                    subjects = [row for row in subjects if row["type"] == type_filter]
             filtered = browse_subjects(subjects, index, query=query, sort=sort)
-            signature = hashlib.sha256(json.dumps([view, grouping_label, query, sort, project_id, scope, collection, methods, hide_smoke,
-                                                   [row["id"] for row in filtered]]).encode()).hexdigest()[:16]
+            signature = _signature([view, grouping_label, query, sort, project_id, scope, collection, methods, hide_smoke,
+                                    [row["id"] for row in filtered]])
             if st.session_state.get("database-browser-signature") != signature:
                 st.session_state["database-browser-page"] = 1
                 st.session_state["database-browser-signature"] = signature
             page_count = max(1, math.ceil(len(filtered) / 50))
             page_number = 1
-            if page_count > 1:
-                page_number = int(st.number_input("Grouped page", min_value=1, max_value=page_count, step=1, key="database-browser-page"))
-            st.caption(f"{len(filtered):,} grouped items · page {page_number} of {page_count}")
-            page = filtered[(page_number - 1) * 50:page_number * 50]
-            subject_lookup = {row["id"]: row for row in page}
-            picker_key = "database-browser-inspect-" + signature + str(page_number)
-            pending = st.session_state.pop("database-browser-pending-subject", None)
-            if pending and pending.get("picker_key") == picker_key and pending.get("subject_id") in subject_lookup:
-                st.session_state[picker_key] = pending["subject_id"]
-            selected = ""
-            if page:
-                selected = st.selectbox("Inspect grouped item", ["", *subject_lookup],
-                                        format_func=lambda value: subject_lookup[value]["name"] + " · " + value[:8] if value else "First item on this page",
-                                        key=picker_key) or page[0]["id"]
+            with chooser:
+                if page_count > 1:
+                    page_number = int(st.number_input("Browse page", min_value=1, max_value=page_count, step=1, key="database-browser-page"))
+                st.caption(f"{len(filtered):,} {'molecules' if view == 'Molecules' else 'runs / campaigns'} · page {page_number} of {page_count}")
+                page = filtered[(page_number - 1) * 50:page_number * 50]
+                subject_lookup = {row["id"]: row for row in page}
+                selected = ""
+                if page:
+                    with st.container(height=200, border=False):
+                        selected = st.radio("Choose a molecule" if view == "Molecules" else "Choose a run / campaign", list(subject_lookup),
+                            format_func=lambda value: subject_lookup[value]["name"] + f" · {len(subject_lookup[value]['run_keys']):,} jobs",
+                            key="database-browser-subject-" + signature + str(page_number))
         subject = subject_lookup.get(selected)
-        with main:
-            st.markdown("### " + ("Molecules" if view == "Molecules" else "Runs & campaigns"))
-            st.caption(f"{len(filtered):,} grouped items · {len(index['runs']):,} recorded jobs. Select a row to update the molecule viewer.")
-            if page:
-                rows = [{"id": row["id"], "values": {
-                    "Name": row["name"], "Jobs": len(row["run_keys"]), "Records": len(row["molecule_ids"]),
-                    "Collections": len(row["group_ids"]),
-                    **({"Type": row["type"], "Sequence / chemistry": row["sequence"][:100] + ("…" if len(row["sequence"]) > 100 else "")}
-                       if view == "Molecules" else {"Tools": ", ".join(sorted(row["tools"])), "Workstations": ", ".join(sorted(row["workstations"]))})}}
-                        for row in page]
-                event = render_table(rows, [{"key": field, "label": field, "kind": "value"} for field in rows[0]["values"]],
-                                     selected_ids=[], focus_id=selected, key="database-browser-table-" + signature + str(page_number), allow_selection=False)
-                event_key = "database-browser-event-" + signature + str(page_number)
-                if event and event.get("token") != st.session_state.get(event_key):
-                    st.session_state[event_key] = event.get("token")
-                    if event.get("focusId") in subject_lookup and event["focusId"] != selected:
-                        st.session_state["database-browser-pending-subject"] = {"picker_key": picker_key, "subject_id": event["focusId"]}
+        selected_result = None
+        result_page = []
+        result_signature = ""
+        if subject:
+            results = subject_results(database, index, subject, run_view=view == "Runs")
+            with navigation:
+                st.markdown("#### Filter connected results")
+                result_query = st.text_input("Find a result", placeholder="Name, tool, job, model…",
+                                             key="database-results-query-" + subject["id"])
+                kinds = sorted({row["kind_label"] for row in results})
+                kind = st.selectbox("Result type", ["All result types", *kinds], key="database-results-kind-" + subject["id"])
+                tools = sorted({row["tool"] for row in results if row["tool"]})
+                tool = st.selectbox("Result tool", ["All tools", *tools], key="database-results-tool-" + subject["id"])
+                terms = result_query.casefold().split()
+                results = [row for row in results if (kind == "All result types" or row["kind_label"] == kind)
+                           and (tool == "All tools" or row["tool"] == tool)
+                           and all(term in " ".join(str(value) for value in row.values()).casefold() for term in terms)]
+                result_signature = _signature([signature, subject["id"], result_query, kind, tool, [row["id"] for row in results]])
+                page_key = "database-results-page-" + result_signature
+                result_page_count = max(1, math.ceil(len(results) / 50))
+                result_page_number = 1
+                if result_page_count > 1:
+                    result_page_number = int(st.number_input("Results page", min_value=1, max_value=result_page_count, step=1, key=page_key))
+                st.caption(f"{len(results):,} connected results · page {result_page_number} of {result_page_count}")
+                result_page = results[(result_page_number - 1) * 50:result_page_number * 50]
+                result_lookup = {row["id"]: row for row in result_page}
+                result_picker_key = "database-results-inspect-" + result_signature + str(result_page_number)
+                pending = st.session_state.pop("database-results-pending", None)
+                if pending and pending.get("picker_key") == result_picker_key and pending.get("result_id") in result_lookup:
+                    st.session_state[result_picker_key] = pending["result_id"]
+                if result_page:
+                    focused_result = st.selectbox("Inspect result", list(result_lookup),
+                        index=next((offset for offset, row in enumerate(result_page) if row["structure_ids"]), 0),
+                        format_func=lambda value: result_lookup[value]["name"] + " · " + result_lookup[value]["kind_label"]
+                        + " · " + (result_lookup[value]["run_id"] or result_lookup[value]["collection"]) + " · " + value[-6:],
+                        key=result_picker_key)
+                    selected_result = result_lookup[focused_result]
+                    if st.button("Open original collection", key="database-browser-open-" + subject["id"]):
+                        database.group(selected_result["group_id"], user)
+                        st.session_state["molecular-preselect-group"] = selected_result["group_id"]
+                        st.session_state["molecular-preselect-molecule"] = selected_result["molecule_id"]
+                        st.session_state["molecular-preselect-collection"] = "all"
                         st.rerun()
+        with main:
+            st.markdown("### Connected results")
+            if subject:
+                st.markdown("**" + subject["name"] + "**")
+                st.caption(f"{len(results):,} results · {len(subject['run_keys']):,} recorded jobs. Select a result below to update the viewer.")
+                if result_page:
+                    rows = [{"id": row["id"], "values": {
+                        "Name": row["name"], "Result": row["kind_label"], "Tool": row["tool"], "Job": row["run_id"],
+                        "Candidate": row.get("candidate", ""), "Model / pose": row["model"], "Structures": len(row["structure_ids"]),
+                        "Status": row["status"], "Collection": row["collection"],
+                        "Workstation": row["workstation"], "Connection": row["relation"],
+                    }} for row in result_page]
+                    table_key = "database-results-table-" + result_signature + str(result_page_number)
+                    event = render_table(rows, [{"key": field, "label": field, "kind": "value"} for field in rows[0]["values"]],
+                        selected_ids=[], focus_id=selected_result["id"], key=table_key, allow_selection=False)
+                    event_key = table_key + "-event"
+                    if event and event.get("token") != st.session_state.get(event_key):
+                        st.session_state[event_key] = event.get("token")
+                        if event.get("focusId") in result_lookup and event["focusId"] != selected_result["id"]:
+                            st.session_state["database-results-pending"] = {"picker_key": result_picker_key, "result_id": event["focusId"]}
+                            st.rerun()
+                else:
+                    st.info("No matching connected results. Adjust the result filters on the left.")
                 _render_subject_summary(index, subject)
             else:
-                st.info("No matching grouped records. Try another search or adjust the access/source filters. Original collections remain available under Collections.")
-        molecule_id = ""
-        group_id = ""
-        if subject:
-            with navigation:
-                molecule_ids = sorted(subject["molecule_ids"])
-                molecule_id = st.selectbox("Original molecule record", molecule_ids,
-                                          format_func=lambda value: index["molecules"][value]["name"] + " · " + value[-8:],
-                                          key="database-browser-record-" + subject["id"])
-                source_groups = sorted(index["molecules"][molecule_id]["group_ids"] & subject["group_ids"])
-                group_id = st.selectbox("Original source collection", source_groups,
-                                       format_func=lambda value: index["groups"][value]["name"] + " · " + value[:12],
-                                       key="database-browser-source-" + subject["id"] + molecule_id)
-                if st.button("Open original collection", key="database-browser-open-" + subject["id"]):
-                    database.group(group_id, user)
-                    st.session_state["molecular-preselect-group"] = group_id
-                    st.session_state["molecular-preselect-molecule"] = molecule_id
-                    st.session_state["molecular-preselect-collection"] = "all"
-                    st.rerun()
+                st.info("No matching molecules or runs. Try another search or adjust the access/source filters.")
         with details, st.container(key="database-details"):
-            if molecule_id:
-                records = database.list_molecules(user, group_id=group_id, molecule_ids=[molecule_id], project_id=project_id,
-                                                 scope=scope, collection="all", hide_smoke_test=hide_smoke, limit=1)["items"]
-                if records:
-                    st.session_state["database-focus"] = molecule_id
-                    render_details(database, user, records[0])
+            if selected_result:
+                record = load_result_record(database, user, selected_result, project_id=project_id, scope=scope, hide_smoke_test=hide_smoke)
+                if record:
+                    st.session_state["database-focus"] = record["id"]
+                    if selected_result["evaluation_id"]:
+                        st.session_state["database-evaluation-" + record["id"]] = selected_result["evaluation_id"]
+                    st.caption(selected_result["kind_label"] + " · " + (selected_result["tool"] or selected_result["collection"]))
+                    if not record["structures"]:
+                        st.caption("No structure is recorded for this result. Choose a structure-bearing result in the middle for 3D viewing.")
+                    render_details(database, user, record)
                 else:
-                    st.caption("This record is no longer accessible. Choose another item or refresh the view.")
+                    st.caption("This result is no longer accessible. Choose another result or refresh the view.")
             else:
-                st.caption("Select a molecule to inspect its structure, chains, and scores.")
+                st.caption("Select a result to inspect its structure, chains, and scores.")
     if st.session_state.get("molecular-import-open"):
         render_import_dialog(user, projects)
 
 
 def _render_subject_summary(index, subject):
-    st.caption(f"{len(subject['run_keys']):,} jobs · {len(subject['molecule_ids']):,} original molecule records · {len(subject['group_ids']):,} collections. Scores and structures remain attached to their original evaluations.")
-    with st.expander("Jobs and provenance", expanded=False):
+    with st.expander("Recorded connections & provenance", expanded=False):
+        st.caption(f"{len(subject['run_keys']):,} jobs · {len(subject['molecule_ids']):,} original molecule records · {len(subject['group_ids']):,} collections. Each result keeps its own evaluation and scores.")
         if sequence := subject.get("sequence"):
             st.code(sequence, language=None)
         run_rows = [index["runs"][key] for key in sorted(subject["run_keys"])]

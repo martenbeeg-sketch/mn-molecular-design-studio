@@ -16,6 +16,25 @@ The Results folder starts empty, defaults to the same data volume as the
 previous app, and can be changed in Settings. The Database includes only
 molecule sets imported or created through Molecular Design Studio.
 
+### Browse connected Database results
+
+The Database keeps its three-pane layout: choose and filter on the left,
+select a connected result in the center, and inspect its structure and scores
+on the right.
+
+- **Molecules** selects an exact ligand or polymer across recorded complexes,
+  plus designs/evaluations with explicit target links. **Whole molecule** keeps
+  complete complexes, partners and stoichiometry separate.
+- **Runs** shows the individual results of a recorded execution. Campaigns
+  combine only explicitly linked executions, across their source collections.
+- **Collections** are imported libraries or folders of selected molecules,
+  not new calculations. Existing selection, editing and export remain here.
+
+Each evaluation/model retains its own scores and representations. A structure
+without a recorded evaluation is shown without borrowing another job's scores.
+Only accessible, indexed evidence is included; missing historical relationships
+are not inferred from names. Browsing does not merge or delete original records.
+
 Studio also supports an optional [workstation cluster](docs/workstation-cluster.md):
 shared job visibility, machine availability, remote submission through local
 schedulers, and analysis on the workstation that owns its input data. Enable it

@@ -8,8 +8,11 @@ from streamlit.testing.v1 import AppTest
 from mn_molecular_design_studio.database_browser import (
     browse_subjects,
     build_browser_index,
+    component_subjects,
+    load_result_record,
     molecular_subjects,
     run_subjects,
+    subject_results,
 )
 from mn_molecular_design_studio.molecular_database import MolecularDatabase
 
@@ -201,12 +204,12 @@ def test_grouped_browser_default_and_original_collection_drilldown(database, mon
     app = AppTest.from_string(f"from mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
     assert not app.exception
     assert app.session_state["database-browser-view"] == "Molecules"
-    assert any("1 grouped items" in item.value for item in app.caption)
-    picker = next(item for item in app.selectbox if item.label == "Inspect grouped item")
-    subject = molecular_subjects(build_browser_index(database, USER))[0]
+    assert any("1 molecules" in item.value for item in app.caption)
+    picker = next(item for item in app.radio if item.label == "Choose a molecule")
+    subject = component_subjects(build_browser_index(database, USER))[0]
     picker.set_value(subject["id"]).run()
     assert not app.exception
-    assert any("2 jobs" in item.value for item in app.caption)
+    assert any("2 results" in item.value for item in app.caption)
     assert hydration_calls
     assert all(call["molecule_ids"] == first["molecule_ids"] and call["limit"] == 1 for call in hydration_calls)
     app.button(key="database-browser-open-" + subject["id"]).click().run()
@@ -225,13 +228,13 @@ def test_grouped_browser_run_switch_search_and_empty_state(database, monkeypatch
     monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
     app = AppTest.from_string(f"import streamlit as st\nst.session_state.setdefault('database-browser-view', 'Runs')\nfrom mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
     assert not app.exception
-    assert any("1 grouped items" in item.value for item in app.caption)
+    assert any("1 runs / campaigns" in item.value for item in app.caption)
     app.selectbox(key="database-browser-run-grouping").set_value("Individual runs").run()
     assert not app.exception
-    assert any("2 grouped items" in item.value for item in app.caption)
+    assert any("2 runs / campaigns" in item.value for item in app.caption)
     app.text_input(key="database-browser-query").set_value("no-match").run()
     assert not app.exception
-    assert any("No matching grouped records" in item.value for item in app.info)
+    assert any("No matching molecules or runs" in item.value for item in app.info)
 
 
 def test_grouped_pagination_and_search_include_late_page_records(database, monkeypatch):
@@ -242,14 +245,14 @@ def test_grouped_pagination_and_search_include_late_page_records(database, monke
     monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
     app = AppTest.from_string(f"from mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
     assert not app.exception
-    assert any("60 grouped items" in item.value for item in app.caption)
+    assert any("60 molecules" in item.value for item in app.caption)
     app.number_input(key="database-browser-page").set_value(2).run()
     assert not app.exception
-    assert len(next(item for item in app.selectbox if item.label == "Inspect grouped item").options) == 11
+    assert len(next(item for item in app.radio if item.label == "Choose a molecule").options) == 10
     app.text_input(key="database-browser-query").set_value("Binder 059").run()
     assert not app.exception
     assert app.session_state["database-browser-page"] == 1
-    assert any("1 grouped items" in item.value for item in app.caption)
+    assert any("1 molecules" in item.value for item in app.caption)
 
 
 @pytest.mark.parametrize("view", ["Molecules", "Runs", "Collections"])
@@ -272,10 +275,12 @@ def test_grouped_views_keep_filters_left_and_automatic_viewer_right(database, mo
         assert left.selectbox(key="molecular-type-filter").label == "Molecule type"
         assert {"Target", "Tool", "Run"}.issubset({item.label for item in left.selectbox})
     else:
-        assert left.text_input(key="database-browser-query").label == "Search grouped records"
+        assert left.text_input(key="database-browser-query").label in {"Find a molecule", "Find a run / campaign"}
         assert any(item.label == "Group by" for item in left.selectbox)
-        assert any(item.label == "Original molecule record" for item in left.selectbox)
-        assert any(item.label == "Original source collection" for item in left.selectbox)
+        assert any(item.label == "Inspect result" for item in left.selectbox)
+        assert any(item.label == "Find a result" for item in left.text_input)
+        assert any(item.label in {"Choose a molecule", "Choose a run / campaign"} for item in left.radio)
+        assert not center.radio
     assert not center.text_input
     assert {item.label for item in center.selectbox}.issubset({"Format"})
     assert any("VIEWER_ACTIVE: " + imported["molecule_ids"][0] == item.value for item in right.markdown)
@@ -284,18 +289,24 @@ def test_grouped_views_keep_filters_left_and_automatic_viewer_right(database, mo
         app.text_input(key="database-browser-query").set_value("no-match").run()
         assert not app.exception
         assert not any("VIEWER_ACTIVE" in item.value for item in app.markdown)
-        assert any("Select a molecule to inspect" in item.value for item in app.caption)
+        assert any("Select a result to inspect" in item.value for item in app.caption)
 
 
 def test_grouped_sheet_focus_changes_the_inspector_without_stale_selection(database, monkeypatch):
     import streamlit as st
     from mn_molecular_design_studio import database_ui, molecule_table
 
-    imported = _import(database, records=[_record("ACDE", name="First"), _record("FGHI", name="Second")])
+    imported = _import(database, run_id="first", records=[_record("ACDE", name="First")])
+    _import(database, run_id="second", records=[_record("ACDE", name="Second")])
+    for run_id, score in (("first", 1), ("second", 2)):
+        group = next(group for group in database.groups(USER) if group["origin"].get("run_id") == run_id)
+        database.add_observation(group["id"], imported["molecule_ids"][0], "tool", run_id, {"score": score}, context={"task_group": "design"})
     monkeypatch.setattr(database_ui, "MolecularDatabase", lambda: database)
     monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
-    monkeypatch.setattr(database_ui, "render_details", lambda database, user, record: st.markdown("VIEWER_ACTIVE: " + record["id"]))
-    second = next(row for row in molecular_subjects(build_browser_index(database, USER)) if row["name"] == "Second")
+    monkeypatch.setattr(database_ui, "render_details", lambda database, user, record: st.markdown("VIEWER_ACTIVE: " + str(record["scores"].get("tool.score"))))
+    index = build_browser_index(database, USER)
+    subject = component_subjects(index)[0]
+    second = next(row for row in subject_results(database, index, subject) if row["run_id"] == "second")
 
     def render_table(*args, **kwargs):
         assert kwargs["allow_selection"] is False
@@ -304,12 +315,13 @@ def test_grouped_sheet_focus_changes_the_inspector_without_stale_selection(datab
     monkeypatch.setattr(molecule_table, "render_table", render_table)
     app = AppTest.from_string(f"from mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
     assert not app.exception
-    assert app.session_state["database-focus"] == imported["molecule_ids"][1]
-    assert any("VIEWER_ACTIVE: " + imported["molecule_ids"][1] == item.value for item in app.markdown)
-    app.text_input(key="database-browser-query").set_value("First").run()
+    assert app.session_state["database-focus"] == imported["molecule_ids"][0]
+    assert any("VIEWER_ACTIVE: 2" == item.value for item in app.markdown)
+    next(item for item in app.text_input if item.label == "Find a result").set_value("first").run()
     assert not app.exception
     assert app.session_state["database-focus"] == imported["molecule_ids"][0]
-    assert not any("VIEWER_ACTIVE: " + imported["molecule_ids"][1] == item.value for item in app.markdown)
+    assert any("VIEWER_ACTIVE: 1" == item.value for item in app.markdown)
+    assert not any("VIEWER_ACTIVE: 2" == item.value for item in app.markdown)
 
 
 @pytest.mark.parametrize("allow_selection", [True, False])
@@ -321,3 +333,160 @@ def test_molecular_sheet_preserves_selection_default_and_supports_focus_only(mon
     options = {} if allow_selection else {"allow_selection": False}
     molecule_table.render_table([], [], selected_ids=[], focus_id="", key="sheet-test", **options)
     assert arguments[0]["allowSelection"] is allow_selection
+
+
+def test_component_navigation_connects_ligands_complexes_and_explicit_target_designs(database):
+    target = _import(database, records=[_record("ACDE", name="Target")], method="user_uploads", kind="curated", run_id="")
+    target_id = target["molecule_ids"][0]
+    ligand = {"chain": "L", "type": "small_molecule", "smiles": "CCO"}
+    compound = _import(database, records=[_record(name="Ligand", components=[ligand])], run_id="ligand")
+    complex_record = _import(database, records=[_record(name="Complex", components=[
+        {"chain": "T", "type": "protein", "sequence": "ACDE"}, ligand])], run_id="complex")
+    design = _import(database, records=[_record("FGHI", name="Designed binder", metadata={"design_target_molecule_id": target_id})], run_id="design")
+    unrelated = _import(database, records=[_record("KLMN", name="Target")], run_id="unrelated")
+    index = build_browser_index(database, USER, include_related=True)
+    subjects = component_subjects(index)
+    protein = next(row for row in subjects if row["sequence"] == "ACDE")
+    assert protein["name"] == "Target"
+    assert protein["molecule_ids"] == set(target["molecule_ids"] + complex_record["molecule_ids"] + design["molecule_ids"])
+    assert not protein["molecule_ids"] & set(unrelated["molecule_ids"])
+    compound_subject = next(row for row in subjects if row["type"] == "small_molecule")
+    assert compound_subject["molecule_ids"] == set(compound["molecule_ids"] + complex_record["molecule_ids"])
+    results = subject_results(database, index, protein)
+    assert set(row["molecule_id"] for row in results) == protein["molecule_ids"]
+    assert next(row for row in results if row["molecule_id"] == design["molecule_ids"][0])["relation"] == "Recorded target link"
+
+
+def test_target_history_includes_accessible_nonlibrary_results_without_other_target_evaluations(database):
+    target = _import(database, records=[_record("ACDE", name="Target")], method="user_uploads", kind="curated", run_id="")
+    other_target = _import(database, records=[_record("KLMN", name="Other target")], method="user_uploads", kind="curated", run_id="")
+    design = _import(database, records=[_record("FGHI", name="Binder")], run_id="score", kind="evaluation")
+    for target_id, model in ((target["molecule_ids"][0], "0"), (other_target["molecule_ids"][0], "1")):
+        database.add_observation(design["group_id"], design["molecule_ids"][0], "validator", "score", {"score": int(model)},
+            context={"task_group": "design", "target_molecule_id": target_id, "model_id": model})
+    private = _import(database, user=OTHER, records=[_record("PQRS", metadata={"design_target_molecule_id": target["molecule_ids"][0]})])
+    index = build_browser_index(database, USER, methods=["user_uploads"], include_related=True)
+    subject = next(row for row in component_subjects(index) if row["sequence"] == "ACDE")
+    assert design["molecule_ids"][0] not in index["visible_ids"]
+    assert design["molecule_ids"][0] in subject["molecule_ids"]
+    assert not set(private["molecule_ids"]) & subject["molecule_ids"]
+    rows = subject_results(database, index, subject)
+    evaluations = [row for row in rows if row["evaluation_id"]]
+    assert len(evaluations) == 1 and evaluations[0]["model"] == "0"
+    record = load_result_record(database, USER, evaluations[0])
+    assert record["selected_evaluation"]["target_id"] == target["molecule_ids"][0]
+    assert record["selected_evaluation"]["model_id"] == "0"
+    assert len(record["observations"]) == 1
+    assert load_result_record(database, OTHER, evaluations[0]) is None
+
+
+def test_run_results_do_not_include_other_jobs_of_the_same_molecule(database):
+    original = _import(database, name="Shared evaluations", run_id="", kind="evaluation")
+    molecule_id = original["molecule_ids"][0]
+    for run_id, workstation, model in (("first", "peer-one", "0"), ("second", "peer-one", "1"), ("first", "peer-two", "2")):
+        database.add_observation(original["group_id"], molecule_id, "predictor", run_id, {"score": int(model)},
+            context={"task_group": "validation", "workstation": workstation, "model_id": model})
+    index = build_browser_index(database, USER, collection="all", include_related=True)
+    subjects = run_subjects(index, combine_campaigns=False)
+    assert len(subjects) == 3
+    selected = next(row for row in subjects if any(index["runs"][key]["run_id"] == "first"
+                    and "peer-one" in index["runs"][key]["workstations"] for key in row["run_keys"]))
+    rows = subject_results(database, index, selected, run_view=True)
+    assert len(rows) == 1
+    assert rows[0]["run_id"] == "first" and rows[0]["model"] == "0"
+    assert rows[0]["workstation"] == "peer-one"
+
+
+def test_selected_evaluations_and_structures_keep_their_own_scores(database):
+    imported = _import(database, records=[_record(files=[{"name": "model.pdb", "content": b"END\n", "model_id": "0"}])])
+    molecule_id = imported["molecule_ids"][0]
+    database.add_observation(imported["group_id"], molecule_id, "predictor", "run-1", {"score": 10},
+                             context={"task_group": "design", "model_id": "0"})
+    database.add_observation(imported["group_id"], molecule_id, "predictor", "run-1", {"score": 20},
+                             context={"task_group": "design", "model_id": "1"})
+    unscored = _import(database, run_id="unscored", records=[_record(files=[{"name": "unscored.pdb", "content": b"END\n\n"}])])
+    index = build_browser_index(database, USER)
+    subject = component_subjects(index)[0]
+    with database.connection() as connection:
+        before = [tuple(row) for row in connection.execute("SELECT * FROM molecule_observations ORDER BY id")]
+        revision = connection.execute("SELECT local_revision FROM molecular_database_sync_state").fetchone()[0]
+    rows = subject_results(database, index, subject)
+    evaluation_rows = [row for row in rows if row["evaluation_id"]]
+    assert len(evaluation_rows) == 2
+    for row in evaluation_rows:
+        record = load_result_record(database, USER, row)
+        assert record["selected_evaluation"]["id"] == row["evaluation_id"]
+        assert record["scores"]["predictor.score"] == (10 if row["model"] == "0" else 20)
+        assert len(record["structures"]) == (1 if row["model"] == "0" else 0)
+    structure_row = next(row for row in rows if row["kind"] == "Structure" and row["group_id"] == unscored["group_id"])
+    record = load_result_record(database, USER, structure_row)
+    assert len(record["structures"]) == 1
+    assert record["selected_evaluation"] is None and not record["scores"] and not record["observations"]
+    with database.connection() as connection:
+        assert before == [tuple(row) for row in connection.execute("SELECT * FROM molecule_observations ORDER BY id")]
+        assert revision == connection.execute("SELECT local_revision FROM molecular_database_sync_state").fetchone()[0]
+
+
+def test_source_collections_do_not_duplicate_one_run_output(database):
+    first = _import(database, name="Generated")
+    second = _import(database, name="Selected", method="user_uploads", kind="curated")
+    index = build_browser_index(database, USER, include_related=True)
+    subject = component_subjects(index)[0]
+    rows = subject_results(database, index, subject)
+    assert len(rows) == 1
+    assert rows[0]["group_ids"] == {first["group_id"], second["group_id"]}
+    assert rows[0]["collection"] == "Generated, Selected"
+    database.add_observation(first["group_id"], first["molecule_ids"][0], "generator", "run-1", {"score": 4},
+                             context={"task_group": "design"})
+    index = build_browser_index(database, USER, include_related=True)
+    rows = subject_results(database, index, component_subjects(index)[0])
+    assert len(rows) == 1 and rows[0]["kind"] == "Evaluation"
+
+
+def test_result_pages_search_before_pagination_and_hydrate_only_one_record(database, monkeypatch):
+    from mn_molecular_design_studio import database_ui
+
+    imported = _import(database)
+    for model in range(60):
+        database.add_observation(imported["group_id"], imported["molecule_ids"][0], "predictor", "run-1", {"score": model},
+                                 context={"task_group": "design", "model_id": str(model), "candidate_id": f"candidate-{model:03}"})
+    monkeypatch.setattr(database_ui, "MolecularDatabase", lambda: database)
+    monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
+    calls = []
+    original = database.list_molecules
+
+    def hydrate(*args, **kwargs):
+        calls.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(database, "list_molecules", hydrate)
+    app = AppTest.from_string(f"from mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
+    assert not app.exception
+    assert any("60 connected results" in item.value for item in app.caption)
+    next(item for item in app.number_input if item.label == "Results page").set_value(2).run()
+    assert not app.exception
+    assert len(next(item for item in app.selectbox if item.label == "Inspect result").options) == 10
+    next(item for item in app.text_input if item.label == "Find a result").set_value("candidate-059").run()
+    assert not app.exception
+    assert any("1 connected results" in item.value for item in app.caption)
+    assert all(call["limit"] == 1 and call["molecule_ids"] == imported["molecule_ids"] for call in calls)
+
+
+def test_native_evaluation_selector_follows_center_result_for_same_molecule(database, monkeypatch):
+    from mn_molecular_design_studio import database_ui
+
+    imported = _import(database)
+    for model in ("0", "1"):
+        database.add_observation(imported["group_id"], imported["molecule_ids"][0], "predictor", "run-1", {"score": int(model)},
+                                 context={"task_group": "design", "model_id": model})
+    monkeypatch.setattr(database_ui, "MolecularDatabase", lambda: database)
+    monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
+    index = build_browser_index(database, USER)
+    rows = subject_results(database, index, component_subjects(index)[0])
+    app = AppTest.from_string(f"from mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
+    assert not app.exception
+    for row in rows:
+        next(item for item in app.selectbox if item.label == "Inspect result").set_value(row["id"]).run()
+        assert not app.exception
+        selector = next(item for item in app.selectbox if item.label == "Evaluation")
+        assert selector.value == row["evaluation_id"] and len(selector.options) == 1
