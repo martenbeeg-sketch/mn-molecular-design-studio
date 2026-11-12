@@ -11,10 +11,10 @@ specialist pipelines remain unqualified.
 - Research: **https://pc002975.marionegri.it:18503/** or
   **https://172.18.24.170:18503/**. The resolvable short hostname `pc002975` also works.
 - Hosting PC only: **http://127.0.0.1:8502/**.
-- Login: **`research_instructor`**. The temporary password is in the local,
-  owner-only `~/.config/mn-molecular-design-studio/production-credentials.json`.
-  Do not send that file to students or commit it. Change the password at first
-  sign-in; normal API/workflow access is blocked until this happens.
+- Login: **`research_instructor`**, using the current password chosen by the
+  instructor. Original bootstrap credentials are obsolete. Account recovery
+  issues a new private temporary password and requires another password change;
+  do not share credential files or the instructor password with students.
 - Existing research owner `00000000000000000000000000000001` is retained. No
   campaign, import, project, library or Evaluation ownership was reassigned.
 - Production is **instructor-only** pending the unanswered choice about three
@@ -51,11 +51,71 @@ Gateway uploads are capped at 256 MB, with application limits still applicable.
 IT must confirm client addresses belong to this subnet. No public-Internet
 listener or automatic client trust installation was added.
 
-## Library navigation update — 12 November 2026
+## Grouped molecule/run views — 12 November 2026
 
-The current deployed application is **`304fc295416995f0e338c745582c2772053940fd`**
-on PC002975, PC004032 and PC004033. This supersedes the original application
-source below, not its scientific qualification limits.
+The current deployed application is **`6064409bf7da583b9f742438513de7573389ced5`**
+on PC002975, PC004032 and PC004033. This supersedes the navigation-only update
+below. Source: `~/programs/deployments/mn-molecular-design-studio/prod-6064409bf7da/source`.
+Archive SHA-256: `d89cf74aec858431ebbff61cbf227722e53d5a1f2969ca09082087eeeb349032`.
+All three agents report application-code fingerprint
+`29398c0d25485deb2c5062c8de127ca33323454e9f1cb2573f2fd2d36ee32d21`.
+
+- **Molecules** is the new default perspective. Whole-molecule grouping uses
+  recorded component contents with chain multiplicity retained. Individual
+  sequence grouping links exact polymer type/sequence occurrences across jobs
+  and complexes. Molecular-context variants retain their distinct original IDs.
+  An overview group is not a new scientific identity or an averaged result.
+- **Runs** combines collections from the same node/task/run/owner/project and
+  optionally groups explicitly linked campaign children. Shared evaluation
+  containers are resolved through per-row observation/source provenance, not
+  their stale first-run group origin. Different workstations, task groups and
+  ownership contexts remain distinct even when run labels match.
+- Campaign parent links/IDs must be explicit. Cycles, conflicting lineage and
+  missing identities are not guessed. In particular, old accepted-RFD4 singleton
+  registrations with blank parent/campaign IDs cannot safely be joined merely
+  from their names, targets or registration batch. Verified lineage backfill
+  remains separate future work; no production lineage was rewritten here.
+- **Collections** retains the existing import/edit/export workflow. Grouped
+  items list contributing jobs and permit drill-down to original collections.
+  The original molecule inspector is loaded only on explicit request. Scores,
+  structures, targets, evaluator versions and settings are not combined by
+  these views. No group, record or scientific identity was merged or deleted.
+- ACL-filtered metadata grouping and search cover the whole eligible scope
+  before 50-item pagination. Related history is drawn only from accessible
+  groups. Browsing does not start ingestion or load coordinate files. The
+  metadata scan is linear, not an indexed constant-time materialized view.
+- A read-only primary Library probe finds 2,341 molecular compositions, 1,527
+  individual polymer sequences, and 1,506 recorded jobs represented by 1,481
+  campaign/run groups. One composition links 135 jobs; one sequence links 206;
+  one explicitly linked campaign groups 24. These are view-scope counts, not
+  physical database totals. The probe completes in 3.07 seconds on the host;
+  this is one observation, not a latency guarantee for larger databases.
+- Exact-source isolated primary regression checks: **215 passed**. Focused
+  read-only/container checks: **53 passed on each compute workstation**. Cases
+  cover aliases, complex partners/stoichiometry, stereochemistry, polymer types,
+  identity variants, incomplete legacy data, shared evaluation containers,
+  homonymous runs, explicit/cyclic/conflicting lineage, ACLs and late-page
+  search/navigation. Browser checks use labelled synthetic data.
+- All three active application SQLite/configuration sets have fresh private,
+  integrity-checked cold snapshots under
+  `~/.local/state/mn-molecular-design-studio/releases/grouped-6064409bf7da/`.
+  Jobs and commands were idle before the coordinated Studio-only restart.
+  After restart, process paths/environments, production authentication, API/UI
+  health and all agent code fingerprints are verified. All seven research table
+  counts and all account rows (including the current password) are exactly
+  unchanged per host. The scheduler, teaching pilot and TLS gateway are unchanged.
+
+Refresh the research tab and sign in again if prompted, using the **current**
+password, not an expired temporary password. Hot reload remains disabled.
+Evidence is in `docs/audits/2026-11-12-grouped-database-views/`. This UI release
+does not repair the previously recorded peer-sync discrepancies or extend the
+scientific-tool qualification of the original acceptance.
+
+## Earlier library navigation update — 12 November 2026
+
+The earlier navigation-only application was **`304fc295416995f0e338c745582c2772053940fd`**
+on PC002975, PC004032 and PC004033. It superseded the original application
+source below and is now superseded by the grouped views above.
 
 - Archive SHA-256: `10b747f4b50995112b238fb1226566f923799a3bef52ece73acbf9630898799a`.
 - Agent code fingerprint on all three workstations:

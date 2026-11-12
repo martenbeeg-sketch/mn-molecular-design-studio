@@ -1,0 +1,12 @@
+{
+  "source_read_only": true,
+  "elapsed_seconds": 3.07,
+  "molecule_records": 2341,
+  "whole_molecule_subjects": 2341,
+  "individual_sequences": 1527,
+  "recorded_runs": 1506,
+  "campaign_and_run_subjects": 1481,
+  "largest_molecule_job_count": 135,
+  "largest_sequence_job_count": 206,
+  "largest_campaign_job_count": 24
+}
