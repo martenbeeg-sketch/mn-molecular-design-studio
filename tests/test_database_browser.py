@@ -201,13 +201,14 @@ def test_grouped_browser_default_and_original_collection_drilldown(database, mon
     app = AppTest.from_string(f"from mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
     assert not app.exception
     assert app.session_state["database-browser-view"] == "Molecules"
-    assert next(item for item in app.metric if item.label == "Grouped items").value == "1"
+    assert any("1 grouped items" in item.value for item in app.caption)
     picker = next(item for item in app.selectbox if item.label == "Inspect grouped item")
     subject = molecular_subjects(build_browser_index(database, USER))[0]
     picker.set_value(subject["id"]).run()
     assert not app.exception
     assert any("2 jobs" in item.value for item in app.caption)
-    assert not hydration_calls
+    assert hydration_calls
+    assert all(call["molecule_ids"] == first["molecule_ids"] and call["limit"] == 1 for call in hydration_calls)
     app.button(key="database-browser-open-" + subject["id"]).click().run()
     assert not app.exception
     assert app.session_state["database-browser-view"] == "Collections"
@@ -224,10 +225,10 @@ def test_grouped_browser_run_switch_search_and_empty_state(database, monkeypatch
     monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
     app = AppTest.from_string(f"import streamlit as st\nst.session_state.setdefault('database-browser-view', 'Runs')\nfrom mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
     assert not app.exception
-    assert next(item for item in app.metric if item.label == "Grouped items").value == "1"
+    assert any("1 grouped items" in item.value for item in app.caption)
     app.selectbox(key="database-browser-run-grouping").set_value("Individual runs").run()
     assert not app.exception
-    assert next(item for item in app.metric if item.label == "Grouped items").value == "2"
+    assert any("2 grouped items" in item.value for item in app.caption)
     app.text_input(key="database-browser-query").set_value("no-match").run()
     assert not app.exception
     assert any("No matching grouped records" in item.value for item in app.info)
@@ -241,11 +242,82 @@ def test_grouped_pagination_and_search_include_late_page_records(database, monke
     monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
     app = AppTest.from_string(f"from mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
     assert not app.exception
-    assert next(item for item in app.metric if item.label == "Grouped items").value == "60"
+    assert any("60 grouped items" in item.value for item in app.caption)
     app.number_input(key="database-browser-page").set_value(2).run()
     assert not app.exception
     assert len(next(item for item in app.selectbox if item.label == "Inspect grouped item").options) == 11
     app.text_input(key="database-browser-query").set_value("Binder 059").run()
     assert not app.exception
     assert app.session_state["database-browser-page"] == 1
-    assert next(item for item in app.metric if item.label == "Grouped items").value == "1"
+    assert any("1 grouped items" in item.value for item in app.caption)
+
+
+@pytest.mark.parametrize("view", ["Molecules", "Runs", "Collections"])
+def test_grouped_views_keep_filters_left_and_automatic_viewer_right(database, monkeypatch, view):
+    import streamlit as st
+    from mn_molecular_design_studio import database_ui
+
+    imported = _import(database)
+    monkeypatch.setattr(database_ui, "MolecularDatabase", lambda: database)
+    monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
+    monkeypatch.setattr(database_ui, "render_details", lambda database, user, record: st.markdown("VIEWER_ACTIVE: " + record["id"]))
+    app = AppTest.from_string(f"import streamlit as st\nst.session_state.setdefault('database-browser-view', {view!r})\nfrom mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
+    assert not app.exception
+    columns = app.get("column")
+    left, center, right = columns[0], next(column for column in columns if column.weight == .50), columns[-1]
+    assert left.weight == .25 and right.weight == .25
+    if view == "Collections":
+        assert left.text_input(key="molecular-query").label == "Search molecules"
+        assert left.selectbox(key="molecular-sort").label == "Sort"
+        assert left.selectbox(key="molecular-type-filter").label == "Molecule type"
+        assert {"Target", "Tool", "Run"}.issubset({item.label for item in left.selectbox})
+    else:
+        assert left.text_input(key="database-browser-query").label == "Search grouped records"
+        assert any(item.label == "Group by" for item in left.selectbox)
+        assert any(item.label == "Original molecule record" for item in left.selectbox)
+        assert any(item.label == "Original source collection" for item in left.selectbox)
+    assert not center.text_input
+    assert {item.label for item in center.selectbox}.issubset({"Format"})
+    assert any("VIEWER_ACTIVE: " + imported["molecule_ids"][0] == item.value for item in right.markdown)
+    assert not any(item.label == "Load molecule inspector" for item in app.toggle)
+    if view != "Collections":
+        app.text_input(key="database-browser-query").set_value("no-match").run()
+        assert not app.exception
+        assert not any("VIEWER_ACTIVE" in item.value for item in app.markdown)
+        assert any("Select a molecule to inspect" in item.value for item in app.caption)
+
+
+def test_grouped_sheet_focus_changes_the_inspector_without_stale_selection(database, monkeypatch):
+    import streamlit as st
+    from mn_molecular_design_studio import database_ui, molecule_table
+
+    imported = _import(database, records=[_record("ACDE", name="First"), _record("FGHI", name="Second")])
+    monkeypatch.setattr(database_ui, "MolecularDatabase", lambda: database)
+    monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
+    monkeypatch.setattr(database_ui, "render_details", lambda database, user, record: st.markdown("VIEWER_ACTIVE: " + record["id"]))
+    second = next(row for row in molecular_subjects(build_browser_index(database, USER)) if row["name"] == "Second")
+
+    def render_table(*args, **kwargs):
+        assert kwargs["allow_selection"] is False
+        return {"token": "clicked-second", "focusId": second["id"], "selectedIds": []}
+
+    monkeypatch.setattr(molecule_table, "render_table", render_table)
+    app = AppTest.from_string(f"from mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
+    assert not app.exception
+    assert app.session_state["database-focus"] == imported["molecule_ids"][1]
+    assert any("VIEWER_ACTIVE: " + imported["molecule_ids"][1] == item.value for item in app.markdown)
+    app.text_input(key="database-browser-query").set_value("First").run()
+    assert not app.exception
+    assert app.session_state["database-focus"] == imported["molecule_ids"][0]
+    assert not any("VIEWER_ACTIVE: " + imported["molecule_ids"][1] == item.value for item in app.markdown)
+
+
+@pytest.mark.parametrize("allow_selection", [True, False])
+def test_molecular_sheet_preserves_selection_default_and_supports_focus_only(monkeypatch, allow_selection):
+    from mn_molecular_design_studio import molecule_table
+
+    arguments = []
+    monkeypatch.setattr(molecule_table, "_component", lambda **kwargs: arguments.append(kwargs))
+    options = {} if allow_selection else {"allow_selection": False}
+    molecule_table.render_table([], [], selected_ids=[], focus_id="", key="sheet-test", **options)
+    assert arguments[0]["allowSelection"] is allow_selection

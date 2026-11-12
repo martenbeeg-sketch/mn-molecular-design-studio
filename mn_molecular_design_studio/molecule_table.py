@@ -4,9 +4,9 @@ from pathlib import Path
 _component = None
 
 
-def render_table(rows, columns, *, selected_ids, focus_id, key):
+def render_table(rows, columns, *, selected_ids, focus_id, key, allow_selection=True):
     import streamlit.components.v1 as components
     global _component
     if _component is None:
         _component = components.declare_component("studio_molecular_sheet", path=str(Path(__file__).parent / "components/molecule_table"))
-    return _component(rows=rows, columns=columns, selected=selected_ids, focus=focus_id, key=key, default=None)
+    return _component(rows=rows, columns=columns, selected=selected_ids, focus=focus_id, allowSelection=allow_selection, key=key, default=None)

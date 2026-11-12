@@ -88,6 +88,12 @@ def _browse_collections(groups, *, query="", section="All collections", sort="Li
     return result
 
 
+def _database_view_selector(current):
+    selected = st.segmented_control("Database view", ["Molecules", "Runs", "Collections"], key="database-browser-view") or current
+    if selected != current:
+        st.rerun()
+
+
 def _reset_import():
     st.session_state["molecular-import-open"] = False
     st.session_state["molecular-import-step"] = 0
@@ -869,9 +875,9 @@ def render_database(user, projects):
     if errors:
         with st.expander(f"{len(errors)} source jobs could not be indexed"):
             st.dataframe(errors, hide_index=True)
-    browser_view = st.segmented_control("Database view", ["Molecules", "Runs", "Collections"],
-                                        default=None if "database-browser-view" in st.session_state else "Molecules",
-                                        key="database-browser-view") or "Molecules"
+    if st.session_state.get("database-browser-view") not in {"Molecules", "Runs", "Collections"}:
+        st.session_state["database-browser-view"] = "Molecules"
+    browser_view = st.session_state["database-browser-view"]
     if browser_view != "Collections":
         from mn_molecular_design_studio.database_browser_ui import render_browser
         render_browser(database, user, projects, browser_view)
@@ -880,6 +886,7 @@ def render_database(user, projects):
         sidebar, main, details = st.columns([.25, .50, .25], gap="medium")
         with sidebar, st.container(key="database-groups"):
             st.markdown("### Collections")
+            _database_view_selector("Collections")
             new, refresh = st.columns([4, 1])
             if new.button("Import / new", icon=":material/add:", use_container_width=True, key="molecular-database-new"):
                 st.session_state["molecular-import-open"] = True
@@ -888,6 +895,7 @@ def render_database(user, projects):
                 st.session_state["molecular-indexing-errors"] = sync_workspace(user, database=database, force=True)
                 st.rerun()
             group_query = st.text_input("Find a collection", placeholder="Find a library, campaign, project…", label_visibility="collapsed", key="molecular-group-search")
+            molecule_controls = st.container()
             with st.popover("Access & source filters", icon=":material/tune:", use_container_width=True):
                 collection_label = st.segmented_control(
                     "Collection", ["Library", "All indexed"], default="Library", key="molecular-collection-view",
@@ -1052,34 +1060,34 @@ def render_database(user, projects):
                 scope=scope, hide_smoke_test=hide_smoke_test,
             )
             evaluation_filters = {}
-            with st.expander("Choose the scores shown in the molecule table", expanded=False):
-                for field, label in (("target_id", "Target"), ("evaluator", "Tool"), ("run_id", "Run")):
-                    options = ["", *evaluation_options[field]]
-                    key = "database-context-" + field + "-" + (group_id or "all")
-                    if st.session_state.get(key, "") not in options:
-                        st.session_state[key] = ""
-                    value = st.selectbox(label, options, format_func=lambda item: item or "Latest matching result", key=key)
-                    if value:
-                        evaluation_filters[field] = value
-                st.caption("Each molecule row shows scores from one result: the latest representative model or pose by default. Use these selectors to choose a target, tool or run. Other model results remain available on Results.")
-            search, sort_col, order_col, filter_col = st.columns([3, 1.5, .8, 1.2])
-            query = search.text_input("Search molecules", placeholder="Search name, sequence, SMILES, tag…", label_visibility="collapsed", key="molecular-query")
-            sort_options = ["added", "name", *metric_fields]
-            if st.session_state.get("molecular-sort") not in sort_options:
-                st.session_state["molecular-sort"] = "added"
-            sort = sort_col.selectbox("Sort", sort_options, format_func=lambda value: value.title() if value in {"added", "name"} else field_label(value), key="molecular-sort", label_visibility="collapsed")
-            descending = order_col.toggle("↓", value=True, key="molecular-desc", help="Descending sort order; turn off for ascending.")
-            filters = []
-            with filter_col.popover("Filter", use_container_width=True):
-                kind = st.selectbox("Molecule type", ["", *TYPE_LABELS], format_func=lambda value: TYPE_LABELS.get(value, "All types"), key="molecular-type-filter")
-                if not set(st.session_state.get("molecular-score-filters") or []).issubset(metric_fields):
-                    st.session_state["molecular-score-filters"] = []
-                score_fields = st.multiselect("Score filters", metric_fields, format_func=field_label, key="molecular-score-filters")
-                for field in score_fields:
-                    left, right = st.columns([1, 2])
-                    operator = left.selectbox(field + " comparison", [">=", "<=", ">", "<", "="], key="molecular-op-" + field, label_visibility="collapsed")
-                    value = right.number_input(field_label(field), value=0.0, key="molecular-value-" + field)
-                    filters.append({"field": field, "operator": operator, "value": value})
+            with molecule_controls:
+                query = st.text_input("Search molecules", placeholder="Search name, sequence, SMILES, tag…", label_visibility="collapsed", key="molecular-query")
+                with st.popover("Molecule & score filters", use_container_width=True):
+                    sort_options = ["added", "name", *metric_fields]
+                    if st.session_state.get("molecular-sort") not in sort_options:
+                        st.session_state["molecular-sort"] = "added"
+                    sort = st.selectbox("Sort", sort_options, format_func=lambda value: value.title() if value in {"added", "name"} else field_label(value), key="molecular-sort")
+                    descending = st.toggle("Descending", value=True, key="molecular-desc")
+                    kind = st.selectbox("Molecule type", ["", *TYPE_LABELS], format_func=lambda value: TYPE_LABELS.get(value, "All types"), key="molecular-type-filter")
+                    filters = []
+                    if not set(st.session_state.get("molecular-score-filters") or []).issubset(metric_fields):
+                        st.session_state["molecular-score-filters"] = []
+                    score_fields = st.multiselect("Score filters", metric_fields, format_func=field_label, key="molecular-score-filters")
+                    for field in score_fields:
+                        left, right = st.columns([1, 2])
+                        operator = left.selectbox(field + " comparison", [">=", "<=", ">", "<", "="], key="molecular-op-" + field, label_visibility="collapsed")
+                        value = right.number_input(field_label(field), value=0.0, key="molecular-value-" + field)
+                        filters.append({"field": field, "operator": operator, "value": value})
+                    st.markdown("**Evaluation context**")
+                    for field, label in (("target_id", "Target"), ("evaluator", "Tool"), ("run_id", "Run")):
+                        options = ["", *evaluation_options[field]]
+                        key = "database-context-" + field + "-" + (group_id or "all")
+                        if st.session_state.get(key, "") not in options:
+                            st.session_state[key] = ""
+                        value = st.selectbox(label, options, format_func=lambda item: item or "Latest matching result", key=key)
+                        if value:
+                            evaluation_filters[field] = value
+                    st.caption("Each row shows scores from one matching result, never a mixture of different models or settings. Other model results remain available on Results.")
             args = {**query_args, "query": query, "molecule_type": kind, "sort": sort, "descending": descending, "metric_filters": filters,
                     "evaluation_filters": evaluation_filters or None}
             signature = hashlib.sha1(json.dumps(args, sort_keys=True).encode()).hexdigest()
