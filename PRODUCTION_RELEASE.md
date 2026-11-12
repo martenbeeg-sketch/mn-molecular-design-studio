@@ -51,9 +51,71 @@ Gateway uploads are capped at 256 MB, with application limits still applicable.
 IT must confirm client addresses belong to this subnet. No public-Internet
 listener or automatic client trust installation was added.
 
-## Database layout correction — 12 November 2026
+## Connected-result workflow — 12 November 2026
 
-The current deployed application is **`7a82f70af11f91f109777bee639e5f32825ab198`**
+The current deployed application is **`3eb59610ea394dc2c599d11028b8411eba33f583`**
+on PC002975, PC004032 and PC004033, from
+`~/programs/deployments/mn-molecular-design-studio/prod-3eb59610ea39/source`.
+Archive SHA-256: `6a938009cb8c19ed795247efd06bbaa8c5898bc357f9663255fcab7a5a202230`.
+All three agents report code fingerprint
+`a8f94cf179af657b15cadfcf03df34f7634f74bcc831a3d097412381d1a14949`.
+
+The established three-pane design remains unchanged. The left pane now selects
+a molecule or run/campaign; the center lists its individual connected results,
+not another overview of groups; selecting a result updates the right-hand native
+structure/evaluation inspector. Search, result-type/tool filters and both browse
+and result pagination remain on the left. A structure-bearing result is inspected
+initially where available. Results without coordinates are explicitly identified
+instead of displaying another job's structure.
+
+Molecules defaults to exact ligand/polymer entities across recorded complexes,
+plus designs/evaluations with explicit target links. Complete-composition and
+sequence perspectives remain available. Source/library filters select starting
+entities; connected evidence can come from other accessible indexed collections,
+within the selected access/project scope and confirmed-development exclusions.
+Target-linked evaluations for a different target are not substituted. Runs retain
+node/task/run/owner/project qualification and explicit campaign lineage. Their
+center table excludes other jobs' evaluations of the same molecule. Repeated
+source-folder memberships of one molecule/run are coalesced for navigation only;
+separate evaluations and structures keep their original identities and scores.
+Collections retains its established folder, multi-selection, editing and export
+behavior. Historical relationships absent from recorded provenance are not guessed.
+
+Primary isolated regression suite: **228 passed**. Focused, network-disabled CPU
+container suites: **48 passed on each compute PC**. Checks cover the preserved
+three-column layout, entity/complex/target relationships, non-library history,
+private-data exclusion, homonymous jobs on different workstations, model-zero
+selection, native Evaluation-widget state, stale result filtering, pagination,
+source-folder deduplication, exact structure/score pairing and read-only evidence
+enumeration. Browser verification uses synthetic data and confirms selecting a
+target, switching to a single binder, selecting a center-table structure, combined
+campaign output, and individual-run isolation. This is UI/database regression
+qualification, not a new qualification of every scientific tool or pipeline.
+Evidence: `docs/audits/2026-11-12-connected-results/`.
+
+A separate production metadata probe uses SQLite `mode=ro` and `query_only=ON`,
+with no coordinate reads or evaluation hydration. It enumerates 2,337 accessible
+entities; the largest selected entity yields 17,051 result rows and the largest
+run group yields 2,001. Observed indexing takes 10.06 seconds, entity grouping
+0.56 seconds, and those result enumerations 4.04/0.53 seconds. These are single
+measurements, not a latency or multi-user throughput guarantee. Only 50 results
+are displayed per page and one selected original result is hydrated.
+
+Deployment drained Studio jobs/commands, stopped only Studio services, took fresh
+private integrity-checked backups of all six active application SQLite databases
+per host, and verified the actual resumed process paths/environments, production
+authentication, API/UI health and matching node fingerprints. Backups are under
+`~/.local/state/mn-molecular-design-studio/releases/connected-3eb59610ea39/`.
+All seven research-table counts, node IDs and all account rows are unchanged on
+each host. No cleanup, authentication reset, ownership transfer, scientific schema
+migration or production-data merge occurs. Existing peer-count differences remain
+unchanged; this update does not claim to repair peer synchronization. The shared
+scheduler, teaching pilot and TLS gateway remain unchanged. Refresh Streamlit;
+use the current password if sign-in is requested.
+
+## Earlier Database layout correction — 12 November 2026
+
+The earlier deployed application was **`7a82f70af11f91f109777bee639e5f32825ab198`**
 on all three workstations, from
 `~/programs/deployments/mn-molecular-design-studio/prod-7a82f70af11f/source`.
 Archive SHA-256: `a6b7c0898b7a08b0f3ae9eb9a60b3e549b41b60a817e8ef0e6eb5b4f69ca4b3b`.

@@ -1,0 +1,18 @@
+{
+  "mode": "read-only SQLite connections with query_only=ON",
+  "coordinate_files_opened": false,
+  "evaluation_hydration": false,
+  "molecules_in_index": 20560,
+  "molecular_entities": 2337,
+  "largest_entity_records": 16982,
+  "largest_entity_results": 17051,
+  "run_groups": 1483,
+  "largest_run_records": 2001,
+  "largest_run_results": 2001,
+  "seconds": {
+    "index": 10.058,
+    "entities": 0.555,
+    "largest_entity_results": 4.041,
+    "largest_run_results": 0.527
+  }
+}
