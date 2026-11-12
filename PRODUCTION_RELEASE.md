@@ -51,10 +51,53 @@ Gateway uploads are capped at 256 MB, with application limits still applicable.
 IT must confirm client addresses belong to this subnet. No public-Internet
 listener or automatic client trust installation was added.
 
-## Grouped molecule/run views — 12 November 2026
+## Database layout correction — 12 November 2026
 
-The current deployed application is **`6064409bf7da583b9f742438513de7573389ced5`**
-on PC002975, PC004032 and PC004033. This supersedes the navigation-only update
+The current deployed application is **`7a82f70af11f91f109777bee639e5f32825ab198`**
+on all three workstations, from
+`~/programs/deployments/mn-molecular-design-studio/prod-7a82f70af11f/source`.
+Archive SHA-256: `a6b7c0898b7a08b0f3ae9eb9a60b3e549b41b60a817e8ef0e6eb5b4f69ca4b3b`.
+All agents report code fingerprint
+`57ddf999e716986ddbbc17c98f3e840c0ef200a7054511fd533fef272d999001`.
+
+This corrects the preceding grouped views' unwanted page redesign, without
+removing their grouping behavior. All perspectives use the established
+**left filters / center table / right molecule inspector** layout and proportions.
+View switching, searching, grouping, ordering, access/project/source filters,
+and original-record selection are on the left. Collections' molecule, numeric
+score and evaluation-context filters are also on the left. The established
+molecular sheet and native structure/evaluation inspector are reused.
+
+The first current item is inspected automatically; no “Load molecule inspector”
+toggle is required. A row click updates the inspector and left-side selection.
+The inspector loads only the selected original molecule, preserving model,
+structure-integrity and evaluation behavior. Grouped empty/search states do not
+show a stale off-filter record. Grouped sheets use focus-only navigation while
+Collections retain their existing multi-selection and editing/export actions.
+
+Exact-source primary regression suite: **221 passed**; focused isolated peer
+suites: **59 passed on each compute PC**. New checks assert the three-column
+placement and automatic inspector in Molecules, Runs and Collections, plus
+focus/filter changes and backward-compatible sheet selection. Browser checks
+use synthetic molecules and confirm the native 3D viewer and row-click updates.
+Evidence: `docs/audits/2026-11-12-database-viewer-layout/`.
+
+All six active application databases per host have fresh private,
+integrity-checked cold backups under
+`~/.local/state/mn-molecular-design-studio/releases/viewer-7a82f70af11f/`.
+The coordinated Studio-only restart began with no queued/running/claimed Studio
+jobs or pending cluster commands. Post-restart paths, process environments,
+production authentication, API/UI health and fingerprints are verified.
+All seven research table counts and all account rows, including the current
+password, are exactly unchanged on each host. No authentication reset, research
+cleanup, ownership change or scientific migration was performed. The shared
+scheduler, teaching pilot and TLS gateway remain unchanged. Refresh the browser
+and sign in again with the current password if prompted.
+
+## Earlier grouped molecule/run views — 12 November 2026
+
+The earlier application was **`6064409bf7da583b9f742438513de7573389ced5`**
+on PC002975, PC004032 and PC004033. It superseded the navigation-only update
 below. Source: `~/programs/deployments/mn-molecular-design-studio/prod-6064409bf7da/source`.
 Archive SHA-256: `d89cf74aec858431ebbff61cbf227722e53d5a1f2969ca09082087eeeb349032`.
 All three agents report application-code fingerprint
