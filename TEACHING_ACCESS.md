@@ -1,5 +1,8 @@
 # Institute teaching access — three students and one instructor
 
+This page describes the isolated pilot on port 18502. The separate authenticated
+research deployment on port 18503 is documented in `PRODUCTION_RELEASE.md`.
+
 ## Open in a browser
 
 **Teaching URL:** <https://pc002975.marionegri.it:18502/>

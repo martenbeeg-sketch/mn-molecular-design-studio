@@ -249,3 +249,11 @@ changing the hosts' security policies. A separate, authenticated, bounded teachi
 pilot is running; research production remains unchanged and is not activated.
 The original independent report remains the baseline assessment, not a retrospective
 independent certification of these additional implementation changes.
+
+## Subsequent research deployment
+
+`PRODUCTION_RELEASE.md` records the later coordinated deployment, production
+instructor sign-in preserving the original owner, additional AUD-008 correction,
+whole-scope review regressions and per-host recovery acceptance. Earlier
+non-activation statements above describe their original capture times. Original
+independent audit conclusions are not rewritten as certification of this rollout.

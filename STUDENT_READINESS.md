@@ -1,5 +1,8 @@
 # Student readiness — supervised pilot, not production rollout
 
+Historical pilot report. Research deployment is subsequently recorded in
+`PRODUCTION_RELEASE.md`; student production admission remains a separate choice.
+
 Date: 2026-11-11. Application candidate:
 `f0e768235eff799d7abbe06a07c4970ca5d05e78`.
 Tracked source archive SHA-256:

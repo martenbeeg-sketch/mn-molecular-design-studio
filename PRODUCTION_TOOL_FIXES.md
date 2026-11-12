@@ -1,5 +1,8 @@
 # Production tool corrections — 2026-11-12
 
+Subsequent deployment status: see `PRODUCTION_RELEASE.md`. The historical native
+test results below are retained; the corrected research release is now active.
+
 ## Scope and release decision
 
 This follow-up addresses the three concrete release blockers and the final-result
