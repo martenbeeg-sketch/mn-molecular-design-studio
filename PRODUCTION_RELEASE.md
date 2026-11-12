@@ -51,9 +51,86 @@ Gateway uploads are capped at 256 MB, with application limits still applicable.
 IT must confirm client addresses belong to this subnet. No public-Internet
 listener or automatic client trust installation was added.
 
-## Connected-result workflow — 12 November 2026
+## Target roles and result classification — 12 November 2026
 
-The current deployed application is **`3eb59610ea394dc2c599d11028b8411eba33f583`**
+The current deployed application is **`d8ca273252bda5377d22064e4d9eff22f8f40f25`**
+on all three workstations, from
+`~/programs/deployments/mn-molecular-design-studio/prod-d8ca273252bd/source`.
+Archive SHA-256: `4c3887dab89fc0b74c9bcbb1c2c390a8d33f07c99c7610430478ee922e49dd4f`.
+All agents report code fingerprint
+`3b5a59cc02467a78536699a4e43c240b3342d94478ffe63aaddbbce0708c09a9`.
+
+Read-only tracing of the reported entries confirmed two browser defects: repeated
+target/input-carrier memberships were presented as outputs and sorted ahead of
+actual structures/evaluations; target names could be borrowed from an unrelated
+binder alias on a containing complex. The first reported sequence has a recorded
+target label **R3 (31 aa)**. Its results were present, not absent from the Database.
+
+The unchanged three-pane layout now defaults to **Targets & ligands**, with
+**Designed molecules** and **All molecular entities** separate. Target roles use
+recorded receptor/target inputs, target identity metadata, declared component
+roles and explicit target references. A designed binder or generated binder-target
+complex is not promoted into a whole-target reference. Posed ligands and ordinary
+predicted receptors can retain explicit target roles; being an output alone does
+not mean being a designed binder. Recorded target labels/reference names take
+precedence over carrier filenames or a containing complex's binder alias. Generic
+unnamed targets get a type/length/sequence-prefix label, not a guessed protein name.
+
+Input/reference history is off by default and explicitly labeled when enabled.
+Actual structure-bearing results and evaluations appear first, without claiming
+that display order is a scientific ranking. Each pose/model retains its own
+evaluation, coordinates and scores. Legacy binder-only results can link through
+an unambiguous origin-qualified run's recorded target input; conflicting/multiple
+target identities are not guessed. Reused-binder fallback links are source-group
+specific rather than pooled across every target ever associated with the molecule.
+Unassigned data remain available through the all-entity and Collections views.
+No scientific identities or persistent names are merged, rewritten or deleted.
+
+Session-local metadata caching uses a read-only SQLite connection's `data_version`,
+file identity and reconnect generation, plus freshly checked visible/access-authorized
+collection IDs. It does not depend on local-capture revision alone: peer commits,
+deletions, project revocation, reopened watches and database replacement invalidate
+snapshots. Selected-result hydration remains uncached and uses native authorization,
+evaluation selection and structure integrity checks. Explicit refresh clears the
+session cache. First loads and reloads after new data still require a catalog scan.
+
+The final primary isolated regression suite passes **240 tests**; final immutable,
+network-disabled peer suites pass **60 tests on each compute PC**. New cases cover
+carrier/input exclusion, target naming and member roles, no binder-to-target
+promotion, posed-ligand targets, distinct docking poses, unambiguous qualified
+legacy links, reused binders against different targets, cache hits without hydration,
+peer edits without local-revision changes, deletion, project revocation and replaced
+or reopened databases. Synthetic browser checks exercise target/design separation,
+target-connected outputs, ligand pose selection, and matching Evaluation/structure
+changes in the existing right-hand viewer.
+
+Production-data checks use SQLite `mode=ro` and `query_only=ON`. R3 yields **3,177
+output rows, including 2,818 evaluations**; Tau214–283 yields **244 output rows,
+including 238 evaluations**. Each first page contains 50 structure-bearing rows
+and no bare target-input rows. Three evaluation/representation identities and three
+local structure SHA-256 digests are checked for each target (six of each total).
+These are sampled integrity checks, not verification of every historical file/link.
+Observed cold metadata indexing takes 10.62 s, entity grouping 1.45 s, and R3 output
+enumeration 2.62 s. A cached index lookup takes 0.27 s; cached result enumeration
+rounds to 0.00 s. These measurements exclude full UI/3D rendering and are not a
+multi-user throughput guarantee. Cold-start latency remains a coverage limitation.
+Evidence: `docs/audits/2026-11-12-target-roles/`.
+
+The final coordinated Studio-only restart starts with no active Studio jobs or
+pending commands. All six active application SQLite databases per host have fresh
+private integrity-checked backups under
+`~/.local/state/mn-molecular-design-studio/releases/targets-d8ca273252bd/`.
+Post-restart process paths/environments, production authentication, API/UI health
+and node fingerprints are verified. All seven research-table counts, account rows
+and node IDs are unchanged on every host. No authentication reset, ownership
+transfer or scientific schema migration occurs. Existing peer-count differences
+remain unchanged; peer synchronization is not claimed repaired. The shared
+scheduler, teaching pilot and TLS gateway remain unchanged. Refresh Streamlit;
+use the current password if prompted.
+
+## Earlier connected-result workflow — 12 November 2026
+
+The earlier deployed application was **`3eb59610ea394dc2c599d11028b8411eba33f583`**
 on PC002975, PC004032 and PC004033, from
 `~/programs/deployments/mn-molecular-design-studio/prod-3eb59610ea39/source`.
 Archive SHA-256: `6a938009cb8c19ed795247efd06bbaa8c5898bc357f9663255fcab7a5a202230`.

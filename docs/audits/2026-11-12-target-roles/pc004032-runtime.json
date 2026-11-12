@@ -1,0 +1,45 @@
+{
+  "host": "PC004032",
+  "revision": "d8ca273252bda5377d22064e4d9eff22f8f40f25",
+  "fingerprint": "3b5a59cc02467a78536699a4e43c240b3342d94478ffe63aaddbbce0708c09a9",
+  "source": "/home/compute/programs/deployments/mn-molecular-design-studio/prod-d8ca273252bd/source",
+  "units": {
+    "studio-api.service": {
+      "MainPID": "706112",
+      "WorkingDirectory": "/home/compute/programs/deployments/mn-molecular-design-studio/prod-d8ca273252bd/source",
+      "ActiveState": "active"
+    },
+    "studio-agent.service": {
+      "MainPID": "706111",
+      "WorkingDirectory": "/home/compute/programs/deployments/mn-molecular-design-studio/prod-d8ca273252bd/source",
+      "ActiveState": "active"
+    },
+    "studio-ui.service": {
+      "MainPID": "0",
+      "WorkingDirectory": "/home/compute/programs/deployments/mn-molecular-design-studio/prod-d8ca273252bd/source",
+      "ActiveState": "inactive"
+    }
+  },
+  "node_id_unchanged": true,
+  "accounts_unchanged": true,
+  "counts_before": {
+    "molecules": 21470,
+    "molecule_groups": 1050,
+    "molecule_members": 22305,
+    "molecule_observations": 41085,
+    "molecule_evaluations": 41085,
+    "molecule_structures": 21534,
+    "complex_review_annotations": 0
+  },
+  "counts_after": {
+    "molecules": 21470,
+    "molecule_groups": 1050,
+    "molecule_members": 22305,
+    "molecule_observations": 41085,
+    "molecule_evaluations": 41085,
+    "molecule_structures": 21534,
+    "complex_review_annotations": 0
+  },
+  "api_healthy": true,
+  "shared_scheduler_and_pilot_untouched": true
+}

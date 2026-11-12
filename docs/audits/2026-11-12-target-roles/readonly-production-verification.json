@@ -1,0 +1,37 @@
+{
+  "mode": "read-only SQLite; query_only=ON; no evaluation hydration; local coordinates read only for digest checks",
+  "index_seconds": 10.617,
+  "grouping_seconds": 1.4459,
+  "warm_index_seconds": 0.2664,
+  "targets_and_ligands": 859,
+  "targets": [
+    {
+      "target": "R3 (31 aa)",
+      "role": "Target",
+      "output_jobs": 648,
+      "outputs": 3177,
+      "evaluations": 2818,
+      "structure_bearing_rows": 2817,
+      "first_page_structure_rows": 50,
+      "bare_target_input_rows": 0,
+      "evaluation_structure_identity_samples": 3,
+      "local_structure_digest_checks": 3,
+      "cold_results_seconds": 2.6245,
+      "warm_results_seconds": 0.0
+    },
+    {
+      "target": "Tau214\u2013283 (70 aa)",
+      "role": "Target",
+      "output_jobs": 137,
+      "outputs": 244,
+      "evaluations": 238,
+      "structure_bearing_rows": 238,
+      "first_page_structure_rows": 50,
+      "bare_target_input_rows": 0,
+      "evaluation_structure_identity_samples": 3,
+      "local_structure_digest_checks": 3,
+      "cold_results_seconds": 0.1077,
+      "warm_results_seconds": 0.0
+    }
+  ]
+}
