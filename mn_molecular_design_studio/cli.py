@@ -44,12 +44,14 @@ def api(port: int = typer.Option(8766, min=1, max=65535, help="Local API port.")
 def create_admin(
     username: str = typer.Option(..., prompt=True, help="Admin username or email address."),
     display_name: str = typer.Option("", prompt="Display name", help="Name shown in the Studio."),
+    preserve_development_owner: bool = typer.Option(False, "--preserve-development-owner",
+        help="Bind the first instructor login to the existing development owner without changing research ownership. Requires a reviewed backup and migration plan."),
 ) -> None:
     """Create the first Studio admin account on this computer."""
     ensure_studio_workspace()
     password = typer.prompt("Admin password", hide_input=True, confirmation_prompt=True)
     try:
-        user = create_initial_admin(username, display_name, password)
+        user = create_initial_admin(username, display_name, password, preserve_development_owner=preserve_development_owner)
     except (OSError, TypeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     typer.echo(f"Admin account created for {user['username']}. You can now sign in to Molecular Design Studio.")

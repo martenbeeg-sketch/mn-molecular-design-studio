@@ -182,6 +182,18 @@ def test_protocol_conflicts_and_failed_evidence_are_not_silent_numbers(designs):
     assert 9 in values[models[0]].values()
 
 
+def test_review_measurements_never_merge_different_or_unknown_images(designs):
+    db, group, molecule, models = designs
+    for run, digest, value in [("image-one", "sha256:" + "1" * 64, 3),
+                                ("image-two", "sha256:" + "2" * 64, 7), ("unknown-image", "", 9)]:
+        db.add_observation(group, molecule, "image_sensitive", run, {"iptm": value},
+            context={"representation_id": models[0], "image_digest": digest, "settings": {"cutoff": 4}})
+    series, values = review_measurements(design_review_page(db, OWNER, [group])["items"])
+    keys = [key for key, value in series.items() if value["method"] == "image_sensitive"]
+    assert len(keys) == 3
+    assert sorted(values[models[0]][key] for key in keys) == [3, 7, 9]
+
+
 def test_review_rechecks_acl_and_pagination(designs):
     db, group, _, _ = designs
     with pytest.raises(PermissionError):
@@ -193,6 +205,132 @@ def test_review_rechecks_acl_and_pagination(designs):
     first = design_review_page(db, OWNER, [group], limit=1)
     second = design_review_page(db, OWNER, [group], limit=1, offset=first["next_offset"])
     assert first["items"][0]["structure_id"] != second["items"][0]["structure_id"]
+
+
+@pytest.fixture
+def large_designs(designs):
+    import json
+    db, group, molecule, models = designs
+    with db.connection() as connection:
+        template = dict(connection.execute("SELECT * FROM molecule_structures WHERE id=?", (models[0],)).fetchone())
+        for index in range(260):
+            context = {**json.loads(template["context"]), "candidate_id": f"late-design-{index:03}",
+                       "model_id": f"late-model-{index:03}", "run_id": "late-source"}
+            row = {**template, "id": f"late-structure-{index:03}", "created_at": f"2100-01-01T00:00:{index:03}",
+                   "context": json.dumps(context)}
+            connection.execute("INSERT INTO molecule_structures (" + ",".join(row) + ") VALUES (" +
+                               ",".join("?" for _ in row) + ")", list(row.values()))
+    late = "late-structure-259"
+    db.add_observation(group, molecule, "validation_acceptance", "late-validation", {"accepted": True},
+        context={"representation_id": late, "model_id": "late-model-259", "candidate_id": "late-design-259",
+                 "target_id": "late-target", "candidate": {"candidate_id": "late-design-259", "model_id": "late-model-259",
+                 "raw_metadata": {"validation_acceptance": {"status": "accepted", "policy": {"schema": "v1"}}}}})
+    for run, value in [("late-analysis", 0), ("late-repeat", 0)]:
+        db.add_observation(group, molecule, "late_measurement", run, {"iptm": value},
+            context={"representation_id": late, "model_id": "late-model-259", "settings": {"cutoff": 4, "engine_version": "1"}})
+    return db, group, molecule, models, late
+
+
+def test_review_filters_entire_catalog_before_paging(large_designs, monkeypatch):
+    from mn_molecular_design_studio.complex_analysis_design_review import design_review_query
+    db, group, _, models, late = large_designs
+    monkeypatch.setattr(db, "structure_file", lambda *a: pytest.fail("Metadata must not fetch coordinates"))
+    assert late not in {sample["structure_id"] for sample in design_review_page(db, OWNER, [group])["items"]}
+    page = design_review_query(db, OWNER, [group], mode="Final accepted designs", limit=1)
+    assert page["scoped_total"] == 262
+    assert page["final_count"] == page["total"] == 2
+    assert page["next_offset"] == 1
+    assert page["items"][0]["structure_id"] == models[0]
+    second = design_review_query(db, OWNER, [group], mode="Final accepted designs", limit=1, offset=1)
+    assert second["items"][0]["structure_id"] == late
+    search = design_review_query(db, OWNER, [group], search="LATE-DESIGN-259")
+    assert search["total"] == 1
+    assert search["items"][0]["structure_id"] == late
+    key = next(key for key, value in search["series"].items() if value["method"] == "late_measurement")
+    measurement = {"key": key, "minimum": 0, "maximum": 0, "keep_missing": False}
+    measured = design_review_query(db, OWNER, [group], measurement=measurement)
+    assert measured["total"] == 1
+    assert measured["items"][0]["structure_id"] == late
+    assert measured["ranges"][key] == (0, 0)
+    with_missing = design_review_query(db, OWNER, [group], measurement={**measurement, "keep_missing": True})
+    assert with_missing["total"] == 262
+    assert len(with_missing["items"]) == 250
+
+
+def test_review_scope_conflicts_versions_and_failures_apply_before_paging(large_designs):
+    from mn_molecular_design_studio.complex_analysis_design_review import design_review_query
+    db, group, molecule, _, late = large_designs
+    scope = [{"group_id": group, "target_ref": "late-target", "target_revision": "", "preparation_id": ""}]
+    page = design_review_query(db, OWNER, [group], system_scope=scope)
+    assert page["scoped_total"] == page["total"] == 1
+    assert page["items"][0]["structure_id"] == late
+    key = next(key for key, row in page["series"].items() if row["method"] == "late_measurement")
+    for run, value, version, status in [("conflict", 9, "1", "completed"), ("failed", 99, "2", "failed"),
+                                        ("different-version", 5, "2", "completed")]:
+        db.add_observation(group, molecule, "late_measurement", run, {"iptm": value},
+            context={"representation_id": late, "model_id": "late-model-259",
+                     "settings": {"cutoff": 4, "engine_version": version}, "status": status})
+    measurement = {"key": key, "minimum": 0, "maximum": 0, "keep_missing": False}
+    assert design_review_query(db, OWNER, [group], measurement=measurement)["total"] == 0
+    page = design_review_query(db, OWNER, [group], system_scope=scope)
+    other = next(key for key, row in page["series"].items() if row["method"] == "late_measurement" and row["version"] == "2")
+    assert page["ranges"][other] == (5, 5)
+    assert key not in page["ranges"]
+
+
+def test_review_scan_uses_one_snapshot_and_bounded_batches(large_designs, monkeypatch):
+    from mn_molecular_design_studio import complex_analysis_design_review as review
+    import json
+    db, group, _, _, _ = large_designs
+    original = review._hydrate_review_rows
+    sizes = []
+    def hydrate(connection, user, visible, rows):
+        sizes.append(len(rows))
+        if len(sizes) == 1:
+            with db.connection() as writer:
+                row = writer.execute("SELECT context FROM molecule_structures WHERE id='late-structure-259'").fetchone()
+                writer.execute("UPDATE molecule_structures SET context=? WHERE id='late-structure-259'",
+                               (json.dumps({**json.loads(row[0]), "candidate_id": "changed-concurrently"}),))
+        return original(connection, user, visible, rows)
+    monkeypatch.setattr(review, "_hydrate_review_rows", hydrate)
+    page = review.design_review_query(db, OWNER, [group], search="late-design-259")
+    assert page["total"] == 1
+    assert sizes == [250, 12]
+    assert review.design_review_query(db, OWNER, [group], search="changed-concurrently")["total"] == 1
+
+
+@pytest.mark.parametrize("measurement", [
+    {"key": "x", "minimum": 2, "maximum": 1, "keep_missing": False},
+    {"key": "x", "minimum": float("nan"), "maximum": 1, "keep_missing": False},
+    {"key": "x", "minimum": 0, "maximum": 1, "keep_missing": "false"},
+    {"key": "x"},
+])
+def test_review_query_rejects_invalid_filters(designs, measurement):
+    from mn_molecular_design_studio.complex_analysis_design_review import design_review_query
+    db, group, _, _ = designs
+    with pytest.raises(ValueError):
+        design_review_query(db, OWNER, [group], measurement=measurement)
+    with pytest.raises(PermissionError):
+        design_review_query(db, OTHER, [group])
+
+
+def test_review_browser_finds_models_beyond_original_first_page(large_designs, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    db, group, _, _, _ = large_designs
+    monkeypatch.setattr("mn_molecular_design_studio.molecular_database.MolecularDatabase", lambda: db)
+    monkeypatch.setattr(db, "structure_file", lambda *a: pytest.fail("Review must not fetch coordinates"))
+    app = AppTest.from_string(f'''
+from mn_molecular_design_studio.molecular_database import MolecularDatabase
+from mn_molecular_design_studio.complex_analysis_design_review_ui import render_design_review
+render_design_review(MolecularDatabase(), {OWNER!r}, {{"group_ids": [{group!r}], "label": "Large campaign"}})
+''').run(timeout=30)
+    assert not app.exception
+    assert app.metric[0].value == "262"
+    assert len(app.dataframe[0].value) == 2
+    next(widget for widget in app.text_input if widget.label == "Find a design").input("late-design-259").run(timeout=30)
+    assert not app.exception
+    assert len(app.dataframe[0].value) == 1
+    assert any("1 matching across" in caption.value for caption in app.caption)
 
 
 def test_digest_aliases_link_evidence_but_not_other_models_or_private_groups(designs):

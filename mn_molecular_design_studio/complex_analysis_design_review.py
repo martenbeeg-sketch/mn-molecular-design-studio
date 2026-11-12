@@ -37,47 +37,62 @@ def design_review_page(database, user, group_ids, *, offset=0, limit=250, struct
     compatible candidate/model identity. Shared names, runs and molecule IDs
     alone are insufficient. Multiple saved parameter sets remain separate.
     """
-    from mn_molecular_design_studio.evaluations import evaluation_descriptor, PROJECTION_VERSION
-    from mn_molecular_design_studio.complex_analysis_collection import acceptance_decisions, evaluation_table_rows, component_kind
-    from mn_molecular_design_studio.complex_analysis_collection_ui import _database_candidate_view
-
     if not 1 <= limit <= 250 or offset < 0:
         raise ValueError("Invalid design review page.")
     if structure_ids is not None and (not isinstance(structure_ids, list) or len(structure_ids) > 250):
         raise ValueError("Select at most 250 exact models per metadata request.")
+    membership, scope, visible = _review_membership(database, user, group_ids, structure_ids)
+    with database.connection() as connection:
+        connection.execute("BEGIN")
+        total = connection.execute("SELECT COUNT(*) FROM molecule_structures s WHERE " + membership, scope).fetchone()[0]
+        rows = connection.execute(_review_query(membership) + " LIMIT ? OFFSET ?", (*scope, limit, offset)).fetchall()
+        samples = _hydrate_review_rows(connection, user, visible, rows)
+    return {"items": samples, "total": total, "next_offset": offset + limit if offset + limit < total else None}
+
+
+def _review_membership(database, user, group_ids, structure_ids=None):
     ids = list(dict.fromkeys(group_ids))
     database._authorize_group_ids_for_query(user, ids)
     visible = database._visible_ids(user, collection="all")
-    with database.connection() as connection:
-        membership = ("s.group_id IN (SELECT value FROM json_each(?)) AND EXISTS (SELECT 1 FROM molecule_members selected "
+    membership = ("s.group_id IN (SELECT value FROM json_each(?)) AND EXISTS (SELECT 1 FROM molecule_members selected "
                       "WHERE selected.molecule_id=s.molecule_id AND selected.group_id IN (SELECT value FROM json_each(?)) "
                       "AND (selected.group_id=s.group_id OR NOT EXISTS (SELECT 1 FROM molecule_structures owned "
                       "WHERE owned.group_id=selected.group_id AND owned.molecule_id=selected.molecule_id)))")
-        scope = (json.dumps(visible), json.dumps(ids))
-        if structure_ids is not None:
-            membership += " AND s.id IN (SELECT value FROM json_each(?))"
-            scope += (json.dumps(structure_ids),)
-        total = connection.execute("SELECT COUNT(*) FROM molecule_structures s WHERE " + membership, scope).fetchone()[0]
-        rows = connection.execute("SELECT s.*,m.name,m.components,m.metadata,g.project_id,g.origin "
+    scope = (json.dumps(visible), json.dumps(ids))
+    if structure_ids is not None:
+        membership += " AND s.id IN (SELECT value FROM json_each(?))"
+        scope += (json.dumps(structure_ids),)
+    return membership, scope, visible
+
+
+def _review_query(membership):
+    return ("SELECT s.*,m.name,m.components,m.metadata,g.project_id,g.origin "
             "FROM molecule_structures s JOIN molecule_members m ON m.group_id=s.group_id AND m.molecule_id=s.molecule_id "
             "JOIN molecule_groups g ON g.id=s.group_id WHERE " + membership +
-            " ORDER BY m.name,s.created_at,s.id LIMIT ? OFFSET ?", (*scope, limit, offset)).fetchall()
-        molecule_ids = list({row["molecule_id"] for row in rows})
-        observations = connection.execute("SELECT * FROM molecule_observations WHERE molecule_id IN "
+            " ORDER BY m.name,s.created_at,s.id")
+
+
+def _hydrate_review_rows(connection, user, visible, rows):
+    from mn_molecular_design_studio.evaluations import evaluation_descriptor, PROJECTION_VERSION
+    from mn_molecular_design_studio.complex_analysis_collection import acceptance_decisions, evaluation_table_rows, component_kind
+    from mn_molecular_design_studio.complex_analysis_collection_ui import _database_candidate_view
+
+    molecule_ids = list({row["molecule_id"] for row in rows})
+    observations = connection.execute("SELECT * FROM molecule_observations WHERE molecule_id IN "
             "(SELECT value FROM json_each(?)) AND group_id IN (SELECT value FROM json_each(?))",
             (json.dumps(molecule_ids), json.dumps(visible))).fetchall() if rows else []
-        has_evaluations = connection.execute("SELECT 1 FROM sqlite_master WHERE name='molecule_evaluations' AND type='table'").fetchone()
-        saved_evaluations = ({row["observation_id"]: json.loads(row["descriptor"]) for row in connection.execute(
+    has_evaluations = connection.execute("SELECT 1 FROM sqlite_master WHERE name='molecule_evaluations' AND type='table'").fetchone()
+    saved_evaluations = ({row["observation_id"]: json.loads(row["descriptor"]) for row in connection.execute(
             "SELECT observation_id,descriptor FROM molecule_evaluations WHERE molecule_id IN "
             "(SELECT value FROM json_each(?)) AND group_id IN (SELECT value FROM json_each(?)) AND projection_version=?",
             (json.dumps(molecule_ids), json.dumps(visible), PROJECTION_VERSION))} if has_evaluations and rows else {})
-        aliases = connection.execute("SELECT id,molecule_id,context FROM molecule_structures WHERE molecule_id IN "
+    aliases = connection.execute("SELECT id,molecule_id,context FROM molecule_structures WHERE molecule_id IN "
             "(SELECT value FROM json_each(?)) AND group_id IN (SELECT value FROM json_each(?))",
             (json.dumps(molecule_ids), json.dumps(visible))).fetchall() if rows else []
-        sources = connection.execute("SELECT molecule_id,source_key,provenance FROM molecule_sources WHERE molecule_id IN "
+    sources = connection.execute("SELECT molecule_id,source_key,provenance FROM molecule_sources WHERE molecule_id IN "
             "(SELECT value FROM json_each(?)) AND group_id IN (SELECT value FROM json_each(?))",
             (json.dumps(molecule_ids), json.dumps(visible))).fetchall() if rows else []
-        reviews = connection.execute("SELECT subject_id,structure_ref,status,note FROM complex_review_annotations "
+    reviews = connection.execute("SELECT subject_id,structure_ref,status,note FROM complex_review_annotations "
             "WHERE source_kind='database' AND user_id=? AND evaluation_id='' AND structure_ref IN "
             "(SELECT value FROM json_each(?))", (str(user["id"]), json.dumps([row["id"] for row in rows]))).fetchall() if rows else []
     annotation = {row["structure_ref"]: dict(row) for row in reviews}
@@ -170,7 +185,75 @@ def design_review_page(database, user, group_ids, *, offset=0, limit=250, struct
             used[sample["label"]] += 1
             if used[sample["label"]] > 1:
                 sample["label"] += " · representation " + str(used[sample["label"]])
-    return {"items": samples, "total": total, "next_offset": offset + limit if offset + limit < total else None}
+    return samples
+
+
+def design_review_query(database, user, group_ids, *, offset=0, limit=250, mode="All designs",
+                        stage="", search="", measurement=None, system_scope=None):
+    """Filter the entire authorized metadata snapshot before taking a bounded page.
+
+    Evidence linking and conflicting-measurement handling are shared with exact
+    model review. Only one batch of models and the requested page are retained;
+    no coordinate files or full molecule records are loaded. Cost is linear in
+    scoped metadata, rather than a misleading filter of the first 250 models.
+    """
+    from mn_molecular_design_studio.complex_analysis_collection import filter_acceptance_cohort, acceptance_stage_options
+    from mn_molecular_design_studio.complex_analysis_catalog import scoped_structure_ids
+
+    if not 1 <= limit <= 250 or offset < 0:
+        raise ValueError("Invalid design review page.")
+    if measurement is not None:
+        if (set(measurement) != {"key", "minimum", "maximum", "keep_missing"}
+                or not isinstance(measurement["key"], str) or not measurement["key"]
+                or type(measurement["keep_missing"]) is not bool
+                or any(type(measurement[key]) not in {int, float} or not math.isfinite(measurement[key])
+                       for key in ("minimum", "maximum"))
+                or measurement["minimum"] > measurement["maximum"]):
+            raise ValueError("Invalid saved-measurement filter.")
+    membership, scope, visible = _review_membership(database, user, group_ids)
+    if system_scope is not None:
+        scoped_structure_ids(database, user, group_ids, system_scope, [])
+    samples, series, ranges, stages = [], {}, {}, {}
+    total = scoped_total = final_count = evidence_count = shortlisted = 0
+    needle = str(search).casefold().strip()
+    with database.connection() as connection:
+        connection.execute("BEGIN")
+        cursor = connection.execute(_review_query(membership), scope)
+        while rows := cursor.fetchmany(250):
+            if system_scope is not None:
+                allowed = scoped_structure_ids(database, user, group_ids, system_scope,
+                    [row["id"] for row in rows], _connection=connection)
+                rows = [row for row in rows if row["id"] in allowed]
+            batch = _hydrate_review_rows(connection, user, visible, rows)
+            scoped_total += len(batch)
+            final_count += len(filter_acceptance_cohort(batch, "Final accepted designs"))
+            evidence_count += sum(bool(sample["associated"]) for sample in batch)
+            shortlisted += sum(sample["review_annotation"]["status"] == "Shortlisted for experimental testing" for sample in batch)
+            stages.update(acceptance_stage_options(batch))
+            batch = filter_acceptance_cohort(batch, mode, stage)
+            batch = [sample for sample in batch if not needle or needle in json.dumps(
+                [sample["label"], sample["record"]["name"], sample["candidate"]["candidate_id"], sample["context"]], default=str).casefold()]
+            batch_series, values = review_measurements(batch)
+            series.update(batch_series)
+            for sample in batch:
+                numbers = values.get(sample["structure_id"], {})
+                for key, value in numbers.items():
+                    previous = ranges.get(key, (value, value))
+                    ranges[key] = (min(previous[0], value), max(previous[1], value))
+                if measurement is not None:
+                    value = numbers.get(measurement["key"])
+                    if (value is None and not measurement["keep_missing"]) or (value is not None and not
+                            measurement["minimum"] <= value <= measurement["maximum"]):
+                        continue
+                if offset <= total < offset + limit:
+                    samples.append(sample)
+                total += 1
+    order = ("final", "sequence", "shared_filter", "native")
+    return {"items": samples, "total": total, "scoped_total": scoped_total,
+            "next_offset": offset + limit if offset + limit < total else None,
+            "stages": [(key, stages[key]) for key in order if key in stages],
+            "series": series, "ranges": ranges, "final_count": final_count,
+            "evidence_count": evidence_count, "shortlisted": shortlisted}
 
 
 def review_measurements(samples):
@@ -185,10 +268,10 @@ def review_measurements(samples):
                 if type(value) not in {int, float} or not math.isfinite(value):
                     continue
                 identity = (observation["namespace"], descriptor.get("engine_version") or "",
-                            descriptor.get("parameters_digest") or "", key)
+                            descriptor.get("parameters_digest") or "", key, descriptor.get("image_digest") or "")
                 token = hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:20]
                 series[token] = {"method": identity[0], "version": identity[1], "parameters_digest": identity[2], "field": key,
-                                 "parameters": descriptor.get("native_parameters") or {}}
+                                 "image_digest": identity[4], "parameters": descriptor.get("native_parameters") or {}}
                 collected[token].append(value)
         for token, numbers in collected.items():
             if len(set(numbers)) == 1:

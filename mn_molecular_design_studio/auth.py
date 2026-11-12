@@ -233,8 +233,10 @@ def user_count() -> int:
         return int(connection.execute("SELECT count(*) FROM users").fetchone()[0])
 
 
-def create_initial_admin(username: str, display_name: str, password: str) -> dict[str, Any]:
+def create_initial_admin(username: str, display_name: str, password: str, *, preserve_development_owner: bool = False) -> dict[str, Any]:
     """Create the first and only bootstrap admin; intended for the local CLI."""
+    if type(preserve_development_owner) is not bool:
+        raise ValueError("Development-owner preservation must be explicitly enabled or disabled.")
     normalized = _normalize_username(username)
     clean_name = " ".join(str(display_name or "").split()) or normalized
     if len(clean_name) > 120:
@@ -242,12 +244,12 @@ def create_initial_admin(username: str, display_name: str, password: str) -> dic
     encoded_password = _password_hash(password)
     now = _stamp()
     user = {
-        "id": uuid.uuid4().hex,
+        "id": _DEVELOPMENT_USER_ID if preserve_development_owner else uuid.uuid4().hex,
         "username": normalized,
         "display_name": clean_name,
         "role": "admin",
         "password_hash": encoded_password,
-        "must_change_password": 0,
+        "must_change_password": int(preserve_development_owner),
         "disabled": 0,
         "created_at": now,
         "updated_at": now,

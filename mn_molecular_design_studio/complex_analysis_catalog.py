@@ -192,7 +192,7 @@ def collection_system_facets(group):
     return list(facets.values())
 
 
-def scoped_structure_ids(database, user, group_ids, system_scope, structure_ids):
+def scoped_structure_ids(database, user, group_ids, system_scope, structure_ids, *, _connection=None):
     """Resolve only the visible model IDs in one saved-system query, not every relationship page."""
     import json
     cte, _, parameters = _evidence_scope_query(database, user, group_ids)
@@ -202,7 +202,8 @@ def scoped_structure_ids(database, user, group_ids, system_scope, structure_ids)
         raise ValueError("The selected system is outside these source memberships.")
     if not structure_ids or not system_scope:
         return set()
-    with database.connection() as connection:
+    from contextlib import nullcontext
+    with nullcontext(_connection) if _connection is not None else database.connection() as connection:
         rows = connection.execute(cte + "SELECT s.id FROM molecule_structures s WHERE s.id IN (SELECT value FROM json_each(?)) "
             "AND EXISTS (SELECT 1 FROM evidence o JOIN json_each(?) q ON " +
             " AND ".join("o." + field + "=json_extract(q.value,'$." + field + "')" for field in fields) +

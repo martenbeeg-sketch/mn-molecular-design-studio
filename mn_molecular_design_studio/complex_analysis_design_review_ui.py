@@ -8,11 +8,9 @@ import json
 import streamlit as st
 
 from mn_molecular_design_studio.complex_analysis_design_review import (
-    design_review_page, review_measurements, remember_review_selection, selected_review_models,
+    design_review_query, review_measurements, remember_review_selection, selected_review_models,
 )
-from mn_molecular_design_studio.complex_analysis_collection import (
-    filter_acceptance_cohort, acceptance_stage_options,
-)
+from mn_molecular_design_studio.complex_analysis_collection import filter_acceptance_cohort
 
 
 def _field_label(field):
@@ -62,17 +60,10 @@ def render_design_review(database, user, selection, *, requested_action="", work
         if st.session_state.get("review-context-open-" + token):
             from mn_molecular_design_studio.complex_analysis_evidence_ui import render_work_overview
             render_work_overview(database, user, selection)
-    page_number = int(st.number_input("Design page · 250 models per page", min_value=1, value=1,
-                                    step=1, key="review-page-" + token))
-    page = design_review_page(database, user, selection["group_ids"], offset=(page_number - 1) * 250)
-    samples = page["items"]
-    if selection.get("system_scope") is not None:
-        from mn_molecular_design_studio.complex_analysis_catalog import scoped_structure_ids
-        linked = scoped_structure_ids(database, user, selection["group_ids"], selection["system_scope"],
-                                      [sample["structure_id"] for sample in samples])
-        samples = [sample for sample in samples if sample["structure_id"] in linked]
-    if not samples:
-        st.info("No exact retained models on this page. Choose another page or return to campaign selection; source evidence remains unchanged.")
+    catalog = design_review_query(database, user, selection["group_ids"], limit=1,
+                                  system_scope=selection.get("system_scope"))
+    if not catalog["scoped_total"]:
+        st.info("No exact retained models in this saved scope. Return to campaign selection; source evidence remains unchanged.")
         return
     if requested_action == "shortlist":
         selected_ids = st.session_state.get("design-review-selected-" + token, [])
@@ -83,19 +74,17 @@ def render_design_review(database, user, selection, *, requested_action="", work
             render_shortlist_review_export(user, selected, key_prefix="review-shortlist-" + token)
             return
         st.info("Select designs in the review table below, then open Shortlist & export to record decisions and rationale.")
-    final_count = sum(any(d["stage_id"] == "final" and d["cohort_status"] == "passed" for d in sample["decisions"]) for sample in samples)
-    evidence_count = sum(bool(sample["associated"]) for sample in samples)
-    shortlisted = sum(sample["review_annotation"]["status"] == "Shortlisted for experimental testing" for sample in samples)
-    for col, (label, value) in zip(st.columns(4), [("Saved models", len(samples)), ("Final passed", final_count),
-                                                ("With saved evidence", evidence_count), ("Your shortlist", shortlisted)]):
+    final_count = catalog["final_count"]
+    for col, (label, value) in zip(st.columns(4), [("Saved models", catalog["scoped_total"]), ("Final passed", final_count),
+                                                ("With saved evidence", catalog["evidence_count"]), ("Your shortlist", catalog["shortlisted"])]):
         col.metric(label, value)
-    st.caption("Acceptance counts refer to explicitly linked decisions on these exact models. They are not an inferred campaign-wide pass count.")
+    st.caption("Counts cover every retained model in the selected authorized scope, using explicitly linked decisions only. Filters apply before pagination.")
     controls = st.columns([1.2, 1.4, 1.3])
     with controls[0]:
         mode = collection._stateful_selectbox("Cohort", ["Final accepted designs", "Passed at selected stage", "All designs",
             "Rejected at selected stage", "Pending / unresolved at selected stage", "No recorded decision"],
             key="review-cohort-" + token, state_key="review-cohort-value-" + token, default="Final accepted designs")
-    stages = acceptance_stage_options(samples)
+    stages = catalog["stages"]
     with controls[1]:
         stage = collection._stateful_selectbox("Recorded passing stage", [key for key, _ in stages] or [""],
             format_func=lambda key: dict(stages).get(key, "No decision recorded"),
@@ -105,11 +94,8 @@ def render_design_review(database, user, selection, *, requested_action="", work
         search = collection._stateful_text_input("Find a design", placeholder="Design, native ID or source run",
             key="review-search-" + token, state_key="review-search-value-" + token)
     if not final_count and mode == "Final accepted designs":
-        st.info("No final computational pass is recorded on this page. Choose Passed at selected stage to review an earlier recorded pass, or All designs for diagnostics.")
-    filtered = filter_acceptance_cohort(samples, mode, stage)
-    filtered = [s for s in filtered if not search or search.casefold() in
-                json.dumps([s["label"], s["candidate"]["candidate_id"], s["context"]], default=str).casefold()]
-    series, values = review_measurements(filtered)
+        st.info("No final computational pass is recorded in this scope. Choose Passed at selected stage to review an earlier recorded pass, or All designs for diagnostics.")
+    series = catalog["series"]
     with st.expander("Measurement methods and additional fields"):
         include_raw = st.checkbox("Show additional raw numeric fields", value=False, key="review-raw-" + token)
         st.caption("Columns retain their method, version and parameter set. Different settings are separate choices; repeated conflicting measurements stay blank.")
@@ -117,35 +103,47 @@ def render_design_review(database, user, selection, *, requested_action="", work
         series = {key: row for key, row in series.items() if any(part in row["field"].lower() for part in (
             "iptm", "i_ptm", "plddt", "ipae", "overall_pae", "contact_pairs", "buried_surface",
             "unsatisfied", "hydrophobic", "hydrogen_bond_count", "solubility", "liability", "binder_residue_count"))}
-    ordered = sorted(series, key=lambda key: (-sum(key in value for value in values.values()), _metric_priority(series[key]), series[key]["field"]))
-    protocols = sorted({(row["method"], row["version"], row["parameters_digest"]) for row in series.values()})
+    ordered = sorted(series, key=lambda key: (_metric_priority(series[key]), series[key]["field"], key))
+    protocols = sorted({(row["method"], row["version"], row["parameters_digest"], row["image_digest"]) for row in series.values()})
     protocol_number = {protocol: index + 1 for index, protocol in enumerate(protocols)}
     metric_label = lambda key: (f"{_field_label(series[key]['field'])} · {_method_label(series[key]['method'])}" +
-        (f" · settings {protocol_number[(series[key]['method'], series[key]['version'], series[key]['parameters_digest'])]}" if len(protocols) > 1 else ""))
+        (f" · settings {protocol_number[(series[key]['method'], series[key]['version'], series[key]['parameters_digest'], series[key]['image_digest'])]}" if len(protocols) > 1 else ""))
     defaults = []
-    for key in sorted(ordered, key=lambda key: (_metric_priority(series[key]), -sum(key in value for value in values.values()))):
+    for key in ordered:
         if series[key]["field"] not in {series[other]["field"] for other in defaults}:
             defaults.append(key)
         if len(defaults) == 3:
             break
     metrics = st.multiselect("Measurements to compare", ordered, default=defaults,
                             format_func=metric_label, max_selections=6, key="review-metrics-" + token + hashlib.sha256(str(ordered).encode()).hexdigest()[:6])
+    measurement = None
     with st.expander("Filter by a saved measurement"):
         metric = st.selectbox("Measurement", ["", *metrics], format_func=lambda key: metric_label(key) if key else "No numeric filter", key="review-filter-" + token)
         if metric:
-            recorded = [values[s["structure_id"]][metric] for s in filtered if metric in values.get(s["structure_id"], {})]
-            if recorded:
+            recorded = catalog["ranges"].get(metric)
+            if recorded is not None:
                 left, right = st.columns(2)
-                low = left.number_input("Minimum", value=float(min(recorded)), key="review-min-" + token + metric)
-                high = right.number_input("Maximum", value=float(max(recorded)), key="review-max-" + token + metric)
+                low = left.number_input("Minimum", value=float(recorded[0]), key="review-min-" + token + metric)
+                high = right.number_input("Maximum", value=float(recorded[1]), key="review-max-" + token + metric)
                 keep_missing = st.checkbox("Keep designs without this measurement", value=True, key="review-missing-" + token + metric)
-                filtered = [s for s in filtered if (keep_missing if metric not in values.get(s["structure_id"], {}) else
-                            low <= values[s["structure_id"]][metric] <= high)]
+                if low > high:
+                    st.warning("Minimum must not exceed maximum.")
+                    return
+                measurement = {"key": metric, "minimum": low, "maximum": high, "keep_missing": keep_missing}
+    criteria = hashlib.sha256(json.dumps([mode, stage, search, measurement], sort_keys=True).encode()).hexdigest()[:12]
+    page_number = int(st.number_input("Design page · 250 matching models per page", min_value=1, value=1,
+                                    step=1, key="review-page-" + token + criteria))
+    page = design_review_query(database, user, selection["group_ids"], offset=(page_number - 1) * 250,
+        mode=mode, stage=stage, search=search, measurement=measurement, system_scope=selection.get("system_scope"))
+    filtered = page["items"]
+    _, values = review_measurements(filtered)
     allowed = {s["structure_id"] for s in filtered}
     state_key = "design-review-selected-" + token
-    selected_ids = remember_review_selection(st.session_state, token, st.session_state.get(state_key, []), allowed)
-    st.caption(f"{len(filtered)} models shown · page {page_number} of {(page['total'] + 249) // 250}. Blank measurements mean missing, conflicting or failed evidence, not zero. Parameters and versions remain separate; no combined quality score.")
+    selected_ids = (remember_review_selection(st.session_state, token, st.session_state.get(state_key, []), allowed)
+                    if allowed else st.session_state.get(state_key, []))
+    st.caption(f"{len(filtered)} models shown · {page['total']} matching across the selected scope · page {page_number} of {max(1, (page['total'] + 249) // 250)}. Blank measurements mean missing, conflicting or failed evidence, not zero. Parameters and versions remain separate; no combined quality score.")
     if not filtered:
+        st.info("No matching models on this page. Change the filters or page; selected model IDs are retained and reauthorized before use.")
         return
     selected = selected_review_models(database, user, selection["group_ids"], selected_ids,
                                      system_scope=selection.get("system_scope"))
