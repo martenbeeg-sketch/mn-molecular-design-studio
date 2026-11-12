@@ -22,9 +22,11 @@ The Database keeps its three-pane layout: choose and filter on the left,
 select a connected result in the center, and inspect its structure and scores
 on the right.
 
-- **Molecules** selects an exact ligand or polymer across recorded complexes,
-  plus designs/evaluations with explicit target links. **Whole molecule** keeps
-  complete complexes, partners and stoichiometry separate.
+- **Molecules** defaults to **Targets & ligands**. A recorded binding target or
+  receptor is distinct from a designed binder; **Designed molecules** and
+  **All molecular entities** are separate choices. Recorded target labels take
+  precedence over carrier filenames or a complex's binder alias. **Whole molecule**
+  keeps complete complexes, partners and stoichiometry separate.
 - **Runs** shows the individual results of a recorded execution. Campaigns
   combine only explicitly linked executions, across their source collections.
 - **Collections** are imported libraries or folders of selected molecules,
@@ -32,8 +34,16 @@ on the right.
 
 Each evaluation/model retains its own scores and representations. A structure
 without a recorded evaluation is shown without borrowing another job's scores.
-Only accessible, indexed evidence is included; missing historical relationships
-are not inferred from names. Browsing does not merge or delete original records.
+Repeated target carriers and other input-only history are hidden from outputs
+unless **Include input / reference history** is enabled. Structures/evaluations
+appear first; this order is not a scientific score ranking.
+
+Links use accessible exact contents, explicit target IDs, or an unambiguous
+origin-qualified run's recorded target input. Ambiguous or conflicting legacy
+relationships are not guessed from names. Session-local metadata caching checks
+fresh collection access and all SQLite commits, including peer edits and deletion;
+the first load after new data can still take several seconds. Browsing does not
+merge, rename or delete original records.
 
 Studio also supports an optional [workstation cluster](docs/workstation-cluster.md):
 shared job visibility, machine availability, remote submission through local

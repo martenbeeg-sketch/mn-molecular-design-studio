@@ -9,13 +9,12 @@ import streamlit as st
 
 from mn_molecular_design_studio.database_browser import (
     browse_subjects,
-    build_browser_index,
     component_subjects,
     load_result_record,
     molecular_subjects,
     run_subjects,
-    subject_results,
 )
+from mn_molecular_design_studio.database_browser_cache import BrowserCache
 from mn_molecular_design_studio.molecular_database import IMPORT_METHODS
 
 
@@ -42,15 +41,20 @@ def render_browser(database, user, projects, view):
                 st.session_state["molecular-import-step"] = 0
             if refresh.button("↻", key="molecular-database-refresh", help="Explicitly refresh saved job indexing"):
                 st.session_state["molecular-indexing-errors"] = sync_workspace(user, database=database, force=True)
+                previous = st.session_state.pop("database-browser-cache", None)
+                if isinstance(previous, BrowserCache):
+                    previous.close()
                 st.rerun()
             query = st.text_input("Find a molecule" if view == "Molecules" else "Find a run / campaign",
                                   placeholder="Name, sequence, library, job…", key="database-browser-query")
+            if view == "Molecules":
+                grouping_label = st.selectbox("Browse molecules", ["Targets & ligands", "Designed molecules", "All molecular entities",
+                                                                   "Whole molecule", "Individual sequence"],
+                    key="database-browser-molecule-grouping-v3",
+                    help="Targets require recorded target/receptor evidence. Designed binders are kept in their own view.")
             chooser = st.container()
             with st.popover("Browse & access filters", use_container_width=True):
-                if view == "Molecules":
-                    grouping_label = st.selectbox("Group by", ["Ligands & targets", "Whole molecule", "Individual sequence"],
-                                                  key="database-browser-molecule-grouping-v2")
-                else:
+                if view == "Runs":
                     grouping_label = st.selectbox("Group by", ["Campaigns + runs", "Individual runs"], key="database-browser-run-grouping")
                 sort = st.selectbox("Order", ["Most jobs", "Recently added", "Name A–Z", "Most molecules"], key="database-browser-sort")
                 collection_label = st.segmented_control("Starting collection", ["Library", "All indexed"], default="Library",
@@ -68,16 +72,24 @@ def render_browser(database, user, projects, view):
             project_name = next((row["name"] for row in projects if row["id"] == project_id), "All projects")
             st.caption(f"{collection_label} · {scope_label} access · {project_name}")
             with st.expander("Molecules, runs or collections?"):
-                st.caption("Molecules: one exact ligand or polymer, including complexes that contain it and designs with a recorded target link. Whole molecule keeps complete complexes separate.")
+                st.caption("Targets & ligands: recorded binding targets/receptors and ligand identities, not designed binders. Designed molecules has its own view. Names come from target records and recorded target labels, never a complex's binder alias.")
                 st.caption("Runs: results of one recorded execution. Campaigns combine only explicitly linked executions, not similarly named jobs.")
                 st.caption("Collections: imported libraries or folders of selected molecules. A molecule can belong to several folders; a folder is not a new calculation.")
                 st.caption("Only indexed, accessible evidence is shown. Missing historical links are not guessed from names. No identities, structures or scores are merged.")
-            index = build_browser_index(database, user, project_id=project_id, scope=scope, methods=methods,
-                                        collection=collection, hide_smoke_test=hide_smoke, include_related=True)
+            cache = st.session_state.get("database-browser-cache")
+            if not isinstance(cache, BrowserCache) or cache.path != database.path.resolve():
+                if isinstance(cache, BrowserCache):
+                    cache.close()
+                cache = BrowserCache(database.path)
+                st.session_state["database-browser-cache"] = cache
+            with st.spinner("Loading recorded molecular connections…"):
+                index = cache.get_index(database, user, project_id=project_id, scope=scope, methods=methods,
+                                         collection=collection, hide_smoke_test=hide_smoke, include_related=True)
             if view == "Runs":
                 subjects = run_subjects(index, combine_campaigns=grouping_label == "Campaigns + runs")
-            elif grouping_label == "Ligands & targets":
-                subjects = component_subjects(index)
+            elif grouping_label in {"Targets & ligands", "Designed molecules", "All molecular entities"}:
+                subjects = component_subjects(index, role={"Targets & ligands": "targets", "Designed molecules": "designs",
+                                                          "All molecular entities": "all"}[grouping_label])
             else:
                 subjects = molecular_subjects(index, individual_sequences=grouping_label == "Individual sequence")
             if view == "Molecules":
@@ -103,16 +115,19 @@ def render_browser(database, user, projects, view):
                 if page:
                     with st.container(height=200, border=False):
                         selected = st.radio("Choose a molecule" if view == "Molecules" else "Choose a run / campaign", list(subject_lookup),
-                            format_func=lambda value: subject_lookup[value]["name"] + f" · {len(subject_lookup[value]['run_keys']):,} jobs",
+                            format_func=lambda value: subject_lookup[value]["name"] + " · " + subject_lookup[value].get("role", "Run")
+                            + f" · {len(subject_lookup[value]['run_keys']):,} output jobs",
                             key="database-browser-subject-" + signature + str(page_number))
         subject = subject_lookup.get(selected)
         selected_result = None
         result_page = []
         result_signature = ""
         if subject:
-            results = subject_results(database, index, subject, run_view=view == "Runs")
             with navigation:
                 st.markdown("#### Filter connected results")
+                include_inputs = st.checkbox("Include input / reference history", value=False, key="database-results-inputs-" + subject["id"],
+                    help="Off by default: repeated target carriers, prediction inputs and receptor inputs are not design results or poses.")
+                results = cache.get_results(database, index, subject, run_view=view == "Runs", include_inputs=include_inputs)
                 result_query = st.text_input("Find a result", placeholder="Name, tool, job, model…",
                                              key="database-results-query-" + subject["id"])
                 kinds = sorted({row["kind_label"] for row in results})
@@ -123,7 +138,7 @@ def render_browser(database, user, projects, view):
                 results = [row for row in results if (kind == "All result types" or row["kind_label"] == kind)
                            and (tool == "All tools" or row["tool"] == tool)
                            and all(term in " ".join(str(value) for value in row.values()).casefold() for term in terms)]
-                result_signature = _signature([signature, subject["id"], result_query, kind, tool, [row["id"] for row in results]])
+                result_signature = _signature([signature, subject["id"], include_inputs, result_query, kind, tool, [row["id"] for row in results]])
                 page_key = "database-results-page-" + result_signature
                 result_page_count = max(1, math.ceil(len(results) / 50))
                 result_page_number = 1
@@ -153,7 +168,9 @@ def render_browser(database, user, projects, view):
             st.markdown("### Connected results")
             if subject:
                 st.markdown("**" + subject["name"] + "**")
-                st.caption(f"{len(results):,} results · {len(subject['run_keys']):,} recorded jobs. Select a result below to update the viewer.")
+                if subject.get("role"):
+                    st.caption(subject["role"] + " · input-only history is separate from actual outputs.")
+                st.caption(f"{len(results):,} results · {len(subject['run_keys']):,} output jobs. Structures/evaluations first, not a score ranking. Select a result to update the viewer.")
                 if result_page:
                     rows = [{"id": row["id"], "values": {
                         "Name": row["name"], "Result": row["kind_label"], "Tool": row["tool"], "Job": row["run_id"],
@@ -171,7 +188,7 @@ def render_browser(database, user, projects, view):
                             st.session_state["database-results-pending"] = {"picker_key": result_picker_key, "result_id": event["focusId"]}
                             st.rerun()
                 else:
-                    st.info("No matching connected results. Adjust the result filters on the left.")
+                    st.info("No matching design, pose, structure or evaluation outputs. Adjust the result filters or enable input/reference history; an input record alone is not a successful result.")
                 _render_subject_summary(index, subject)
             else:
                 st.info("No matching molecules or runs. Try another search or adjust the access/source filters.")

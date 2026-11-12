@@ -33,6 +33,12 @@ def _record(sequence="ACDE", **values):
     return {"name": "Binder", "components": [{"chain": "A", "type": "protein", "sequence": sequence}], **values}
 
 
+def _app_source(view="Molecules", mode="All molecular entities"):
+    return (f"import streamlit as st\nst.session_state.setdefault('database-browser-view', {view!r})\n"
+            f"st.session_state.setdefault('database-browser-molecule-grouping-v3', {mode!r})\n"
+            f"from mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])")
+
+
 def _import(database, *, name="Design", run_id="run-1", task="design", user=USER, origin=None, records=None, method="tool_output", kind="generated", project_id=""):
     return database.import_records(user, records or [_record()], name=name, import_method=method, project_id=project_id,
                                    origin={"collection_kind": kind, "run_id": run_id, "task_group": task,
@@ -201,7 +207,7 @@ def test_grouped_browser_default_and_original_collection_drilldown(database, mon
         return original_list(*args, **kwargs)
 
     monkeypatch.setattr(database, "list_molecules", list_molecules)
-    app = AppTest.from_string(f"from mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
+    app = AppTest.from_string(_app_source(), default_timeout=15).run()
     assert not app.exception
     assert app.session_state["database-browser-view"] == "Molecules"
     assert any("1 molecules" in item.value for item in app.caption)
@@ -226,7 +232,7 @@ def test_grouped_browser_run_switch_search_and_empty_state(database, monkeypatch
     _import(database, run_id="child", origin={"parent_campaign_run_dir": "/runs/design/parent"})
     monkeypatch.setattr(database_ui, "MolecularDatabase", lambda: database)
     monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
-    app = AppTest.from_string(f"import streamlit as st\nst.session_state.setdefault('database-browser-view', 'Runs')\nfrom mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
+    app = AppTest.from_string(_app_source("Runs"), default_timeout=15).run()
     assert not app.exception
     assert any("1 runs / campaigns" in item.value for item in app.caption)
     app.selectbox(key="database-browser-run-grouping").set_value("Individual runs").run()
@@ -243,7 +249,7 @@ def test_grouped_pagination_and_search_include_late_page_records(database, monke
     _import(database, records=[_record("ACDE" * (index + 1), name=f"Binder {index:03}") for index in range(60)])
     monkeypatch.setattr(database_ui, "MolecularDatabase", lambda: database)
     monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
-    app = AppTest.from_string(f"from mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
+    app = AppTest.from_string(_app_source(), default_timeout=15).run()
     assert not app.exception
     assert any("60 molecules" in item.value for item in app.caption)
     app.number_input(key="database-browser-page").set_value(2).run()
@@ -264,7 +270,7 @@ def test_grouped_views_keep_filters_left_and_automatic_viewer_right(database, mo
     monkeypatch.setattr(database_ui, "MolecularDatabase", lambda: database)
     monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
     monkeypatch.setattr(database_ui, "render_details", lambda database, user, record: st.markdown("VIEWER_ACTIVE: " + record["id"]))
-    app = AppTest.from_string(f"import streamlit as st\nst.session_state.setdefault('database-browser-view', {view!r})\nfrom mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
+    app = AppTest.from_string(_app_source(view), default_timeout=15).run()
     assert not app.exception
     columns = app.get("column")
     left, center, right = columns[0], next(column for column in columns if column.weight == .50), columns[-1]
@@ -276,7 +282,7 @@ def test_grouped_views_keep_filters_left_and_automatic_viewer_right(database, mo
         assert {"Target", "Tool", "Run"}.issubset({item.label for item in left.selectbox})
     else:
         assert left.text_input(key="database-browser-query").label in {"Find a molecule", "Find a run / campaign"}
-        assert any(item.label == "Group by" for item in left.selectbox)
+        assert any(item.label in {"Group by", "Browse molecules"} for item in left.selectbox)
         assert any(item.label == "Inspect result" for item in left.selectbox)
         assert any(item.label == "Find a result" for item in left.text_input)
         assert any(item.label in {"Choose a molecule", "Choose a run / campaign"} for item in left.radio)
@@ -313,7 +319,7 @@ def test_grouped_sheet_focus_changes_the_inspector_without_stale_selection(datab
         return {"token": "clicked-second", "focusId": second["id"], "selectedIds": []}
 
     monkeypatch.setattr(molecule_table, "render_table", render_table)
-    app = AppTest.from_string(f"from mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
+    app = AppTest.from_string(_app_source(), default_timeout=15).run()
     assert not app.exception
     assert app.session_state["database-focus"] == imported["molecule_ids"][0]
     assert any("VIEWER_ACTIVE: 2" == item.value for item in app.markdown)
@@ -347,13 +353,13 @@ def test_component_navigation_connects_ligands_complexes_and_explicit_target_des
     index = build_browser_index(database, USER, include_related=True)
     subjects = component_subjects(index)
     protein = next(row for row in subjects if row["sequence"] == "ACDE")
-    assert protein["name"] == "Target"
+    assert protein["name"] == "Protein target · 4 aa · ACDE"
     assert protein["molecule_ids"] == set(target["molecule_ids"] + complex_record["molecule_ids"] + design["molecule_ids"])
     assert not protein["molecule_ids"] & set(unrelated["molecule_ids"])
     compound_subject = next(row for row in subjects if row["type"] == "small_molecule")
     assert compound_subject["molecule_ids"] == set(compound["molecule_ids"] + complex_record["molecule_ids"])
     results = subject_results(database, index, protein)
-    assert set(row["molecule_id"] for row in results) == protein["molecule_ids"]
+    assert set(row["molecule_id"] for row in results) == protein["molecule_ids"] - set(target["molecule_ids"])
     assert next(row for row in results if row["molecule_id"] == design["molecule_ids"][0])["relation"] == "Recorded target link"
 
 
@@ -460,7 +466,7 @@ def test_result_pages_search_before_pagination_and_hydrate_only_one_record(datab
         return original(*args, **kwargs)
 
     monkeypatch.setattr(database, "list_molecules", hydrate)
-    app = AppTest.from_string(f"from mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
+    app = AppTest.from_string(_app_source(), default_timeout=15).run()
     assert not app.exception
     assert any("60 connected results" in item.value for item in app.caption)
     next(item for item in app.number_input if item.label == "Results page").set_value(2).run()
@@ -483,10 +489,127 @@ def test_native_evaluation_selector_follows_center_result_for_same_molecule(data
     monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
     index = build_browser_index(database, USER)
     rows = subject_results(database, index, component_subjects(index)[0])
-    app = AppTest.from_string(f"from mn_molecular_design_studio.database_ui import render_database\nrender_database({USER!r}, [])", default_timeout=15).run()
+    app = AppTest.from_string(_app_source(), default_timeout=15).run()
     assert not app.exception
     for row in rows:
         next(item for item in app.selectbox if item.label == "Inspect result").set_value(row["id"]).run()
         assert not app.exception
         selector = next(item for item in app.selectbox if item.label == "Evaluation")
         assert selector.value == row["evaluation_id"] and len(selector.options) == 1
+
+
+def test_targets_use_recorded_names_and_hide_repeated_sequence_carrier_inputs(database):
+    target = _import(database, name="Protein Library", run_id="run-1", method="tool_inputs", kind="reference",
+        origin={"input_role": "receptor", "collection_kind": "inputs"},
+        records=[_record(name="idr_sequence_carrier", metadata={"target_identity_type": "sequence_only"})])
+    target_id = target["molecule_ids"][0]
+    design = _import(database, run_id="run-1", records=[_record("FGHI", name="bindcraft2_00001",
+        metadata={"design_target_molecule_id": target_id, "design_target_name": "R3 (test target)"})])
+    database.add_observation(design["group_id"], design["molecule_ids"][0], "designer", "run-1", {"score": 1},
+        context={"task_group": "design", "target_molecule_id": target_id, "candidate_id": "candidate"})
+    index = build_browser_index(database, USER, include_related=True)
+    targets = component_subjects(index, role="targets")
+    assert len(targets) == 1 and targets[0]["name"] == "R3 (test target)" and targets[0]["role"] == "Target"
+    assert target_id in targets[0]["target_record_ids"]
+    assert design["molecule_ids"][0] not in targets[0]["target_record_ids"]
+    outputs = subject_results(database, index, targets[0])
+    assert len(outputs) == 1 and outputs[0]["evaluation_id"]
+    assert outputs[0]["name"] == "bindcraft2_00001"
+    assert all(row["kind_label"] != "Input / reference" for row in outputs)
+    history = subject_results(database, index, targets[0], include_inputs=True)
+    assert any(row["kind_label"] == "Input / reference" for row in history)
+    assert len(component_subjects(index, role="designs")) == 1
+
+
+def test_target_component_never_borrows_a_binder_alias_and_preserves_member_roles(database):
+    target = _import(database, name="References", run_id="", kind="reference", method="user_uploads",
+        records=[_record(name="Receptor", metadata={"target_identity_type": "sequence_only"})])
+    complex_record = _import(database, records=[_record(name="bindcraft2_00001_ipsae_001", components=[
+        {"chain": "A", "type": "protein", "sequence": "ACDE"},
+        {"chain": "B", "type": "protein", "sequence": "FGHI"}], metadata={"source_to_prediction_components": {
+            "target": [{"prediction_chain": "A", "prediction_sequence": "ACDE"}],
+            "designed_binder": [{"prediction_chain": "B", "prediction_sequence": "FGHI"}]}})])
+    index = build_browser_index(database, USER, include_related=True)
+    targets = component_subjects(index, role="targets")
+    assert len(targets) == 1 and targets[0]["name"] == "Receptor"
+    assert targets[0]["sequence"] == "ACDE"
+    assert complex_record["molecule_ids"][0] in targets[0]["molecule_ids"]
+    assert component_subjects(index, role="designs")[0]["sequence"] == "FGHI"
+    assert target["molecule_ids"][0] in targets[0]["target_record_ids"]
+
+
+@pytest.mark.parametrize("ambiguous", [False, True])
+def test_legacy_design_links_use_only_unambiguous_origin_qualified_target_inputs(database, ambiguous):
+    target = _import(database, name="Target reference", method="tool_inputs", kind="reference",
+        origin={"input_role": "receptor"}, records=[_record(name="Target reference")])
+    design = _import(database, records=[_record("FGHI", name="Generated binder")])
+    if ambiguous:
+        _import(database, name="Other target", method="tool_inputs", kind="reference",
+            origin={"input_role": "receptor"}, records=[_record("KLMN", name="Other target")])
+    foreign = _import(database, name="Peer output", records=[_record("PQRS")], origin={"workstation": "other-peer"})
+    index = build_browser_index(database, USER, include_related=True)
+    selected = next(row for row in component_subjects(index, role="targets") if row["sequence"] == "ACDE")
+    outputs = subject_results(database, index, selected)
+    assert any(row["molecule_id"] == design["molecule_ids"][0] for row in outputs) is not ambiguous
+    assert not any(row["molecule_id"] == foreign["molecule_ids"][0] for row in outputs)
+    assert target["molecule_ids"][0] in selected["target_record_ids"]
+
+
+def test_protein_targets_and_ligands_keep_distinct_poses_and_designed_binders(database):
+    receptor = _import(database, name="Protein receptor", run_id="", method="user_uploads", kind="reference",
+        records=[_record(name="Protein receptor", metadata={"target_identity_type": "sequence_only"})])
+    ligand = _import(database, name="Ligand library", run_id="", method="user_uploads", kind="curated", records=[
+        _record(name="Compound", components=[{"chain": "L", "type": "small_molecule", "smiles": "CCO"}])])
+    for pose in ("1", "2"):
+        database.add_observation(ligand["group_id"], ligand["molecule_ids"][0], "dock", "docking", {"score": int(pose)},
+            context={"task_group": "docking", "target_molecule_id": receptor["molecule_ids"][0], "pose_id": pose})
+    designed = _import(database, name="Ligand binder", records=[_record("FGHI", metadata={
+        "design_target_molecule_id": ligand["molecule_ids"][0], "design_target_name": "Ligand target"})])
+    database.add_observation(designed["group_id"], designed["molecule_ids"][0], "designer", "run-1", {"score": 8},
+        context={"task_group": "design", "target_molecule_id": ligand["molecule_ids"][0]})
+    index = build_browser_index(database, USER, include_related=True)
+    subjects = component_subjects(index, role="targets")
+    assert len(subjects) == 2
+    protein = next(row for row in subjects if row["type"] == "protein")
+    compound = next(row for row in subjects if row["type"] == "small_molecule")
+    protein_results = [row for row in subject_results(database, index, protein) if row["evaluation_id"]]
+    assert len(protein_results) == 2 and {row["model"] for row in protein_results} == {"1", "2"}
+    compound_results = [row for row in subject_results(database, index, compound) if row["evaluation_id"]]
+    assert len(compound_results) == 3
+    assert not any(row["sequence"] == "FGHI" for row in subjects)
+
+
+def test_default_ui_selects_targets_not_designs_and_real_outputs_not_input_history(database, monkeypatch):
+    import streamlit as st
+    from mn_molecular_design_studio import database_ui
+
+    target = _import(database, name="Reference", method="tool_inputs", kind="reference", origin={"input_role": "receptor"},
+        records=[_record(name="idr_sequence_carrier", metadata={"target_identity_type": "sequence_only"})])
+    designed = _import(database, records=[_record("FGHI", name="Binder", metadata={
+        "design_target_molecule_id": target["molecule_ids"][0], "design_target_name": "R3 reference"})])
+    database.add_observation(designed["group_id"], designed["molecule_ids"][0], "designer", "run-1", {"score": 1},
+        context={"task_group": "design", "target_molecule_id": target["molecule_ids"][0]})
+    monkeypatch.setattr(database_ui, "MolecularDatabase", lambda: database)
+    monkeypatch.setattr(database_ui, "workspace_sync_running", lambda *args, **kwargs: False)
+    monkeypatch.setattr(database_ui, "render_details", lambda database, user, record: st.markdown("VIEWER: " + record["name"]))
+    app = AppTest.from_string(_app_source(mode="Targets & ligands"), default_timeout=15).run()
+    assert not app.exception
+    assert any("R3 reference" in item.value for item in app.markdown)
+    assert any("VIEWER: Binder" == item.value for item in app.markdown)
+    assert not any("idr_sequence_carrier" in option for item in app.radio for option in item.options)
+    next(item for item in app.checkbox if item.label == "Include input / reference history").check().run()
+    assert not app.exception
+    assert any("Input / reference" in option for item in app.selectbox if item.label == "Result type" for option in item.options)
+
+
+def test_reused_binder_without_evaluation_target_uses_its_own_source_collection_link(database):
+    first = _import(database, name="First target", method="user_uploads", kind="reference", run_id="", records=[_record("ACDE")])
+    second = _import(database, name="Second target", method="user_uploads", kind="reference", run_id="", records=[_record("KLMN")])
+    for target, run_id in ((first, "first"), (second, "second")):
+        design = _import(database, run_id=run_id, records=[_record("FGHI", metadata={"design_target_molecule_id": target["molecule_ids"][0]})])
+        database.add_observation(design["group_id"], design["molecule_ids"][0], "predictor", run_id, {"score": 1},
+                                 context={"task_group": "design"})
+    index = build_browser_index(database, USER, include_related=True)
+    selected = next(row for row in component_subjects(index, role="targets") if row["sequence"] == "ACDE")
+    rows = [row for row in subject_results(database, index, selected) if row["evaluation_id"]]
+    assert len(rows) == 1 and rows[0]["run_id"] == "first"
