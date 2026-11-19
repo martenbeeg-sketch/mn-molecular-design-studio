@@ -28,6 +28,8 @@ report had no verified finalization-only recovery path.
   and initiate shutdown earlier when the recorded lease approaches expiry.
 - Save heartbeat exception type/detail, failure count and timestamps, with the
   lease token redacted. A successful renewal clears the active failure detail.
+  A separate heartbeat sidecar prevents diagnostic writes from overwriting a
+  concurrent workflow completion; terminal metadata receives the final snapshot.
 - On heartbeat-loss shutdown, terminate the worker and stop only Docker
   containers with an exact bind mount of that run. Substring matches are not
   ownership. Failed cleanup is explicit and does not voluntarily release the
@@ -54,9 +56,9 @@ authentication and design admission decisions are not changed.
 
 ## Verification
 
-- 242 focused isolated regressions pass across scheduler/dependencies, workflow
+- 243 focused isolated regressions pass across scheduler/dependencies, workflow
   lifecycle, artifact validation, collection/admission, measurements and SQL
-  attachment, including 45 focused recovery/bridge checks.
+  attachment, including 46 focused recovery/bridge checks.
 - All 67 BinderScope tests pass with the offline image enabled, including real
   queued execution followed by same-folder report-only recovery and idempotent
   attachment to the original SQL design.

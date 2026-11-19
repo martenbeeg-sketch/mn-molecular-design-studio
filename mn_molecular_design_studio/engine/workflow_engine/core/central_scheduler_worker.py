@@ -228,6 +228,7 @@ def _run_claimed_job(client, job: dict[str, Any], worker_id: str) -> None:
     def finish_failure(message: str, *, traceback_text: str = "", release_claim: bool = True) -> None:
         if run_dir.is_relative_to(base) and run_dir.is_dir():
             metadata = read_json(run_dir / "metadata.json")
+            metadata.update(read_json(run_dir / "scheduler_heartbeat.json"))
             metadata.update({"scheduler_backend": BACKEND, "scheduler_job_id": job_id, "updated_at": utc_now()})
             if str(metadata.get("status") or "") not in {"cancelled", "paused"}:
                 metadata.update({"scheduler_status": "failed", "scheduler_error": message})
@@ -306,6 +307,7 @@ def _run_claimed_job(client, job: dict[str, Any], worker_id: str) -> None:
     lease_expiry = str(job.get("lease_expires_at") or "")
     heartbeat_stopped = False
     cancellation_requested = False
+    heartbeat_diagnostics: dict[str, Any] = {}
 
     def stop_execution():
         from mn_molecular_design_studio.engine.workflow_engine.core.jobs import _stop_run_docker_containers
@@ -336,10 +338,9 @@ def _run_claimed_job(client, job: dict[str, Any], worker_id: str) -> None:
             )
             heartbeat_failure_started = None
             lease_expiry = str(state.get("lease_expires_at") or lease_expiry)
-            metadata = read_json(run_dir / "metadata.json")
-            metadata.update({"scheduler_last_lease_heartbeat_at": utc_now(), "scheduler_heartbeat_failures": 0})
-            metadata.pop("scheduler_heartbeat_error", None)
-            write_json(run_dir / "metadata.json", metadata)
+            heartbeat_diagnostics.update({"scheduler_last_lease_heartbeat_at": utc_now(), "scheduler_heartbeat_failures": 0})
+            heartbeat_diagnostics.pop("scheduler_heartbeat_error", None)
+            write_json(run_dir / "scheduler_heartbeat.json", heartbeat_diagnostics)
             if state.get("cancel_requested"):
                 cancellation_requested = True
                 _terminate(process)
@@ -347,11 +348,10 @@ def _run_claimed_job(client, job: dict[str, Any], worker_id: str) -> None:
         except Exception as exc:
             if heartbeat_failure_started is None:
                 heartbeat_failure_started = now
-            metadata = read_json(run_dir / "metadata.json")
-            metadata.update({"scheduler_heartbeat_error": f"{type(exc).__name__}: {exc}".replace(lease_token, "[redacted]")[-2000:],
+            heartbeat_diagnostics.update({"scheduler_heartbeat_error": f"{type(exc).__name__}: {exc}".replace(lease_token, "[redacted]")[-2000:],
                 "scheduler_heartbeat_failed_at": utc_now(),
-                "scheduler_heartbeat_failures": int(metadata.get("scheduler_heartbeat_failures") or 0) + 1})
-            write_json(run_dir / "metadata.json", metadata)
+                "scheduler_heartbeat_failures": int(heartbeat_diagnostics.get("scheduler_heartbeat_failures") or 0) + 1})
+            write_json(run_dir / "scheduler_heartbeat.json", heartbeat_diagnostics)
             if process.poll() is not None:
                 break
             lease_near_expiry = False
@@ -428,6 +428,7 @@ def _run_claimed_job(client, job: dict[str, Any], worker_id: str) -> None:
                     f"(worker exit status {return_code})."
                 )
     metadata = read_json(run_dir / "metadata.json")
+    metadata.update(heartbeat_diagnostics)
     metadata.update({"scheduler_status": "completed" if success else "failed", "updated_at": utc_now()})
     metadata["scheduler_worker_exit_code"] = return_code
     metadata.pop("scheduler_error", None)

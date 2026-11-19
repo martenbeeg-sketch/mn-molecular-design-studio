@@ -155,6 +155,26 @@ def test_unconfirmed_container_cleanup_is_not_a_voluntary_resource_release(bridg
     assert metadata["status"] == "failed" and metadata["scheduler_cleanup_error"]
 
 
+def test_heartbeat_diagnostics_cannot_overwrite_concurrent_workflow_completion(bridge_run, monkeypatch):
+    from mn_molecular_design_studio.engine.workflow_engine.core import jobs
+
+    run, state, client, job = bridge_run
+    original_write = central_scheduler_worker.write_json
+    def complete_during_diagnostic_write(path, value):
+        if path.name == "scheduler_heartbeat.json":
+            original_write(run / "metadata.json", {"status": "completed"})
+            original_write(run / "result.json", {"success": True})
+            state["return_code"] = 0
+        original_write(path, value)
+    monkeypatch.setattr(central_scheduler_worker, "write_json", complete_during_diagnostic_write)
+    client.heartbeat_job = lambda *args, **kwargs: {}
+    client.heartbeat_worker = lambda **kwargs: None
+    central_scheduler_worker._run_claimed_job(client, job, "worker")
+    assert state["finished"][0]["success"] is True
+    assert jobs.read_json(run / "metadata.json")["status"] == "completed"
+    assert jobs.read_json(run / "scheduler_heartbeat.json")["scheduler_heartbeat_failures"] == 0
+
+
 def test_docker_cleanup_matches_exact_mount_not_path_substring(tmp_path, monkeypatch):
     from mn_molecular_design_studio.engine.workflow_engine.core import jobs
 
