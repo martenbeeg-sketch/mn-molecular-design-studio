@@ -519,10 +519,13 @@ def test_worker_session_uses_shared_user_id_and_offline_cache_until_original_exp
             "session_expires_at": datetime.fromtimestamp(time.time() + 600, timezone.utc).isoformat()}
     monkeypatch.setattr(transport, "request", lambda *a, **k: user.copy())
     assert identity_auth.resolve("central-token")["_cluster_project_ids"] == ["global-project"]
+    monkeypatch.setattr(transport, "request", lambda *a, **k: dict(user, mcp_session=True, session_expires_at=None))
+    assert identity_auth.resolve("paired-codex-token")["_cluster_project_ids"] == ["global-project"]
     def offline(*a, **k): raise transport.ClusterUnavailable("offline")
     monkeypatch.setattr(transport, "request", offline)
     cached = identity_auth.resolve("central-token")
     assert cached["id"] == "global-user" and cached["coordinator_offline"]
+    assert identity_auth.resolve("paired-codex-token") is None
     assert identity_auth.resolve("different-token") is None
     def revoked(*a, **k): raise ValueError("invalid session")
     monkeypatch.setattr(transport, "request", revoked)

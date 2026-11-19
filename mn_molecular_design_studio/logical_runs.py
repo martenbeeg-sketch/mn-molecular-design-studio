@@ -223,9 +223,20 @@ def catalog(user, *, project_id=None, token=""):
     return group_runs(apply_operation_links(all_rows.values()))
 
 
+def _operation_scope(row):
+    return str(row.get("owner_id") or ""), str(row.get("project_id") or "")
+
+
+def _operation_execution_key(row):
+    if not row.get("task_group") or not row.get("run_id"):
+        return None
+    from mn_molecular_design_studio.cluster import config
+
+    return "execution", row.get("node_id") or config.identity(), row["task_group"], row["run_id"]
+
+
 def apply_operation_links(rows):
     """Organizer receipts also link jobs executed by older compatible workers."""
-    import json
     from mn_molecular_design_studio.workspace import _studio_home
     links = {}
     for path in (_studio_home() / "run_operations").glob("op-*.json"):
@@ -234,8 +245,13 @@ def apply_operation_links(rows):
             job = receipt.get("job") or {}
             request = state["requests"][int(index)]
             context = request.get("run_context")
-            if context:
-                links[str(job.get("cluster_job_id") or job.get("run_id"))] = (context, state)
+            cluster_id = job.get("cluster_job_id")
+            execution = ("cluster", cluster_id) if cluster_id else _operation_execution_key(job)
+            if context and execution:
+                key = (_operation_scope(state), execution)
+                link = (context, len(state.get("errors", {})), len(state["requests"]))
+                if links.setdefault(key, link) != link:
+                    links[key] = None
     membership_path = _studio_home() / "run_membership.json"
     memberships = {}
     if membership_path.is_file():
@@ -246,12 +262,15 @@ def apply_operation_links(rows):
         row = dict(row)
         for key in ("cluster:" + str(row.get("cluster_job_id") or ""), reference(row)):
             saved = memberships.get(key)
-            if saved and (str(row.get("owner_id") or ""), str(row.get("project_id") or "")) == (saved["owner_id"], saved["project_id"]):
+            if saved and _operation_scope(row) == (saved["owner_id"], saved["project_id"]):
                 row.update(saved["tags"])
-        link = links.get(str(row.get("cluster_job_id") or "")) or links.get(str(row.get("run_id") or ""))
-        if link and str(row.get("project_id")) == str(link[1]["project_id"]) and str(row.get("owner_id")) == str(link[1]["owner_id"]):
-            row.update(link[0])
-            row.update(run_dispatch_error_count=len(link[1].get("errors", {})), run_expected_source_count=len(link[1]["requests"]))
+        if links:
+            scope = _operation_scope(row)
+            cluster_key = (scope, ("cluster", row.get("cluster_job_id")))
+            link = links[cluster_key] if cluster_key in links else links.get((scope, _operation_execution_key(row)))
+            if link:
+                context, errors, sources = link
+                row.update(context, run_dispatch_error_count=errors, run_expected_source_count=sources)
         result.append(row)
     return result
 

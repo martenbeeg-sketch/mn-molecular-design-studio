@@ -112,6 +112,15 @@ def install(app, current_user):
         return call(create, MolecularDatabase(), user, payload.name, molecule_ids=payload.molecule_ids,
             project_ids=payload.project_references)
 
+    @router.get("/datasets/{group_id}/members")
+    def dataset_members(group_id: str, query: str = "", limit: int = Query(100, ge=1, le=1000),
+                        offset: int = Query(0, ge=0), user=Depends(current_user)):
+        from mn_molecular_design_studio.datasets import DatasetView, is_dataset
+        database = MolecularDatabase()
+        if not is_dataset(call(database.group, group_id, user)):
+            raise HTTPException(404, "Dataset not found or inaccessible.")
+        return call(DatasetView(database, group_id).list_molecules, user, query=query, limit=limit, offset=offset)
+
     @router.patch("/datasets/{group_id}/projects")
     def dataset_projects(group_id: str, payload: DatasetProjectsRequest, user=Depends(current_user)):
         from mn_molecular_design_studio.datasets import save_project_references
@@ -186,6 +195,10 @@ def install(app, current_user):
     def import_molecules(payload: ImportRequest, user=Depends(current_user)):
         def operation():
             from mn_molecular_design_studio import api_files
+            if payload.reusable_dataset and payload.group_id and (payload.project_id or payload.project_references):
+                raise ValueError("Appending to a dataset keeps its current project references. Edit them through PATCH /molecules/datasets/{group_id}/projects with the current revision.")
+            if not payload.reusable_dataset and payload.project_references:
+                raise ValueError("Project references require a reusable dataset import.")
             if len(payload.content_base64) > imports.MAX_BYTES * 4 // 3 + 8:
                 raise ValueError("The import exceeds 100 MB.")
             if payload.file_id and payload.content_base64:
@@ -234,8 +247,6 @@ def install(app, current_user):
                 references = [*payload.project_references, *([payload.project_id] if payload.project_id else [])]
                 origin = input_origin(user, references)
                 records = input_records(records)
-            elif payload.project_references:
-                raise ValueError("Project references require a reusable dataset import.")
             return database.import_records(user, records, name=payload.name, project_id="" if payload.reusable_dataset else payload.project_id,
                 group_id=payload.group_id, origin=origin, import_audit=audit, source_content=data if audit else None)
         return call(operation)
@@ -263,7 +274,7 @@ def install(app, current_user):
 
     @router.post("/comparisons/preview")
     def compare_evaluations(payload: ComparisonPreviewRequest, user=Depends(current_user)):
-        from mn_molecular_design_studio.comparisons import compare, compatibility_warnings, prepare_rows
+        from mn_molecular_design_studio.comparisons import compare
         selection = payload.selection
         if set(selection) - {"group_id", "project_id", "molecule_ids", "evaluation_filters"}:
             raise HTTPException(422, "Unsupported comparison selection.")
@@ -272,9 +283,8 @@ def install(app, current_user):
             raise HTTPException(422, "Unsupported comparison settings.")
         rows = call(MolecularDatabase().evaluation_rows, user, **selection)
         frame = call(compare, rows, **settings)
-        prepared = call(prepare_rows, rows, combine_same_subject=settings.get("combine_same_subject", False), evaluator_runs=settings.get("evaluator_runs"))
-        warnings = compatibility_warnings(prepared, settings.get("fields") or [])
-        if warnings and settings.get("fields"):
+        warnings = frame.attrs.get("compatibility_warnings", [])
+        if warnings:
             raise HTTPException(422, "; ".join(warnings))
         import json
         return {"items": json.loads(frame.to_json(orient="records")), "total": len(frame), "warnings": warnings}

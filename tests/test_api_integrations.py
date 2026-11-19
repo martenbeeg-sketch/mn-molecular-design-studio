@@ -509,6 +509,73 @@ def test_account_administration_grants_disable_and_password_reset(api_data):
     assert client.patch(member, json={"disabled": "yes"}).status_code == 422
 
 
+def test_codex_pairing_writes_as_the_signed_in_account_and_revokes_separately(api_data):
+    from concurrent.futures import ThreadPoolExecutor
+
+    data, client = api_data, api_data["client"]
+    pair = "/api/v1/auth/mcp/pair"
+    redeem = "/api/v1/auth/mcp/redeem"
+    disconnect = "/api/v1/auth/mcp/disconnect"
+    assert client.post(pair, headers={"Authorization": ""}).status_code == 401
+    response = client.post(pair)
+    assert response.status_code == 200 and response.headers["Cache-Control"] == "no-store"
+    code = response.json()["code"]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        attempts = list(pool.map(lambda _: client.post(redeem, json={"code": code}), range(2)))
+    assert sorted(row.status_code for row in attempts) == [200, 401]
+    token = next(row.json()["access_token"] for row in attempts if row.status_code == 200)
+    paired = {"Authorization": "Bearer " + token}
+    identity = client.get("/api/v1/auth/me", headers=paired).json()
+    assert identity["id"] == data["admin"]["id"]
+    assert identity["mcp_session"] is True and identity["session_expires_at"] is None
+    project = client.post("/api/v1/projects", json={"name": "Created via Codex"}, headers=paired)
+    assert project.status_code == 201, project.text
+    assert project.json()["created_by"] == data["admin"]["id"]
+    assert client.get("/api/v1/admin/users", headers=paired).status_code == 403
+    unrestricted = client.post("/api/v1/workflows/validate", json={"project_id": data["project"]["id"]},
+                               params={"base_dir": str(data["root"])}, headers=paired)
+    assert unrestricted.status_code == 403
+    assert client.post(pair, headers=paired).status_code == 403
+    assert client.post(disconnect, headers=paired).status_code == 403
+    pending = client.post(pair).json()["code"]
+    assert client.post(disconnect, headers=headers(data, "student")).status_code == 200
+    assert client.get("/api/v1/auth/me", headers=paired).status_code == 200
+    assert client.post(disconnect).status_code == 200
+    assert client.get("/api/v1/auth/me", headers=paired).status_code == 401
+    assert client.post(redeem, json={"code": pending}).status_code == 401
+    assert client.get("/api/v1/auth/me").status_code == 200
+
+
+def test_codex_pairing_expires_but_redeemed_access_survives_browser_session(api_data, monkeypatch):
+    from datetime import timedelta
+    from mn_molecular_design_studio import auth
+
+    data, client = api_data, api_data["client"]
+    pair = "/api/v1/auth/mcp/pair"
+    redeem = "/api/v1/auth/mcp/redeem"
+    code = client.post(pair).json()["code"]
+    original_now = auth._now()
+    with monkeypatch.context() as clock:
+        clock.setattr(auth, "_now", lambda: original_now + timedelta(minutes=6))
+        assert client.post(redeem, json={"code": code}).status_code == 401
+    code = client.post(pair).json()["code"]
+    token = client.post(redeem, json={"code": code}).json()["access_token"]
+    paired = {"Authorization": "Bearer " + token}
+    unredeemed = client.post(pair).json()["code"]
+    with monkeypatch.context() as clock:
+        clock.setattr(auth, "_now", lambda: original_now + timedelta(days=30))
+        assert client.get("/api/v1/auth/me").status_code == 401
+        assert client.get("/api/v1/auth/me", headers=paired).status_code == 200
+    auth.revoke_session(data["admin_token"])
+    assert client.post(redeem, json={"code": unredeemed}).status_code == 401
+    assert client.get("/api/v1/auth/me", headers=paired).status_code == 200
+    auth.reset_admin_password("instructor", "new-password-42")
+    assert client.get("/api/v1/auth/me", headers=paired).status_code == 401
+    monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_AUTH_MODE", "development")
+    assert client.post(pair).status_code == 403
+    assert client.post(redeem, json={"code": code}).status_code == 403
+
+
 def test_capabilities_exclude_node_routes_and_nonadmin_management(api_data):
     client = api_data["client"]
     response = client.get("/api/v1/capabilities", headers=headers(api_data, "student"))
@@ -586,6 +653,43 @@ def test_uncertain_local_submission_is_not_automatically_repeated(api_data, monk
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("recorded", [True, False])
+def test_comparison_versions_gate_preview_and_save(api_data, recorded):
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+
+    client, user = api_data["client"], api_data["admin"]
+    database = MolecularDatabase()
+    imported = database.import_records(user, [
+        {"name": "Fixture A", "components": [{"type": "small_molecule", "chain": "L", "smiles": "CCO"}]},
+        {"name": "Fixture B", "components": [{"type": "small_molecule", "chain": "L", "smiles": "CCN"}]},
+    ])
+    group_id, molecule_ids = imported["group_id"], imported["molecule_ids"]
+    digest = "sha256:" + "d" * 64
+    for index, molecule_id in enumerate(molecule_ids):
+        database.add_observation(group_id, molecule_id, "fixture", f"run-{index}", {"measurement": index + 1},
+            context={"target_id": "fixture-target", "target_structure_digest": "a" * 64, "target_chains": ["A"],
+                     "settings": {"fixture_setting": 3}, "image_digest": digest if recorded or index == 0 else ""})
+    original = database.evaluation_rows(user, molecule_ids=molecule_ids)
+    selection = {"molecule_ids": molecule_ids}
+    settings = {"fields": ["fixture.measurement"], "directions": {"fixture.measurement": "higher"}}
+    endpoint = "/api/v1/molecules/comparisons"
+    preview = client.post(endpoint + "/preview", json={"selection": selection, "settings": settings})
+    saved = client.post(endpoint, json={**selection, "settings": settings, "name": "Evaluation fixture"})
+    if recorded:
+        assert preview.status_code == 200, preview.text
+        assert saved.status_code == 201, saved.text
+        assert [row["Comparison rank"] for row in preview.json()["items"]] == [1, 2]
+    else:
+        assert preview.status_code == saved.status_code == 422
+        assert preview.json()["detail"] == saved.json()["detail"]
+        assert "unrecorded execution versions" in preview.json()["detail"]
+    descriptive = client.post(endpoint + "/preview", json={"selection": selection})
+    assert descriptive.status_code == 200, descriptive.text
+    assert all(row["Comparison rank"] is None for row in descriptive.json()["items"])
+    assert {row["fixture.measurement"] for row in descriptive.json()["items"]} == {1., 2.}
+    assert database.evaluation_rows(user, molecule_ids=molecule_ids) == original
+
+
 def test_saved_pipeline_revisions_are_accessible_only_in_the_original_scope(api_data):
     from mn_molecular_design_studio.pipeline_graph import new_graph
     data, client = api_data, api_data["client"]
@@ -600,6 +704,177 @@ def test_saved_pipeline_revisions_are_accessible_only_in_the_original_scope(api_
     assert client.get(version_path, params=query).json()["graph"]["id"] == graph["id"]
     assert client.get(version_path, params=query, headers=headers(data, "other")).status_code == 404
     assert client.get(version_path, params=query, headers=headers(data, "student")).status_code == 404
+
+
+def test_pipeline_save_requires_the_opened_revision(api_data):
+    from mn_molecular_design_studio.pipeline_graph import new_graph
+
+    client = api_data["client"]
+    project_id = api_data["project"]["id"]
+    path = "/api/v1/pipelines/save"
+    payload = {"project_id": project_id, "graph": new_graph()}
+    opened = client.post(path, json=payload)
+    assert opened.status_code == 200, opened.text
+
+    baseline = opened.json()["revision"]
+    changed = dict(payload, graph=dict(payload["graph"], name="Newer edit"), expected_revision=baseline)
+    result = client.post(path, json=changed)
+    assert result.status_code == 200, result.text
+    assert client.post(path, json=changed).json() == result.json()
+
+    stale = dict(changed, graph=dict(payload["graph"], name="Stale edit"))
+    assert client.post(path, json=stale).status_code == 409
+    stale.pop("expected_revision")
+    assert client.post(path, json=stale).status_code == 409
+    assert client.post(path, json=dict(stale, expected_revision="invalid")).status_code == 422
+    [draft] = client.get("/api/v1/pipelines", params={"project_id": project_id}).json()
+    assert draft["revision"] == result.json()["revision"]
+    assert draft["graph"]["name"] == "Newer edit"
+
+
+def test_md_starter_and_remote_validation_report_deferred_workstation_checks(api_data, monkeypatch):
+    from mn_molecular_design_studio.auth import user_input_root
+    from mn_molecular_design_studio.cluster import config
+
+    client = api_data["client"]
+    project = api_data["project"]["id"]
+    prefix = "/api/v1/pipelines"
+    assert "md_analysis" in {item["id"] for item in client.get(prefix + "/templates").json()["items"]}
+    draft = client.post(prefix + "/drafts", json={"template": "md_analysis", "project_id": project})
+    assert draft.status_code == 200, draft.text
+    graph = draft.json()["graph"]
+    assert graph["template_id"] == "md_analysis"
+    assert [node["data"]["kind"] for node in graph["nodes"]] == ["md_source", "md_analysis", "results"]
+    payload = {"graph": graph, "project_id": project}
+    local = client.post(prefix + "/validate", json=payload)
+    assert local.status_code == 422
+    config.save({"mode": "peer", "default_placement": "auto", "coordinator_url": "http://127.0.0.1:18766"})
+    remote = client.post(prefix + "/validate", json=payload)
+    assert remote.status_code == 422 and local.json() == remote.json()
+    graph["nodes"][0]["data"]["params"].update(
+        source_run_dir=config.artifact_uri(config.identity(), "md", "saved-fixture"),
+        option_id="segment-1", topology_relative_path="artifacts/topology.pdb")
+    ready = client.post(prefix + "/validate", json=payload)
+    assert ready.status_code == 200, ready.text
+    assert ready.json()["readiness"] == {"graph": "valid", "input_selectors": "valid", "source_files": "deferred", "workstation": "deferred"}
+    assert not ready.json()["ready_to_run"]
+    collision = user_input_root(api_data["admin"]["id"]).parent / "requests" / "artifacts" / "topology.pdb"
+    collision.parent.mkdir(parents=True)
+    collision.write_text("Not the topology of the saved run.")
+    from mn_molecular_design_studio.cluster import transport
+    def submit(path, envelope, **kwargs):
+        assert path == "/api/v1/cluster/submissions"
+        assert envelope["bundle_id"] is None
+        selectors = envelope["payload"]["graph"]["nodes"][0]["data"]["params"]
+        assert selectors["topology_relative_path"] == "artifacts/topology.pdb"
+        assert selectors["source_run_dir"].startswith("cluster://")
+        return {"job": {"cluster_job_id": "md-fixture"}}
+
+    monkeypatch.setattr(transport, "request", submit)
+    queued = client.post(prefix + "/run", json=payload)
+    assert queued.status_code == 202, queued.text
+    assert queued.json()["job"]["cluster_job_id"] == "md-fixture"
+
+
+def test_rejected_pipeline_replays_original_error_but_lost_dispatch_stays_uncertain(api_data, monkeypatch):
+    from mn_molecular_design_studio import api
+    from mn_molecular_design_studio.cluster import config, service
+    from mn_molecular_design_studio.pipeline_graph import new_graph
+
+    client = api_data["client"]
+    payload = {"project_id": api_data["project"]["id"], "graph": new_graph("md_analysis")}
+    address = "/api/v1/pipelines/run"
+    for mode in ("disabled", "peer"):
+        config.save({"mode": mode, "default_placement": "local" if mode == "disabled" else "auto",
+                     "coordinator_url": "http://127.0.0.1:18766"})
+        key = {"Idempotency-Key": "missing-source-" + mode}
+        first = client.post(address, json=payload, headers=key)
+        replay = client.post(address, json=payload, headers=key)
+        assert first.status_code == replay.status_code == 422
+        assert first.headers["X-Studio-Submission-State"] == replay.headers["X-Studio-Submission-State"] == "rejected"
+        assert first.json() == replay.json()
+        status = client.get("/api/v1/submissions/status", params={"kind": "pipeline", "key": key["Idempotency-Key"]}).json()
+        assert status["status"] == "rejected" and status["response"]["detail"] == first.json()["detail"]
+
+    calls = []
+    def lost_dispatch(*args, on_dispatch, **kwargs):
+        on_dispatch()
+        calls.append(True)
+        raise OSError("Scheduler reply lost")
+
+    monkeypatch.setattr(service, "submit_from_api", lost_dispatch)
+    key = {"Idempotency-Key": "lost-reply"}
+    lost = client.post(address, json=payload, headers=key)
+    assert lost.status_code == 422 and "X-Studio-Submission-State" not in lost.headers
+    assert client.post(address, json=payload, headers=key).status_code == 409
+    assert calls == [True]
+    status = client.get("/api/v1/submissions/status", params={"kind": "pipeline", "key": "lost-reply"}).json()
+    assert status["status"] == "uncertain"
+
+
+def test_archived_pipeline_history_keeps_its_owner_scope_and_rejects_writes(api_data):
+    from mn_molecular_design_studio.pipeline_graph import new_graph
+    from mn_molecular_design_studio.project_lifecycle import archive_project
+
+    client = api_data["client"]
+    project = api_data["project"]["id"]
+    graph = new_graph("blank")
+    payload = {"project_id": project, "graph": graph, "version": True}
+    saved = client.post("/api/v1/pipelines/save", json=payload)
+    assert saved.status_code == 200, saved.text
+    archive_project(api_data["admin"], project, True)
+    query = {"project_id": project}
+    versions = f"/api/v1/pipelines/{graph['id']}/versions"
+    assert client.get("/api/v1/pipelines", params=query).json()[0]["revision"] == saved.json()["revision"]
+    assert len(client.get(versions, params=query).json()["items"]) == 1
+    assert client.get(versions + "/" + saved.json()["revision"], params=query).json() == saved.json()
+    assert client.get(versions, params=query, headers=headers(api_data, "other")).status_code == 404
+    assert client.get("/api/v1/pipelines", params=query, headers=headers(api_data, "student")).json() == []
+    assert client.post("/api/v1/pipelines/save", json=payload).status_code == 422
+    assert client.post("/api/v1/pipelines/run", json={"project_id": project, "graph": graph}).status_code == 422
+
+
+def test_run_results_requires_explicit_inspection_and_retries_failed_sources(api_data, monkeypatch):
+    from types import SimpleNamespace
+    from mn_molecular_design_studio import logical_runs, run_results
+    from mn_molecular_design_studio.cluster import service, transport
+
+    client = api_data["client"]
+    query = {"project_id": api_data["project"]["id"]}
+    source = {"status": "completed", "node_id": "fixture-node", "cluster_job_id": "fixture-job",
+              "task_group": "analysis", "run_id": "fixture-run", "local_reference": "analysis/fixture-run",
+              "updated_at": "fixture", "availability": "online"}
+    run = {"id": "run:fixture", "outputs": [{"id": "results", "reference": "run:fixture", "sources": [source]}]}
+    monkeypatch.setattr(logical_runs, "catalog", lambda *args, **kwargs: [run])
+    monkeypatch.setattr(service, "lookup_job", lambda *args, **kwargs: source)
+    clock = [100.0]
+    requests = []
+    monkeypatch.setattr(run_results, "time", SimpleNamespace(time=lambda: clock[0]))
+
+    def request(path, payload=None, *, method="GET", token="", **kwargs):
+        if method == "POST":
+            requests.append(path)
+            return {"command_id": f"inspection-{len(requests)}"}
+        if path.endswith("inspection-1"):
+            return {"status": "failed", "error": "Temporary fixture failure"}
+        assert path.endswith("inspection-2")
+        return {"status": "completed", "response": {"results": {"candidates": [{"candidate_id": "saved"}]}}}
+
+    monkeypatch.setattr(transport, "request", request)
+    address = "/api/v1/runs/run:fixture/results"
+    initial = client.get(address, params=query).json()
+    assert initial["inspection_required"]
+    assert client.get(address, params={**query, "export": "csv"}).status_code == 409
+    assert requests == []
+    assert client.post(address, params=query, headers=headers(api_data, "other")).status_code == 403
+    assert client.post(initial["inspection_url"]).json()["source_errors"][0]["retryable"]
+    assert client.get(address, params=query).json()["source_errors"][0]["error"] == "Temporary fixture failure"
+    assert client.post(address, params=query).json()["source_errors"][0]["retry_after_seconds"] == 2
+    assert len(requests) == 1
+    clock[0] += 3
+    assert client.post(address, params=query).json()["complete"]
+    assert client.get(address, params={**query, "export": "jsonl"}).json()["candidate_id"] == "saved"
+    assert len(requests) == 2
 
 
 def test_bound_pose_api_prepares_mapped_md_files_without_merging_molecules(api_data):
@@ -673,6 +948,84 @@ def test_mcp_http_never_falls_back_to_admin_or_development_identity(api_data, mo
         assert client.post("/mcp", json={}, headers={"Authorization": "Bearer invalid"}).status_code == 401
         monkeypatch.setenv("MN_MOLECULAR_DESIGN_STUDIO_AUTH_MODE", "development")
         assert client.post("/mcp", json={}, headers=headers(api_data, "student")).status_code == 401
+
+
+def test_mcp_operates_projects_pipelines_datasets_and_saved_results(api_data):
+    from mcp import Client
+    from mn_molecular_design_studio.api_client import StudioClient
+    from mn_molecular_design_studio.mcp_server import create_server
+    from mn_molecular_design_studio.molecular_database import MolecularDatabase
+
+    data = api_data
+    studio = StudioClient("http://studio.test", token=data["student_token"], transport=httpx.ASGITransport(app=data["app"]))
+
+    async def check():
+        async with Client(create_server(studio)) as client:
+            async def tool(name, **arguments):
+                result = await client.call_tool(name, arguments)
+                assert not result.is_error, result.content
+                return result.structured_content
+
+            project = await tool("studio_api_request", method="POST", path="/api/v1/projects", body={"name": "MCP practice project"})
+            project_id = project["id"]
+            assert project_id in {row["id"] for row in (await tool("list_projects"))["items"]}
+            operations = await tool("studio_operations")
+            assert any(item["path"] == "/api/v1/molecules/browser/results" for item in operations["operations"])
+            contract = await tool("studio_operation_schema", method="GET", path="/api/v1/molecules/browser/results")
+            assert any(item["name"] == "folder" for item in contract["operation"]["parameters"])
+
+            starter = await tool("create_pipeline_draft", template="md_analysis", project_id=project_id)
+            draft = await tool("save_pipeline_draft", project_id=project_id, graph=starter["graph"], version=True)
+            history = await tool("list_saved_pipelines", project_id=project_id, pipeline_id=draft["graph"]["id"])
+            assert history["items"][0]["revision"] == draft["revision"]
+
+            imported = await tool("studio_api_request", method="POST", path="/api/v1/molecules/imports", body={
+                "name": "MCP inputs", "method": "smiles", "text": "CCO ethanol", "project_references": [project_id], "reusable_dataset": True})
+            inputs = await tool("list_datasets", project_id=project_id)
+            assert [row["id"] for row in inputs["items"]] == [imported["group_id"]]
+            one = await tool("dataset_members", group_id=imported["group_id"])
+            assert one["items"][0]["name"] == "ethanol" and not one["items"][0]["observations"]
+
+            database = MolecularDatabase()
+            saved = database.import_records(data["student"], [{"name": "Saved fixture", "components": [
+                {"type": "small_molecule", "chain": "L", "smiles": "CCO"}]}], project_id=project_id,
+                name="Saved docking fixture", origin={"collection_kind": "curated", "workflow_role": "docking"})
+            structure = database.attach_structure(saved["group_id"], saved["molecule_ids"][0],
+                {"name": "pose.pdb", "content": b"HETATM    1  C1  LIG L   1       1.000   2.000   3.000  1.00  0.00           C\nEND\n"},
+                context={"run_id": "fixture-run", "candidate_id": "fixture-pose"})
+            database.add_observation(saved["group_id"], saved["molecule_ids"][0], "vina", "fixture-run", {"energy": -5.},
+                context={"workflow_role": "docking", "task_group": "ligand-docking", "calculation_recorded": True,
+                         "representation_id": structure, "candidate_id": "fixture-pose"})
+            roots = await tool("browse_saved_results")
+            assert "projects" in {row["id"] for row in roots["folders"]}
+            results = await tool("browse_saved_results", folder="project:" + project_id, limit=1)
+            assert results["items"][0]["row"]["Result · energy"] == -5.
+            assert results["items"][0]["molecule_id"] == saved["molecule_ids"][0]
+            exported = await tool("studio_api_request", method="GET", path="/api/v1/molecules/browser/results",
+                                  query={"folder": "project:" + project_id, "export": "csv"})
+            assert exported["requires_authentication"] and "csv" in exported["media_type"]
+            await tool("studio_api_request", method="PATCH", path=f"/api/v1/projects/{project_id}/archive", body={"archived": True})
+            archived = await tool("list_saved_pipelines", project_id=project_id)
+            assert archived["items"][0]["revision"] == draft["revision"]
+
+            unexpected = await client.call_tool("studio_api_request", {"method": "POST",
+                "path": f"/api/v1/admin/projects/{project_id}/cleanup/reviews", "body": {"mode": "delete"}})
+            assert unexpected.is_error
+            denied = data["client"].get("/api/v1/molecules/browser/results", params={"folder": "project:" + project_id},
+                                        headers=headers(data, "other"))
+            assert denied.status_code == 404
+    asyncio.run(check())
+
+
+def test_project_cleanup_review_and_status_use_existing_guarded_service(api_data):
+    client = api_data["client"]
+    project = api_data["project"]["id"]
+    response = client.post(f"/api/v1/admin/projects/{project}/cleanup/reviews", json={"mode": "delete"})
+    assert response.status_code == 201, response.text
+    plan = response.json()
+    assert plan["status"] == "review" and plan["project_id"] == project
+    assert client.get(f"/api/v1/admin/project-cleanup/{plan['id']}").json() == plan
+    assert client.get(f"/api/v1/projects/{project}").status_code == 200
 
 
 def test_mcp_http_forwards_each_users_identity_without_shared_credentials(api_data):

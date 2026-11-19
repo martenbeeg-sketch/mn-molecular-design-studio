@@ -5,7 +5,7 @@ import hashlib
 import json
 import streamlit as st
 
-from mn_molecular_design_studio.comparisons import compare, compatibility_warnings, prepare_rows
+from mn_molecular_design_studio.comparisons import compare, prepare_rows
 from mn_molecular_design_studio.output_vocabulary import PREFIX, DEFINITIONS, field_label
 
 
@@ -23,8 +23,7 @@ def render_comparison(rows, *, key, database=None, user=None, project_id="", sel
     )
     st.caption(
         f"This comparison currently has {result_count:,} evaluation rows. Each row is one selected tool result. "
-        "A candidate gets a comparison rank only when all chosen scores are present and it meets every cutoff. "
-        "With no cutoffs, every candidate says Pass; the rank still compares their scores."
+        "Ranking requires compatible evaluations, all chosen scores, and any selected cutoffs to be met."
     )
     with st.expander("Advanced: choose runs or combine results"):
         combine = st.checkbox("Combine evaluations of the same structure", value=settings.get("combine_same_subject", False), key=key + "-combine")
@@ -63,19 +62,22 @@ def render_comparison(rows, *, key, database=None, user=None, project_id="", sel
                 operators = [">=", "<=", ">", "<", "="]
                 operator = columns[3].selectbox("Rule", operators, index=operators.index(saved_test["operator"] if saved_test else ">=" if directions[field] == "higher" else "<="), key=key + suffix + "-operator")
                 thresholds.append({"field": field, "operator": operator, "value": value})
-    warnings = compatibility_warnings(rows, selected)
-    for warning in warnings:
-        st.warning(warning)
-    ranking_fields = [] if warnings else selected
     try:
-        frame = compare(rows, fields=ranking_fields, directions=directions, weights=weights, thresholds=thresholds, method=method)
+        frame = compare(rows, fields=selected, directions=directions, weights=weights, thresholds=thresholds, method=method)
     except ValueError as exc:
         st.error(str(exc))
         return
-    st.caption(f"{int(frame['Pass'].sum()):,} / {len(frame):,} meet the cutoffs. With no cutoffs, all rows pass. Native ranks from the original tool are shown separately from this comparison rank.")
-    visible = ["Compound ID", "Name", "Evaluator", "Target", "Run", "Native rank", "Comparison rank", "Pass", "Metric coverage", *selected, "Filter failures", "Missing metrics", "Conflicting metrics"]
+    for warning in frame.attrs.get("compatibility_warnings", []):
+        st.warning(f"Comparison ranking unavailable. {warning}")
+    if thresholds:
+        st.caption(f"{int(frame['Pass'].sum()):,} / {len(frame):,} meet the cutoffs.")
+    else:
+        st.caption("No cutoffs applied.")
+    visible = ["Compound ID", "Name", "Evaluator", "Target", "Run", "Native rank", "Comparison rank",
+               *(["Pass"] if thresholds else []), "Metric coverage", *selected, "Filter failures", "Missing metrics", "Conflicting metrics"]
     selection_version = hashlib.sha1(json.dumps([frame["Evaluation ID"].tolist(), selected, directions, weights, thresholds, method], sort_keys=True).encode()).hexdigest()[:12]
-    event = st.dataframe(frame[visible].rename(columns={field: field_label(field) for field in selected}), hide_index=True,
+    labels = {**{field: field_label(field) for field in selected}, "Pass": "Meets cutoffs"}
+    event = st.dataframe(frame[visible].rename(columns=labels), hide_index=True,
                          on_select="rerun", selection_mode="multi-row", key=key + "-table-" + selection_version, use_container_width=True)
     selected_indices = event.selection.rows
     if len(selected) >= 2:
@@ -83,7 +85,8 @@ def render_comparison(rows, *, key, database=None, user=None, project_id="", sel
         xcol, ycol = st.columns(2)
         x = xcol.selectbox("X axis", selected, format_func=field_label, key=key + "-x")
         y = ycol.selectbox("Y axis", selected, index=1, format_func=field_label, key=key + "-y")
-        color = st.selectbox("Color by", ["Evaluator", "Pass", "Run", "Target"], key=key + "-color")
+        color = st.selectbox("Color by", ["Evaluator", "Run", "Target", *(["Pass"] if thresholds else [])],
+                             format_func=lambda field: labels.get(field, field), key=key + "-color")
         fig = px.scatter(frame, x=x, y=y, color=color, hover_name="Name", custom_data=["Molecule ID", "Evaluation ID"],
                          labels={x: field_label(x), y: field_label(y)})
         fig.update_layout(dragmode="lasso")
@@ -123,10 +126,14 @@ def render_comparison(rows, *, key, database=None, user=None, project_id="", sel
         if database and user:
             name = st.text_input("Save comparison as", value="Selected comparison", key=key + "-name")
             if st.button("Save comparison", key=key + "-save"):
-                result = database.save_comparison(user, name, ids, project_id=project_id,
-                    evaluation_filters={"evaluation_ids": sorted({identifier for ids in selected_frame["Source evaluations"] for identifier in ids})},
-                    settings={"fields": selected, "directions": directions, "weights": weights, "thresholds": thresholds, "method": method,
-                              "combine_same_subject": combine, "evaluator_runs": selected_runs})
-                st.success("Saved the selected evaluations and comparison rules.")
-                st.session_state["molecular-preselect-group"] = result["group_id"]
+                try:
+                    result = database.save_comparison(user, name, ids, project_id=project_id,
+                        evaluation_filters={"evaluation_ids": sorted({identifier for ids in selected_frame["Source evaluations"] for identifier in ids})},
+                        settings={"fields": selected, "directions": directions, "weights": weights, "thresholds": thresholds, "method": method,
+                                  "combine_same_subject": combine, "evaluator_runs": selected_runs})
+                except (ValueError, PermissionError) as exc:
+                    st.error(str(exc))
+                else:
+                    st.success("Saved the selected evaluations and comparison rules.")
+                    st.session_state["molecular-preselect-group"] = result["group_id"]
     st.download_button("Download comparison CSV", frame.to_csv(index=False).encode(), file_name="comparison.csv", mime="text/csv", key=key + "-csv")

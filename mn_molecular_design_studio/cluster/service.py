@@ -32,10 +32,12 @@ def schema_check(payload, kind, request_dir):
     """Validate request types without pretending remote files exist locally."""
     from mn_molecular_design_studio.engine.workflow_engine.services import workflow_automation as workflows
     if kind == "pipeline":
-        from mn_molecular_design_studio.pipeline_graph import clean_graph, validate_graph
+        from mn_molecular_design_studio.pipeline_graph import clean_graph, execution_options, validate_graph
+        if set(payload) - {"graph", "version", "reuse_completed", "gpu_device"}:
+            raise ValueError("Unsupported pipeline request fields.")
+        execution_options(payload)
         graph = clean_graph(payload.get("graph"))
-        validate_graph(graph, require_inputs=False)
-        return
+        return validate_graph(graph, require_inputs=True, require_files=False)
     allowed = {"schema_version", "workflow", "parameters", "resources", "source_job", "priority", "database_collection_policy", "run_context"}
     if set(payload) - allowed or payload.get("schema_version") != 1 or type(payload.get("schema_version")) is not int:
         raise ValueError("Unsupported workflow request fields or schema version.")
@@ -52,13 +54,20 @@ def schema_check(payload, kind, request_dir):
     workflows._request_priority(payload)
 
 
-def submit_from_api(payload, user, *, request_dir, token, authorize_path, kind="workflow", validate_only=False):
+def submit_from_api(payload, user, *, request_dir, token, authorize_path, kind="workflow", validate_only=False, on_dispatch=None):
     """Return None for ordinary local execution; otherwise stage and federate."""
     settings = config.load()
     execution = payload.get("execution") or {}
     if not isinstance(execution, dict) or set(execution) - {"placement", "idempotency_key", "organizer_output_directory"}:
         raise ValueError("execution accepts placement, idempotency_key, and organizer_output_directory.")
     placement = execution.get("placement", settings["default_placement"])
+    if kind == "pipeline" and placement is None:
+        placement = settings["default_placement"]
+    if kind == "pipeline" and placement not in {"auto", "local"}:
+        try:
+            placement = str(uuid.UUID(str(placement)))
+        except ValueError as exc:
+            raise ValueError("Select automatic placement, this workstation, or a registered workstation ID.") from exc
     library_workflow = kind == "workflow" and payload.get("workflow") in {"library.prepare", "library.centroids", "library.seed_dock"}
     remote_library_paths = False
     if library_workflow:
@@ -129,8 +138,18 @@ def submit_from_api(payload, user, *, request_dir, token, authorize_path, kind="
         if not record or record.get("project_id") != project_id:
             raise ValueError("The source job must belong to the selected project.")
         request_payload["source_job"] = config.artifact_uri(config.identity(), row["task_group"], row["run_id"])
-    schema_check(request_payload, kind, request_dir)
+    plan = schema_check(request_payload, kind, request_dir)
     if validate_only:
+        if kind == "pipeline":
+            owner_nodes = bundles.referenced_nodes(request_payload)
+            if len(owner_nodes) > 1 or (owner_nodes and placement not in {"auto", *owner_nodes}
+                                       and (placement != "local" or config.identity() not in owner_nodes)):
+                raise ValueError("Select a workstation that owns the pipeline's saved inputs.")
+            return {"valid": True, "validation_scope": "graph_and_input_selectors", "ready_to_run": False,
+                    "readiness": {"graph": "valid", "input_selectors": "valid", "source_files": "deferred", "workstation": "deferred"},
+                    "order": plan["order"], "node_count": len(plan["graph"]["nodes"]),
+                    "connection_count": len(plan["graph"]["edges"]),
+                    "file_validation": "The assigned workstation checks saved files and runtime availability before starting work."}
         return {"valid": True, "validation_scope": "request_schema", "file_validation": "Performed on the owning workstation before a scientific job is created."}
     preserve_path_keys = ()
     if remote_library_paths:
@@ -153,15 +172,17 @@ def submit_from_api(payload, user, *, request_dir, token, authorize_path, kind="
             with Store().connect() as db:
                 db.execute("CREATE TABLE IF NOT EXISTS blob_grants(digest TEXT,owner_id TEXT,PRIMARY KEY(digest,owner_id))")
                 db.execute("INSERT OR IGNORE INTO blob_grants VALUES (?,?)", (bundle_id, user["id"]))
-        return accept_submission(envelope, user)
+        return accept_submission(envelope, user, on_dispatch=on_dispatch)
     if settings["mode"] == "peer" and not has_cluster_source:
         if bundle_id:
             with Store().connect() as db:
                 db.execute("CREATE TABLE IF NOT EXISTS blob_grants(digest TEXT,owner_id TEXT,PRIMARY KEY(digest,owner_id))")
                 db.execute("INSERT OR IGNORE INTO blob_grants VALUES (?,?)", (bundle_id, user["id"]))
-        return accept_submission(envelope, user)
+        return accept_submission(envelope, user, on_dispatch=on_dispatch)
     if bundle_id:
         transport.request("/api/v1/cluster/blobs", token=token, method="POST", binary=bundles.blob_path(bundle_id).read_bytes(), timeout=90)
+    if on_dispatch is not None:
+        on_dispatch()
     return transport.request("/api/v1/cluster/submissions", envelope, token=token, method="POST", timeout=30)
 
 
@@ -225,7 +246,7 @@ def placement_options_from_api(payload, user, *, request_dir, token, authorize_p
 
 
 @serialized
-def accept_submission(envelope, user):
+def accept_submission(envelope, user, *, on_dispatch=None):
     from mn_molecular_design_studio.workspace import validate_project_id
     from mn_molecular_design_studio.auth import require_project_access
     from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import is_operational_path_key
@@ -321,6 +342,8 @@ def accept_submission(envelope, user):
     if not isinstance(requirements, dict):
         raise ValueError("Workstation requirements are missing.")
     request["requirements"] = requirements
+    if on_dispatch is not None:
+        on_dispatch()
     return store.submit(request, requirements, actor, origin_node=origin, placement=envelope.get("placement", "auto"),
                         affinity_node=next(iter(nodes), None), idempotency_key=envelope.get("idempotency_key"))
 

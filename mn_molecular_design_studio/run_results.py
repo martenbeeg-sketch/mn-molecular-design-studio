@@ -1,7 +1,11 @@
 """Combined, source-qualified candidate metadata; structures stay on their owner."""
 import copy
+import fcntl
 import hashlib
 import json
+import math
+import time
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from functools import lru_cache
 
@@ -22,11 +26,63 @@ def _local_rows(run_dir, mtime_ns, size):
     return rows
 
 
-def collect(run, output, user, *, token=""):
+@contextmanager
+def _inspection_lock(receipt):
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    with receipt.with_suffix(".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def _remote_inspection(source, ref, user, token, *, refresh, retry_failed):
     from mn_molecular_design_studio.cluster import config, service, transport
     from mn_molecular_design_studio.cluster.store import Store
     from mn_molecular_design_studio.workspace import _studio_home
-    candidates, pending, errors, excluded, source_details = [], [], [], [], {}
+
+    authorized = service.lookup_job(ref, user, token=token)
+    if (str(authorized.get("node_id") or "") != str(source.get("node_id") or "")
+            or str(authorized.get("local_reference") or "") != str(
+                source.get("local_reference") or f"{source['task_group']}/{source['run_id']}")):
+        raise PermissionError("The saved Results source identity changed.")
+    key = hashlib.sha256(f"{user['id']}:{ref}:{source.get('updated_at')}".encode()).hexdigest()
+    cache = _studio_home() / "run_result_receipts" / (key + ".json")
+    coordinator = config.load()["mode"] == "coordinator"
+
+    def poll(command_id):
+        if coordinator:
+            return Store().command(command_id, service.user_record(user))
+        return transport.request("/api/v1/cluster/commands/" + command_id, token=token)
+
+    with (_inspection_lock(cache) if refresh else nullcontext()):
+        try:
+            receipt = json.loads(cache.read_text())
+        except FileNotFoundError:
+            receipt = None
+        if receipt is not None:
+            operation = {"command_id": receipt["command_id"], **poll(receipt["command_id"])}
+            if operation["status"] not in {"failed", "cancelled"}:
+                return operation
+            remaining = max(0, math.ceil(2 - (time.time() - receipt.get("requested_at", 0))))
+            if not refresh or not retry_failed or remaining or source.get("availability") != "online":
+                return {**operation, "retry_after_seconds": remaining}
+        if not refresh:
+            return None
+        if source.get("availability") != "online":
+            raise ValueError("Source workstation is offline; its saved results are still part of this Run.")
+        job_id = ref.removeprefix("cluster:")
+        if coordinator:
+            operation = Store().action(job_id, "inspect", {}, service.user_record(user))
+        else:
+            operation = transport.request("/api/v1/cluster/jobs/" + job_id + "/actions",
+                                          {"action": "inspect"}, method="POST", token=token)
+        command_id = operation["command_id"]
+        config.atomic_json(cache, {"command_id": command_id, "requested_at": time.time()})
+        return {"command_id": command_id, **poll(command_id)}
+
+
+def collect(run, output, user, *, token="", refresh=False, retry_failed=False):
+    from mn_molecular_design_studio.cluster import transport
+    candidates, pending, errors, excluded, inspection_required, source_details = [], [], [], [], [], {}
     if output.get("dispatch_error_count"):
         errors.append({"source_job": output["reference"], "error": f"{output['dispatch_error_count']} source collection(s) have not been submitted; retry their dispatch before exporting a complete output."})
     for source in output["sources"]:
@@ -39,41 +95,21 @@ def collect(run, output, user, *, token=""):
             continue
         try:
             if ref.startswith("cluster:"):
-                # An inspect receipt is a cache, not an access grant. Recheck
-                # the source job even when its command was created by this user.
-                authorized = service.lookup_job(ref, user, token=token)
-                if (str(authorized.get("node_id") or "") != str(source.get("node_id") or "")
-                        or str(authorized.get("local_reference") or "") != str(
-                            source.get("local_reference") or f"{source['task_group']}/{source['run_id']}")):
-                    raise PermissionError("The saved Results source identity changed.")
-                key = hashlib.sha256(f"{user['id']}:{ref}:{source.get('updated_at')}".encode()).hexdigest()
-                cache = _studio_home() / "run_result_receipts" / (key + ".json")
-                cache.parent.mkdir(parents=True, exist_ok=True)
-                if cache.is_file():
-                    operation_id = json.loads(cache.read_text())["command_id"]
-                else:
-                    if source.get("availability") != "online":
-                        raise ValueError("Source workstation is offline; its saved results are still part of this Run.")
-                    # Only a coordinator owns the authoritative metadata store.
-                    # A peer may display the shared catalog, but its local Store
-                    # is not the coordinator's catalog; resolve remote source
-                    # jobs and their inspect action through the configured API.
-                    local_coordinator = config.load()["mode"] == "coordinator"
-                    if local_coordinator:
-                        operation = Store().action(ref.removeprefix("cluster:"), "inspect", {}, service.user_record(user))
-                    else:
-                        operation = transport.request("/api/v1/cluster/jobs/" + ref.removeprefix("cluster:") + "/actions",
-                            {"action": "inspect"}, method="POST", token=token)
-                    config.atomic_json(cache, operation)
-                    operation_id = operation["command_id"]
-                operation = (Store().command(operation_id, service.user_record(user)) if config.load()["mode"] == "coordinator"
-                             else transport.request("/api/v1/cluster/commands/" + operation_id, token=token))
-                if operation["status"] == "failed":
-                    raise ValueError(operation.get("error") or "Could not read the saved source results.")
-                if operation["status"] != "completed":
-                    pending.append({"source_job": ref, "command_id": operation_id})
+                operation = _remote_inspection(source, ref, user, token, refresh=refresh, retry_failed=retry_failed)
+                if operation is None:
+                    inspection_required.append({"source_job": ref, "availability": source.get("availability")})
                     continue
-                rows = operation["response"].get("results", {}).get("candidates", [])
+                if operation["status"] in {"failed", "cancelled"}:
+                    errors.append({"source_job": ref, "error": operation.get("error") or "Could not read the saved source results.",
+                                   "retryable": source.get("availability") == "online",
+                                   "retry_after_seconds": operation.get("retry_after_seconds", 0)})
+                    continue
+                if operation["status"] != "completed":
+                    pending.append({"source_job": ref, "command_id": operation["command_id"]})
+                    continue
+                rows = operation["response"].get("results", {}).get("candidates")
+                if not isinstance(rows, list):
+                    raise ValueError("The source inspection did not return a candidate collection.")
                 details = operation["response"]
             else:
                 root = Path(source["run_dir"])
@@ -100,17 +136,17 @@ def collect(run, output, user, *, token=""):
         except (OSError, ValueError, LookupError, transport.ClusterUnavailable) as exc:
             errors.append({"source_job": ref, "error": str(exc)})
     return {"run_id": run["id"], "output": output["reference"], "candidates": candidates,
-            "candidate_count": len(candidates), "complete": not pending and not errors and not any(
+            "candidate_count": len(candidates), "complete": not inspection_required and not pending and not errors and not any(
                 item.get("status") not in logical_runs.TERMINAL for item in excluded),
             "pending_sources": pending, "source_errors": errors, "excluded_sources": excluded,
-            "source_details": source_details}
+            "inspection_required": inspection_required, "source_details": source_details}
 
 
 def read_source(source, user, *, token=""):
     """Read one saved collection through the same authorized Results transport."""
     reference = logical_runs.source_reference(source)
     return collect({"id": reference}, {"id": "results", "reference": reference,
-                                      "sources": [source]}, user, token=token)
+                                      "sources": [source]}, user, token=token, refresh=True)
 
 
 def completed_sources(user, *, token="", runs=None):

@@ -14,7 +14,7 @@ import sqlite3
 import tempfile
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -200,7 +200,12 @@ class MolecularDatabase:
 
     @contextmanager
     def connection(self):
-        connection = sqlite3.connect(self.path, timeout=30)
+        with closing(sqlite3.connect(self.path, timeout=30)) as connection:
+            self._initialize_connection(connection)
+            with connection:
+                yield connection
+
+    def _initialize_connection(self, connection):
         connection.row_factory = sqlite3.Row
         connection.create_function("studio_common_metrics", 3, sql_common_metrics, deterministic=True)
         connection.execute("PRAGMA foreign_keys=ON")
@@ -372,13 +377,11 @@ class MolecularDatabase:
         if browser_installed:
             from mn_molecular_design_studio.browser_revision import install_schema as install_browser_revision
             install_browser_revision(connection)
-        try:
-            with connection:
-                yield connection
-            if browser_installed:
-                _BROWSER_REVISION_SCHEMA_READY.add(browser_key)
-        finally:
-            connection.close()
+        # Bootstrap writes must finish before callers can begin their own
+        # transaction or open another connection during peer replay.
+        connection.commit()
+        if browser_installed:
+            _BROWSER_REVISION_SCHEMA_READY.add(browser_key)
 
     @staticmethod
     def _can_read(group, user):
@@ -1420,7 +1423,7 @@ class MolecularDatabase:
         return result
 
     def save_comparison(self, user, name, molecule_ids, *, project_id="", evaluation_filters=None, settings=None):
-        from mn_molecular_design_studio.comparisons import compare, prepare_rows, compatibility_warnings
+        from mn_molecular_design_studio.comparisons import compare, prepare_rows
         if not isinstance(molecule_ids, list) or not molecule_ids or len(molecule_ids) > 100000:
             raise ValueError("Select between 1 and 100,000 molecules.")
         if not isinstance(settings or {}, dict) or set(settings or {}) - {"fields", "directions", "weights", "thresholds", "method", "combine_same_subject", "evaluator_runs"}:
@@ -1430,16 +1433,18 @@ class MolecularDatabase:
         if set(molecule_ids) != {row["id"] for row in rows}:
             raise ValueError("Some selected molecules have no accessible matching evaluation.")
         evaluations = self.evaluation_rows(user, molecule_ids=molecule_ids, project_id=project_id, evaluation_filters=evaluation_filters)
-        compare(evaluations, **(settings or {}))
-        prepared = prepare_rows(evaluations, combine_same_subject=(settings or {}).get("combine_same_subject", False), evaluator_runs=(settings or {}).get("evaluator_runs"))
+        ranking = dict(settings or {})
+        prepared = prepare_rows(evaluations, combine_same_subject=ranking.pop("combine_same_subject", False),
+                                evaluator_runs=ranking.pop("evaluator_runs", None))
+        frame = compare(prepared, **ranking)
+        warnings = frame.attrs.get("compatibility_warnings", [])
+        if warnings:
+            raise ValueError("; ".join(warnings))
         frozen = sorted({evaluation_id for row in prepared for evaluation_id in (row["evaluation"].get("source_evaluation_ids") or [row["evaluation"]["id"]])})
         if not frozen:
             raise ValueError("Select at least one completed evaluation to save a comparison.")
         if set(molecule_ids) != {row["molecule_id"] for row in prepared}:
             raise ValueError("Some selected molecules have no evaluation in the contributing runs.")
-        warnings = compatibility_warnings(prepared, (settings or {}).get("fields") or [])
-        if warnings:
-            raise ValueError("; ".join(warnings))
         specification = {"version": "studio.comparison.v1", "evaluation_filters": {"evaluation_ids": frozen},
                          "settings": settings or {}, "selection_policy": "frozen evaluations"}
         group = self.create_group(user, name, project_id=project_id, origin={"type": "comparison", "collection_kind": "curated", "comparison_spec": specification})

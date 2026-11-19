@@ -88,8 +88,8 @@ def install(app, current_user, admin_user):
 
     @router.post("/projects", status_code=201)
     def create_project(payload: dict = Body(...), user=Depends(current_user), store=Depends(coordinator)):
-        from mn_molecular_design_studio.workspace import create_project
-        return call(create_project, payload.get("name"), payload.get("description", ""), payload.get("color", "#ef5350"), owner_id=user["id"])
+        from mn_molecular_design_studio.workspace import create_project_for_user
+        return call(create_project_for_user, user, payload.get("name"), payload.get("description", ""), payload.get("color", "#ef5350"))
 
     @router.post("/projects/{project_id}/name")
     def rename_project(project_id: str, payload: dict = Body(...), user=Depends(current_user), store=Depends(coordinator)):

@@ -49,3 +49,37 @@ def test_dataset_import_rejects_unknown_projects_and_result_collection_destinati
     assert case["client"].post("/api/v1/molecules/imports", headers=headers(case), json={**base,
         "group_id": group_id}).status_code == 422
     assert case["pending"] == []
+
+
+def test_append_requires_explicit_project_edit_and_members_are_input_only(preserved_api):
+    case = preserved_api
+    actor, client, database = case["actor"], case["client"], case["database"]
+    project = case["payload"]["project_id"]
+    address = "/api/v1/molecules/imports"
+    base = {"name": "Reusable test inputs", "method": "smiles", "reusable_dataset": True}
+    initial = client.post(address, headers=headers(case), json={**base, "text": "CCO ethanol", "project_references": [project]})
+    assert initial.status_code == 201, initial.text
+    group, molecule = initial.json()["group_id"], initial.json()["molecule_ids"][0]
+    member_url = f"/api/v1/molecules/datasets/{group}/members"
+    append = {**base, "text": "CCN ethylamine", "group_id": group}
+    assert client.post(address, headers=headers(case), json={**append, "project_references": [project]}).status_code == 422
+    assert client.post(address, headers=headers(case), json={**append, "project_id": project}).status_code == 422
+    assert client.get(member_url, headers=headers(case)).json()["total"] == 1
+    response = client.post(address, headers=headers(case), json=append)
+    assert response.status_code == 201, response.text
+    assert datasets.project_references(database.group(group, actor)) == [project]
+
+    result = database.import_records(actor, [{"name": "Measured fixture", "components": [
+        {"type": "small_molecule", "chain": "L", "smiles": "CCO"}]}], project_id=project,
+        origin={"collection_kind": "generated"})
+    database.add_observation(result["group_id"], molecule, "fixture", "different-result", {"score": 7.})
+    first = client.get(member_url, headers=headers(case), params={"limit": 1}).json()
+    assert first["next_offset"] == 1 and first["total"] == 2
+    second = client.get(member_url, headers=headers(case), params={"limit": 1, "offset": 1}).json()
+    assert second["next_offset"] is None and first["items"][0]["id"] != second["items"][0]["id"]
+    items = client.get(member_url, headers=headers(case), params={"query": "ethanol"}).json()["items"]
+    assert len(items) == 1 and items[0]["id"] == molecule and items[0]["observations"] == []
+    assert client.get(member_url, headers=headers(case, other=True)).status_code == 404
+    assert client.get(f"/api/v1/molecules/datasets/{result['group_id']}/members", headers=headers(case)).status_code == 404
+    generic = client.get("/api/v1/molecules", headers=headers(case), params={"group_id": group, "query": "ethanol"})
+    assert len(generic.json()["items"][0]["observations"]) == 1

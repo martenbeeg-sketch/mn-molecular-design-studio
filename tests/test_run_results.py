@@ -43,7 +43,7 @@ def test_peer_results_collect_inspects_remote_source_through_coordinator_api(tmp
         }],
     }
 
-    result = run_results.collect(run, output, {"id": "user-17"}, token="session-token")
+    result = run_results.collect(run, output, {"id": "user-17"}, token="session-token", refresh=True)
 
     assert [call[0] for call in calls] == [
         "/api/v1/cluster/jobs/remote-source-17",

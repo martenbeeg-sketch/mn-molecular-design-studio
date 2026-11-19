@@ -122,6 +122,25 @@ portable structure snapshots and saved docking preparations also have public
 routes. Cropping uses the same function as Streamlit. Existing owner/write checks
 are retained.
 
+For `POST /molecules/comparisons/preview` and `POST /molecules/comparisons`,
+pooled ranking requires matching settings, metric definitions and execution
+provenance for each selected score. Eligible rows need a matching recorded
+image digest or the same fully qualified workstation, task group and run.
+Different versions and mixtures of recorded and missing versions return 422
+with the affected score. Omit the ranking fields for a descriptive preview.
+
+Use `GET /molecules/datasets/{group_id}/members` for the same input records
+shown in Datasets. It accepts `query`, `limit` and `offset` and returns
+`next_offset`. Appending to a reusable dataset rejects project-reference
+fields. Update the references separately with the revision-checked
+`PATCH /molecules/datasets/{group_id}/projects`.
+
+`GET /runs/{reference}/results?project_id=…` reads local results and polls
+existing remote inspections. It returns sources requiring inspection in
+`inspection_required`. Send `POST` to the same URL to start inspections or
+retry failed ones. Pending inspections are reused and rapid retries are
+throttled. CSV and JSONL export requires a complete result.
+
 ## Retries and revisions
 
 Send `Idempotency-Key` on workflow, pipeline and design-campaign submissions.
@@ -135,9 +154,29 @@ again. Inspect `GET /submissions/status?kind=workflow&key=<key>` and your jobs.
 Use `kind=pipeline` or `campaign` as appropriate. Records are user-private and
 contain a payload hash/response outside the molecular record tables.
 
+Pipeline validation errors detected before dispatch are saved as `rejected`.
+Repeating the same keyed request returns its original HTTP error with the
+`X-Studio-Submission-State: rejected` header. Use a new key after correcting
+the request. A failure after possible dispatch continues to report `uncertain`.
+
 Pipeline history is available through `/pipelines/{id}/versions` and
 `/pipelines/{id}/versions/{revision}`, with the required `project_id` query.
 Scope matches the editor's existing owner/project scope.
+Archived projects support these reads as well as `GET /pipelines`. Editing
+or running an archived pipeline requires restoring its project first.
+
+`GET /pipelines/templates` and `POST /pipelines/drafts` include `md_analysis`.
+`POST /pipelines/validate` checks required selectors for both local and
+remote pipelines. For remote placement, `readiness` marks source files and
+workstation checks as `deferred`, and `ready_to_run` is `false` until those
+checks can be performed on the assigned workstation.
+
+When updating a draft with `POST /pipelines/save`, send `expected_revision`
+from the draft you opened or last saved. Omit it when creating a draft. An
+identical retry succeeds. A divergent edit based on a stale or missing
+revision returns 409. Keep the edit locally and reload or save a separate
+copy with a new graph ID. Pipeline submissions save an immutable snapshot
+and preserve any existing draft.
 
 ## Administration and browser clients
 
@@ -162,7 +201,8 @@ Configure an MCP host to launch the Studio environment's Python with arguments
 `-m mn_molecular_design_studio.mcp_server`. Environment:
 
 - `STUDIO_API_URL`: API origin, default `http://127.0.0.1:8766`.
-- `STUDIO_API_TOKEN`: signed-in user's session token for stdio.
+- `STUDIO_API_TOKEN`: optional existing user session for stdio.
+- `STUDIO_MCP_SESSION_FILE`: optional location for the private stdio session file.
 - `STUDIO_MCP_ALLOW_DEVELOPMENT=1`: explicit local stdio access to the development
   identity. HTTP never accepts that identity.
 
@@ -174,8 +214,34 @@ scheduler and normal results pages.
 HTTP checks each caller's Studio bearer token and forwards that identity to REST,
 without falling back to a process-wide token. `STUDIO_MCP_ALLOWED_HOSTS` and
 `STUDIO_MCP_ALLOWED_ORIGINS` configure host/origin checks; defaults are localhost.
-This is Studio's bearer integration, not an OAuth server or a Codex registration
-step. An external MCP host needs configured bearer headers or can use stdio.
+An external HTTP MCP host needs configured bearer headers. A local Codex
+installation can use stdio. From the Studio environment and source directory,
+register the adapter and connect as follows.
+
+```bash
+codex mcp add molecular_design_studio --env PYTHONPATH="$PWD" --env STUDIO_API_URL=http://127.0.0.1:8766 -- "$(command -v python)" -m mn_molecular_design_studio.mcp_server
+python -m mn_molecular_design_studio.cli mcp-login --pair
+```
+
+Sign in to production Studio normally and use **Account → Generate pairing
+code**. Run the command from the same source directory (or use the installed
+launcher) and enter the code at the hidden prompt within five minutes. Use
+the same API origin for registration and pairing. For a coordinator/worker
+installation, pair on the coordinator. Pairing requires HTTPS or loopback.
+
+Codex writes using the signed-in Studio account's ID and project access.
+Paired credentials are stored in a private file under
+`$XDG_STATE_HOME/mn-molecular-design-studio` (default `~/.local/state`). They
+remain valid until **Account → Disconnect Codex**, account disablement, or
+password change. Disconnect revokes the account's paired credentials on the
+API that issued them. Account and workstation administration and unrestricted
+server file access require an ordinary admin session. A worker must reach the
+coordinator to verify a paired credential. Browser sessions still expire
+after 12 hours.
+
+After registration, start a new Codex session and call `studio_identity` to
+confirm the account. The API service must run a release that supports pairing.
+The command without `--pair` still offers ordinary password sign-in.
 
 Named tools cover discovery, operation/workflow schemas, validation, placement,
 submission/status/cancellation, retry status, pipelines, library lineage,
@@ -183,6 +249,22 @@ screening/convergence, final shortlist import, exports, bound-pose preparation a
 text-file staging. `studio_api_request` reaches other discovered public operations
 under the same permissions. Job submissions require retry keys. Internal node
 routes, external URLs and authentication-header overrides are excluded.
+
+`list_projects` discovers authorized Projects. The public Projects endpoints
+support creation, detail, archive and restore. Admin cleanup review and status
+are available at `/admin/projects/{project_id}/cleanup/reviews` and
+`/admin/project-cleanup/{operation_id}`. The Projects page confirms and executes
+deletion.
+
+`browse_saved_results` opens the Data browser's saved-results tree. Pass a
+returned folder ID, and for nested folders its ancestor IDs, to select a page.
+Pass a returned branch ID to refine the current folder. The table uses the same
+saved outcomes, parameters, and linked observations as the app. The REST
+operation also exports a requested page as CSV. `list_datasets` and
+`dataset_members` browse reusable inputs. `list_saved_pipelines` and
+`save_pipeline_draft` expose revision-checked saves and archived history.
+`list_runs` and `run_results` read logical outputs. Use
+`request_run_inspection` to start or retry remote inspection.
 
 Small files are resources at `studio://files/{id}` and molecular structures at
 `studio://structures/{id}`. Inline responses/resources are bounded to 1 MiB;
@@ -236,7 +318,7 @@ the signed-in user's existing permissions:
 | Common local/distributed job listing and inspection | `GET /executions`, `/executions/{ref}` | `list_jobs`, `get_job` |
 | Available job controls and parameter schemas | `GET /executions/{ref}/actions` | `job_actions` |
 | Apply a discovered job control | `POST /executions/{ref}/actions` | `control_job`, `cancel_job` |
-| Read saved results / request remote inspection | `GET` or `POST /executions/{ref}/results` | `job_results` |
+| Read saved results / request remote inspection | `GET` or `POST /executions/{ref}/results` | `job_results`, `request_job_inspection` |
 | Candidate metric fields and bounded tables | `GET /jobs/{ref}/presentation` | `result_presentation` |
 | Candidate complex viewer layers and chain roles | `GET /jobs/{ref}/candidates/{id}/viewer` | `candidate_viewer` |
 | Molecular viewer layers, including separate bound target and ligand | `GET /molecules/{id}/viewer` | `molecule_viewer` |
@@ -282,7 +364,7 @@ Workstation settings never return enrollment tokens or passwords. Connection
 changes report that API/agent restart is required. Editing peer addresses does
 not enroll a new trusted peer or generate credentials.
 
-The MCP adapter now defines 41 named tools. Other public operations continue to
+The MCP adapter defines 51 named tools. Other public operations continue to
 be discoverable through `studio_operations` / `studio_operation_schema` and
 callable through `studio_api_request`. These extensions do not build the student
 frontend, register an LLM client, add OAuth/SSO or add per-user quotas.

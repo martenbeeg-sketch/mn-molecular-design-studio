@@ -1448,7 +1448,10 @@ def test_database_analysis_ingestion_attaches_evaluation_to_exact_existing_repre
     assert evaluations[0]["context"]["representation_id"] == structure["id"]
     assert evaluations[0]["context"]["structure_digest"] == adapter["source"]["structure_digest"]
     assert evaluations[0]["context"]["source_structure_digest"] == adapter["source"]["structure_digest"]
-    assert (evaluations[0]["context"]["target_id"] == target_id) is not reverse_roles
+    if reverse_roles:
+        assert "target_id" not in evaluations[0]["context"]
+    else:
+        assert evaluations[0]["context"]["target_id"] == target_id
     assert len(after["representations"]) == 1
 
 

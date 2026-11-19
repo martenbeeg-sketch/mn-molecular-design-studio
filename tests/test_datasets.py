@@ -154,7 +154,12 @@ def test_old_schema_reads_without_mutation_then_backfills_project_reference_inde
     assert datasets.catalog(reader, ADMIN, project_id=project)[0]["id"] == saved["id"]
     with sqlite3.connect(database.path) as connection:
         assert not connection.execute("SELECT 1 FROM sqlite_master WHERE name='dataset_project_links'").fetchone()
-    with database.connection() as connection:
+    with pytest.raises(ValueError, match="Aborted first write"):
+        with database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM dataset_project_links WHERE group_id=?", (saved["id"],))
+            raise ValueError("Aborted first write")
+    with sqlite3.connect(database.path) as connection:
         assert connection.execute("SELECT project_id FROM dataset_project_links WHERE group_id=?", (saved["id"],)).fetchone()[0] == project
     assert database.group(saved["id"], ADMIN)["origin"] == saved["origin"]
 

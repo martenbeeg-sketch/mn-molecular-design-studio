@@ -31,15 +31,18 @@ def resolve(token):
     except transport.ClusterUnavailable:
         try:
             cached = json.loads(path.read_text())
-            if cached["expires_at"] <= time.time():
+            if cached["expires_at"] <= time.time() or cached["user"].get("mcp_session"):
                 return None
             user = dict(cached["user"], coordinator_offline=True)
         except (FileNotFoundError, KeyError, json.JSONDecodeError):
             return None
     else:
-        expiry = user.get("session_expires_at")
-        expires_at = datetime.fromisoformat(expiry).timestamp() if expiry else time.time() + 3600
-        config.atomic_json(path, {"user": user, "expires_at": expires_at})
+        if user.get("mcp_session"):
+            path.unlink(missing_ok=True)
+        else:
+            expiry = user.get("session_expires_at")
+            expires_at = datetime.fromisoformat(expiry).timestamp() if expiry else time.time() + 3600
+            config.atomic_json(path, {"user": user, "expires_at": expires_at})
     _token.set(token)
     user["_cluster_project_ids"] = user.get("project_ids", [])
     return user

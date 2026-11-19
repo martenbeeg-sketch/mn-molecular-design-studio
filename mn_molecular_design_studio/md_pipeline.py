@@ -47,9 +47,8 @@ def _digest(path):
     return digest.hexdigest()
 
 
-def source_output(params, *, owner_id, project_id):
+def resolve_source(params, *, owner_id, project_id):
     from mn_molecular_design_studio.auth import development_user, is_development_mode, list_users, require_job_access
-    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
     from mn_molecular_design_studio.engine.workflow_engine.workflows.md_analysis import _resolve_source_paths
     from mn_molecular_design_studio.job_catalog import get_job_access_record
     from mn_molecular_design_studio.md_analysis_ui import _source_options_for_job
@@ -80,6 +79,13 @@ def source_output(params, *, owner_id, project_id):
     if topology.resolve() not in option["topology_paths"]:
         raise ValueError("The topology does not belong to the selected MD trajectory.")
     source, topology, trajectory = _resolve_source_paths(root, topology, option["trajectory_path"])
+    return source, topology, trajectory, relative, option
+
+
+def source_output(params, *, owner_id, project_id):
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
+
+    source, topology, trajectory, relative, option = resolve_source(params, owner_id=owner_id, project_id=project_id)
     segment = option.get("segment") or {}
     lineage = {**segment, "study_id": (option.get("study") or {}).get("study_id"),
         "source_run_relative_path": relative.as_posix()}

@@ -74,6 +74,9 @@ def is_portable_path(value: object) -> bool:
 
 def is_operational_path_key(key: str) -> bool:
     lowered = key.lower()
+    if lowered == "topology_relative_path":
+        # An MD source selector is relative to its authorized source run.
+        return False
     if _is_inline_content_key(lowered):
         return False
     # These names are common in scientific schemas as direct artifact fields

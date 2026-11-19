@@ -804,9 +804,18 @@ def test_pipeline_campaign_tile_submits_through_normal_api_without_dispatching_i
     monkeypatch.setattr(api, "_call", call)
     monkeypatch.setattr(api, "mark_studio_job", lambda result, **kwargs: result)
     monkeypatch.setattr(local_automation, "job_reference", lambda run_dir: {"run_id": "fixture-campaign", "run_dir": str(run_dir)})
-    response = client.post("/api/v1/pipelines/run", json={"project_id": data["project"]["id"], "graph": graph})
+    project = {"project_id": data["project"]["id"]}
+    draft = client.post("/api/v1/pipelines/save", json={**project, "graph": dict(graph, name="Newer draft")})
+    assert draft.status_code == 200, draft.text
+    response = client.post("/api/v1/pipelines/run", json={**project, "graph": graph})
 
     assert response.status_code == 202, response.text
+    [current] = client.get("/api/v1/pipelines", params=project).json()
+    assert current["revision"] == draft.json()["revision"]
+    revision = response.json()["revision"]
+    snapshot = client.get(f"/api/v1/pipelines/{graph['id']}/versions/{revision}", params=project)
+    assert snapshot.status_code == 200, snapshot.text
+    assert snapshot.json()["graph"]["name"] == captured["graph"]["name"] == graph["name"]
     submitted = next(node for node in captured["graph"]["nodes"] if node["data"]["kind"] == "rfd4")
     config = submitted["data"]["params"]["distributed_campaign"]
     assert config["accepted_target"] == 2

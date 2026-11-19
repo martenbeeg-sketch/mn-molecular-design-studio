@@ -25,6 +25,7 @@ _SCRYPT_R = 8
 _SCRYPT_P = 1
 _PASSWORD_MIN_LENGTH = 12
 _SESSION_HOURS = 12
+_MCP_PAIRING_MINUTES = 5
 _LOGIN_FAILURE_LIMIT = 5
 _LOGIN_LOCK_MINUTES = 15
 _USERNAME_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$|^[a-zA-Z0-9_.-]{3,64}$")
@@ -116,6 +117,14 @@ def _connect() -> sqlite3.Connection:
             expires_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS sessions_by_user ON sessions(user_id);
+        CREATE TABLE IF NOT EXISTS mcp_pairing_codes (
+            code_hash TEXT PRIMARY KEY,
+            browser_session_hash TEXT NOT NULL REFERENCES sessions(token_hash) ON DELETE CASCADE,
+            expires_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mcp_sessions (
+            token_hash TEXT PRIMARY KEY REFERENCES sessions(token_hash) ON DELETE CASCADE
+        );
         CREATE TABLE IF NOT EXISTS project_memberships (
             project_id TEXT NOT NULL,
             user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -139,10 +148,11 @@ def _connect() -> sqlite3.Connection:
 
 
 @contextmanager
-def _connection():
+def _connection(*, replicate_identity: bool = True):
     from mn_molecular_design_studio.cluster import config as cluster_config
     from mn_molecular_design_studio.cluster.replication import locked, capture_identity
-    with locked() if cluster_config.is_peer() else nullcontext():
+    peer_edit = replicate_identity and cluster_config.is_peer()
+    with locked() if peer_edit else nullcontext():
         connection = _connect()
         try:
             with connection:
@@ -150,7 +160,7 @@ def _connection():
             changed = connection.total_changes
         finally:
             connection.close()
-        if changed:
+        if changed and peer_edit:
             capture_identity()
 
 
@@ -350,17 +360,89 @@ def _record_failed_login(username_key: str) -> None:
         )
 
 
-def _new_session(user_id: str) -> tuple[str, str]:
+def _insert_session(connection: sqlite3.Connection, user_id: str, *, mcp: bool = False) -> tuple[str, str]:
     token = secrets.token_urlsafe(40)
     now = _now()
-    expires = now + timedelta(hours=_SESSION_HOURS)
+    # Persistent grants are identified by mcp_sessions. The empty expiry
+    # also makes an older API reject a paired token.
+    expires_at = "" if mcp else _stamp(now + timedelta(hours=_SESSION_HOURS))
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    connection.execute(
+        "INSERT INTO sessions(token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        (digest, user_id, _stamp(now), expires_at),
+    )
+    if mcp:
+        connection.execute("INSERT INTO mcp_sessions(token_hash) VALUES (?)", (digest,))
+    return token, expires_at
+
+
+def _new_session(user_id: str) -> tuple[str, str]:
     with _connection() as connection:
+        return _insert_session(connection, user_id)
+
+
+def _require_browser_session(connection: sqlite3.Connection, digest: str) -> str:
+    session = connection.execute(
+        "SELECT s.user_id FROM sessions s JOIN users u ON u.id=s.user_id "
+        "WHERE s.token_hash=? AND s.expires_at>? AND u.disabled=0 AND u.must_change_password=0 "
+        "AND NOT EXISTS (SELECT 1 FROM mcp_sessions m WHERE m.token_hash=s.token_hash)",
+        (digest, _stamp()),
+    ).fetchone()
+    if session is None:
+        raise PermissionError("Sign in to Studio with your account to manage Codex pairing.")
+    return session["user_id"]
+
+
+def create_mcp_pairing(browser_token: str) -> tuple[str, str]:
+    code = secrets.token_urlsafe(24)
+    digest = hashlib.sha256(browser_token.encode("utf-8")).hexdigest()
+    with _connection(replicate_identity=False) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        _require_browser_session(connection, digest)
+        expires_at = _stamp(_now() + timedelta(minutes=_MCP_PAIRING_MINUTES))
         connection.execute(
-            "INSERT INTO sessions(token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-            (digest, user_id, _stamp(now), _stamp(expires)),
+            "DELETE FROM mcp_pairing_codes WHERE expires_at<=? OR browser_session_hash=?",
+            (_stamp(), digest),
         )
-    return token, _stamp(expires)
+        connection.execute(
+            "INSERT INTO mcp_pairing_codes(code_hash, browser_session_hash, expires_at) VALUES (?,?,?)",
+            (hashlib.sha256(code.encode("utf-8")).hexdigest(), digest, expires_at),
+        )
+    return code, expires_at
+
+
+def redeem_mcp_pairing(code: str) -> tuple[dict[str, Any], str] | None:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32}", code):
+        return None
+    digest = hashlib.sha256(code.encode("utf-8")).hexdigest()
+    with _connection(replicate_identity=False) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        user = connection.execute(
+            "SELECT u.* FROM mcp_pairing_codes p JOIN sessions s ON s.token_hash=p.browser_session_hash "
+            "JOIN users u ON u.id=s.user_id WHERE p.code_hash=? AND p.expires_at>? AND s.expires_at>? "
+            "AND u.disabled=0 AND u.must_change_password=0",
+            (digest, _stamp(), _stamp()),
+        ).fetchone()
+        if user is None:
+            return None
+        connection.execute("DELETE FROM mcp_pairing_codes WHERE code_hash=?", (digest,))
+        token, _ = _insert_session(connection, user["id"], mcp=True)
+    return _public_user(user), token
+
+
+def revoke_mcp_sessions(browser_token: str) -> None:
+    digest = hashlib.sha256(browser_token.encode("utf-8")).hexdigest()
+    with _connection(replicate_identity=False) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        user_id = _require_browser_session(connection, digest)
+        connection.execute(
+            "DELETE FROM mcp_pairing_codes WHERE browser_session_hash IN (SELECT token_hash FROM sessions WHERE user_id=?)",
+            (user_id,),
+        )
+        connection.execute(
+            "DELETE FROM sessions WHERE user_id=? AND token_hash IN (SELECT token_hash FROM mcp_sessions)",
+            (user_id,),
+        )
 
 
 def authenticate(username: str, password: str) -> tuple[dict[str, Any], str, str] | None:
@@ -405,11 +487,13 @@ def resolve_session(token: object) -> dict[str, Any] | None:
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
     with _read_connection() as connection:
         row = connection.execute(
-            "SELECT u.*, s.expires_at AS session_expires_at FROM sessions s JOIN users u ON u.id=s.user_id "
-            "WHERE s.token_hash=? AND s.expires_at>? AND u.disabled=0",
+            "SELECT u.*, s.expires_at AS session_expires_at, m.token_hash IS NOT NULL AS mcp_session "
+            "FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN mcp_sessions m ON m.token_hash=s.token_hash "
+            "WHERE s.token_hash=? AND (s.expires_at>? OR m.token_hash IS NOT NULL) AND u.disabled=0",
             (digest, _stamp()),
         ).fetchone()
-    return dict(_public_user(row), session_expires_at=row["session_expires_at"]) if row else None
+    return dict(_public_user(row), session_expires_at=row["session_expires_at"] or None,
+                mcp_session=bool(row["mcp_session"])) if row else None
 
 
 def revoke_session(token: object) -> None:

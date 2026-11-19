@@ -80,10 +80,14 @@ def evaluation_entries(entries):
     return expanded
 
 
+def accessible_entries(index, entries):
+    return [entry for entry in entries if entry["result"]["group_id"] in index["groups"] and
+            entry["result"]["molecule_id"] in index["molecules"] and entry["result"]["group_id"] in
+            index["molecules"][entry["result"]["molecule_id"]]["group_ids"]]
+
+
 def result_table(database, index, entries, *, cache=None):
-    permitted = [entry for entry in entries if entry["result"]["group_id"] in index["groups"] and
-                 entry["result"]["molecule_id"] in index["molecules"] and entry["result"]["group_id"] in
-                 index["molecules"][entry["result"]["molecule_id"]]["group_ids"]]
+    permitted = accessible_entries(index, entries)
     requests = sorted({(entry["result"]["observation_id"], entry["result"]["molecule_id"], entry["result"]["group_id"])
                        for entry in permitted if entry["result"].get("observation_id")})
     members = sorted({(entry["result"]["molecule_id"], entry["result"]["group_id"])

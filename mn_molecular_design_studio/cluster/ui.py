@@ -934,8 +934,10 @@ def _render_run_output_results(run, output, token):
         _render_campaign_candidate_measurements(output["sources"], token)
         return
     key = "run-measurements-" + output["reference"]
-    if st.button("Load Run results", key=key + "-load", type="primary"):
-        st.session_state[key] = run_results.collect(run, output, user, token=token or "")
+    last_result = st.session_state.get(key) or {}
+    label = "Retry loading Run results" if last_result.get("source_errors") else "Load Run results"
+    if st.button(label, key=key + "-load", type="primary"):
+        st.session_state[key] = run_results.collect(run, output, user, token=token or "", refresh=True, retry_failed=True)
 
     @st.fragment(run_every=2)
     def measured_results():
@@ -950,6 +952,8 @@ def _render_run_output_results(run, output, token):
             st.info(f"Loading saved results from {len(result['pending_sources'])} source collection(s)…")
         for error in result["source_errors"]:
             st.warning(f"{error['source_job']}: {error['error']}")
+        if result.get("inspection_required"):
+            st.caption("Load Run results to request inspection of the remaining remote collections.")
         if result["excluded_sources"]:
             st.caption(f"{len(result['excluded_sources'])} source collection(s) are unfinished or have no saved candidates. Execution details retain their status.")
         by_reference = {logical_runs.source_reference(row): row for row in output["sources"]}

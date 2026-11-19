@@ -11,6 +11,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from mn_molecular_design_studio.pipeline_graph import ACTIVE_LEARNING_LAYOUT, NODE_CATALOG, clean_graph, fingerprint, list_definitions, list_versions, migrate_template_graph, new_graph, validate_graph
+from mn_molecular_design_studio.api_client import StudioAPIConflictError
 from mn_molecular_design_studio.engine.workflow_engine.core.jobs import read_json
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
 
@@ -555,7 +556,7 @@ def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs):
                 updated = clean_graph(updated)
                 validate_graph(updated)
                 if project_id:
-                    submit_api("/api/v1/pipelines/save", {"project_id":project_id, "graph":updated})
+                    _save_draft(prefix, project_id, updated, submit_api)
                 st.session_state[prefix+"-graph"] = updated
                 st.session_state[prefix+"-settings-update"] = {
                     "id":uuid.uuid4().hex, "node_id":node["id"],
@@ -585,7 +586,7 @@ def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs):
                         node["data"][name] = copy.deepcopy(value)
                 updated = clean_graph(updated)
                 if project_id:
-                    submit_api("/api/v1/pipelines/save", {"project_id":project_id, "graph":updated})
+                    _save_draft(prefix, project_id, updated, submit_api)
                 st.session_state[prefix+"-graph"] = updated
                 st.session_state[prefix+"-settings-update"] = {
                     "id":uuid.uuid4().hex, "node_id":node["id"],
@@ -598,9 +599,32 @@ def _show_node_editor(prefix, *, owner_id, project_id, submit_api, search_jobs):
     dialog()
 
 
-def _activate_graph(prefix, graph):
+def _draft_revision(prefix, graph):
+    identifier, revision = st.session_state.get(prefix + "-draft-base", (None, None))
+    return revision if identifier == graph["id"] else None
+
+
+def _save_draft(prefix, project_id, graph, submit_api, *, version=False, from_canvas=False):
+    try:
+        saved = submit_api("/api/v1/pipelines/save", {"project_id": project_id, "graph": graph,
+            "version": version, "expected_revision": _draft_revision(prefix, graph)})
+    except StudioAPIConflictError:
+        st.session_state[prefix + "-graph"] = graph
+        st.session_state[prefix + "-draft-conflict"] = graph["id"]
+        if not from_canvas:
+            st.session_state[prefix + "-reset"] = uuid.uuid4().hex
+        raise
+    if (saved or {}).get("revision"):
+        st.session_state[prefix + "-draft-base"] = (graph["id"], saved["revision"])
+    st.session_state.pop(prefix + "-draft-conflict", None)
+    return saved
+
+
+def _activate_graph(prefix, graph, revision=None):
     """Widget callback: replace the draft before its widgets are instantiated."""
     st.session_state[prefix+"-graph"] = copy.deepcopy(graph)
+    st.session_state[prefix + "-draft-base"] = (graph["id"], revision)
+    st.session_state.pop(prefix + "-draft-conflict", None)
     st.session_state[prefix+"-reset"] = uuid.uuid4().hex
     _close_node_editor(prefix)
 
@@ -632,8 +656,8 @@ def _show_pipeline_save_as(prefix, project_id, submit_api):
             duplicate["id"] = uuid.uuid4().hex
             duplicate["name"] = name
             try:
-                submit_api("/api/v1/pipelines/save", {"project_id": project_id, "graph": duplicate})
-                _activate_graph(prefix, duplicate)
+                saved = submit_api("/api/v1/pipelines/save", {"project_id": project_id, "graph": duplicate})
+                _activate_graph(prefix, duplicate, (saved or {}).get("revision"))
                 st.session_state[prefix + "-save-as-open"] = False
                 st.success(f"Saved as {name}.")
                 st.rerun()
@@ -757,7 +781,7 @@ def _show_pipeline_resources(prefix, owner_id, project_id, submit_api):
                 graph["candidate_execution"] = candidate_execution.policy(settings)
                 normalized = clean_graph(graph)
                 if project_id:
-                    submit_api("/api/v1/pipelines/save", {"project_id": project_id, "graph": normalized})
+                    _save_draft(prefix, project_id, normalized, submit_api)
                 st.session_state[state_key] = normalized
                 st.session_state[prefix + "-resources-open"] = False
                 if not project_id:
@@ -983,7 +1007,7 @@ def _show_pipeline_campaign(prefix, project_id, submit_api):
             try:
                 normalized = clean_graph(graph)
                 if project_id:
-                    submit_api("/api/v1/pipelines/save", {"project_id": project_id, "graph": normalized})
+                    _save_draft(prefix, project_id, normalized, submit_api)
                 st.session_state[state_key] = normalized
                 st.session_state[prefix + "-campaign-open"] = False
                 st.rerun()
@@ -993,15 +1017,32 @@ def _show_pipeline_campaign(prefix, project_id, submit_api):
     dialog()
 
 
-def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jobs):
+def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jobs, read_only_projects=()):
     st.markdown("<style>.block-container{max-width:1900px;padding-top:1.35rem} [data-testid=stMainBlockContainer]{padding-left:2rem;padding-right:2rem}</style>", unsafe_allow_html=True)
     project_id = project_selector("visual-pipeline")
     prefix = f"visual-pipeline-{project_id or 'unassigned'}"
     state_key = prefix + "-graph"
     definitions = list_definitions(owner_id, project_id) if project_id else []
+    if project_id in read_only_projects:
+        st.info("This project is read-only. You can inspect and download its saved pipeline graphs.")
+        if definitions:
+            draft = st.selectbox("Saved pipeline", definitions, format_func=lambda item: item["graph"]["name"], key=prefix + "-archived-draft")
+            versions = list_versions(owner_id, project_id, draft["graph"]["id"])
+            snapshot = st.selectbox("Revision", [draft, *versions], key=prefix + "-archived-revision",
+                format_func=lambda item: ("Draft" if "versions" in item else "Saved version")
+                + " · " + item["saved_at"][:19] + " · " + item["revision"][:10])
+            st.download_button("Download pipeline graph", json.dumps(snapshot["graph"], indent=2),
+                               file_name=f"pipeline-{snapshot['revision'][:10]}.json", mime="application/json")
+            with st.expander("Graph and parameters"):
+                st.json(snapshot["graph"], expanded=False)
+        else:
+            st.caption("No saved pipelines in this project.")
+        return
     if state_key not in st.session_state:
-        st.session_state[state_key] = copy.deepcopy(definitions[0]["graph"] if definitions else new_graph("targeted_protein_binder"))
-        st.session_state[prefix + "-reset"] = uuid.uuid4().hex
+        if definitions:
+            _activate_graph(prefix, definitions[0]["graph"], definitions[0]["revision"])
+        else:
+            _activate_graph(prefix, new_graph("targeted_protein_binder"))
     reuse_key = prefix + "-reuse"
     st.session_state.setdefault(reuse_key, True)
     pending = st.session_state.get("pipeline-pending-draft")
@@ -1011,17 +1052,19 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     current_graph = st.session_state[state_key]
     migrated_graph = migrate_template_graph(current_graph)
     if migrated_graph is not current_graph:
-        _activate_graph(prefix, migrated_graph)
+        _activate_graph(prefix, migrated_graph, _draft_revision(prefix, current_graph))
 
     graph = st.session_state[state_key]
     with st.expander("Saved pipelines & versions", expanded=True):
         if definitions:
             saved = st.selectbox("Saved draft", definitions, format_func=lambda d:f"{d['graph']['name']} · {d['versions']} saved versions", key=prefix+"-saved")
-            st.button("Open saved draft", key=prefix+"-open", on_click=_activate_graph, args=(prefix, saved["graph"]))
+            st.button("Open saved draft", key=prefix+"-open", on_click=_activate_graph,
+                args=(prefix, saved["graph"], saved["revision"]))
         versions = list_versions(owner_id, project_id, graph["id"]) if project_id else []
         if versions:
             version = st.selectbox("Version history", versions, format_func=lambda d:f"{d['saved_at'][:19].replace('T',' ')} UTC · {d['revision'][:10]}", key=prefix+"-version-"+graph["id"])
-            st.button("Restore version into draft", key=prefix+"-restore", on_click=_activate_graph, args=(prefix, version["graph"]))
+            st.button("Restore version into draft", key=prefix+"-restore", on_click=_activate_graph,
+                args=(prefix, version["graph"], _draft_revision(prefix, graph)))
         if not definitions and not versions:
             st.caption("Canvas edits autosave to the current draft. Use Save as… to create a separate pipeline; Save version keeps immutable history.")
 
@@ -1035,6 +1078,14 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
         _activate_graph(prefix, created)
     graph = st.session_state[state_key]
     reuse = bool(st.session_state.get(reuse_key, True))
+    if st.session_state.get(prefix + "-draft-conflict") == graph["id"]:
+        st.warning("The saved draft has changed. Your edits are still in this tab. Open the latest draft or save your edits as a copy.")
+        latest = next((item for item in definitions if item["graph"]["id"] == graph["id"]), None)
+        if latest:
+            st.button("Open latest draft", key=prefix + "-open-latest", on_click=_activate_graph,
+                args=(prefix, latest["graph"], latest["revision"]))
+        if st.button("Save edits as a copy", key=prefix + "-copy-edits"):
+            st.session_state[prefix + "-save-as-open"] = True
 
     from mn_molecular_design_studio import candidate_execution
     from mn_molecular_design_studio.cluster import config as cluster_config
@@ -1057,13 +1108,14 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
     if last_job.get("run_dir"):
         last_path = Path(last_job["run_dir"])
         execution = _matching_execution(graph, read_json(last_path/"graph_snapshot.json"), read_json(last_path/"graph_execution.json"))
+    reset_token = st.session_state[prefix + "-reset"]
     value = _component()(graph=graph, catalog=NODE_CATALOG, active_study_layout=ACTIVE_LEARNING_LAYOUT,
                          active_execution_ready=graph.get("template_id") == "unidock_active_learning",
                          reuse_completed=reuse,
-                         reset_token=st.session_state[prefix+"-reset"], input_contexts=contexts,
+                         reset_token=reset_token, input_contexts=contexts,
                          execution=execution, settings_update=st.session_state.get(prefix+"-settings-update"),
-                         key=prefix+"-canvas", default=None)
-    if value:
+                         key=f"{prefix}-canvas-{reset_token}", default=None)
+    if value and (value.get("graph") or {}).get("id") == graph["id"]:
         signature = json.dumps(value, sort_keys=True)
         if signature != st.session_state.get(prefix+"-last-value"):
             st.session_state[prefix+"-last-value"] = signature
@@ -1088,11 +1140,15 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                         component_graph.pop(field_name, None)
                 updated = _restore_component_parameters(component_graph, graph)
                 updated["name"] = component_graph.get("name") or graph["name"]
-                if project_id:
-                    submit_api("/api/v1/pipelines/save", {"project_id": project_id, "graph": updated})
-                st.session_state[state_key] = graph = updated
                 action=value.get("action") or {}
-                if action.get("id") and action["id"] != st.session_state.get(prefix+"-handled-action"):
+                new_action = action.get("id") and action["id"] != st.session_state.get(prefix+"-handled-action")
+                action_type = action.get("type") if new_action else None
+                saved = None
+                if project_id and action_type != "save_as":
+                    saved = _save_draft(prefix, project_id, updated, submit_api,
+                                        version=action_type == "save_version", from_canvas=True)
+                st.session_state[state_key] = graph = updated
+                if new_action:
                     st.session_state[prefix+"-handled-action"] = action["id"]
                     if action["type"] == "edit_node":
                         _open_node_editor(prefix, action.get("node_id"))
@@ -1104,7 +1160,6 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                         if not project_id:
                             st.warning("Choose a project before saving a pipeline.")
                         else:
-                            submit_api("/api/v1/pipelines/save", {"project_id": project_id, "graph": graph})
                             st.success(f"Saved {graph['name']}.")
                     elif action["type"] == "save_as":
                         if not project_id:
@@ -1114,8 +1169,7 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                     elif not project_id:
                         st.warning("Select a project before saving a version or running the pipeline.")
                     elif action["type"] == "save_version":
-                        result=submit_api("/api/v1/pipelines/save", {"project_id":project_id,"graph":graph,"version":True})
-                        st.success(f"Version {result['revision'][:10]} saved. Existing versions and runs are preserved.")
+                        st.success(f"Version {saved['revision'][:10]} saved.")
                     elif action["type"] == "run":
                         if not execution_controls_ready:
                             raise ValueError('Correct the dispatch time limits before starting this pipeline.')
@@ -1123,6 +1177,8 @@ def render_pipeline_builder(*, owner_id, project_selector, submit_api, search_jo
                         st.session_state[prefix+"-last-job"] = result["job"]
                         st.session_state["last_submitted_job"] = result["job"]
                         st.success(f"Pipeline queued · {result['job'].get('job_code') or result['job']['run_id']}")
+            except StudioAPIConflictError:
+                st.rerun()
             except (ValueError, OSError, TypeError, KeyError) as exc:
                 st.error(str(exc))
     _show_pipeline_campaign(prefix, project_id, submit_api)

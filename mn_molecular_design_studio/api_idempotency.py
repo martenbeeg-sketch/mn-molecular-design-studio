@@ -12,6 +12,14 @@ class Conflict(ValueError):
     pass
 
 
+class Rejected(ValueError):
+    """A definitive rejection before any work was dispatched."""
+
+    def __init__(self, status_code, detail, headers=None):
+        super().__init__(str(detail))
+        self.response = {"status_code": status_code, "detail": detail, "headers": headers}
+
+
 def submission_status(user, kind, key):
     from mn_molecular_design_studio.runtime import app_home
     path = Path(app_home()) / "api-requests.sqlite3"
@@ -60,10 +68,17 @@ def submit_once(user, kind, key, payload, operation):
                 raise Conflict("This idempotency key was already used for a different request.")
             if previous["status"] == "completed":
                 return json.loads(previous["response"])
+            if previous["status"] == "rejected":
+                raise Rejected(**json.loads(previous["response"]))
             raise Conflict("This submission is pending or its outcome is uncertain. Inspect your jobs before resubmitting; reuse this key when polling the submission.")
         db.execute("INSERT INTO requests VALUES (?,?,?,?,?,NULL)", (*identity, fingerprint, "pending"))
     try:
         response = operation()
+    except Rejected as exc:
+        with connect() as db:
+            db.execute("UPDATE requests SET status='rejected',response=? WHERE owner=? AND kind=? AND key=?",
+                       (json.dumps(exc.response, allow_nan=False), *identity))
+        raise
     except BaseException:
         # A failure may happen after a scheduler accepted work. Never blindly
         # repeat an uncertain submission after a lost reply or process crash.

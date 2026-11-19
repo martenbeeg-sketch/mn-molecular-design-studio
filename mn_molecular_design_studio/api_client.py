@@ -8,7 +8,13 @@ import httpx
 
 
 class StudioAPIError(RuntimeError):
-    pass
+    def __init__(self, message, *, status_code=None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class StudioAPIConflictError(ValueError):
+    """A write conflicted with a newer saved revision."""
 
 
 def public_path(path):
@@ -49,7 +55,7 @@ class StudioClient:
                                      timeout=60, follow_redirects=False) as client:
             identity = await client.get("/api/v1/auth/me", headers=request_headers)
             if identity.status_code != 200:
-                raise StudioAPIError(f"Studio authentication failed ({identity.status_code}).")
+                raise StudioAPIError(f"Studio authentication failed ({identity.status_code}).", status_code=identity.status_code)
             try:
                 actor = identity.json()
             except ValueError as exc:
@@ -83,7 +89,9 @@ class StudioClient:
                         detail = json.loads(raw).get("detail", "Request rejected.")
                     except (ValueError, AttributeError):
                         detail = "Request rejected."
-                    raise StudioAPIError(f"Studio API {response.status_code}: {detail}")
+                    if response.headers.get("X-Studio-Submission-State") == "rejected":
+                        detail = f"{detail} The request was rejected before dispatch. Use a new idempotency key after correcting it."
+                    raise StudioAPIError(f"Studio API {response.status_code}: {detail}", status_code=response.status_code)
                 if content:
                     return raw
                 return json.loads(raw) if raw else {"status_code": response.status_code}

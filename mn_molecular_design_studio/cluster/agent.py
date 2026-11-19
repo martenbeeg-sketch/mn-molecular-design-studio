@@ -906,7 +906,11 @@ class Agent:
                 from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import enqueue_graph_pipeline
                 from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import job_reference
                 graph = clean_graph(prepared["graph"])
-                validate_graph(graph, require_inputs=True)
+                graph = validate_graph(graph, require_inputs=True)["graph"]
+                from mn_molecular_design_studio.md_pipeline import resolve_source
+                for node in graph["nodes"]:
+                    if node["data"]["kind"] == "md_source" and node["data"].get("enabled", True):
+                        resolve_source(node["data"]["params"], owner_id=command["owner_id"], project_id=command["project_id"])
                 run = enqueue_graph_pipeline(graph, pipeline_name=graph["name"], owner_id=command["owner_id"],
                                              project_id=command["project_id"], reuse_completed=prepared.get("reuse_completed", True), gpu_device=prepared.get("gpu_device", "all"))
                 result = {"job": job_reference(run)}

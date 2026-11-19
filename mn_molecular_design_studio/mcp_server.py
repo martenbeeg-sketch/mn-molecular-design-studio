@@ -9,17 +9,21 @@ import os
 from typing import Any
 from urllib.parse import quote
 
-from mn_molecular_design_studio.api_client import StudioClient
+import httpx
+
+from mn_molecular_design_studio.api_client import StudioAPIError, StudioClient
+from mn_molecular_design_studio.mcp_session import DEFAULT_API_URL, saved_token
 
 
 def create_server(client=None):
     from mcp.server import MCPServer
     from mcp.server.mcpserver import Context
+    from mcp.server.mcpserver.exceptions import ResourceError, ToolError
     from mcp_types import ToolAnnotations
     # Annotations are resolved by the SDK in module globals, including when this
     # optional import occurs inside the factory.
     globals()["Context"] = Context
-    studio = client or StudioClient(os.environ.get("STUDIO_API_URL", "http://127.0.0.1:8766"),
+    studio = client or StudioClient(os.environ.get("STUDIO_API_URL", DEFAULT_API_URL),
         token=os.environ.get("STUDIO_API_TOKEN"),
         allow_development=os.environ.get("STUDIO_MCP_ALLOW_DEVELOPMENT", "").lower() in {"1", "true"})
     server = MCPServer("Molecular Design Studio", version="0.1.0", log_level="WARNING", instructions=(
@@ -35,14 +39,27 @@ def create_server(client=None):
     async def call(ctx, method, path, *, body=None, query=None, headers=None, content=False, content_bytes=None):
         incoming = ctx.headers
         bearer = None
-        if incoming is not None:
-            authorization = next((v for k, v in incoming.items() if k.lower() == "authorization"), "")
-            if not authorization.startswith("Bearer "):
-                from mn_molecular_design_studio.api_client import StudioAPIError
-                raise StudioAPIError("A Studio user bearer token is required.")
-            bearer = authorization[7:]
-        return await studio.request(method, path, body=body, query=query, headers=headers,
-                                    bearer=bearer, http_client=incoming is not None, content=content, content_bytes=content_bytes)
+        error_type = ResourceError if content else ToolError
+        try:
+            if incoming is not None:
+                authorization = next((v for k, v in incoming.items() if k.lower() == "authorization"), "")
+                if not authorization.startswith("Bearer "):
+                    raise StudioAPIError("A Studio user bearer token is required.")
+                bearer = authorization[7:]
+            elif client is None and not studio.token:
+                bearer = saved_token(studio.base_url)
+                if bearer is None and not studio.allow_development:
+                    raise StudioAPIError("Generate a pairing code in Studio Account, then run python -m mn_molecular_design_studio.cli mcp-login --pair from the Studio source directory.")
+            return await studio.request(method, path, body=body, query=query, headers=headers,
+                                        bearer=bearer, http_client=incoming is not None, content=content, content_bytes=content_bytes)
+        except StudioAPIError as exc:
+            if incoming is None and client is None and not studio.token and bearer and exc.status_code == 401:
+                raise error_type("Your Studio MCP credential expired or was revoked. Generate a new code in Studio Account and run mcp-login --pair.") from exc
+            raise error_type(str(exc)) from exc
+        except ValueError as exc:
+            raise error_type(str(exc)) from exc
+        except httpx.RequestError as exc:
+            raise error_type("Could not reach the Studio API. For a submission with a lost reply, look up the existing idempotency key.") from exc
 
     def segment(value):
         return quote(str(value), safe="")
@@ -147,9 +164,13 @@ def create_server(client=None):
 
     @server.tool(annotations=read)
     async def job_results(reference: str, ctx: Context) -> dict[str, Any]:
-        """Read local results or request remote inspection, returning a command ID to poll."""
-        return await call(ctx, "POST" if reference.startswith("cluster:") else "GET",
-                          "/api/v1/executions/" + segment(reference) + "/results")
+        """Read local results or a cached remote inspection. Use request_job_inspection to load remote data."""
+        return await call(ctx, "GET", "/api/v1/executions/" + segment(reference) + "/results")
+
+    @server.tool(annotations=write)
+    async def request_job_inspection(reference: str, ctx: Context) -> dict[str, Any]:
+        """Start an inspection of remote saved job results and return a command ID to poll."""
+        return await call(ctx, "POST", "/api/v1/executions/" + segment(reference) + "/results")
 
     @server.tool(annotations=read)
     async def job_actions(reference: str, ctx: Context) -> dict[str, Any]:
@@ -273,6 +294,67 @@ def create_server(client=None):
         """Submit a Studio pipeline; reuse this key when retrying the same submission."""
         return await call(ctx, "POST", "/api/v1/pipelines/run", body=request, headers={"Idempotency-Key": idempotency_key})
 
+    @server.tool(annotations=read)
+    async def list_projects(ctx: Context, include_archived: bool = True) -> dict[str, Any]:
+        """List the projects accessible to this Studio account."""
+        try:
+            return await call(ctx, "GET", "/api/v1/projects", query={"include_archived": include_archived})
+        except ToolError as exc:
+            if not isinstance(exc.__cause__, StudioAPIError) or exc.__cause__.status_code != 404:
+                raise
+        registry = await call(ctx, "GET", "/api/v1/cluster/organization")
+        return {"items": [project for project in registry.get("projects", []) if not project.get("deleted_at")
+                          and (include_archived or not project.get("archived_at"))]}
+
+    @server.tool(annotations=read)
+    async def list_saved_pipelines(project_id: str, ctx: Context, pipeline_id: str | None = None) -> dict[str, Any]:
+        """Read saved drafts or, with a pipeline ID, its immutable versions. Archived projects can be read."""
+        path = "/api/v1/pipelines" + ("/" + segment(pipeline_id) + "/versions" if pipeline_id else "")
+        result = await call(ctx, "GET", path, query={"project_id": project_id})
+        return result if isinstance(result, dict) else {"items": result}
+
+    @server.tool(annotations=write)
+    async def save_pipeline_draft(project_id: str, graph: dict, ctx: Context, expected_revision: str | None = None,
+                                  version: bool = False) -> dict[str, Any]:
+        """Save a draft or an immutable version. Use the last opened revision when updating an existing draft."""
+        return await call(ctx, "POST", "/api/v1/pipelines/save", body={"project_id": project_id, "graph": graph,
+                          "expected_revision": expected_revision, "version": version})
+
+    @server.tool(annotations=read)
+    async def list_datasets(ctx: Context, project_id: str = "", query: str = "") -> dict[str, Any]:
+        """Discover reusable inputs by name and optional project reference."""
+        return await call(ctx, "GET", "/api/v1/molecules/datasets", query={"project_id": project_id, "query": query})
+
+    @server.tool(annotations=read)
+    async def dataset_members(group_id: str, ctx: Context, query: str = "", offset: int = 0, limit: int = 25) -> dict[str, Any]:
+        """Page through input structures, sequences and SMILES from a dataset."""
+        return await call(ctx, "GET", "/api/v1/molecules/datasets/" + segment(group_id) + "/members",
+                          query={"query": query, "offset": offset, "limit": limit})
+
+    @server.tool(annotations=read)
+    async def browse_saved_results(ctx: Context, folder: str = "", ancestor: list[str] | None = None, branch: str = "",
+                                   query: str = "", historical: bool = False, structures: bool = False,
+                                   offset: int = 0, limit: int = 25) -> dict[str, Any]:
+        """Browse the Data browser's folders and saved result rows. Start with no folder, then use returned folder and branch IDs."""
+        return await call(ctx, "GET", "/api/v1/molecules/browser/results", query={"folder": folder,
+            "ancestor": ancestor or [], "branch": branch, "query": query, "historical": historical,
+            "structures": structures, "offset": offset, "limit": limit})
+
+    @server.tool(annotations=read)
+    async def list_runs(ctx: Context, project_id: str | None = None) -> dict[str, Any]:
+        """List logical Runs and their saved output references across workstations."""
+        return await call(ctx, "GET", "/api/v1/runs", query={"project_id": project_id} if project_id else {})
+
+    @server.tool(annotations=read)
+    async def run_results(reference: str, project_id: str, ctx: Context) -> dict[str, Any]:
+        """Read a logical Run output and determine which remote results still need inspection."""
+        return await call(ctx, "GET", "/api/v1/runs/" + segment(reference) + "/results", query={"project_id": project_id})
+
+    @server.tool(annotations=write)
+    async def request_run_inspection(reference: str, project_id: str, ctx: Context) -> dict[str, Any]:
+        """Load a logical Run output from its source workstations or retry a failed inspection."""
+        return await call(ctx, "POST", "/api/v1/runs/" + segment(reference) + "/results", query={"project_id": project_id})
+
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False))
     async def studio_api_request(method: str, path: str, ctx: Context,
                                   body: dict | None = None, query: dict | None = None,
@@ -283,16 +365,21 @@ def create_server(client=None):
         For workflow/pipeline submission prefer the named tools with retry keys.
         """
         from mn_molecular_design_studio.api_client import public_path
-        selected = public_path(path)
+        try:
+            selected = public_path(path)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+        if selected.startswith("/api/v1/auth/") and selected != "/api/v1/auth/me":
+            raise ToolError("Manage Studio credentials through Studio Account or the local sign-in command.")
         if method.upper() == "POST" and selected in {"/api/v1/workflows", "/api/v1/pipelines/run", "/api/v1/campaigns", "/api/v1/cluster/submissions"}:
             execution = (body or {}).get("execution") or {}
             if not isinstance(execution, dict):
-                raise ValueError("execution must be an object.")
+                raise ToolError("execution must be an object.")
             if not idempotency_key and not execution.get("idempotency_key") and not (body or {}).get("idempotency_key"):
-                raise ValueError("A job submission needs an idempotency key. Prefer the named submission tools.")
+                raise ToolError("A job submission needs an idempotency key. Prefer the named submission tools.")
             if selected == "/api/v1/cluster/submissions" and idempotency_key:
                 if (body or {}).get("idempotency_key") not in {None, idempotency_key}:
-                    raise ValueError("Submission idempotency keys must match.")
+                    raise ToolError("Submission idempotency keys must match.")
                 body = {**(body or {}), "idempotency_key": idempotency_key}
         result = await call(ctx, method, selected, body=body, query=query,
                             headers={"Idempotency-Key": idempotency_key} if idempotency_key else None)
@@ -316,7 +403,7 @@ def http_app(server=None, client=None):
     """Bearer-authenticated HTTP transport; no process-wide user token fallback."""
     from starlette.responses import JSONResponse
     from mcp.server.transport_security import TransportSecuritySettings
-    studio = client or StudioClient(os.environ.get("STUDIO_API_URL", "http://127.0.0.1:8766"))
+    studio = client or StudioClient(os.environ.get("STUDIO_API_URL", DEFAULT_API_URL))
     server = server or create_server(studio)
     hosts = os.environ.get("STUDIO_MCP_ALLOWED_HOSTS", "127.0.0.1,127.0.0.1:*,localhost,localhost:*,[::1],[::1]:*")
     origins = os.environ.get("STUDIO_MCP_ALLOWED_ORIGINS", "http://127.0.0.1:*,http://localhost:*")

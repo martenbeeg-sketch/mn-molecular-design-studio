@@ -1379,8 +1379,9 @@ def _render_project_selector(
     *,
     label: str = "Project",
     allow_create: bool = True,
+    include_archived: bool = False,
 ) -> str | None:
-    projects = _studio_projects()
+    projects = _studio_projects(include_archived=include_archived)
     project_ids = ["", *[str(project["id"]) for project in projects]]
     key = f"{key_prefix}-project-id"
     pending = st.session_state.get("project-pending-selection", {})
@@ -1400,7 +1401,8 @@ def _render_project_selector(
         f"{label} *",
         project_ids,
         format_func=lambda value: "Select a project" if value == "" else next(
-            (str(project["name"]) for project in projects if project["id"] == value), "Unknown project"
+            (str(project["name"]) + (" · Archived" if project.get("archived_at") else "")
+             for project in projects if project["id"] == value), "Unknown project"
         ),
         key=key,
         help="Every job must belong to a project. Select an existing project or create one.",
@@ -3323,10 +3325,16 @@ def _post_local_api(path: str, payload: dict) -> dict:
                 st.session_state.pop(pending_key, None)
             return result
     except HTTPError as exc:
+        if pending_key and exc.headers and exc.headers.get("X-Studio-Submission-State") == "rejected":
+            st.session_state.pop(pending_key, None)
         try:
             error = json.loads(exc.read().decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             error = {"detail": str(exc)}
+        if path == "/api/v1/pipelines/save" and exc.code == 409:
+            from mn_molecular_design_studio.api_client import StudioAPIConflictError
+
+            raise StudioAPIConflictError(error.get("detail", str(exc))) from exc
         raise ValueError(error.get("detail", str(exc))) from exc
     except URLError as exc:
         raise ValueError(f"Could not reach the local workflow API at {API_BASE_URL}: {exc.reason}") from exc
@@ -4724,7 +4732,11 @@ def _render_pipelines() -> None:
     from mn_molecular_design_studio import pipeline_node_ui, pipeline_graph_ui
     importlib.reload(pipeline_node_ui)
     importlib.reload(pipeline_graph_ui)
-    pipeline_graph_ui.render_pipeline_builder(owner_id=str(CURRENT_USER["id"]), project_selector=_render_project_selector, submit_api=_post_local_api, search_jobs=search_jobs)
+    from mn_molecular_design_studio.project_lifecycle import project_writable
+    read_only = {project["id"] for project in _studio_projects(include_archived=True) if not project_writable(project)}
+    pipeline_graph_ui.render_pipeline_builder(owner_id=str(CURRENT_USER["id"]),
+        project_selector=lambda key: _render_project_selector(key, include_archived=True),
+        submit_api=_post_local_api, search_jobs=search_jobs, read_only_projects=read_only)
 
 
 def _render_multi_engine_campaign() -> None:
@@ -7976,10 +7988,8 @@ def _render_job_details() -> None:
             st.caption("This graph is the saved run snapshot. Editing it as a draft keeps these results intact.")
             st.download_button("Download run graph", json.dumps(saved_graph, indent=2), file_name=f"pipeline-{run_id}.json", mime="application/json", key=f"pipeline-graph-download-{run_id}")
             if saved_graph and project_id and st.button("Edit graph as a draft", key=f"pipeline-graph-edit-{run_id}"):
-                prefix = f"visual-pipeline-{project_id}"
-                st.session_state[prefix+"-graph"] = saved_graph
-                st.session_state[prefix+"-reset"] = secrets.token_hex(16)
-                st.session_state[prefix+"-name"] = saved_graph["name"]
+                st.session_state["pipeline-pending-draft"] = {"project_id": project_id,
+                    "graph": {**saved_graph, "id": secrets.token_hex(16)}}
                 st.session_state.setdefault("project-pending-selection", {})["visual-pipeline-project-id"] = project_id
                 st.session_state["pipeline-workspace-view"] = "Node canvas"
                 st.session_state["page"] = "Pipelines"
@@ -9880,6 +9890,29 @@ def _render_account() -> None:
                 st.session_state.clear()
                 st.rerun()
     st.caption(f"Passwords require at least {password_min_length()} characters.")
+
+    st.subheader("Codex access")
+    if cluster_config.is_worker():
+        st.info("Open Account on your coordinator to connect or disconnect Codex.")
+        return
+    st.write("Give Codex access to your Studio workspace with a one-time code. The connection stays active until you disconnect it or change your password.")
+    connect_col, disconnect_col = st.columns(2)
+    if connect_col.button("Generate pairing code"):
+        try:
+            pairing = _post_local_api("/api/v1/auth/mcp/pair", {})
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            st.caption("Run this from the Studio source directory and Python environment on the Codex computer. Paste the code at the hidden prompt within five minutes.")
+            st.code("python -m mn_molecular_design_studio.cli mcp-login --pair", language="bash")
+            st.code(pairing["code"], language=None)
+    if disconnect_col.button("Disconnect Codex"):
+        try:
+            _post_local_api("/api/v1/auth/mcp/disconnect", {})
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            st.success("Paired Codex connections and unused codes for this account were revoked.")
 
 
 def _render_user_access() -> None:

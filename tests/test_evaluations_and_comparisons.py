@@ -11,6 +11,8 @@ from mn_molecular_design_studio.evaluations import evaluation_descriptor
 from mn_molecular_design_studio.molecular_database import MolecularDatabase
 
 USER = {"id": "owner", "role": "user"}
+IMAGE_A = "sha256:" + "a" * 64
+IMAGE_B = "sha256:" + "b" * 64
 
 
 def database_with_two_targets(tmp_path):
@@ -100,6 +102,29 @@ def test_conflicting_targets_and_methods_block_binding_ranking_but_not_sequence_
     assert compatibility_warnings(rows, ["common.sequence.gravy"]) == []
 
 
+@pytest.mark.parametrize("image_digests, second_node, second_settings, ranks", [
+    ((IMAGE_A, IMAGE_A), "second", "same", True),
+    ((IMAGE_A, IMAGE_B), "second", "same", False),
+    ((IMAGE_A, ""), "first", "same", False),
+    (("", ""), "second", "same", False),
+    (("", ""), "first", "same", True),
+    (("", ""), "", "same", False),
+    ((IMAGE_A, IMAGE_A), "second", "", False),
+    ((IMAGE_A, IMAGE_A), "second", "different", False),
+    (("engine:latest", "engine:latest"), "second", "same", False),
+])
+def test_pooled_ranks_require_matching_execution_and_settings(image_digests, second_node, second_settings, ranks):
+    rows = comparison_rows()[:2]
+    for row, node, image, settings in zip(rows, ("first", second_node), image_digests, ("same", second_settings)):
+        row["evaluation"].update(evaluator="fixture", node_id=node, task_group="measurement", run_id="same-id",
+                                 image_digest=image, parameters_digest=settings)
+    frame = compare(rows, fields=["x"], directions={"x": "higher"})
+    assert frame["Comparison rank"].notna().all() == ranks
+    assert bool(frame.attrs["compatibility_warnings"]) is not ranks
+    assert set(frame["x"]) == {1., 2.}
+    assert set(frame["Metric coverage"]) == {"1/1"}
+
+
 def test_preview_and_save_use_the_same_authenticated_api(tmp_path, monkeypatch):
     database, group, molecule, first, second = database_with_two_targets(tmp_path)
     monkeypatch.setattr(molecular_database_api, "MolecularDatabase", lambda: database)
@@ -114,6 +139,22 @@ def test_preview_and_save_use_the_same_authenticated_api(tmp_path, monkeypatch):
     saved = client.post("/api/v1/molecules/comparisons", json={"name": "API shortlist", **payload})
     assert saved.status_code == 201, saved.text
     assert saved.json()["comparison_spec"]["selection_policy"] == "frozen evaluations"
+
+
+def test_incompatible_comparison_stays_descriptive_in_streamlit():
+    from streamlit.testing.v1 import AppTest
+
+    rows = comparison_rows()[:2]
+    for row, image in zip(rows, (IMAGE_A, "")):
+        row["evaluation"].update(evaluator="fixture", image_digest=image, parameters_digest="same")
+    settings = {"fields": ["x"], "directions": {"x": "higher"}}
+    app = AppTest.from_string(f'''from mn_molecular_design_studio.comparison_ui import render_comparison
+render_comparison({rows!r}, key="incompatible", settings={settings!r})''').run()
+    assert not app.exception
+    assert any("unrecorded execution versions" in warning.value for warning in app.warning)
+    assert app.dataframe[0].value["Comparison rank"].isna().all()
+    assert app.dataframe[0].value["Metric coverage"].tolist() == ["1/1", "1/1"]
+    assert any(item.value == "No cutoffs applied." for item in app.caption)
 
 
 def test_protocol_digest_ignores_execution_placement_and_paths():
@@ -308,7 +349,8 @@ def same_structure_rows():
             rows.append({"molecule_id": molecule, "name": molecule, "scores": scores,
                          "evaluation": {"id": molecule + tool, "subject_id": "subject-" + molecule,
                                         "representation": "digest-" + molecule, "status": "completed", "target_id": "t",
-                                        "evaluator": tool, "run_id": tool + "-run", "parameters_digest": tool + "-params"}})
+                                        "evaluator": tool, "run_id": tool + "-run", "parameters_digest": tool + "-params",
+                                        "image_digest": IMAGE_A if tool == "prediction" else IMAGE_B}})
     return rows
 
 
@@ -321,6 +363,18 @@ def test_explicit_composition_joins_distinct_evaluators_of_the_identical_structu
     assert frame.iloc[0]["Source evaluations"] == ["aprediction", "aproteinsol"]
     assert rows == original
     assert compatibility_warnings(prepare_rows(rows, combine_same_subject=True), ["confidence", "solubility"]) == []
+
+
+def test_composition_preserves_missing_versions_on_individual_scores():
+    rows = same_structure_rows()
+    rows[-1]["evaluation"]["image_digest"] = ""
+    rows[-1]["evaluation"]["native_parameters"] = {"assessment_protocol": {"image_digest": IMAGE_B}}
+    settings = {"fields": ["confidence", "solubility"], "directions": {"confidence": "higher", "solubility": "higher"},
+                "combine_same_subject": True}
+    for ordering in (rows, list(reversed(rows))):
+        frame = compare(ordering, **settings)
+        assert frame["Comparison rank"].isna().all()
+        assert frame.attrs["compatibility_warnings"] == ["solubility has different or unrecorded execution versions."]
 
 
 def test_composition_never_joins_different_structures_or_incomplete_context():

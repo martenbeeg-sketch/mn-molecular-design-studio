@@ -13,7 +13,7 @@ from mn_molecular_design_studio.workspace import ensure_studio_workspace, mark_s
 
 ensure_studio_workspace()
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
@@ -21,11 +21,14 @@ from mn_molecular_design_studio.auth import (
     accessible_project_ids,
     authenticate,
     change_password,
+    create_mcp_pairing,
     development_user,
     is_development_mode,
+    redeem_mcp_pairing,
     require_job_access,
     require_project_access,
     resolve_session,
+    revoke_mcp_sessions,
     user_input_root,
 )
 from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import (
@@ -68,7 +71,7 @@ if _cors_origins:
     app.add_middleware(CORSMiddleware, allow_origins=_cors_origins,
                        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
                        allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "Range"],
-                       expose_headers=["Content-Disposition", "Content-Length", "Content-Range", "Accept-Ranges"])
+                       expose_headers=["Content-Disposition", "Content-Length", "Content-Range", "Accept-Ranges", "X-Studio-Submission-State"])
 _bearer = HTTPBearer(auto_error=False)
 
 
@@ -95,6 +98,10 @@ class PasswordChangeRequest(BaseModel):
     current_password: str | None = None
 
 
+class MCPPairingRequest(BaseModel):
+    code: str
+
+
 def _session_user(credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> dict[str, Any]:
     from mn_molecular_design_studio.cluster import config as cluster_config
     if cluster_config.is_worker():
@@ -118,8 +125,12 @@ def _current_user(user: dict[str, Any] = Depends(_session_user)) -> dict[str, An
     return user
 
 
+def _can_administer(user: dict[str, Any]) -> bool:
+    return user.get("role") == "admin" and not user.get("mcp_session")
+
+
 def _admin_user(user: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
-    if user.get("role") != "admin":
+    if not _can_administer(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access is required.")
     return user
 
@@ -218,11 +229,11 @@ def _with_request_file(
 
 
 def _request_directory(user: dict[str, Any], base_dir: str | None) -> Path:
-    if user.get("role") == "admin" and base_dir:
+    if _can_administer(user) and base_dir:
         directory = Path(base_dir).expanduser().resolve()
     else:
         if base_dir:
-            raise HTTPException(status_code=403, detail="Only an admin can choose a server-side request directory.")
+            raise HTTPException(status_code=403, detail="Choosing a server-side request directory requires an admin sign-in.")
         directory = user_input_root(str(user["id"])).parent / "requests"
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
@@ -252,8 +263,8 @@ def _is_path_input_key(key: str) -> bool:
 
 
 def _validate_user_path_values(value: Any, user: dict[str, Any], request_dir: Path, key: str = "") -> None:
-    """Keep non-admin workflow inputs inside their uploads or readable data."""
-    if user.get("role") == "admin":
+    """Keep restricted workflow inputs inside their uploads or readable data."""
+    if _can_administer(user):
         return
     if isinstance(value, dict):
         if key == "json_config":
@@ -583,7 +594,50 @@ def login(payload: LoginRequest) -> dict[str, Any]:
 def who_am_i(user: dict[str, Any] = Depends(_session_user)) -> dict[str, Any]:
     return {**{key: user[key] for key in ("id", "username", "display_name", "role", "must_change_password")},
             "project_ids": accessible_project_ids(user), "session_expires_at": user.get("session_expires_at"),
-            "development_mode": is_development_mode()}
+            "development_mode": is_development_mode(), "mcp_session": bool(user.get("mcp_session"))}
+
+
+def _require_pairing_host() -> None:
+    from mn_molecular_design_studio.cluster import config as cluster_config
+    if is_development_mode() or cluster_config.is_worker():
+        raise HTTPException(403, "Pair Codex through your production Studio or coordinator.")
+
+
+@app.post("/api/v1/auth/mcp/pair", include_in_schema=False)
+def issue_codex_pairing(
+    response: Response, credentials: HTTPAuthorizationCredentials = Depends(_bearer),
+    user: dict[str, Any] = Depends(_current_user),
+) -> dict[str, str]:
+    _require_pairing_host()
+    try:
+        code, expires_at = create_mcp_pairing(credentials.credentials)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    response.headers["Cache-Control"] = "no-store"
+    return {"code": code, "expires_at": expires_at}
+
+
+@app.post("/api/v1/auth/mcp/redeem", include_in_schema=False)
+def redeem_codex_pairing(payload: MCPPairingRequest, response: Response) -> dict[str, Any]:
+    _require_pairing_host()
+    authenticated = redeem_mcp_pairing(payload.code)
+    if authenticated is None:
+        raise HTTPException(401, "This pairing code is invalid, expired or already used.")
+    user, token = authenticated
+    response.headers["Cache-Control"] = "no-store"
+    return {"access_token": token, "token_type": "bearer", "user": {"id": user["id"]}}
+
+
+@app.post("/api/v1/auth/mcp/disconnect", include_in_schema=False)
+def disconnect_codex(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer), user: dict[str, Any] = Depends(_current_user),
+) -> dict[str, str]:
+    _require_pairing_host()
+    try:
+        revoke_mcp_sessions(credentials.credentials)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    return {"status": "disconnected"}
 
 
 @app.post("/api/v1/auth/logout")
@@ -599,6 +653,8 @@ def update_password(
     payload: PasswordChangeRequest,
     user: dict[str, Any] = Depends(_session_user),
 ) -> dict[str, str]:
+    if user.get("mcp_session"):
+        raise HTTPException(403, "Change your password from your Studio account.")
     try:
         change_password(
             str(user["id"]),
@@ -784,13 +840,20 @@ def get_runs(project_id: str | None = None, user: dict[str, Any] = Depends(_curr
     return {"items": [logical_runs.public(run) for run in items], "total": len(items)}
 
 
+def _authorized_run_output(reference, project_id, user, credentials):
+    from mn_molecular_design_studio import logical_runs
+    _call(require_project_access, user, project_id)
+    token = credentials.credentials if credentials else "development-mode" if is_development_mode() else ""
+    catalog = _call(logical_runs.catalog, user, project_id=project_id, token=token)
+    run, output = _call(logical_runs.resolve, reference, catalog)
+    return run, output, token
+
+
 @app.get("/api/v1/runs/{reference}")
 def get_run(reference: str, project_id: str, user: dict[str, Any] = Depends(_current_user),
             credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)):
     from mn_molecular_design_studio import logical_runs
-    _call(require_project_access, user, project_id)
-    token = credentials.credentials if credentials else "development-mode" if is_development_mode() else ""
-    run, output = _call(logical_runs.resolve, reference, logical_runs.catalog(user, project_id=project_id, token=token))
+    run, output, _ = _authorized_run_output(reference, project_id, user, credentials)
     return {**logical_runs.public(run), "selected_output": output["reference"],
             "execution_jobs": run["jobs"], "source_jobs": output["sources"]}
 
@@ -799,17 +862,17 @@ def get_run(reference: str, project_id: str, user: dict[str, Any] = Depends(_cur
 def get_run_results(reference: str, project_id: str, export: str | None = None,
                     user: dict[str, Any] = Depends(_current_user),
                     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)):
-    from mn_molecular_design_studio import logical_runs, run_results
-    _call(require_project_access, user, project_id)
-    token = credentials.credentials if credentials else "development-mode" if is_development_mode() else ""
-    run, output = _call(logical_runs.resolve, reference, logical_runs.catalog(user, project_id=project_id, token=token))
+    from mn_molecular_design_studio import run_results
+    run, output, token = _authorized_run_output(reference, project_id, user, credentials)
     result = _call(run_results.collect, run, output, user, token=token)
     if export is None:
+        from urllib.parse import quote, urlencode
+        result["inspection_url"] = f"/api/v1/runs/{quote(reference, safe=':')}/results?" + urlencode({"project_id": project_id})
         return result
     if export not in {"jsonl", "csv"}:
         raise HTTPException(422, "Choose csv or jsonl export.")
     if not result["complete"]:
-        raise HTTPException(409, "Some source results are pending or unavailable. Retry after they are loaded; incomplete exports are not labelled complete.")
+        raise HTTPException(409, "Some source results are pending or unavailable. Request inspection and wait for a complete result before exporting.")
     from fastapi.responses import Response
     if export == "jsonl":
         content = "".join(json.dumps(row, sort_keys=True) + "\n" for row in result["candidates"])
@@ -821,6 +884,14 @@ def get_run_results(reference: str, project_id: str, export: str | None = None,
         content = pd.DataFrame(rows).to_csv(index=False)
         media = "text/csv"
     return Response(content, media_type=media, headers={"Content-Disposition": f'attachment; filename="run-results.{export}"'})
+
+
+@app.post("/api/v1/runs/{reference}/results", status_code=202)
+def inspect_run_results(reference: str, project_id: str, user: dict[str, Any] = Depends(_current_user),
+                        credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)):
+    from mn_molecular_design_studio import run_results
+    run, output, token = _authorized_run_output(reference, project_id, user, credentials)
+    return _call(run_results.collect, run, output, user, token=token, refresh=True, retry_failed=True)
 
 
 @app.post("/api/v1/run-operations/{operation_id}/retry", status_code=202)
@@ -868,8 +939,8 @@ def _dispatch_run_child(child, *, base_dir, user, credentials, token):
                            idempotency_key=child["execution"]["idempotency_key"])
 
 
-def _submit_once(payload, project_id, user, kind, header_key, operation):
-    from mn_molecular_design_studio.api_idempotency import Conflict, submit_once
+def _submit_once(payload, project_id, user, kind, header_key, operation, *, dispatch_aware=False):
+    from mn_molecular_design_studio.api_idempotency import Conflict, Rejected, submit_once
     execution = payload.get("execution") or {}
     if not isinstance(execution, dict):
         raise HTTPException(422, "execution must be an object.")
@@ -881,23 +952,40 @@ def _submit_once(payload, project_id, user, kind, header_key, operation):
         from mn_molecular_design_studio.workspace import load_organization
         def guarded_operation():
             with locked():
-                if project_id and any(row.get("id") == project_id for row in load_organization().get("projects", [])):
-                    validate_project_id(project_id)
-                return operation()
+                dispatched = False
+
+                def on_dispatch():
+                    nonlocal dispatched
+                    dispatched = True
+
+                try:
+                    if project_id and any(row.get("id") == project_id for row in load_organization().get("projects", [])):
+                        _call(validate_project_id, project_id)
+                    if dispatch_aware:
+                        return operation(on_dispatch)
+                    on_dispatch()
+                    return operation()
+                except HTTPException as exc:
+                    if dispatched:
+                        raise
+                    headers = {**(exc.headers or {}), "X-Studio-Submission-State": "rejected"}
+                    raise Rejected(exc.status_code, exc.detail, headers) from exc
         return submit_once(user, kind, header_key or execution_key,
                            {"project_id": project_id, **payload}, guarded_operation)
     except Conflict as exc:
         raise HTTPException(409, str(exc)) from exc
+    except Rejected as exc:
+        raise HTTPException(**exc.response) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except (sqlite3.Error, OSError, RuntimeError) as exc:
         raise HTTPException(503, "Submission state is unavailable; inspect the existing request before retrying.") from exc
 
-def _cluster_submission(payload, project_id, user, request_dir, credentials, *, kind="workflow", validate_only=False):
+def _cluster_submission(payload, project_id, user, request_dir, credentials, *, kind="workflow", validate_only=False, on_dispatch=None):
     from mn_molecular_design_studio.cluster.service import submit_from_api
     token = credentials.credentials if credentials else "development-mode" if is_development_mode() else ""
     response = _call(submit_from_api, dict(payload, project_id=project_id), user, request_dir=request_dir,
-                     token=token, kind=kind, validate_only=validate_only,
+                     token=token, kind=kind, validate_only=validate_only, on_dispatch=on_dispatch,
                      authorize_path=lambda path: _validate_user_path_values(str(path), user, request_dir, "input_path"))
     payload.pop("execution", None)
     return response
@@ -933,7 +1021,7 @@ def submit_campaign(
 
 def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
     import re
-    from mn_molecular_design_studio.pipeline_graph import clean_graph, validate_graph
+    from mn_molecular_design_studio.pipeline_graph import clean_graph, execution_options, validate_graph
     from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import (
         source_designs, source_generations, source_molecule_selection, source_project_designs,
     )
@@ -941,6 +1029,8 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
     request, project_id = _request_payload_and_project(payload, user)
     if set(request) - {"graph", "version", "reuse_completed", "gpu_device"}:
         raise HTTPException(status_code=422, detail="Unsupported pipeline request fields.")
+    if runnable:
+        _call(execution_options, request)
     graph = _call(clean_graph, request.get("graph"))
     _validate_user_path_values(graph, user, _request_directory(user, None))
     for node in graph["nodes"]:
@@ -974,6 +1064,11 @@ def _pipeline_payload(payload: dict, user: dict, *, runnable=False):
         _call(preflight, graph, plan, project_id)
         from mn_molecular_design_studio.rfdiffusion3_input import inventory
         for node in graph["nodes"]:
+            if node["data"].get("enabled") is False:
+                continue
+            if node["data"]["kind"] == "md_source":
+                from mn_molecular_design_studio.md_pipeline import resolve_source
+                _call(resolve_source, node["data"]["params"], owner_id=str(user["id"]), project_id=project_id)
             if node["data"]["kind"] != "target":
                 continue
             params = node["data"]["params"]
@@ -1043,18 +1138,37 @@ def pipeline_workflow_compatibility(user: dict[str, Any] = Depends(_current_user
 
 @app.post("/api/v1/pipelines/save")
 def save_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any] = Depends(_current_user)):
-    from mn_molecular_design_studio.pipeline_graph import save_definition
+    from mn_molecular_design_studio.pipeline_graph import PipelineDraftConflictError, save_definition
+    payload = dict(payload)
+    expected_revision = payload.pop("expected_revision", None)
     graph, project_id, request = _pipeline_payload(payload, user)
     if type(request.get("version", False)) is not bool:
         raise HTTPException(status_code=422, detail="version must be true or false.")
-    return _call(save_definition, graph, str(user["id"]), project_id, version=request.get("version", False))
+    try:
+        return save_definition(graph, str(user["id"]), project_id,
+                               version=request.get("version", False), expected_revision=expected_revision)
+    except PipelineDraftConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (OSError, TypeError, ValueError, LookupError) as exc:
+        raise _http_error(exc) from exc
 
 
 @app.get("/api/v1/pipelines")
 def list_saved_pipelines(project_id: str, user: dict[str, Any] = Depends(_current_user)):
     from mn_molecular_design_studio.pipeline_graph import list_definitions
-    _, project_id = _request_payload_and_project({"project_id": project_id}, user)
+    _require_pipeline_history_access(project_id, user)
     return _call(list_definitions, str(user["id"]), project_id)
+
+
+def _require_pipeline_history_access(project_id, user):
+    from mn_molecular_design_studio.workspace import load_organization
+    if not any(isinstance(project, dict) and project.get("id") == project_id and not project.get("deleted_at")
+               for project in load_organization().get("projects", [])):
+        raise HTTPException(404, "Project not found.")
+    try:
+        require_project_access(user, project_id)
+    except PermissionError as exc:
+        raise HTTPException(404, "Project not found.") from exc
 
 
 @app.post("/api/v1/pipelines/validate")
@@ -1072,7 +1186,9 @@ def validate_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any] 
     plan = _call(validate_graph, graph, require_inputs=True)
     from mn_molecular_design_studio.candidate_pipeline import execution_plan
     from mn_molecular_design_studio.native_execution import tool_inventory
-    return {"valid": True, "order": plan["order"], "node_count": len(graph["nodes"]), "connection_count": len(graph["edges"]),
+    return {"valid": True, "validation_scope": "local_inputs", "ready_to_run": True,
+            "readiness": {"graph": "valid", "input_selectors": "valid", "source_files": "validated", "workstation": "local"},
+            "order": plan["order"], "node_count": len(graph["nodes"]), "connection_count": len(graph["edges"]),
             "collection_execution_plan": execution_plan(graph),
             "native_tool_inventory": tool_inventory()}
 
@@ -1081,35 +1197,32 @@ def validate_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any] 
 def run_visual_pipeline(payload: dict[str, Any] = Body(...), user: dict[str, Any] = Depends(_current_user),
                         credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
                         idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None):
-    from mn_molecular_design_studio.pipeline_graph import save_definition
+    from mn_molecular_design_studio.pipeline_graph import execution_options, save_definition
     from mn_molecular_design_studio.engine.workflow_engine.workflows.graph_pipeline import enqueue_graph_pipeline
     from mn_molecular_design_studio.engine.workflow_engine.services.local_automation import job_reference
     request, selected_project = _request_payload_and_project(payload, user)
     request_dir = _request_directory(user, None)
-    _validate_user_path_values(request.get("graph"), user, request_dir)
-    def perform():
+    def perform(on_dispatch):
         local_request = dict(request)
-        remote = _cluster_submission(local_request, selected_project, user, request_dir, credentials, kind="pipeline")
+        _validate_user_path_values(local_request.get("graph"), user, request_dir)
+        remote = _cluster_submission(local_request, selected_project, user, request_dir, credentials,
+                                     kind="pipeline", on_dispatch=on_dispatch)
         if remote is not None:
             return remote
         payload = dict(local_request, project_id=selected_project)
         graph, project_id, run_request = _pipeline_payload(payload, user, runnable=True)
-        reuse = run_request.get("reuse_completed", True)
-        if type(reuse) is not bool:
-            raise HTTPException(status_code=422, detail="reuse_completed must be true or false.")
-        device = str(run_request.get("gpu_device") or "all")
-        if device not in {"all", "0", "1"}:
-            raise HTTPException(status_code=422, detail="Choose automatic GPU assignment, GPU 0, or GPU 1.")
-        version = _call(save_definition, graph, str(user["id"]), project_id, version=True)
+        reuse, device = execution_options(run_request)
+        version = _call(save_definition, graph, str(user["id"]), project_id, for_run=True)
         from mn_molecular_design_studio.engine.workflow_engine.core.jobs import submission_tags
         with submission_tags(
             studio_owner_id=str(user["id"]), studio_project_id=project_id,
             studio_development_mode=is_development_mode(),
         ):
+            on_dispatch()
             run_dir = _call(enqueue_graph_pipeline, graph, pipeline_name=graph["name"], owner_id=str(user["id"]), project_id=project_id, reuse_completed=reuse, gpu_device=device)
         result = {"job": job_reference(run_dir), "revision": version["revision"]}
         return mark_studio_job(result, project_id=project_id, owner_id=str(user["id"]))
-    return _submit_once(request, selected_project, user, "pipeline", idempotency_key, perform)
+    return _submit_once(request, selected_project, user, "pipeline", idempotency_key, perform, dispatch_aware=True)
 
 
 @app.post("/api/v1/pipelines/adopt-completed")
@@ -1346,12 +1459,15 @@ from mn_molecular_design_studio.presentation_api import install as _install_pres
 _install_presentation_routes(app, _current_user,
     resolve_job=lambda ref, user: _resolve_api_job(ref, user, include_hidden=True), call=_call)
 
+from mn_molecular_design_studio.workspace_api import install as _install_workspace_routes
+_install_workspace_routes(app, _current_user, _admin_user, _call)
+
 
 @app.get("/api/v1/pipelines/{pipeline_id}/versions")
 def pipeline_versions(pipeline_id: str, project_id: str, user=Depends(_current_user)):
     from mn_molecular_design_studio.pipeline_graph import list_versions
-    _, project = _request_payload_and_project({"project_id": project_id}, user)
-    return {"items": _call(list_versions, user["id"], project, pipeline_id)}
+    _require_pipeline_history_access(project_id, user)
+    return {"items": _call(list_versions, str(user["id"]), project_id, pipeline_id)}
 
 
 @app.get("/api/v1/pipelines/{pipeline_id}/versions/{revision}")
@@ -1382,11 +1498,11 @@ def capabilities(user=Depends(_current_user)):
 
 
 def _public_operation(path, method, user):
-    if "/cluster/node/" in path:
+    if "/cluster/node/" in path or (path.startswith("/api/v1/auth/") and path != "/api/v1/auth/me"):
         return False
     admin = (path.startswith("/api/v1/admin/") or path == "/api/v1/cluster/nodes" and method == "post"
              or path == "/api/v1/cluster/nodes/{node_id}" and method == "patch")
-    return not admin or user.get("role") == "admin"
+    return not admin or _can_administer(user)
 
 
 @app.get("/api/v1/operations/schema")

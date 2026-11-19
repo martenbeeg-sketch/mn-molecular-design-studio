@@ -3,7 +3,51 @@ from __future__ import annotations
 
 import math
 import json
+import re
 import pandas as pd
+
+
+def _metric_context(source, evaluation):
+    if "comparison_context" in source:
+        return source["comparison_context"]
+    settings = evaluation.get("native_parameters") or {}
+    protocol = settings.get("assessment_protocol") or {}
+    if not isinstance(protocol, dict):
+        protocol = {}
+
+    def recorded(field):
+        value = str(source.get(field) or evaluation.get(field) or settings.get(field) or protocol.get(field) or "").strip()
+        return "" if value.casefold() in {"unknown", "unrecorded", "unavailable", "not recorded", "latest"} else value
+
+    # Runtime evidence comes from the recorded evaluation, not its requested protocol.
+    digest = str(source.get("image_digest") or evaluation.get("image_digest") or "").strip().rpartition("@")[2].lower()
+    image_digest = digest if re.fullmatch(r"sha256:[0-9a-f]{64}", digest) else ""
+    return {
+        "definition": (source.get("method"), source.get("unit"), source.get("scope")),
+        "evaluator": recorded("evaluator"),
+        "parameters": recorded("parameters_digest"),
+        "version": (image_digest, *(recorded(field) for field in ("engine_version", "method_version",
+                                                                 "protocol_revision", "checkpoint_sha256"))),
+        "execution": tuple(str(source.get(field) or evaluation.get(field) or "")
+                           for field in ("node_id", "task_group", "run_id")),
+    }
+
+
+def _metric_incompatibilities(contexts):
+    if len(contexts) < 2:
+        return []
+    issues = []
+    if len({(context["definition"], context["evaluator"]) for context in contexts}) > 1:
+        issues.append("has different evaluators, calculation methods, units, or scopes")
+    parameters = {context["parameters"] for context in contexts}
+    if len(parameters) > 1 or "" in parameters:
+        issues.append("has different or unrecorded calculation settings")
+    versions = {context["version"] for context in contexts}
+    executions = {context["execution"] for context in contexts}
+    same_execution = len(executions) == 1 and all(next(iter(executions)))
+    if len(versions) != 1 or not (next(iter(versions))[0] or same_execution):
+        issues.append("has different or unrecorded execution versions")
+    return issues
 
 
 def prepare_rows(rows, *, combine_same_subject=False, evaluator_runs=None):
@@ -37,19 +81,19 @@ def prepare_rows(rows, *, combine_same_subject=False, evaluator_runs=None):
         ids = sorted(e["id"] for e in evaluations)
         scores, sources, conflicts = {}, {}, []
         fields = {field for row in group for field in row.get("scores", {})}
-        for field in fields:
+        for field in sorted(fields):
             values = [(row["scores"][field], row.get("score_sources", {}).get(field, {}), evaluation)
                       for row, evaluation in zip(group, evaluations) if field in row.get("scores", {})]
-            signatures = {(json.dumps(value, sort_keys=True, default=str), source.get("method"), source.get("unit"), source.get("scope"),
-                           source.get("parameters_digest") or evaluation.get("parameters_digest"),
-                           source.get("image_digest") or evaluation.get("image_digest")) for value, source, evaluation in values}
-            if len(signatures) != 1:
+            signatures = {json.dumps(value, sort_keys=True, default=str) for value, _, _ in values}
+            contexts = [_metric_context(source, evaluation) for _, source, evaluation in values]
+            if len(signatures) != 1 or _metric_incompatibilities(contexts):
                 conflicts.append(field)
                 continue
-            value, source, evaluation = values[0]
+            value, source, _ = values[0]
             scores[field] = value
-            sources[field] = {**source, "parameters_digest": evaluation.get("parameters_digest"),
-                              "image_digest": evaluation.get("image_digest"), "evaluation_ids": [e["id"] for _, _, e in values]}
+            context = contexts[0]
+            sources[field] = {**source, "parameters_digest": context["parameters"], "image_digest": context["version"][0],
+                              "comparison_context": context, "evaluation_ids": sorted(e["id"] for _, _, e in values)}
         evaluation = {**evaluations[0], "id": identifier("comparison-subject-", ids), "source_evaluation_ids": ids,
                       "evaluator": " + ".join(sorted({e.get("evaluator", "") for e in evaluations})),
                       "run_id": " + ".join(sorted({e.get("run_id", "") for e in evaluations})), "parameters_digest": ""}
@@ -111,7 +155,8 @@ def compare(rows, *, fields=None, directions=None, weights=None, thresholds=None
     if frame.empty:
         return frame
     eligible = frame.index[frame["_eligible"]]
-    if len(eligible):
+    warnings = compatibility_warnings([rows[index] for index in eligible], fields)
+    if len(eligible) and not warnings:
         ranks = pd.DataFrame({field: frame.loc[eligible, field].rank(ascending=directions[field] == "lower", method="average")
                               * float(weights.get(field, 1)) for field in fields})
         if method == "mean":
@@ -133,33 +178,23 @@ def compare(rows, *, fields=None, directions=None, weights=None, thresholds=None
                 remaining = [i for i in remaining if i not in fronts]
             score = pd.Series(fronts)
         frame.loc[eligible, "Comparison rank"] = score.rank(method="min") if method != "pareto" else score
-    return frame.drop(columns="_eligible").sort_values(["Comparison rank", "Name", "Evaluation ID"], na_position="last", kind="stable").reset_index(drop=True)
+    frame = frame.drop(columns="_eligible").sort_values(["Comparison rank", "Name", "Evaluation ID"], na_position="last", kind="stable").reset_index(drop=True)
+    frame.attrs["compatibility_warnings"] = warnings
+    return frame
 
 
 def compatibility_warnings(rows, fields):
     warnings = []
-    targets = {(row.get("evaluation") or row.get("selected_evaluation") or {}).get("target_id") for row in rows}
     target_fields = [f for f in fields if not f.startswith(("common.sequence.", "common.geometry.binder.", "common.secondary_structure.binder.", "sequence_qc.", "proteinsol.", "common.design.sequence_length"))]
-    if target_fields and len(targets - {None, ""}) > 1:
-        warnings.append("This comparison includes different targets. Select one target for binding-score ranking.")
     contexts = {(str(evaluation.get("target_id") or ""), str(evaluation.get("target_revision") or ""),
                  tuple(sorted(map(str, evaluation.get("target_chains") or []))))
                 for row in rows if any(field in row.get("scores", {}) for field in target_fields)
                 for evaluation in [row.get("evaluation") or row.get("selected_evaluation") or {}]}
     if target_fields and len(contexts) > 1:
-        warnings.append("Binding-score ranking requires the same target structure revision and chain scope; unknown and known context cannot be pooled.")
+        warnings.append("Binding-score ranking requires the same target, structure revision, and chain scope.")
     for field in fields:
-        definitions = {(row.get("score_sources", {}).get(field, {}).get("method"),
-                        row.get("score_sources", {}).get(field, {}).get("unit"),
-                        row.get("score_sources", {}).get(field, {}).get("scope")) for row in rows if field in row.get("scores", {})}
-        if len(definitions) > 1:
-            warnings.append(field + " includes different calculation methods or scopes. Select a single evaluator for ranking.")
-        protocols = {str(row.get("score_sources", {}).get(field, {}).get("parameters_digest") or (row.get("evaluation") or row.get("selected_evaluation") or {}).get("parameters_digest") or "")
-                     for row in rows if field in row.get("scores", {})}
-        if len(protocols - {""}) > 1:
-            warnings.append(field + " was calculated with different parameters. Select a single protocol/run for ranking.")
-        images = {str(row.get("score_sources", {}).get(field, {}).get("image_digest") or (row.get("evaluation") or row.get("selected_evaluation") or {}).get("image_digest") or "")
-                  for row in rows if field in row.get("scores", {})}
-        if len(images - {""}) > 1:
-            warnings.append(field + " was calculated with different container versions. Select a single version for ranking.")
-    return list(dict.fromkeys(warnings))
+        contexts = [_metric_context(row.get("score_sources", {}).get(field, {}),
+                    row.get("evaluation") or row.get("selected_evaluation") or {})
+                    for row in rows if field in row.get("scores", {})]
+        warnings.extend(f"{field} {issue}." for issue in _metric_incompatibilities(contexts))
+    return warnings

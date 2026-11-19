@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import hashlib
 import json
 import math
@@ -1648,13 +1649,17 @@ def clean_graph(graph: dict) -> dict:
                 or graph.get('template_id') == 'unidock_active_learning' and 2 <= graph['template_version'] <= ACTIVE_LEARNING_TEMPLATE_VERSION) else {})}
 
 
-def validate_active_library_sources(screening: dict, seed: dict) -> tuple[dict, dict]:
-    """Independent datasets share the model's fingerprint contract, not an ID namespace."""
-    from mn_molecular_design_studio.external_libraries import read_feature_manifest
+def _validate_active_library_selection(screening, seed):
     if not screening.get("library_id") or not screening.get("feature_manifest"):
         raise ValueError("Choose the compound screening library and its fingerprint dataset.")
     if not seed.get("library_id") or not seed.get("centroid_manifest"):
         raise ValueError("Choose the initial centroid library and its centroid dataset independently.")
+
+
+def validate_active_library_sources(screening: dict, seed: dict) -> tuple[dict, dict]:
+    """Independent datasets share the model's fingerprint contract, not an ID namespace."""
+    from mn_molecular_design_studio.external_libraries import read_feature_manifest
+    _validate_active_library_selection(screening, seed)
     try:
         _path, features = read_feature_manifest(screening["feature_manifest"])
         centroids = json.loads(Path(seed["centroid_manifest"]).read_text(encoding="utf-8"))
@@ -2111,7 +2116,17 @@ def _compile_campaign_stop(graph: dict, nodes: dict, incoming: dict, *, allow_un
                       "campaign": copy.deepcopy(campaign), "filter_node": filter_id}}
 
 
-def validate_graph(graph: dict, *, require_inputs=False) -> dict:
+def execution_options(request):
+    reuse = request.get("reuse_completed", True)
+    device = str(request.get("gpu_device") or "all")
+    if type(reuse) is not bool:
+        raise ValueError("reuse_completed must be true or false.")
+    if device not in {"all", "0", "1"}:
+        raise ValueError("Choose automatic GPU assignment, GPU 0, or GPU 1.")
+    return reuse, device
+
+
+def validate_graph(graph: dict, *, require_inputs=False, require_files=True) -> dict:
     graph = clean_graph(migrate_template_graph(graph))
     nodes = {n["id"]: n for n in graph["nodes"]}
     if len(nodes) != len(graph["nodes"]):
@@ -2245,24 +2260,29 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
             if not node["data"]["params"].get("target_pdb"):
                 raise ValueError("Load a target structure before running the pipeline.")
         if require_inputs and kind == "md_source":
-            if not all(node["data"]["params"].get(key) for key in ("source_run_dir", "option_id", "topology_relative_path")):
+            params = node["data"]["params"]
+            if not all(params.get(key) for key in ("source_run_dir", "option_id", "topology_relative_path")):
                 raise ValueError("Choose a completed MD job, recorded segment and matching topology in Saved MD run.")
+            relative = params["topology_relative_path"]
+            if Path(relative).is_absolute() or ".." in Path(relative).parts or "://" in relative or "\\" in relative:
+                raise ValueError("Choose a topology path relative to the selected MD run.")
         if kind == "md_analysis":
             from mn_molecular_design_studio.md_pipeline import validate_analysis_parameters
             validate_analysis_parameters(node["data"]["params"])
         if require_inputs and kind == "kejia_idr":
             from mn_molecular_design_studio.kejia_idr_input import prepare_request
-            prepare_request(node["data"]["params"])
+            prepare_request(node["data"]["params"], require_files=require_files)
         if require_inputs and kind == "peptide_trap":
             from mn_molecular_design_studio.peptide_trap_input import prepare_request
-            prepare_request(node["data"]["params"])
+            prepare_request(node["data"]["params"], require_files=require_files)
         if require_inputs and kind == "active_library":
             seed = next((n for n in nodes.values() if n["data"]["kind"] == "active_seed"), None)
             if seed is not None:
-                validate_active_library_sources(node["data"]["params"], seed["data"]["params"])
+                check_library = validate_active_library_sources if require_files else _validate_active_library_selection
+                check_library(node["data"]["params"], seed["data"]["params"])
         if require_inputs and kind == "active_target":
             target_path = str(node["data"]["params"].get("target_pdb") or "").strip()
-            if not target_path or not Path(target_path).expanduser().is_file():
+            if not target_path or (require_files and not Path(target_path).expanduser().is_file()):
                 raise ValueError("Choose an existing imported receptor structure.")
         if require_inputs and kind == 'cofold_input':
             params = node['data']['params']
@@ -2292,16 +2312,16 @@ def validate_graph(graph: dict, *, require_inputs=False) -> dict:
                 raise ValueError('Mark the protein partner as cyclic for the macrocyclic task.')
             optional_target_path = str(params.get('target_pdb') or '').strip()
             for selection_key in ('compound_set_file', 'sequence_file'):
-                if params.get(selection_key) and not Path(params[selection_key]).expanduser().is_file():
+                if require_files and params.get(selection_key) and not Path(params[selection_key]).expanduser().is_file():
                     raise ValueError(f'The {selection_key} collection in Cofolding Inputs does not exist.')
-            if optional_target_path and not Path(optional_target_path).expanduser().is_file():
+            if require_files and optional_target_path and not Path(optional_target_path).expanduser().is_file():
                 raise ValueError('The optional target PDB path in Cofolding Inputs does not exist.')
         if require_inputs and NODE_CATALOG[kind].get('requires_target_structure'):
             if cofold_task_context.get(node_id):
                 source_id = cofold_source_context.get(node_id)
                 source_input = nodes[source_id]['data']['params'] if source_id in nodes else None
                 path = str((source_input or {}).get('target_pdb') or '').strip()
-                if not path or not Path(path).expanduser().is_file():
+                if not path or (require_files and not Path(path).expanduser().is_file()):
                     raise ValueError(f"{node['data']['label']} requires an existing target PDB path in Cofolding Inputs.")
                 if kind == 'af2' and Path(path).suffix.lower() != '.pdb':
                     raise ValueError('AlphaFold2 Initial Guess requires a PDB file (mmCIF is not supported by this input mode).')
@@ -2381,22 +2401,42 @@ def scope_root(owner_id: str, project_id: str) -> Path:
     return app_home() / "pipelines" / scope
 
 
-def save_definition(graph: dict, owner_id: str, project_id: str, *, version=False) -> dict:
+class PipelineDraftConflictError(ValueError):
+    pass
+
+
+def save_definition(graph: dict, owner_id: str, project_id: str, *, version=False,
+                    expected_revision: str | None = None, for_run=False) -> dict:
+    """Save an editable revision, or pin a run snapshot without replacing its draft."""
+    from mn_molecular_design_studio.cluster.config import atomic_json
+
+    if expected_revision is not None and (not isinstance(expected_revision, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", expected_revision)):
+        raise ValueError("Use the revision from the saved pipeline draft.")
     graph = clean_graph(graph)
     root = scope_root(owner_id, project_id) / graph["id"]
     root.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256(json.dumps(graph, sort_keys=True).encode()).hexdigest()
     payload = {"graph": graph, "revision": digest, "saved_at": datetime.now(timezone.utc).isoformat()}
     draft = root / "draft.json"
-    temporary = root / f".draft-{uuid.uuid4().hex}.tmp"
-    temporary.write_text(json.dumps(payload, indent=2)); temporary.replace(draft)
-    if version:
-        versions = root / "versions"; versions.mkdir(exist_ok=True)
+    with (root / ".draft.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
         try:
-            with (versions / f"{digest}.json").open("x") as handle:
-                json.dump(payload, handle, indent=2)
-        except FileExistsError:
-            pass
+            current = json.loads(draft.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            current = None
+        current_revision = current["revision"] if current is not None else None
+        if not for_run and expected_revision != current_revision and digest != current_revision:
+            raise PipelineDraftConflictError("The saved draft has changed. Open the saved draft or use Save as… to keep your edits separately.")
+        if version or for_run:
+            version_path = root / "versions" / f"{digest}.json"
+            version_path.parent.mkdir(exist_ok=True)
+            if not version_path.exists():
+                atomic_json(version_path, payload)
+        if current is None or (not for_run and digest != current_revision):
+            atomic_json(draft, payload)
+        elif digest == current_revision and not for_run:
+            return current
     return payload
 
 
@@ -2475,7 +2515,7 @@ for _kind, _specification in NODE_CATALOG.items():
     if _specification['category'] in {'Design engine', 'Design pipeline'}:
         _specification['scientific_workflow'] = workflow_capability(_kind)
 
-STARTER_TEMPLATES = {label: mode for mode, label in MODES.items()} | {spec['label']: key for key, spec in TASKS.items()} | {"Accepted Results → Complex Analysis": "accepted_complex_analysis", "Multi-Generator Binder Design & Evaluation": "multi_generator_binder", "Blank canvas": "blank"}
+STARTER_TEMPLATES = {label: mode for mode, label in MODES.items()} | {spec['label']: key for key, spec in TASKS.items()} | {"Accepted Results → Complex Analysis": "accepted_complex_analysis", "Multi-Generator Binder Design & Evaluation": "multi_generator_binder", "Saved MD run → MD Analysis → Results": "md_analysis", "Blank canvas": "blank"}
 SUPPORTED_TEMPLATE_IDS = (set(LEGACY_STARTER_TEMPLATES.values()) | set(STARTER_TEMPLATES.values())
                           | {'bindcraft2', 'boltzgen', 'complexa', 'rfdiffusion_beta_pairing'}
                           | {key + '_generated' for key in ('complexa', 'rfdiffusion', 'genie3', 'pxdesign',

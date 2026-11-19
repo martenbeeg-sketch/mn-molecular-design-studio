@@ -923,13 +923,45 @@ def test_versions_remain_immutable_while_draft_and_positions_change(monkeypatch,
     monkeypatch.setattr(graph,"app_home",lambda:tmp_path)
     g=graph.new_graph();first=graph.save_definition(g,"owner","project",version=True)
     changed=copy.deepcopy(g);changed["nodes"][1]["position"]["x"]+=200
-    second=graph.save_definition(changed,"owner","project",version=True)
+    second=graph.save_definition(changed,"owner","project",version=True,expected_revision=first["revision"])
     assert first["revision"]!=second["revision"]
     versions=graph.list_versions("owner","project",g["id"])
     assert len(versions)==2
     assert next(v for v in versions if v["revision"]==first["revision"])["graph"]==g
     assert graph.list_definitions("owner","other-project")==[]
     assert graph.list_definitions("other-owner","project")==[]
+
+
+def test_concurrent_drafts_and_run_snapshot_keep_the_winning_edit(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    monkeypatch.setattr(graph, "app_home", lambda: tmp_path)
+    original = graph.new_graph()
+    initial = graph.save_definition(original, "owner", "project", version=True)
+    ready = Barrier(2)
+
+    def save(name):
+        ready.wait(timeout=5)
+        try:
+            return graph.save_definition(dict(original, name=name), "owner", "project",
+                                         version=True, expected_revision=initial["revision"])
+        except graph.PipelineDraftConflictError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        [winner] = [saved for saved in pool.map(save, ["First edit", "Second edit"]) if saved]
+
+    root = graph.scope_root("owner", "project") / original["id"]
+    draft_bytes = (root / "draft.json").read_bytes()
+    assert graph.save_definition(winner["graph"], "owner", "project",
+                                 expected_revision=initial["revision"]) == winner
+    snapshot = graph.save_definition(dict(original, name="Other session run"), "owner", "project", for_run=True)
+    assert (root / "draft.json").read_bytes() == draft_bytes
+    assert graph.list_definitions("owner", "project")[0]["revision"] == winner["revision"]
+    assert {v["revision"]: v["graph"] for v in graph.list_versions("owner", "project", original["id"])} == {
+        initial["revision"]: original, winner["revision"]: winner["graph"], snapshot["revision"]: snapshot["graph"],
+    }
 
 
 def test_adapters_disable_hidden_downstream_pipelines_and_bind_existing_signatures(design_source_factory):
@@ -1410,6 +1442,69 @@ _show_pipeline_save_as(prefix, "test-project", submit_api)
     assert saved["name"] == "PD-L1 copy"
     assert saved["id"] != source_id
     assert app.session_state["save-as-test-graph"] == saved
+
+
+def test_archived_project_shows_saved_graph_without_starting_the_editor(monkeypatch, tmp_path):
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import pipeline_graph_ui
+
+    monkeypatch.setattr(graph, "app_home", lambda: tmp_path)
+    monkeypatch.setattr(pipeline_graph_ui, "_component", lambda: pytest.fail("Archived project opened an editable canvas"))
+    graph.save_definition(graph.new_graph("md_analysis"), "test-user", "archived", version=True)
+    app = AppTest.from_string('''
+from mn_molecular_design_studio.pipeline_graph_ui import render_pipeline_builder
+render_pipeline_builder(owner_id="test-user", project_selector=lambda _: "archived",
+    submit_api=lambda *a: None, search_jobs=lambda **k: {"items": []}, read_only_projects={"archived"})
+''').run()
+    assert not app.exception
+    assert "read-only" in app.info[0].value
+    assert len(app.selectbox(key="visual-pipeline-archived-archived-revision").options) == 2
+    assert len(app.get("download_button")) == 1
+
+
+def test_canvas_recovers_stale_edits_as_a_copy(monkeypatch, tmp_path):
+    import streamlit as st
+    from streamlit.testing.v1 import AppTest
+    from mn_molecular_design_studio import pipeline_graph_ui
+
+    monkeypatch.setattr(graph, "app_home", lambda: tmp_path)
+    monkeypatch.setattr(pipeline_graph_ui, "_component", lambda: lambda **_: st.session_state.get("canvas-event"))
+    original = graph.save_definition(graph.new_graph(), "test-user", "test-project")
+    script = '''
+from mn_molecular_design_studio.api_client import StudioAPIConflictError
+from mn_molecular_design_studio.pipeline_graph import PipelineDraftConflictError, save_definition
+from mn_molecular_design_studio.pipeline_graph_ui import render_pipeline_builder
+
+def submit_api(endpoint, payload):
+    assert endpoint == "/api/v1/pipelines/save"
+    try:
+        return save_definition(payload["graph"], "test-user", payload["project_id"],
+                               expected_revision=payload.get("expected_revision"))
+    except PipelineDraftConflictError as exc:
+        raise StudioAPIConflictError(str(exc)) from exc
+
+render_pipeline_builder(owner_id="test-user", project_selector=lambda _: "test-project",
+    submit_api=submit_api, search_jobs=lambda **_: {"items": []})
+'''
+    first = AppTest.from_string(script).run()
+    second = AppTest.from_string(script).run()
+    first.session_state["canvas-event"] = {"graph": dict(original["graph"], name="First tab")}
+    first.run()
+    second.session_state["canvas-event"] = {"graph": dict(original["graph"], name="Second tab")}
+    second.run()
+    assert not first.exception and not second.exception
+    assert any("Your edits are still in this tab" in item.value for item in second.warning)
+
+    prefix = "visual-pipeline-test-project"
+    source_id = original["graph"]["id"]
+    second.button(key=prefix + "-copy-edits").click().run()
+    second.text_input(key=f"{prefix}-save-as-name-{source_id}").set_value("Second tab copy").run()
+    second.button(key=prefix + "-save-as-submit").click().run()
+    assert not second.exception and not second.warning
+    drafts = graph.list_definitions("test-user", "test-project")
+    assert {item["graph"]["name"] for item in drafts} == {"First tab", "Second tab copy"}
+    copy_id = second.session_state[prefix + "-graph"]["id"]
+    assert copy_id != source_id
 
 
 def test_pipeline_resource_dialog_updates_graph_level_scheduler_policy():

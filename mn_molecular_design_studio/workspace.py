@@ -180,6 +180,17 @@ def create_project(
     return project
 
 
+@identity_edit
+def create_project_for_user(user, name, description="", color="#ef5350", home=None):
+    from mn_molecular_design_studio.auth import grant_project_access
+    from mn_molecular_design_studio.cluster.config import is_worker
+
+    project = create_project(name, description, color, home, owner_id=str(user["id"]))
+    if user.get("role") != "admin" and not is_worker():
+        grant_project_access(project["id"], str(user["id"]), actor=user, allow_self_grant=True)
+    return project
+
+
 def validate_project_id(project_id: object, home: Path | None = None) -> str | None:
     """Return a known project ID, or reject stale/unknown IDs from API requests."""
     if project_id is None or project_id == "":

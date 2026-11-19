@@ -258,10 +258,14 @@ def selection_clause(filters, parameters, *, alias="e"):
 
 def project_observation(observation):
     metrics = _projectable_metrics(observation["metrics"], observation["namespace"])
-    normalized = normalize_metrics(metrics, observation["namespace"], observation["context"])
+    context = observation["context"]
+    if not isinstance(context, dict):
+        context = {}
+    normalized = normalize_metrics(metrics, observation["namespace"], context)
     scores = {observation["namespace"] + "." + key: value for key, value in metrics.items()}
     scores.update({PREFIX + key: value for key, value in normalized["metrics"].items()})
-    sources = {field: {"observation_id": observation["id"], "run_id": observation["run_id"],
+    execution = {key: context[key] for key in ("node_id", "task_group") if context.get(key)}
+    sources = {field: {"observation_id": observation["id"], "run_id": observation["run_id"], **execution,
                        "namespace": observation["namespace"], "created_at": observation["created_at"],
                        **normalized["provenance"].get(field.removeprefix(PREFIX), {})} for field in scores}
     return scores, sources, normalized

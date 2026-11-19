@@ -119,6 +119,40 @@ def isolated(tmp_path, monkeypatch):
     return tmp_path
 
 
+def test_operation_receipts_match_exact_executions_within_scope(isolated):
+    from mn_molecular_design_studio.cluster import config
+
+    local = config.identity()
+    directory = isolated / "studio" / "run_operations"
+    directory.mkdir(parents=True)
+
+    def receipt(output, job, *, owner="u", project="p"):
+        path = directory / f"op-{output}.json"
+        config.atomic_json(path, dict(owner_id=owner, project_id=project,
+            requests=[{"run_context": {"studio_run_output_id": output}}], receipts={"0": {"job": job}}))
+
+    receipt("local", dict(task_group="design", run_id="shared"))
+    receipt("worker", dict(cluster_job_id="cluster-job"))
+    receipt("incomplete", dict(run_id="bare"))
+    receipt("other-scope", dict(task_group="design", run_id="shared"), project="alternate")
+    receipt("ambiguous-1", dict(task_group="design", run_id="ambiguous", node_id="worker"))
+    receipt("ambiguous-2", dict(task_group="design", run_id="ambiguous", node_id="worker"))
+    rows = [row("shared", node_id=local), row("shared", node_id="worker"),
+            row("shared", node_id=local, task_group="analysis"), row("shared", node_id=local, owner_id="another"),
+            row("shared", node_id=local, project_id="alternate"), row("bare", node_id=local),
+            row("worker-run", node_id="worker", cluster_job_id="cluster-job"),
+            row("worker-run", node_id="worker", cluster_job_id="cluster-job", owner_id="another"),
+            row("ambiguous", node_id="worker")]
+    original = copy.deepcopy(rows)
+    receipts = {path: path.read_bytes() for path in directory.glob("*.json")}
+    linked = runs.apply_operation_links(rows)
+    assert [item.get("studio_run_output_id") for item in linked] == [
+        "local", None, None, None, "other-scope", None, "worker", None, None,
+    ]
+    assert rows == original
+    assert all(path.read_bytes() == content for path, content in receipts.items())
+
+
 def test_run_dispatch_freezes_all_sources_recovers_and_keeps_remote_affinity(isolated):
     run = runs.group_runs([row("a", campaign_group_id="g"), row("b", campaign_group_id="g")])[0]
     request = dict(schema_version=1, workflow="analysis.ipsae", source_job=run["id"], parameters={}, project_id="p")

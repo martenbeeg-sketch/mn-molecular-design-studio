@@ -71,6 +71,34 @@ def mcp_server(
         raise typer.BadParameter("Install the Studio mcp extra in this environment first.") from exc
 
 
+@app.command("mcp-login")
+def mcp_login(
+    username: str | None = typer.Option(None, help="Existing Studio username or email address."),
+    api_url: str = typer.Option("http://127.0.0.1:8766", envvar="STUDIO_API_URL", help="Studio API origin."),
+    pair: bool = typer.Option(False, "--pair", help="Use a one-time code from Studio Account instead of a password."),
+) -> None:
+    """Sign the local Codex MCP server in with your existing Studio account."""
+    import httpx
+    from mn_molecular_design_studio.api_client import StudioAPIError
+    from mn_molecular_design_studio.mcp_session import pair_with_studio, sign_in
+
+    try:
+        if pair:
+            code = typer.prompt("Studio pairing code", hide_input=True)
+            account = pair_with_studio(api_url, code)
+        else:
+            if username is None:
+                username = typer.prompt("Studio username or email")
+            password = typer.prompt("Studio password", hide_input=True)
+            account = sign_in(api_url, username, password)
+    except (StudioAPIError, ValueError, OSError, httpx.HTTPError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if pair:
+        typer.echo(f"Codex connected as {account}. Revoke this connection in Studio Account.")
+    else:
+        typer.echo(f"Studio MCP signed in as {account} until this session expires.")
+
+
 @app.command("reset-admin-password")
 def reset_admin(
     username: str = typer.Option(..., prompt=True, help="Existing admin username or email address."),
