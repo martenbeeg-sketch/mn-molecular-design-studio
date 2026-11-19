@@ -121,3 +121,34 @@ def test_unstructured_input_members_are_paginated_not_hidden(database, monkeypat
     app.number_input(key=key).set_value(2).run()
     assert not app.exception
     assert len(next(frame for frame in app.dataframe if "datasets-members-" in frame.proto.id).value) == 21
+
+
+def test_input_chemistry_and_sequence_previews_are_visible_without_calculations(database, monkeypatch):
+    _library(database)
+    app = _app(database, monkeypatch, inputs=True)
+    assert not app.exception
+    assert app.image
+    assert any(code.value in {"CCO", "CO"} for code in app.code)
+    sequence = "ACDEFGHIKLMNPQRSTVWY"
+    imported = database.import_records(USER, [{"name": "Reference sequence", "components": [
+        {"chain": "A", "type": "protein", "sequence": sequence}]}], name="Sequence inputs", origin=datasets.input_origin(USER))
+    app = _app(database, monkeypatch, inputs=True, state={"datasets-open-group": imported["group_id"]})
+    assert not app.exception
+    assert any(code.value == sequence for code in app.code)
+
+
+def test_saved_reference_structure_is_rendered_as_cartoon_without_result_scores(database, monkeypatch):
+    from test_molecular_database_policy import _pdb_acd
+    from mn_molecular_design_studio.engine.workflow_engine.app.components import molstar_viewer
+    imported = database.import_records(USER, [{"name": "Reference structure", "components": [
+        {"chain": "A", "type": "protein", "sequence": "ACD"}]}], name="Input structures", origin=datasets.input_origin(USER))
+    structure = database.attach_structure(imported["group_id"], imported["molecule_ids"][0], {
+        "name": "reference.pdb", "content": _pdb_acd().encode()})
+    rendered = []
+    monkeypatch.setattr(molstar_viewer, "molstar_custom_component", lambda visualizations, **kwargs: rendered.extend(visualizations))
+    app = _app(database, monkeypatch, inputs=True, state={"datasets-open-group": imported["group_id"]})
+    assert not app.exception
+    assert any(item.label == "Saved structure" and item.value == structure for item in app.selectbox)
+    assert len(rendered) == 1 and rendered[0].representation_type == "cartoon"
+    assert app.get("download_button")
+    assert not any("Original result scores" in item.value for item in app.markdown)
