@@ -719,7 +719,7 @@ def _signal_worker_process(run_dir: Path, sig: int = signal.SIGTERM) -> bool:
         return False
 
 
-def _stop_run_docker_containers(run_dir: Path) -> list[str]:
+def _stop_run_docker_containers(run_dir: Path, *, strict: bool = False) -> list[str]:
     """Stop running Docker containers whose inspect metadata references run_dir."""
     run_text = str(run_dir.expanduser().resolve())
     try:
@@ -730,7 +730,11 @@ def _stop_run_docker_containers(run_dir: Path) -> list[str]:
             text=True,
             timeout=10,
         )
+        if ps.returncode:
+            raise RuntimeError("Could not list Docker containers for execution cleanup.")
     except Exception:
+        if strict:
+            raise
         return []
     container_ids = [line.strip() for line in ps.stdout.splitlines() if line.strip()]
     if not container_ids:
@@ -746,25 +750,36 @@ def _stop_run_docker_containers(run_dir: Path) -> list[str]:
                 text=True,
                 timeout=10,
             )
+            if inspected.returncode:
+                raise RuntimeError("Could not inspect a running Docker container for execution cleanup.")
+            records = json.loads(inspected.stdout)
+            owned = any(str(Path(mount.get("Source") or "").resolve()) == run_text
+                        for record in records for mount in record.get("Mounts", []) if mount.get("Source"))
         except Exception:
+            if strict:
+                raise
             continue
-        if inspected.returncode == 0 and run_text in inspected.stdout:
+        if owned:
             matching.append(container_id)
 
     stopped: list[str] = []
     for container_id in matching:
         try:
             result = subprocess.run(
-                ["docker", "stop", container_id],
+                ["docker", "stop", "--time", "10", container_id],
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=20,
             )
         except Exception:
+            if strict:
+                raise
             continue
         if result.returncode == 0:
             stopped.append(container_id)
+        elif strict:
+            raise RuntimeError("Could not stop the run's Docker container during execution cleanup.")
     return stopped
 
 

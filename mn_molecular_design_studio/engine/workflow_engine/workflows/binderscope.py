@@ -53,6 +53,14 @@ def run_saved_binderscope(selection_file: Path, selection_sha256: str, cpu_cores
     if file_digest(selection_file) != selection_sha256:
         raise ValueError("The queued design selection changed after submission.")
     selection = read_json(selection_file)
+    if (run / "artifacts/analysis/binderscope/binderscope_report.json").is_file():
+        from mn_molecular_design_studio.binderscope_submission import validate_submission
+
+        parameters = {"cpu_cores": cpu_cores, "use_recorded_settings": use_recorded_settings,
+                      "bfactors_are_plddt": bfactors_are_plddt, "component_format": component_format}
+        validate_submission({"schema_version": 1, "workflow": "analysis.binderscope",
+            "parameters": parameters, "binderscope_collection": selection}, user, project)
+        return _recover_saved_report(run, selection, parameters)
     total = len(selection.get("sources") or [])
 
     def progress(completed, count):
@@ -127,6 +135,100 @@ def _saved_inputs(source, candidates_path, *, use_recorded_settings=False):
     return candidates
 
 
+def _saved_request_item(candidate, inputs, *, use_recorded_settings, component_format, bfactors_are_plddt):
+    selection = candidate["raw_metadata"]["complex_analysis_selection"]
+    destination = inputs / (candidate["candidate_id"] + Path(candidate["complex_pdb"]).suffix)
+    item = {**selection, "path": "/work/input/" + destination.name,
+        "assessment": selection["assessment"] if use_recorded_settings else {
+            "component_format": component_format,
+            "b_factor_interpretation": "plddt_0_100" if bfactors_are_plddt else "uninterpreted",
+            "topology_basis": "Explicit legacy job setting.", "confidence_basis": "Explicit legacy job setting.",
+        }, "label": str(selection.get("source", {}).get("record_name") or candidate["candidate_id"])}
+    if selection.get("target_reference"):
+        reference = selection["target_reference"]
+        filename = candidate["candidate_id"] + "-target" + Path(reference["path"]).suffix
+        item["target_reference"] = {**reference, "path": "/work/input/" + filename}
+    return item
+
+
+def _validate_saved_report(run_dir, report, request, staged):
+    from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import store_managed_paths
+
+    vendor = Path(__file__).resolve().parents[3] / "vendor/binderscope/SOURCE_MANIFEST.json"
+    expected = {"schema": "studio.binderscope_report.v1", "mode": "saved", "upstream_revision": REVISION,
+        "source_manifest_sha256": file_digest(vendor), "adapter_sha256": request.get("adapter_sha256"),
+        "target_context_sha256": request.get("context_sha256")}
+    if any(not value or report.get(key) != value for key, value in expected.items()):
+        raise ValueError("BinderScope report provenance does not match its recorded request and runtime.")
+    if request.get("adapter_sha256") != file_digest(RUNTIME) or request.get("context_sha256") != file_digest(RUNTIME.with_name("binderscope_context.py")):
+        raise ValueError("BinderScope report recovery requires its original runtime adapters.")
+    results, items = report.get("results") or [], request.get("items") or []
+    measured = {item["candidate_id"]: item for item in results}
+    authorized = {candidate["candidate_id"] for candidate in staged}
+    if len(results) != len(measured) or len(items) != len(authorized) or len(staged) != len(authorized) or set(measured) != authorized:
+        raise ValueError("BinderScope did not return exactly the authorized structure inventory.")
+    for candidate, item in zip(staged, items):
+        expected_item = _saved_request_item(candidate, run_dir / "input", **{
+            key: request[key] for key in ("use_recorded_settings", "component_format", "bfactors_are_plddt")})
+        expected_item = store_managed_paths(expected_item, run_dir=run_dir)
+        if item != expected_item or any(measured[item["candidate_id"]].get("source", {}).get(key) != value for key, value in item.items()):
+            raise ValueError("BinderScope report source identity or settings differ from its authorized input.")
+        for source, digest in [(item, item["input_structure_digest"]), *(
+                [(item["target_reference"], item["target_reference"]["input_structure_digest"])] if item.get("target_reference") else [])]:
+            relative = Path(source["path"]).relative_to("/work/input")
+            path = (run_dir / "input" / relative).resolve(strict=True)
+            path.relative_to((run_dir / "input").resolve())
+            if file_digest(path) != digest:
+                raise ValueError("A BinderScope calculation input changed after execution.")
+
+
+def _recover_saved_report(run_dir, selection, parameters):
+    from mn_molecular_design_studio.engine.workflow_engine.core.jobs import JobPaths, utc_now
+    from mn_molecular_design_studio.engine.workflow_engine.core.portable_paths import resolve_stored_path
+
+    original = read_json(run_dir / "input.json")
+    recorded = original.get("params") or {}
+    if original.get("tool") != "binderscope" or any(recorded.get(key) != value for key, value in parameters.items()):
+        raise ValueError("BinderScope recovery settings differ from the original calculation.")
+    if recorded.get("method_version") != METHOD_VERSION or recorded.get("upstream_revision") != REVISION or not recorded.get("protocol_revision"):
+        raise ValueError("BinderScope recovery requires its recorded scientific protocol.")
+    source = resolve_stored_path(original["inputs"]["source_run_dir"]).resolve(strict=True)
+    candidates_path = resolve_stored_path(original["inputs"]["candidates_jsonl"]).resolve(strict=True)
+    candidates_path.relative_to(source)
+    staged = copy.deepcopy(_saved_inputs(source, candidates_path, use_recorded_settings=parameters["use_recorded_settings"]))
+    selectors = {(item["molecule_id"], item["structure_id"], item["group_id"]): item for item in selection["sources"]}
+    seen = set()
+    for candidate in staged:
+        saved = candidate["raw_metadata"]["complex_analysis_selection"]
+        identity = tuple(saved["source"].get(key) for key in ("molecule_id", "structure_id", "group_id"))
+        selector = selectors.get(identity)
+        if selector is None or identity in seen or any(selector[key] != saved.get(key) for key in ("binder_chains", "target_chains", "assessment") if key in selector):
+            raise ValueError("BinderScope recovery inventory differs from the queued SQL selection.")
+        if (selector.get("structure_digest") and selector["structure_digest"] != saved.get("source_structure_digest")) or ("target_context" in selector and selector["target_context"] != saved["source"].get("target_context")):
+            raise ValueError("BinderScope recovery inventory differs from the queued SQL selection.")
+        seen.add(identity)
+        candidate["complex_pdb"] = str(run_dir / "input" / (candidate["candidate_id"] + Path(candidate["complex_pdb"]).suffix))
+    if seen != set(selectors):
+        raise ValueError("BinderScope recovery is missing selected designs.")
+    request = json.loads((run_dir / "input/request.json").read_text())
+    if request.get("mode") != "saved" or any(request.get(key) != value for key, value in parameters.items()):
+        raise ValueError("BinderScope runtime request differs from the queued settings.")
+    report_path = run_dir / "artifacts/analysis/binderscope/binderscope_report.json"
+    report = json.loads(report_path.read_text())
+    _validate_saved_report(run_dir, report, request, staged)
+    image_digest = read_json(run_dir / "command.json").get("image_digest")
+    if not image_digest:
+        raise ValueError("BinderScope recovery requires the recorded calculation image identity.")
+    write_json(run_dir / "binderscope_recovery.json", {"schema": "studio.binderscope_recovery.v1",
+        "validated_at": utc_now(), "report_sha256": file_digest(report_path), "designs": len(staged),
+        "calculation_repeated": False, "original_container_exit_observed": False,
+        "protocol_revision": recorded["protocol_revision"], "image_digest": image_digest})
+    update_status(run_dir, "running", current_phase=f"Saving recovered BinderScope results · {len(staged)} designs")
+    job = JobPaths(task_group=run_dir.parent.name, run_id=run_dir.name, run_dir=run_dir)
+    return _finish_report(job, staged, report, saved=True, use_recorded_settings=parameters["use_recorded_settings"],
+                          recorded_protocol=recorded["protocol_revision"], image_digest=image_digest)
+
+
 def run_binderscope(
     source_run_dir: Path | None = None,
     candidates_jsonl: Path | None = None,
@@ -188,13 +290,8 @@ def run_binderscope(
         shutil.copyfile(original, destination)
         candidate["complex_pdb"] = str(destination)
         staged.append(candidate)
-        request_item = {**selection, "path": "/work/input/" + destination.name,
-            "assessment": selection["assessment"] if use_recorded_settings else {
-                "component_format": component_format,
-                "b_factor_interpretation": "plddt_0_100" if bfactors_are_plddt else "uninterpreted",
-                "topology_basis": "Explicit legacy job setting.", "confidence_basis": "Explicit legacy job setting.",
-            },
-            "label": str(selection.get("source", {}).get("record_name") or candidate["candidate_id"])}
+        request_item = _saved_request_item(candidate, inputs, use_recorded_settings=use_recorded_settings,
+            component_format=component_format, bfactors_are_plddt=bfactors_are_plddt)
         if selection.get("target_reference"):
             reference = selection["target_reference"]
             reference_destination = inputs / (candidate["candidate_id"] + "-target" + Path(reference["path"]).suffix)
@@ -239,6 +336,15 @@ def run_binderscope(
         finish_job(run_dir, False, {"error": "BinderScope analysis failed; inspect the job log. No design admission was changed."})
         return run_dir
     report = json.loads(report_path.read_text())
+    if saved:
+        _validate_saved_report(run_dir, report, json.loads((inputs / "request.json").read_text()), staged)
+    return _finish_report(job, staged, report, saved=saved, use_recorded_settings=use_recorded_settings,
+                          recorded_protocol=protocol_revision(), image_digest=inspection.stdout.strip())
+
+
+def _finish_report(job, staged, report, *, saved, use_recorded_settings, recorded_protocol, image_digest):
+    run_dir = job.run_dir
+    report_path = run_dir / "artifacts/analysis/binderscope/binderscope_report.json"
     vendor_root = Path(__file__).resolve().parents[3] / "vendor/binderscope"
     shutil.copyfile(vendor_root / "LICENSE", report_path.parent / "BINDERSCOPE-LICENSE.txt")
     shutil.make_archive(str(run_dir / "artifacts/analysis/binderscope-results"), "zip", report_path.parent)
@@ -247,9 +353,6 @@ def run_binderscope(
             "outputs": {"artifacts": [{"name": "BinderScope report", "path": "artifacts/analysis/binderscope-results.zip", "type": "analysis_summary"}]}})
         return run_dir
     measured = {item["candidate_id"]: item for item in report["results"]}
-    if set(measured) != {candidate["candidate_id"] for candidate in staged}:
-        finish_job(run_dir, False, {"error": "BinderScope did not return exactly the authorized structure inventory."})
-        return run_dir
     for candidate in staged:
         result = measured[candidate["candidate_id"]]
         candidate["metrics"] = {"binderscope_" + label: result["analysis"].get(name) for name, label in METRICS.items()}
@@ -264,8 +367,8 @@ def run_binderscope(
         candidate["raw_metadata"]["analysis_parameters"] = {
             **result.get("source", {}).get("assessment", {}),
             "use_recorded_settings": use_recorded_settings,
-            "method_version": METHOD_VERSION, "upstream_revision": REVISION, "protocol_revision": protocol_revision(),
-            "image_digest": inspection.stdout.strip(), "source_manifest_sha256": report["source_manifest_sha256"],
+            "method_version": METHOD_VERSION, "upstream_revision": REVISION, "protocol_revision": recorded_protocol,
+            "image_digest": image_digest, "source_manifest_sha256": report["source_manifest_sha256"],
             "target_context_sha256": report["target_context_sha256"],
         }
     return _finish_metric_analysis(job, staged, tool="binderscope", table_name="binderscope_metrics.csv",

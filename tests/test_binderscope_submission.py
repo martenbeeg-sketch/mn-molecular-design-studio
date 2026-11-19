@@ -148,6 +148,13 @@ def test_one_queued_job_prepares_and_runs_the_real_offline_engine(database, tmp_
     assert run_workflow_call(run, read_json(run / "worker_request.json")) == run
     assert read_json(run / "result.json")["success"]
     assert len(list(run.parent.iterdir())) == 1
+    from mn_molecular_design_studio.engine.workflow_engine.workflows import binderscope
+    original_protocol = read_json(run / "input.json")["params"]["protocol_revision"]
+    monkeypatch.setattr(binderscope, "run_binderscope", lambda *args, **kwargs: pytest.fail("Complete report must never recalculate"))
+    monkeypatch.setattr(binderscope, "protocol_revision", lambda: "new-wrapper-not-original-calculation")
+    assert run_workflow_call(run, read_json(run / "worker_request.json")) == run
+    assert read_json(run / "result.json")["success"]
+    assert read_json(run / "binderscope_recovery.json")["protocol_revision"] == original_protocol
     assert ingest_run(run, database=database, force=True) == 1
     with database.connection() as connection:
         assert connection.execute("SELECT count(*) FROM molecule_observations WHERE namespace='binderscope'").fetchone()[0] == 1
